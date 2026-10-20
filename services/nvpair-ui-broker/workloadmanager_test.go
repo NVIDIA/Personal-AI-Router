@@ -32,7 +32,7 @@ func storeIncoming(id, origin, engine, runID, state, scheduledOn string) workloa
 // restart) — never peer-origin jobs merely scheduled here (the origin is the
 // single writer). The terminal time-window and the inferred-exclusion are
 // covered at the store level (TestReplayForNode), where the clock is settable.
-func TestActiveLocalReplayFrames(t *testing.T) {
+func TestActiveLocalReplay_EmitsFramesForLocalActiveWorkloads(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "host"}
 
 	b.workloads.Apply(storeIncoming("1", "host", "ollama", "r1", "running", "peer"))   // local-origin active → replay
@@ -67,7 +67,7 @@ func TestActiveLocalReplayFrames(t *testing.T) {
 // flush — must still be persisted, because the stop func cancels AND joins the
 // flusher's final flush before returning. Without the join, the process could
 // exit after cancel() but before the goroutine writes, silently dropping it.
-func TestWorkloadHistoryFlusherFlushesOnShutdown(t *testing.T) {
+func TestWorkloadHistoryFlusher_FlushesOnShutdown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workloads-history.json")
 	b := &Broker{workloads: workloadstore.New().WithPersistence(path)}
 
@@ -92,7 +92,7 @@ func TestWorkloadHistoryFlusherFlushesOnShutdown(t *testing.T) {
 // workload:errored. The flusher must not final-flush-and-exit on that parent
 // cancel — it stays alive until stop() (deferred after producer teardown) — so a
 // terminal applied after parent cancel but before stop() is still persisted.
-func TestWorkloadHistoryFlusherOutlivesParentCancel(t *testing.T) {
+func TestWorkloadHistoryFlusher_OutlivesParentCancel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workloads-history.json")
 	b := &Broker{workloads: workloadstore.New().WithPersistence(path)}
 
@@ -118,7 +118,7 @@ func TestWorkloadHistoryFlusherOutlivesParentCancel(t *testing.T) {
 // workloads by the stable HostUUID (what the proxy stamps as originatedFrom /
 // scheduledOn), not the display hostname. Sweeping by name leaves a
 // UUID-stamped workload incorrectly running.
-func TestFailWorkloadsForNodeMatchesByHostUUID(t *testing.T) {
+func TestFailWorkloadsForNode_MatchesByHostUUID(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
 	// A peer-origin running workload stamped with the peer's HostUUID.
 	require.True(t, b.workloads.Apply(storeIncoming("7", "peer-uuid", "ollama", "r1", "running", "peer-uuid")), "running apply should be accepted")

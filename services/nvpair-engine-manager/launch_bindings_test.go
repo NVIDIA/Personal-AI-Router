@@ -15,7 +15,7 @@ import (
 
 // These synthetic engines exercise different syntax, not per-engine code paths.
 // The same fixtures are also usable with the authoring JSON Schema.
-func TestDeclarativeLaunchBindings(t *testing.T) {
+func TestLaunchBindings_PreserveDeclaredControlsAndUnrelatedArguments(t *testing.T) {
 	data, err := os.ReadFile("testdata/launch-bindings.json")
 	require.NoError(t, err)
 	var cases []struct {
@@ -62,7 +62,7 @@ func TestDeclarativeLaunchBindings(t *testing.T) {
 	}
 }
 
-func TestManifestLoadRejectsInvalidLaunchBindings(t *testing.T) {
+func TestManifestLoad_RejectsInvalidLaunchBindings(t *testing.T) {
 	for _, control := range []string{
 		`{"flags":["--x"],"value":"{unknown}"}`,
 		`{"flags":["--x"],"value":"{proxy.port}"}`,
@@ -87,7 +87,7 @@ func TestManifestLoadRejectsInvalidLaunchBindings(t *testing.T) {
 	}
 }
 
-func TestManagedBindingRoundTripsWithOverlappingSeparators(t *testing.T) {
+func TestManagedBinding_RoundTripsWithOverlappingSeparators(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "::1"} {
 		for _, format := range []string{"{server.host}:{server.port}", "{server.port}:{server.host}", "{server.port}0{server.host}", "http://[{server.host}]:{server.port}"} {
 			control := LaunchControl{Env: []string{"ENDPOINT"}, Value: format}

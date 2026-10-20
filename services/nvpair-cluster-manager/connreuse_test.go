@@ -73,7 +73,7 @@ func TestReconcile_ReusesPeerConnections(t *testing.T) {
 // delete during pairing rollback. Forget is the live TrustStore revocation; the
 // leftover file must not let Mesh or the connection pool authorize outbound
 // traffic after inbound traffic already rejects the peer.
-func TestPeerClient_ForgetRevokesWithPinStillOnDisk(t *testing.T) {
+func TestPeerClient_RevokesAuthorizationWhenDurablePinIsForgotten(t *testing.T) {
 	m := newTestManager(t)
 	defer m.clients.CloseIdle()
 

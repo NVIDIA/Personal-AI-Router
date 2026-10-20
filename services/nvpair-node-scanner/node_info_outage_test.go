@@ -41,7 +41,7 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 // The sweep repeats for as long as the node is advertised, so reporting every
 // attempt is what made this unreadable — and reporting none of them is what hid
 // it entirely.
-func TestNodeInfoOutageIsStatedOnceAtEachEnd(t *testing.T) {
+func TestNodeInfoOutage_IsStatedOnceAtEachEnd(t *testing.T) {
 	logs := captureLogs(t)
 	d := &daemon{}
 
@@ -60,7 +60,7 @@ func TestNodeInfoOutageIsStatedOnceAtEachEnd(t *testing.T) {
 
 // TestNodeInfoSilenceWhenNothingChanges keeps the steady state quiet: a peer that
 // has always answered has nothing to say about itself.
-func TestNodeInfoSilenceWhenNothingChanges(t *testing.T) {
+func TestNodeInfoOutage_EmitsNothingWhileAvailabilityIsUnchanged(t *testing.T) {
 	logs := captureLogs(t)
 	d := &daemon{}
 
@@ -75,7 +75,7 @@ func TestNodeInfoSilenceWhenNothingChanges(t *testing.T) {
 // it either fails immediately (the local network says so) or hangs — and hanging
 // is the case that mattered: it must end at the connect budget rather than
 // consume the whole request timeout the enrichment client allows.
-func TestNodeInfoConnectGivesUpBeforeTheRequestBudget(t *testing.T) {
+func TestNodeInfoConnect_GivesUpBeforeTheRequestBudget(t *testing.T) {
 	require.Less(t, nodeInfoDialTimeout, nodeInfoFetchTimeout, "a connect budget of")
 
 	start := time.Now()
@@ -87,13 +87,13 @@ func TestNodeInfoConnectGivesUpBeforeTheRequestBudget(t *testing.T) {
 	require.Less(t, time.Since(start), nodeInfoFetchTimeout, "connect must give up at the dial budget %v", nodeInfoDialTimeout)
 }
 
-func TestNodeInfoTransportBoundsConnectionsPerHost(t *testing.T) {
+func TestNodeInfoTransport_BoundsConnectionsPerHost(t *testing.T) {
 	transport := nodeInfoTransport(nil)
 	require.Equal(t, 1, transport.MaxConnsPerHost)
 	require.Equal(t, 1, transport.MaxIdleConnsPerHost)
 }
 
-func TestNodeInfoConcurrentFetchesGetIndependentRequestBudgets(t *testing.T) {
+func TestNodeInfoFetches_UseIndependentRequestBudgets(t *testing.T) {
 	const responseDelay = 200 * time.Millisecond
 	var requests atomic.Int32
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -141,7 +141,7 @@ func TestNodeInfoConcurrentFetchesGetIndependentRequestBudgets(t *testing.T) {
 	require.Equal(t, int32(1), connections.Load(), "requests used")
 }
 
-func TestNodeInfoOriginGateHonorsCanceledWaiter(t *testing.T) {
+func TestNodeInfoOriginGate_HonorsCanceledWaiter(t *testing.T) {
 	var gate nodeInfoOriginGate
 	release, acquired := gate.acquire(context.Background(), "http://127.0.0.1:14318")
 	require.True(t, acquired, "first origin request did not acquire the gate")
@@ -156,7 +156,7 @@ func TestNodeInfoOriginGateHonorsCanceledWaiter(t *testing.T) {
 	}
 }
 
-func TestNodeInfoErrorBodyIsDrainedForConnectionReuse(t *testing.T) {
+func TestNodeInfoErrorBody_IsDrainedForConnectionReuse(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if requests.Add(1) == 1 {

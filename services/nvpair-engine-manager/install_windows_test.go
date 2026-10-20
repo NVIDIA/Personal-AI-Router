@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLlamaCPPInstallPreservesDestinationPathWithSpaces(t *testing.T) {
+func TestLlamaCPPInstall_PreservesDestinationPathWithSpaces(t *testing.T) {
 	serverArchive := testZIP(t, "llama-server.exe", "server")
 	cudartArchive := testZIP(t, "cudart64_12.dll", "runtime")
 	archives := map[string][]byte{

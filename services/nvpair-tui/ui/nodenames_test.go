@@ -30,7 +30,7 @@ const sampleNodeUUID = "3f2a91c4-7b1e-4d55-9a02-8c6f1e2b7d40"
 // TestNamerResolvesFromDiscovery is the regression guard for the jobs list
 // showing a random-looking string: discovery carries hostUuid alongside name, so
 // the id the workload manager reports is resolvable without any extra request.
-func TestNamerResolvesFromDiscovery(t *testing.T) {
+func TestNamer_ResolvesFromDiscovery(t *testing.T) {
 	n := newNodeNamer()
 	require.NotEqual(t, "workstation-01", n.name(sampleNodeUUID), "resolved before learning anything")
 
@@ -40,7 +40,7 @@ func TestNamerResolvesFromDiscovery(t *testing.T) {
 
 // TestNamerResolvesFromMembership covers a peer known from the cluster roster
 // but absent from the current discovery snapshot.
-func TestNamerResolvesFromMembership(t *testing.T) {
+func TestNamer_ResolvesFromMembership(t *testing.T) {
 	n := newNodeNamer()
 	n.learnMembers([]clusterNode{{NodeUUID: sampleNodeUUID, Name: "peer-a"}})
 	assert.Equal(t, "peer-a", n.name(sampleNodeUUID), "name must come from membership")
@@ -48,7 +48,7 @@ func TestNamerResolvesFromMembership(t *testing.T) {
 
 // TestNamerFallsBackToShortID checks an unresolved id is shortened rather than
 // printed in full, and is still distinguishable from a real name.
-func TestNamerFallsBackToShortID(t *testing.T) {
+func TestNamer_FallsBackToShortID(t *testing.T) {
 	n := newNodeNamer()
 	got := n.name(sampleNodeUUID)
 
@@ -59,14 +59,14 @@ func TestNamerFallsBackToShortID(t *testing.T) {
 	assert.True(t, strings.HasPrefix(sampleNodeUUID, strings.TrimSuffix(got, "…")), "fallback must be a prefix of the id")
 }
 
-func TestNamerHandlesEmptyReference(t *testing.T) {
+func TestNamer_HandlesEmptyReference(t *testing.T) {
 	n := newNodeNamer()
 	assert.Equal(t, unknownNodeLabel, n.name(""))
 }
 
 // TestNamerRetainsNamesAfterNodeLeaves checks a completed job keeps a readable
 // origin after the machine that ran it drops out of discovery.
-func TestNamerRetainsNamesAfterNodeLeaves(t *testing.T) {
+func TestNamer_RetainsNamesAfterNodeLeaves(t *testing.T) {
 	n := newNodeNamer()
 	n.learnDiscovered([]availableNode{{HostUUID: sampleNodeUUID, Name: "workstation-01"}})
 	n.learnDiscovered(nil) // node gone from the snapshot
@@ -76,7 +76,7 @@ func TestNamerRetainsNamesAfterNodeLeaves(t *testing.T) {
 
 // TestNamerIgnoresBlankLearnings checks a payload missing either half does not
 // poison the map with an empty name.
-func TestNamerIgnoresBlankLearnings(t *testing.T) {
+func TestNamer_IgnoresBlankLearnings(t *testing.T) {
 	n := newNodeNamer()
 	n.learnDiscovered([]availableNode{
 		{HostUUID: sampleNodeUUID, Name: ""},
@@ -85,7 +85,7 @@ func TestNamerIgnoresBlankLearnings(t *testing.T) {
 	assert.NotEmpty(t, n.name(sampleNodeUUID), "resolved to an empty name")
 }
 
-func TestNamerSelf(t *testing.T) {
+func TestNodeNamer_ResolvesLocalNodeName(t *testing.T) {
 	n := newNodeNamer()
 	n.setSelf(clusterIdentity{NodeUUID: sampleNodeUUID, Name: "this-host"})
 
@@ -98,7 +98,7 @@ func TestNamerSelf(t *testing.T) {
 
 // TestJobsRendersNodeNames is the end-to-end guard: a job's origin and target
 // must reach the table as names, not as the UUIDs the backend stamps.
-func TestJobsRendersNodeNames(t *testing.T) {
+func TestJobs_RendersNodeNames(t *testing.T) {
 	v := newJobsView(nil)
 	v.namer.learnDiscovered([]availableNode{
 		{HostUUID: "origin-uuid", Name: "laptop"},
@@ -121,7 +121,7 @@ func TestJobsRendersNodeNames(t *testing.T) {
 
 // TestJobsUnplacedWorkShowsPending checks an active job with no target yet says
 // so, instead of rendering a blank that reads as "ran nowhere".
-func TestJobsUnplacedWorkShowsPending(t *testing.T) {
+func TestJobsUnplacedWork_ShowsPending(t *testing.T) {
 	v := newJobsView(nil)
 
 	queued := workload{ID: "w1", State: "queued", OriginatedFrom: "o"}
@@ -136,7 +136,7 @@ func TestJobsUnplacedWorkShowsPending(t *testing.T) {
 // TestClusterLabelIsShown is the guard for a write-only setting: the cluster
 // name must appear somewhere once set, or naming a cluster has no visible
 // effect anywhere in the interface.
-func TestClusterLabelIsShown(t *testing.T) {
+func TestClusterLabel_IsShown(t *testing.T) {
 	v := newNodesView(nil)
 	v.identity = clusterIdentity{ClusterID: "abcdef0123456789", Name: "host-a"}
 
@@ -149,7 +149,7 @@ func TestClusterLabelIsShown(t *testing.T) {
 
 // TestClusterLabelFromIdentityPush checks the label follows the notification, so
 // renaming on one machine is reflected without a restart.
-func TestClusterLabelFromIdentityPush(t *testing.T) {
+func TestClusterLabel_UpdatesFromIdentityNotification(t *testing.T) {
 	v := newNodesView(nil)
 	v.Update(NotificationMsg{Msg: identityChanged("cid-1", "Lab 3 desks")})
 
@@ -161,7 +161,7 @@ func TestClusterLabelFromIdentityPush(t *testing.T) {
 // that looked unsaved. The settings worker sends no push when the name
 // changes, and the Nodes tab read it once at startup, so flipping back after a
 // rename showed the old name.
-func TestRenameOnServiceTabReachesNodesTab(t *testing.T) {
+func TestRenameOnServiceTab_ReachesNodesTab(t *testing.T) {
 	nodes := newNodesView(nil)
 	nodes.Update(clusterNameMsg{name: "old name"})
 
@@ -186,7 +186,7 @@ func TestRenameOnServiceTabReachesNodesTab(t *testing.T) {
 
 // TestServiceHidesUnusedSettings checks the two settings nothing acts on are not
 // offered, so the list does not imply an effect they do not have.
-func TestServiceHidesUnusedSettings(t *testing.T) {
+func TestService_HidesUnusedSettings(t *testing.T) {
 	v := newServiceView(nil)
 	for _, it := range v.items {
 		for _, method := range []string{it.getMethod, it.setMethod} {

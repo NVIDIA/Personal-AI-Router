@@ -14,7 +14,7 @@ import (
 	"nvpair-shared/httpcon"
 )
 
-func TestConnectionCounterCountsDistinctConnections(t *testing.T) {
+func TestConnectionCounter_CountsDistinctConnections(t *testing.T) {
 	client, connections := New(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))

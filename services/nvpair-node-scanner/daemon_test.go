@@ -58,7 +58,7 @@ func newSelfTestDaemon(hostUUID, ip string) *daemon {
 // so the advertised uuid= converges (no lingering scanner-minted id) — AND move
 // this node's own directory entry to the new uuid so the stale one isn't served
 // to peers as a ghost.
-func TestReloadIdentityAdoptsClusterPrincipal(t *testing.T) {
+func TestReloadIdentity_AdoptsClusterPrincipal(t *testing.T) {
 	base := t.TempDir()
 	d := &daemon{
 		mesh:               clustertrust.Open(""), // unclustered: no cluster dir -> no clusterUuid
@@ -98,7 +98,7 @@ func TestReloadIdentityAdoptsClusterPrincipal(t *testing.T) {
 // any peer and (its LAN-IP liveness probe failing behind a first-run firewall)
 // evicts it. With self registry-driven and ignored in onBrowse, a removed/
 // discovered/updated browse event for our own uuid is a no-op on the directory.
-func TestSelfNotEvictedByBrowse(t *testing.T) {
+func TestBrowse_DoesNotEvictLocalNode(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	d.reg.register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318})
 	d.publishSelf()
@@ -126,7 +126,7 @@ func TestSelfNotEvictedByBrowse(t *testing.T) {
 // self enrichment must dial loopback, not the advertised LAN ip=, so a firewall
 // block on inbound to our own LAN address can't blank the local card. The stub
 // listens on loopback while the node advertises an (unreachable-in-test) LAN IP.
-func TestPublishSelfEnrichesOverLoopback(t *testing.T) {
+func TestPublishSelf_EnrichesOverLoopback(t *testing.T) {
 	want := NodeInfoResponse{
 		GPUs:   []GPUInfo{{Name: "NVIDIA GeForce RTX 5090"}},
 		CPU:    &CPUInfo{Name: "AMD Ryzen 7 9800X3D", Cores: 8},
@@ -164,7 +164,7 @@ func TestPublishSelfEnrichesOverLoopback(t *testing.T) {
 // TestPublishSelfLoopbackIPFallback covers the "IP unknown at startup" case: when
 // the LAN ranker hasn't picked an address, self still gets a dialable host
 // (loopback) so the local card is never address-less.
-func TestPublishSelfLoopbackIPFallback(t *testing.T) {
+func TestPublishSelf_UsesLoopbackWhenNoAddressIsPublished(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "") // BestLocalIP() empty
 	d.publishSelf()
 	n, ok := d.dir.get("self-uuid")
@@ -175,7 +175,7 @@ func TestPublishSelfLoopbackIPFallback(t *testing.T) {
 // TestPeerStillAgesOut confirms the fix is scoped to self: a genuine remote peer
 // is still added on discovery and removed on a browse 'removed' event. The peer
 // advertises no services so onBrowse does no enrichment dial.
-func TestPeerStillAgesOut(t *testing.T) {
+func TestReachable_RemovesPeerAfterLivenessExpires(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	peerTXT := []string{"v=1", "uuid=peer-uuid", "ip=192.168.1.99"}
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "peer", TXT: peerTXT}})
@@ -189,7 +189,7 @@ func TestPeerStillAgesOut(t *testing.T) {
 // TestReachableAntiFlap covers the daemon's liveness probe: prefer fresh
 // lastInfo, else TCP to node-info / engine-manager, then identity when
 // conclusive. Never treat ol/lm alone as proof of life.
-func TestReachableAntiFlap(t *testing.T) {
+func TestReachable_RetainsNodeAcrossTransientFailures(t *testing.T) {
 	niSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/node-info" {
 			http.NotFound(w, r)
@@ -263,7 +263,7 @@ func TestReachableAntiFlap(t *testing.T) {
 	assert.False(t, d.reachable(noIP), "node with no resolvable address should be unreachable")
 }
 
-func TestEnrichFallsBackToASecondPublishedAddress(t *testing.T) {
+func TestEnrich_FallsBackToASecondPublishedAddress(t *testing.T) {
 	const hostUUID = "host-enrich-failover"
 	niSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
@@ -300,7 +300,7 @@ func TestEnrichFallsBackToASecondPublishedAddress(t *testing.T) {
 // threshold-missed record is this host, reachable dials loopbackHost rather than
 // the advertised LAN ip=. A hostname-keyed browse filter is not required — and
 // would wrongly drop a peer that merely shares our instance name.
-func TestReachableSelfDialsLoopback(t *testing.T) {
+func TestReachableSelf_DialsLoopback(t *testing.T) {
 	const selfUUID = "self-uuid"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/node-info" {

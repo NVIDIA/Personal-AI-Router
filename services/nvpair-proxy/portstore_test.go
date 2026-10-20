@@ -48,7 +48,7 @@ func freeTCPPort(t *testing.T) int {
 
 // Each engine persists to its own file, so one engine's saved port can never
 // be read back as the other's.
-func TestPersistedPortRoundTrip(t *testing.T) {
+func TestPersistedPort_RoundTripsChosenPort(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		redirectConfigDir(t)
 
@@ -71,7 +71,7 @@ func TestPersistedPortRoundTrip(t *testing.T) {
 
 // The two engines must not share a persisted-port file, or moving one proxy
 // would silently move the other on its next start.
-func TestPersistedPortIsPerEngine(t *testing.T) {
+func TestPersistedPort_IsPerEngine(t *testing.T) {
 	redirectConfigDir(t)
 
 	ollama := ollamaCase(t).profile
@@ -90,7 +90,7 @@ func TestPersistedPortIsPerEngine(t *testing.T) {
 // port, set-port moves it to another, and afterward the new port accepts
 // connections, the old one doesn't, the choice is persisted, and a fresh
 // ready notification carries the new port.
-func TestSetPortRebinds(t *testing.T) {
+func TestSetPort_Rebinds(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		redirectConfigDir(t)
 
@@ -133,7 +133,7 @@ func TestSetPortRebinds(t *testing.T) {
 }
 
 // Persistence failure must leave the old listener serving and the new port free.
-func TestSetPortPersistenceFailurePreservesListener(t *testing.T) {
+func TestSetPortPersistenceFailure_PreservesListener(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		redirectConfigDir(t)
 		portA := freeTCPPort(t)

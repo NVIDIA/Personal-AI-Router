@@ -64,7 +64,7 @@ func countingChooser(p *Proxy, accept bool) *atomic.Int32 {
 	return &dials
 }
 
-func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
+func TestChooseReachable_FailsOverForPinnedPeer(t *testing.T) {
 	const peerUUID = "principal-peer"
 	const reachable = "192.0.2.11"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
@@ -100,7 +100,7 @@ func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
 	require.Equal(t, int32(2), dials.Load(), "pinned peer triggered")
 }
 
-func TestChooseReachableProbesPlainMultiHomed(t *testing.T) {
+func TestChooseReachable_ProbesPlainMultiHomed(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	dials := countingChooser(p, true)
 	n := Node{
@@ -119,7 +119,7 @@ func TestChooseReachableProbesPlainMultiHomed(t *testing.T) {
 // TestTargetURLFailsOverToAReachableAddress is the reported defect at the routing
 // layer: a peer whose canonical address is a direct-connect link this host cannot
 // reach must still be routed to, at the address that answers.
-func TestTargetURLFailsOverToAReachableAddress(t *testing.T) {
+func TestTargetURL_FailsOverToAReachableAddress(t *testing.T) {
 	const reachable = "10.172.55.129"
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	p.soleFacade().targets = reach.NewChooser(reach.WithDial(
@@ -147,7 +147,7 @@ func TestTargetURLFailsOverToAReachableAddress(t *testing.T) {
 // TestNodeCandidatesKeepsPublishedOrder: the node ranked its addresses from
 // evidence no observer has, so routing must try them in that order rather than
 // re-sorting by address class.
-func TestNodeCandidatesKeepsPublishedOrder(t *testing.T) {
+func TestNodeCandidates_KeepsPublishedOrder(t *testing.T) {
 	n := Node{
 		ID:        "spark",
 		Port:      11434,
@@ -231,7 +231,7 @@ func assertReprobed(t *testing.T, p *Proxy, n Node, fake *fakeNetwork, replaceme
 // request keeps being sent to the address that just failed, and the peer's other
 // published addresses are never tried — which is the whole reason routing confirms
 // reachability in the first place.
-func TestUpstreamTransportFailureReprobesTheNextSelection(t *testing.T) {
+func TestUpstreamTransportFailure_ReprobesTheNextSelection(t *testing.T) {
 	const replacement = "192.0.2.11"
 	p, n, fake := confirmedDeadPeer(t, replacement)
 
@@ -245,7 +245,7 @@ func TestUpstreamTransportFailureReprobesTheNextSelection(t *testing.T) {
 // TestModelListTransportFailureReprobesTheNextSelection: the aggregated model list
 // reaches every candidate directly, so it learns about a dead address before any
 // inference request does, and must retire it on the same evidence.
-func TestModelListTransportFailureReprobesTheNextSelection(t *testing.T) {
+func TestModelListTransportFailure_ReprobesTheNextSelection(t *testing.T) {
 	const replacement = "192.0.2.11"
 	p, n, fake := confirmedDeadPeer(t, replacement)
 

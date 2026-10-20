@@ -35,7 +35,7 @@ func tcpAddr(t *testing.T, s string) *net.TCPAddr {
 	return a
 }
 
-func TestObserverRecordsTheAddressARemotePeerReached(t *testing.T) {
+func TestObserver_RecordsTheAddressARemotePeerReached(t *testing.T) {
 	o := newAddressObserver()
 	o.connState(stubConn{
 		local:  tcpAddr(t, "10.172.54.70:14318"),
@@ -47,7 +47,7 @@ func TestObserverRecordsTheAddressARemotePeerReached(t *testing.T) {
 
 // A loopback caller is this machine talking to itself and proves nothing about
 // what another machine can reach, which is the entire point of the set.
-func TestObserverIgnoresLoopbackPeers(t *testing.T) {
+func TestObserver_IgnoresLoopbackPeers(t *testing.T) {
 	o := newAddressObserver()
 	o.connState(stubConn{
 		local:  tcpAddr(t, "127.0.0.1:14318"),
@@ -58,7 +58,7 @@ func TestObserverIgnoresLoopbackPeers(t *testing.T) {
 }
 
 // A connection that never became a request is not evidence; only StateActive is.
-func TestObserverIgnoresConnectionsThatSendNothing(t *testing.T) {
+func TestObserver_IgnoresConnectionsThatSendNothing(t *testing.T) {
 	o := newAddressObserver()
 	conn := stubConn{
 		local:  tcpAddr(t, "10.172.54.70:14318"),
@@ -72,7 +72,7 @@ func TestObserverIgnoresConnectionsThatSendNothing(t *testing.T) {
 
 // An address peers have stopped reaching must stop being reported, or a link that
 // went away would keep outranking one that works.
-func TestObserverExpiresStaleObservations(t *testing.T) {
+func TestObserver_ExpiresStaleObservations(t *testing.T) {
 	o := newAddressObserver()
 	now := time.Now()
 	o.now = func() time.Time { return now }
@@ -85,7 +85,7 @@ func TestObserverExpiresStaleObservations(t *testing.T) {
 	require.Empty(t, o.addresses(), "addresses")
 }
 
-func TestObserverReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {
+func TestObserver_ReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {
 	o := newAddressObserver()
 	now := time.Now()
 	o.now = func() time.Time { return now }
@@ -103,7 +103,7 @@ func TestObserverReportsEmptySetAfterTheLastObservationExpires(t *testing.T) {
 	require.Empty(t, msg.Params.Addresses, "reported addresses")
 }
 
-func TestObserverReportsASortedSet(t *testing.T) {
+func TestObserver_ReportsASortedSet(t *testing.T) {
 	o := newAddressObserver()
 	for _, local := range []string{"10.172.54.70:14318", "10.0.0.5:14318"} {
 		o.connState(stubConn{

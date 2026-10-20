@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInboundInitialCannotPublishAfterTeardown(t *testing.T) {
+func TestInboundInitial_CannotPublishAfterTeardown(t *testing.T) {
 	m := newTestManagerPort(t, 15201)
 	peer := newTestManagerPort(t, 15202)
 	inviteID := "inbound-after-teardown"
@@ -51,7 +51,7 @@ func TestInboundInitialCannotPublishAfterTeardown(t *testing.T) {
 	require.False(t, ok, "stale inbound Initial completion republished an invite after teardown")
 }
 
-func TestFailedTeardownBlocksTrustAndReadmission(t *testing.T) {
+func TestFailedTeardown_BlocksTrustAndReadmission(t *testing.T) {
 	m := newTestManagerPort(t, 15203)
 	peer := newPinFixture(t, "peer")
 	pinTrusted(t, m, peer.uuid, peer.cert, peer.fp)
@@ -78,7 +78,7 @@ func TestFailedTeardownBlocksTrustAndReadmission(t *testing.T) {
 	assert.Error(t, err, "new admission committed while teardown.pending still existed")
 }
 
-func TestRosterPinWithoutPersistedMemberIsPruned(t *testing.T) {
+func TestRosterPinWithoutPersistedMember_IsPruned(t *testing.T) {
 	dir := t.TempDir()
 	m := testManagerAt(t, dir, 15204)
 	activateTestCluster(t, m, "cluster-1")
@@ -90,7 +90,7 @@ func TestRosterPinWithoutPersistedMemberIsPruned(t *testing.T) {
 	require.False(t, ok, "restart retained a roster pin whose matching member was never persisted")
 }
 
-func TestMalformedInitialDoesNotLeakSession(t *testing.T) {
+func TestMalformedInitial_DoesNotLeakSession(t *testing.T) {
 	m := testManagerAt(t, t.TempDir(), 15206)
 	inviteID := "malformed-initial"
 	m.admissionMu.Lock()
@@ -106,7 +106,7 @@ func TestMalformedInitialDoesNotLeakSession(t *testing.T) {
 	require.Equal(t, before, after, "malformed request consumed durable admission epoch: before")
 }
 
-func TestPreInviteSessionsExpireAndAreBounded(t *testing.T) {
+func TestPreInviteSessions_ExpireAndEnforceSessionLimit(t *testing.T) {
 	m := testManagerAt(t, t.TempDir(), 15210)
 	expired := &pairingSession{
 		inviteID: "pre-invite-expired", role: roleJoiner,
@@ -130,7 +130,7 @@ func TestPreInviteSessionsExpireAndAreBounded(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, rr.Code, "over-limit status")
 }
 
-func TestDirectPairingRejectsRemovedAdmission(t *testing.T) {
+func TestDirectPairing_RejectsRemovedAdmission(t *testing.T) {
 	m := newTestManagerPort(t, 15207)
 	peer := newPinFixture(t, "readmission")
 	pinTrusted(t, m, peer.uuid, peer.cert, peer.fp)
@@ -153,7 +153,7 @@ func TestDirectPairingRejectsRemovedAdmission(t *testing.T) {
 	require.False(t, committed, "removed admission commit (%v, %v)", committed, err)
 }
 
-func TestRestartRollsBackProvisionalAdmission(t *testing.T) {
+func TestRestart_RollsBackProvisionalAdmission(t *testing.T) {
 	dir := t.TempDir()
 	m := testManagerAt(t, dir, 15211)
 	epoch, err := m.reserveAdmissionEpoch()
@@ -174,7 +174,7 @@ func TestRestartRollsBackProvisionalAdmission(t *testing.T) {
 	require.Empty(t, restarted.snapshotNodes(), "restart retained provisional members or pins")
 }
 
-func TestBareRejectionRemovesDepartedPeerButKeepsCluster(t *testing.T) {
+func TestBareRejection_RemovesDepartedPeerButKeepsCluster(t *testing.T) {
 	m := newTestManagerPort(t, 15208)
 	startPeerStub(t, m, "departed", http.StatusForbidden, false)
 
@@ -185,7 +185,7 @@ func TestBareRejectionRemovesDepartedPeerButKeepsCluster(t *testing.T) {
 	require.Empty(t, m.snapshotNodes(), "departed peer remained in roster")
 }
 
-func TestRemovalIgnoresUnrelatedCompositionChange(t *testing.T) {
+func TestRemoval_IgnoresUnrelatedCompositionChange(t *testing.T) {
 	m := newTestManagerPort(t, 15209)
 	target := newPinFixture(t, "target")
 	pinTrusted(t, m, target.uuid, target.cert, target.fp)
@@ -215,7 +215,7 @@ func TestRemovalIgnoresUnrelatedCompositionChange(t *testing.T) {
 	require.False(t, ok, "target member survived because an unrelated member changed")
 }
 
-func TestRosterFixpointContinuesAfterAdmissionUpgrade(t *testing.T) {
+func TestRosterFixpoint_ContinuesAfterAdmissionUpgrade(t *testing.T) {
 	m := newTestManagerPort(t, 15213)
 	aUUID, aCert, aFP, aPriv := makeNode(t, "node-a")
 	pinTrusted(t, m, aUUID, aCert, aFP)
@@ -245,7 +245,7 @@ func TestRosterFixpointContinuesAfterAdmissionUpgrade(t *testing.T) {
 	require.True(t, ok, "fixpoint stopped after upgrading the endorser admission")
 }
 
-func TestJoinerFailureAfterInviterCommitRollsBackPairing(t *testing.T) {
+func TestJoinerFailureAfterInviterCommit_RollsBackPairing(t *testing.T) {
 	m := newTestManagerPort(t, 15214)
 	peer := newPinFixture(t, "joiner")
 	pi, cert := pairingInfoFor(t, peer)
@@ -275,7 +275,7 @@ func TestJoinerFailureAfterInviterCommitRollsBackPairing(t *testing.T) {
 	require.Equal(t, inviteStateFailed, invite.State, "invite state (%v)", invite)
 }
 
-func TestJoinerAckFinalizesInviterSession(t *testing.T) {
+func TestJoinerAck_FinalizesInviterSession(t *testing.T) {
 	m := newTestManagerPort(t, 15215)
 	peer := newPinFixture(t, "joiner")
 	pi, cert := pairingInfoFor(t, peer)
@@ -305,7 +305,7 @@ func TestJoinerAckFinalizesInviterSession(t *testing.T) {
 	require.Equal(t, inviteStatePaired, invite.State, "invite state (%v)", invite)
 }
 
-func TestFinalCompletionRetriesLostResponse(t *testing.T) {
+func TestFinalCompletion_RetriesLostResponse(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if attempts.Add(1) == 1 {
@@ -327,7 +327,7 @@ func TestFinalCompletionRetriesLostResponse(t *testing.T) {
 	require.Equal(t, int32(2), attempts.Load(), "retry result (%v)", blob)
 }
 
-func TestDuplicateFinalCompletionReturnsCachedSuccess(t *testing.T) {
+func TestDuplicateFinalCompletion_ReturnsCachedSuccess(t *testing.T) {
 	m := newTestManagerPort(t, 15216)
 	inviteID := "cached-final"
 	m.putInvite(&Invite{InviteID: inviteID, State: inviteStatePaired})
@@ -341,7 +341,7 @@ func TestDuplicateFinalCompletionReturnsCachedSuccess(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "Y2FjaGVkLWVhcC1zdWNjZXNz", "cached completion response")
 }
 
-func TestAckTimeoutKeepsCommittedPairAndClearsInviteProvenance(t *testing.T) {
+func TestAckTimeout_KeepsCommittedPairAndClearsInviteProvenance(t *testing.T) {
 	m := newTestManagerPort(t, 15217)
 	peer := newPinFixture(t, "joiner")
 	pi, cert := pairingInfoFor(t, peer)

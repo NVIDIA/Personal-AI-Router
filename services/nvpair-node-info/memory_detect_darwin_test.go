@@ -11,6 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDetectMemoryTotalDarwin(t *testing.T) {
+func TestDetectMemoryTotalDarwin_ReturnsSystemMemory(t *testing.T) {
 	require.NotEqual(t, uint64(0), detectMemoryTotal(), "detectMemoryTotal() returned zero on macOS")
 }

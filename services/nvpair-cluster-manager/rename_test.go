@@ -14,7 +14,7 @@ import (
 // uuid) refreshes both the member record and the persisted pin to the new
 // display name, keyed by the stable nodeUuid — and a second identical reconcile
 // is a no-op.
-func TestReconcileRefreshesRenamedPeerName(t *testing.T) {
+func TestReconcile_RefreshesRenamedPeerName(t *testing.T) {
 	m := newTestManager(t)
 	aUUID, aCert, aFP, _ := makeNode(t, "old-a")
 	pinTrusted(t, m, aUUID, aCert, aFP)
@@ -41,7 +41,7 @@ func TestReconcileRefreshesRenamedPeerName(t *testing.T) {
 // TestReconcileIgnoresThirdPartyName verifies the anti-flap guard: only a peer's
 // OWN self entry may rename it. A third party's (possibly stale) view of that
 // peer, carried in someone else's roster, must not overwrite the current name.
-func TestReconcileIgnoresThirdPartyName(t *testing.T) {
+func TestReconcile_IgnoresThirdPartyName(t *testing.T) {
 	m := newTestManager(t)
 	aUUID, aCert, aFP, _ := makeNode(t, "a")
 	bUUID, bCert, bFP, _ := makeNode(t, "b")
@@ -65,7 +65,7 @@ func TestReconcileIgnoresThirdPartyName(t *testing.T) {
 // from members.json under the PC's old name is re-stamped to the current
 // identity on startup, so the local node doesn't linger as a stale-named ghost
 // in its own roster.
-func TestRefreshSelfMemberIdentityOnRestart(t *testing.T) {
+func TestRestart_RefreshesLocalMemberIdentity(t *testing.T) {
 	m := newTestManager(t)
 	m.upsertMember(&ClusterNode{
 		NodeUUID: m.identity.NodeUUID, ID: "old-name", Name: "old-name",

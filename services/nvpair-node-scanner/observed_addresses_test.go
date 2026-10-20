@@ -16,7 +16,7 @@ import (
 // inference, so the daemon must hold exactly what node-info reported: replaced
 // wholesale (an address peers stopped reaching stops counting) and free of the
 // empty entries a hand-built payload can carry.
-func TestSetObservedAddressesReplacesTheSet(t *testing.T) {
+func TestSetObservedAddresses_ReplacesTheSet(t *testing.T) {
 	d := newSelfTestDaemon("host-a", "10.172.54.70")
 
 	d.setObservedAddresses([]string{"10.172.54.70", "", "10.0.0.5"})
@@ -31,7 +31,7 @@ func TestSetObservedAddressesReplacesTheSet(t *testing.T) {
 
 // The relay arrives as a JSON-RPC request, so the daemon's dispatch must accept
 // it and apply it.
-func TestHandleSetObservedAddresses(t *testing.T) {
+func TestHandleSetObservedAddresses_ForwardsAddressSnapshot(t *testing.T) {
 	d := newSelfTestDaemon("host-a", "10.172.54.70")
 	params, err := json.Marshal(noderec.ObservedAddressesParams{Addresses: []string{"10.172.54.70"}})
 	require.NoError(t, err, "marshal")

@@ -230,7 +230,7 @@ func startFakeOllama(t *testing.T) (host string, port int, generates *int32) {
 	return u.Hostname(), p, &n
 }
 
-func TestSecureInferenceClusterMTLS(t *testing.T) {
+func TestClusterInference_RequiresPinnedMutualTLS(t *testing.T) {
 	baseA, baseB, baseC := t.TempDir(), t.TempDir(), t.TempDir()
 	clusterA := filepath.Join(baseA, "cluster")
 	clusterB := filepath.Join(baseB, "cluster")

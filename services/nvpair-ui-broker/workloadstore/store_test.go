@@ -37,7 +37,7 @@ func mkIn(id, origin, state, scheduledOn string, createdAt int64) Incoming {
 // TestApplyRejectsRunningAfterTerminal is the core reordering bug: on the
 // receiving node the relayed "failed" can arrive before "running" for the same
 // workload. The stale running must not resurrect a finished job.
-func TestApplyRejectsRunningAfterTerminal(t *testing.T) {
+func TestApply_RejectsRunningAfterTerminal(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkIn("9", "laptop", "failed", "pc", 100)), "first sighting (failed) should be accepted")
 	require.False(t, s.Apply(mkIn("9", "laptop", "running", "pc", 100)), "running after failed (same generation) must be rejected")
@@ -49,7 +49,7 @@ func TestApplyRejectsRunningAfterTerminal(t *testing.T) {
 
 // TestApplyRunningThenFailed is the in-order path: running then failed both
 // apply and the workload ends terminal.
-func TestApplyRunningThenFailed(t *testing.T) {
+func TestApply_AdvancesRunningWorkloadToFailed(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkIn("9", "laptop", "running", "pc", 100)), "running should be accepted")
 	require.True(t, s.Apply(mkIn("9", "laptop", "failed", "pc", 100)), "failed after running should be accepted (forward progress)")
@@ -61,7 +61,7 @@ func TestApplyRunningThenFailed(t *testing.T) {
 // TestApplyNewerGenerationReplaces is epoch protection: a restarted proxy
 // reuses id "5" (createdAt resets forward); its newer-createdAt running must
 // replace the prior generation's terminal record, not be mistaken for it.
-func TestApplyNewerGenerationReplaces(t *testing.T) {
+func TestApply_ReplacesWorkloadWithNewerGeneration(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkIn("5", "pc", "failed", "pc", 100)), "old-generation terminal should be accepted")
 	require.True(t, s.Apply(mkIn("5", "pc", "running", "laptop", 200)), "newer-generation running must replace the old terminal")
@@ -75,7 +75,7 @@ func TestApplyNewerGenerationReplaces(t *testing.T) {
 // TestApplyOlderGenerationRejected: a late event from a prior generation (older
 // createdAt) must never touch the current generation's record — even a terminal
 // one, which would otherwise look like "forward progress" by state rank.
-func TestApplyOlderGenerationRejected(t *testing.T) {
+func TestApply_RejectsOlderGeneration(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkIn("5", "pc", "running", "pc", 200)), "current-generation running should be accepted")
 	require.False(t, s.Apply(mkIn("5", "pc", "completed", "pc", 100)), "older-generation event must be rejected despite higher state rank")
@@ -86,7 +86,7 @@ func TestApplyOlderGenerationRejected(t *testing.T) {
 
 // TestApplyEqualRankReemit: an identical re-emit is a no-op, but a same-state
 // re-emit that re-points scheduledOn (a failover) is a meaningful change.
-func TestApplyEqualRankReemit(t *testing.T) {
+func TestApply_ReemitsSameRankWhenAuthoritativeDataChanges(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkIn("1", "a", "running", "node1", 100)), "initial running should be accepted")
 	require.False(t, s.Apply(mkIn("1", "a", "running", "node1", 100)), "identical re-emit should be a no-op")
@@ -101,7 +101,7 @@ func TestApplyEqualRankReemit(t *testing.T) {
 // the transition never reaches the scheduler or any client. Omitted from
 // isTerminal() it is accepted but treated as live forever, so it keeps counting
 // toward its node's pending total and stays exposed to the staleness sweeps.
-func TestApplyCancelledIsTerminal(t *testing.T) {
+func TestApplyCancelled_IsTerminal(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkIn("1", "a", "running", "node1", 100)), "initial running should be accepted")
 	// Ranks above running, so the transition is accepted rather than dropped.
@@ -117,7 +117,7 @@ func TestApplyCancelledIsTerminal(t *testing.T) {
 
 // TestApplyCrossNodeIsolation: the same numeric id from two origins is two
 // distinct workloads and must never merge against each other.
-func TestApplyCrossNodeIsolation(t *testing.T) {
+func TestApply_KeepsSameWorkloadIDDistinctAcrossNodes(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkIn("1", "A", "failed", "A", 100)), "A/1 should be accepted")
 	require.True(t, s.Apply(mkIn("1", "B", "running", "B", 100)), "B/1 has the same id but a different origin; must be independent")
@@ -128,14 +128,14 @@ func TestApplyCrossNodeIsolation(t *testing.T) {
 	require.Equal(t, "running", b.State, "B/1 state")
 }
 
-func TestApplyRejectsMalformed(t *testing.T) {
+func TestApply_RejectsMalformedWorkloads(t *testing.T) {
 	s := New()
 	require.False(t, s.Apply(Incoming{ID: "", Origin: "a", State: "running"}), "missing id must be rejected")
 	require.False(t, s.Apply(Incoming{ID: "1", Origin: "", State: "running"}), "missing origin must be rejected")
 	require.Equal(t, 0, s.Len())
 }
 
-func TestRemove(t *testing.T) {
+func TestRemove_DeletesMatchingWorkload(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
 	require.True(t, s.Remove("a", "1"), "Remove of present entry should report true")
@@ -144,7 +144,7 @@ func TestRemove(t *testing.T) {
 	require.False(t, ok, "entry should be gone after Remove")
 }
 
-func TestSnapshotOrderedByCreatedAt(t *testing.T) {
+func TestSnapshot_OrdersWorkloadsByCreationTime(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("2", "a", "running", "a", 300))
 	s.Apply(mkIn("1", "a", "running", "a", 100))
@@ -163,7 +163,7 @@ func TestSnapshotOrderedByCreatedAt(t *testing.T) {
 	require.Equal(t, []int64{100, 200, 300}, got, "snapshot order")
 }
 
-func TestActiveSnapshotExcludesTerminalHistory(t *testing.T) {
+func TestActiveSnapshot_ExcludesTerminalHistory(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("completed", "a", "completed", "a", 100))
 	s.Apply(mkIn("queued", "a", "queued", "b", 200))
@@ -185,7 +185,7 @@ func TestActiveSnapshotExcludesTerminalHistory(t *testing.T) {
 	require.ElementsMatch(t, []string{"queued", "running"}, ids, "active snapshot ids")
 }
 
-func TestActiveForNode(t *testing.T) {
+func TestActiveForNode_ExcludesTerminalAndUnrelatedWorkloads(t *testing.T) {
 	s := New()
 	// Non-terminal, executes on pc (origin laptop) — should match "pc".
 	s.Apply(mkIn("1", "laptop", "running", "pc", 100))
@@ -210,7 +210,7 @@ func TestActiveForNode(t *testing.T) {
 // guess, and never a terminal that has aged out. Including recent terminals is
 // what keeps the manager's two-interval terminal re-sync window alive across a
 // restart.
-func TestReplayForNode(t *testing.T) {
+func TestReplayForNode_IncludesActiveAndRecentAuthoritativeTerminalWorkloads(t *testing.T) {
 	s := New()
 	clock := int64(1_000_000)
 	s.now = func() time.Time { return time.UnixMilli(clock) }
@@ -236,7 +236,7 @@ func TestReplayForNode(t *testing.T) {
 // history as just-finished and rebroadcast it on the first post-restart
 // respawn. Freshness must come from the persisted completedAt instead, so only
 // a genuinely recent terminal is replayed.
-func TestReplayForNodeAfterLoadUsesCompletionTime(t *testing.T) {
+func TestReplayForNodeAfterLoad_UsesCompletionTime(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.json")
 	const window = int64(60_000)
 
@@ -266,7 +266,7 @@ func replayIDSet(recs []Record) []string {
 
 // TestInferredMarksRunningFailed: the node-loss sweep may fail an authoritative
 // running job.
-func TestInferredMarksRunningFailed(t *testing.T) {
+func TestInferred_MarksRunningFailed(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
 	require.True(t, s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)), "inferred failed should mark a running job failed")
@@ -279,7 +279,7 @@ func TestInferredMarksRunningFailed(t *testing.T) {
 // TestAuthoritativeOverridesInferred is the blip-and-return case: a node
 // wrongly inferred failed, then the origin re-asserts running (same generation).
 // The authoritative event must win.
-func TestAuthoritativeOverridesInferred(t *testing.T) {
+func TestAuthoritative_OverridesInferred(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
 	s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)) // node-loss guess
@@ -292,7 +292,7 @@ func TestAuthoritativeOverridesInferred(t *testing.T) {
 
 // TestInferredCannotOverrideAuthoritativeTerminal: a guess must never overwrite
 // the origin's real terminal.
-func TestInferredCannotOverrideAuthoritativeTerminal(t *testing.T) {
+func TestInferred_CannotOverrideAuthoritativeTerminal(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "completed", "a", 100))
 	require.False(t, s.ApplyInferred(mkIn("1", "a", "failed", "a", 100)), "inferred failed must not override an authoritative terminal")
@@ -303,7 +303,7 @@ func TestInferredCannotOverrideAuthoritativeTerminal(t *testing.T) {
 
 // TestAuthoritativeTerminalOverridesInferred: the origin's real terminal
 // replaces a prior inferred one.
-func TestAuthoritativeTerminalOverridesInferred(t *testing.T) {
+func TestAuthoritativeTerminal_OverridesInferred(t *testing.T) {
 	s := New()
 	s.Apply(mkIn("1", "a", "running", "a", 100))
 	s.ApplyInferred(mkIn("1", "a", "failed", "a", 100))
@@ -339,7 +339,7 @@ func mkTermFull(id, origin, engine, runID string, createdAt, completedAt int64) 
 // TestCrossEngineConcurrentDistinct: two concurrent jobs from one host that
 // reuse id "1" (Ollama + LM Studio, separate counters) are distinct workloads
 // and must not collide in the store.
-func TestCrossEngineConcurrentDistinct(t *testing.T) {
+func TestWorkloadStore_KeepsConcurrentEnginesDistinct(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkInFull("1", "host", "ollama", "ro", "running", "host", 100)), "ollama/1 should be accepted")
 	require.True(t, s.Apply(mkInFull("1", "host", "lmstudio", "rl", "running", "host", 200)), "lmstudio/1 shares the numeric id but a different engine; must be distinct")
@@ -348,7 +348,7 @@ func TestCrossEngineConcurrentDistinct(t *testing.T) {
 
 // TestRestartReuseKeepsHistory: after a proxy restart reuses id "1" (new runId),
 // the prior generation's terminal history must be preserved, not overwritten.
-func TestRestartReuseKeepsHistory(t *testing.T) {
+func TestRestartReuse_KeepsHistory(t *testing.T) {
 	s := New()
 	require.True(t, s.Apply(mkTermFull("1", "host", "ollama", "run1", 100, 150)), "gen-1 terminal should be accepted")
 	require.True(t, s.Apply(mkInFull("1", "host", "ollama", "run2", "running", "host", 200)), "gen-2 reused id (new run) should be a distinct workload")
@@ -358,7 +358,7 @@ func TestRestartReuseKeepsHistory(t *testing.T) {
 // TestGenerationBeforeProvenance: a stale generation must be rejected before
 // provenance is considered, in both interleavings (same identity key, differing
 // createdAt).
-func TestGenerationBeforeProvenance(t *testing.T) {
+func TestApply_ComparesGenerationBeforeProvenance(t *testing.T) {
 	// (a) A stale authoritative event must not replace a newer inferred record.
 	s := New()
 	s.Apply(mkInFull("1", "a", "ollama", "r", "running", "a", 200))
@@ -375,7 +375,7 @@ func TestGenerationBeforeProvenance(t *testing.T) {
 	require.Equal(t, int64(200), r.CreatedAt, "record (%v)", r)
 }
 
-func TestParseIncoming(t *testing.T) {
+func TestParseIncoming_ExtractsWorkloadFields(t *testing.T) {
 	info := mkIn("7", "laptop", "running", "pc", 4242).Info
 	in, ok := ParseIncoming(info)
 	require.True(t, ok, "valid workloadInfo should parse")

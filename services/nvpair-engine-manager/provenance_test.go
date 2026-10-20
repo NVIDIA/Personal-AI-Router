@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInstallMarkerRoundTrip(t *testing.T) {
+func TestInstallMarker_RoundTripsInstallationProvenance(t *testing.T) {
 	installDir := filepath.Join(t.TempDir(), "lmstudio")
 	require.False(t, installedByPAIR(installDir), "an install directory that does not exist cannot be ours")
 	require.NoError(t, writeInstallMarker(installDir, "lmstudio"), "writeInstallMarker")
@@ -79,7 +79,7 @@ func managedExecutor(t *testing.T, manifest *Manifest) *Executor {
 	return ex
 }
 
-func TestUninstallManagedRemovesOnlyWhatPAIRInstalled(t *testing.T) {
+func TestUninstallManaged_RemovesOnlyWhatPAIRInstalled(t *testing.T) {
 	vendorRoot := t.TempDir()
 	binary, weights := vendorEngineOnDisk(t, vendorRoot)
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
@@ -109,7 +109,7 @@ func TestUninstallManagedRemovesOnlyWhatPAIRInstalled(t *testing.T) {
 // losing ownership. The marker is the only record that an engine is PAIR's, so
 // clearing it after a failure would leave the engine installed and every future
 // uninstall refusing it.
-func TestUninstallManagedKeepsTheMarkerWhenRemovalFails(t *testing.T) {
+func TestUninstallManaged_KeepsTheMarkerWhenRemovalFails(t *testing.T) {
 	oldRetries, oldBackoff := uninstallRetries, uninstallBackoff
 	uninstallRetries, uninstallBackoff = 1, time.Millisecond
 	defer func() { uninstallRetries, uninstallBackoff = oldRetries, oldBackoff }()
@@ -135,7 +135,7 @@ func TestUninstallManagedKeepsTheMarkerWhenRemovalFails(t *testing.T) {
 // and reports the failure, and the engine after it is still removed: one stuck
 // engine must not leave the others behind, and the caller decides what a
 // failure means for the rest of its work.
-func TestUninstallManagedCarriesOnPastAPartialRemoval(t *testing.T) {
+func TestUninstallManaged_CarriesOnPastAPartialRemoval(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the directory permissions this test relies on")
 	}
@@ -194,7 +194,7 @@ func TestUninstallManagedCarriesOnPastAPartialRemoval(t *testing.T) {
 // TestUninstallManagedWithoutDataDirRemovesNothing covers losing the app data
 // directory, which is where ownership is recorded. With no way to tell whose
 // install an engine is, the safe answer is to remove none of them.
-func TestUninstallManagedWithoutDataDirRemovesNothing(t *testing.T) {
+func TestUninstallManagedWithoutDataDir_RemovesNothing(t *testing.T) {
 	vendorRoot := t.TempDir()
 	binary, _ := vendorEngineOnDisk(t, vendorRoot)
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
@@ -208,7 +208,7 @@ func TestUninstallManagedWithoutDataDirRemovesNothing(t *testing.T) {
 // vendor script picks its own destination, so the managed-path test can never
 // vouch for a command-mode engine; without a marker this could be the user's
 // own install, holding the model library they built up in it.
-func TestUninstallDeclinesUnmarkedCommandEngine(t *testing.T) {
+func TestUninstall_RejectsCommandEngineWithoutInstallMarker(t *testing.T) {
 	vendorRoot := t.TempDir()
 	vendorEngineOnDisk(t, vendorRoot)
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
@@ -221,7 +221,7 @@ func TestUninstallDeclinesUnmarkedCommandEngine(t *testing.T) {
 // TestUninstallClearsTheMarkerWhenAlreadyGone covers the engine removed by its
 // own uninstaller. Leaving the claim behind would authorise removing a copy the
 // user installs later.
-func TestUninstallClearsTheMarkerWhenAlreadyGone(t *testing.T) {
+func TestUninstall_ClearsTheMarkerWhenAlreadyGone(t *testing.T) {
 	vendorRoot := t.TempDir() // nothing laid down, so detection fails
 	ex := managedExecutor(t, vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot}))
 	installDir := filepath.Join(ex.baseDir, "vendor")

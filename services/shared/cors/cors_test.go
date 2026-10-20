@@ -34,7 +34,7 @@ func policy() http.Header {
 	h.Add("Vary", "Accept-Encoding")
 	return h
 }
-func TestCombine(t *testing.T) {
+func TestCombineCORS_RequiresCompatibleTargetPolicies(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		change         func(http.Header)
@@ -76,7 +76,7 @@ func TestCombine(t *testing.T) {
 	}
 }
 
-func TestCombineSafelistedAndOrdinaryRequests(t *testing.T) {
+func TestCombineCORS_HandlesSafelistedAndOrdinaryRequests(t *testing.T) {
 	r := preflight()
 	r.Header.Set("Access-Control-Request-Method", "GET")
 	r.Header.Del("Access-Control-Request-Headers")
@@ -95,7 +95,7 @@ func TestCombineSafelistedAndOrdinaryRequests(t *testing.T) {
 	require.False(t, ok, "invented origin")
 	assert.False(t, IsPreflight(r), "GET is not preflight")
 }
-func TestEndToEndHeaders(t *testing.T) {
+func TestEndToEndHeaders_StripsHopHeadersAndPreservesRequestHeaders(t *testing.T) {
 	h := http.Header{
 		"Origin":        {"http://app.test"},
 		"Authorization": {"Bearer test"},
@@ -117,7 +117,7 @@ func target(s *httptest.Server) Target {
 	u, _ := url.Parse(s.URL)
 	return Target{URL: u, Transport: s.Client().Transport}
 }
-func TestFanoutStripsCredentials(t *testing.T) {
+func TestFanout_StripsCredentials(t *testing.T) {
 	request := preflight()
 	request.Header.Set("Authorization", "Bearer private")
 	request.Header.Set("Cookie", "session=private")
@@ -138,7 +138,7 @@ func TestFanoutStripsCredentials(t *testing.T) {
 	assert.Equal(t, "Bearer private", request.Header.Get("Authorization"), "mutated original request")
 	assert.Equal(t, "session=private", request.Header.Get("Cookie"), "mutated original request")
 }
-func TestPreflightResponses(t *testing.T) {
+func TestPreflight_CombinesTargetResponses(t *testing.T) {
 	test := func(name string, status int, withPolicy bool, combinedStatus int) {
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -183,7 +183,7 @@ func TestPreflightResponses(t *testing.T) {
 	test("failure", http.StatusServiceUnavailable, false, http.StatusBadGateway)
 }
 
-func TestPreflightWithoutTargets(t *testing.T) {
+func TestPreflight_RejectsRequestWithoutTargets(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ServePreflight(rec, preflight(), nil)
 	assert.Equal(t, http.StatusBadGateway, rec.Code, "no engines granted preflight")
@@ -193,7 +193,7 @@ func TestPreflightWithoutTargets(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-func TestBoundedFanoutAndCancellation(t *testing.T) {
+func TestCORSFanout_BoundsConcurrentRequestsAndHonorsCancellation(t *testing.T) {
 	var active, max atomic.Int32
 	started := make(chan struct{}, 20)
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {

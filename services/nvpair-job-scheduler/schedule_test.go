@@ -150,14 +150,14 @@ func TestApplyNodesChanged_KeysByHostUUID(t *testing.T) {
 
 // TestRank_ColdStartIDSort: with no workloads every node ties at 0, so the order
 // is a stable node-id sort.
-func TestRank_ColdStartIDSort(t *testing.T) {
+func TestRank_SortsNodesByIDBeforeWorkloadsArrive(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"c", "a", "b"})
 	order, _ := m.rank()
 	assertStrs(t, order, []string{"a", "b", "c"})
 }
 
 // TestRank_AscendingByPending: least-loaded node first.
-func TestRank_AscendingByPending(t *testing.T) {
+func TestRank_SortsNodesByPendingWorkloadCount(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b", "c"},
 		wl("1", "ollama", "running", "x", "a"),
 		wl("2", "ollama", "running", "x", "a"),
@@ -217,7 +217,7 @@ func TestRank_UnknownAndStaleTelemetryUseNeutralPressure(t *testing.T) {
 }
 
 // TestRank_UnplacedIgnored: a workload with no scheduledOn counts toward no node.
-func TestRank_UnplacedIgnored(t *testing.T) {
+func TestRank_IgnoresUnplacedWorkloads(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b"},
 		wl("1", "ollama", "running", "x", ""),
 	)
@@ -228,7 +228,7 @@ func TestRank_UnplacedIgnored(t *testing.T) {
 }
 
 // TestRank_ScheduledOnUnknownIgnored: work on a node not in discovery is dropped.
-func TestRank_ScheduledOnUnknownIgnored(t *testing.T) {
+func TestRank_IgnoresWorkloadsOnUnknownNodes(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b"},
 		wl("1", "ollama", "running", "x", "ghost"),
 	)
@@ -239,7 +239,7 @@ func TestRank_ScheduledOnUnknownIgnored(t *testing.T) {
 }
 
 // TestRank_TerminalStatesExcluded: only queued/running count.
-func TestRank_TerminalStatesExcluded(t *testing.T) {
+func TestRank_ExcludesTerminalWorkloads(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b"},
 		wl("1", "ollama", "running", "x", "a"),   // a = 1
 		wl("2", "ollama", "completed", "x", "b"), // ignored
@@ -252,7 +252,7 @@ func TestRank_TerminalStatesExcluded(t *testing.T) {
 // what keeps a new terminal state from silently counting as load. "cancelled"
 // is not queued and not running, so it must contribute nothing — a job the
 // requester walked away from is not occupying its node.
-func TestRank_CancelledExcluded(t *testing.T) {
+func TestRank_ExcludesCancelledWorkloads(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b"},
 		wl("1", "ollama", "running", "x", "a"),   // a = 1
 		wl("2", "ollama", "cancelled", "x", "b"), // must not count toward b
@@ -265,7 +265,7 @@ func TestRank_CancelledExcluded(t *testing.T) {
 // TestRank_NodeWideMixedEngineSynthetic verifies the requested synthetic
 // ranking: A has three mixed-engine pending jobs, B has one, and C has none.
 // Both engine outputs must therefore receive C,B,A.
-func TestRank_NodeWideMixedEngineSynthetic(t *testing.T) {
+func TestRank_BalancesMixedEngineWorkAcrossNodes(t *testing.T) {
 	rec := &capRW{}
 	m := mgrWith(rec, []string{"a", "b", "c"},
 		workload{ID: "1", Engine: "ollama", RunID: "o1", State: "running", OriginatedFrom: "x", ScheduledOn: "a"},
@@ -326,7 +326,7 @@ func pressureOf(ranks []NodeRank, id string) int {
 // "1" for the same origin. They must remain two catalog entries (keyed by
 // engine + runId), so node-wide pending includes both. Keyed on the bare
 // (origin,id) the second upsert would clobber the first.
-func TestApplyUpsert_CrossEngineSameIDDistinct(t *testing.T) {
+func TestApplyUpsert_KeepsSameWorkloadIDDistinctAcrossEngines(t *testing.T) {
 	m := NewManager(NewCodec(nopRW{}), time.Second)
 	m.nodes["a"] = true
 	m.nodes["b"] = true
@@ -342,7 +342,7 @@ func TestApplyUpsert_CrossEngineSameIDDistinct(t *testing.T) {
 // TestApplyUpsert_SameIDAcrossRestartDistinct: a proxy restart mints a fresh
 // runId, so a reused id after restart is a separate job — both must count until
 // the old one is retired.
-func TestApplyUpsert_SameIDAcrossRestartDistinct(t *testing.T) {
+func TestApplyUpsert_KeepsSameWorkloadIDDistinctAcrossRuns(t *testing.T) {
 	m := NewManager(NewCodec(nopRW{}), time.Second)
 	m.nodes["a"] = true
 	m.applyUpsert(upsertJSON(t, workload{ID: "1", Engine: "ollama", RunID: "run-1", State: "running", OriginatedFrom: "x", ScheduledOn: "a"}))
@@ -363,7 +363,7 @@ func TestApplyRemove_DropsEveryEngineForID(t *testing.T) {
 	require.Empty(t, m.catalog, "catalog len")
 }
 
-func TestApplyUpsert_ActiveOnlyAndMeaningfulChanges(t *testing.T) {
+func TestApplyUpsert_ReportsOnlyMeaningfulActiveWorkloadChanges(t *testing.T) {
 	m := NewManager(NewCodec(nopRW{}), time.Second)
 	base := workload{ID: "1", Engine: "ollama", RunID: "run", State: "queued", OriginatedFrom: "x", ScheduledOn: "a"}
 
@@ -478,7 +478,7 @@ func TestRecomputeAll_SerializesOlderAndNewerResults(t *testing.T) {
 	}
 }
 
-func TestFeedbackBurstBalancesPastDepthThree(t *testing.T) {
+func TestFeedbackBurst_BalancesPastDepthThree(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b", "c"})
 	depths := map[string]int{"a": 0, "b": 0, "c": 0}
 	for i := 0; i < 50; i++ {
@@ -512,7 +512,7 @@ func TestFeedbackBurstBalancesPastDepthThree(t *testing.T) {
 
 // TestEmit_OnChangeOnly: emit on the first snapshot and on changes, silent
 // otherwise, and always on a forced tick.
-func TestEmit_OnChangeOnly(t *testing.T) {
+func TestEmit_SendsSnapshotOnlyWhenRankingChanges(t *testing.T) {
 	rec := &capRW{}
 	m := mgrWith(rec, []string{"a", "b"})
 
@@ -540,7 +540,7 @@ func TestEmit_IncludesPendingRanks(t *testing.T) {
 	assert.Equal(t, want, got[0].Ranks, "pending ranks")
 }
 
-func TestEmit_PendingOnlyChangeRefreshesSnapshot(t *testing.T) {
+func TestEmit_RefreshesSnapshotWhenOnlyPendingCountsChange(t *testing.T) {
 	rec := &capRW{}
 	m := mgrWith(rec, []string{"a", "b"},
 		workload{ID: "b1", Engine: "ollama", RunID: "run", State: "running", OriginatedFrom: "local", ScheduledOn: "b"},
@@ -562,7 +562,7 @@ func TestEmit_PendingOnlyChangeRefreshesSnapshot(t *testing.T) {
 }
 
 // TestEmit_EmptyUniverseSilent: with no nodes there is nothing to emit.
-func TestEmit_EmptyUniverseSilent(t *testing.T) {
+func TestEmit_SendsNothingWithoutNodes(t *testing.T) {
 	rec := &capRW{}
 	m := mgrWith(rec, nil)
 	m.recomputeAll(false)
@@ -570,7 +570,7 @@ func TestEmit_EmptyUniverseSilent(t *testing.T) {
 }
 
 // TestSetInterval_Floor: a sub-floor interval is clamped to 200ms.
-func TestSetInterval_Floor(t *testing.T) {
+func TestSetInterval_EnforcesMinimumPollingInterval(t *testing.T) {
 	rec := &capRW{}
 	m := mgrWith(rec, nil)
 	id := json.RawMessage(`1`)
@@ -584,7 +584,7 @@ func TestSetInterval_Floor(t *testing.T) {
 }
 
 // TestNewManager_Floor: the constructor clamps the initial interval too.
-func TestNewManager_Floor(t *testing.T) {
+func TestNewManager_EnforcesMinimumPollingInterval(t *testing.T) {
 	m := NewManager(NewCodec(nopRW{}), 10*time.Millisecond)
 	assert.Equal(t, intervalFloor, m.interval, "interval")
 }

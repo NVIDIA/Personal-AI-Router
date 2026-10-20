@@ -15,7 +15,7 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
-func TestPressureBandsAndDownwardHysteresis(t *testing.T) {
+func TestTelemetryPressure_UsesBandsAndDownwardHysteresis(t *testing.T) {
 	bands := []struct {
 		utilization float64
 		want        int
@@ -56,7 +56,7 @@ func TestPressureBandsAndDownwardHysteresis(t *testing.T) {
 	}
 }
 
-func TestApplyTelemetrySmoothsUtilizationBeforeChangingPressure(t *testing.T) {
+func TestApplyTelemetry_SmoothsUtilizationBeforeChangingPressure(t *testing.T) {
 	manager := NewManager(NewCodec(nopRW{}), time.Second)
 	now := time.Unix(1_700_000_000, 0)
 	sample := noderec.NodeTelemetry{
@@ -80,7 +80,7 @@ func TestApplyTelemetrySmoothsUtilizationBeforeChangingPressure(t *testing.T) {
 	assert.Equal(t, 1, manager.gpuPressureAt("node-a", now.Add(2*time.Second)), "pressure after smoothed hot samples")
 }
 
-func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
+func TestTelemetryFreshness_TransitionsThroughUnknownAndRecovery(t *testing.T) {
 	manager := NewManager(NewCodec(nopRW{}), time.Second)
 	now := time.Unix(1_700_000_000, 0)
 	hot := noderec.NodeTelemetry{
@@ -112,7 +112,7 @@ func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
 	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", recoveredAt.Add(time.Second)), "invalid pressure")
 }
 
-func TestTelemetryOlderThanFreshnessStartsUnknown(t *testing.T) {
+func TestTelemetryOlderThanFreshness_StartsUnknown(t *testing.T) {
 	manager := NewManager(NewCodec(nopRW{}), time.Second)
 	now := time.Unix(1_700_000_000, 0)
 	changed := manager.applyTelemetryAt(noderec.NodeTelemetry{
@@ -125,7 +125,7 @@ func TestTelemetryOlderThanFreshnessStartsUnknown(t *testing.T) {
 	assert.Equal(t, unknownGPUPressure, manager.gpuPressureAt("node-a", now), "stale first pressure")
 }
 
-func TestNodeRemovalDropsTelemetryState(t *testing.T) {
+func TestNodeRemoval_DropsTelemetryState(t *testing.T) {
 	manager := NewManager(NewCodec(nopRW{}), time.Second)
 	manager.applyTelemetryAt(noderec.NodeTelemetry{
 		HostUUID:       "node-a",
@@ -137,7 +137,7 @@ func TestNodeRemovalDropsTelemetryState(t *testing.T) {
 	manager.mu.Unlock()
 }
 
-func TestHandleMessageAppliesTelemetryNotification(t *testing.T) {
+func TestHandleMessage_AppliesTelemetryNotification(t *testing.T) {
 	manager := NewManager(NewCodec(nopRW{}), time.Second)
 	params, err := json.Marshal(noderec.NodeTelemetry{
 		HostUUID:          "node-a",
@@ -159,7 +159,7 @@ func TestHandleMessageAppliesTelemetryNotification(t *testing.T) {
 	assert.True(t, state.valid, "handled telemetry state (%v, %v)", state, ok)
 }
 
-func TestTelemetryNotificationEmitsOnlyOnPressureChange(t *testing.T) {
+func TestTelemetryNotification_EmitsOnlyOnPressureChange(t *testing.T) {
 	recorder := &capRW{}
 	manager := NewManager(NewCodec(recorder), time.Second)
 	manager.handleMessage(&Message{

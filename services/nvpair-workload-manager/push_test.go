@@ -24,7 +24,7 @@ func lifecycleFrame(id, state, method, origin string) json.RawMessage {
 // re-broadcast of an already-seen (…,state) frame is deduped and not re-emitted,
 // but a re-sync frame (params carry resync:true) bypasses dedup and reaches the
 // broker so the store can reconcile.
-func TestResyncBypassesReceiverDedup(t *testing.T) {
+func TestResync_BypassesReceiverDedup(t *testing.T) {
 	var mu sync.Mutex
 	var emits int
 	self, peer := newPinnedPeerMeshes(t)
@@ -58,7 +58,7 @@ func mustJSON(v any) json.RawMessage {
 // TestActiveSnapshotTracking checks the re-sync set: active workloads are
 // retained, a terminal is retained (for a couple of heartbeats) then pruned once
 // expired, and a removal drops immediately.
-func TestActiveSnapshotTracking(t *testing.T) {
+func TestActiveSnapshot_TracksRunningAndTerminalWorkloads(t *testing.T) {
 	m := &Manager{activeLocal: make(map[workloadKey]workloadEvent)}
 	k1 := workloadKey{origin: "node-a", id: "1"}
 	k2 := workloadKey{origin: "node-a", id: "2"}
@@ -88,7 +88,7 @@ func TestActiveSnapshotTracking(t *testing.T) {
 // runId, so concurrent cross-engine jobs and a reused id after a restart are all
 // retained (not collapsed), and a removal drops every composite key sharing
 // (origin, id).
-func TestActiveSnapshotDistinguishesEngineAndRun(t *testing.T) {
+func TestActiveSnapshot_DistinguishesEngineAndRun(t *testing.T) {
 	m := &Manager{activeLocal: make(map[workloadKey]workloadEvent)}
 
 	m.trackActive(workloadKey{origin: "a", engine: "ollama", runID: "r1", id: "1"}, MethodStarted, lifecycleFrame("1", "running", MethodStarted, "a"), StateRunning)
@@ -104,7 +104,7 @@ func TestActiveSnapshotDistinguishesEngineAndRun(t *testing.T) {
 // set, a later non-terminal event for that same identity is dropped. A stale or
 // replayed "running" (e.g. a rehydration/heartbeat frame racing a terminal)
 // must not resurrect a finished job, nor strip its expiry so it never ages out.
-func TestTrackActiveMonotonicTerminal(t *testing.T) {
+func TestTrackActive_DoesNotRestoreRunningStateAfterTerminal(t *testing.T) {
 	m := &Manager{activeLocal: make(map[workloadKey]workloadEvent)}
 	k := workloadKey{origin: "a", engine: "ollama", runID: "r1", id: "1"}
 

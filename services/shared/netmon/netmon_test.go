@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFingerprintOrderInsensitive(t *testing.T) {
+func TestNetworkFingerprint_IgnoresInterfaceOrdering(t *testing.T) {
 	a := Snapshot{
 		LocalIPs: map[string]bool{"10.0.0.1": true, "192.168.1.2": true},
 		IfaceV4:  map[int][]net.IP{3: {net.IPv4(10, 0, 0, 1), net.IPv4(10, 0, 0, 2)}},
@@ -25,13 +25,13 @@ func TestFingerprintOrderInsensitive(t *testing.T) {
 	assert.Equal(t, fingerprint(b), fingerprint(a), "fingerprints differ for equal-but-reordered snapshots")
 }
 
-func TestFingerprintDetectsChange(t *testing.T) {
+func TestFingerprint_DetectsChange(t *testing.T) {
 	a := Snapshot{LocalIPs: map[string]bool{"10.0.0.1": true}, IfaceV4: map[int][]net.IP{}}
 	b := Snapshot{LocalIPs: map[string]bool{"10.0.0.2": true}, IfaceV4: map[int][]net.IP{}}
 	assert.NotEqual(t, fingerprint(b), fingerprint(a), "fingerprint should differ when an IP changes")
 }
 
-func TestSnapshotCloneIsIndependent(t *testing.T) {
+func TestSnapshotClone_IsIndependent(t *testing.T) {
 	orig := Snapshot{
 		LocalIPs: map[string]bool{"10.0.0.1": true},
 		IfaceV4:  map[int][]net.IP{1: {net.IPv4(10, 0, 0, 1)}},
@@ -43,7 +43,7 @@ func TestSnapshotCloneIsIndependent(t *testing.T) {
 	assert.NotEqual(t, "8.8.8.8", orig.IfaceV4[1][0].String(), "clone shares IfaceV4 backing array with original")
 }
 
-func TestWatchProvidesInitialSnapshot(t *testing.T) {
+func TestWatch_ProvidesInitialSnapshot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mon, err := Watch(ctx)

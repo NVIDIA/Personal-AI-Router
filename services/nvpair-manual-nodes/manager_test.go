@@ -139,7 +139,7 @@ func configureHealthyLMStudio(rt *fakeRoundTripper, addr string, models []string
 // TestProbeLMStudioReportsModels covers the new LM Studio probe: a reachable
 // server reports up with its model ids parsed from /v1/models, and an absent
 // one (no handler registered, so the request errors) reports down.
-func TestProbeLMStudioReportsModels(t *testing.T) {
+func TestProbeLMStudio_ReportsModels(t *testing.T) {
 	m, _, rt := newTestManager()
 	configureHealthyLMStudio(rt, "node.local", []string{"qwen2.5-7b", "llama-3.1-8b"})
 
@@ -261,12 +261,12 @@ func sampleInfo() NodeInfoResponse {
 	}
 }
 
-func TestNodeID(t *testing.T) {
+func TestNodeID_PrefersConfiguredNameOverAddressFallback(t *testing.T) {
 	assert.Equal(t, "workstation", nodeID(ManualEntry{Name: "workstation", Address: "10.0.0.5"}), "named nodeID")
 	assert.Equal(t, "manual:10.0.0.5", nodeID(ManualEntry{Address: "10.0.0.5"}), "unnamed nodeID")
 }
 
-func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) {
+func TestNodeAdd_RespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) {
 	m, rw, rt := newTestManager()
 	configureHealthyNode(rt, "node.local", []string{"llama3", "mistral"}, sampleInfo())
 
@@ -296,7 +296,7 @@ func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) 
 	assert.Equal(t, int64(137), status.MSSince, "telemetry = valid")
 }
 
-func TestNodeAddValidationErrors(t *testing.T) {
+func TestNodeAdd_RejectsInvalidParameters(t *testing.T) {
 	m, rw, _ := newTestManager()
 
 	m.handleMessage(requestMessageRaw(1, "node/add", json.RawMessage(`"bad"`)))
@@ -312,7 +312,7 @@ func TestNodeAddValidationErrors(t *testing.T) {
 	require.Empty(t, m.listNodes(), "validation errors added nodes")
 }
 
-func TestNodesListReturnsCurrentStatuses(t *testing.T) {
+func TestNodesList_ReturnsCurrentStatuses(t *testing.T) {
 	m, rw, rt := newTestManager()
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
 
@@ -330,7 +330,7 @@ func TestNodesListReturnsCurrentStatuses(t *testing.T) {
 	assert.True(t, result.Nodes[0].NodeInfoUp, "nodes/list status")
 }
 
-func TestNodeRemoveReturnsRemovedAndNotifies(t *testing.T) {
+func TestNodeRemove_ReturnsRemovedAndNotifies(t *testing.T) {
 	m, rw, _ := newTestManager()
 	m.nodes["lab"] = &trackedNode{
 		entry:  ManualEntry{Name: "lab", Address: "node.local"},
@@ -354,7 +354,7 @@ func TestNodeRemoveReturnsRemovedAndNotifies(t *testing.T) {
 	assertNoCaptureMethod(t, rw, "node/removed")
 }
 
-func TestAddThenRemoveBeforeInitialProbeDoesNotRediscover(t *testing.T) {
+func TestAddThenRemoveBeforeInitialProbe_DoesNotRediscover(t *testing.T) {
 	m, rw, rt := newTestManager()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -387,7 +387,7 @@ func TestAddThenRemoveBeforeInitialProbeDoesNotRediscover(t *testing.T) {
 	require.Empty(t, m.listNodes(), "node rediscovered in state")
 }
 
-func TestProbeNodeEmitsUpdatedOnStateChange(t *testing.T) {
+func TestProbeNode_EmitsUpdatedOnStateChange(t *testing.T) {
 	m, rw, rt := newTestManager()
 	m.nodes["lab"] = &trackedNode{entry: ManualEntry{Name: "lab", Address: "node.local"}, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
 
@@ -402,7 +402,7 @@ func TestProbeNodeEmitsUpdatedOnStateChange(t *testing.T) {
 	assert.Equal(t, []string{"mistral"}, second.OllamaModels, "second update models")
 }
 
-func TestProbeNodeNoUpdateWhenStable(t *testing.T) {
+func TestProbeNode_EmitsNothingWhenStateIsUnchanged(t *testing.T) {
 	m, rw, rt := newTestManager()
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
 	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
@@ -415,7 +415,7 @@ func TestProbeNodeNoUpdateWhenStable(t *testing.T) {
 	assertNoCaptureMethod(t, rw, "node/updated")
 }
 
-func TestProbeFailuresClearAvailability(t *testing.T) {
+func TestProbeNode_ClearsAvailabilityAfterFailure(t *testing.T) {
 	m, rw, rt := newTestManager()
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
 	m.nodes["lab"] = &trackedNode{
@@ -453,7 +453,7 @@ func TestProbeFailuresClearAvailability(t *testing.T) {
 // TestProbeFailurePreservesHostUUID: a node-info blip
 // (while Ollama stays reachable) must NOT blank the learned HostUUID, or the
 // broker would rekey the live node UUID -> manual-id -> UUID.
-func TestProbeFailurePreservesHostUUID(t *testing.T) {
+func TestProbeFailure_PreservesHostUUID(t *testing.T) {
 	m, rw, rt := newTestManager()
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
 	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
@@ -483,7 +483,7 @@ func TestProbeFailurePreservesHostUUID(t *testing.T) {
 	assert.Equal(t, "node-uuid", up.HostUUID, "HostUUID after recovery")
 }
 
-func TestCPUAndMemoryNilAwareEquality(t *testing.T) {
+func TestTelemetryEquality_DistinguishesMissingCPUAndMemoryReadings(t *testing.T) {
 	assert.True(t, cpuEqual(nil, nil), "nil values should compare equal")
 	assert.True(t, memoryEqual(nil, nil), "nil values should compare equal")
 	assert.False(t, cpuEqual(nil, &CPUInfo{}), "nil and non-nil values should differ")
@@ -494,7 +494,7 @@ func TestCPUAndMemoryNilAwareEquality(t *testing.T) {
 	assert.False(t, memoryEqual(&MemoryInfo{TotalBytes: 10, UsedBytes: 5}, &MemoryInfo{TotalBytes: 10, UsedBytes: 6}), "different memory values compared equal")
 }
 
-func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {
+func TestUnknownMethod_ReturnsMethodNotFound(t *testing.T) {
 	m, rw, _ := newTestManager()
 	m.handleMessage(requestMessage(1, "bogus", nil))
 	resp := readCaptureFrame(t, rw)
@@ -502,7 +502,7 @@ func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {
 	assert.Equal(t, -32601, resp.Error.Code, "unknown method error")
 }
 
-func TestLogSetLevelRequest(t *testing.T) {
+func TestLogSetLevel_AppliesRequestedVerbosity(t *testing.T) {
 	m, rw, _ := newTestManager()
 	m.handleMessage(requestMessage(1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
 	resp := readCaptureFrame(t, rw)
@@ -515,7 +515,7 @@ func TestLogSetLevelRequest(t *testing.T) {
 	assert.Equal(t, -32602, resp.Error.Code, "invalid log/set-level error")
 }
 
-func TestShutdownRequestCancelsRun(t *testing.T) {
+func TestShutdownRequest_CancelsRun(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
 	defer client.Close()
@@ -546,7 +546,7 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 	}
 }
 
-func TestNotificationIsIgnored(t *testing.T) {
+func TestNotification_IsIgnored(t *testing.T) {
 	m, rw, _ := newTestManager()
 	m.handleMessage(notificationMessage("node/add", ManualEntry{Address: "node.local"}))
 	require.Empty(t, m.listNodes(), "notification mutated state")

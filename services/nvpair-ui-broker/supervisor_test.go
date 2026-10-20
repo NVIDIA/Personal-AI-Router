@@ -36,7 +36,7 @@ func (h *fakeHandle) crash() { close(h.done) }
 // predecessor, so onSpawned has to fire for the first spawn and every respawn.
 // Missing the respawn is the interesting failure: the worker comes back and
 // silently serves without the ranking the broker believes it has.
-func TestOnSpawnedFiresForFirstSpawnAndEveryRespawn(t *testing.T) {
+func TestOnSpawned_FiresForFirstSpawnAndEveryRespawn(t *testing.T) {
 	handles := make(chan *fakeHandle, 4)
 	spawned := make(chan struct{}, 4)
 
@@ -63,7 +63,7 @@ func TestOnSpawnedFiresForFirstSpawnAndEveryRespawn(t *testing.T) {
 // onSpawned must not run on the monitor goroutine: that goroutine is the only
 // thing that reaches h.Stop() when stopCh closes, so a callback blocking there
 // makes Stop wait it out inside the shared teardown budget.
-func TestOnSpawnedDoesNotBlockStop(t *testing.T) {
+func TestOnSpawned_DoesNotBlockStop(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	entered := make(chan struct{})
@@ -100,7 +100,7 @@ func waitSupervisorSignal(t *testing.T, ch <-chan struct{}, failure string) {
 	}
 }
 
-func TestRestartPolicyBackoff(t *testing.T) {
+func TestRestartPolicy_BoundsDelayAndRetryBudget(t *testing.T) {
 	p := restartPolicy{baseDelay: time.Second, maxDelay: 16 * time.Second}
 	cases := []struct {
 		attempt int
@@ -130,7 +130,7 @@ func fastPolicy(maxAttempts int, healthyReset time.Duration) restartPolicy {
 	}
 }
 
-func TestSupervisorSurfacesAndRestartsThenRecovers(t *testing.T) {
+func TestSupervisor_SurfacesAndRestartsThenRecovers(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -167,7 +167,7 @@ func TestSupervisorSurfacesAndRestartsThenRecovers(t *testing.T) {
 	_ = h1
 }
 
-func TestSupervisorGivesUpAfterBudget(t *testing.T) {
+func TestSupervisor_GivesUpAfterBudget(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -198,7 +198,7 @@ func TestSupervisorGivesUpAfterBudget(t *testing.T) {
 	}
 }
 
-func TestSupervisorNoRestartPolicy(t *testing.T) {
+func TestSupervisor_DoesNotRestartWorkerWhenPolicyDisablesRestarts(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -224,7 +224,7 @@ func TestSupervisorNoRestartPolicy(t *testing.T) {
 	}
 }
 
-func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
+func TestSupervisorStop_TearsDownCurrentHandle(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -259,7 +259,7 @@ func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
 // that became facade-scoped. What remains worth asserting is the invariant
 // that replaced it: nothing short of an actual exit replaces a running worker,
 // so a facade-level failure cannot cost every engine its listener.
-func TestSupervisorLeavesAHealthyWorkerAlone(t *testing.T) {
+func TestSupervisor_LeavesAHealthyWorkerAlone(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()

@@ -46,7 +46,7 @@ func discoveryPush(nodes ...availableNode) NotificationMsg {
 // snapshot it was constructed with and then ignored every later one. Pulling a
 // model onto that peer, including from this very screen, changed nothing on
 // screen until the operator backed out and re-entered.
-func TestRemoteDetailFollowsDiscoveryModels(t *testing.T) {
+func TestRemoteDetail_FollowsDiscoveryModels(t *testing.T) {
 	d := remoteDetail()
 	d.models = modelsResult{Models: []string{"old-model"}}
 	d.refreshModels()
@@ -64,7 +64,7 @@ func TestRemoteDetailFollowsDiscoveryModels(t *testing.T) {
 
 // TestRemoteDetailIgnoresOtherNodesDiscovery checks the screen only takes the
 // entry for its own node, so a busy cluster cannot overwrite it.
-func TestRemoteDetailIgnoresOtherNodesDiscovery(t *testing.T) {
+func TestRemoteDetail_IgnoresOtherNodesDiscovery(t *testing.T) {
 	d := remoteDetail()
 	d.models = modelsResult{Models: []string{"mine"}}
 	d.refreshModels()
@@ -82,7 +82,7 @@ func TestRemoteDetailIgnoresOtherNodesDiscovery(t *testing.T) {
 // shown for a model whose engine cannot say. An engine with no loaded endpoint
 // is left out of loadedByEngine, and reading that as an empty list marked every
 // one of its models as not in memory.
-func TestUnreportedLoadStateIsUnknown(t *testing.T) {
+func TestUnreportedLoadState_IsUnknown(t *testing.T) {
 	d := localDetail()
 	d.models = modelsResult{
 		ModelsByEngine: map[string][]string{
@@ -105,7 +105,7 @@ func TestUnreportedLoadStateIsUnknown(t *testing.T) {
 
 // TestLocalDetailIgnoresDiscoveryModels checks this machine keeps using the
 // authoritative engine:models RPC rather than the discovery summary.
-func TestLocalDetailIgnoresDiscoveryModels(t *testing.T) {
+func TestLocalDetail_IgnoresDiscoveryModels(t *testing.T) {
 	d := localDetail()
 	d.models = modelsResult{Models: []string{"authoritative"}}
 	d.refreshModels()
@@ -123,7 +123,7 @@ func TestLocalDetailIgnoresDiscoveryModels(t *testing.T) {
 // tick. engine:state-changed carries a local snapshot with no node on it, so it
 // cannot be attributed to a peer — polling is the only way an open remote
 // screen notices an engine starting or stopping over there.
-func TestRemoteDetailPollsEngines(t *testing.T) {
+func TestRemoteDetail_PollsEngines(t *testing.T) {
 	d := remoteDetail()
 	cmd, _ := d.update(detailEnginesTickMsg{gen: d.telemetryGen})
 	assert.NotNil(t, cmd, "remote detail did not re-read engines on its tick")
@@ -140,7 +140,7 @@ func TestRemoteDetailPollsEngines(t *testing.T) {
 
 // TestDetailSectionsAreSeparated is the guard for the two tables reading as one
 // with a stray header in the middle: there must be a blank line between them.
-func TestDetailSectionsAreSeparated(t *testing.T) {
+func TestDetailSections_AreSeparated(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true, Port: 11434}}
 	d.refreshEngines()
@@ -159,7 +159,7 @@ func TestDetailSectionsAreSeparated(t *testing.T) {
 
 // TestLocalDetailShowsBothPorts is the guard for the two ports being managed in
 // different places: on this machine they sit side by side on the engine's row.
-func TestLocalDetailShowsBothPorts(t *testing.T) {
+func TestLocalDetail_ShowsBothPorts(t *testing.T) {
 	d := localDetail()
 	require.NotNil(t, d.proxy, "no proxy tracker on the local node")
 	d.proxy.apply(proxyStatusMsg{idx: 0, ready: true, port: 11435})
@@ -182,7 +182,7 @@ func TestLocalDetailShowsBothPorts(t *testing.T) {
 
 // TestRemoteDetailHidesProxyPort checks a peer's endpoints are not presented as
 // ours to configure.
-func TestRemoteDetailHidesProxyPort(t *testing.T) {
+func TestRemoteDetail_HidesProxyPort(t *testing.T) {
 	d := remoteDetail()
 	assert.Nil(t, d.proxy, "a remote node should carry no proxy tracker")
 	for _, c := range detailEngineColumns(100, true) {
@@ -196,7 +196,7 @@ func TestRemoteDetailHidesProxyPort(t *testing.T) {
 
 // TestProxyPortCellStates checks the cell distinguishes a live endpoint from a
 // port whose proxy is down, and from an engine no proxy fronts.
-func TestProxyPortCellStates(t *testing.T) {
+func TestProxyPortCell_DistinguishesLiveDownAndUnknownEndpoints(t *testing.T) {
 	d := localDetail()
 
 	d.proxy.apply(proxyStatusMsg{idx: 0, ready: true, port: 11435})
@@ -210,7 +210,7 @@ func TestProxyPortCellStates(t *testing.T) {
 
 // TestProxyIndexForEngine pins the engine-to-proxy pairing the proxy port
 // column depends on.
-func TestProxyIndexForEngine(t *testing.T) {
+func TestProxyIndexForEngine_NormalizesNamesAndRejectsUnknownEngine(t *testing.T) {
 	p := newProxyTracker()
 	assert.Equal(t, 0, p.indexForEngine("ollama"))
 	assert.Equal(t, 1, p.indexForEngine("lmstudio"))
@@ -248,7 +248,7 @@ func ollamaSettings() enginesettings.Snapshot {
 // The revision is the point. A field opened without one has nothing to write
 // against, and the backend's whole defence against two clients overwriting each
 // other is that every write carries the revision it was based on.
-func TestSettingsKeysAskTheBackendBeforeOpening(t *testing.T) {
+func TestSettingsKeys_RequestCurrentSettingsBeforeOpeningEditor(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Port: 11434}}
 	d.refreshEngines()
@@ -262,7 +262,7 @@ func TestSettingsKeysAskTheBackendBeforeOpening(t *testing.T) {
 
 // TestSettingsEditorsAreDistinct checks the three fields are told apart, so a
 // typed value cannot be applied to the wrong one.
-func TestSettingsEditorsAreDistinct(t *testing.T) {
+func TestSettingsEditors_AreDistinct(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Port: 11434}}
 	d.refreshEngines()
@@ -294,7 +294,7 @@ func TestSettingsEditorsAreDistinct(t *testing.T) {
 // because the old RPC had no remote form. The settings path does, so the
 // judgement belongs to the side that knows why — an adopted engine, an
 // unreachable settings worker — rather than to a rule here that would drift.
-func TestSettingsRefusalComesFromTheBackend(t *testing.T) {
+func TestSettingsRefusal_ComesFromTheBackend(t *testing.T) {
 	d := remoteDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Port: 11434}}
 	d.refreshEngines()
@@ -318,7 +318,7 @@ func TestSettingsRefusalComesFromTheBackend(t *testing.T) {
 // field and the port inside the command text disagree: editing the field
 // should rewrite the command, and editing the command should move the field.
 // Send the wrong one and the backend quietly rewrites what the operator typed.
-func TestSettingsWriteCarriesTheRevisionAndResolution(t *testing.T) {
+func TestSettingsWrite_CarriesTheRevisionAndResolution(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Port: 11434}}
 	d.refreshEngines()
@@ -360,7 +360,7 @@ func TestSettingsWriteCarriesTheRevisionAndResolution(t *testing.T) {
 // Whitespace is significant to a tokenizer, and the backend normalizes to rules
 // this screen does not carry. Trimming on the way out would disagree with it
 // and, worse, would disagree invisibly.
-func TestLaunchTextIsSentAsTyped(t *testing.T) {
+func TestLaunchText_IsSentAsTyped(t *testing.T) {
 	d := localDetail()
 	snap := ollamaSettings()
 	const typed = `  OLLAMA_ORIGINS="https://example.com"  `
@@ -376,7 +376,7 @@ func TestLaunchTextIsSentAsTyped(t *testing.T) {
 // The preview returns normalized settings — quoting settled, ports reconciled
 // — and applying the raw draft instead would save text that was never checked,
 // with the preview's approval standing behind it.
-func TestSettingsApplyUsesTheNormalizedDraft(t *testing.T) {
+func TestSettingsApply_UsesTheNormalizedDraft(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 	d.refreshEngines()
@@ -416,7 +416,7 @@ func settingsPush(snap enginesettings.Snapshot) NotificationMsg {
 // revision then stayed at whatever the first read returned, so the save after
 // a successful one was rejected as stale, and stayed rejected until the screen
 // was closed and reopened.
-func TestLocalSettingsPushIsNotDiscarded(t *testing.T) {
+func TestLocalSettingsPush_IsNotDiscarded(t *testing.T) {
 	const uuid = "33983c39-c0a6-41d2-9488-455b5e61e25f"
 	d := newNodeDetail(nil, nodeRow{key: uuid, name: "this-host", self: true, presence: presenceOnline})
 	d.SetSize(100, 30)
@@ -443,7 +443,7 @@ func TestLocalSettingsPushIsNotDiscarded(t *testing.T) {
 // A revision the backend will not accept is not recoverable by repeating the
 // same write: without dropping it, every later attempt fails identically and
 // the only way out is to leave the screen.
-func TestFailedSaveReloadsTheSnapshot(t *testing.T) {
+func TestFailedSave_ReloadsTheSnapshot(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 	d.refreshEngines()
@@ -468,7 +468,7 @@ func TestFailedSaveReloadsTheSnapshot(t *testing.T) {
 // carrying different settings. A commit without one is rejected outright — and
 // because only the commit needs it, the preview succeeded first, so the
 // interface reported the settings as valid and then refused to save them.
-func TestSettingsCommitCarriesARequestIdentifier(t *testing.T) {
+func TestSettingsCommit_CarriesARequestIdentifier(t *testing.T) {
 	previewOf := func(port int) enginePreviewMsg {
 		return enginePreviewMsg{
 			request: enginesettings.Request{Engine: "ollama", ExpectedRevision: 7},
@@ -498,7 +498,7 @@ func TestSettingsCommitCarriesARequestIdentifier(t *testing.T) {
 
 // TestSettingsRestartIsConfirmed checks a change that restarts the engine asks
 // first, and that the confirmation applies the same request it armed.
-func TestSettingsRestartIsConfirmed(t *testing.T) {
+func TestSettingsRestart_IsConfirmed(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 	d.refreshEngines()
@@ -532,7 +532,7 @@ func TestSettingsRestartIsConfirmed(t *testing.T) {
 
 // TestSettingsPreviewFailuresAreExplained checks a rejected draft says why and
 // saves nothing.
-func TestSettingsPreviewFailuresAreExplained(t *testing.T) {
+func TestSettingsPreviewFailures_AreExplained(t *testing.T) {
 	cases := []struct {
 		name    string
 		preview enginesettings.Preview
@@ -570,7 +570,7 @@ func TestSettingsPreviewFailuresAreExplained(t *testing.T) {
 
 // TestSettingsErrorsReadTheSameEveryTime checks the per-field errors are
 // ordered, since a map would reshuffle the same failure between attempts.
-func TestSettingsErrorsReadTheSameEveryTime(t *testing.T) {
+func TestSettingsErrors_UsesDeterministicOrder(t *testing.T) {
 	errs := map[string]string{
 		"serverPort": "port in use",
 		"launchText": "unbalanced quote",
@@ -586,7 +586,7 @@ func TestSettingsErrorsReadTheSameEveryTime(t *testing.T) {
 // TestNoBindingRequiresShift is the guard for the mixed-case keyboard: needing
 // shift for some keys and not others makes every press a guess. Named keys like
 // shift+tab are exempt; this is about letters.
-func TestNoBindingRequiresShift(t *testing.T) {
+func TestSettingsBindings_DoNotRequireShift(t *testing.T) {
 	bindings := map[string][]key.Binding{
 		"global":         globalBindings(),
 		"nodes":          newNodesView(nil).Help(),
@@ -622,7 +622,7 @@ func TestNoBindingRequiresShift(t *testing.T) {
 // elsewhere and reports the difference as the effective port. Treating the
 // absence of an error as success meant asking for a port an engine held
 // produced "updated" while the table went on showing the old one.
-func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
+func TestSettingsOutcome_ReportsTheBoundPort(t *testing.T) {
 	cases := []struct {
 		name      string
 		snapshot  enginesettings.Snapshot
@@ -730,7 +730,7 @@ func TestSettingsOutcomeReportsTheBoundPort(t *testing.T) {
 // These snapshots also arrive whenever the desktop app or another operator
 // saves something, and a note on each would be noise about work the person at
 // this terminal did not do.
-func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
+func TestSettingsOutcome_IsSilentForSomeoneElsesChange(t *testing.T) {
 	d := localDetail()
 	snap := enginesettings.Snapshot{
 		Engine:             "ollama",
@@ -770,7 +770,7 @@ func TestSettingsOutcomeIsSilentForSomeoneElsesChange(t *testing.T) {
 // immediately; on a proxy change it reported a healthy move as a failure,
 // since accepted and effective ports differ by definition at that point; and
 // it spent the await, so the real verdict was never reported.
-func TestAcceptedIsNotApplied(t *testing.T) {
+func TestSettingsReceipt_DistinguishesAcceptedFromApplied(t *testing.T) {
 	d := localDetail()
 	d.settingsAwaited = &awaitedSettings{engine: "ollama", requestID: "req-1"}
 
@@ -819,7 +819,7 @@ func TestAcceptedIsNotApplied(t *testing.T) {
 // not anyone is still listening. Treating the deadline as a rejection reported
 // failure on the path where the change was working, then dropped the await and
 // the cached snapshot, so the real verdict that followed went unreported.
-func TestSlowApplyIsStillApplying(t *testing.T) {
+func TestSlowApply_IsStillApplying(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 	d.refreshEngines()
@@ -842,7 +842,7 @@ func TestSlowApplyIsStillApplying(t *testing.T) {
 
 // TestSettingsApplyBudgetIsTheBackends checks the apply call is given the time
 // the backend works to, not the one sized for control calls.
-func TestSettingsApplyBudgetIsTheBackends(t *testing.T) {
+func TestSettingsApplyBudget_IsTheBackends(t *testing.T) {
 	assert.Equal(t, enginesettings.CallBudget, settingsApplyBudget(enginesettings.Request{Engine: "ollama"}), "local apply budget")
 	assert.Equal(t, enginesettings.RelayBudget, settingsApplyBudget(enginesettings.Request{NodeID: "peer", Engine: "ollama"}), "relayed apply budget")
 	assert.Greater(t, settingsApplyBudget(enginesettings.Request{}), callTimeout, "an apply is allowed more than a control call")
@@ -855,7 +855,7 @@ func TestSettingsApplyBudgetIsTheBackends(t *testing.T) {
 // left the restart armed behind a prompt no longer on screen. With a settings
 // read in flight, the shell was free to act on keys that belong to the field
 // about to open.
-func TestSettingsPromptsHoldTheKeyboard(t *testing.T) {
+func TestSettingsPrompts_CaptureKeysWhileEditing(t *testing.T) {
 	d := localDetail()
 	d.settingsConfirm = &enginesettings.Request{Engine: "ollama"}
 	assert.True(t, d.CapturingInput(), "an armed restart confirmation does not hold the keyboard")
@@ -871,7 +871,7 @@ func TestSettingsPromptsHoldTheKeyboard(t *testing.T) {
 // A field can open after a settings read, and the cursor is free to move while
 // the read is in flight. Building the request from the selection wrote the
 // value typed into Ollama's field into LM Studio's settings.
-func TestSettingsWriteFollowsTheFieldNotTheCursor(t *testing.T) {
+func TestSettingsWrite_FollowsTheFieldNotTheCursor(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{
 		{Engine: "ollama", DisplayName: "Ollama", Installed: true, Port: 11435},
@@ -906,7 +906,7 @@ func TestSettingsWriteFollowsTheFieldNotTheCursor(t *testing.T) {
 // A settings read is not cancelled when its screen closes. Its reply landed on
 // whichever detail screen was open by then, opened that node's field prefilled
 // with the first node's value, and cached the first node's revision against it.
-func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
+func TestLateSettingsReply_DoesNotOpenAnotherNodesEditor(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	open := func(key string) *nodeDetail {
@@ -949,7 +949,7 @@ func TestLateSettingsReplyDoesNotOpenAnotherNodesEditor(t *testing.T) {
 //
 // A slow operation's reply outlives the screen that sent it. Start something
 // on node A, open node B, and A's "start failed" landed on B.
-func TestLateOperationReplyStaysWithItsNode(t *testing.T) {
+func TestLateOperationReply_StaysWithItsNode(t *testing.T) {
 	b := newNodeDetail(nil, nodeRow{key: "node-b", name: "B", presence: presenceOnline})
 	b.SetSize(100, 30)
 	b.engines = []engineStatus{{Engine: "ollama", DisplayName: "Ollama", Installed: true}}
@@ -966,7 +966,7 @@ func TestLateOperationReplyStaysWithItsNode(t *testing.T) {
 // TestDetailRepliesCarryTheirNode checks the other half of the envelope: a
 // reply leaves addressed to the screen that asked, whatever screen is open by
 // the time it lands.
-func TestDetailRepliesCarryTheirNode(t *testing.T) {
+func TestDetailReplies_RetainTargetNodeIdentity(t *testing.T) {
 	a := newNodeDetail(nil, nodeRow{key: "node-a", name: "A", presence: presenceOnline})
 	reply := engineOpMsg{what: "start", engine: "ollama"}
 	got := a.own(func() tea.Msg { return reply })()
@@ -982,7 +982,7 @@ func TestDetailRepliesCarryTheirNode(t *testing.T) {
 // TestSecondSettingsChangeWaitsForTheFirst is the regression guard for a
 // second save replacing the first before its verdict came back. The screen
 // follows one outstanding write, so the first outcome was never reported.
-func TestSecondSettingsChangeWaitsForTheFirst(t *testing.T) {
+func TestSecondSettingsChange_WaitsForTheFirst(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{
 		{Engine: "ollama", DisplayName: "Ollama", Installed: true},
@@ -1006,7 +1006,7 @@ func progressPush(method string, fields map[string]any) NotificationMsg {
 // TestInstallProgressStaysOnThisMachine checks that a local install's progress
 // is not reported on a peer's screen. The payload carries no node, so shown
 // there it read as the peer installing something.
-func TestInstallProgressStaysOnThisMachine(t *testing.T) {
+func TestInstallProgress_StaysOnThisMachine(t *testing.T) {
 	frame := progressPush("engine:install-progress",
 		map[string]any{"engine": "ollama", "stage": "downloading", "percent": 40})
 
@@ -1023,7 +1023,7 @@ func TestInstallProgressStaysOnThisMachine(t *testing.T) {
 // frames read as stuck downloads. The engine manager leaves the percent out
 // while progress is indeterminate and sends -1 on failure; printed, those read
 // "(0%)" and "(-1%)".
-func TestProgressWithoutAPercentShowsNone(t *testing.T) {
+func TestProgressWithoutAPercent_ShowsNone(t *testing.T) {
 	peer := remoteDetail()
 	peer.update(progressPush("engine:remote-progress",
 		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "pulling manifest"}))
@@ -1050,7 +1050,7 @@ func TestProgressWithoutAPercentShowsNone(t *testing.T) {
 // TestHiddenListsRefuseTheirKeys is the regression guard for keys acting on a
 // list the frame had no room to show: on a short terminal a delete could be
 // armed against a model the operator could not see.
-func TestHiddenListsRefuseTheirKeys(t *testing.T) {
+func TestHiddenLists_IgnoreTheirActionKeys(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", DisplayName: "Ollama", Installed: true, Running: true}}
 	models := []string{"model-a", "model-b", "model-c"}
@@ -1098,7 +1098,7 @@ func TestHiddenListsRefuseTheirKeys(t *testing.T) {
 // cluster roster among them — so a peer that left the cluster or dropped off
 // the network went on reading "Member" and "Online" until the screen was
 // reopened, with its engine controls still offered.
-func TestOpenDetailFollowsPresenceAndMembership(t *testing.T) {
+func TestOpenDetail_FollowsPresenceAndMembership(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	peer := availableNode{HostUUID: "peer", Name: "peer-host", IPAddress: "10.0.0.2", Port: 9000, Trusted: true}
@@ -1133,7 +1133,7 @@ func TestOpenDetailFollowsPresenceAndMembership(t *testing.T) {
 // still empty — the manager not running, the read failing, or a reply that
 // genuinely lists nothing. Resolving the name only against that list meant the
 // spelling depended on whether an unrelated fetch had landed.
-func TestEngineNameDoesNotDependOnTheEngineFetch(t *testing.T) {
+func TestEngineName_DoesNotDependOnTheEngineFetch(t *testing.T) {
 	withList := localDetail()
 	withList.engines = []engineStatus{
 		{Engine: "ollama", DisplayName: "Ollama"},
@@ -1155,7 +1155,7 @@ func TestEngineNameDoesNotDependOnTheEngineFetch(t *testing.T) {
 // The manager answering with nothing, the manager not answering, and the node
 // being one we cannot ask at all have different causes, and the operator's
 // next move differs for each.
-func TestEmptyEngineListExplainsItself(t *testing.T) {
+func TestEmptyEngineList_ExplainsItself(t *testing.T) {
 	local := localDetail()
 	assert.Contains(t, local.emptyEnginesHint(), "engine manager", "local hint points at the engine manager")
 
@@ -1173,7 +1173,7 @@ func TestEmptyEngineListExplainsItself(t *testing.T) {
 // cluster cannot be asked at all. That call was made anyway, and its failure
 // rendered as "not answering" — beside a hardware readout, polled over an
 // endpoint that needs no pairing, visibly updating for the same machine.
-func TestUnpairedNodeIsNotCalledSilent(t *testing.T) {
+func TestUnpairedNode_IsNotCalledSilent(t *testing.T) {
 	cases := map[nodeMembership]string{
 		membershipNone:    "not in this cluster",
 		membershipForeign: "another cluster",
@@ -1208,7 +1208,7 @@ func TestUnpairedNodeIsNotCalledSilent(t *testing.T) {
 // in. "Its engines are not visible from here", printed directly above a list
 // naming Ollama, claimed less than the screen displayed. What pairing actually
 // buys is their state and their controls.
-func TestUnpairedHintAgreesWithTheModelList(t *testing.T) {
+func TestUnpairedHint_AgreesWithTheModelList(t *testing.T) {
 	d := remoteDetail()
 	d.node.membership = membershipNone
 	d.models = modelsResult{ModelsByEngine: map[string][]string{
@@ -1236,7 +1236,7 @@ func TestUnpairedHintAgreesWithTheModelList(t *testing.T) {
 // letter each, and they have been renamed more than once — pair moved from i to
 // p and accept from p to a, which is exactly the edit that lands two verbs on
 // one key if the whole set is not considered at once.
-func TestNodeKeysDoNotCollide(t *testing.T) {
+func TestNodeKeys_UseDistinctBindings(t *testing.T) {
 	nodeKeys := map[string]key.Binding{
 		"details":         nodeDetailKey,
 		"pair":            nodeInviteKey,
@@ -1279,7 +1279,7 @@ func globalBindings() []key.Binding {
 // TestDetailResizesWhenHardwareArrives is the regression guard for the status
 // line falling off the frame. The model table is sized against the hardware
 // block's height, and that height changes when a telemetry reading lands.
-func TestDetailResizesWhenHardwareArrives(t *testing.T) {
+func TestDetail_ResizesWhenHardwareArrives(t *testing.T) {
 	const budget = 20
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true}}
@@ -1316,7 +1316,7 @@ func TestDetailResizesWhenHardwareArrives(t *testing.T) {
 
 // TestDetailResizesCatalogBrowser checks the browser follows a terminal resize
 // rather than keeping the size it was opened at.
-func TestDetailResizesCatalogBrowser(t *testing.T) {
+func TestDetail_ResizesCatalogBrowser(t *testing.T) {
 	d := localDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true}}
 	d.refreshEngines()
@@ -1336,7 +1336,7 @@ func TestDetailResizesCatalogBrowser(t *testing.T) {
 // everything below it. An earlier attempt at this captured the selection after
 // the rebuild, which reads back whatever now sits at the old index — the very
 // row the cursor slid onto — so it restored nothing.
-func TestModelSelectionSurvivesARebuild(t *testing.T) {
+func TestModelSelection_SurvivesARebuild(t *testing.T) {
 	d := localDetail()
 	d.models = modelsResult{
 		ModelsByEngine: map[string][]string{"ollama": {"bravo", "charlie", "delta"}},
@@ -1365,7 +1365,7 @@ func TestModelSelectionSurvivesARebuild(t *testing.T) {
 // lands on -1 and stays there — refilling it never moves a cursor already below
 // the range. A local node's inventory is empty until engine:models replies, so
 // every model action reported "no model selected" for the life of the screen.
-func TestActionsWorkAfterAnEmptyRefresh(t *testing.T) {
+func TestModelActions_RemainAvailableAfterEmptyRefresh(t *testing.T) {
 	d := localDetail() // constructed with no inventory, as at startup
 
 	d.models = modelsResult{ModelsByEngine: map[string][]string{"ollama": {"a", "b"}}}
@@ -1381,7 +1381,7 @@ func TestActionsWorkAfterAnEmptyRefresh(t *testing.T) {
 // TestArmedActionOwnsTheKeyboard checks a pending confirmation cannot be
 // escaped by a global key, which would leave it armed behind an off-screen
 // prompt for whatever the operator pressed on returning.
-func TestArmedActionOwnsTheKeyboard(t *testing.T) {
+func TestArmedAction_OwnsTheKeyboard(t *testing.T) {
 	d := localDetail()
 	d.models = modelsResult{ModelsByEngine: map[string][]string{"ollama": {"victim"}}}
 	d.refreshModels()
@@ -1399,7 +1399,7 @@ func TestArmedActionOwnsTheKeyboard(t *testing.T) {
 // was never tested: that `y` actually runs the captured action and that any
 // other key abandons it. Arming was covered; confirming was not, on the one
 // screen whose arming implementation the others were copied from.
-func TestArmedActionRunsOnConfirmAndNotOtherwise(t *testing.T) {
+func TestArmedAction_RunsOnConfirmAndNotOtherwise(t *testing.T) {
 	build := func() *nodeDetail {
 		d := localDetail()
 		d.models = modelsResult{ModelsByEngine: map[string][]string{"ollama": {"victim"}}}
@@ -1424,7 +1424,7 @@ func TestArmedActionRunsOnConfirmAndNotOtherwise(t *testing.T) {
 // TestUninstallRefusedOnAPeerBeforeArming checks the refusal comes before the
 // confirmation, not after it. Staging a gigabyte-destroying prompt and then
 // answering that the operation is unavailable is worse than refusing outright.
-func TestUninstallRefusedOnAPeerBeforeArming(t *testing.T) {
+func TestUninstall_RefusesRemoteNodeBeforeConfirmation(t *testing.T) {
 	d := remoteDetail()
 	d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 	d.refreshEngines()
@@ -1443,7 +1443,7 @@ func (d *nodeDetail) handleKeyForTest(t *testing.T, k string) tea.Cmd {
 	return cmd
 }
 
-func TestParsePort(t *testing.T) {
+func TestParsePort_RejectsInvalidAndOutOfRangeValues(t *testing.T) {
 	valid := map[string]int{"1": 1, "11434": 11434, "65535": 65535}
 	for in, want := range valid {
 		got, ok := parsePort(in)
@@ -1459,7 +1459,7 @@ func TestParsePort(t *testing.T) {
 
 // TestServiceTabNoLongerOffersPorts checks the ports are configured in exactly
 // one place, not two.
-func TestServiceTabNoLongerOffersPorts(t *testing.T) {
+func TestServiceTab_OmitsPortSettings(t *testing.T) {
 	v := newServiceView(nil)
 	for _, it := range v.items {
 		assert.NotContains(t, strings.ToLower(it.label), "port", "Service tab still offers %q; ports belong on the node", it.label)

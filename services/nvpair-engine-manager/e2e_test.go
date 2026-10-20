@@ -24,7 +24,7 @@ import (
 // over JSON-RPC stdio: it discovers an injected "fake" engine, starts
 // it (spawning the fake-engine child), runs an action, stops it, and
 // shuts down — the same path the supervising broker uses.
-func TestE2EOverStdio(t *testing.T) {
+func TestEngineManager_HandlesLifecycleRequestsOverStdio(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	// Drop the test manifest in every location os.UserConfigDir might
@@ -72,7 +72,7 @@ func TestE2EOverStdio(t *testing.T) {
 
 // Saving a bundled engine's port through the real worker must preserve the
 // rest of its override across a new worker process, not just in-memory state.
-func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
+func TestE2EPortSave_PreservesLaunchOverrides(t *testing.T) {
 	cfg, home := t.TempDir(), t.TempDir()
 	override := map[string]any{
 		"engine": "ollama",
@@ -108,7 +108,7 @@ func TestE2EPortSavePreservesLaunchOverrides(t *testing.T) {
 	second.stop(t)
 }
 
-func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
+func TestEngineManager_PreservesDesiredStateAcrossShutdown(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	for _, dir := range []string{
@@ -148,7 +148,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 // cancels a spawned engine that is still inside its readiness allowance,
 // responds while the manager transport remains alive, and joins the child
 // before reporting completion.
-func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
+func TestE2EPrepareShutdown_CancelsStartingEngine(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
@@ -361,7 +361,7 @@ func waitNotify(t *testing.T, frames <-chan frame, method string, timeout time.D
 
 // Configure can request a parent rebind while both stdio readers continue
 // servicing unrelated messages; literal settings survive a fresh worker.
-func TestE2ESettingsRebindRelayAndWorkerReload(t *testing.T) {
+func TestEngineManager_RelaysSettingsRebindAndReloadsWorker(t *testing.T) {
 	cfg, home := t.TempDir(), t.TempDir()
 	fixture := settingsExecutor(t, false)
 	manifest, _ := fixture.reg.Get("fake")

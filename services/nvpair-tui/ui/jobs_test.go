@@ -16,7 +16,7 @@ import (
 // running. The broker never tells a client to forget a job, so without a cap
 // every job the cluster has ever run accumulates for the life of the process,
 // and the "show all" table grows with it.
-func TestJobsHistoryIsBounded(t *testing.T) {
+func TestJobsHistory_IsBounded(t *testing.T) {
 	v := newJobsView(nil)
 	for i := range maxFinishedJobs + 50 {
 		v.upsert(workload{
@@ -37,7 +37,7 @@ func TestJobsHistoryIsBounded(t *testing.T) {
 // TestJobsNeverEvictsActiveWork checks the cap only reclaims finished jobs. An
 // in-flight job is the thing the operator is watching, and dropping one would
 // make a busy cluster look idle.
-func TestJobsNeverEvictsActiveWork(t *testing.T) {
+func TestJobs_NeverEvictsActiveWork(t *testing.T) {
 	v := newJobsView(nil)
 	v.upsert(workload{ID: "live", OriginatedFrom: "node", State: "running"})
 	for i := range maxFinishedJobs + 50 {
@@ -53,7 +53,7 @@ func TestJobsNeverEvictsActiveWork(t *testing.T) {
 
 // TestJobsUpsertReplacesRatherThanDuplicating checks a job progressing through
 // its states occupies one row, not one per update.
-func TestJobsUpsertReplacesRatherThanDuplicating(t *testing.T) {
+func TestJobsUpsert_ReplacesRatherThanDuplicating(t *testing.T) {
 	v := newJobsView(nil)
 	for _, state := range []string{"queued", "running", "completed"} {
 		v.upsert(workload{ID: "j1", OriginatedFrom: "node", State: state})
@@ -65,7 +65,7 @@ func TestJobsUpsertReplacesRatherThanDuplicating(t *testing.T) {
 
 // TestJobsKeyIsScopedByOrigin checks two nodes can use the same job id without
 // colliding, since ids are only unique to the node that issued them.
-func TestJobsKeyIsScopedByOrigin(t *testing.T) {
+func TestJobsKey_IsScopedByOrigin(t *testing.T) {
 	v := newJobsView(nil)
 	v.upsert(workload{ID: "1", OriginatedFrom: "node-a", State: "running"})
 	v.upsert(workload{ID: "1", OriginatedFrom: "node-b", State: "running"})
@@ -77,7 +77,7 @@ func TestJobsKeyIsScopedByOrigin(t *testing.T) {
 // is a counter each engine's facade starts at 1 and every proxy restart resets,
 // so a concurrent Ollama and LM Studio job, or a job from before a restart and
 // one after it, share an origin and an ID while being different work.
-func TestJobsKeyIsScopedByEngineAndRun(t *testing.T) {
+func TestJobsKey_IsScopedByEngineAndRun(t *testing.T) {
 	v := newJobsView(nil)
 	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "running"})
 	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "lmstudio", RunID: "r2", State: "running"})
@@ -89,7 +89,7 @@ func TestJobsKeyIsScopedByEngineAndRun(t *testing.T) {
 // TestJobsRemovalDropsEveryGeneration checks a removal takes out every job it
 // names. It carries only the origin and ID, so it cannot say which engine or
 // run it meant — the broker's own store drops them all, and so must this.
-func TestJobsRemovalDropsEveryGeneration(t *testing.T) {
+func TestJobsRemoval_DropsEveryGeneration(t *testing.T) {
 	v := newJobsView(nil)
 	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "completed"})
 	v.upsert(workload{ID: "1", OriginatedFrom: "node", Engine: "lmstudio", RunID: "r2", State: "completed"})
@@ -109,7 +109,7 @@ func TestJobsRemovalDropsEveryGeneration(t *testing.T) {
 // removal can be handled before a snapshot taken while the job still existed.
 // Merging that snapshot re-added the job, and nothing would ever remove it
 // again.
-func TestRemovedJobStaysRemovedWhenTheSnapshotLandsLater(t *testing.T) {
+func TestRemovedJob_StaysRemovedWhenTheSnapshotLandsLater(t *testing.T) {
 	v := newJobsView(nil)
 	gone := workload{ID: "1", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "completed"}
 	kept := workload{ID: "2", OriginatedFrom: "node", Engine: "ollama", RunID: "r1", State: "running"}
@@ -130,7 +130,7 @@ func TestRemovedJobStaysRemovedWhenTheSnapshotLandsLater(t *testing.T) {
 
 // TestNewestJobsLead checks new work is at the top of the table. In arrival
 // order, a backlog of older queued jobs pushed each new one below the fold.
-func TestNewestJobsLead(t *testing.T) {
+func TestJobs_SortNewestFirst(t *testing.T) {
 	v := newJobsView(nil)
 	v.upsert(workload{ID: "old", OriginatedFrom: "n", State: "queued", CreatedAt: 1000})
 	v.upsert(workload{ID: "new", OriginatedFrom: "n", State: "queued", CreatedAt: 3000})
@@ -143,7 +143,7 @@ func TestNewestJobsLead(t *testing.T) {
 
 // TestJobIDTellsSimultaneousJobsApart checks two jobs for the same model, from
 // the same node, started at the same moment, do not read as one row twice.
-func TestJobIDTellsSimultaneousJobsApart(t *testing.T) {
+func TestJobID_TellsSimultaneousJobsApart(t *testing.T) {
 	cases := map[string]string{"1": "1", "123456": "123456", "burst-1042": "…-1042"}
 	for id, want := range cases {
 		assert.Equal(t, want, shortJobID(id), "shortJobID(%q)", id)
@@ -159,7 +159,7 @@ func TestJobIDTellsSimultaneousJobsApart(t *testing.T) {
 // TestFailedStartupReadsAreRetried checks a subscription or identity read that
 // failed is tried again, rather than leaving the table empty, or this
 // machine's jobs unnamed, for the rest of the session.
-func TestFailedStartupReadsAreRetried(t *testing.T) {
+func TestStartupReads_RetryAfterFailure(t *testing.T) {
 	v := newJobsView(nil)
 	v.Update(workloadsSubscribedMsg{err: errFake{}})
 	v.Update(jobsIdentityMsg{err: errFake{}})

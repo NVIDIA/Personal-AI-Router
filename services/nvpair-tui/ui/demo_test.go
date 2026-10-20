@@ -33,7 +33,7 @@ func targets(n int) []demoTarget {
 	return out
 }
 
-func TestScheduleSubmitsNothingAtOrAfterTheCeiling(t *testing.T) {
+func TestSchedule_SubmitsNothingAtOrAfterTheCeiling(t *testing.T) {
 	// The ceiling is the demo's one hard promise: a burst that outlives its
 	// window is indistinguishable from a load generator someone forgot about.
 	for _, count := range []int{1, 3, 7, 60, 61, 200} {
@@ -45,7 +45,7 @@ func TestScheduleSubmitsNothingAtOrAfterTheCeiling(t *testing.T) {
 	}
 }
 
-func TestScheduleLastSubmissionLandsAtFiftyEight(t *testing.T) {
+func TestScheduleLastSubmission_LandsAtFiftyEight(t *testing.T) {
 	// Pins the cohort/stage arithmetic against a silent change: if the omitted
 	// 50s cohort were reinstated, or a stage offset moved, the window would
 	// quietly stop being what both front ends document.
@@ -59,7 +59,7 @@ func TestScheduleLastSubmissionLandsAtFiftyEight(t *testing.T) {
 	assert.Equal(t, 58*time.Second, last)
 }
 
-func TestScheduleTouchesEveryTargetBeforeRepeatingOne(t *testing.T) {
+func TestSchedule_TouchesEveryTargetBeforeRepeatingOne(t *testing.T) {
 	// The round-robin exists so a host with many models demonstrates all of
 	// them. Assigning targets before sorting by time would still touch them all
 	// eventually, but not before revisiting some — and a demo that sends four
@@ -78,7 +78,7 @@ func TestScheduleTouchesEveryTargetBeforeRepeatingOne(t *testing.T) {
 	}
 }
 
-func TestScheduleAddsAgentsSoEveryTargetFits(t *testing.T) {
+func TestSchedule_AddsAgentsSoEveryTargetFits(t *testing.T) {
 	// Beyond the 60 requests the base agent count produces, the schedule has to
 	// grow rather than drop targets off the end.
 	const count = 130
@@ -94,7 +94,7 @@ func TestScheduleAddsAgentsSoEveryTargetFits(t *testing.T) {
 	assert.Greater(t, demoAgentsPerCohort(count), demoBaseAgentsPerCohort, "agents per cohort must grow past the base")
 }
 
-func TestScheduleIsEmptyWithoutTargets(t *testing.T) {
+func TestSchedule_IsEmptyWithoutTargets(t *testing.T) {
 	assert.Empty(t, buildDemoSchedule(nil))
 }
 
@@ -120,7 +120,7 @@ func armedRunner(t *testing.T, targetCount int) *demoRunner {
 	return d
 }
 
-func TestTickSubmitsEachRequestExactlyOnce(t *testing.T) {
+func TestTick_SubmitsEachRequestExactlyOnce(t *testing.T) {
 	// The cursor is what prevents a replay. Ticking repeatedly over the same
 	// window must not resend anything, which a "submit everything due" loop
 	// without the cursor would do on every single tick.
@@ -141,7 +141,7 @@ func TestTickSubmitsEachRequestExactlyOnce(t *testing.T) {
 // TestOnlyStartedRequestsCount is the regression guard for the progress note
 // counting a request as sent when its dispatcher never started. The desktop
 // counts on spawn, and so does this.
-func TestOnlyStartedRequestsCount(t *testing.T) {
+func TestRequestCounter_CountsOnlyStartedRequests(t *testing.T) {
 	d := armedRunner(t, 3)
 	d.started = time.Now()
 	cmds, _ := d.tick()
@@ -158,7 +158,7 @@ func TestOnlyStartedRequestsCount(t *testing.T) {
 	assert.Equal(t, 1, d.submitted, "an earlier run's request was counted in this one")
 }
 
-func TestTickSubmitsNothingOnceTheWindowHasClosed(t *testing.T) {
+func TestTick_SubmitsNothingOnceTheWindowHasClosed(t *testing.T) {
 	// The wall clock, not the tick count, enforces the ceiling — so a process
 	// that was suspended across the whole window must come back to a finished
 	// demo rather than flushing sixty requests at once.
@@ -170,7 +170,7 @@ func TestTickSubmitsNothingOnceTheWindowHasClosed(t *testing.T) {
 	assert.Equal(t, demoIdle, d.status, "status after the ceiling")
 }
 
-func TestStopEndsTheRunAndIgnoresLateDiscovery(t *testing.T) {
+func TestStop_EndsTheRunAndIgnoresLateDiscovery(t *testing.T) {
 	// Discovery spawns processes and can take seconds. Without the generation
 	// guard a stop during it would be undone by its own reply, starting a demo
 	// the operator had already cancelled.
@@ -187,7 +187,7 @@ func TestStopEndsTheRunAndIgnoresLateDiscovery(t *testing.T) {
 	assert.Equal(t, demoIdle, d.status, "status after a stale reply")
 }
 
-func TestStopMidRunLeavesNothingScheduled(t *testing.T) {
+func TestStopMidRun_LeavesNothingScheduled(t *testing.T) {
 	d := armedRunner(t, 3)
 	n, _ := tickAt(t, d, 0)
 	require.NotEqual(t, 0, n, "no requests were due at the start of the window")
@@ -198,7 +198,7 @@ func TestStopMidRunLeavesNothingScheduled(t *testing.T) {
 	assert.False(t, finished, "a tick after stop reported the run finishing again")
 }
 
-func TestEmptyInventoryDoesNotStartARun(t *testing.T) {
+func TestEmptyInventory_DoesNotStartARun(t *testing.T) {
 	// An engine that is up but has no model is the common case on a fresh
 	// install, and it must read as "install a model", not as a broken demo.
 	d := newDemoRunner()
@@ -210,7 +210,7 @@ func TestEmptyInventoryDoesNotStartARun(t *testing.T) {
 	assert.Equal(t, demoIdle, d.status)
 }
 
-func TestStartRefusesWhenNoProxyIsListening(t *testing.T) {
+func TestStart_RefusesWhenNoProxyIsListening(t *testing.T) {
 	// The demo targets proxy ports, never an engine's own, so with no proxy up
 	// there is nowhere legitimate to send traffic. It must refuse rather than
 	// invent a port.
@@ -224,7 +224,7 @@ func TestStartRefusesWhenNoProxyIsListening(t *testing.T) {
 	assert.Equal(t, demoIdle, d.status, "status after a refused start")
 }
 
-func TestStartRefusesASecondConcurrentRun(t *testing.T) {
+func TestStart_RefusesASecondConcurrentRun(t *testing.T) {
 	d := armedRunner(t, 2)
 	tracker := newProxyTracker()
 	tracker.engines[0].ready = true
@@ -234,7 +234,7 @@ func TestStartRefusesASecondConcurrentRun(t *testing.T) {
 	assert.Error(t, err, "a second demo started while one was running")
 }
 
-func TestDispatcherEnvDropsTheWholeDispatcherNamespace(t *testing.T) {
+func TestDispatcherEnv_DropsTheWholeDispatcherNamespace(t *testing.T) {
 	// _CONFIG loads an arbitrary config, _LOOP runs past the ceiling, and the
 	// log variables write inference metadata to disk. Stripping the prefix
 	// rather than a list is what keeps a newly added variable from becoming a
@@ -259,7 +259,7 @@ func TestDispatcherEnvDropsTheWholeDispatcherNamespace(t *testing.T) {
 	assert.True(t, ok, "this process's own environment was modified")
 }
 
-func TestGeneratesMirrorsTheDispatcher(t *testing.T) {
+func TestGenerates_MirrorsTheDispatcher(t *testing.T) {
 	// A model advertising neither a type nor capabilities gets the benefit of
 	// the doubt, because that is what the dispatcher itself does — being
 	// stricter here would silently exclude models the demo could have used.
@@ -307,7 +307,7 @@ func fakeDispatcher(t *testing.T, stdout string) (exe, argsFile string) {
 	return exe, argsFile
 }
 
-func TestProbeAsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing.T) {
+func TestProbe_AsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing.T) {
 	// This runs the real command path. A mistyped flag would otherwise show up
 	// only as a demo that always says no model is available — the failure mode
 	// least likely to be read as a bug in this code.
@@ -331,17 +331,17 @@ func TestProbeAsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing.
 	}
 }
 
-func TestProbeTreatsAnUnreachableEngineAsNoTargets(t *testing.T) {
+func TestProbe_TreatsAnUnreachableEngineAsNoTargets(t *testing.T) {
 	// An engine that is down is not a demo failure — it just is not a target.
 	assert.Empty(t, probeModels(context.Background(), "/nonexistent/dispatcher", "ollama", 1), "missing dispatcher must produce no targets")
 }
 
-func TestProbeIgnoresOutputThatIsNotAModelList(t *testing.T) {
+func TestProbe_IgnoresOutputThatIsNotAModelList(t *testing.T) {
 	exe, _ := fakeDispatcher(t, "Model query failed: connection refused")
 	assert.Empty(t, probeModels(context.Background(), exe, "ollama", 11434), "non-JSON output must produce no targets")
 }
 
-func TestNoteNamesTheKeyThatStopsIt(t *testing.T) {
+func TestNote_NamesTheKeyThatStopsIt(t *testing.T) {
 	// The note is the only place the stop key is stated while a demo runs, and
 	// the footer's label is derived from the same state — so an operator who
 	// wants it to stop has somewhere to look.

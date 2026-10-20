@@ -70,13 +70,13 @@ func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 	return transport.ResponseHeaderTimeout
 }
 
-func TestEngineHTTPClientsBoundResponseHeaders(t *testing.T) {
+func TestEngineHTTPClients_BoundResponseHeaderWait(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	require.Equal(t, engineResponseHeaderTimeout, responseHeaderTimeout(t, ex.client), "ordinary response-header timeout")
 	require.Equal(t, ollamaLoadResponseHeaderTimeout, responseHeaderTimeout(t, ex.ollamaLoadClient), "Ollama load response-header timeout")
 }
 
-func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
+func TestOnlyOllamaRunModel_UsesSlowResponseHeaderBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -125,7 +125,7 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	require.ErrorContains(t, err, "timeout awaiting response headers", "non-Ollama run_model error")
 }
 
-func TestHTTPActionSendsStringParamsInQuery(t *testing.T) {
+func TestHTTPAction_SendsStringParamsInQuery(t *testing.T) {
 	type observedRequest struct {
 		method      string
 		rawQuery    string
@@ -199,12 +199,12 @@ func TestHTTPActionSendsStringParamsInQuery(t *testing.T) {
 	assert.Empty(t, got.contentType, "Content-Type must be empty without a body")
 }
 
-func TestHTTPActionRejectsNonStringQueryParams(t *testing.T) {
+func TestHTTPAction_RejectsNonStringQueryParams(t *testing.T) {
 	_, err := actionQueryParams(json.RawMessage(`{"model":42}`))
 	require.ErrorContains(t, err, "string values", "non-string query param accepted")
 }
 
-func TestEngineLifecycle(t *testing.T) {
+func TestEngineLifecycle_DetectsStartsReportsHealthAndStops(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -228,7 +228,7 @@ func TestEngineLifecycle(t *testing.T) {
 	require.False(t, st.Running, "expected stopped (%v)", st)
 }
 
-func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
+func TestCrashThenExternalService_IsAdoptedWithoutRespawn(t *testing.T) {
 	port, err := freePort()
 	require.NoError(t, err)
 	m := testEngineManifest(fakeEngineBin)
@@ -274,18 +274,18 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 	require.True(t, healthy, "restart spawned over external service: proc (%v, %v, %v)", adopted, running, healthy)
 }
 
-func TestActionRequiresRunning(t *testing.T) {
+func TestAction_RejectsStoppedEngine(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	_, err := ex.Action(context.Background(), "fake", "list_models", nil)
 	require.Error(t, err, "expected error: action on a non-running engine")
 }
 
-func TestStartUnknownEngine(t *testing.T) {
+func TestStart_RejectsUnknownEngine(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	require.Error(t, ex.Start(context.Background(), "nope"), "expected error for unknown engine")
 }
 
-func TestStartPortOverride(t *testing.T) {
+func TestStart_UsesRequestedPort(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin)) // manifest Port is 0
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	const want = 17777
@@ -294,7 +294,7 @@ func TestStartPortOverride(t *testing.T) {
 	require.Equal(t, want, st.Port, "expected port")
 }
 
-func TestEffectiveBind(t *testing.T) {
+func TestEffectiveBind_PrefersExplicitOverrideOverManifest(t *testing.T) {
 	cases := []struct{ manifest, override, want string }{
 		{"", "", "127.0.0.1"},                 // ordinary engine: safe default
 		{"0.0.0.0", "", "0.0.0.0"},            // inference engine declares open
@@ -311,7 +311,7 @@ func TestEffectiveBind(t *testing.T) {
 // instance as installed and running, even when its binary lives outside every
 // NVPAIR-managed detection path. Only the engine-specific readiness probe
 // should decide whether the external service is present.
-func TestStatusReportsExternallyRunning(t *testing.T) {
+func TestStatus_ReportsExternallyRunning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -340,7 +340,7 @@ func TestStatusReportsExternallyRunning(t *testing.T) {
 	require.True(t, st.Healthy, "expected externally-running engine adopted as installed and healthy (%v)", st)
 }
 
-func TestStatusAtPortAdoptsLegacyListener(t *testing.T) {
+func TestStatusAtPort_AdoptsLegacyListener(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -371,7 +371,7 @@ func TestStatusAtPortAdoptsLegacyListener(t *testing.T) {
 	require.Equal(t, legacyPort, st.Port, "legacy listener was not adopted (%v)", st)
 }
 
-func TestGetInstalledAdoptsExternallyRunningEngineWithoutDetectPath(t *testing.T) {
+func TestGetInstalled_AdoptsExternallyRunningEngineWithoutDetectPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -401,7 +401,7 @@ func TestGetInstalledAdoptsExternallyRunningEngineWithoutDetectPath(t *testing.T
 	require.True(t, statuses[0].Healthy, "expected get-installed to adopt the external engine (%v)", statuses)
 }
 
-func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
+func TestInstall_AdoptsExternalServiceWithoutDownloading(t *testing.T) {
 	engineSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/version" {
 			http.NotFound(w, r)
@@ -452,7 +452,7 @@ func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
 	require.Contains(t, methods, "engine:install-progress", "install adoption notifications")
 }
 
-func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
+func TestInstall_DoesNotOverwriteUnknownListener(t *testing.T) {
 	occupant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			w.WriteHeader(http.StatusOK)
@@ -490,7 +490,7 @@ func TestInstallDoesNotOverwriteUnknownListener(t *testing.T) {
 	require.False(t, st.Running, "unknown listener must not be adopted (%v)", st)
 }
 
-func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
+func TestCommandModeMissingCLI_InstallsDespiteLiveAPI(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -524,7 +524,7 @@ func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
 	require.FileExists(t, cli, "live API incorrectly suppressed command-mode installer")
 }
 
-func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
+func TestStatus_DoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
 	facade := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/version" {
 			_, _ = w.Write([]byte(`{"version":"facade"}`))
@@ -555,7 +555,7 @@ func TestStatusDoesNotAdoptFacadeOnDifferentConfiguredPort(t *testing.T) {
 	require.False(t, st.Running, "facade on a different port was adopted: status (%v, %v)", st, err)
 }
 
-func TestAdoptedExternalLivenessIsTruthful(t *testing.T) {
+func TestAdoptedEngine_ReportsObservedLiveness(t *testing.T) {
 	var status atomic.Int32
 	status.Store(http.StatusOK)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -591,7 +591,7 @@ func TestAdoptedExternalLivenessIsTruthful(t *testing.T) {
 	require.False(t, st.Healthy, "closed external listener remained present (%v)", st)
 }
 
-func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
+func TestProxyFacade_CannotIdentifyAsOllama(t *testing.T) {
 	var probes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(engineIdentityProbeHeader) == "1" {
@@ -631,7 +631,7 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 	require.NotEqual(t, int32(0), probes.Load(), "engine identity probe did not carry the proxy sentinel")
 }
 
-func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
+func TestPreviouslyAdoptedForeignReplacement_FailsClosed(t *testing.T) {
 	var isOllama atomic.Bool
 	isOllama.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -676,7 +676,7 @@ func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
 // TestUninstallTerminatesRunningInstance covers a uniquely-named managed
 // engine started without an executor process handle. Uninstall must reconcile
 // and reclaim that exact managed image before deleting it.
-func TestUninstallTerminatesRunningInstance(t *testing.T) {
+func TestUninstall_TerminatesRunningInstance(t *testing.T) {
 	baseDir := t.TempDir()
 	bin := filepath.Join(baseDir, "fake", "fakeu"+strconv.Itoa(os.Getpid())+exeExt())
 	require.NoError(t, os.MkdirAll(filepath.Dir(bin), 0o755))
@@ -708,7 +708,7 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	require.False(t, portServing(port), "expected uninstall to stop the running instance")
 }
 
-func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
+func TestUninstall_DoesNotKillExternalSameNameProcess(t *testing.T) {
 	baseDir := t.TempDir()
 	name := "fakeu" + strconv.Itoa(os.Getpid()) + exeExt()
 	managedBin := filepath.Join(baseDir, "fake", name)
@@ -743,7 +743,7 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 	require.FileExists(t, managedBin, "uninstall removed managed files after refusing the external owner")
 }
 
-func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
+func TestUninstall_RefusesExternalProcessEngine(t *testing.T) {
 	externalBin := filepath.Join(t.TempDir(), "external"+exeExt())
 	copyFile(t, fakeEngineBin, externalBin)
 	m := testEngineManifest(externalBin)
@@ -758,7 +758,7 @@ func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
 	require.FileExists(t, externalBin, "external executable was removed")
 }
 
-func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
+func TestUninstall_RefusesUnidentifiedLiveListener(t *testing.T) {
 	baseDir := t.TempDir()
 	managedBin := filepath.Join(baseDir, "fake", "fake"+exeExt())
 	require.NoError(t, os.MkdirAll(filepath.Dir(managedBin), 0o755))
@@ -806,7 +806,7 @@ func portServing(port int) bool {
 	return true
 }
 
-func TestDownloadVerify(t *testing.T) {
+func TestDownload_VerifiesChecksumAndReportsHTTPFailures(t *testing.T) {
 	payload := []byte("fake engine payload bytes")
 	sum := sha256.Sum256(payload)
 	good := hex.EncodeToString(sum[:])
@@ -837,7 +837,7 @@ func TestDownloadVerify(t *testing.T) {
 	require.ErrorContains(t, err, "HTTP 404", "expected HTTP 404")
 }
 
-func TestInstallRefusesAdmin(t *testing.T) {
+func TestInstall_RefusesAdmin(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
@@ -849,7 +849,7 @@ func TestInstallRefusesAdmin(t *testing.T) {
 	require.ErrorContains(t, ex.Install(context.Background(), "fake"), "refused", "expected admin-install refusal")
 }
 
-func TestEngineUninstall(t *testing.T) {
+func TestUninstall_RemovesInstalledEngine(t *testing.T) {
 	// Copy the fake engine so uninstall can delete the copy without
 	// disturbing the shared build artifact other tests rely on.
 	baseDir := t.TempDir()
@@ -874,7 +874,7 @@ func TestEngineUninstall(t *testing.T) {
 	require.False(t, ok, "expected not-installed after uninstall")
 }
 
-func TestUninstallNoOpWhenAbsent(t *testing.T) {
+func TestUninstall_SucceedsWhenEngineIsAbsent(t *testing.T) {
 	m := testEngineManifest(filepath.Join(t.TempDir(), "absent"+exeExt()))
 	ex := newTestExecutor(t, m)
 	require.NoError(t, ex.Uninstall(context.Background(), "fake"), "uninstall of an absent engine should be a no-op")
@@ -884,7 +884,7 @@ func TestUninstallNoOpWhenAbsent(t *testing.T) {
 // commands run, readiness is determined by a probe (here a stand-in
 // HTTP server for the daemon's API), and the stop command runs. Marker
 // files prove the commands executed.
-func TestCommandModeLifecycle(t *testing.T) {
+func TestCommandMode_StartsReportsHealthAndStopsEngine(t *testing.T) {
 	dir := t.TempDir()
 	startMarker := filepath.Join(dir, "started")
 	stopMarker := filepath.Join(dir, "stopped")
@@ -957,7 +957,7 @@ func TestCommandModeLifecycle(t *testing.T) {
 
 // TestCmdAction exercises a CLI action with a param placeholder; it must
 // run without the engine being "running" and return the command stdout.
-func TestCmdAction(t *testing.T) {
+func TestCommandAction_ReturnsCommandOutput(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["echo"] = Action{Cmd: []string{fakeEngineBin, "echo", "{model}"}}
 	ex := newTestExecutor(t, m)
@@ -971,7 +971,7 @@ func TestCmdAction(t *testing.T) {
 // already serves the target port instead of spawning a duplicate. The
 // runtime bin is bogus on purpose: without adoption, Start would try to
 // spawn it and fail.
-func TestStartAdoptsAlreadyRunning(t *testing.T) {
+func TestStart_AdoptsAlreadyRunning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

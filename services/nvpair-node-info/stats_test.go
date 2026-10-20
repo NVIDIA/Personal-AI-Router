@@ -21,7 +21,7 @@ import (
 // compute queues, which PDH just lets through as part of engtype),
 // a few malformed variants we must reject, and the edge case of a
 // trailing underscore with no engine type.
-func TestParseEngineInstance(t *testing.T) {
+func TestParseEngineInstance_ExtractsEngineAndNode(t *testing.T) {
 	cases := []struct {
 		name     string
 		in       string
@@ -70,7 +70,7 @@ func TestParseEngineInstance(t *testing.T) {
 // sum by (luid, engtype), clamp to 100, max across engtypes per luid.
 // Each test case targets one specific step so a regression in any of
 // them produces a pinpointable failure.
-func TestAggregateUtilization(t *testing.T) {
+func TestAggregateUtilization_CombinesGPUReadings(t *testing.T) {
 	cases := []struct {
 		name string
 		in   map[string]float64
@@ -151,7 +151,7 @@ func TestAggregateUtilization(t *testing.T) {
 	}
 }
 
-func TestApplyGPUStatsRetainsLastUsableSample(t *testing.T) {
+func TestApplyGPUStats_RetainsLastUsableSample(t *testing.T) {
 	sampledAt := time.Unix(1_700_000_000, 0)
 	previous := statsSnapshot{
 		GPU: map[string]gpuStat{
@@ -169,7 +169,7 @@ func TestApplyGPUStatsRetainsLastUsableSample(t *testing.T) {
 	require.WithinDuration(t, sampledAt, next.GPUSampledAt, 0, "failed collection moved sample time")
 }
 
-func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
+func TestApplyGPUStats_PublishesIdleAndPreSampleFields(t *testing.T) {
 	partial := map[string]gpuStat{"gpu-a": {VRAMUsed: 2 << 30}}
 	beforeFirstSample := &statsSnapshot{}
 	applyGPUStats(statsSnapshot{}, beforeFirstSample, partial, time.Time{})
@@ -184,7 +184,7 @@ func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
 	require.WithinDuration(t, sampledAt, usable.GPUSampledAt, 0, "idle sample (%v)", usable)
 }
 
-func TestBuildResponseTelemetryFreshness(t *testing.T) {
+func TestBuildResponse_ReportsTelemetryAgeAndFreshness(t *testing.T) {
 	now := time.Unix(1_700_000_000, 500_000_000)
 	cases := []struct {
 		name      string
@@ -240,7 +240,7 @@ func buildResponseDecode(t *testing.T, static []GPUInfo, cpu *CPUInfo, memTotal 
 
 // TestBuildResponseMerge verifies the happy path: matched LUIDs get
 // dynamic fields from the stats map, unmatched LUIDs stay zero.
-func TestBuildResponseMerge(t *testing.T) {
+func TestBuildResponse_MergesStaticInventoryAndDynamicGPUReadings(t *testing.T) {
 	static := []GPUInfo{
 		{Name: "GPU 0", VramBytes: 16 << 30, statsKey: "luid_a"},
 		{Name: "GPU 1", VramBytes: 8 << 30, statsKey: "luid_b"},
@@ -265,7 +265,7 @@ func TestBuildResponseMerge(t *testing.T) {
 // remain available when nvidia-smi produced no dynamic GPU row, and a matching
 // row may contribute utilization but must not replace the shared-memory value
 // with a dedicated-VRAM counter.
-func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
+func TestBuildResponseUnifiedMemory_UsesSystemSnapshot(t *testing.T) {
 	const sysMemUsed uint64 = 48 << 30
 	static := []GPUInfo{{
 		Name:                  "NVIDIA GB10",
@@ -311,7 +311,7 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 // Apple Silicon shares physical memory but ioreg reports the GPU-specific
 // mapped allocation. It must flow through the normal per-adapter stats path,
 // not be replaced with whole-system memory usage.
-func TestBuildResponseAppleUnifiedMemoryUsesGPUAllocation(t *testing.T) {
+func TestBuildResponseAppleUnifiedMemory_UsesGPUAllocation(t *testing.T) {
 	static := []GPUInfo{{
 		Name:      "Apple M3 Max",
 		VramBytes: 36 << 30,
@@ -329,7 +329,7 @@ func TestBuildResponseAppleUnifiedMemoryUsesGPUAllocation(t *testing.T) {
 	require.Equal(t, uint32(73), gpu.UtilizationPercent, "unexpected Apple GPU metrics (%v)", gpu)
 }
 
-func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
+func TestBuildResponse_RecoversDarwinGPUInventory(t *testing.T) {
 	snap := statsSnapshot{
 		GPU: map[string]gpuStat{
 			"ioreg:2a": {VRAMUsed: 8 << 30, UtilizationPct: 73},
@@ -358,7 +358,7 @@ func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
 // produces JSON without the dynamic fields, not with literal zeros.
 // Clients depend on this to distinguish "unknown / unavailable" from
 // "actually idle" for vram_used_bytes.
-func TestBuildResponseOmitsZero(t *testing.T) {
+func TestBuildResponse_OmitsZero(t *testing.T) {
 	static := []GPUInfo{{Name: "GPU 0", VramBytes: 4 << 30, statsKey: "luid_a"}}
 	_, raw := buildResponseDecode(t, static, nil, 0, statsSnapshot{})
 
@@ -378,7 +378,7 @@ func TestBuildResponseOmitsZero(t *testing.T) {
 // `"memory":{"total_bytes":0}`. Clients distinguish "host can't
 // introspect this subsystem" from "subsystem reports zero" exactly the
 // way they already do for GPU dynamic fields.
-func TestBuildResponseCPUMemoryMatrix(t *testing.T) {
+func TestBuildResponse_PreservesCPUAndMemoryFieldPresence(t *testing.T) {
 	cpu := &CPUInfo{Name: "Intel Core i9-13900K", Cores: 24}
 	const memTotal uint64 = 32 << 30
 	snap := statsSnapshot{

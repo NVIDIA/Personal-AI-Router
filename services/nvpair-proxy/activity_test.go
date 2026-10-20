@@ -34,7 +34,7 @@ func waitFor(t *testing.T, rec *recRW, frame string) bool {
 
 // TestStreamedBytesReportNodeActivity is the point of the feature: the node that
 // served the response is named to the broker so discovery can keep it.
-func TestStreamedBytesReportNodeActivity(t *testing.T) {
+func TestStreamedBytes_ReportNodeActivity(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -59,7 +59,7 @@ func TestStreamedBytesReportNodeActivity(t *testing.T) {
 // A node that accepted the connection but never wrote a byte has proved nothing
 // about being able to do work, so it must not be vouched for. This is the case
 // that matters: an accept can succeed on a machine whose user space is wedged.
-func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
+func TestNodeActivity_IsNotReportedWithoutUpstreamBytes(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		release := make(chan struct{})
 		var releaseOnce sync.Once
@@ -111,7 +111,7 @@ func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
 // A streaming generation writes hundreds of chunks. Reporting each one would put
 // thousands of frames a minute on the broker pipe for no gain, since the scanner
 // treats one report as good for a minute.
-func TestRepeatedChunksAreCoalescedIntoOneReport(t *testing.T) {
+func TestRepeatedChunks_AreCoalescedIntoOneReport(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		chunks := 40
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

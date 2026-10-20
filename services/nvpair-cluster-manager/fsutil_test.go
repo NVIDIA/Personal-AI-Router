@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAtomicWriteCreatesAndReplaces(t *testing.T) {
+func TestAtomicWrite_CreatesAndReplaces(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "admission.json")
 
@@ -35,7 +35,7 @@ func TestAtomicWriteCreatesAndReplaces(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteRetriesTransientRename(t *testing.T) {
+func TestAtomicWrite_RetriesTransientRename(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "admission.json")
 	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
@@ -58,7 +58,7 @@ func TestAtomicWriteRetriesTransientRename(t *testing.T) {
 	require.Equal(t, "new\n", string(got), "got (%v)", got)
 }
 
-func TestAtomicWriteNonTransientRenameFailsFast(t *testing.T) {
+func TestAtomicWrite_FailsImmediatelyForPermanentRenameError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "admission.json")
 
@@ -76,7 +76,7 @@ func TestAtomicWriteNonTransientRenameFailsFast(t *testing.T) {
 	require.ErrorContains(t, err, "no such file or directory")
 }
 
-func TestIsTransientReplaceError(t *testing.T) {
+func TestIsTransientReplaceError_RecognizesRetryableRenameFailures(t *testing.T) {
 	require.True(t, isTransientReplaceError(errors.New("Access is denied.")), "expected Access is denied to be transient")
 	require.True(t, isTransientReplaceError(errors.New("The process cannot access the file because it is being used by another process.")), "expected sharing text to be transient")
 	require.False(t, isTransientReplaceError(errors.New("no such file or directory")), "ENOENT must not be treated as transient")

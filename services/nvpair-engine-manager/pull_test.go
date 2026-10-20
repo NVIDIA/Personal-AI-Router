@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPullProgressFromLine(t *testing.T) {
+func TestPullProgressFromLine_ExtractsProgressAndStatus(t *testing.T) {
 	ev := pullProgressFromLine("ollama", []byte(`{"status":"pulling manifest","total":200,"completed":50}`))
 	require.Equal(t, "pull", ev.Op, "unexpected event meta (%v)", ev)
 	require.Equal(t, "ollama", ev.Engine, "unexpected event meta (%v)", ev)
@@ -36,7 +36,7 @@ func TestPullProgressFromLine(t *testing.T) {
 	require.Equal(t, "verifying", ev.Stage, "unexpected zero-total event (%v)", ev)
 }
 
-func TestHandlePullRejectsMissingTarget(t *testing.T) {
+func TestHandlePull_RejectsMissingTarget(t *testing.T) {
 	s := &controlServer{exec: &Executor{progress: newProgressHub()}}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(`{"opId":"x","engine":"ollama"}`))
@@ -44,7 +44,7 @@ func TestHandlePullRejectsMissingTarget(t *testing.T) {
 	require.Equal(t, 400, rec.Code, "expected 400 when neither model nor params set")
 }
 
-func TestModelFromParams(t *testing.T) {
+func TestModelFromParams_ExtractsRequestedModel(t *testing.T) {
 	cases := []struct {
 		params, want string
 	}{
@@ -59,7 +59,7 @@ func TestModelFromParams(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPModelsEventPercentAggregatesFiles(t *testing.T) {
+func TestLlamaCPPModelsEventPercent_AggregatesFiles(t *testing.T) {
 	var event llamaCPPModelsEvent
 	require.NoError(t, json.Unmarshal([]byte(`{
 		"model":"owner/repo:Q4_K_M",
@@ -90,7 +90,7 @@ func newHTTPPullTestExecutor(t *testing.T, server *httptest.Server, action Actio
 	return executor
 }
 
-func TestPullModelLlamaCPPSSESubscribesBeforeStarting(t *testing.T) {
+func TestPullModelLlamaCPP_SubscribesToProgressBeforeStartingDownload(t *testing.T) {
 	const model = "owner/repo:Q4_K_M"
 	subscribed := make(chan struct{})
 	started := make(chan struct{})
@@ -171,7 +171,7 @@ func TestPullModelLlamaCPPSSESubscribesBeforeStarting(t *testing.T) {
 	require.Equal(t, 100, events[1].Percent)
 }
 
-func TestPullModelOllamaAdvancingProgressRefreshesTimeout(t *testing.T) {
+func TestPullModelOllamaAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	const (
 		idleTimeout     = 400 * time.Millisecond
 		progressDelay   = 90 * time.Millisecond
@@ -218,7 +218,7 @@ func TestPullModelOllamaAdvancingProgressRefreshesTimeout(t *testing.T) {
 	require.Contains(t, string(result), `"status":"success"`, "pull must report terminal success")
 }
 
-func TestPullModelLlamaCPPAdvancingProgressRefreshesTimeout(t *testing.T) {
+func TestPullModelLlamaCPPAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	const (
 		model           = "owner/repo:Q4_K_M"
 		idleTimeout     = 400 * time.Millisecond
@@ -281,7 +281,7 @@ func TestPullModelLlamaCPPAdvancingProgressRefreshesTimeout(t *testing.T) {
 	require.Contains(t, string(result), `"success":true`, "pull must report an accepted download")
 }
 
-func TestPullModelDuplicateProgressDoesNotRefreshTimeout(t *testing.T) {
+func TestPullModelDuplicateProgress_DoesNotRefreshTimeout(t *testing.T) {
 	const idleTimeout = 150 * time.Millisecond
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +321,7 @@ func TestPullModelDuplicateProgressDoesNotRefreshTimeout(t *testing.T) {
 	require.ErrorContains(t, err, "model download made no progress for 150ms", "pull model succeeded despite duplicate-only progress")
 }
 
-func TestPullProgressWatchdogPreservesParentCancellation(t *testing.T) {
+func TestPullProgressWatchdog_PreservesParentCancellation(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	ctx, watchdog := newPullProgressWatchdog(parent, time.Hour)
 	defer watchdog.stop()
@@ -340,7 +340,7 @@ func TestPullProgressWatchdogPreservesParentCancellation(t *testing.T) {
 // emits live engine:pull-progress notifications (with computed percentages) and
 // still returns the pull's terminal result — matching what remote pulls already
 // surface via engine:remote-progress.
-func TestActionPullModelStreamsProgress(t *testing.T) {
+func TestActionPullModel_StreamsProgress(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 
@@ -388,7 +388,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 // expose structured line progress, so it emits a single "pulling" marker and
 // returns the command's terminal result — the counterpart to the HTTP streaming
 // path in TestActionPullModelStreamsProgress.
-func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
+func TestActionPullModel_ReturnsCommandResultAndProgressMarker(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{Cmd: []string{fakeEngineBin, "echo", "pulled:{model}"}}
 
@@ -428,7 +428,7 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 // a terminal engine:pull-progress error frame (in addition to the JSON-RPC
 // error), so a UI that already stopped waiting on the synchronous call still
 // converges off "pulling" instead of appearing stuck.
-func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
+func TestActionPullModelFailure_EmitsTerminalError(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 
@@ -478,7 +478,7 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 
 // Ollama can report a failed pull in an NDJSON error record after sending HTTP
 // 200. That record must fail the operation even when reading the stream succeeds.
-func TestPullModelStreamRejectsOllamaNDJSONError(t *testing.T) {
+func TestPullModelStream_RejectsOllamaNDJSONError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		methodOK := assert.Equal(t, http.MethodPost, r.Method)
 		pathOK := assert.Equal(t, "/api/pull", r.URL.Path)

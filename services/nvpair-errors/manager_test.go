@@ -184,7 +184,7 @@ func sampleError(id string, ts int64, msg string) ServiceError {
 // TestGetInitialEmpty: the freshly-constructed manager reports an empty
 // list, not nil. A nil result would JSON-encode as `null` and the
 // frontend would have to special-case it; explicit `[]` is the contract.
-func TestGetInitialEmpty(t *testing.T) {
+func TestGetInitial_ReturnsEmptyErrorListInitially(t *testing.T) {
 	m, rw := newTestManager(t)
 	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil), "get-initial on empty manager")
 }
@@ -193,7 +193,7 @@ func TestGetInitialEmpty(t *testing.T) {
 // a null response AND triggers an errors:update push carrying the new
 // state. Response is sent first; the test relies on the captureRW split
 // so reading the response side first does not race the update push.
-func TestReportRequestUpsertsAndEmitsUpdate(t *testing.T) {
+func TestReportRequest_UpsertsAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := sampleError("ollama-proxy:upstream-unreachable:node-a", 1000, "node-a unreachable")
 
@@ -217,7 +217,7 @@ func TestReportRequestUpsertsAndEmitsUpdate(t *testing.T) {
 // TestReportNotificationUpsertsAndEmitsUpdate: the notification form
 // (no id) shares all the upsert + push plumbing with the request form,
 // but sends NO response frame.
-func TestReportNotificationUpsertsAndEmitsUpdate(t *testing.T) {
+func TestReportNotification_UpsertsAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := sampleError("manual-nodes:probe-failed:peer-1", 5000, "peer-1 probe failed")
 
@@ -236,7 +236,7 @@ func TestReportNotificationUpsertsAndEmitsUpdate(t *testing.T) {
 // cross-node propagation lands. A no-op upsert must NOT emit
 // errors:update (otherwise the UI would re-render on every dropped
 // stale frame).
-func TestUpsertHighestTimestampWins(t *testing.T) {
+func TestUpsert_PrefersHighestTimestamp(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-local:not-running"
 
@@ -262,7 +262,7 @@ func TestUpsertHighestTimestampWins(t *testing.T) {
 // stored message and metadata. The rationale lives in the upsert
 // docstring; this test pins the behavior so a future "exact dedupe"
 // refactor doesn't quietly regress it.
-func TestUpsertEqualTimestampReplaces(t *testing.T) {
+func TestUpsert_ReplacesEntryAtEqualTimestamp(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-local:install-failed"
 
@@ -279,7 +279,7 @@ func TestUpsertEqualTimestampReplaces(t *testing.T) {
 // TestClearRemovesEntryAndEmitsUpdate: an errors:clear removes the
 // entry by id and fires an errors:update reflecting the new (empty)
 // state.
-func TestClearRemovesEntryAndEmitsUpdate(t *testing.T) {
+func TestClear_RemovesEntryAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "supervisor:subprocess-crashed:nvpair-node-info"
 
@@ -300,7 +300,7 @@ func TestClearRemovesEntryAndEmitsUpdate(t *testing.T) {
 // was already cleared) must not push errors:update. The response is
 // still a successful null — the UI fires defensive clears on success
 // and treating "id not present" as an error would generate UI noise.
-func TestClearAbsentIdIsNoOp(t *testing.T) {
+func TestClearAbsentId_IsNoOp(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	_ = callAndDecode[any](t, m, rw, 1, "errors:clear", ClearParams{ID: "nothing:here"})
@@ -312,7 +312,7 @@ func TestClearAbsentIdIsNoOp(t *testing.T) {
 // re-emit" semantics from the plan: the producer is the source of
 // truth, the user's clear is just "don't show me this until the
 // producer says it's still broken."
-func TestAckUntilReemit(t *testing.T) {
+func TestAcknowledge_SuppressesErrorUntilNextReport(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-proxy:upstream-unreachable:peer-x"
 
@@ -333,7 +333,7 @@ func TestAckUntilReemit(t *testing.T) {
 // TestReportMissingFieldsRejected: id and message are required;
 // missing either returns -32602. Notifications log a warning but emit
 // no errors:update.
-func TestReportMissingFieldsRejected(t *testing.T) {
+func TestReport_RejectsMissingRequiredFields(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	// Request form, missing id.
@@ -356,7 +356,7 @@ func TestReportMissingFieldsRejected(t *testing.T) {
 // TestClearMissingIdRejected: clear without an id is -32602 in request
 // form, warn-and-drop in notification form. Notifications must NOT
 // emit errors:update on invalid input.
-func TestClearMissingIdRejected(t *testing.T) {
+func TestClear_RejectsMissingID(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	callExpectError(t, m, rw, 1, "errors:clear", ClearParams{}, -32602)
@@ -370,7 +370,7 @@ func TestClearMissingIdRejected(t *testing.T) {
 // CURRENT FULL list, sorted by id. Two reports → one entry per id, in
 // id order. The full-list contract means consumers can render-on-event
 // without re-fetching, and the sort means cheap diff-by-position.
-func TestUpdatePayloadIsFullSortedList(t *testing.T) {
+func TestUpdatePayload_IsFullSortedList(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	// Emit in non-sorted order.
@@ -387,7 +387,7 @@ func TestUpdatePayloadIsFullSortedList(t *testing.T) {
 
 // TestUnknownMethodReturns32601 mirrors node-settings: anything we
 // haven't implemented is -32601 method-not-found, not a silent drop.
-func TestUnknownMethodReturns32601(t *testing.T) {
+func TestUnknownMethod_ReturnsMethodNotFoundCode(t *testing.T) {
 	m, rw := newTestManager(t)
 	callExpectError(t, m, rw, 1, "errors:does-not-exist", nil, -32601)
 }
@@ -396,7 +396,7 @@ func TestUnknownMethodReturns32601(t *testing.T) {
 // cross-node clear propagation; nvpair-errors must accept the field today
 // (forward-compat unmarshal) and ignore it semantically (clear is just
 // delete-by-id).
-func TestClearedByPassedThroughIgnored(t *testing.T) {
+func TestClear_IgnoresCallerSuppliedClearedBy(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "manual-nodes:probe-failed:peer-q"
 
@@ -413,7 +413,7 @@ func TestClearedByPassedThroughIgnored(t *testing.T) {
 // and round-trips through get-initial. This is the forward-compat
 // contract that makes cross-node propagation additive — peer-stored
 // errors keep their origin nodeId.
-func TestNodeIdPreserved(t *testing.T) {
+func TestReport_PreservesNodeIdentity(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := ServiceError{
 		ID:        "peer:something",

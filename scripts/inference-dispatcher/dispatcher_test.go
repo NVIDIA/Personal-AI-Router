@@ -51,7 +51,7 @@ func configuredTestClient(t *testing.T, args []string, baseURL string, stderr *b
 	return cfg, client
 }
 
-func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
+func TestOmittedModel_SelectsAvailableGenerationModel(t *testing.T) {
 	var receivedModel string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -90,7 +90,7 @@ func TestOmittedModelSelectsAvailableGenerationModel(t *testing.T) {
 	assert.Contains(t, stdout.String(), "Auto-selected available model", "missing auto-selection output")
 }
 
-func TestExplicitModelSkipsInventoryRequest(t *testing.T) {
+func TestExplicitModel_SkipsInventoryRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {
 			assert.Fail(t, "explicit model unexpectedly queried inventory")
@@ -112,7 +112,7 @@ func TestExplicitModelSkipsInventoryRequest(t *testing.T) {
 	assert.Equal(t, 0, exit, "stderr: %s", stderr.String())
 }
 
-func TestLMStudioFallsBackToOpenAIInventory(t *testing.T) {
+func TestLMStudio_FallsBackToOpenAIInventory(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/models":
@@ -140,7 +140,7 @@ func TestLMStudioFallsBackToOpenAIInventory(t *testing.T) {
 	assert.Contains(t, stdout.String(), "live-model", "selected model missing from output")
 }
 
-func TestLlamaCPPUsesOpenAIInventoryAndChat(t *testing.T) {
+func TestLlamaCPP_UsesOpenAIInventoryAndChat(t *testing.T) {
 	type observedRequest struct {
 		method       string
 		path         string
@@ -195,7 +195,7 @@ func TestLlamaCPPUsesOpenAIInventoryAndChat(t *testing.T) {
 // inventory and forwards /api/v1/models to one node, so the aggregated list must
 // win. The native list still supplies the type and capability fields the
 // generation filter needs.
-func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
+func TestLMStudio_PrefersAggregatedInventory(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -240,7 +240,7 @@ func TestLMStudioPrefersAggregatedInventory(t *testing.T) {
 	assert.True(t, supportsGeneration(byName["remote-chat"]), "a model without native metadata was wrongly excluded")
 }
 
-func TestListModelsEmitsJSON(t *testing.T) {
+func TestListModels_EmitsJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"models":[{"name":"test-model"}]}`))
 	}))
@@ -262,7 +262,7 @@ func TestListModelsEmitsJSON(t *testing.T) {
 	assert.Equal(t, "test-model", models[0].Name)
 }
 
-func TestInvalidConfigurationDoesNotSendRequests(t *testing.T) {
+func TestInvalidConfiguration_DoesNotSendRequests(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exit := runMain(
 		context.Background(),
@@ -274,7 +274,7 @@ func TestInvalidConfigurationDoesNotSendRequests(t *testing.T) {
 	assert.Contains(t, stderr.String(), "--count")
 }
 
-func TestCancellationStopsInFlightRequestCleanly(t *testing.T) {
+func TestCancellation_StopsInFlightRequestCleanly(t *testing.T) {
 	requestStarted := make(chan struct{})
 	releaseServer := make(chan struct{})
 	var once sync.Once
@@ -314,12 +314,12 @@ func TestCancellationStopsInFlightRequestCleanly(t *testing.T) {
 	}
 }
 
-func TestHelpExitsSuccessfully(t *testing.T) {
+func TestHelp_ExitsSuccessfully(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	assert.Equal(t, 0, runMain(context.Background(), []string{"--help"}, &stdout, &stderr), "stderr: %s", stderr.String())
 }
 
-func TestConnectionIsLocalOnly(t *testing.T) {
+func TestConnection_IsLocalOnly(t *testing.T) {
 	for _, option := range []string{"--host", "--base-url"} {
 		var stdout, stderr bytes.Buffer
 		exit := runMain(context.Background(), []string{option, "example.test"}, &stdout, &stderr)
@@ -331,21 +331,21 @@ func TestConnectionIsLocalOnly(t *testing.T) {
 // The default must be the proxy facade (1234), not PAIR's managed LM Studio
 // backend (1235+). Defaulting to the backend would bypass lmstudio-proxy and
 // route nothing through the cluster.
-func TestLMStudioDefaultPort(t *testing.T) {
+func TestLMStudio_UsesPort1234ByDefault(t *testing.T) {
 	var stderr bytes.Buffer
 	cfg, err := parseConfig([]string{"--backend", "lmstudio"}, &stderr)
 	require.NoError(t, err, "parse config")
 	assert.Equal(t, 1234, effectivePort(cfg), "LM Studio default port")
 }
 
-func TestLlamaCPPDefaultPort(t *testing.T) {
+func TestLlamaCPP_UsesPort8080ByDefault(t *testing.T) {
 	var stderr bytes.Buffer
 	cfg, err := parseConfig([]string{"--backend", "llamacpp"}, &stderr)
 	require.NoError(t, err, "parse config")
 	require.Equal(t, 8080, effectivePort(cfg))
 }
 
-func TestResponseTextNeverReachesStdout(t *testing.T) {
+func TestResponseText_NeverReachesStdout(t *testing.T) {
 	const secret = "the capital of France is Paris"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -371,7 +371,7 @@ func TestResponseTextNeverReachesStdout(t *testing.T) {
 
 // A non-2xx body from an OpenAI-compatible endpoint can echo the request back,
 // and result.Error reaches both the JSONL result log and the debug error log.
-func TestUpstreamErrorBodyNeverReachesLogs(t *testing.T) {
+func TestUpstreamErrorBody_NeverReachesLogs(t *testing.T) {
 	const echoed = "invalid request: summarize the quarterly revenue memo"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -419,7 +419,7 @@ func TestUpstreamErrorBodyNeverReachesLogs(t *testing.T) {
 	}
 }
 
-func TestPromptDigestDoesNotLeakPromptText(t *testing.T) {
+func TestPromptDigest_DoesNotLeakPromptText(t *testing.T) {
 	const prompt = "classify this support request into one category"
 	digest := promptDigest(prompt)
 	assert.NotContains(t, digest, "classify", "digest leaked prompt text")

@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTLSClientOptionsValidate(t *testing.T) {
+func TestTLSClientOptions_ValidatesConfiguration(t *testing.T) {
 	cases := []struct {
 		name string
 		o    tlsClientOptions
@@ -44,13 +44,13 @@ func TestTLSClientOptionsValidate(t *testing.T) {
 
 // TestBuildTLSClientUnconfiguredIsNil is the dormant-by-default guarantee: with
 // no flags set, there's no TLS client and the daemon falls back to plain HTTP.
-func TestBuildTLSClientUnconfiguredIsNil(t *testing.T) {
+func TestBuildTLSClientUnconfigured_IsNil(t *testing.T) {
 	c, err := buildTLSClient(tlsClientOptions{}, nodeInfoFetchTimeout)
 	require.NoError(t, err, "buildTLSClient(unconfigured) err")
 	require.Nil(t, c, "buildTLSClient(unconfigured) should return a nil client (plain-HTTP fallback)")
 }
 
-func TestBuildTLSClientCABundle(t *testing.T) {
+func TestBuildTLSClient_AcceptsValidCAAndRejectsMalformedBundle(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
@@ -71,7 +71,7 @@ func TestBuildTLSClientCABundle(t *testing.T) {
 // TestFetchNodeInfoTLSClientSelection proves the flag-gated wiring: an HTTPS-only
 // node-info endpoint is reachable only when the daemon holds a configured TLS
 // client; the default plain-HTTP client cannot speak to it.
-func TestFetchNodeInfoTLSClientSelection(t *testing.T) {
+func TestFetchNodeInfo_SelectsClientForConfiguredTransport(t *testing.T) {
 	want := NodeInfoResponse{GPUs: []GPUInfo{{}}}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/node-info" {

@@ -40,7 +40,7 @@ func findRow(t *testing.T, rows []nodeRow, name string) nodeRow {
 // TestFilterNodeRowsMatchesNameAndAddress checks both of the things an operator
 // knows a machine by. Addresses matter especially for nodes added by address,
 // whose reported name they may never have seen.
-func TestFilterNodeRowsMatchesNameAndAddress(t *testing.T) {
+func TestFilterNodeRows_MatchesNameAndAddress(t *testing.T) {
 	rows := []nodeRow{
 		{key: "a", name: "workstation", address: "10.0.0.5", addresses: []string{"10.0.0.5", "192.168.1.9"}},
 		{key: "b", name: "laptop", address: "10.0.0.6"},
@@ -69,7 +69,7 @@ func TestFilterNodeRowsMatchesNameAndAddress(t *testing.T) {
 	assert.Len(t, filterNodeRows(rows, "   "), len(rows), "blank filter must preserve rows")
 }
 
-func TestMergeKeepsOfflineMembersListed(t *testing.T) {
+func TestMerge_KeepsOfflineMembersListed(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "up", Name: "up-host", IPAddress: "10.0.0.1", Port: 14318,
@@ -103,7 +103,7 @@ func TestMergeKeepsOfflineMembersListed(t *testing.T) {
 //
 // An hour-old timestamp is used deliberately: under the previous rule it was
 // forty-eight thresholds stale.
-func TestMergeDoesNotAgeOutDiscoveryOnItsOwnClock(t *testing.T) {
+func TestMerge_DoesNotAgeOutDiscoveryOnItsOwnClock(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "fresh", Name: "fresh", IPAddress: "10.0.0.1", Port: 14318,
@@ -122,7 +122,7 @@ func TestMergeDoesNotAgeOutDiscoveryOnItsOwnClock(t *testing.T) {
 // TestMergeNeedsSomewhereToReachANode mirrors the desktop app's rule, whose
 // nodeInfoUp starts as `Boolean(ipAddress) && port > 0`. A snapshot entry with
 // nowhere to connect is not a reachable node.
-func TestMergeNeedsSomewhereToReachANode(t *testing.T) {
+func TestMerge_NeedsSomewhereToReachANode(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "noaddr", Name: "noaddr", Port: 14318},
@@ -137,7 +137,7 @@ func TestMergeNeedsSomewhereToReachANode(t *testing.T) {
 
 // TestMergeDeduplicatesAcrossFeeds checks one machine appearing in all three
 // feeds renders as a single row carrying every feed's contribution.
-func TestMergeDeduplicatesAcrossFeeds(t *testing.T) {
+func TestMerge_DeduplicatesAcrossFeeds(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{{
 			HostUUID:  "u1",
@@ -161,7 +161,7 @@ func TestMergeDeduplicatesAcrossFeeds(t *testing.T) {
 // TestMergeManualProbeBeatsDiscoverySilence covers a host on a network that
 // filters multicast: it never announces, but a successful probe is direct
 // evidence that it is up.
-func TestMergeManualProbeBeatsDiscoverySilence(t *testing.T) {
+func TestMergeManualProbe_BeatsDiscoverySilence(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		manual: []manualNode{
 			{ID: "m1", Name: "reachable", Address: "10.0.0.7", NodeInfoUp: true},
@@ -180,7 +180,7 @@ func TestMergeManualProbeBeatsDiscoverySilence(t *testing.T) {
 // running only LM Studio read Offline, a hostname typed by hand could not be
 // joined to the same machine discovered by IP, and the node-info port and TLS
 // setting the probe found were dropped.
-func TestMergeUsesEveryFactTheManualWorkerReports(t *testing.T) {
+func TestMerge_UsesEveryFactTheManualWorkerReports(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		manual: []manualNode{{ID: "m1", Name: "lms-only", Address: "10.0.0.7", LMStudioUp: true}},
 	})
@@ -215,7 +215,7 @@ func TestMergeUsesEveryFactTheManualWorkerReports(t *testing.T) {
 // discovered row with a different UUID at the same address — that is another
 // machine now answering there. An entry the probe has not identified still
 // joins by address, as it must for a host discovery reports by IP.
-func TestAReusedAddressDoesNotMergeTwoMachines(t *testing.T) {
+func TestAReusedAddress_DoesNotMergeTwoMachines(t *testing.T) {
 	discovered := []availableNode{{HostUUID: "machine-b", Name: "b", IPAddress: "10.0.0.5", Port: 14318}}
 
 	rows := mergeNodes(nodeFeeds{
@@ -236,7 +236,7 @@ func TestAReusedAddressDoesNotMergeTwoMachines(t *testing.T) {
 // TestTLSNodeInfoIsNotPolledInPlainText checks the detail screen shows the
 // worker's reading for a TLS node rather than polling it itself. That endpoint
 // needs the backend's cluster trust, and a plain-HTTP poll to it only fails.
-func TestTLSNodeInfoIsNotPolledInPlainText(t *testing.T) {
+func TestTLSNodeInfo_IsNotPolledInPlainText(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{
 		key: "manual:m2", name: "tls-box", address: "10.0.0.9", port: 14319,
 		presence: presenceOnline, nodeInfoTLS: true,
@@ -250,7 +250,7 @@ func TestTLSNodeInfoIsNotPolledInPlainText(t *testing.T) {
 
 // TestMembershipGovernsInvitability is the guard for re-inviting a node that
 // already has a relationship. Only a standalone node may be invited.
-func TestMembershipGovernsInvitability(t *testing.T) {
+func TestNodeInvitation_RequiresEligibleClusterMembership(t *testing.T) {
 	cases := map[nodeMembership]bool{
 		membershipNone:    true,
 		membershipMember:  false,
@@ -263,7 +263,7 @@ func TestMembershipGovernsInvitability(t *testing.T) {
 }
 
 // TestMergeMarksSelf checks this machine is identified and always reads online.
-func TestMergeMarksSelf(t *testing.T) {
+func TestMerge_MarksSelf(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "me", Name: "this-host", LastSeen: seenAgo(time.Hour)},
@@ -281,7 +281,7 @@ func TestMergeMarksSelf(t *testing.T) {
 // TestMergeSortsOnlineBeforeOffline checks reachable nodes lead the list. The
 // offline one here is a cluster member discovery has never reported, which is
 // what an unreachable node now looks like.
-func TestMergeSortsOnlineBeforeOffline(t *testing.T) {
+func TestMerge_SortsOnlineBeforeOffline(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "z", Name: "zzz", IPAddress: "10.0.0.2", Port: 14318,
@@ -295,7 +295,7 @@ func TestMergeSortsOnlineBeforeOffline(t *testing.T) {
 
 // TestMergeForeignClusterNotInvitable checks a node clustered elsewhere is
 // distinguished from one of ours.
-func TestMergeForeignClusterNotInvitable(t *testing.T) {
+func TestMergeNodes_MarksForeignClusterNodesUninvitable(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "f", Name: "foreign", Clustered: true, LastSeen: seenAgo(time.Second)},
@@ -307,6 +307,6 @@ func TestMergeForeignClusterNotInvitable(t *testing.T) {
 	assert.True(t, findRow(t, rows, "standalone").membership.invitable(), "standalone node must be invitable")
 }
 
-func TestMergeEmptyFeeds(t *testing.T) {
+func TestMergeNodes_ReturnsEmptyRowsForEmptyFeeds(t *testing.T) {
 	assert.Empty(t, mergeNodes(nodeFeeds{}))
 }

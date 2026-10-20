@@ -12,7 +12,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-func TestRegistrationCache(t *testing.T) {
+func TestRegistrationCache_StoresAndReplacesServiceRegistrations(t *testing.T) {
 	c := NewRegistrationCache()
 	require.True(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}), "first register should change")
 	assert.False(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}), "identical re-register should not change")
@@ -65,7 +65,7 @@ func erNode(id string) noderec.DirectoryNode {
 	return noderec.DirectoryNode{HostUUID: id, Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}
 }
 
-func TestDirectorySubscribeInitialSnapshot(t *testing.T) {
+func TestDirectorySubscribe_SendsInitialSnapshot(t *testing.T) {
 	d := NewDirectory()
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
 	d.Apply(noderec.NotifyNodeDiscovered, erNode("b"))
@@ -86,7 +86,7 @@ func TestDirectorySubscribeInitialSnapshot(t *testing.T) {
 // lands after Subscribe but before the initial Deliver must be reflected — the
 // delivery captures the snapshot when it runs, not a stale pre-subscribe set, so
 // it can't overwrite a concurrent Apply with an older list.
-func TestDeliverCapturesAtSendTime(t *testing.T) {
+func TestDeliver_CapturesAtSendTime(t *testing.T) {
 	d := NewDirectory()
 	rec := &recordingSub{}
 	sub := &Subscriber{Filter: noderec.SubscribeParams{}, Send: rec.send}
@@ -96,7 +96,7 @@ func TestDeliverCapturesAtSendTime(t *testing.T) {
 	require.Equal(t, []string{"a"}, ids(rec.last()), "delivery after a post-subscribe change")
 }
 
-func TestDirectoryFanoutRespectsFilter(t *testing.T) {
+func TestDirectoryFanout_RespectsSubscriberFilter(t *testing.T) {
 	d := NewDirectory()
 	olSub := &recordingSub{}
 	allSub := &recordingSub{}
@@ -112,7 +112,7 @@ func TestDirectoryFanoutRespectsFilter(t *testing.T) {
 	assert.Equal(t, []string{"a", "b"}, ids(allSub.last()), "all subscriber last snapshot")
 }
 
-func TestDirectoryRemoveAndUnsubscribe(t *testing.T) {
+func TestDirectory_UnsubscribesClientsAndReportsNodeRemoval(t *testing.T) {
 	d := NewDirectory()
 	sub := &recordingSub{}
 	id := d.Subscribe(&Subscriber{Filter: noderec.SubscribeParams{}, Send: sub.send})
@@ -130,7 +130,7 @@ func TestDirectoryRemoveAndUnsubscribe(t *testing.T) {
 	assert.Len(t, sub.snaps, before, "unsubscribed sub still received")
 }
 
-func TestDirectorySnapshotFilterAndSort(t *testing.T) {
+func TestDirectorySnapshot_FiltersAndSortsNodes(t *testing.T) {
 	d := NewDirectory()
 	d.Apply(noderec.NotifyNodeDiscovered, erNode("z"))
 	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))

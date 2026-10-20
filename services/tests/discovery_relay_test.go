@@ -19,7 +19,7 @@ import (
 // registry and advertises ONE _nvpair-node record carrying the schema key and
 // ni=14318. This is the new consolidated discovery record (distinct from
 // node-info's own transitional _nvpair-node-info advertisement).
-func TestBrokerAdvertisesNodeRecord(t *testing.T) {
+func TestBroker_AdvertisesNodeRecord(t *testing.T) {
 	_, msgs, stderr, cleanup := startBrokerWith(t, "--node-info-path", nodeInfoBin)
 	t.Cleanup(cleanup)
 	// Drain the broker's stdout/stderr so it doesn't stall on a full pipe while

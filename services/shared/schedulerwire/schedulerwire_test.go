@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPriorityAcceptsLegacyNodesOnlyPayload(t *testing.T) {
+func TestPriority_AcceptsLegacyNodesOnlyPayload(t *testing.T) {
 	var got Priority
 	require.NoError(t, json.Unmarshal([]byte(`{"nodes":["a","b"]}`), &got), "unmarshal nodes-only priority")
 	assert.Equal(t, []string{"a", "b"}, got.Nodes)
@@ -22,7 +22,7 @@ func TestPriorityAcceptsLegacyNodesOnlyPayload(t *testing.T) {
 	assert.NotContains(t, string(encoded), `"ranks"`, "nodes-only encoding unexpectedly included ranks")
 }
 
-func TestEnginePriorityRoundTripsGPUAwareRanks(t *testing.T) {
+func TestEnginePriority_RoundTripsGPUAwareRanks(t *testing.T) {
 	want := EnginePriority{
 		Engine: "ollama",
 		Nodes:  []string{"b", "a"},
@@ -40,7 +40,7 @@ func TestEnginePriorityRoundTripsGPUAwareRanks(t *testing.T) {
 	assert.Equal(t, want, got, "round trip")
 }
 
-func TestPriorityCopiesOwnTheirSlices(t *testing.T) {
+func TestPriorityCopies_DoNotShareBackingSlices(t *testing.T) {
 	source := EnginePriority{
 		Engine: "ollama",
 		Nodes:  []string{"a"},

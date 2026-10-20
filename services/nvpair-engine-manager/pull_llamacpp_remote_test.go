@@ -21,7 +21,7 @@ import (
 	"nvpair-shared/clustertrust"
 )
 
-func TestLlamaCPPPullRemoteDisconnectStopsDownload(t *testing.T) {
+func TestLlamaCPPPullRemoteDisconnect_StopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	stopped := make(chan struct{})
 	f.unload = func(w http.ResponseWriter, _ *http.Request) {
@@ -41,7 +41,7 @@ func TestLlamaCPPPullRemoteDisconnectStopsDownload(t *testing.T) {
 
 // Exercise the real ec listener, pinned mTLS, request cancellation, and cleanup
 // in the compiled manager, without a real engine or model download.
-func TestE2ELlamaCPPPullRemoteDisconnectStopsDownload(t *testing.T) {
+func TestE2ELlamaCPPPullRemoteDisconnect_StopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	stopped := make(chan struct{})
 	f.unload = func(w http.ResponseWriter, _ *http.Request) {

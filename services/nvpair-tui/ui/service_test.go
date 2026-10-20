@@ -32,7 +32,7 @@ import (
 // build catches that — the mismatch compiles and every other test passes — so
 // this assertion is what makes the identity rule in nvpair-shared/engines
 // enforceable rather than advisory.
-func TestServiceProxyRowMatchesTheBrokerCrashIdentity(t *testing.T) {
+func TestServiceProxyRow_MatchesTheBrokerCrashIdentity(t *testing.T) {
 	for _, w := range serviceWorkers {
 		for _, e := range engines.All() {
 			assert.NotEqual(t, e.ComponentName(), w, "the broker reports proxy crashes against %q", engines.ProxyComponent)
@@ -55,7 +55,7 @@ func TestServiceProxyRowMatchesTheBrokerCrashIdentity(t *testing.T) {
 // crashes, keyed on this host's stable UUID (the value the broker stamps on
 // local reports). A peer's crash must be dropped, and a local UUID-stamped
 // crash must NOT be misclassified as remote.
-func TestRebuildCrashesFiltersByUUID(t *testing.T) {
+func TestRebuildCrashes_FiltersByUUID(t *testing.T) {
 	v := newServiceView(nil)
 	v.localNodeUUID = "self-uuid"
 
@@ -75,7 +75,7 @@ func TestRebuildCrashesFiltersByUUID(t *testing.T) {
 // before there is evidence for it. A worker is ok only by the absence of its
 // crash from a snapshot read with this machine's UUID, so until the service has
 // answered, a snapshot has arrived, and the UUID is known, every row is "?".
-func TestWorkersAreUnknownUntilTheyCanBeKnown(t *testing.T) {
+func TestWorkers_AreUnknownUntilTheyCanBeKnown(t *testing.T) {
 	statuses := func(v *serviceView) map[string]bool {
 		seen := map[string]bool{}
 		for _, r := range v.workers.Rows() {
@@ -112,7 +112,7 @@ func TestWorkersAreUnknownUntilTheyCanBeKnown(t *testing.T) {
 //
 // errors:update fires only on change, so a tab that learns crashes from pushes
 // alone knew nothing of one recorded before it subscribed.
-func TestServiceShowsACrashFromBeforeItStarted(t *testing.T) {
+func TestService_ShowsACrashFromBeforeItStarted(t *testing.T) {
 	crash := svcerrors.ServiceError{ID: crashPrefix + "scanner", Message: "scanner crashed"}
 
 	v := newServiceView(nil)
@@ -136,7 +136,7 @@ func TestServiceShowsACrashFromBeforeItStarted(t *testing.T) {
 // only compare that slice with itself. It is the second opinion: a worker the
 // broker supervises and this table forgot is exactly the failure an operator
 // cannot see, so the names are restated here deliberately.
-func TestServiceListsEverySupervisedWorker(t *testing.T) {
+func TestService_ListsEverySupervisedWorker(t *testing.T) {
 	// The broker's supervisor names, which its crash ids are built from. The
 	// proxy appears once, by process name: one nvpair-proxy hosts every
 	// engine's facade, so there is one supervisor entry and one crash id.
@@ -157,7 +157,7 @@ func TestServiceListsEverySupervisedWorker(t *testing.T) {
 
 // TestErrorSinkRowExplainsItself checks the errors worker carries a caveat, so
 // its unconditional "ok" is not read as confirmed liveness.
-func TestErrorSinkRowExplainsItself(t *testing.T) {
+func TestErrorSinkRow_ExplainsItself(t *testing.T) {
 	v := newServiceView(nil)
 	v.refreshWorkers()
 
@@ -197,7 +197,7 @@ func press(v *serviceView, k string) tea.Cmd {
 
 // TestLogLevelOpensPicker checks enter presents the options rather than silently
 // stepping to the next one.
-func TestLogLevelOpensPicker(t *testing.T) {
+func TestLogLevel_OpensPicker(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
 
@@ -214,7 +214,7 @@ func TestLogLevelOpensPicker(t *testing.T) {
 
 // TestLogLevelPickerOpensOnCurrentValue checks the highlight starts on the level
 // in force, not always at the first option.
-func TestLogLevelPickerOpensOnCurrentValue(t *testing.T) {
+func TestLogLevelPicker_OpensOnCurrentValue(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
 	v.logLevel = slog.LevelWarn
@@ -225,7 +225,7 @@ func TestLogLevelPickerOpensOnCurrentValue(t *testing.T) {
 
 // TestLogLevelPickerNavigationClamps checks the highlight moves on both axes and
 // stops at the ends rather than wrapping.
-func TestLogLevelPickerNavigationClamps(t *testing.T) {
+func TestLogLevelPickerNavigation_Clamps(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
 	v.logLevel = applog.Levels[0]
@@ -244,7 +244,7 @@ func TestLogLevelPickerNavigationClamps(t *testing.T) {
 }
 
 // TestLogLevelPickerCancels checks esc closes without applying anything.
-func TestLogLevelPickerCancels(t *testing.T) {
+func TestLogLevelPicker_Cancels(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
 	v.logLevel = slog.LevelInfo
@@ -258,7 +258,7 @@ func TestLogLevelPickerCancels(t *testing.T) {
 
 // TestLogLevelPickerAppliesSelection checks committing a different option issues
 // the change, and that re-picking the current one does not.
-func TestLogLevelPickerAppliesSelection(t *testing.T) {
+func TestLogLevelPicker_AppliesSelection(t *testing.T) {
 	v := newServiceView(nil)
 	logLevelRow(t, v)
 	v.logLevel = slog.LevelInfo
@@ -334,7 +334,7 @@ func armedResetView(t *testing.T, client *rpc.Client) *serviceView {
 // installer put in the user's home, which is where LM Studio lands.
 //
 // One call, not a loop: engine-manager owns which installs are PAIR's.
-func TestResetRemovesManagedEnginesBeforeWiping(t *testing.T) {
+func TestReset_RemovesManagedEnginesBeforeWiping(t *testing.T) {
 	client, called := resetBroker(t, `{"engines":[
 		{"engine":"ollama","removed":true},
 		{"engine":"llamacpp","removed":false}
@@ -364,7 +364,7 @@ func TestResetRemovesManagedEnginesBeforeWiping(t *testing.T) {
 // TestResetStopsWhenAnEngineCannotBeRemoved is the guard for orphaning an
 // engine. The wipe deletes the record that an engine is PAIR's, so wiping after
 // a failed removal left its files on disk with nothing allowed to remove them.
-func TestResetStopsWhenAnEngineCannotBeRemoved(t *testing.T) {
+func TestReset_StopsWhenAnEngineCannotBeRemoved(t *testing.T) {
 	client, _ := resetBroker(t, `{"engines":[
 		{"engine":"ollama","removed":true},
 		{"engine":"lmstudio","removed":false,"error":"locked"}
@@ -387,7 +387,7 @@ func TestResetStopsWhenAnEngineCannotBeRemoved(t *testing.T) {
 // TestResetStopsWhenTheEngineManagerCannotBeReached covers the backend being
 // unreachable or rejecting the call, when nothing is known about which engines
 // are still on disk.
-func TestResetStopsWhenTheEngineManagerCannotBeReached(t *testing.T) {
+func TestReset_StopsWhenTheEngineManagerCannotBeReached(t *testing.T) {
 	client, _ := resetBroker(t, "")
 	v := armedResetView(t, client)
 
@@ -401,7 +401,7 @@ func TestResetStopsWhenTheEngineManagerCannotBeReached(t *testing.T) {
 // is disarmed before the work starts, so without the reset holding input the
 // shell's own `q` exits with the data directory intact — engines gone, data
 // kept, the opposite of what the row promises.
-func TestResetHoldsTheKeyboard(t *testing.T) {
+func TestReset_CapturesKeysDuringConfirmation(t *testing.T) {
 	client, _ := resetBroker(t, `{"engines":[]}`)
 	v := armedResetView(t, client)
 	require.False(t, v.resetting, "arming alone should not start the reset")
@@ -423,7 +423,7 @@ func TestResetHoldsTheKeyboard(t *testing.T) {
 // TestResetRequiresConfirmation is the guard on the one irreversible action in
 // the TUI: activating the row must only arm it, and only the confirmation key
 // may fire it.
-func TestResetRequiresConfirmation(t *testing.T) {
+func TestReset_RequiresConfirmation(t *testing.T) {
 	resetIdx := -1
 	client, _ := resetBroker(t, `{"engines":[]}`)
 	v := newServiceView(client)
@@ -454,7 +454,7 @@ func TestResetRequiresConfirmation(t *testing.T) {
 
 // TestWipeRequestQuitsAndRecordsIntent checks the shell records the request and
 // exits, leaving the deletion to the caller once the broker has stopped.
-func TestWipeRequestQuitsAndRecordsIntent(t *testing.T) {
+func TestWipeRequest_RecordsIntentAndQuits(t *testing.T) {
 	m := newTestModel(&stubView{title: "T", rows: 1})
 	updated, cmd := m.Update(wipeDataMsg{})
 	got, ok := updated.(Model)
@@ -470,7 +470,7 @@ func TestWipeRequestQuitsAndRecordsIntent(t *testing.T) {
 // bubbles highlights its cursor row regardless of focus, so a read-only table
 // built the normal way advertises a selection that does not exist — and the
 // worker table has no per-worker operation to select for.
-func TestWorkerTableIsStatic(t *testing.T) {
+func TestWorkerTable_IsStatic(t *testing.T) {
 	v := newServiceView(nil)
 	assert.False(t, v.workers.Focused(), "worker table is focused but its keys are never routed to it")
 
@@ -501,7 +501,7 @@ func TestWorkerTableIsStatic(t *testing.T) {
 // bubbles applies the Selected style to the already-assembled row, so giving it
 // anything with padding indents row 0 relative to its neighbours — which looked
 // like the first worker being mysteriously offset.
-func TestStaticTableRowsAlignExactly(t *testing.T) {
+func TestWorkerTableRows_AlignColumns(t *testing.T) {
 	tbl := newStaticTable(serviceWorkerColumns(70))
 	tbl.SetHeight(4)
 	tbl.SetRows([]table.Row{
@@ -527,7 +527,7 @@ func TestStaticTableRowsAlignExactly(t *testing.T) {
 // TestWorkerTableOrdersCrashesFirst is the guard for the clipping bug behind the
 // highlight: the table cannot be scrolled, so on a short terminal the tail is
 // unreachable. Failures must never be the rows that get cut.
-func TestWorkerTableOrdersCrashesFirst(t *testing.T) {
+func TestWorkerTable_OrdersCrashesFirst(t *testing.T) {
 	v := newServiceView(nil)
 	v.pinged, v.errsKnown, v.localNodeUUID = true, true, "self-uuid"
 	// Pick a worker deliberately late in the declared order.
@@ -549,7 +549,7 @@ func TestWorkerTableOrdersCrashesFirst(t *testing.T) {
 // TestWorkerTableReportsHiddenRows checks a terminal too short to show every
 // worker says so, rather than silently dropping the tail of a table that cannot
 // be scrolled.
-func TestWorkerTableReportsHiddenRows(t *testing.T) {
+func TestWorkerTable_ReportsHiddenRows(t *testing.T) {
 	v := newServiceView(nil)
 	v.refreshWorkers()
 
@@ -573,7 +573,7 @@ func TestWorkerTableReportsHiddenRows(t *testing.T) {
 // only height-2 data rows are visible. Treating the height as a row count made
 // the view claim everything fit while two workers were cut off a table that
 // cannot be scrolled.
-func TestHiddenWorkersAccountsForTheHeader(t *testing.T) {
+func TestHiddenWorkers_ExcludesHeaderFromVisibleCapacity(t *testing.T) {
 	v := newServiceView(nil)
 	v.refreshWorkers()
 
@@ -591,7 +591,7 @@ func TestHiddenWorkersAccountsForTheHeader(t *testing.T) {
 }
 
 // TestVisibleTableRows pins the header accounting the layout budgets depend on.
-func TestVisibleTableRows(t *testing.T) {
+func TestVisibleTableRows_AccountsForTerminalHeight(t *testing.T) {
 	cases := map[int]int{0: 0, 1: 0, 2: 0, 3: 1, 5: 3, 13: 11}
 	for h, want := range cases {
 		assert.Equal(t, want, visibleTableRows(h), "visibleTableRows(%d)", h)

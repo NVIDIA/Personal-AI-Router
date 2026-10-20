@@ -36,7 +36,7 @@ func actionOf(t *testing.T, envelope map[string]any) (string, map[string]any) {
 // under BOTH "name" (Ollama's /api/pull body key) and "model" (LM Studio's
 // `lms get {model}` CLI placeholder). Sending only "name" silently ran
 // `lms get "" --yes`, so the download never reached LM Studio.
-func TestPullSendsBothKeys(t *testing.T) {
+func TestPull_SendsBothKeys(t *testing.T) {
 	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
 		envelope := wireOf(t, engine, "pull", "owner/model")
 		require.Equal(t, engine, envelope["engine"])
@@ -51,7 +51,7 @@ func TestPullSendsBothKeys(t *testing.T) {
 // Ollama has no load action — warming a model is run_model with streaming off —
 // so sending load_model errors, and the failure is quiet enough to look like the
 // model simply not loading.
-func TestOllamaLoadUsesRunModel(t *testing.T) {
+func TestOllamaLoad_UsesRunModel(t *testing.T) {
 	envelope := wireOf(t, engines.NameOllama, "load", "llama3.2")
 	action, params := actionOf(t, envelope)
 
@@ -68,7 +68,7 @@ func TestOllamaLoadUsesRunModel(t *testing.T) {
 // TestOllamaUnloadSendsKeepAlive guards the other asymmetry: Ollama only frees a
 // model when keep_alive is 0. Without it the request succeeds and the model
 // stays resident, so eject appears to do nothing.
-func TestOllamaUnloadSendsKeepAlive(t *testing.T) {
+func TestOllamaUnload_SendsKeepAlive(t *testing.T) {
 	envelope := wireOf(t, engines.NameOllama, "unload", "llama3.2")
 	action, params := actionOf(t, envelope)
 
@@ -86,7 +86,7 @@ func TestOllamaUnloadSendsKeepAlive(t *testing.T) {
 // engine keeps working, so a failure would be wrong — but the previous silence
 // was too, leaving the operator unable to tell a started download from a
 // keystroke that missed.
-func TestPullDeadlineReportsDetachedNotSilence(t *testing.T) {
+func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
 	msg := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
 	require.NotNil(t, msg, "a pull that outran its deadline produced no message at all")
 	op, ok := msg.(engineOpMsg)
@@ -105,7 +105,7 @@ func TestPullDeadlineReportsDetachedNotSilence(t *testing.T) {
 // and reporting "load failed" at the moment the model finishes loading is worse
 // than saying nothing. Quick operations get no such excuse, because a deadline
 // there is a real fault.
-func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
+func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// Only operations engineOps actually declares: the TUI offers no engine
 	// update, so listing one here would assert against a path nothing reaches.
 	// Start and restart wait on the engine's readiness probe, which the
@@ -133,7 +133,7 @@ func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
 
 // TestDeleteSendsBothKeys checks delete works on either engine, since Ollama
 // keys it as "name" and LM Studio as "model".
-func TestDeleteSendsBothKeys(t *testing.T) {
+func TestDelete_SendsBothKeys(t *testing.T) {
 	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
 		envelope := wireOf(t, engine, "delete", "victim")
 		action, params := actionOf(t, envelope)
@@ -147,7 +147,7 @@ func TestDeleteSendsBothKeys(t *testing.T) {
 // the model under "model" and nothing else, as the engine manager's own wire
 // for it does. Its delete sends the params as a query string, so an extra
 // "name" would reach the engine as a parameter it does not take.
-func TestLlamaCPPSendsTheModelAlone(t *testing.T) {
+func TestLlamaCPP_SendsTheModelAlone(t *testing.T) {
 	want := map[string]string{
 		"load": "load_model", "unload": "unload_model",
 		"delete": "delete_model", "pull": "pull_model",
@@ -163,7 +163,7 @@ func TestLlamaCPPSendsTheModelAlone(t *testing.T) {
 // TestDownloadPromptUsesTheEnginesSpelling is the regression guard for an
 // Ollama example offered for every engine. "llama3.2" is not a name LM Studio
 // or llama.cpp can download, and llama.cpp's needs a quantization after a colon.
-func TestDownloadPromptUsesTheEnginesSpelling(t *testing.T) {
+func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 	for _, e := range engines.All() {
 		assert.Contains(t, downloadExamples, e.Name, "every engine needs a download example")
 	}
@@ -175,7 +175,7 @@ func TestDownloadPromptUsesTheEnginesSpelling(t *testing.T) {
 // adding its entry: an engine in the shared table without a spelling for every
 // model operation fails here, rather than being sent another engine's action
 // names at runtime.
-func TestEveryEngineHasAModelWire(t *testing.T) {
+func TestEveryEngine_HasAModelWire(t *testing.T) {
 	for _, e := range engines.All() {
 		for op := range modelActions {
 			_, err := modelActionWire(e.Name, op, "m")
@@ -189,7 +189,7 @@ func TestEveryEngineHasAModelWire(t *testing.T) {
 // TestLongRunningOpsAreRealOperations keeps the leniency set honest: every
 // entry must be an operation the interface can actually issue, or the set
 // documents behaviour nothing exercises.
-func TestLongRunningOpsAreRealOperations(t *testing.T) {
+func TestLongRunningOps_AreRealOperations(t *testing.T) {
 	for op := range longRunningOps {
 		_, isLifecycle := engineOps[op]
 		_, isModel := modelActions[op]
@@ -199,7 +199,7 @@ func TestLongRunningOpsAreRealOperations(t *testing.T) {
 
 // TestModelActionsCarryRemoteEquivalents checks every model operation has a
 // remote method, since all four are offered on a peer's node.
-func TestModelActionsCarryRemoteEquivalents(t *testing.T) {
+func TestModelActions_DeclareRemoteEquivalentMethods(t *testing.T) {
 	for name, act := range modelActions {
 		assert.NotEmpty(t, act.op, "%s: no operation name", name)
 		assert.NotEmpty(t, act.remote, "%s: model operations are offered on remote nodes", name)
@@ -212,7 +212,7 @@ func TestModelActionsCarryRemoteEquivalents(t *testing.T) {
 // but no remote restart, uninstall, or port change — those need process
 // ownership on the target host — so those three must be marked local-only or the
 // UI would offer an operation that always fails.
-func TestLifecycleRemoteCoverageMatchesManager(t *testing.T) {
+func TestLifecycleRemoteCoverage_MatchesManager(t *testing.T) {
 	for name, op := range engineOps {
 		_, hasRemote := remoteEngineMethods[op.method]
 		assert.Equal(t, !op.localOnly, hasRemote, "%s: remote coverage must match the manager", name)

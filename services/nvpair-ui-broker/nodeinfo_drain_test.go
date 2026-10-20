@@ -59,7 +59,7 @@ func addressesOf(t *testing.T, params json.RawMessage) []string {
 // node-info's stdout, so ending it leaves the child blocked on a full pipe and
 // permanently stops observed-address delivery — the feed address selection
 // depends on.
-func TestNodeInfoDrainSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
+func TestNodeInfoDrain_SkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 	oversized := `{"jsonrpc":"2.0","method":"` + noderec.NotifyObservedAddresses +
 		`","params":{"addresses":["` + strings.Repeat("a", maxNodeInfoLine) + `"]}}`
 	stream := oversized + "\n" + observedFrame("10.172.54.70") + "\n"
@@ -72,7 +72,7 @@ func TestNodeInfoDrainSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 
 // An oversized frame that is also the last thing on the stream must end the drain
 // rather than spin on a buffer it can never empty.
-func TestNodeInfoDrainStopsOnAnUnterminatedOversizedFrame(t *testing.T) {
+func TestNodeInfoDrain_StopsOnAnUnterminatedOversizedFrame(t *testing.T) {
 	oversized := `{"method":"x","params":"` + strings.Repeat("a", 2*maxNodeInfoLine) + `"}`
 
 	require.Empty(t, drainFrames(t, strings.NewReader(oversized)))
@@ -80,7 +80,7 @@ func TestNodeInfoDrainStopsOnAnUnterminatedOversizedFrame(t *testing.T) {
 
 // node-info can exit having written a frame but not its newline; that frame is
 // still real output.
-func TestNodeInfoDrainDeliversAFinalFrameWithoutANewline(t *testing.T) {
+func TestNodeInfoDrain_DeliversAFinalFrameWithoutANewline(t *testing.T) {
 	got := drainFrames(t, strings.NewReader(observedFrame("10.172.54.71")))
 	require.Len(t, got, 1)
 	require.Equal(t, []string{"10.172.54.71"}, addressesOf(t, got[0].params), "addresses")
@@ -88,7 +88,7 @@ func TestNodeInfoDrainDeliversAFinalFrameWithoutANewline(t *testing.T) {
 
 // Responses to the broker's own control requests, blank lines, and anything that
 // isn't JSON share the stream with notifications and carry no method.
-func TestNodeInfoDrainSkipsFramesThatAreNotNotifications(t *testing.T) {
+func TestNodeInfoDrain_SkipsFramesThatAreNotNotifications(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"result":{"level":"debug"}}`,
 		`not json at all`,

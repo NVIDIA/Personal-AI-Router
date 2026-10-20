@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSafeRemoveUnderRootDeletesNestedFile(t *testing.T) {
+func TestSafeRemoveUnderRoot_DeletesNestedFile(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "publisher", "model")
 	require.NoError(t, os.MkdirAll(target, 0o755))
@@ -22,13 +22,13 @@ func TestSafeRemoveUnderRootDeletesNestedFile(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist, "target still exists after delete")
 }
 
-func TestSafeRemoveUnderRootRejectsTraversal(t *testing.T) {
+func TestSafeRemoveUnderRoot_RejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	require.Error(t, safeRemoveUnderRoot(root, filepath.Join(root, "..", filepath.Base(outside))), "expected traversal escape to fail")
 }
 
-func TestSafeRemoveUnderRootRejectsSymlinkEscape(t *testing.T) {
+func TestSafeRemoveUnderRoot_RejectsSymlinkEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires elevated privileges on Windows")
 	}

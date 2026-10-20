@@ -78,7 +78,7 @@ func waitForResponseID(t *testing.T, msgs <-chan jsonrpc.Message, id int, timeou
 // nvpair-node-settings through one broker, restarts the broker against the same
 // config dir, and asserts cluster:get-node-id reports the restored clusterId
 // (rather than the "" a fresh cluster-manager comes up with).
-func TestBrokerRestoresClusterIdentityAfterRestart(t *testing.T) {
+func TestBroker_RestoresClusterIdentityAfterRestart(t *testing.T) {
 	configDir := t.TempDir()
 	const clusterID = "restore-test-cluster-0001"
 	const friendly = "Restore Test Lab"
@@ -163,7 +163,7 @@ func waitSettingClusterID(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Mes
 // closes: cluster:create must persist the new id to nvpair-node-settings (so it
 // survives a restart), and cluster:leave must clear it (so the node stays
 // unclustered after a restart rather than having the stale id restored).
-func TestBrokerPersistsClusterLifecycleToSettings(t *testing.T) {
+func TestBroker_PersistsClusterLifecycleToSettings(t *testing.T) {
 	if portBusy(14321) {
 		t.Skip("cluster-manager inter-node port 14321 already in use; skipping")
 	}

@@ -86,7 +86,7 @@ func nodeForModel(t *testing.T, id, serverURL, model string) Node {
 }
 
 // Preflight cannot authorize a browser when no engine is reachable.
-func TestHandlePlain_PreflightWithoutEngineFails(t *testing.T) {
+func TestHandlePlain_RejectsPreflightWithoutEnabledEngine(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		p := testProxy(tc.profile, NewDiscovery(), tc.profile.FacadePort)
 		req := corsRequest(http.MethodOptions, tc.inferencePath, "http://app.test")
@@ -100,7 +100,7 @@ func TestHandlePlain_PreflightWithoutEngineFails(t *testing.T) {
 // TestHandlePlain_EngineCredentialedPreflightPreserved: when an engine opts an
 // exact origin into credentialed CORS, its preflight policy reaches the browser
 // instead of being replaced by the proxy's uncredentialed wildcard fallback.
-func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
+func TestHandlePlain_PreservesEngineCredentialedPreflight(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		preflightSeen := make(chan struct{}, 1)
 		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +140,7 @@ func TestHandlePlain_EngineCredentialedPreflightPreserved(t *testing.T) {
 // TestHandleHTTP_EngineCORSPolicyPreserved: an engine that declares its own
 // origin policy keeps it. Replacing it with the proxy's wildcard would widen
 // what the user configured, and would break a credentialed response outright.
-func TestHandleHTTP_EngineCORSPolicyPreserved(t *testing.T) {
+func TestHandleHTTP_PreservesEngineCORSPolicy(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
@@ -163,7 +163,7 @@ func TestHandleHTTP_EngineCORSPolicyPreserved(t *testing.T) {
 }
 
 // Preserve incomplete upstream policy without adding permissions.
-func TestHandleHTTP_EngineCredentialsWithoutOriginPreserved(t *testing.T) {
+func TestHandleHTTP_PreservesEngineCredentialsWithoutOrigin(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -186,7 +186,7 @@ func TestHandleHTTP_EngineCredentialsWithoutOriginPreserved(t *testing.T) {
 
 // TestHandleHTTP_HappyPathSingleNode: the common case — one healthy node
 // answers directly, preserving the body and absence of CORS permissions.
-func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
+func TestHandleHTTP_ForwardsRequestToSingleNode(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		var gotBody string
 		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +212,7 @@ func TestHandleHTTP_HappyPathSingleNode(t *testing.T) {
 
 // TestHandleHTTP_NoRetryOn400: a client error (400) is returned as-is and not
 // failed over — retrying elsewhere would return the same error and mask it.
-func TestHandleHTTP_NoRetryOn400(t *testing.T) {
+func TestHandleHTTP_DoesNotRetryBadRequestResponse(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		hits := 0
 		bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -241,7 +241,7 @@ func TestHandleHTTP_NoRetryOn400(t *testing.T) {
 }
 
 // Proxy-generated errors grant no cross-origin access.
-func TestHandleHTTP_RejectionHasNoCORS(t *testing.T) {
+func TestHandleHTTP_OmitsCORSHeadersFromLocalRejection(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		p := testProxy(tc.profile, NewDiscovery(), tc.profile.FacadePort)
 		rec := httptest.NewRecorder()
@@ -254,7 +254,7 @@ func TestHandleHTTP_RejectionHasNoCORS(t *testing.T) {
 
 // TestHandleHTTP_FailoverOn503: a busy first node (503) is skipped and the
 // request is filled by the next node, with the original body replayed.
-func TestHandleHTTP_FailoverOn503(t *testing.T) {
+func TestHandleHTTP_FailsOverOnServiceUnavailable(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -314,7 +314,7 @@ func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
 // TestHandleHTTP_404FailoverInferenceOnly: a 404 (model-not-found) on an
 // inference call fails over to the next advertised owner, but a 404 on a
 // non-inference path is returned as-is.
-func TestHandleHTTP_404FailoverInferenceOnly(t *testing.T) {
+func TestHandleHTTP_FailsOverOnNotFoundForInferenceRequests(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -515,7 +515,7 @@ func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
 	})
 }
 
-func TestHandleHTTP_LlamaCPPModelListsAggregateFleet(t *testing.T) {
+func TestHandleHTTP_AggregatesLlamaCPPModelsAcrossNodes(t *testing.T) {
 	for _, path := range []string{"/models", "/v1/models"} {
 		t.Run(path, func(t *testing.T) {
 			profile, ok := profileFor("llamacpp")
@@ -566,7 +566,7 @@ func TestHandleHTTP_LlamaCPPModelListsAggregateFleet(t *testing.T) {
 	}
 }
 
-func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {
+func TestHandleHTTP_UsesEngineSpecificUpstreamModelListPath(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method, "upstream request method")
 		assert.Equal(t, "/models", r.URL.Path, "upstream request path")
@@ -591,7 +591,7 @@ func TestHandleHTTP_ModelListRemapsUpstreamPath(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"id":"remapped"`, "remapped model list")
 }
 
-func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
+func TestHandleHTTP_DistinguishesEmptyModelListFromUnavailableNodes(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		serveEmpty := func() *httptest.Server {
 			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -631,7 +631,7 @@ func TestHandleHTTP_ModelListEmptyAndUnavailable(t *testing.T) {
 // model in the engine's own spelling — which for Ollama differs from what the
 // client requests, so this also pins that normalizeModel is applied on the
 // gate rather than only on the model list.
-func TestHandleHTTP_StrictModelRouting(t *testing.T) {
+func TestHandleHTTP_RoutesOnlyToNodesAdvertisingRequestedModel(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		missHits, unknownHits, matchHits := 0, 0, 0
 		miss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -689,7 +689,7 @@ func TestHandleHTTP_StrictModelRouting(t *testing.T) {
 // TestHandleHTTP_InferenceRouting proves each engine inference route is
 // model-routed, retries a model-not-found response, and
 // forwards the request path and body unchanged.
-func TestHandleHTTP_InferenceRouting(t *testing.T) {
+func TestHandleHTTP_SelectsEligibleNodeForInference(t *testing.T) {
 	test := func(name, path string, profiles ...engineProfile) {
 		t.Run(name, func(t *testing.T) {
 			for _, profile := range profiles {
@@ -760,7 +760,7 @@ func TestHandleHTTP_InferenceRouting(t *testing.T) {
 	test("Anthropic messages", "/v1/messages", ollama, lmstudio)
 }
 
-func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
+func TestHandleHTTP_RejectsLocallyWhenNoNodeAdvertisesModel(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		hits := 0
 		upstream := func() *httptest.Server {
@@ -795,7 +795,7 @@ func TestHandleHTTP_NoAdvertisedModelRejectsLocally(t *testing.T) {
 // "name" or "model", and the lookup must reach a node that has that model even
 // when the scheduler ranks a node without it first. A non-owner answers 404,
 // which a client like Hermes reads as "model unknown" (issue #94).
-func TestHandleHTTP_ShowRoutesToModelOwner(t *testing.T) {
+func TestHandleHTTP_RoutesModelLookupToModelOwner(t *testing.T) {
 	tc := ollamaCase(t)
 	test := func(name, requestBody string) {
 		t.Run(name, func(t *testing.T) {
@@ -850,7 +850,7 @@ func TestHandleHTTP_ShowRoutesToModelOwner(t *testing.T) {
 
 // TestHandleHTTP_ShowWithNoOwnerAnswers404Locally: when no node has the model,
 // the proxy answers the lookup itself instead of asking a node that lacks it.
-func TestHandleHTTP_ShowWithNoOwnerAnswers404Locally(t *testing.T) {
+func TestHandleHTTP_ReturnsLocalNotFoundForModelLookupWithoutOwner(t *testing.T) {
 	tc := ollamaCase(t)
 	hits := 0
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -876,7 +876,7 @@ func TestHandleHTTP_ShowWithNoOwnerAnswers404Locally(t *testing.T) {
 
 // TestHandleHTTP_ShowFailsOverOnOwner404: an advertised owner that answers 404
 // has a stale inventory, so the lookup moves on to the next owner.
-func TestHandleHTTP_ShowFailsOverOnOwner404(t *testing.T) {
+func TestHandleHTTP_FailsOverModelLookupWhenOwnerReturnsNotFound(t *testing.T) {
 	tc := ollamaCase(t)
 	staleHits, goodHits := 0, 0
 	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -906,7 +906,7 @@ func TestHandleHTTP_ShowFailsOverOnOwner404(t *testing.T) {
 
 // TestResolveCandidates_SelfGuard: a node resolving to the proxy's own
 // listen address is dropped so we never self-forward.
-func TestResolveCandidates_SelfGuard(t *testing.T) {
+func TestResolveCandidates_ExcludesProxyOwnListener(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		port := tc.profile.FacadePort
 		disc := NewDiscovery()

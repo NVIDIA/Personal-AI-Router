@@ -19,7 +19,7 @@ import (
 	settings "nvpair-shared/enginesettings"
 )
 
-func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
+func TestSettingsRebind_AddressesOnlyRequestedFacade(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			h := newSettingsHarness(t)
@@ -43,7 +43,7 @@ func TestSettingsRebindAddressesOnlyRequestedFacade(t *testing.T) {
 	}
 }
 
-func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
+func TestExplicitSettingsBindFailure_PreservesChosenPort(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			const requested = 25000
@@ -79,7 +79,7 @@ func TestExplicitSettingsBindFailurePreservesChosenPort(t *testing.T) {
 	}
 }
 
-func TestSettingsReservesStoppedProxySavedPort(t *testing.T) {
+func TestSettings_ReservesStoppedProxySavedPort(t *testing.T) {
 	test := func(name string, serverPort bool) {
 		t.Run(name, func(t *testing.T) {
 			h := newSettingsHarness(t)
@@ -104,7 +104,7 @@ func TestSettingsReservesStoppedProxySavedPort(t *testing.T) {
 	test("proxy port cannot reuse saved proxy port", false)
 }
 
-func TestSettingsMigrationRejectsReservedPorts(t *testing.T) {
+func TestSettingsMigration_RejectsReservedPorts(t *testing.T) {
 	test := func(name string, reserve func(*settingsHarness, settings.Request) int) {
 		t.Run(name, func(t *testing.T) {
 			h := newSettingsHarness(t)
@@ -141,7 +141,7 @@ func TestSettingsMigrationRejectsReservedPorts(t *testing.T) {
 	})
 }
 
-func TestEnabledEngineRestorationSurvivesInvalidSettingsJournal(t *testing.T) {
+func TestEnabledEngineRestoration_SurvivesInvalidSettingsJournal(t *testing.T) {
 	b := &Broker{clusterDir: filepath.Join(t.TempDir(), "cluster")}
 	path, err := b.engineSettingsPath()
 	require.NoError(t, err)
@@ -166,7 +166,7 @@ func TestEnabledEngineRestorationSurvivesInvalidSettingsJournal(t *testing.T) {
 	require.NotNil(t, b.engineSettingsError, "invalid journal was not reported")
 }
 
-func TestSettingsFullCommandJournalMigratesBeforeRecovery(t *testing.T) {
+func TestSettingsFullCommandJournal_MigratesBeforeRecovery(t *testing.T) {
 	h := newSettingsHarness(t)
 	request := h.request(t)
 	h.b.engineConfigMu.Lock()

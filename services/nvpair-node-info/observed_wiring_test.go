@@ -47,7 +47,7 @@ func nonLoopbackIPv4(t *testing.T) string {
 // the notification the broker listens for. Both halves are one line of production
 // setup each, and removing either leaves the observer's own tests passing while no
 // address evidence ever reaches address selection.
-func TestServedRequestReportsTheAddressTheClientReached(t *testing.T) {
+func TestServedRequest_ReportsTheAddressTheClientReached(t *testing.T) {
 	local := nonLoopbackIPv4(t)
 
 	observer := newAddressObserver()
@@ -128,7 +128,7 @@ func (l *oneConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
 // own LAN addresses, which a firewall or a container with only loopback can deny.
 // It also pins the part that is easy to get subtly wrong: the hook must fire for
 // the connection that served a request, not merely for one that was accepted.
-func TestServerRecordsTheServingConnectionWhenARequestArrives(t *testing.T) {
+func TestServer_RecordsTheServingConnectionWhenARequestArrives(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	t.Cleanup(func() {
 		_ = serverConn.Close()

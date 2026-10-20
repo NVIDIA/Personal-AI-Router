@@ -74,7 +74,7 @@ func proxyForCORSTargets(t *testing.T, tc engineCase, servers ...*httptest.Serve
 	}
 	return testProxy(tc.profile, d, tc.profile.StandalonePort).soleFacade()
 }
-func TestCORSOriginDenialIsNotRewritten(t *testing.T) {
+func TestCORSOriginDenial_IsNotRewritten(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		for _, status := range []int{200, 401, 403} {
 			t.Run(http.StatusText(status), func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestCORSOriginDenialIsNotRewritten(t *testing.T) {
 // A preflight is shared only where every engine that answered agrees. The
 // request it precedes would route around an engine that is down, so that
 // engine's silence must not deny the browser the ones that are up.
-func TestCORSClusterRequiresEveryRespondingTarget(t *testing.T) {
+func TestCORSCluster_RequiresEveryRespondingTarget(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		for _, policy := range []struct {
 			name, origin string
@@ -135,7 +135,7 @@ func TestCORSClusterRequiresEveryRespondingTarget(t *testing.T) {
 // engine that could not answer has no permission to intersect: its models are
 // absent from the merged list either way, so treating its silence as a denial
 // would let one offline node cut a browser off from every online one.
-func TestCORSModelListRequiresEveryRespondingTarget(t *testing.T) {
+func TestCORSModelList_RequiresEveryRespondingTarget(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		for _, policy := range []struct {
 			name, origin string
@@ -167,7 +167,7 @@ func TestCORSModelListRequiresEveryRespondingTarget(t *testing.T) {
 
 // An engine that is down must not be able to deny the browser, but one that
 // answers and refuses the origin still must.
-func TestCORSModelListSeparatesSilenceFromDenial(t *testing.T) {
+func TestCORSModelList_SeparatesSilenceFromDenial(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		allowing := corsEngine(t, tc, "http://app.test", 200)
 		defer allowing.Close()
@@ -190,7 +190,7 @@ func TestCORSModelListSeparatesSilenceFromDenial(t *testing.T) {
 		require.NotContains(t, rec.Body.String(), "private-model", "a live refusal was overridden: status")
 	})
 }
-func TestCORSNoRetryOnPermissionDenial(t *testing.T) {
+func TestCORS_DoesNotRetryPermissionDenials(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		for _, status := range []int{401, 403} {
 			a := corsEngine(t, tc, "", status)
@@ -206,7 +206,7 @@ func TestCORSNoRetryOnPermissionDenial(t *testing.T) {
 		}
 	})
 }
-func TestCORSOrdinaryOptionsAndPolicyChanges(t *testing.T) {
+func TestCORS_AppliesPolicyChangesToOrdinaryOptionsRequests(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		var origin atomic.Value
 		origin.Store("http://app.test")
@@ -241,7 +241,7 @@ func TestCORSOrdinaryOptionsAndPolicyChanges(t *testing.T) {
 		require.Equal(t, 403, rec.Code, "cached obsolete permission")
 	})
 }
-func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
+func TestCORSModelList_StripsCredentialsAndDoesNotRedirect(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		var leaked atomic.Int32
 		sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked.Add(1) }))
@@ -284,7 +284,7 @@ func TestCORSModelListStripsCredentialsAndDoesNotRedirect(t *testing.T) {
 		require.Equal(t, int32(0), leaked.Load(), "followed aggregate redirect")
 	})
 }
-func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
+func TestCORSPairedIngress_PreservesPolicyAndIsTerminal(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		aDir, bDir := t.TempDir(), t.TempDir()
 		clustertrusttest.Join(t, aDir, "cluster", "a")
@@ -333,7 +333,7 @@ func TestCORSPairedIngressPreservesPolicyAndIsTerminal(t *testing.T) {
 }
 
 // Opt-in fixture for real browser validation; regular suites do not keep a server running.
-func TestCORSBrowserFixture(t *testing.T) {
+func TestCORS_EnforcesPolicyForBrowserRequests(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		file := os.Getenv("PAIR_CORS_BROWSER_FIXTURE")
 		if file == "" {
@@ -379,7 +379,7 @@ func TestCORSBrowserFixture(t *testing.T) {
 
 // TestCORSExternalEngineParity optionally compares a running engine with this
 // proxy implementation using read-only OPTIONS and GET requests.
-func TestCORSExternalEngineParity(t *testing.T) {
+func TestCORS_PreservesExternalEnginePolicy(t *testing.T) {
 	tc := ollamaCase(t)
 	base := os.Getenv("PAIR_CORS_PARITY_URL")
 	if executable := os.Getenv("PAIR_CORS_OLLAMA_EXECUTABLE"); base == "" && executable != "" {
@@ -454,7 +454,7 @@ func TestCORSExternalEngineParity(t *testing.T) {
 	}
 }
 
-func TestCORSInvalidModelListIsNotPartiallyExposed(t *testing.T) {
+func TestCORSInvalidModelList_IsNotPartiallyExposed(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		good := corsEngine(t, tc, "http://app.test", 200)
 		defer good.Close()
@@ -474,7 +474,7 @@ func TestCORSInvalidModelListIsNotPartiallyExposed(t *testing.T) {
 		}
 	})
 }
-func TestCORSStreamingResponseIsPreserved(t *testing.T) {
+func TestCORSStreamingResponse_IsPreserved(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		release := make(chan struct{})
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

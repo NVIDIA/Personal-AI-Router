@@ -23,7 +23,7 @@ import (
 // Asserted structurally rather than by rendering, because the colour profile in
 // a test process is unset and lipgloss then drops colour from the output
 // entirely: the rendered strings for a right and a wrong pairing are identical.
-func TestTextOnAnAdaptiveBackgroundAdaptsToo(t *testing.T) {
+func TestTextOnAnAdaptiveBackground_AdaptsToo(t *testing.T) {
 	cases := map[string]lipgloss.Style{
 		"active tab":         tabActiveStyle,
 		"selected table row": tableStyles().Selected,
@@ -52,7 +52,7 @@ func TestTextOnAnAdaptiveBackgroundAdaptsToo(t *testing.T) {
 // reached for this flag is the one whose terminal was already detected wrongly,
 // so falling back to detection leaves them exactly where they started with no
 // indication why.
-func TestAppearanceOverrideIsExplicit(t *testing.T) {
+func TestAppearanceOverride_IsExplicit(t *testing.T) {
 	good := map[string]Appearance{
 		"auto":    AppearanceAuto,
 		"":        AppearanceAuto,
@@ -80,7 +80,7 @@ func TestAppearanceOverrideIsExplicit(t *testing.T) {
 // ready before anything renders. A waiter that returned early would put the
 // query back where it was — resolved during the first frame, when Bubble Tea
 // owns stdin and the terminal's reply goes to its reader instead.
-func TestStartAppearanceSettlesBeforeTheFirstFrame(t *testing.T) {
+func TestStartAppearance_SettlesBeforeTheFirstFrame(t *testing.T) {
 	before := lipgloss.HasDarkBackground()
 	t.Cleanup(func() { lipgloss.SetHasDarkBackground(before) })
 
@@ -95,7 +95,7 @@ func TestStartAppearanceSettlesBeforeTheFirstFrame(t *testing.T) {
 
 // TestSetAppearanceLeavesDetectionAloneOnAuto checks auto does not assert a
 // background of its own.
-func TestSetAppearanceLeavesDetectionAloneOnAuto(t *testing.T) {
+func TestSetAppearance_LeavesDetectionAloneOnAuto(t *testing.T) {
 	before := lipgloss.HasDarkBackground()
 	t.Cleanup(func() { lipgloss.SetHasDarkBackground(before) })
 

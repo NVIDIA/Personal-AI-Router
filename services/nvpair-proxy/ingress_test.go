@@ -19,7 +19,7 @@ import (
 // relay-discovered peers — even one advertising a cluster principal — because it
 // holds no pin to reach them over mTLS. Only an explicit, user-added manual node
 // survives, dialed plaintext.
-func TestResolveCandidatesUnclusteredDropsRelayPeers(t *testing.T) {
+func TestResolveCandidatesUnclustered_DropsRelayPeers(t *testing.T) {
 	disc := NewDiscovery()
 	disc.SetSubscribed([]Node{{
 		ID: "peer-a", Host: "peer-a", Port: 11434,
@@ -43,7 +43,7 @@ func TestResolveCandidatesUnclusteredDropsRelayPeers(t *testing.T) {
 // TestHandlePlainRejectsNonLoopback proves the plaintext personality is
 // loopback-only: a LAN caller is refused (closing the former open-relay), so
 // peers cannot use the plaintext path at all.
-func TestHandlePlainRejectsNonLoopback(t *testing.T) {
+func TestHandlePlain_RejectsNonLoopback(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	req := httptest.NewRequest(http.MethodPost, "/api/generate", nil)
 	req.RemoteAddr = "192.0.2.50:40000"
@@ -55,7 +55,7 @@ func TestHandlePlainRejectsNonLoopback(t *testing.T) {
 }
 
 // Preflight is subject to the same ingress gate as ordinary requests.
-func TestHandlePlainRejectsPreflightAtLoopbackGate(t *testing.T) {
+func TestHandlePlain_RejectsPreflightAtLoopbackGate(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	req := httptest.NewRequest(http.MethodOptions, "/api/generate", nil)
 	req.RemoteAddr = "192.0.2.50:40000"
@@ -70,7 +70,7 @@ func TestHandlePlainRejectsPreflightAtLoopbackGate(t *testing.T) {
 // never be adopted as the engine itself. The rejection has to name the engine
 // this proxy fronts, or the operator reading it is sent to the wrong process —
 // which is why this runs per engine rather than asserting only the status.
-func TestHandlePlainRejectsEngineIdentityProbe(t *testing.T) {
+func TestHandlePlain_RejectsEngineIdentityProbe(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		p := testProxy(tc.profile, NewDiscovery(), tc.profile.StandalonePort)
 		req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
@@ -87,7 +87,7 @@ func TestHandlePlainRejectsEngineIdentityProbe(t *testing.T) {
 // TestHandleClusterIngressUnclusteredForbids proves the mTLS ingress fails
 // closed on an unclustered node (nil mesh): with no cluster identity there are
 // no pins, so every caller is rejected.
-func TestHandleClusterIngressUnclusteredForbids(t *testing.T) {
+func TestHandleClusterIngress_RejectsRequestsWithoutClusterMembership(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	req := httptest.NewRequest(http.MethodPost, "/api/generate", nil) // no client cert
 	rec := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestHandleClusterIngressUnclusteredForbids(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rec.Code, "unclustered ingress status")
 }
 
-func TestIsLoopbackRemote(t *testing.T) {
+func TestIsLoopbackRemote_DistinguishesLoopbackAndLANClients(t *testing.T) {
 	for _, c := range []struct {
 		addr string
 		want bool
@@ -112,7 +112,7 @@ func TestIsLoopbackRemote(t *testing.T) {
 	}
 }
 
-func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {
+func TestLocalReverseProxy_UsesSharedPlainTransport(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	shared := p.plainHTTPTransport()
 	target := &url.URL{Scheme: "http", Host: "127.0.0.1:1"}

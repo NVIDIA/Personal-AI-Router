@@ -49,7 +49,7 @@ func contentBudget(t *testing.T, w, h int) int {
 // TestNodesViewNeverOverflowsItsBudget covers the tab with the most optional
 // chrome: a filter note, a feed warning, an inbound-invite prompt, an inline
 // editor, and a status toast can all be present at once.
-func TestNodesViewNeverOverflowsItsBudget(t *testing.T) {
+func TestNodesView_NeverOverflowsItsBudget(t *testing.T) {
 	const w, h = 80, 24
 	budget := contentBudget(t, w, h)
 
@@ -105,7 +105,7 @@ func TestNodesViewNeverOverflowsItsBudget(t *testing.T) {
 
 // TestErrorsViewNeverOverflowsItsBudget covers the context line added for the
 // selected error, which appears exactly when an engine failure is highlighted.
-func TestErrorsViewNeverOverflowsItsBudget(t *testing.T) {
+func TestErrorsView_NeverOverflowsItsBudget(t *testing.T) {
 	const w, h = 80, 24
 	budget := contentBudget(t, w, h)
 
@@ -141,7 +141,7 @@ func TestErrorsViewNeverOverflowsItsBudget(t *testing.T) {
 
 // TestNodeDetailNeverOverflowsItsBudget covers the screen with two tables
 // sharing one budget plus a hardware block whose height depends on the node.
-func TestNodeDetailNeverOverflowsItsBudget(t *testing.T) {
+func TestNodeDetail_NeverOverflowsItsBudget(t *testing.T) {
 	const w, h = 80, 24
 	budget := contentBudget(t, w, h)
 
@@ -192,7 +192,7 @@ func TestNodeDetailNeverOverflowsItsBudget(t *testing.T) {
 // show, at every size worth caring about, with and without a status line, and
 // asserts two things: it does not panic, and it does not overflow. A new view
 // is covered the moment it is added to defaultViews.
-func TestEveryViewRendersWithinBudget(t *testing.T) {
+func TestEveryView_RendersWithinBudget(t *testing.T) {
 	// Every height from the supported minimum upward, not a handful of sampled
 	// sizes. The sampled list jumped from a budget of 21 to 11 and stepped
 	// straight over the band where the Service tab overran by one row — a hole
@@ -238,7 +238,7 @@ func TestEveryViewRendersWithinBudget(t *testing.T) {
 // terminal would otherwise wrap, and every wrapped row pushes the footer one
 // row further off the screen. This proves the clamp holds for the real views,
 // not only for the stub the shell's own frame test uses.
-func TestNarrowTerminalClipsRatherThanOverruns(t *testing.T) {
+func TestNarrowTerminal_ClipsRatherThanOverruns(t *testing.T) {
 	const h = 24
 	for w := minTerminalWidth; w <= 100; w++ {
 		for _, withStatus := range []bool{false, true} {
@@ -264,7 +264,7 @@ func TestNarrowTerminalClipsRatherThanOverruns(t *testing.T) {
 // row appeared and the shell deleted the last line — which is the status row
 // carrying "press y to confirm" for the data reset. The operator pressed enter
 // on the wipe, saw nothing change, and was left armed with no prompt.
-func TestServiceConfirmationSurvivesEveryHeight(t *testing.T) {
+func TestServiceConfirmation_SurvivesEveryHeight(t *testing.T) {
 	for h := minTerminalHeight; h <= 44; h++ {
 		budget := contentBudget(t, 80, h)
 		if budget <= 0 {
@@ -289,7 +289,7 @@ func TestServiceConfirmationSurvivesEveryHeight(t *testing.T) {
 // eight-GPU box produced ten unshrinkable lines that pushed the engine table,
 // the models list, and the status line off the frame — leaving a hardware
 // readout and no sign anything was missing.
-func TestDetailSurvivesAManyGpuHost(t *testing.T) {
+func TestDetail_SurvivesAManyGpuHost(t *testing.T) {
 	for _, gpuCount := range []int{1, 2, 4, 8, 16} {
 		gpus := make([]noderec.GPUInfo, gpuCount)
 		for i := range gpus {
@@ -330,7 +330,7 @@ func TestDetailSurvivesAManyGpuHost(t *testing.T) {
 // digit, which leaves it armed behind a prompt that is no longer on screen — to
 // be confirmed by whatever the operator presses on returning. One of the three
 // sites had this and the other two did not.
-func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
+func TestArmedActions_CaptureKeysAcrossViews(t *testing.T) {
 	// Armed through the real key paths, so the prompt is set the way it is at
 	// runtime rather than by poking the flag.
 	nodesLeave := newNodesView(nil)
@@ -391,7 +391,7 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 // it was about to render, so the section went through at exactly the sizes
 // where it did not fit — and the shell deleted the status line, which is where
 // an armed "press y to confirm" lives.
-func TestDetailStaysInBudgetWithAStaleEngineList(t *testing.T) {
+func TestDetail_StaysInBudgetWithAStaleEngineList(t *testing.T) {
 	gpus := make([]noderec.GPUInfo, 4)
 	for i := range gpus {
 		gpus[i] = noderec.GPUInfo{Name: "GPU", VramBytes: 1 << 30}
@@ -430,7 +430,7 @@ func TestDetailStaysInBudgetWithAStaleEngineList(t *testing.T) {
 // bindings regardless — so the composed line advertised keys that no longer
 // reached the shell. In a port field the digits are what you are meant to type,
 // and q typed a q instead of quitting.
-func TestFooterHidesGlobalsWhileCapturing(t *testing.T) {
+func TestFooter_HidesGlobalsWhileCapturing(t *testing.T) {
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 80, 24
 	m.resizeViews()
@@ -528,7 +528,7 @@ func noteStatus(v View) {
 
 // TestCatalogBrowserStaysInBudget covers the overlay, which replaces a whole
 // screen and so gets the full content budget.
-func TestCatalogBrowserStaysInBudget(t *testing.T) {
+func TestCatalogBrowser_StaysInBudget(t *testing.T) {
 	for _, size := range [][2]int{{120, 40}, {80, 24}, {60, 12}, {40, 12}} {
 		w, h := size[0], size[1]
 		budget := contentBudget(t, w, h)
@@ -555,7 +555,7 @@ func TestCatalogBrowserStaysInBudget(t *testing.T) {
 
 // TestNodeDetailStaysInBudgetWhenShort covers the drill-down at sizes below the
 // 80x24 the per-view test uses, where its two tables and hardware block compete.
-func TestNodeDetailStaysInBudgetWhenShort(t *testing.T) {
+func TestNodeDetail_StaysInBudgetWhenShort(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {80, 16}, {80, 13}, {60, 12}, {40, 12}} {
 		w, h := size[0], size[1]
 		budget := contentBudget(t, w, h)
@@ -585,7 +585,7 @@ func TestNodeDetailStaysInBudgetWhenShort(t *testing.T) {
 
 // TestNarrowAndShortTerminalsStayInBudget checks the smallest sizes anyone
 // plausibly uses, where the budget can go to almost nothing.
-func TestNarrowAndShortTerminalsStayInBudget(t *testing.T) {
+func TestTerminalViews_FitNarrowAndShortDimensions(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {80, 14}, {60, 12}, {40, 12}} {
 		w, h := size[0], size[1]
 		budget := contentBudget(t, w, h)

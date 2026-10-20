@@ -45,7 +45,7 @@ func mkTerm(id, origin string, createdAt, completedAt int64) Incoming {
 	return in
 }
 
-func TestPersistenceRoundTripTerminalOnly(t *testing.T) {
+func TestWorkloadPersistence_RoundTripsOnlyTerminalHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
 	s.Apply(mkTerm("1", "a", testNow-1000, testNow-150))
@@ -62,7 +62,7 @@ func TestPersistenceRoundTripTerminalOnly(t *testing.T) {
 	require.False(t, ok, "active c/3 must not be persisted")
 }
 
-func TestFlushCoalescesOnDirty(t *testing.T) {
+func TestFlush_CoalescesOnDirty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
 
@@ -81,7 +81,7 @@ func TestFlushCoalescesOnDirty(t *testing.T) {
 	require.FileExists(t, path, "file should exist after terminal flush")
 }
 
-func TestCountCapEviction(t *testing.T) {
+func TestWorkloadHistory_EvictsOldestRecordsAboveCountLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
 	s.historyCap = 2
@@ -98,7 +98,7 @@ func TestCountCapEviction(t *testing.T) {
 	require.True(t, ok, "newest (completedAt=testNow-100) should be kept")
 }
 
-func TestAgeCapEviction(t *testing.T) {
+func TestWorkloadHistory_EvictsRecordsBeyondAgeLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := New().WithPersistence(path)
 	s.maxAgeMs = 1000
@@ -113,7 +113,7 @@ func TestAgeCapEviction(t *testing.T) {
 	require.True(t, ok, "record within maxAge should remain")
 }
 
-func TestCheckpointRotates(t *testing.T) {
+func TestCheckpoint_Rotates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
 	s.Apply(mkTerm("1", "a", testNow-1000, testNow-100))
@@ -124,7 +124,7 @@ func TestCheckpointRotates(t *testing.T) {
 	require.FileExists(t, path+".1", "rotation .1 should exist after checkpoint")
 }
 
-func TestLoadFallsBackOnCorruptPrimary(t *testing.T) {
+func TestLoad_FallsBackOnCorruptPrimary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
 	s.Apply(mkTerm("1", "a", testNow-1000, testNow-100))
@@ -141,13 +141,13 @@ func TestLoadFallsBackOnCorruptPrimary(t *testing.T) {
 	require.True(t, ok, "should have recovered a/1 from rotation .1")
 }
 
-func TestLoadMissingFileIsClean(t *testing.T) {
+func TestWorkloadHistoryLoad_StartsEmptyWhenFileIsMissing(t *testing.T) {
 	s := New().WithPersistence(filepath.Join(t.TempDir(), "absent.json"))
 	require.NoError(t, s.Load(), "missing file should load cleanly")
 	require.Equal(t, 0, s.Len())
 }
 
-func TestInferredTerminalNotPersisted(t *testing.T) {
+func TestWorkloadPersistence_ExcludesInferredTerminalRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wl.json")
 	s := newStoreAt(path, testNow)
 	s.Apply(mkTerm("2", "a", testNow-1000, testNow-100))         // authoritative terminal → persisted
@@ -162,7 +162,7 @@ func TestInferredTerminalNotPersisted(t *testing.T) {
 	require.False(t, ok, "inferred terminal must not be persisted")
 }
 
-func TestDisabledPersistenceNoops(t *testing.T) {
+func TestWorkloadPersistence_PerformsNoIOWhenDisabled(t *testing.T) {
 	s := New() // no path
 	s.Apply(mkTerm("1", "a", testNow-1000, testNow-100))
 	require.NoError(t, s.Flush(), "flush with persistence off should be a no-op")

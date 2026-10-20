@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
+func TestCORSInvalidInventory_PreservesApprovedPolicy(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		test := func(name string, denied, malformedFirst bool) {
 			t.Run(name, func(t *testing.T) {
@@ -56,7 +56,7 @@ func TestCORSInvalidInventoryPreservesApprovedPolicy(t *testing.T) {
 	})
 }
 
-func TestModelListStripsCredentialsWithoutOrigin(t *testing.T) {
+func TestModelList_StripsCredentialsWithoutOrigin(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Empty(t, r.Header.Get("Authorization"), "caller credentials forwarded to model-list candidate")

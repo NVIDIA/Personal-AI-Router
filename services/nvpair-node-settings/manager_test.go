@@ -199,7 +199,7 @@ func callExpectError(t *testing.T, m *Manager, rw *captureRW, id int, method str
 	return resp.Error
 }
 
-func TestClusterAutoSyncRoundTrip(t *testing.T) {
+func TestClusterAutoSync_RoundTripsThroughSettings(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	got := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-cluster-auto-sync", nil)
@@ -215,7 +215,7 @@ func TestClusterAutoSyncRoundTrip(t *testing.T) {
 // byte-for-byte (no normalization, no trimming) so a future
 // migration of the id format (UUID vs hash vs whatever security
 // picks) doesn't have to coordinate with the datastore.
-func TestClusterIDRoundTrip(t *testing.T) {
+func TestClusterID_RoundTripsThroughSettings(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	got := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-id", nil)
@@ -234,7 +234,7 @@ func TestClusterIDRoundTrip(t *testing.T) {
 // TestClusterFriendlyNameRoundTrip covers the display-only label.
 // Same string get/set shape as cluster-id, but no push side — the
 // notification assertions live in TestNoPushSettersDoNotEmit.
-func TestClusterFriendlyNameRoundTrip(t *testing.T) {
+func TestClusterFriendlyName_RoundTripsThroughSettings(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	got := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-friendly-name", nil)
@@ -252,7 +252,7 @@ func TestClusterFriendlyNameRoundTrip(t *testing.T) {
 // must see a clean -32601 method-not-found, not a stale alias
 // response, so any drift between this manager and an older client
 // surfaces loudly.
-func TestConnectionEndpointsAreNotRequestMethods(t *testing.T) {
+func TestConnectionEndpoints_AreNotRequestMethods(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	callExpectError(t, m, rw, 1, "connection/cluster-identity", nil, -32601)
@@ -270,7 +270,7 @@ func TestConnectionEndpointsAreNotRequestMethods(t *testing.T) {
 // (e.g. via a forgotten case branch that mutates a now-deleted
 // field). They should return -32601 just like any other unknown
 // method.
-func TestRemovedLegacyMethodsReturnMethodNotFound(t *testing.T) {
+func TestLegacySettingsMethods_ReturnMethodNotFound(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	for i, method := range []string{
@@ -289,7 +289,7 @@ func TestRemovedLegacyMethodsReturnMethodNotFound(t *testing.T) {
 // derive "are we clustered?" locally from `id != ""` because the
 // real membership predicate is still owned by the security model
 // and embedding a boolean here would freeze the wrong answer.
-func TestSetClusterIDEmitsConnectionIdentityNotification(t *testing.T) {
+func TestSetClusterID_EmitsConnectionIdentityNotification(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 1, "settings/set-cluster-id", map[string]string{"value": "cluster-xyz"})
@@ -309,7 +309,7 @@ func TestSetClusterIDEmitsConnectionIdentityNotification(t *testing.T) {
 // TestSetClusterAutoSyncEmitsConnectionAutoSyncNotification verifies
 // the auto-sync push side. Same lifecycle as cluster-identity: one
 // notification per successful set, carrying the post-set value.
-func TestSetClusterAutoSyncEmitsConnectionAutoSyncNotification(t *testing.T) {
+func TestSetClusterAutoSync_EmitsConnectionAutoSyncNotification(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 1, "settings/set-cluster-auto-sync", map[string]bool{"value": true})
@@ -329,7 +329,7 @@ func TestSetClusterAutoSyncEmitsConnectionAutoSyncNotification(t *testing.T) {
 // setters fire pushes. Touching force-ports or cluster-friendly-name
 // must not produce a connection/* frame, because those settings have
 // no live-connection consumers.
-func TestNoPushSettersDoNotEmit(t *testing.T) {
+func TestSettingsSetters_EmitNothingForSettingsWithoutPushNotification(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 1, "settings/set-force-ports", map[string]bool{"value": true})
@@ -345,7 +345,7 @@ func TestNoPushSettersDoNotEmit(t *testing.T) {
 // late-attach. Pre-seeding non-default cluster values would have
 // produced visible pushes under a startup-emit design; the test
 // asserts nothing arrives beyond `ready`.
-func TestRunEmitsOnlyReadyOnStartup(t *testing.T) {
+func TestRun_EmitsOnlyReadyOnStartup(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	seed := `{"cluster_id":"cluster-xyz","cluster_friendly_name":"Lab 3","cluster_auto_sync":true}`
@@ -380,7 +380,7 @@ func TestRunEmitsOnlyReadyOnStartup(t *testing.T) {
 // TestForcePortsRoundTrip locks down the (boolean) force-ports setting.
 // This setting is a single boolean policy switch for managed port ownership.
 // The actual safe claim/move logic lives in the broker and engine manager.
-func TestForcePortsRoundTrip(t *testing.T) {
+func TestForcePorts_RoundTripsThroughSettings(t *testing.T) {
 	m, rw, path := newTestManager(t)
 
 	got := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-force-ports", nil)
@@ -420,7 +420,7 @@ func TestForcePortsRoundTrip(t *testing.T) {
 // fail with EISDIR regardless of platform or umask. Removing the
 // blocker restores normal save() semantics for the rest of the
 // test.
-func TestSaveFailureRejectsValueAndDoesNotPersist(t *testing.T) {
+func TestSaveFailure_RejectsValueAndDoesNotPersist(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 
@@ -461,7 +461,7 @@ func TestSaveFailureRejectsValueAndDoesNotPersist(t *testing.T) {
 	assert.True(t, onDisk.ForcePorts, "subsequent successful set was not persisted (%v)", onDisk)
 }
 
-func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
+func TestSettings_PersistsAcrossManagerInstances(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 
@@ -502,7 +502,7 @@ func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
 //     never actually shipped; tested defensively to catch any
 //     accidental aliasing.
 //   - "future_setting" — any unknown future key. Same fate.
-func TestSchemaEvolutionIgnoresUnknownKeysIncludingRemovedSettings(t *testing.T) {
+func TestSchemaEvolution_IgnoresUnknownKeysIncludingRemovedSettings(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 
@@ -547,7 +547,7 @@ func TestSchemaEvolutionIgnoresUnknownKeysIncludingRemovedSettings(t *testing.T)
 // Without this, a torn file (e.g. crash mid-save on an earlier
 // version) wedges every settings call in the UI behind a parse error
 // until the user finds and deletes the file by hand.
-func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
+func TestLoadMalformedFile_RenamesAsideAndStartsWithDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	require.NoError(t, os.WriteFile(path, []byte("not valid json {{{"), 0o644), "seed write")
@@ -592,7 +592,7 @@ func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
 	assert.Equal(t, "cluster-zzz", asMap["cluster_id"], "recovered file missing the new setting (%v)", saved)
 }
 
-func TestTypeValidationRejectsWrongTypeAndMissingValue(t *testing.T) {
+func TestTypeValidation_RejectsWrongTypeAndMissingValue(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	// Wrong type for a bool field.
@@ -631,12 +631,12 @@ func TestTypeValidationRejectsWrongTypeAndMissingValue(t *testing.T) {
 	assert.Equal(t, -32602, resp.Error.Code, "wrong-type force-ports error")
 }
 
-func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {
+func TestUnknownMethod_ReturnsMethodNotFound(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 	callExpectError(t, m, rw, 1, "bogus/method", nil, -32601)
 }
 
-func TestLogSetLevelRequestAndNotification(t *testing.T) {
+func TestLogSetLevel_AcceptsRequestsAndNotifications(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	// Request form: replies with {"level": "debug"}.
@@ -660,7 +660,7 @@ func TestLogSetLevelRequestAndNotification(t *testing.T) {
 	}
 }
 
-func TestNotificationIsIgnored(t *testing.T) {
+func TestNotification_IsIgnored(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	m.handleMessage(notificationMessage("settings/set-cluster-id", map[string]string{"value": "cluster-zzz"}))
@@ -670,7 +670,7 @@ func TestNotificationIsIgnored(t *testing.T) {
 	assert.Equal(t, "", got["value"], "notification mutated state (%v)", got)
 }
 
-func TestShutdownRequestCancelsRun(t *testing.T) {
+func TestShutdownRequest_CancelsRun(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 

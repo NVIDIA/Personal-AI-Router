@@ -81,7 +81,7 @@ func okHandler() http.Handler {
 // node's own scanner and nothing else. It must keep working while unclustered —
 // a standalone machine reads its own inventory this way — and must refuse a LAN
 // caller, which is the leak this gate closes.
-func TestModelSurface_LoopbackOnlyForPlaintext(t *testing.T) {
+func TestModelSurface_RestrictsPlaintextToLoopback(t *testing.T) {
 	h := loopbackOnly(okHandler())
 
 	for _, remote := range []string{"127.0.0.1:51234", "[::1]:51234"} {
@@ -104,7 +104,7 @@ func TestModelSurface_LoopbackOnlyForPlaintext(t *testing.T) {
 // TestModelSurface_PinGateIsUnconditional: the mTLS personality admits a pinned
 // cluster peer and nobody else — including while this node belongs to no cluster,
 // where it must admit no one at all rather than falling open.
-func TestModelSurface_PinGateIsUnconditional(t *testing.T) {
+func TestModelSurface_RequiresPinnedPeerForEveryClusterRequest(t *testing.T) {
 	selfCert, selfKey := mintLeaf(t, "uuid-self")
 	peerCert, peerKey := mintLeaf(t, "uuid-peer")
 	strangerCert, strangerKey := mintLeaf(t, "uuid-stranger")

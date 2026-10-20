@@ -56,7 +56,7 @@ func (r *installProgressRecorder) assertSingleTerminal(t *testing.T, want string
 	require.Equal(t, []string{want}, terminal, "all install progress stages: %v", stages)
 }
 
-func TestInstallDownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
+func TestInstall_DownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
 	payload := []byte("artifact")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(payload)
@@ -84,7 +84,7 @@ func TestInstallDownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
 	assertNoArtifactTemps(t, manifest.Engine)
 }
 
-func TestInstallRejectsBadSecondArtifactBeforeCommand(t *testing.T) {
+func TestInstall_RejectsBadSecondArtifactBeforeCommand(t *testing.T) {
 	payload := []byte("artifact")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(payload)
@@ -107,7 +107,7 @@ func TestInstallRejectsBadSecondArtifactBeforeCommand(t *testing.T) {
 	assertNoArtifactTemps(t, manifest.Engine)
 }
 
-func TestInstallCancellationRemovesDownloadedArtifacts(t *testing.T) {
+func TestInstallCancellation_RemovesDownloadedArtifacts(t *testing.T) {
 	firstPayload := []byte("server")
 	secondStarted := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

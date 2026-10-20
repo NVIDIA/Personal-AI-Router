@@ -38,7 +38,7 @@ func callBrokerPortRequest(t *testing.T, b *Broker, method string, params json.R
 	}
 }
 
-func TestBrokerProxySetPortRejectsInvalidPorts(t *testing.T) {
+func TestBrokerProxySetPort_RejectsInvalidPorts(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			for _, tc := range []struct{ name, params string }{
@@ -59,7 +59,7 @@ func TestBrokerProxySetPortRejectsInvalidPorts(t *testing.T) {
 	}
 }
 
-func TestBrokerProxySetPortRejectsInheritedAlias(t *testing.T) {
+func TestBrokerProxySetPort_RejectsInheritedAlias(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			b := &Broker{}
@@ -72,7 +72,7 @@ func TestBrokerProxySetPortRejectsInheritedAlias(t *testing.T) {
 	}
 }
 
-func TestBrokerLlamaCPPProxySetPortRejectsConflicts(t *testing.T) {
+func TestBrokerLlamaCPPProxySetPort_RejectsConflicts(t *testing.T) {
 	test := func(name string, port func(*testing.T, *settingsHarness, settings.Snapshot) int) {
 		t.Run(name, func(t *testing.T) {
 			h := newSettingsHarnessForEngine(t, "llamacpp")
@@ -114,7 +114,7 @@ func TestBrokerLlamaCPPProxySetPortRejectsConflicts(t *testing.T) {
 	})
 }
 
-func TestBrokerLlamaCPPProxySetPortPersistsOnlyRequestedFacade(t *testing.T) {
+func TestBrokerLlamaCPPProxySetPort_PersistsOnlyRequestedFacade(t *testing.T) {
 	h := newSettingsHarnessForEngine(t, "llamacpp")
 	before, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "llamacpp"}, "")
 	require.NoError(t, err, "read initial settings")

@@ -176,7 +176,7 @@ const dataPlaneErrorsEnvelope = `{"nodeId":"intruder-node","errors":[{"id":"intr
 // ports — not even in the clear. Before this posture such a node accepted
 // plaintext workload events from any host on the network and relayed them into its
 // catalog as though a peer had sent them.
-func TestDataPlaneRefusesNonMemberWhenUnclustered(t *testing.T) {
+func TestDataPlane_RefusesNonMemberWhenUnclustered(t *testing.T) {
 	if portBusy(14319) || portBusy(14320) {
 		t.Skip("an inter-node port is already in use; skipping")
 	}
@@ -204,7 +204,7 @@ func TestDataPlaneRefusesNonMemberWhenUnclustered(t *testing.T) {
 //
 // The unclustered case is the one that was reported: such a node served its whole
 // inventory to anyone who asked, and read every peer's the same way.
-func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
+func TestModelInventory_RefusesLANPlaintext(t *testing.T) {
 	// No evidence to supply: this only needs an address of this host that a
 	// LAN caller would use, not the one the node would choose to advertise.
 	lanIP := netpick.BestLocalIP(netpick.Evidence{})
@@ -252,7 +252,7 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 // a host that holds a cluster identity this node does not pin — even though that
 // host can complete the TLS handshake, which is what makes the per-request pin
 // gate load-bearing rather than decorative.
-func TestDataPlaneRefusesNonMemberWhenClustered(t *testing.T) {
+func TestDataPlane_RefusesNonMemberWhenClustered(t *testing.T) {
 	if portBusy(14319) || portBusy(14320) {
 		t.Skip("an inter-node port is already in use; skipping")
 	}

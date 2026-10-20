@@ -112,7 +112,7 @@ func callRPC(t *testing.T, in io.Writer, msgs <-chan jsonrpc.Message, method str
 // basic startup contract: the binary launches, emits a `ready`
 // notification (with the version stamped via ldflags), and responds
 // to the product defaults.
-func TestNodeSettingsEndToEndStartReadyAndDefaults(t *testing.T) {
+func TestNodeSettings_EmitsReadyAndServesDefaultsOverStdio(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
 	in, msgs, cleanup := startNodeSettings(t, settings)
@@ -145,7 +145,7 @@ func TestNodeSettingsEndToEndStartReadyAndDefaults(t *testing.T) {
 // set false, read back false. The unit tests cover the same path in
 // memory; this one exists to make sure the codec/transport doesn't
 // silently mangle the payload.
-func TestNodeSettingsForcePortsRoundTripOverWire(t *testing.T) {
+func TestNodeSettings_RoundTripsForcePortsOverRPC(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
 	in, msgs, cleanup := startNodeSettings(t, settings)
@@ -176,7 +176,7 @@ func TestNodeSettingsForcePortsRoundTripOverWire(t *testing.T) {
 // current `{id}` payload. The unit test covers the same path in
 // memory; this one pins the wire shape so a codec or framing
 // regression can't silently break it.
-func TestNodeSettingsClusterIdentityPushOnSetCrossProcess(t *testing.T) {
+func TestNodeSettings_PushesClusterIdentityAfterUpdate(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
 	in, msgs, cleanup := startNodeSettings(t, settings)
@@ -201,7 +201,7 @@ func TestNodeSettingsClusterIdentityPushOnSetCrossProcess(t *testing.T) {
 // the user runs in real life — and it's the path that pure in-package
 // tests can't observe (they reuse one Manager instance against a temp
 // file, which doesn't exercise the cold-start load).
-func TestNodeSettingsPersistsAcrossProcessRestart(t *testing.T) {
+func TestNodeSettings_PersistsAcrossProcessRestart(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
 
@@ -262,7 +262,7 @@ func TestNodeSettingsPersistsAcrossProcessRestart(t *testing.T) {
 // (e.g. a goroutine that never receives the cancel) would manifest
 // as the cleanup func timing out and force-killing — which we'd see
 // in CI as a flaky test, but we want to fail loudly instead.
-func TestNodeSettingsShutdownIsClean(t *testing.T) {
+func TestNodeSettingsShutdown_IsClean(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
 	in, msgs, cleanup := startNodeSettings(t, settings)

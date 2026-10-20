@@ -26,7 +26,7 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 // frame it could not parse and continued, which burned a core, never closed the
 // notifications channel, and left the UI reporting a service it could no longer
 // reach.
-func TestRunReturnsOnBrokenStream(t *testing.T) {
+func TestRun_ReturnsOnBrokenStream(t *testing.T) {
 	// One frame longer than the cap, which is exactly the failure the frame
 	// cap's own comment describes.
 	oversized := `{"jsonrpc":"2.0","method":"x","params":"` +
@@ -55,7 +55,7 @@ func TestRunReturnsOnBrokenStream(t *testing.T) {
 
 // TestRunSkipsUnparseableFrame checks the other direction is unchanged: a frame
 // this client does not model must not kill a working session.
-func TestRunSkipsUnparseableFrame(t *testing.T) {
+func TestRun_SkipsUnparseableFrame(t *testing.T) {
 	stream := "{not json at all}\n" +
 		`{"jsonrpc":"1.0","method":"wrong-version"}` + "\n" +
 		`{"jsonrpc":"2.0","method":"app:ready"}` + "\n"

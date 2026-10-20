@@ -16,7 +16,7 @@ import (
 // TestSetMemberAddr covers the address-update helper: a host-only update keeps
 // the stored listening port, identical updates are no-ops, an explicit port is
 // honored, and unknown/empty inputs change nothing.
-func TestSetMemberAddr(t *testing.T) {
+func TestSetMemberAddr_ReportsHostAndPortChanges(t *testing.T) {
 	m := newTestManager(t)
 	uuid := "11111111-1111-1111-1111-111111111111"
 	m.upsertMember(&ClusterNode{NodeUUID: uuid, ID: "n", IPAddress: "10.0.0.1", Port: 14321, State: stateMember})
@@ -38,7 +38,7 @@ func TestSetMemberAddr(t *testing.T) {
 // moved since pairing), and after one reconcile it must have learned the
 // client's real source IP from the authenticated connection while preserving
 // the client's known listening port.
-func TestHandleRosterLearnsSourceAddr(t *testing.T) {
+func TestHandleRoster_LearnsSourceAddr(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -66,7 +66,7 @@ func TestHandleRosterLearnsSourceAddr(t *testing.T) {
 // TestRefreshMemberAddrsFromMDNS verifies the discovery backstop: a member
 // whose stored address is stale is refreshed from the mDNS browse map, the
 // pass is a safe no-op without a browser, and the self entry is never rewritten.
-func TestRefreshMemberAddrsFromMDNS(t *testing.T) {
+func TestRefreshMemberAddrsFromMDNS_UpdatesMembersFromDiscovery(t *testing.T) {
 	m := newTestManager(t)
 	peer := "22222222-2222-2222-2222-222222222222"
 	m.upsertMember(&ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "10.9.9.9", Port: 14321, State: stateMember})

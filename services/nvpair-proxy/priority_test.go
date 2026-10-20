@@ -51,7 +51,7 @@ func assertOrder(t *testing.T, got, want []string) {
 }
 
 // TestResolveCandidates_PriorityOrder: the priority list dictates auto order.
-func TestResolveCandidates_PriorityOrder(t *testing.T) {
+func TestResolveCandidates_UsesSchedulerPriorityOrder(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"c", "a", "b"})
 	assertOrder(t, candidateIDs(p), []string{"c", "a", "b"})
@@ -59,14 +59,14 @@ func TestResolveCandidates_PriorityOrder(t *testing.T) {
 
 // TestResolveCandidates_UnlistedFallback: nodes absent from the priority list
 // come last, in stable ID order.
-func TestResolveCandidates_UnlistedFallback(t *testing.T) {
+func TestResolveCandidates_AppendsNodesMissingFromPriority(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"b"})
 	assertOrder(t, candidateIDs(p), []string{"b", "a", "c"})
 }
 
 // TestResolveCandidates_UnknownIgnored: an id not in discovery is skipped.
-func TestResolveCandidates_UnknownIgnored(t *testing.T) {
+func TestResolveCandidates_IgnoresUnknownPriorityNodes(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"zzz", "c"})
 	assertOrder(t, candidateIDs(p), []string{"c", "a", "b"})
@@ -74,7 +74,7 @@ func TestResolveCandidates_UnknownIgnored(t *testing.T) {
 
 // TestResolveCandidates_ManualPinOverridesPriority: an explicit node/select pin
 // wins over the priority list; the rest follow priority order.
-func TestResolveCandidates_ManualPinOverridesPriority(t *testing.T) {
+func TestResolveCandidates_PrefersManuallySelectedNode(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"a", "b", "c"})
 	p.soleFacade().SetSelected("b")
@@ -99,7 +99,7 @@ func TestResolveCandidates_FiltersBeforeSelectionAndPriority(t *testing.T) {
 
 // TestResolveCandidates_EmptyReverts: an empty priority list reverts to the
 // default stable ID order.
-func TestResolveCandidates_EmptyReverts(t *testing.T) {
+func TestResolveCandidates_RevertsToDefaultOrderForEmptyPriority(t *testing.T) {
 	p := prProxy(t, "c", "a", "b")
 	p.SetPriority([]string{"c", "a"})
 	p.SetPriority(nil) // clear
@@ -108,7 +108,7 @@ func TestResolveCandidates_EmptyReverts(t *testing.T) {
 
 // TestSetPriority_CountAndCopy: SetPriority returns the stored length and
 // PriorityList hands back an independent copy.
-func TestSetPriority_CountAndCopy(t *testing.T) {
+func TestSetPriority_ReturnsCountAndCopiesInput(t *testing.T) {
 	p := prProxy(t, "a")
 	require.Equal(t, 3, p.SetPriority([]string{"a", "b", "c"}), "SetPriority count")
 	got := p.PriorityList()
@@ -117,7 +117,7 @@ func TestSetPriority_CountAndCopy(t *testing.T) {
 }
 
 // TestHandleSetPriority_Response: the node/set-priority request returns {count}.
-func TestHandleSetPriority_Response(t *testing.T) {
+func TestHandleSetPriority_RespondsWithAcceptedNodeCount(t *testing.T) {
 	rec := &recRW{}
 	p := newTestProxy(anyProfile(t), NewCodec(rec), NewDiscovery(), 11435)
 

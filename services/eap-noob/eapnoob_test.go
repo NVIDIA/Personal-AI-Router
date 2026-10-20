@@ -76,7 +76,7 @@ func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
 	return srv, peer
 }
 
-func TestPairingAllSuitesAndDirections(t *testing.T) {
+func TestPairing_DerivesMatchingSecretsAcrossSuitesAndDirections(t *testing.T) {
 	for _, suite := range []int{1, 2} {
 		for _, dir := range []int{1, 2} {
 			suite, dir := suite, dir
@@ -109,13 +109,13 @@ func TestPairingAllSuitesAndDirections(t *testing.T) {
 	}
 }
 
-func TestExportBeforeRegistrationFails(t *testing.T) {
+func TestExport_RejectsUnregisteredPairing(t *testing.T) {
 	peer := NewPeer(PeerConfig{}, nil)
 	_, err := peer.Export("app", nil, 16)
 	assert.ErrorIs(t, err, ErrNotRegistered, "Export before registration")
 }
 
-func TestTamperedMACFails(t *testing.T) {
+func TestPairing_RejectsTamperedMAC(t *testing.T) {
 	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 1}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: 1}, nil)
 
@@ -147,7 +147,7 @@ func TestTamperedMACFails(t *testing.T) {
 	assert.Equal(t, ErrHMACVerificationFailed, out.Err.Code, "expected HMAC verification failure, got %+v", out.Err)
 }
 
-func TestRejectBadOOBFingerprint(t *testing.T) {
+func TestPairing_RejectsIncorrectOutOfBandFingerprint(t *testing.T) {
 	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 2}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
 	driveConversation(t, srv, peer)
@@ -159,7 +159,7 @@ func TestRejectBadOOBFingerprint(t *testing.T) {
 	assert.Equal(t, StateWaiting, peer.State(), "peer state %s after rejected OOB, want WaitingForOOB", peer.State())
 }
 
-func TestOneStepKDFDeterministic(t *testing.T) {
+func TestOneStepKDF_DerivesRepeatableKeys(t *testing.T) {
 	z := bytes.Repeat([]byte{0x01}, 32)
 	np := bytes.Repeat([]byte{0x02}, 32)
 	ns := bytes.Repeat([]byte{0x03}, 32)
@@ -179,7 +179,7 @@ func TestOneStepKDFDeterministic(t *testing.T) {
 	assert.Len(t, km1.Kz, 32, "Kz length")
 }
 
-func TestJWKRoundTrip(t *testing.T) {
+func TestJWK_RoundTripsPublicKeys(t *testing.T) {
 	for _, id := range []int{1, 2} {
 		cs, err := suiteByID(id)
 		require.NoError(t, err)

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseLifecycleValid(t *testing.T) {
+func TestParseLifecycle_ExtractsValidWorkloadFields(t *testing.T) {
 	params := json.RawMessage(`{"workloadInfo":{"id":"wl-1","model":"llama-3","engine":"trt-llm","state":"queued","originatedFrom":"node-A","createdAt":1,"startedAt":null,"completedAt":null,"error":null,"requesterId":null}}`)
 	w, err := parseLifecycle(params)
 	require.NoError(t, err)
@@ -20,7 +20,7 @@ func TestParseLifecycleValid(t *testing.T) {
 	assert.Equal(t, "trt-llm", w.Engine)
 }
 
-func TestParseLifecycleRejectsMissingFields(t *testing.T) {
+func TestParseLifecycle_RejectsMissingFields(t *testing.T) {
 	cases := map[string]string{
 		"no workloadInfo":      `{}`,
 		"empty id":             `{"workloadInfo":{"id":"","model":"m","engine":"e","state":"queued","originatedFrom":"n"}}`,
@@ -34,7 +34,7 @@ func TestParseLifecycleRejectsMissingFields(t *testing.T) {
 	}
 }
 
-func TestParseRemove(t *testing.T) {
+func TestParseRemove_ExtractsWorkloadIdentity(t *testing.T) {
 	id, node, err := parseRemove(json.RawMessage(`{"workloadId":"wl-9","originatedFrom":"node-C"}`))
 	require.NoError(t, err)
 	assert.Equal(t, "wl-9", id)
@@ -49,7 +49,7 @@ func TestParseRemove(t *testing.T) {
 	require.Error(t, err, "empty workloadId")
 }
 
-func TestLifecycleMethodMapping(t *testing.T) {
+func TestLifecycleMethods_MapNotificationsToWorkloadStates(t *testing.T) {
 	for method, want := range map[string]WorkloadState{
 		MethodSubmitted: StateQueued,
 		MethodStarted:   StateRunning,

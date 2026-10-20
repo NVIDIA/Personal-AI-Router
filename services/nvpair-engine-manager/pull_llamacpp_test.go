@@ -140,7 +140,7 @@ func waitLlamaCPPPullSignal(t *testing.T, signal <-chan struct{}) {
 	}
 }
 
-func TestLlamaCPPPullCancellationStopsDownload(t *testing.T) {
+func TestLlamaCPPPullCancellation_StopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -153,7 +153,7 @@ func TestLlamaCPPPullCancellationStopsDownload(t *testing.T) {
 	require.Equal(t, int32(1), f.unloads.Load())
 }
 
-func TestLlamaCPPPullInactivityStopsDownload(t *testing.T) {
+func TestLlamaCPPPullInactivity_StopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	f.ex.pullProgressTimeout = 100 * time.Millisecond
 	require.ErrorIs(t, f.pull(context.Background()), errPullProgressTimeout)
@@ -161,7 +161,7 @@ func TestLlamaCPPPullInactivityStopsDownload(t *testing.T) {
 	require.Equal(t, int32(1), f.unloads.Load())
 }
 
-func TestLlamaCPPPullStreamEOFStopsDownload(t *testing.T) {
+func TestLlamaCPPPullStreamEOF_StopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	go func() {
 		<-f.started
@@ -172,7 +172,7 @@ func TestLlamaCPPPullStreamEOFStopsDownload(t *testing.T) {
 	require.Equal(t, int32(1), f.unloads.Load())
 }
 
-func TestLlamaCPPPullStreamReadErrorStopsDownload(t *testing.T) {
+func TestLlamaCPPPullStreamReadError_StopsDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	f.stream = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1000")
@@ -193,7 +193,7 @@ func TestLlamaCPPPullStreamReadErrorStopsDownload(t *testing.T) {
 	require.Equal(t, int32(1), f.unloads.Load())
 }
 
-func TestLlamaCPPPullCancellationWaitsForStartAcceptance(t *testing.T) {
+func TestLlamaCPPPullCancellation_WaitsForStartAcceptance(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	releaseStart := make(chan struct{}, 1)
 	defer close(releaseStart)
@@ -232,7 +232,7 @@ func TestLlamaCPPPullCancellationWaitsForStartAcceptance(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPPullCancelledBeforeStartDoesNotDownload(t *testing.T) {
+func TestLlamaCPPPullCancelledBeforeStart_DoesNotDownload(t *testing.T) {
 	f := newLlamaCPPPullFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -246,7 +246,7 @@ func TestLlamaCPPPullCancelledBeforeStartDoesNotDownload(t *testing.T) {
 	require.Zero(t, f.inventories.Load(), "cancelled pull attempted cleanup without starting")
 }
 
-func TestLlamaCPPPullRejectsInvalidModelParamsBeforeStarting(t *testing.T) {
+func TestLlamaCPPPull_RejectsInvalidModelParamsBeforeStarting(t *testing.T) {
 	for _, tc := range []struct{ name, params string }{
 		{"different model", `{"model":"other/model"}`},
 		{"missing model", `{}`},
@@ -267,7 +267,7 @@ func TestLlamaCPPPullRejectsInvalidModelParamsBeforeStarting(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPPullRejectedStartPreservesOtherDownload(t *testing.T) {
+func TestLlamaCPPPull_PreservesOtherDownloadWhenStartIsRejected(t *testing.T) {
 	test := func(name string, status int, body string) {
 		t.Run(name, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
@@ -287,7 +287,7 @@ func TestLlamaCPPPullRejectedStartPreservesOtherDownload(t *testing.T) {
 	test("negative acknowledgement", http.StatusOK, `{"success":false}`)
 }
 
-func TestLlamaCPPPullUnconfirmedStartDoesNotUnload(t *testing.T) {
+func TestLlamaCPPPullUnconfirmedStart_DoesNotUnload(t *testing.T) {
 	test := func(name string, respond func(*testing.T, http.ResponseWriter, *http.Request)) {
 		t.Run(name, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
@@ -333,7 +333,7 @@ func TestLlamaCPPPullUnconfirmedStartDoesNotUnload(t *testing.T) {
 	})
 }
 
-func TestLlamaCPPPullTerminalEventsSkipCleanup(t *testing.T) {
+func TestLlamaCPPPull_SkipsCleanupAfterTerminalEvents(t *testing.T) {
 	for _, event := range []string{"download_finished", "download_failed"} {
 		t.Run(event, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
@@ -361,7 +361,7 @@ func TestLlamaCPPPullTerminalEventsSkipCleanup(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPPullCleanupPreservesCompletedModels(t *testing.T) {
+func TestLlamaCPPPullCleanup_PreservesCompletedModels(t *testing.T) {
 	for _, status := range []string{"downloaded", "loaded", "unloaded", "missing"} {
 		t.Run(status, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
@@ -384,7 +384,7 @@ func TestLlamaCPPPullCleanupPreservesCompletedModels(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPPullCleanupFailurePreservesCancellation(t *testing.T) {
+func TestLlamaCPPPullCleanupFailure_PreservesCancellation(t *testing.T) {
 	test := func(name string, status int, body string) {
 		t.Run(name, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
@@ -413,7 +413,7 @@ func TestLlamaCPPPullCleanupFailurePreservesCancellation(t *testing.T) {
 	test("negative acknowledgement", http.StatusOK, `{"success":false}`)
 }
 
-func TestLlamaCPPPullCleanupTimeoutPreservesWatchdogCause(t *testing.T) {
+func TestLlamaCPPPullCleanupTimeout_PreservesWatchdogCause(t *testing.T) {
 	for _, route := range []string{"inventory", "unload"} {
 		t.Run(route, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
@@ -434,7 +434,7 @@ func TestLlamaCPPPullCleanupTimeoutPreservesWatchdogCause(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPPullInvalidInventoryDoesNotConfirmStop(t *testing.T) {
+func TestLlamaCPPPullInvalidInventory_DoesNotConfirmStop(t *testing.T) {
 	for _, body := range []string{"not JSON", `{}`, `{"data":null}`, `{"data":{}}`, fmt.Sprintf(`{"data":[{"id":%q}]}`, llamaCPPPullTestModel)} {
 		t.Run(body, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)

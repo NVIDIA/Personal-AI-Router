@@ -15,7 +15,7 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
-func TestTelemetryCacheAgesObservations(t *testing.T) {
+func TestTelemetryCache_IncludesElapsedTimeInObservationAge(t *testing.T) {
 	cache := newTelemetryCache()
 	receivedAt := time.Unix(1_700_000_000, 0)
 	input := noderec.NodeTelemetry{
@@ -33,7 +33,7 @@ func TestTelemetryCacheAgesObservations(t *testing.T) {
 	require.Equal(t, uint32(84), snapshot[0].GPUUtilizationPct, "cached utilization")
 }
 
-func TestTelemetryCachePrefersScannerAndFallsBackToManual(t *testing.T) {
+func TestTelemetryCache_PrefersScannerAndFallsBackToManual(t *testing.T) {
 	cache := newTelemetryCache()
 	now := time.Unix(1_700_000_000, 0)
 	scanner := noderec.NodeTelemetry{
@@ -65,7 +65,7 @@ func TestTelemetryCachePrefersScannerAndFallsBackToManual(t *testing.T) {
 	require.Empty(t, cache.Snapshot(now.Add(4*time.Second)), "cache retained final removal")
 }
 
-func TestTelemetryCacheSnapshotIsSortedAndNormalizesInvalidAge(t *testing.T) {
+func TestTelemetryCacheSnapshot_IsSortedAndNormalizesInvalidAge(t *testing.T) {
 	cache := newTelemetryCache()
 	now := time.Unix(1_700_000_000, 0)
 	cache.Upsert(sourceScanner, noderec.NodeTelemetry{
@@ -87,7 +87,7 @@ func TestTelemetryCacheSnapshotIsSortedAndNormalizesInvalidAge(t *testing.T) {
 	require.Equal(t, int64(0), got[1].MSSince, "normalized age")
 }
 
-func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
+func TestReplayTelemetryToScheduler_IncludesCurrentAge(t *testing.T) {
 	brokerSide, schedulerSide := net.Pipe()
 	t.Cleanup(func() {
 		_ = brokerSide.Close()
@@ -114,7 +114,7 @@ func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
 	require.Equal(t, 1, <-replayed, "replayed count")
 }
 
-func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
+func TestManualTelemetry_ReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 	b := newManualTestBroker()
 	first := manualStatus("first", "10.0.0.1", "node-a")
 	first.GPUs = []GPUInfo{{UtilizationPercent: 25}}

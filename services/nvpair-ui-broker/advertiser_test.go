@@ -22,7 +22,7 @@ import (
 // TestLocalEnginePortFallback: with no engine-manager supervised, the broker
 // falls back to the engine's stock port rather than failing — so a broker
 // running without engine-manager still advertises at the sensible default.
-func TestLocalEnginePortFallback(t *testing.T) {
+func TestLocalEnginePort_UsesFallbackWhenStatusHasNoPort(t *testing.T) {
 	b := &Broker{} // no engine-manager worker
 	got, ok := b.localEnginePort("ollama", defaultOllamaPort)
 	assert.True(t, ok, "no engine-manager: Ollama port fallback")
@@ -32,7 +32,7 @@ func TestLocalEnginePortFallback(t *testing.T) {
 	assert.Equal(t, defaultLMStudioPort, got, "no engine-manager: LM Studio port fallback")
 }
 
-func TestRunningEnginePort(t *testing.T) {
+func TestRunningEnginePort_ReturnsPortOnlyForRunningEngine(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -52,7 +52,7 @@ func TestRunningEnginePort(t *testing.T) {
 	}
 }
 
-func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
+func TestLMStudioFallback_NeverAdvertisesItsProxy(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	defer proxyClient.Close()
 	defer proxyServer.Close()
@@ -97,7 +97,7 @@ func TestLMStudioFallbackNeverAdvertisesItsProxy(t *testing.T) {
 // facade port). The advertiser must not promote that guess into the confirmed
 // backend cache, or a later proxy-ready reconcile mistakes the compatibility
 // proxy on :1234 for the backend and disables managed mode.
-func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
+func TestLMStudioFallback_DoesNotOverwriteKnownBackend(t *testing.T) {
 	b := &Broker{regCache: relay.NewRegistrationCache()}
 	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
 
@@ -108,7 +108,7 @@ func TestLMStudioFallbackDoesNotOverwriteKnownBackend(t *testing.T) {
 	require.Equal(t, managedLMStudioBackendStart, int(b.lmstudioState().backendPort.Load()), "fallback must not overwrite the confirmed backend")
 }
 
-func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
+func TestEngineAdvertiser_TracksEngineHealth(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -147,7 +147,7 @@ func TestEngineAdvertiserTracksEngineHealth(t *testing.T) {
 	assert.Equal(t, backendPort, update.Port)
 }
 
-func TestEngineAdvertiserRejectsSelfForwardLoop(t *testing.T) {
+func TestEngineAdvertiser_RejectsSelfForwardLoop(t *testing.T) {
 	profile := testDefaultEngineProxyProfile()
 	profile.DiscoveryService = noderec.ServiceLMStudio
 	b := brokerWithEngineProxyProfile(profile)
@@ -202,12 +202,12 @@ func attachAdvertiserProxy(
 
 // TestProxyListenPortNoProxy: with no proxy supervised, proxyListenPort is 0,
 // so the self-forward collision check (port == proxy port) never falsely trips.
-func TestProxyListenPortNoProxy(t *testing.T) {
+func TestProxyListenPort_ReportsUnavailableWithoutProxy(t *testing.T) {
 	b := &Broker{} // no proxy worker
 	assert.Equal(t, 0, b.proxyListenPort(), "no proxy: proxyListenPort")
 }
 
-func TestOllamaFacadeIsPendingBackend(t *testing.T) {
+func TestOllamaFacade_IsPendingBackend(t *testing.T) {
 	b := &Broker{}
 	b.ollamaState().managedFacade.Store(true)
 	b.ollamaState().backendPort.Store(managedOllamaFacadePort)

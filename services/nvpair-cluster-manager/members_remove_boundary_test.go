@@ -43,7 +43,7 @@ func removeRequest(t *testing.T, remover *Manager, proof RemovalProof, body io.R
 	return req
 }
 
-func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
+func TestMembersRemove_RevalidatesAfterBlockedBody(t *testing.T) {
 	victim := newTestManagerPort(t, 15121)
 	remover := newTestManagerPort(t, 15122)
 	pinTrusted(t, victim, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
@@ -94,7 +94,7 @@ func TestMembersRemoveRevalidatesAfterBlockedBody(t *testing.T) {
 	require.True(t, ok, "stale request cleared the newly re-established remover pin")
 }
 
-func TestMembersRemoveCurrentAdmissionSucceeds(t *testing.T) {
+func TestMembersRemove_RemovesCurrentAdmission(t *testing.T) {
 	victim := newTestManagerPort(t, 15123)
 	remover := newTestManagerPort(t, 15124)
 	pinTrusted(t, victim, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)

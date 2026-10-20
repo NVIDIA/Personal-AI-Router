@@ -118,7 +118,7 @@ func seedEMNode(d *daemon, hostUUID, ip string, emPort int) {
 // peer whose first enrichment returned nothing converges once its engine serves
 // models, with no mDNS record change — a single refresh fetch populates the
 // directory and reports a change.
-func TestRefreshPopulatesInitialEmptyInventory(t *testing.T) {
+func TestRefresh_PopulatesInitialEmptyInventory(t *testing.T) {
 	d := newRefreshTestDaemon()
 	_, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"llama3:8b", "qwen:0.5b"},
@@ -132,7 +132,7 @@ func TestRefreshPopulatesInitialEmptyInventory(t *testing.T) {
 	assert.Equal(t, map[string][]string{"ollama": {"llama3:8b"}, "lmstudio": {"qwen:0.5b"}}, got.ModelsByEngine, "ModelsByEngine")
 }
 
-func TestRefreshModelsFallsBackToASecondPublishedAddress(t *testing.T) {
+func TestRefreshModels_FallsBackToASecondPublishedAddress(t *testing.T) {
 	d := newRefreshTestDaemon()
 	_, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models": []string{"reachable-model"},
@@ -161,7 +161,7 @@ func TestRefreshModelsFallsBackToASecondPublishedAddress(t *testing.T) {
 // an unreachable LAN address, so the fetch can only succeed via the loopback
 // dial. The stored (advertised) address is still used as applyModels' stale-
 // address guard, so it must be preserved.
-func TestRefreshSelfDialsLoopback(t *testing.T) {
+func TestRefreshSelf_DialsLoopback(t *testing.T) {
 	d := newRefreshTestDaemon() // reg self uuid = "self-node-uuid"
 	_, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"llama3:8b"},
@@ -181,7 +181,7 @@ func TestRefreshSelfDialsLoopback(t *testing.T) {
 // TestRefreshPullDeleteAndUnchanged covers three required behaviors together: a
 // pull and a delete each change the inventory and emit exactly one update, while
 // an unchanged inventory emits nothing (no repeated updates).
-func TestRefreshPullDeleteAndUnchanged(t *testing.T) {
+func TestRefreshModels_ReportsDownloadsAndDeletionsButNotUnchangedInventory(t *testing.T) {
 	d := newRefreshTestDaemon()
 	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"a"},
@@ -228,7 +228,7 @@ func TestRefreshPullDeleteAndUnchanged(t *testing.T) {
 // TestRefreshReorderOnlyIsNotAChange asserts the compare is order-insensitive: a
 // response that returns the same models in a different order is not treated as a
 // change (no spurious update).
-func TestRefreshReorderOnlyIsNotAChange(t *testing.T) {
+func TestRefreshReorderOnly_IsNotAChange(t *testing.T) {
 	d := newRefreshTestDaemon()
 	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"a", "b"},
@@ -246,7 +246,7 @@ func TestRefreshReorderOnlyIsNotAChange(t *testing.T) {
 // TestRefreshFetchFailureRetainsInventory covers requirement 5: a transient
 // fetch failure preserves the last successful flat and per-engine inventories
 // (no blanking) and reports no change.
-func TestRefreshFetchFailureRetainsInventory(t *testing.T) {
+func TestRefreshFetchFailure_RetainsInventory(t *testing.T) {
 	d := newRefreshTestDaemon()
 	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"keep-me"},
@@ -272,7 +272,7 @@ func TestRefreshFetchFailureRetainsInventory(t *testing.T) {
 // TestRefreshPartialModelsByEngine covers requirement 4: a partial
 // modelsByEngine response (attribution covering fewer models than the flat
 // union, as a mixed-version peer might send) is propagated exactly as returned.
-func TestRefreshPartialModelsByEngine(t *testing.T) {
+func TestRefreshModels_PreservesInventoryForUnreportedEngines(t *testing.T) {
 	d := newRefreshTestDaemon()
 	_, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"x", "y"},
@@ -287,7 +287,7 @@ func TestRefreshPartialModelsByEngine(t *testing.T) {
 
 // TestRefreshPopulatesLoadedByEngine covers Phase 2: a peer's loadedByEngine is
 // carried onto the directory node from the same /v1/models fetch.
-func TestRefreshPopulatesLoadedByEngine(t *testing.T) {
+func TestRefresh_PopulatesLoadedByEngine(t *testing.T) {
 	d := newRefreshTestDaemon()
 	_, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"llama3:8b", "qwen:0.5b"},
@@ -305,7 +305,7 @@ func TestRefreshPopulatesLoadedByEngine(t *testing.T) {
 // only loadedByEngine changes (a JIT load / TTL eviction with the same installed
 // list), the refresh reports a change and updates the field so remote cards stay
 // live.
-func TestRefreshLoadedOnlyChangeReportsChange(t *testing.T) {
+func TestRefreshLoadedOnlyChange_ReportsChange(t *testing.T) {
 	d := newRefreshTestDaemon()
 	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"a"},
@@ -336,7 +336,7 @@ func TestRefreshLoadedOnlyChangeReportsChange(t *testing.T) {
 
 // TestRefreshLoadedRetainedOnFailure confirms a transient fetch failure preserves
 // the last successful loadedByEngine rather than blanking it.
-func TestRefreshLoadedRetainedOnFailure(t *testing.T) {
+func TestRefreshModels_RetainsLoadedModelsAfterFetchFailure(t *testing.T) {
 	d := newRefreshTestDaemon()
 	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models":         []string{"keep-me"},
@@ -360,7 +360,7 @@ func TestRefreshLoadedRetainedOnFailure(t *testing.T) {
 // fetch is discarded (ok == false) when the node was removed or re-addressed
 // while it was in flight, so it can neither resurrect a removed node nor
 // overwrite a re-addressed one.
-func TestApplyModelsGuard(t *testing.T) {
+func TestApplyModels_RejectsRemovedNodeAndStaleAddress(t *testing.T) {
 	d := newDirectory()
 
 	// Removed mid-sweep: node absent -> not resurrected.
@@ -393,7 +393,7 @@ func TestApplyModelsGuard(t *testing.T) {
 // completion is not resurrected in the directory (the requirement-6 guarantee).
 // The cache may hold the fetched value (it is written before the directory
 // guard, as last-known-good), so this asserts only the directory invariant.
-func TestRefreshNodeModelsRemovedMidSweep(t *testing.T) {
+func TestRefreshNodeModels_DoesNotRestoreNodeRemovedDuringSweep(t *testing.T) {
 	d := newRefreshTestDaemon()
 	_, port := startModelsStub(t, http.StatusOK, map[string]any{
 		"models": []string{"a"},
@@ -413,7 +413,7 @@ func TestRefreshNodeModelsRemovedMidSweep(t *testing.T) {
 // either is released. A serial sweep would block inside the first handler and
 // never enter the second, so the barrier wait fails fast. The time.After bounds
 // are failure ceilings, not success-timing assertions, so the test isn't flaky.
-func TestRefreshOnceConcurrentSlowPeers(t *testing.T) {
+func TestRefreshOnce_PollsSlowPeersConcurrently(t *testing.T) {
 	const peers = 2 // must stay <= modelsRefreshConcurrency
 	entered := make(chan struct{}, peers)
 	release := make(chan struct{})

@@ -125,7 +125,7 @@ func TestReserveCandidate_CombinesPendingPressureAndReservations(t *testing.T) {
 	require.Equal(t, []string{"b", "b", "c"}, got, "GPU-aware reservations")
 }
 
-func TestSetPrioritySnapshotClampsGPUPressure(t *testing.T) {
+func TestSetPrioritySnapshot_ClampsGPUPressure(t *testing.T) {
 	p := prProxy(t)
 	applySnapshot(p, schedulerwire.Priority{
 		Nodes: []string{"low", "high"},
@@ -299,7 +299,7 @@ func reservationCount(p *Proxy, id string) int {
 // when the request ends is what keeps a node from looking loaded until the next
 // snapshot: without it a steady trickle of short requests drives dispatch away
 // from a node that is actually idle.
-func TestReleasedReservationStopsCountingAsLoad(t *testing.T) {
+func TestReleasedReservation_StopsCountingAsLoad(t *testing.T) {
 	p := prProxy(t)
 	flatPriority(p, 1, "a", "b")
 
@@ -320,7 +320,7 @@ func TestReleasedReservationStopsCountingAsLoad(t *testing.T) {
 // counts already include that work. A late release must therefore be dropped:
 // applying it would double-count the completion and leave the node reading as
 // permanently idle.
-func TestReleaseFromBeforeASnapshotIsIgnored(t *testing.T) {
+func TestReleaseFromBeforeASnapshot_IsIgnored(t *testing.T) {
 	p := prProxy(t)
 	flatPriority(p, 1, "a", "b")
 
@@ -344,7 +344,7 @@ func TestReleaseFromBeforeASnapshotIsIgnored(t *testing.T) {
 // Failover moves the claim to the node that actually served. The node that
 // refused the request is not doing the work, so leaving its reservation in
 // place would steer later dispatch away from it for no reason.
-func TestFailoverMovesTheReservationToTheServingNode(t *testing.T) {
+func TestFailover_MovesTheReservationToTheServingNode(t *testing.T) {
 	p := prProxy(t)
 	flatPriority(p, 1, "a", "b")
 
@@ -368,7 +368,7 @@ func TestFailoverMovesTheReservationToTheServingNode(t *testing.T) {
 // Two facades in one process compete for the same GPU, so a dispatch through
 // either has to be visible to the other. That is the whole reason the map is
 // process-wide rather than per facade.
-func TestReservationsAreSharedAcrossFacades(t *testing.T) {
+func TestReservations_AreSharedAcrossFacades(t *testing.T) {
 	p := prProxy(t)
 	flatPriority(p, 1, "a", "b")
 

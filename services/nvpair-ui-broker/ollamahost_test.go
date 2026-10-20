@@ -18,7 +18,7 @@ import (
 	"nvpair-shared/errors"
 )
 
-func TestInheritedOllamaHostAlias(t *testing.T) {
+func TestInheritedOllamaHostAlias_ValidatesLoopbackEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		raw    string
@@ -56,7 +56,7 @@ func TestInheritedOllamaHostAlias(t *testing.T) {
 	}
 }
 
-func TestPrepareOllamaHostAliasReservesBackendPort(t *testing.T) {
+func TestPrepareOllamaHostAlias_ReservesBackendPort(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:11435")
 	b := brokerWithEngineStatus(t, "lmstudio", 1234)
@@ -70,7 +70,7 @@ func TestPrepareOllamaHostAliasReservesBackendPort(t *testing.T) {
 	require.Equal(t, 11436, plan.BackendPort, "backend port")
 }
 
-func TestPrepareOllamaHostAliasRejectsAnyConfiguredEnginePort(t *testing.T) {
+func TestPrepareOllamaHostAlias_RejectsAnyConfiguredEnginePort(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:15555")
 	b := brokerWithEngineInventory(t, map[string]int{
@@ -82,7 +82,7 @@ func TestPrepareOllamaHostAliasRejectsAnyConfiguredEnginePort(t *testing.T) {
 	require.Equal(t, ollamaHostAlias{}, b.currentOllamaHostAlias(), "alias claimed configured custom-engine port")
 }
 
-func TestReservedOllamaHostAliasPort(t *testing.T) {
+func TestReservedOllamaHostAliasPort_TracksActiveReservation(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		port             int
@@ -131,7 +131,7 @@ func TestReservedOllamaHostAliasPort(t *testing.T) {
 
 // The alias reads each sibling proxy's persisted port from its own file, so a
 // third engine is covered by adding a table entry rather than another reader.
-func TestConfiguredEngineProxyPort(t *testing.T) {
+func TestConfiguredEngineProxyPort_UsesSelectedEngineFacadePort(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 
 	for _, p := range engineProxyProfiles {
@@ -160,7 +160,7 @@ func TestConfiguredEngineProxyPort(t *testing.T) {
 //
 // Both directions are checked because the two engines have separate fallback
 // functions and fixing one is not evidence about the other.
-func TestProxyFallbackSkipsASiblingEnginesConfiguredPort(t *testing.T) {
+func TestProxyFallback_SkipsASiblingEnginesConfiguredPort(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		self     engineProxyProfile
@@ -200,7 +200,7 @@ func TestProxyFallbackSkipsASiblingEnginesConfiguredPort(t *testing.T) {
 	}
 }
 
-func TestPrepareOllamaHostAliasHonorsOptOutAndBackendOwnership(t *testing.T) {
+func TestPrepareOllamaHostAlias_HonorsOptOutAndBackendOwnership(t *testing.T) {
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:11433")
 	for _, tc := range []struct {
 		name        string
@@ -218,7 +218,7 @@ func TestPrepareOllamaHostAliasHonorsOptOutAndBackendOwnership(t *testing.T) {
 	}
 }
 
-func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
+func TestAliasWarning_ReplaysAfterErrorsProcessRecovery(t *testing.T) {
 	b := &Broker{nodeID: "local-node"}
 	b.forwardErrorsReport(errors.ServiceError{
 		ID:       ollamaHostAliasBlockedID,
@@ -252,7 +252,7 @@ func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
 // free port. The alias is bound by the proxy only after both facades are
 // prepared, so a plain TCP probe still reports it free — it must be treated as
 // taken or the advancing backend would land on it and orphan the alias.
-func TestManagedBackendMovesSkipTheOllamaHostAlias(t *testing.T) {
+func TestManagedBackendMoves_SkipReservedOllamaHostAlias(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		facadePort   int
@@ -297,7 +297,7 @@ func TestManagedBackendMovesSkipTheOllamaHostAlias(t *testing.T) {
 	require.True(t, plain(managedOllamaBackendStart), "no alias configured, but the port probe was still filtered")
 }
 
-func TestOllamaProxyFallbackSkipsTheOllamaHostAlias(t *testing.T) {
+func TestOllamaProxyFallback_SkipsTheOllamaHostAlias(t *testing.T) {
 	b := &Broker{}
 	b.setOllamaHostAlias(ollamaHostAlias{Port: managedOllamaBackendStart})
 	require.NotEqual(t, managedOllamaBackendStart, b.setOllamaProxyFallback(), "proxy fallback must skip the alias")
@@ -306,7 +306,7 @@ func TestOllamaProxyFallbackSkipsTheOllamaHostAlias(t *testing.T) {
 	require.NotEqual(t, managedLMStudioBackendStart, lm.setLMStudioProxyFallback(), "LM Studio proxy fallback must skip the alias")
 }
 
-func TestDisableAliasClearsEngineReservation(t *testing.T) {
+func TestDisableAlias_ClearsEngineReservation(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
@@ -346,7 +346,7 @@ func TestDisableAliasClearsEngineReservation(t *testing.T) {
 	}
 }
 
-func TestManagedAliasReservationSyncUsesReplacementEngineManager(t *testing.T) {
+func TestManagedAliasReservationSync_UsesReplacementEngineManager(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:15555")
 
@@ -430,7 +430,7 @@ func TestManagedAliasReservationSyncUsesReplacementEngineManager(t *testing.T) {
 	}
 }
 
-func TestAliasReservationSyncsSerializeStateOrder(t *testing.T) {
+func TestAliasReservationSyncs_PreserveStateOrder(t *testing.T) {
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{}
 	b.setEngineMgr(engine)
@@ -499,7 +499,7 @@ func TestAliasReservationSyncsSerializeStateOrder(t *testing.T) {
 	}
 }
 
-func TestAliasBindFailureReleasesReservationButKeepsWarning(t *testing.T) {
+func TestAliasBindFailure_ReleasesReservationButKeepsWarning(t *testing.T) {
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{nodeID: "local-node"}
 	b.setEngineMgr(engine)
@@ -548,7 +548,7 @@ func TestAliasBindFailureReleasesReservationButKeepsWarning(t *testing.T) {
 	require.True(t, b.availableOffOllamaHostAlias(func(port int) bool { return port == 15555 })(15555), "released alias still excludes the existing owner's port from planning")
 }
 
-func TestStaleAliasBindFailureDoesNotReleaseReplacementReservation(t *testing.T) {
+func TestStaleAliasBindFailure_DoesNotReleaseReplacementReservation(t *testing.T) {
 	b := &Broker{nodeID: "local-node"}
 	b.setOllamaHostAlias(ollamaHostAlias{Address: "127.0.0.1:15555", Port: 15555})
 	staleGeneration, _ := b.beginOllamaProxyGeneration()

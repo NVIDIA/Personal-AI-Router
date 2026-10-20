@@ -22,7 +22,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
+func TestRefreshNodeTelemetry_EmitsFreshnessAndUtilization(t *testing.T) {
 	response := NodeInfoResponse{
 		GPUs: []GPUInfo{
 			{Name: "GPU 0", UtilizationPercent: 0},
@@ -57,7 +57,7 @@ func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 	require.Less(t, got.MSSince, int64(3_500), "age")
 }
 
-func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
+func TestRefreshNodeTelemetry_RejectsMismatchedIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID:       "node-b",
@@ -82,7 +82,7 @@ func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
 // reported nothing at all, and the scheduler assigned it neutral pressure and
 // scheduled it blind — while an address that answers sat unused in the same
 // published list.
-func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
+func TestRefreshTelemetry_FailsOverToAnAnsweringAddress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID:       "node-a",
@@ -132,7 +132,7 @@ func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	require.Equal(t, serverURL.Hostname(), d.enrichHosts.get(key), "remembered address")
 }
 
-func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
+func TestTelemetryIntervalForNode_IsStableAndBounded(t *testing.T) {
 	require.Equal(t, telemetryRefreshInterval, telemetryIntervalForNode(""), "empty identity interval")
 	first := telemetryIntervalForNode("node-a")
 	require.Equal(t, first, telemetryIntervalForNode("node-a"), "node jitter must be stable")
@@ -143,7 +143,7 @@ func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
 	require.NotEqual(t, first, telemetryIntervalForNode("node-b"), "distinct identities received identical test intervals (%v)", first)
 }
 
-func TestTelemetryRetryDelay(t *testing.T) {
+func TestTelemetryRetryDelay_BoundsBackoff(t *testing.T) {
 	cases := []struct {
 		failures int
 		want     time.Duration
@@ -160,7 +160,7 @@ func TestTelemetryRetryDelay(t *testing.T) {
 	}
 }
 
-func TestTelemetryRetryGateBacksOffAndResets(t *testing.T) {
+func TestTelemetryRetryGate_BacksOffAndResets(t *testing.T) {
 	var gate telemetryRetryGate
 	startedAt := time.Unix(1_000, 0)
 	targetKey := telemetryTargetKey([]string{"192.0.2.1"}, 14318)
@@ -183,7 +183,7 @@ func TestTelemetryRetryGateBacksOffAndResets(t *testing.T) {
 	require.True(t, ok, "successful telemetry did not reset the retry gate")
 }
 
-func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
+func TestTelemetryRetryGateChangedTarget_WaitsForActiveAttempt(t *testing.T) {
 	oldTarget := telemetryTargetKey([]string{"192.0.2.1"}, 14318)
 	changedTargets := map[string]string{
 		"hosts": telemetryTargetKey([]string{"10.0.0.1"}, 14318),
@@ -205,7 +205,7 @@ func TestTelemetryRetryGateChangedTargetWaitsForActiveAttempt(t *testing.T) {
 	}
 }
 
-func TestTelemetryRetryGateRemoveRediscoverPreservesActiveClaim(t *testing.T) {
+func TestTelemetryRetryGateRemoveRediscover_PreservesActiveClaim(t *testing.T) {
 	var gate telemetryRetryGate
 	now := time.Unix(2_000, 0)
 	targetKey := telemetryTargetKey([]string{"192.0.2.1"}, 14318)
@@ -220,7 +220,7 @@ func TestTelemetryRetryGateRemoveRediscoverPreservesActiveClaim(t *testing.T) {
 	require.True(t, ok, "removed attempt's late failure backed off the re-discovered node")
 }
 
-func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing.T) {
+func TestRefreshTelemetry_SkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing.T) {
 	var backedOffCalls atomic.Int32
 	backedOff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		backedOffCalls.Add(1)
@@ -275,7 +275,7 @@ func TestRefreshTelemetrySkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testing
 	require.Equal(t, int32(1), healthyCalls.Load(), "healthy peer received")
 }
 
-func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
+func TestBrowseTXTUpdate_PreservesTelemetryRetry(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -321,7 +321,7 @@ func TestBrowseTXTUpdatePreservesTelemetryRetry(t *testing.T) {
 	require.False(t, ok, "TXT-only update cleared telemetry backoff for an unchanged endpoint")
 }
 
-func TestBrowseRemovalClearsTelemetryRetry(t *testing.T) {
+func TestBrowseRemoval_ClearsTelemetryRetry(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "127.0.0.1")
 	now := time.Now()
 	host := "192.0.2.81"
@@ -349,7 +349,7 @@ func TestBrowseRemovalClearsTelemetryRetry(t *testing.T) {
 	require.True(t, ok, "removed peer endpoint remained backed off")
 }
 
-func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *testing.T) {
+func TestBrowseEndpointUpdate_WaitsForOldTelemetryBeforeClaimingReplacement(t *testing.T) {
 	newEntered := make(chan struct{}, 1)
 	releaseNew := make(chan struct{}, 1)
 	newServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -440,7 +440,7 @@ func TestBrowseEndpointUpdateWaitsForOldTelemetryBeforeClaimingReplacement(t *te
 	require.True(t, ok, "old endpoint failure backed off the replacement endpoint")
 }
 
-func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) {
+func TestTelemetryLoop_KeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) {
 	slowStarted := make(chan struct{}, 1)
 	slow := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
@@ -517,7 +517,7 @@ func TestTelemetryLoopKeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T) 
 	}
 }
 
-func TestTelemetryLoopDoesNotOverlapNodePolls(t *testing.T) {
+func TestTelemetryLoop_DoesNotOverlapNodePolls(t *testing.T) {
 	var active atomic.Int32
 	var maxActive atomic.Int32
 	var calls atomic.Int32
@@ -562,7 +562,7 @@ func TestTelemetryLoopDoesNotOverlapNodePolls(t *testing.T) {
 	require.Equal(t, int32(1), maxActive.Load(), "maximum concurrent requests for one node")
 }
 
-func TestTelemetryLoopBoundsConcurrentWorkAcrossTicks(t *testing.T) {
+func TestTelemetryLoop_BoundsConcurrentWorkAcrossTicks(t *testing.T) {
 	const nodeCount = telemetryRefreshConcurrency + 1
 	entered := make(chan struct{}, nodeCount)
 	releaseWork := make(chan struct{})

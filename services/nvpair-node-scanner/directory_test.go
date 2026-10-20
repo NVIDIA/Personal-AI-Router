@@ -12,7 +12,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-func TestToDirectoryNode(t *testing.T) {
+func TestToDirectoryNode_ProjectsIdentityServicesAndTrust(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostA",
 		Host:      "hostA.local.",
@@ -35,7 +35,7 @@ func TestToDirectoryNode(t *testing.T) {
 // constant that consumers MUST ignore — every service port comes only from the
 // TXT map. Here the record's SRV port is a bogus value while TXT says ni=14318,
 // and the directory entry must report the TXT port, never the SRV one.
-func TestToDirectoryNodeIgnoresSRVPort(t *testing.T) {
+func TestToDirectoryNode_IgnoresSRVPort(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostC",
 		Host:      "hostC.local.",
@@ -55,7 +55,7 @@ func TestToDirectoryNodeIgnoresSRVPort(t *testing.T) {
 // TestToDirectoryNodeSkipsWithoutUUID: a record with no uuid= can't be keyed by
 // a stable identity, so it's skipped (ok=false) rather than keyed by the
 // hostname — node identity is the UUID everywhere, no name fallback.
-func TestToDirectoryNodeSkipsWithoutUUID(t *testing.T) {
+func TestToDirectoryNode_SkipsWithoutUUID(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostB",
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
@@ -72,7 +72,7 @@ func TestToDirectoryNodeSkipsWithoutUUID(t *testing.T) {
 // the previous preference for 192.168 over 10.x is what made a multi-homed host
 // publish a two-host direct-connect link instead of its LAN. Both addresses are
 // kept, and a consumer that must connect resolves it by connecting.
-func TestToDirectoryNodeIPFallback(t *testing.T) {
+func TestToDirectoryNode_UsesRecordIPWhenAddressesAreAbsent(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostB",
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
@@ -89,7 +89,7 @@ func TestToDirectoryNodeIPFallback(t *testing.T) {
 // projection, and its ip= stays canonical even though the advertised address list
 // leads with something else. This is the multi-homed fix at the collapse point —
 // the node ranked these with evidence no observer has.
-func TestToDirectoryNodePreservesPublishedOrder(t *testing.T) {
+func TestToDirectoryNode_PreservesPublishedOrder(t *testing.T) {
 	raw := RawNode{
 		ID:        "spark",
 		Addresses: []string{"192.168.240.2", "10.172.54.70"},
@@ -106,7 +106,7 @@ func TestToDirectoryNodePreservesPublishedOrder(t *testing.T) {
 
 // TestToDirectoryNodeUnionsUnpublishedAddresses: an address the browse resolved
 // but the node did not rank is kept as a fallback, appended rather than promoted.
-func TestToDirectoryNodeUnionsUnpublishedAddresses(t *testing.T) {
+func TestToDirectoryNode_UnionsUnpublishedAddresses(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostC",
 		Addresses: []string{"10.0.9.9"},
@@ -117,7 +117,7 @@ func TestToDirectoryNodeUnionsUnpublishedAddresses(t *testing.T) {
 	assert.Equal(t, []string{"10.0.0.5", "10.0.9.9"}, n.IPs, "candidates")
 }
 
-func TestDirectoryUpsertRemoveSnapshot(t *testing.T) {
+func TestDirectory_UpdatesRemovesAndSnapshotsNodes(t *testing.T) {
 	d := newDirectory()
 	a := noderec.DirectoryNode{HostUUID: "a", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}}}
 	b := noderec.DirectoryNode{HostUUID: "b", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}

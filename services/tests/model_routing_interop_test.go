@@ -40,7 +40,7 @@ func newRoutingUpstream(t *testing.T, status int) *routingUpstream {
 	return upstream
 }
 
-func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
+func TestModelRouting_RejectsNodesWithoutRequestedModelAcrossProcesses(t *testing.T) {
 	if portBusy(11435) || portBusy(1234) {
 		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
 	}

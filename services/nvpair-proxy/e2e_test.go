@@ -185,7 +185,7 @@ func e2eWaitReadyPort(t *testing.T, frames *e2eInbox, timeout time.Duration) int
 	return p.Port
 }
 
-func TestE2EInboxPreservesInterleavedFrames(t *testing.T) {
+func TestE2EInbox_PreservesInterleavedFrames(t *testing.T) {
 	for _, readyFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("ready-first-%t", readyFirst), func(t *testing.T) {
 			source := make(chan e2eFrame, 4)
@@ -252,7 +252,7 @@ func e2eSplitHostPort(t *testing.T, serverURL string) (string, int) {
 // the tagged spelling while the client asks for the untagged one, so a
 // regression in normalizeModel shows up as an unroutable request rather than
 // a unit-test diff.
-func TestE2EFailoverOverRealBinary(t *testing.T) {
+func TestProxy_FailsOverAcrossNodesOverStdio(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		bin := proxyBinary(t)
 		// The child inherits this environment, so a persisted port it loads on

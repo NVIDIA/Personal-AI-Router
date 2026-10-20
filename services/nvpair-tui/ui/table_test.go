@@ -17,7 +17,7 @@ import (
 // TestTruncate covers the cut and its edges. It counts runes, not bytes: GPU
 // and CPU model names reach it, a byte slice can land inside a multi-byte
 // sequence, and its callers pad with %-Ns, which counts runes too.
-func TestTruncate(t *testing.T) {
+func TestTruncate_PreservesDisplayWidth(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -58,7 +58,7 @@ func rendered(cols []column, total int) int {
 // headers ("po" for PORT, "SEE" for SEEN): a laid-out row must consume the
 // width it was given, never more. Sizing that ignores cellPadding overflows and
 // the terminal drops the rightmost columns.
-func TestLayoutColumnsFillsWidthExactly(t *testing.T) {
+func TestLayoutColumns_FillsWidthExactly(t *testing.T) {
 	cases := []struct {
 		name  string
 		total int
@@ -112,7 +112,7 @@ func TestLayoutColumnsFillsWidthExactly(t *testing.T) {
 
 // TestLayoutColumnsWeightedFlex checks a heavier column takes proportionally
 // more of the surplus, so a message column can dominate a narrow id column.
-func TestLayoutColumnsWeightedFlex(t *testing.T) {
+func TestLayoutColumns_DistributesRemainingWidthByWeight(t *testing.T) {
 	cols := []column{flexCol("ID", 10, 1), flexCol("MESSAGE", 10, 3)}
 	got := layoutColumns(60, cols)
 
@@ -124,7 +124,7 @@ func TestLayoutColumnsWeightedFlex(t *testing.T) {
 // TestLayoutColumnsNarrowTerminal checks a terminal too narrow for the
 // minimums degrades to those minimums rather than producing widths bubbles
 // would render as zero-width or negative.
-func TestLayoutColumnsNarrowTerminal(t *testing.T) {
+func TestLayoutColumns_FitsNarrowTerminal(t *testing.T) {
 	cols := []column{fixedCol("SEV", 9), flexCol("MESSAGE", 10, 1)}
 	for _, total := range []int{0, 1, 10, 20} {
 		got := layoutColumns(total, cols)
@@ -135,7 +135,7 @@ func TestLayoutColumnsNarrowTerminal(t *testing.T) {
 
 // TestLayoutColumnsHonoursMinimum checks a flex column never shrinks below its
 // stated minimum even when fixed columns consume the whole width.
-func TestLayoutColumnsHonoursMinimum(t *testing.T) {
+func TestLayoutColumns_HonoursMinimum(t *testing.T) {
 	cols := []column{fixedCol("WIDE", 50), flexCol("REST", 12, 1)}
 	got := layoutColumns(40, cols)
 	assert.GreaterOrEqual(t, got[1].Width, 12, "REST must retain its minimum width")
@@ -146,7 +146,7 @@ func TestLayoutColumnsHonoursMinimum(t *testing.T) {
 // can arrive before the first WindowSizeMsg. bubbles' renderRow indexes its
 // column slice per row cell, so a table built with no columns panics on the
 // first row rather than rendering empty.
-func TestViewsAcceptRowsBeforeResize(t *testing.T) {
+func TestTableViews_AcceptRowsBeforeResize(t *testing.T) {
 	t.Run("nodes from discovery", func(t *testing.T) {
 		v := newNodesView(nil)
 		v.feeds.discovered = []availableNode{{HostUUID: "u", Name: "n", IPAddress: "10.0.0.1", Port: 1}}
@@ -187,7 +187,7 @@ func TestViewsAcceptRowsBeforeResize(t *testing.T) {
 
 // TestEveryTableViewHasColumnsAtConstruction is the direct invariant behind the
 // panic above, stated per view so a new view cannot regress it silently.
-func TestEveryTableViewHasColumnsAtConstruction(t *testing.T) {
+func TestEveryTableView_HasColumnsAtConstruction(t *testing.T) {
 	widths := map[string][]table.Column{
 		"nodes":                 nodesColumns(defaultTableWidth),
 		"jobs":                  workloadColumns(defaultTableWidth),
@@ -212,7 +212,7 @@ func TestEveryTableViewHasColumnsAtConstruction(t *testing.T) {
 // that builds its rows in one function and its columns in another can lose a
 // cell without a single type error — which is exactly the shape of the edit that
 // removed the node table's timestamp column.
-func TestRowsMatchTheirColumns(t *testing.T) {
+func TestTableRows_MatchDeclaredColumnWidths(t *testing.T) {
 	t.Run("nodes", func(t *testing.T) {
 		v := newNodesView(nil)
 		v.feeds.discovered = []availableNode{

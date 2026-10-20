@@ -24,7 +24,7 @@ import (
 // this writer's activate and clear. Every cluster-scoped service holds exactly
 // such a long-lived Mesh, so a read side that could only answer at construction
 // time would leave those services stuck in whatever mode they started in.
-func TestAdmissionReadSideMatchesWriter(t *testing.T) {
+func TestAdmissionReadSide_MatchesWriter(t *testing.T) {
 	dir := t.TempDir()
 	m := testManagerAt(t, dir, 15377)
 

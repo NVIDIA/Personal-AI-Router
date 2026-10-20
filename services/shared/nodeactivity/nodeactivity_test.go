@@ -36,13 +36,13 @@ func newTestReporter(interval time.Duration) (*Reporter, *fixedClock) {
 	return r, clock
 }
 
-func TestFirstReportIsDueAndTheNextIsNot(t *testing.T) {
+func TestFirstReport_IsDueAndTheNextIsNot(t *testing.T) {
 	r, _ := newTestReporter(2 * time.Second)
 	assert.True(t, r.Due("node-a"), "first report for a node must be due")
 	assert.False(t, r.Due("node-a"), "a second report inside the interval must be coalesced")
 }
 
-func TestReportIsDueAgainAfterTheInterval(t *testing.T) {
+func TestReport_IsDueAgainAfterTheInterval(t *testing.T) {
 	r, clock := newTestReporter(2 * time.Second)
 	r.Due("node-a")
 	clock.advance(2 * time.Second)
@@ -52,7 +52,7 @@ func TestReportIsDueAgainAfterTheInterval(t *testing.T) {
 // A busy node and an idle one share the reporter, so throttling must be
 // per-node: coalescing one node's chunks must not silence another's first
 // report, which is the one that keeps it from being evicted.
-func TestThrottleIsPerNode(t *testing.T) {
+func TestThrottle_IsPerNode(t *testing.T) {
 	r, _ := newTestReporter(2 * time.Second)
 	assert.True(t, r.Due("node-a"), "node-a first report must be due")
 	assert.True(t, r.Due("node-b"), "node-b must not be throttled by node-a's report")
@@ -60,12 +60,12 @@ func TestThrottleIsPerNode(t *testing.T) {
 
 // A node with no id cannot be vouched for, and reporting it would credit
 // whichever node happened to be keyed by the empty string.
-func TestBlankNodeIsNeverDue(t *testing.T) {
+func TestBlankNode_IsNeverDue(t *testing.T) {
 	r, _ := newTestReporter(2 * time.Second)
 	assert.False(t, r.Due(""), "a blank node id must never be reported")
 }
 
-func TestForgetLetsANodeReportImmediately(t *testing.T) {
+func TestForget_LetsANodeReportImmediately(t *testing.T) {
 	r, _ := newTestReporter(2 * time.Second)
 	r.Due("node-a")
 	r.Forget("node-a")
@@ -75,7 +75,7 @@ func TestForgetLetsANodeReportImmediately(t *testing.T) {
 // Write is called from the reverse proxy's copy goroutine, one per in-flight
 // request, so concurrent Due calls for the same node must neither race nor let
 // more than one report through per interval.
-func TestConcurrentDueLetsExactlyOneThrough(t *testing.T) {
+func TestConcurrentDue_LetsExactlyOneThrough(t *testing.T) {
 	r, _ := newTestReporter(time.Minute)
 	var wg sync.WaitGroup
 	var mu sync.Mutex

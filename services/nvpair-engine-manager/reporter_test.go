@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReporterDedupCapClear(t *testing.T) {
+func TestReporter_DeduplicatesCapsAndClearsErrors(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewReporter(NewCodec(&buf))
 

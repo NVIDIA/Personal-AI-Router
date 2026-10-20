@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReservedAliasPortBlocksLocalAndRemoteStarts(t *testing.T) {
+func TestReservedAliasPort_BlocksLocalAndRemoteStarts(t *testing.T) {
 	manifest := testEngineManifest(fakeEngineBin)
 	reg := NewRegistry()
 	reg.engines[manifest.Engine] = manifest

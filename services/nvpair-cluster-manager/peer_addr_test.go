@@ -28,7 +28,7 @@ const unreachableAddr = "192.0.2.1:14321"
 // cluster layer: a peer's leading address was a direct-connect link this host
 // could not reach, so every reconcile burned the full request timeout against it
 // while the address that worked sat unused in the same candidate list.
-func TestReconcileWithFailsOverToAnAnsweringAddress(t *testing.T) {
+func TestReconcileWith_FailsOverToAnAnsweringAddress(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -52,7 +52,7 @@ func TestReconcileWithFailsOverToAnAnsweringAddress(t *testing.T) {
 // trip, not one per address. Reconcile runs on a heartbeat and the self-removal
 // verdict waits on every peer, so a peer whose four published addresses all
 // blackhole must cost one budget rather than four.
-func TestReconcileBudgetCoversTheWholeCandidateWalk(t *testing.T) {
+func TestReconcileBudget_CoversTheWholeCandidateWalk(t *testing.T) {
 	m := newTestManagerPort(t, 15041)
 	peerUUID, certPEM, fingerprint, _ := makeNode(t, "192.0.2.9")
 	pinTrusted(t, m, peerUUID, certPEM, fingerprint)
@@ -75,7 +75,7 @@ func TestReconcileBudgetCoversTheWholeCandidateWalk(t *testing.T) {
 // TestResolvePeerAddrsPutsTheRecordedAddressFirst: the pairing-time address was
 // observed working from here, so it leads — but the peer's other advertised
 // addresses follow it rather than being discarded.
-func TestResolvePeerAddrsPutsTheRecordedAddressFirst(t *testing.T) {
+func TestResolvePeerAddrs_PutsTheRecordedAddressFirst(t *testing.T) {
 	m := newTestManagerPort(t, 14321)
 	peer := "33333333-3333-3333-3333-333333333333"
 	m.browser = newBrowser()
@@ -95,7 +95,7 @@ func TestResolvePeerAddrsPutsTheRecordedAddressFirst(t *testing.T) {
 // was proven from this host, while the peer's own first choice is ranked from its
 // vantage point, so a peer that still advertises what we hold must not be
 // redirected onto a link only its neighbour can use.
-func TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress(t *testing.T) {
+func TestRefreshMemberAddrsFromMDNS_KeepsAStillAdvertisedAddress(t *testing.T) {
 	m := newTestManagerPort(t, 14321)
 	peer := "44444444-4444-4444-4444-444444444444"
 	m.upsertMember(&ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "10.172.55.129", Port: 14321, State: stateMember})
@@ -124,7 +124,7 @@ func TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress(t *testing.T) {
 	require.Equal(t, "10.172.55.200", n.IPAddress, "stored address")
 }
 
-func TestConfirmedFirst(t *testing.T) {
+func TestConfirmedFirst_PromotesConfirmedAddressAndPreservesOtherRanks(t *testing.T) {
 	addrs := []string{"a:1", "b:1", "c:1"}
 	got := confirmedFirst(addrs, "")
 	require.Equal(t, "a:1", got[0], "no confirmation should keep the ranking (%v)", got)
@@ -135,7 +135,7 @@ func TestConfirmedFirst(t *testing.T) {
 // user-initiated and happens once, so it confirms the target rather than failing
 // in front of the person who asked for it. It reorders only — an open port is not
 // proof of which machine is behind it — so every address stays available.
-func TestReachableEndpointFirstLeadsWithTheAddressThatAnswers(t *testing.T) {
+func TestReachableEndpointFirst_LeadsWithTheAddressThatAnswers(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err, "listen")
 	defer ln.Close()
@@ -157,7 +157,7 @@ func TestReachableEndpointFirstLeadsWithTheAddressThatAnswers(t *testing.T) {
 // TestReachableEndpointFirstSingleCandidateSkipsConfirmation: with one address
 // there is nothing to choose between, so pairing must not spend a handshake before
 // its own request.
-func TestReachableEndpointFirstSingleCandidateSkipsConfirmation(t *testing.T) {
+func TestReachableEndpointFirstSingleCandidate_SkipsConfirmation(t *testing.T) {
 	start := time.Now()
 	require.Equal(t, []string{unreachableAddr}, reachableEndpointFirst([]string{unreachableAddr}), "reachableEndpointFirst")
 	require.LessOrEqual(t, time.Since(start), 200*time.Millisecond, "single candidate took")
@@ -203,7 +203,7 @@ func publishPendingInvite(t *testing.T, m *Manager, inviteID string) {
 // TCP handshake only proves a port is open: identically-wired machines genuinely
 // share a direct-connect address, so the endpoint that answers can be the wrong
 // machine, and the remaining published addresses must still be tried.
-func TestPairingWalksPastAnEndpointThatAnswersButCannotPair(t *testing.T) {
+func TestPairing_WalksPastAnEndpointThatAnswersButCannotPair(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	cid, _ := m.clusterIdentity()
@@ -222,7 +222,7 @@ func TestPairingWalksPastAnEndpointThatAnswersButCannotPair(t *testing.T) {
 // TestPairingStopsAtAnExplicitRefusal: a peer that answered and refused refuses at
 // every address it has. Walking on would re-ask the same machine and report a
 // transport failure over its actual answer.
-func TestPairingStopsAtAnExplicitRefusal(t *testing.T) {
+func TestPairing_StopsAtAnExplicitRefusal(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	cid, _ := m.clusterIdentity()
@@ -242,7 +242,7 @@ func TestPairingStopsAtAnExplicitRefusal(t *testing.T) {
 
 // TestPairingDoesNotWalkAfterOurOwnClusterIsGone: no address of the peer's can fix
 // a teardown on this side, and the abandoned pairing must stay abandoned.
-func TestPairingDoesNotWalkAfterOurOwnClusterIsGone(t *testing.T) {
+func TestPairing_DoesNotWalkAfterOurOwnClusterIsGone(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	cid, _ := m.clusterIdentity()
@@ -261,7 +261,7 @@ func TestPairingDoesNotWalkAfterOurOwnClusterIsGone(t *testing.T) {
 // address is being tried must end the pairing, not merely that attempt. The walk
 // previously read only the error, which does not describe a cancel, so it advanced
 // to the next address and paired the peer the user had just stopped inviting.
-func TestPairingStopsWhenTheInviteIsCanceledMidWalk(t *testing.T) {
+func TestPairing_StopsWhenTheInviteIsCanceledMidWalk(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	cid, _ := m.clusterIdentity()
@@ -292,7 +292,7 @@ func TestPairingStopsWhenTheInviteIsCanceledMidWalk(t *testing.T) {
 
 // TestCanceledInviteRefusesLaterSessionRegistration covers the window after the
 // walk's pending-state check but before the next address registers its session.
-func TestCanceledInviteRefusesLaterSessionRegistration(t *testing.T) {
+func TestCanceledInvite_RefusesLaterSessionRegistration(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	cid, _ := m.clusterIdentity()
@@ -323,7 +323,7 @@ func TestCanceledInviteRefusesLaterSessionRegistration(t *testing.T) {
 // next attempt registers a session of its own, so a liveness check alone passes;
 // writing this attempt's PIN onto the invite captured before the exchange put the
 // record back to pending with a fresh PIN, and the joiner could still complete.
-func TestCanceledInviteIsNotRepublishedByALaterAddress(t *testing.T) {
+func TestCanceledInvite_IsNotRepublishedByALaterAddress(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	cid, _ := m.clusterIdentity()

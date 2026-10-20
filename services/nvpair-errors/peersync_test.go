@@ -36,7 +36,7 @@ func localErr(id, nodeID string, ts int64) ServiceError {
 // TestCompositeKeyAvoidsCrossNodeCollision: the same error id reported
 // by two different nodes must coexist as two entries, not clobber each
 // other. This is the whole reason the store keys by (nodeId, id).
-func TestCompositeKeyAvoidsCrossNodeCollision(t *testing.T) {
+func TestCompositeKey_AvoidsCrossNodeCollision(t *testing.T) {
 	m := managerForNode("node-a")
 
 	const id = "ollama-local:not-running"
@@ -48,7 +48,7 @@ func TestCompositeKeyAvoidsCrossNodeCollision(t *testing.T) {
 
 // TestLocalSnapshotFiltersToLocalOrigin: localSnapshot (what we serve
 // and push) must contain only this node's own errors, never peers'.
-func TestLocalSnapshotFiltersToLocalOrigin(t *testing.T) {
+func TestLocalSnapshot_FiltersToLocalOrigin(t *testing.T) {
 	m := managerForNode("node-a")
 	m.upsert(localErr("a:one", "node-a", 1000))
 	m.upsert(localErr("b:one", "node-b", 1000))
@@ -64,7 +64,7 @@ func TestLocalSnapshotFiltersToLocalOrigin(t *testing.T) {
 // TestReconcilePeerUpsertsAndEvicts: a peer's pushed set is
 // authoritative for its nodeId — new entries appear, and entries the
 // peer no longer reports are evicted. Local entries are untouched.
-func TestReconcilePeerUpsertsAndEvicts(t *testing.T) {
+func TestReconcilePeer_UpsertsAndEvicts(t *testing.T) {
 	m := managerForNode("node-a")
 	m.upsert(localErr("a:keep", "node-a", 1000))
 
@@ -96,7 +96,7 @@ func TestReconcilePeerUpsertsAndEvicts(t *testing.T) {
 // TestReconcilePeerStampsOrigin: a peer cannot inject an entry
 // attributed to a third node — the envelope nodeId is stamped onto
 // every entry regardless of the per-error NodeID field.
-func TestReconcilePeerStampsOrigin(t *testing.T) {
+func TestReconcilePeer_StampsOrigin(t *testing.T) {
 	m := managerForNode("node-a")
 	m.reconcilePeer("node-b", []ServiceError{
 		{ID: "spoof", Message: "x", Timestamp: 1, NodeID: "node-c"},
@@ -108,7 +108,7 @@ func TestReconcilePeerStampsOrigin(t *testing.T) {
 
 // TestReconcilePeerRejectsSelf: a peer must never be able to reconcile
 // our own origin's errors.
-func TestReconcilePeerRejectsSelf(t *testing.T) {
+func TestReconcilePeer_RejectsSelf(t *testing.T) {
 	m := managerForNode("node-a")
 	m.upsert(localErr("a:one", "node-a", 1000))
 	assert.False(t, m.reconcilePeer("node-a", nil), "reconcile of own nodeId must be a no-op")
@@ -117,7 +117,7 @@ func TestReconcilePeerRejectsSelf(t *testing.T) {
 
 // TestEvictNodeRemovesPeerEntries: when a peer leaves the network all
 // its entries are dropped; local entries remain.
-func TestEvictNodeRemovesPeerEntries(t *testing.T) {
+func TestEvictNode_RemovesPeerEntries(t *testing.T) {
 	m := managerForNode("node-a")
 	m.upsert(localErr("a:one", "node-a", 1000))
 	m.reconcilePeer("node-b", []ServiceError{localErr("b:one", "node-b", 1000)})
@@ -131,7 +131,7 @@ func TestEvictNodeRemovesPeerEntries(t *testing.T) {
 
 // TestHTTPIngestReconciles: the POST /v1/errors handler decodes a
 // SyncEnvelope and merges it, returning 204.
-func TestHTTPIngestReconciles(t *testing.T) {
+func TestHTTPIngest_ReconcilesPeerSnapshot(t *testing.T) {
 	m := managerForNode("node-a")
 	srv, client := servePinnedErrorsMux(t, m)
 
@@ -153,7 +153,7 @@ func TestHTTPIngestReconciles(t *testing.T) {
 
 // TestHTTPIngestRejectsMissingNodeID: an envelope without a nodeId is a
 // 400, not a silent accept.
-func TestHTTPIngestRejectsMissingNodeID(t *testing.T) {
+func TestHTTPIngest_RejectsMissingNodeID(t *testing.T) {
 	m := managerForNode("node-a")
 	srv, client := servePinnedErrorsMux(t, m)
 
@@ -166,7 +166,7 @@ func TestHTTPIngestRejectsMissingNodeID(t *testing.T) {
 
 // TestHTTPServeLocalReturnsLocalSnapshot: GET /v1/errors returns this
 // node's local-origin errors as a SyncEnvelope, excluding peer entries.
-func TestHTTPServeLocalReturnsLocalSnapshot(t *testing.T) {
+func TestHTTPServeLocal_ReturnsLocalSnapshot(t *testing.T) {
 	m := managerForNode("node-a")
 	m.upsert(localErr("a:one", "node-a", 1000))
 	m.reconcilePeer("node-b", []ServiceError{localErr("b:one", "node-b", 1000)})
@@ -186,7 +186,7 @@ func TestHTTPServeLocalReturnsLocalSnapshot(t *testing.T) {
 
 // TestOnLocalChangeFiresForLocalNotPeer: a local report/clear triggers
 // the push hook; a peer reconcile does not (no echo loop).
-func TestOnLocalChangeFiresForLocalNotPeer(t *testing.T) {
+func TestOnLocalChange_FiresForLocalNotPeer(t *testing.T) {
 	m := managerForNode("node-a")
 	fired := 0
 	m.SetOnLocalChange(func() { fired++ })
@@ -207,7 +207,7 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 
 // TestPeerHostPorts covers address propagation: preserve every ranked address,
 // fall back to the hostname, and reject nodes with no usable destination.
-func TestPeerHostPorts(t *testing.T) {
+func TestPeerHostPorts_UsesPublishedAddressesAndServicePort(t *testing.T) {
 	cases := []struct {
 		name string
 		node RawNode
@@ -237,7 +237,7 @@ func TestPeerHostPorts(t *testing.T) {
 // pins, so every discovered peer is dropped from the push set and nothing is ever
 // sent. This is the outbound half of "the cluster data plane is always mTLS" —
 // previously such a node kept the peer and pushed its error snapshot in the clear.
-func TestUnclusteredNodeKeepsNoPeers(t *testing.T) {
+func TestUnclusteredNode_KeepsNoPeers(t *testing.T) {
 	ps := NewPeerSync(managerForNode("node-a"), clustertrust.Open(t.TempDir()))
 	ps.handleEvent(context.Background(), DiscoveryEvent{
 		Type: "discovered",

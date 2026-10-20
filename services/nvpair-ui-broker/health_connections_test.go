@@ -15,7 +15,7 @@ import (
 	"nvpair-shared/httpcon/testclient"
 )
 
-func TestHealthChecksReuseConnections(t *testing.T) {
+func TestHealthChecks_ReuseConnections(t *testing.T) {
 	test := func(name, path string, profile engineProxyProfile) {
 		t.Run(name, func(t *testing.T) {
 			testFraming := func(name string, chunked bool) {

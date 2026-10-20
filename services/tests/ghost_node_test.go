@@ -40,7 +40,7 @@ import (
 // responder publishes the record, and a local HTTP server plays its node-info.
 // Flipping that server's reported hostUuid is exactly the signal a wipe
 // produces, and is what the probe must notice.
-func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
+func TestScanner_EvictsRecordSupersededAtItsAddress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("multicast + miss-threshold timing; skipped under -short")
 	}

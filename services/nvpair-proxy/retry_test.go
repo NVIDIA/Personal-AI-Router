@@ -91,7 +91,7 @@ func setForTest[A any](t *testing.T, target *A, value A) {
 
 // TestBackoffFor covers the production schedule, which TestMain has replaced
 // for every other body in the package, so it puts the real one back first.
-func TestBackoffFor(t *testing.T) {
+func TestBackoffFor_BoundsRetryDelay(t *testing.T) {
 	setForTest(t, &retryBackoff, defaultRetryBackoff)
 
 	// Indexed by dispatches already made, so the wait after the first dispatch
@@ -131,7 +131,7 @@ func TestBackoffFor_NeverOutlastsTheDeadline(t *testing.T) {
 // signals (spec §5.3). These cover the claim directly, because the race window
 // in the handler is not reachable deterministically.
 
-func TestAttemptClaim_CommitWinsATie(t *testing.T) {
+func TestAttemptClaim_CommitsWhenCompletionAndTimeoutCoincide(t *testing.T) {
 	var claim attemptClaim
 
 	require.True(t, claim.commit(), "commit on a pending claim should win")
@@ -139,7 +139,7 @@ func TestAttemptClaim_CommitWinsATie(t *testing.T) {
 	require.False(t, claim.abandoned(), "a committed claim must not report as abandoned")
 }
 
-func TestAttemptClaim_AbandonBlocksALaterCommit(t *testing.T) {
+func TestAttemptClaim_PreventsCommitAfterAbandonment(t *testing.T) {
 	var claim attemptClaim
 
 	require.True(t, claim.abandon(), "abandon on a pending claim should win")
@@ -154,7 +154,7 @@ func TestAttemptClaim_CommitIsIdempotent(t *testing.T) {
 	require.True(t, claim.commit(), "a second commit from the same committed attempt should still report true")
 }
 
-func TestAttemptClaim_SettledOnlyAfterAClaim(t *testing.T) {
+func TestAttemptClaim_RemainsUnsettledUntilCommittedOrAbandoned(t *testing.T) {
 	var pending, committed, abandoned attemptClaim
 	committed.commit()
 	abandoned.abandon()
@@ -166,7 +166,7 @@ func TestAttemptClaim_SettledOnlyAfterAClaim(t *testing.T) {
 
 // TestAttemptClaim_ExactlyOneWinnerUnderContention is the property the type
 // exists for: with both sides racing, one and only one succeeds.
-func TestAttemptClaim_ExactlyOneWinnerUnderContention(t *testing.T) {
+func TestAttemptClaim_AllowsOneWinnerUnderContention(t *testing.T) {
 	for range 500 {
 		var claim attemptClaim
 		var commits, abandons atomic.Int32
@@ -288,7 +288,7 @@ func TestHandleHTTP_NonInferenceIsNotRetriedBeyondItsCandidates(t *testing.T) {
 // first node would make it look permanently loaded, which is observable twice:
 // the count it is left holding, and the skew in how the five dispatches were
 // split between two nodes that are equally broken.
-func TestHandleHTTP_ReservationReleasedBetweenAttempts(t *testing.T) {
+func TestHandleHTTP_ReleasesReservationBetweenAttempts(t *testing.T) {
 	tc := anyCase(t)
 
 	firstURL, firstHits := newCountingServer(t, http.StatusServiceUnavailable, "")
@@ -377,7 +377,7 @@ func TestHandleHTTP_WaitsForAnOwnerWithoutSpendingAttempts(t *testing.T) {
 // to back — so a job can reach the 10-minute deadline before it reaches five
 // dispatches. The owner is still right there, so reporting that no node became
 // available would blame a missing node for attempts that were made and failed.
-func TestHandleHTTP_DeadlineWithAnOwnerPresentSaysSo(t *testing.T) {
+func TestHandleHTTP_ReportsDeadlineWhenModelOwnerExists(t *testing.T) {
 	// A deadline the first slow attempt outlives, so the loop breaks on time
 	// rather than on the dispatch budget, with the owner still advertising.
 	setForTest(t, &firstBodyTimeout, 300*time.Millisecond)
@@ -417,7 +417,7 @@ func TestHandleHTTP_DeadlineWithAnOwnerPresentSaysSo(t *testing.T) {
 // succeed — or a real disconnect would keep burning attempts. The attempt
 // context is a child, and both the disconnect watcher and the terminal
 // classification read the parent, which is what keeps them apart.
-func TestHandleHTTP_TargetLeavingDiscoveryAbortsAttempt(t *testing.T) {
+func TestHandleHTTP_AbortsAttemptWhenTargetLeavesDiscovery(t *testing.T) {
 	// Left long on purpose: if the watcher does not end the attempt, nothing
 	// else will inside the test's patience.
 	setForTest(t, &firstBodyTimeout, 30*time.Second)
@@ -473,7 +473,7 @@ func TestHandleHTTP_TargetLeavingDiscoveryAbortsAttempt(t *testing.T) {
 // TestHandleHTTP_AbandonedRequestStopsRetrying: a client that has gone away
 // should not keep a retry budget alive. Nobody is left to receive the answer,
 // so the remaining attempts belong to work someone is waiting for.
-func TestHandleHTTP_AbandonedRequestStopsRetrying(t *testing.T) {
+func TestHandleHTTP_StopsRetryingWhenClientAbandonsRequest(t *testing.T) {
 	// Long enough that the cancel below lands inside the wait rather than
 	// between two dispatches.
 	setForTest(t, &retryBackoff, []time.Duration{300 * time.Millisecond})

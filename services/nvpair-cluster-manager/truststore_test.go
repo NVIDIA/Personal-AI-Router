@@ -52,7 +52,7 @@ func pinWithCommonName(t *testing.T, uuid string) *TrustedPin {
 	}
 }
 
-func TestTrustStoreRejectsUnsafePinIdentifiers(t *testing.T) {
+func TestTrustStore_RejectsUnsafePinIdentifiers(t *testing.T) {
 	test := func(name, uuid string) {
 		t.Run(name, func(t *testing.T) {
 			ts, count := newAnnouncingStore(t)
@@ -88,7 +88,7 @@ func TestTrustStoreRejectsUnsafePinIdentifiers(t *testing.T) {
 	}
 }
 
-func TestTrustStoreRejectsUnsafeRemoveIdentifiers(t *testing.T) {
+func TestTrustStore_RejectsUnsafeRemoveIdentifiers(t *testing.T) {
 	test := func(name, uuid string) {
 		t.Run(name, func(t *testing.T) {
 			ts, count := newAnnouncingStore(t)
@@ -125,7 +125,7 @@ func TestTrustStoreRejectsUnsafeRemoveIdentifiers(t *testing.T) {
 	}
 }
 
-func TestTrustStoreLoadSkipsUnsafePinIdentifiers(t *testing.T) {
+func TestTrustStoreLoad_SkipsUnsafePinIdentifiers(t *testing.T) {
 	test := func(name, uuid string) {
 		t.Run(name, func(t *testing.T) {
 			ts, err := newTrustStore(t.TempDir())
@@ -143,7 +143,7 @@ func TestTrustStoreLoadSkipsUnsafePinIdentifiers(t *testing.T) {
 	test("parent directory principal", "..")
 }
 
-func TestTrustStoreOpaqueSafeIdentifierSurvivesReload(t *testing.T) {
+func TestTrustStore_PreservesSafeOpaqueIdentifierAcrossReload(t *testing.T) {
 	ts, err := newTrustStore(t.TempDir())
 	require.NoError(t, err, "open store")
 	pin := testPin(t, "peer.name-1")
@@ -157,7 +157,7 @@ func TestTrustStoreOpaqueSafeIdentifierSurvivesReload(t *testing.T) {
 	require.NoError(t, reloaded.Remove(pin.NodeUUID), "repeat safe removal")
 }
 
-func TestMergeRosterRejectsTraversalPrincipal(t *testing.T) {
+func TestMergeRoster_RejectsTraversalPrincipal(t *testing.T) {
 	m := newTestManager(t)
 	peerUUID, peerCert, peerFP, peerKey := makeNode(t, "trusted-peer")
 	pinTrusted(t, m, peerUUID, peerCert, peerFP)
@@ -218,7 +218,7 @@ func testPin(t *testing.T, uuid string) *TrustedPin {
 //
 // Pinning, removing, and a display-name update mutate disk state; forgetting
 // intentionally changes only live authorization. Each must announce once.
-func TestTrustStoreAnnouncesEveryMutation(t *testing.T) {
+func TestTrustStore_AnnouncesEveryMutation(t *testing.T) {
 	ts, count := newAnnouncingStore(t)
 	const uuid = "principal-peer"
 
@@ -278,7 +278,7 @@ func pinWithEndorsements(ts *TrustStore, pin *TrustedPin, batch []Endorsement) e
 	return ts.Pin(&updated)
 }
 
-func TestTrustStoreAnnouncesNewEndorsementsAfterPersistence(t *testing.T) {
+func TestTrustStore_AnnouncesNewEndorsementsAfterPersistence(t *testing.T) {
 	test := func(name string, merge endorsementMerge) {
 		t.Run(name, func(t *testing.T) {
 			ts, _ := newAnnouncingStore(t)
@@ -317,7 +317,7 @@ func TestTrustStoreAnnouncesNewEndorsementsAfterPersistence(t *testing.T) {
 	test("IdenticalPin", pinWithEndorsements)
 }
 
-func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
+func TestTrustStore_StaysSilentWhenEndorsementWriteFails(t *testing.T) {
 	test := func(name string, merge endorsementMerge) {
 		t.Run(name, func(t *testing.T) {
 			ts, count := newAnnouncingStore(t)
@@ -355,7 +355,7 @@ func TestTrustStoreStaysSilentWhenEndorsementWriteFails(t *testing.T) {
 	test("IdenticalPin", pinWithEndorsements)
 }
 
-func TestTrustStoreConcurrentDuplicateEndorsementsAnnounceOnce(t *testing.T) {
+func TestTrustStore_AnnouncesConcurrentDuplicateEndorsementsOnce(t *testing.T) {
 	ts, err := newTrustStore(t.TempDir())
 	require.NoError(t, err)
 	pin := testPin(t, "principal-peer")
@@ -403,7 +403,7 @@ func TestTrustStoreConcurrentDuplicateEndorsementsAnnounceOnce(t *testing.T) {
 	assertStoredEndorsements(t, snapshotStoredEndorsements(ts, pin.NodeUUID), want)
 }
 
-func TestTrustStoreMissingEndorsementTargetStaysSilent(t *testing.T) {
+func TestTrustStore_EmitsNothingWhenEndorsementTargetIsMissing(t *testing.T) {
 	ts, count := newAnnouncingStore(t)
 	require.NoError(t, ts.AddEndorsements("principal-stranger", []Endorsement{{By: "trusted-peer", SigV2: "signature-1"}}))
 	require.Equal(t, 0, count(), "missing-target merge changed live state: announcements")
@@ -418,7 +418,7 @@ func TestTrustStoreMissingEndorsementTargetStaysSilent(t *testing.T) {
 // it, so a store that announced on every call — including the idempotent re-pin
 // that pairing and roster gossip perform routinely — would turn steady-state
 // reconciliation into a broadcast loop.
-func TestTrustStoreStaysSilentWhenNothingChanged(t *testing.T) {
+func TestTrustStore_StaysSilentWhenNothingChanged(t *testing.T) {
 	ts, count := newAnnouncingStore(t)
 	const uuid = "principal-peer"
 	pin := testPin(t, uuid)
@@ -443,7 +443,7 @@ func TestTrustStoreStaysSilentWhenNothingChanged(t *testing.T) {
 	require.Equal(t, before, count(), "announcements")
 }
 
-func TestTrustStorePinRemoveReload(t *testing.T) {
+func TestTrustStore_PersistsPinsAcrossReloadAndRemovesThem(t *testing.T) {
 	dir := t.TempDir()
 	ts, err := newTrustStore(dir)
 	require.NoError(t, err, "open")
@@ -464,7 +464,7 @@ func TestTrustStorePinRemoveReload(t *testing.T) {
 	require.False(t, ok, "pin still present after removal")
 }
 
-func TestTrustStoreRePinGuard(t *testing.T) {
+func TestTrustStore_RejectsCertificateChangesForPinnedPeer(t *testing.T) {
 	dir := t.TempDir()
 	ts, _ := newTrustStore(dir)
 	pin := testPin(t, "11111111-1111-4111-8111-111111111111")
@@ -476,7 +476,7 @@ func TestTrustStoreRePinGuard(t *testing.T) {
 	require.Error(t, ts.Pin(other), "expected re-pinning a different cert for the same UUID to fail")
 }
 
-func TestTrustStoreAntiTamper(t *testing.T) {
+func TestTrustStore_SkipsPinsWhoseFilenameDoesNotMatchIdentity(t *testing.T) {
 	dir := t.TempDir()
 	// Pre-create a tampered file: filename UUID != the inner nodeUuid / cert.
 	trustedDir := filepath.Join(dir, "trusted")

@@ -19,7 +19,7 @@ import (
 // TestManagerErrorResponses drives handleMessage / runOp / runAction over
 // an in-memory codec and asserts the JSON-RPC error responses for the
 // failure paths the e2e harness can't easily reach.
-func TestManagerErrorResponses(t *testing.T) {
+func TestManager_ReturnsProtocolErrorsForInvalidRequests(t *testing.T) {
 	newM := func() (*Manager, *bytes.Buffer) {
 		var out bytes.Buffer
 		ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
@@ -49,7 +49,7 @@ func TestManagerErrorResponses(t *testing.T) {
 	mustContain(t, out.String(), "engine and action are required")
 }
 
-func TestRunOpRejectsBadPort(t *testing.T) {
+func TestRunOp_RejectsBadPort(t *testing.T) {
 	var out bytes.Buffer
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
 	m := NewManager(NewCodec(&out), ex, nil)
@@ -59,7 +59,7 @@ func TestRunOpRejectsBadPort(t *testing.T) {
 	mustContain(t, out.String(), "port must be between")
 }
 
-func TestRunOpRejectsBadBind(t *testing.T) {
+func TestRunOp_RejectsBadBind(t *testing.T) {
 	var out bytes.Buffer
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
 	m := NewManager(NewCodec(&out), ex, nil)
@@ -69,7 +69,7 @@ func TestRunOpRejectsBadBind(t *testing.T) {
 	mustContain(t, out.String(), "bind must be a valid IP")
 }
 
-func TestRunOpInstallAutostart(t *testing.T) {
+func TestRunOp_StartsEngineAfterInstallation(t *testing.T) {
 	var out bytes.Buffer
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -81,7 +81,7 @@ func TestRunOpInstallAutostart(t *testing.T) {
 	require.True(t, st.Running, "expected running after install+autostart (%v)", st)
 }
 
-func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
+func TestStatusQueries_DoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
 	tests := []struct {
 		name   string
 		method string

@@ -12,7 +12,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-func TestRegistryRegisterAndRecord(t *testing.T) {
+func TestRegistry_RegistersServicesAndBuildsNodeRecord(t *testing.T) {
 	r := newRegistry("host-1", "clu-1", []string{"192.168.1.10"})
 
 	require.True(t, r.register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}), "first register should report a change")
@@ -35,7 +35,7 @@ func TestRegistryRegisterAndRecord(t *testing.T) {
 	assert.Equal(t, 11434, p, "ol port")
 }
 
-func TestRegistryUnregister(t *testing.T) {
+func TestRegistry_RemovesUnregisteredService(t *testing.T) {
 	r := newRegistry("h", "", nil)
 	r.register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 11434})
 	require.True(t, r.unregister(noderec.ServiceOllama), "unregister should report a change")
@@ -44,7 +44,7 @@ func TestRegistryUnregister(t *testing.T) {
 	assert.False(t, ok, "ol should be gone")
 }
 
-func TestRegistrySetIdentity(t *testing.T) {
+func TestRegistry_UpdatesNodeIdentity(t *testing.T) {
 	r := newRegistry("old", "", []string{"1.1.1.1"})
 	require.True(t, r.setIdentity("new", "clu", []string{"2.2.2.2"}), "identity change should report a change")
 	assert.False(t, r.setIdentity("new", "clu", []string{"2.2.2.2"}), "no-op identity set should not report a change")
@@ -57,7 +57,7 @@ func TestRegistrySetIdentity(t *testing.T) {
 // TestRegistrySetAddresses covers the periodic re-rank path: the canonical address
 // is the list's head, and a reordering IS a change — it names a different
 // canonical address, which is exactly what must be republished.
-func TestRegistrySetAddresses(t *testing.T) {
+func TestRegistry_ReplacesAdvertisedAddresses(t *testing.T) {
 	r := newRegistry("h", "", []string{"192.168.240.2", "10.0.0.5"})
 	require.Equal(t, "192.168.240.2", r.record().IP, "canonical")
 	require.True(t, r.setAddresses([]string{"10.0.0.5", "192.168.240.2"}), "reordering should report a change")
@@ -75,14 +75,14 @@ func TestRegistrySetAddresses(t *testing.T) {
 
 // TestRegistryCapsAdvertisedAddresses: the registry never holds addresses the wire
 // would drop, so what a peer receives is what this node believes it published.
-func TestRegistryCapsAdvertisedAddresses(t *testing.T) {
+func TestRegistry_CapsAdvertisedAddresses(t *testing.T) {
 	many := []string{"10.0.0.1", "10.0.1.1", "10.0.2.1", "10.0.3.1", "10.0.4.1", "10.0.5.1"}
 	r := newRegistry("h", "", many)
 	require.Len(t, r.record().IPs, noderec.MaxAdvertisedIPs, "advertised addresses")
 	assert.Equal(t, "10.0.0.1", r.record().IP, "canonical")
 }
 
-func TestRegistryTXTIsValidRecord(t *testing.T) {
+func TestRegistryTXT_EncodesValidNodeRecord(t *testing.T) {
 	r := newRegistry("h", "clu", []string{"10.0.0.1", "192.168.240.2"})
 	r.register(noderec.RegisterParams{Service: noderec.ServiceErrors, Port: 14319})
 	// The built TXT must parse back to an equivalent record.

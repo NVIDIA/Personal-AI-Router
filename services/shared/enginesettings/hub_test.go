@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFullBaselineCoalescingAndLimits(t *testing.T) {
+func TestSettingsHub_DeliversBaselineCoalescesUpdatesAndEnforcesLimits(t *testing.T) {
 	h := &Hub{}
 	h.Publish([]Snapshot{{Revision: 1}})
 	ch, closeSub, ok := h.Subscribe()

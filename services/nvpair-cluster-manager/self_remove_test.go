@@ -48,7 +48,7 @@ func selfRemovalProof(peer, victim *Manager, cluster string) []byte {
 // The test drives the real mTLS reconcile against a peer that blocks before
 // returning 403, so the state change lands deterministically inside the wait
 // window rather than relying on timing.
-func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
+func TestSelfRemoval_IgnoresRejectionFromPreviousMembership(t *testing.T) {
 	cases := []struct {
 		name string
 		// mutate runs while the peer reconcile is blocked, i.e. after the verdict's
@@ -212,7 +212,7 @@ func startPeerStub(t *testing.T, m *Manager, id string, status int, proof bool) 
 // plus authenticated proof, not merely "the pass did nothing," is what drives
 // teardown. (A unanimous 403 with *no* proof is covered separately — it must
 // NOT self-remove.)
-func TestSelfRemoveRequiresUnanimousRejection(t *testing.T) {
+func TestSelfRemove_RequiresUnanimousRejection(t *testing.T) {
 	cases := []struct {
 		name        string
 		peerStatus  []int
@@ -256,7 +256,7 @@ func TestSelfRemoveRequiresUnanimousRejection(t *testing.T) {
 // The stubs answer 403 either bare (proof=false: the peer left or lost its pin)
 // or with a signed tombstone naming us (proof=true: the peer removed us),
 // covering both the 2-node and multi-node shapes.
-func TestSelfRemoveRequiresRemovalProof(t *testing.T) {
+func TestSelfRemove_RequiresRemovalProof(t *testing.T) {
 	type peerSpec struct {
 		status int
 		proof  bool

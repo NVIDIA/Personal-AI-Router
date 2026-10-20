@@ -42,7 +42,7 @@ func brokerWithEngineProxyProfile(profile engineProxyProfile) *Broker {
 	return b
 }
 
-func TestDefaultEngineFacadeRetriesAwayFromReservedPorts(t *testing.T) {
+func TestDefaultEngineFacade_RetriesAwayFromReservedPorts(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	profile := testDefaultEngineProxyProfile()
 	b := brokerWithEngineProxyProfile(profile)
@@ -76,7 +76,7 @@ func TestDefaultEngineFacadeRetriesAwayFromReservedPorts(t *testing.T) {
 	assert.True(t, restart.IgnorePersistedPort, "restart must ignore the persisted port")
 }
 
-func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
+func TestLlamaCPPFacadePreparation_PreservesConfiguredPorts(t *testing.T) {
 	profile := mustEngineProxyProfile("llamacpp")
 	for _, tc := range []struct {
 		name       string
@@ -127,7 +127,7 @@ func TestLlamaCPPFacadePreparationPreservesConfiguredPorts(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPProxyTerminalHandlingPreservesEngineState(t *testing.T) {
+func TestLlamaCPPProxyTerminalHandling_PreservesEngineState(t *testing.T) {
 	profile := mustEngineProxyProfile("llamacpp")
 	b := &Broker{ollamaPortReady: make(chan struct{}), lmstudioPortReady: make(chan struct{})}
 	state := b.engineProxy(profile)
@@ -153,7 +153,7 @@ func TestLlamaCPPProxyTerminalHandlingPreservesEngineState(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPEngineStatusRelaysBeforeOtherPortGates(t *testing.T) {
+func TestLlamaCPPEngineStatus_RelaysBeforeOtherPortGates(t *testing.T) {
 	profile := mustEngineProxyProfile("llamacpp")
 	b := brokerWithEngineStatus(t, profile.Name, profile.EnginePortBase)
 	b.ollamaPortReady = make(chan struct{})
@@ -180,7 +180,7 @@ func TestLlamaCPPEngineStatusRelaysBeforeOtherPortGates(t *testing.T) {
 	assert.Equal(t, profile.EnginePortBase, status.Port)
 }
 
-func TestLlamaCPPProxyNotificationDispatchPreservesFacadeAddress(t *testing.T) {
+func TestLlamaCPPProxyNotificationDispatch_PreservesFacadeAddress(t *testing.T) {
 	profile := mustEngineProxyProfile("llamacpp")
 	client, server := net.Pipe()
 	t.Cleanup(func() {

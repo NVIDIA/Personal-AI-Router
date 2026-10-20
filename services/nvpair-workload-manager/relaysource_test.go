@@ -18,7 +18,7 @@ import (
 // targets. relayPeerSource keys its map by hostUuid, but peerSet.Replace re-keys
 // by PeerNode.ID — so PeerNode.ID must carry the hostUuid, not the (colliding)
 // hostname, or one peer silently misses every workload broadcast.
-func TestSameNameDistinctUUIDPeersSurviveReplace(t *testing.T) {
+func TestSameNameDistinctUUIDPeers_SurviveReplace(t *testing.T) {
 	src := newRelayPeerSource("self-uuid")
 	node := func(uuid, ip string) noderec.DirectoryNode {
 		return noderec.DirectoryNode{
@@ -58,7 +58,7 @@ func TestSameNameDistinctUUIDPeersSurviveReplace(t *testing.T) {
 
 // TestSelfFilteredByUUID confirms the self-filter drops our own record by
 // hostUuid, keeping a same-named peer that holds a different UUID.
-func TestSelfFilteredByUUID(t *testing.T) {
+func TestPeerDirectory_ExcludesLocalUUID(t *testing.T) {
 	src := newRelayPeerSource("self-uuid")
 	svc := map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceWorkload: {Port: 14320}}
 	src.set([]noderec.DirectoryNode{

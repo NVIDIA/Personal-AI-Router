@@ -20,7 +20,7 @@ import (
 // node-info reads its stdin as newline-delimited JSON-RPC, so a missing newline or
 // a renamed method silently stops membership reaching it — and the only symptom
 // would be peers going on suppressing an invite for a node that has left.
-func TestWriteClusterIdentityFrame(t *testing.T) {
+func TestWriteClusterIdentityFrame_EmitsNewlineTerminatedNotification(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		clusterUUID string

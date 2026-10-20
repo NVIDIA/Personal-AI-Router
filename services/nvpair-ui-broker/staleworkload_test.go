@@ -19,7 +19,7 @@ import (
 // a record so the line stops displaying as in-flight, while leaving this node's
 // own workloads alone (its proxies are their authority and never re-assert into
 // this store).
-func TestFailStaleForeignWorkloadsRetiresSilentRemoteWork(t *testing.T) {
+func TestFailStaleForeignWorkloads_RetiresSilentRemoteWork(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
 
 	// Remote-origin, executing on the origin: the sweep's business.
@@ -52,7 +52,7 @@ func TestFailStaleForeignWorkloadsRetiresSilentRemoteWork(t *testing.T) {
 // TestFailStaleForeignWorkloadsYieldsToTheOrigin: the sweep is a guess, so an
 // origin that was merely unable to deliver to us must be able to take its
 // workload back with its next authoritative event.
-func TestFailStaleForeignWorkloadsYieldsToTheOrigin(t *testing.T) {
+func TestFailStaleForeignWorkloads_YieldsToTheOrigin(t *testing.T) {
 	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
 	// Executing on the origin, so the sweep is entitled to judge it.
 	b.workloads.Apply(storeIncoming("9", "peer-uuid", "ollama", "r1", "running", "peer-uuid"))

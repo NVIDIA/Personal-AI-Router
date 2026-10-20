@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStaleEndorserAdmissionCannotIntroduceMember(t *testing.T) {
+func TestStaleEndorserAdmission_CannotIntroduceMember(t *testing.T) {
 	m := newTestManagerPort(t, 15126)
 	endorser := newTestManagerPort(t, 15127)
 	pinTrusted(t, m, endorser.identity.NodeUUID, string(endorser.identity.CertPEM), endorser.identity.CertFingerprint)
@@ -31,7 +31,7 @@ func TestStaleEndorserAdmissionCannotIntroduceMember(t *testing.T) {
 	require.False(t, m.applyMembers([]RosterEntry{entry}, "cluster-1", endorser.identity.NodeUUID), "stale endorser admission introduced a member")
 }
 
-func TestLegacyTombstoneCannotEvictAdmissionAwareMember(t *testing.T) {
+func TestLegacyTombstone_CannotEvictAdmissionAwareMember(t *testing.T) {
 	m := newTestManagerPort(t, 15128)
 	remover := newTestManagerPort(t, 15129)
 	target := newTestManagerPort(t, 15130)
@@ -48,7 +48,7 @@ func TestLegacyTombstoneCannotEvictAdmissionAwareMember(t *testing.T) {
 	require.True(t, ok, "legacy downgrade de-pinned an admission-aware member")
 }
 
-func TestRemovalRevalidatesTargetAdmissionBeforeDepin(t *testing.T) {
+func TestRemoval_RevalidatesTargetAdmissionBeforeDepin(t *testing.T) {
 	m := newTestManagerPort(t, 15131)
 	target := newTestManagerPort(t, 15132)
 	pinTrusted(t, m, target.identity.NodeUUID, string(target.identity.CertPEM), target.identity.CertFingerprint)
@@ -85,7 +85,7 @@ func TestRemovalRevalidatesTargetAdmissionBeforeDepin(t *testing.T) {
 	require.Equal(t, uint64(2), pin.AdmissionEpoch, "newer target admission was removed (%v)", pin)
 }
 
-func TestTrustAndMembershipSnapshotsAreDeepCopies(t *testing.T) {
+func TestTrustAndMembershipSnapshots_AreDeepCopies(t *testing.T) {
 	m := newTestManagerPort(t, 15133)
 	peer := newTestManagerPort(t, 15134)
 	pinTrusted(t, m, peer.identity.NodeUUID, string(peer.identity.CertPEM), peer.identity.CertFingerprint)
@@ -132,7 +132,7 @@ func TestTrustAndMembershipSnapshotsAreDeepCopies(t *testing.T) {
 	require.Len(t, unchanged.Endorsements, before, "failed trust write mutated live endorsements")
 }
 
-func TestRestartFinishesInterruptedTeardownAndRejectsStaleRestore(t *testing.T) {
+func TestRestart_FinishesInterruptedTeardownAndRejectsStaleRestore(t *testing.T) {
 	dir := t.TempDir()
 	m := testManagerAt(t, dir, 15135)
 	activateTestCluster(t, m, "cluster-1")
@@ -156,7 +156,7 @@ func TestRestartFinishesInterruptedTeardownAndRejectsStaleRestore(t *testing.T) 
 	require.Equal(t, "", cid, "stale settings resurrected cluster")
 }
 
-func TestRemovalReplayFailsClosedOnPersistenceError(t *testing.T) {
+func TestRemovalReplay_FailsClosedOnPersistenceError(t *testing.T) {
 	m := newTestManagerPort(t, 15138)
 	target := newTestManagerPort(t, 15139)
 	pinTrusted(t, m, target.identity.NodeUUID, string(target.identity.CertPEM), target.identity.CertFingerprint)

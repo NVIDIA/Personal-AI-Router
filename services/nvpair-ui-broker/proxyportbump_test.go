@@ -100,7 +100,7 @@ func awaitErrorsNotification(t *testing.T, seen <-chan *Message, method string) 
 // engine holds is corrected onto the next free port, and the correction is
 // announced. Both existing reconcile tests set managedOllamaFacade first and
 // return before reaching this code.
-func TestReconcileUnmanagedProxyPortBumpsOffRunningEngine(t *testing.T) {
+func TestReconcileUnmanagedProxyPort_BumpsOffRunningEngine(t *testing.T) {
 	b := brokerWithRunningEngines(t, 11435)
 	seen := observeErrors(t, b)
 
@@ -144,7 +144,7 @@ func TestReconcileUnmanagedProxyPortBumpsOffRunningEngine(t *testing.T) {
 
 // A proxy on a port nothing holds is left alone — no corrective call, so the
 // reconcile must not disturb a healthy unmanaged proxy.
-func TestReconcileUnmanagedProxyPortLeavesFreePortAlone(t *testing.T) {
+func TestReconcileUnmanagedProxyPort_LeavesFreePortAlone(t *testing.T) {
 	b := brokerWithRunningEngines(t)
 
 	proxyClient, proxyServer := net.Pipe()
@@ -178,7 +178,7 @@ func TestReconcileUnmanagedProxyPortLeavesFreePortAlone(t *testing.T) {
 // port decision and the inherited OLLAMA_HOST alias travel now; the child's
 // argv carries only process-scoped flags, because a single-valued flag cannot
 // express a different port plan per engine.
-func TestOllamaFacadeSpec(t *testing.T) {
+func TestOllamaFacadeSpec_PreservesPortAndAliasPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		startupPort int
@@ -259,7 +259,7 @@ func serveFacadeEnable(t *testing.T, conn net.Conn, reject map[int]bool, attempt
 // supervisor respawned it on a corrected port. That is only acceptable while a
 // process hosts one engine — once it hosts several, one engine losing a race
 // would take working listeners down with it.
-func TestFacadeBindRaceRetriesInProcess(t *testing.T) {
+func TestFacadeBindRace_RetriesInProcess(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -301,7 +301,7 @@ func TestFacadeBindRaceRetriesInProcess(t *testing.T) {
 // A rejection no other port would fix must not be retried. Retrying an
 // unknown-engine or unsupported-alias enable would burn a port change and hide
 // the real cause behind a second identical failure.
-func TestFacadeEnableRejectionIsNotRetried(t *testing.T) {
+func TestFacadeEnableRejection_IsNotRetried(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -351,7 +351,7 @@ func TestFacadeEnableRejectionIsNotRetried(t *testing.T) {
 // engine will not claim it, and the stock backend port is exactly where a
 // managed Ollama gets placed — so both it and the facade are excluded until an
 // authoritative port is known.
-func TestOllamaProxyFallbackAvoidsTheEnginesPorts(t *testing.T) {
+func TestOllamaProxyFallback_AvoidsTheEnginesPorts(t *testing.T) {
 	t.Run("backend unknown excludes both stock ports", func(t *testing.T) {
 		b := &Broker{}
 		fallback := b.setOllamaProxyFallback()
@@ -387,7 +387,7 @@ func TestOllamaProxyFallbackAvoidsTheEnginesPorts(t *testing.T) {
 // Gating preparation on proxyEnabled made this worth pinning: the disabled
 // branches used to reach the blocked-ownership report through managedFacade,
 // which is now necessarily false there, so the report had to move.
-func TestUnavailableProxyIsReportedButDeselectionIsNot(t *testing.T) {
+func TestUnavailableProxy_IsReportedButDeselectionIsNot(t *testing.T) {
 	reason, report := proxyDisabledReason("")
 	assert.True(t, report, "an unresolved proxy binary is not reported; a packaging problem would be log-only")
 	assert.Contains(t, reason, "not resolved", "reason for a missing binary")
@@ -402,7 +402,7 @@ func TestUnavailableProxyIsReportedButDeselectionIsNot(t *testing.T) {
 // it unchanged means respawning onto the port that just rejected the bind, over
 // and over until the restart budget runs out. LM Studio handled this; Ollama
 // only handled the managed-facade case and ignored every other bind failure.
-func TestBindFailureMovesTheNextSpawnOffTheContestedPort(t *testing.T) {
+func TestBindFailure_MovesTheNextSpawnOffTheContestedPort(t *testing.T) {
 	t.Run("ollama", func(t *testing.T) {
 		b := &Broker{nodeID: "local-node", ollamaPortReady: make(chan struct{})}
 		// Unmanaged: no facade claim, so this is the path that used to be
@@ -439,7 +439,7 @@ func TestBindFailureMovesTheNextSpawnOffTheContestedPort(t *testing.T) {
 // LM Studio pinned this; Ollama's only stale-generation test covered the alias
 // release, leaving the readiness path uncovered on the engine whose gate also
 // gates engine:status and engine:get-installed.
-func TestStaleProxyReadyDoesNotOpenTheOwnershipGate(t *testing.T) {
+func TestStaleProxyReady_DoesNotOpenTheOwnershipGate(t *testing.T) {
 	newBroker := func(t *testing.T) *Broker {
 		t.Helper()
 		b := &Broker{nodeID: "local-node", ollamaPortReady: make(chan struct{})}
@@ -488,7 +488,7 @@ func TestStaleProxyReadyDoesNotOpenTheOwnershipGate(t *testing.T) {
 // Otherwise every gated engine request waits out rpcWorkerCallTimeout and
 // answers "retry" for the life of the broker, because nothing else ever closes
 // the channel. LM Studio wired onExhausted to do this; Ollama did not.
-func TestTerminalProxyReleasesOwnershipGate(t *testing.T) {
+func TestTerminalProxy_ReleasesOwnershipGate(t *testing.T) {
 	t.Run("ollama", func(t *testing.T) {
 		b := &Broker{
 			nodeID:            "local-node",

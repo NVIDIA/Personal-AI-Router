@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLMSEntryMatchesModel(t *testing.T) {
+func TestLMSEntry_MatchesModel(t *testing.T) {
 	entry := lmsListEntry{
 		ModelKey:               "text-embedding-nomic-embed-text-v1.5",
 		Path:                   "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
@@ -32,7 +32,7 @@ func TestLMSEntryMatchesModel(t *testing.T) {
 	}
 }
 
-func TestSafeRemoveUnderRootRejectsMissingPath(t *testing.T) {
+func TestSafeRemoveUnderRoot_RejectsMissingPath(t *testing.T) {
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing-model")
 	require.Error(t, safeRemoveUnderRoot(root, missing), "expected missing path to fail")

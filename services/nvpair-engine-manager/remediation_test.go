@@ -61,7 +61,7 @@ func capturingExecutor(t *testing.T, m *Manifest) (*Executor, *captured) {
 
 // TestDownloadUnpinned verifies a fetch with no sha256 succeeds (over
 // loopback http) — the unpinned path the bundled Ollama manifest now uses.
-func TestDownloadUnpinned(t *testing.T) {
+func TestDownload_AllowsManifestWithoutChecksum(t *testing.T) {
 	payload := []byte("unpinned engine bytes")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(payload)
@@ -77,7 +77,7 @@ func TestDownloadUnpinned(t *testing.T) {
 
 // TestValidateDownloadURL pins the HTTPS-only policy (loopback http is the
 // only plaintext exception — used by the live tests and a LAN mirror).
-func TestValidateDownloadURL(t *testing.T) {
+func TestValidateDownloadURL_RejectsUnsafeDownloadSchemes(t *testing.T) {
 	assert.NoError(t, validateDownloadURL("https://ollama.com/x.zip"))
 	assert.NoError(t, validateDownloadURL("https://example.com/y"))
 	assert.NoError(t, validateDownloadURL("http://127.0.0.1:8080/x"))
@@ -91,7 +91,7 @@ func TestValidateDownloadURL(t *testing.T) {
 
 // TestUninstallRetries proves a failing uninstall command is retried
 // uninstallRetries times (the command-mode daemon-race mitigation).
-func TestUninstallRetries(t *testing.T) {
+func TestUninstall_RetriesFailedCommandWithinBudget(t *testing.T) {
 	oldR, oldB := uninstallRetries, uninstallBackoff
 	uninstallRetries, uninstallBackoff = 3, 5*time.Millisecond
 	defer func() { uninstallRetries, uninstallBackoff = oldR, oldB }()
@@ -153,7 +153,7 @@ func hostKey() string { return runtime.GOOS + "/" + runtime.GOARCH }
 // TestActionReservedPlaceholderWins is the regression guard for the
 // security fix: a caller-supplied param must NOT be able to override a
 // reserved placeholder like {cli} and hijack argv[0].
-func TestActionReservedPlaceholderWins(t *testing.T) {
+func TestAction_UsesReservedPlaceholderOverCallerParameter(t *testing.T) {
 	m := &Manifest{
 		Engine: "fake", DisplayName: "Fake", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
@@ -175,7 +175,7 @@ func TestActionReservedPlaceholderWins(t *testing.T) {
 
 // TestReadinessTimeoutNoSpuriousExit guards the fix that a readiness
 // timeout reports start-failed but NOT a phantom "exited unexpectedly".
-func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
+func TestReadinessTimeout_DoesNotReportSpuriousProcessExit(t *testing.T) {
 	m := &Manifest{
 		Engine: "slow", DisplayName: "Slow", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
@@ -207,7 +207,7 @@ func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
 // TestStartWaitsForDelayedReadinessWithinBudget is a reduced-time regression
 // for engines whose initialization finishes after several failed probes. Start
 // must keep the owned process alive until the configured finite budget expires.
-func TestStartWaitsForDelayedReadinessWithinBudget(t *testing.T) {
+func TestStart_WaitsForDelayedReadinessWithinBudget(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	p := m.Platforms[hostKey()]
 	p.Runtime.Env["FAKE_START_DELAY"] = "750ms"
@@ -232,7 +232,7 @@ func TestStartWaitsForDelayedReadinessWithinBudget(t *testing.T) {
 
 // TestConcurrentStartIsSerialized guards the per-engine op lock: many
 // concurrent Starts must not race or double-spawn. Run under -race.
-func TestConcurrentStartIsSerialized(t *testing.T) {
+func TestConcurrentStart_IsSerialized(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	var wg sync.WaitGroup
@@ -245,7 +245,7 @@ func TestConcurrentStartIsSerialized(t *testing.T) {
 	require.True(t, st.Running, "expected running after concurrent starts (%v)", st)
 }
 
-func TestInstallChecksumMismatchReported(t *testing.T) {
+func TestInstall_ReportsChecksumMismatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("payload"))
 	}))
@@ -264,7 +264,7 @@ func TestInstallChecksumMismatchReported(t *testing.T) {
 	require.True(t, c.has("engine:install-progress"), "expected an install-progress notification")
 }
 
-func TestHealthFlipReportsAndClears(t *testing.T) {
+func TestHealthFlip_ReportsAndClears(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,7 +301,7 @@ func TestHealthFlipReportsAndClears(t *testing.T) {
 	waitFor(t, 6*time.Second, func() bool { return !hasErr(ex.Errors(), unhealthyID("d")) })
 }
 
-func TestUnexpectedExitReported(t *testing.T) {
+func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
 	st, _ := ex.Status("fake")
@@ -311,7 +311,7 @@ func TestUnexpectedExitReported(t *testing.T) {
 	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
 }
 
-func TestNormalStopIsSilent(t *testing.T) {
+func TestNormalStop_IsSilent(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
 	require.NoError(t, ex.Stop("fake"), "stop")
@@ -319,7 +319,7 @@ func TestNormalStopIsSilent(t *testing.T) {
 	require.False(t, hasErr(ex.Errors(), exitedID("fake")), "a normal stop must not report 'exited unexpectedly'")
 }
 
-func TestRestartProcess(t *testing.T) {
+func TestRestart_StopsAndStartsManagedProcess(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
@@ -329,7 +329,7 @@ func TestRestartProcess(t *testing.T) {
 	require.True(t, st.Healthy, "expected running+healthy after restart (%v)", st)
 }
 
-func TestActionUnknownAndHTTPError(t *testing.T) {
+func TestAction_ReportsUnknownActionAndHTTPFailure(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["err"] = Action{HTTP: &ActionHTTP{Method: "GET", Path: "/api/error"}}
 	ex, _ := capturingExecutor(t, m)
@@ -341,7 +341,7 @@ func TestActionUnknownAndHTTPError(t *testing.T) {
 	require.ErrorContains(t, err, "HTTP 500", "expected HTTP 500 error")
 }
 
-func TestExpandPathForms(t *testing.T) {
+func TestExpandPath_ResolvesHomeAndEnvironmentVariables(t *testing.T) {
 	t.Setenv("NVPAIR_TEST_VAR", "xyz")
 	for _, tc := range []struct {
 		name, goos, input, want string
@@ -365,7 +365,7 @@ func TestExpandPathForms(t *testing.T) {
 	}
 }
 
-func TestBundledWindowsLMStudioUninstallExpansion(t *testing.T) {
+func TestWindowsLMStudioUninstall_ExpandsDeclaredPaths(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
@@ -385,7 +385,7 @@ func TestBundledWindowsLMStudioUninstallExpansion(t *testing.T) {
 
 // TestBundledManifestsGolden validates the shipped manifests load and
 // validate (a typo would otherwise only surface as a runtime fatal).
-func TestBundledManifestsGolden(t *testing.T) {
+func TestBundledManifests_ValidateAndExposeRequiredActions(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "bundled manifests invalid")
 	for _, want := range []string{"ollama", "lmstudio", "llamacpp"} {
@@ -395,7 +395,7 @@ func TestBundledManifestsGolden(t *testing.T) {
 	}
 }
 
-func TestDownloadSizeCap(t *testing.T) {
+func TestDownload_RejectsResponseExceedingSizeLimit(t *testing.T) {
 	old := maxDownloadBytes
 	maxDownloadBytes = 64
 	t.Cleanup(func() { maxDownloadBytes = old })
@@ -412,7 +412,7 @@ func TestDownloadSizeCap(t *testing.T) {
 
 // TestStopClearsUnhealthy guards that a deliberate stop clears a lingering
 // unhealthy error (the same fix-family as clearing exited on start).
-func TestStopClearsUnhealthy(t *testing.T) {
+func TestStop_ClearsUnhealthy(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

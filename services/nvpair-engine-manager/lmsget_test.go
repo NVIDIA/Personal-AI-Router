@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLMSGetCandidates(t *testing.T) {
+func TestLMSGetCandidates_OrdersModelResolutionFallbacks(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -88,7 +88,7 @@ func TestLMSGetCandidates(t *testing.T) {
 	}
 }
 
-func TestIsLMSResolveFailure(t *testing.T) {
+func TestIsLMSResolveFailure_RecognizesModelResolutionErrors(t *testing.T) {
 	const missingArtifact = `exit status 1: Error: Failed to resolve artifact "x/y": The artifact does not exist or you do not have permission to read it`
 	assert.True(t, isLMSResolveFailure(errors.New(missingArtifact)), "expected resolve failure")
 	assert.True(t, isLMSResolveFailure(errors.New("this model is not supported in LM Studio")), "expected resolve failure")
@@ -99,7 +99,7 @@ func TestIsLMSResolveFailure(t *testing.T) {
 	assert.False(t, isLMSResolveFailure(errors.New("network connection failed")), "did not expect resolve failure")
 }
 
-func TestIsLMSTransientDownloadError(t *testing.T) {
+func TestIsLMSTransientDownloadError_RecognizesResumableFailures(t *testing.T) {
 	const downloadTimeout = "exit status 1: Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio."
 	assert.True(t, isLMSTransientDownloadError(errors.New(downloadTimeout)), "expected transient download error")
 	assert.True(t, isLMSTransientDownloadError(errors.New("exit status 1: read ECONNRESET")), "expected transient download error")
@@ -117,7 +117,7 @@ func TestIsLMSTransientDownloadError(t *testing.T) {
 // resolution against the fake engine's `resolvesim`, which fails for a
 // bare Hub id and succeeds for a Hugging Face URL — proving the runner
 // falls back from Hub to Hugging Face and returns the winning candidate.
-func TestCmdActionLMSGetFallback(t *testing.T) {
+func TestLMSGet_TriesFallbackModelIdentifiers(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{
 		Cmd:             []string{fakeEngineBin, "resolvesim", "{model}"},
@@ -134,7 +134,7 @@ func TestCmdActionLMSGetFallback(t *testing.T) {
 // TestCmdActionLMSGetAllFail confirms that when every candidate fails to
 // resolve, the action surfaces the (last) resolve error rather than
 // silently succeeding.
-func TestCmdActionLMSGetAllFail(t *testing.T) {
+func TestLMSGet_ReportsFailureWhenAllCandidatesFail(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{
 		Cmd:             []string{fakeEngineBin, "resolvesim", "{model}"},
@@ -152,7 +152,7 @@ func TestCmdActionLMSGetAllFail(t *testing.T) {
 // download failure (a stalled/timed-out transfer) is retried in place — the
 // download resumes — rather than surfaced to the caller. The fake fails
 // twice then succeeds; the action should succeed within the resume budget.
-func TestCmdActionLMSGetResumesTransientDownload(t *testing.T) {
+func TestLMSGet_ResumesTransientDownloadFailures(t *testing.T) {
 	defer setResumeBudget(t, 3, time.Millisecond)()
 
 	counter := filepath.Join(t.TempDir(), "n")
@@ -173,7 +173,7 @@ func TestCmdActionLMSGetResumesTransientDownload(t *testing.T) {
 // never clears, the action gives up after the resume budget and surfaces the
 // error — and does NOT fall through to the next source (a download stall on
 // the resolved artifact shouldn't switch sources).
-func TestCmdActionLMSGetResumeExhausted(t *testing.T) {
+func TestLMSGet_StopsAfterResumeBudgetIsExhausted(t *testing.T) {
 	defer setResumeBudget(t, 3, time.Millisecond)()
 
 	counter := filepath.Join(t.TempDir(), "n")
@@ -206,7 +206,7 @@ func readCount(t *testing.T, path string) int {
 	return n
 }
 
-func TestModelResolutionValidation(t *testing.T) {
+func TestModelResolution_RejectsUnsupportedManifestValues(t *testing.T) {
 	cases := []struct {
 		name    string
 		action  Action

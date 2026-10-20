@@ -31,7 +31,7 @@ func writeAdmission(t *testing.T, dir, clusterID string, epoch uint64) {
 // TestClustered_KeypairIsNotMembership is the regression guard for the invite
 // deadlock: "clustered" must track live membership (admission / pins), never the
 // mere presence of a keypair that survives a leave or removal by design.
-func TestClustered_KeypairIsNotMembership(t *testing.T) {
+func TestClustered_RequiresMembershipBeyondLocalKeypair(t *testing.T) {
 	certPEM, keyPEM, _ := genLeaf(t, "uuid-self")
 
 	// (a) A left/removed node: the durable keypair is still on disk, but there is
@@ -83,7 +83,7 @@ func TestClustered_KeypairIsNotMembership(t *testing.T) {
 // place. Deriving membership once at startup is what previously left such a
 // service permanently on plain HTTP — in the roster, ranked by the scheduler,
 // yet exchanging no cluster traffic — with a process restart as the only cure.
-func TestMesh_ConvergesOnACluster_JoinedAfterOpen(t *testing.T) {
+func TestMesh_AdoptsMembershipJoinedAfterOpen(t *testing.T) {
 	dir := t.TempDir()
 
 	// The cluster dir exists but is empty: this is a service that started before
@@ -148,7 +148,7 @@ func TestMesh_UnreadableKeypairDoesNotDemoteAMember(t *testing.T) {
 // TestMesh_RotatedKeypairIsPickedUp: a rejoin can mint a new identity in place,
 // so a keypair whose stamp moved must be re-parsed rather than served from the
 // cached leaf.
-func TestMesh_RotatedKeypairIsPickedUp(t *testing.T) {
+func TestMesh_ReloadsRotatedKeypair(t *testing.T) {
 	dir := t.TempDir()
 	firstCert, firstKey, _ := genLeaf(t, "uuid-first")
 	writeIdentity(t, dir, firstCert, firstKey)

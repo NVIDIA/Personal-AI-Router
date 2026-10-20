@@ -37,7 +37,7 @@ func eventsByType(evs []Event) map[string]int {
 	return m
 }
 
-func TestReconcileDiscoveredUpdatedRemoved(t *testing.T) {
+func TestReconcile_ReportsDiscoveredUpdatedAndRemovedNodes(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(3))
 
 	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet(node("a"))))[Discovered], "first scan")
@@ -61,7 +61,7 @@ func TestReconcileDiscoveredUpdatedRemoved(t *testing.T) {
 // departure — so a working node was evicted mid-request. Nothing else in the
 // package asserts the default, and the whole point of the constant is the
 // elapsed time it buys.
-func TestDefaultMissThresholdOutlastsASaturatedNode(t *testing.T) {
+func TestDefaultMissThreshold_OutlastsASaturatedNode(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local")
 
 	assert.GreaterOrEqual(t, time.Duration(b.opt.missThreshold)*b.opt.interval, time.Minute, "default eviction window is")
@@ -77,7 +77,7 @@ func TestDefaultMissThresholdOutlastsASaturatedNode(t *testing.T) {
 // decisions: the probe starts a quarter of the way in and runs every scan, so the
 // minute is spent gathering evidence rather than waiting, and eviction rests on a
 // run of failed probes instead of the one that lands on the deadline.
-func TestLivenessProbeRunsThroughoutTheWindowNotJustAtTheEnd(t *testing.T) {
+func TestLivenessProbe_RunsThroughoutTheWindowNotJustAtTheEnd(t *testing.T) {
 	var probes atomic.Int32
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool {
 		probes.Add(1)
@@ -102,7 +102,7 @@ func TestLivenessProbeRunsThroughoutTheWindowNotJustAtTheEnd(t *testing.T) {
 // The reason for probing early is rescue: one answer clears the miss counter, so
 // a peer whose multicast is being dropped while it remains perfectly reachable
 // never reaches the threshold at all.
-func TestAProbeThatAnswersMidWindowFullyRecoversTheNode(t *testing.T) {
+func TestLivenessProbe_FullyRecoversNodeThatAnswersDuringRetryWindow(t *testing.T) {
 	alive := false
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool { return alive }))
 	b.reconcile(seenSet(node("a")))
@@ -124,7 +124,7 @@ func TestAProbeThatAnswersMidWindowFullyRecoversTheNode(t *testing.T) {
 // A browser that picks a threshold shorter than probeAfterMisses must still get
 // its probe: one that first ran after the point of no return could never rescue
 // anything, and the node would be evicted without ever being asked.
-func TestAShortThresholdStillProbesBeforeEvicting(t *testing.T) {
+func TestAShortThreshold_StillProbesBeforeEvicting(t *testing.T) {
 	var probes atomic.Int32
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(1), WithLivenessProbe(func(Node) bool {
 		probes.Add(1)
@@ -141,7 +141,7 @@ func TestAShortThresholdStillProbesBeforeEvicting(t *testing.T) {
 // multicast socket inside scanTimeout, so its scans came back completely empty
 // and every known node took a miss on the same pass — including idle peers doing
 // no work at all. Three such passes evicted the entire cluster in one reconcile.
-func TestEmptyScanDoesNotEvictTheWholeFleet(t *testing.T) {
+func TestEmptyScan_DoesNotEvictTheWholeFleet(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a"), node("b"), node("c")))
 
@@ -157,7 +157,7 @@ func TestEmptyScanDoesNotEvictTheWholeFleet(t *testing.T) {
 // The guard is a grace, not a veto: a whole fleet can genuinely go — a switch
 // losing power, the last peers shutting down together — and those records still
 // have to age out.
-func TestSustainedEmptyScansStillEvictEventually(t *testing.T) {
+func TestSustainedEmptyScans_StillEvictEventually(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a"), node("b")))
 
@@ -175,7 +175,7 @@ func TestSustainedEmptyScansStillEvictEventually(t *testing.T) {
 // peer looks identical whether it left or we stopped listening, and delaying that
 // eviction would buy nothing — the miss threshold and the liveness probe already
 // cover it.
-func TestALoneNodeIsNotShieldedByTheEmptyScanGuard(t *testing.T) {
+func TestALoneNode_IsNotShieldedByTheEmptyScanGuard(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(2), WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a")))
 
@@ -186,7 +186,7 @@ func TestALoneNodeIsNotShieldedByTheEmptyScanGuard(t *testing.T) {
 // One node answering proves the receive path works, so the run of excuses ends
 // there — otherwise a browser that alternated one good scan with six empty ones
 // would never evict anything.
-func TestAnySeenNodeResetsTheEmptyRun(t *testing.T) {
+func TestAnySeenNode_ResetsTheEmptyRun(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a"), node("b")))
 
@@ -201,7 +201,7 @@ func TestAnySeenNodeResetsTheEmptyRun(t *testing.T) {
 
 // The guard must not soften the ordinary case. A scan that returns some nodes and
 // not others says something real about the ones that are missing.
-func TestPartialScanStillPenalizesTheMissingNode(t *testing.T) {
+func TestPartialScan_StillPenalizesTheMissingNode(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(2), WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a"), node("gone")))
 
@@ -212,7 +212,7 @@ func TestPartialScanStillPenalizesTheMissingNode(t *testing.T) {
 // A browser that knows about nobody is not failing when it hears nobody, so it
 // must not bank excuses it would spend later against nodes it has only just
 // discovered.
-func TestEmptyScanWithNoKnownNodesBanksNothing(t *testing.T) {
+func TestEmptyScan_DoesNotAccumulateMissesWithoutKnownNodes(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool { return false }))
 	for i := 0; i < emptyScanGrace*2; i++ {
 		b.reconcile(seenSet())
@@ -225,7 +225,7 @@ func TestEmptyScanWithNoKnownNodesBanksNothing(t *testing.T) {
 	assert.Equal(t, 1, b.emptyScans, "empty run")
 }
 
-func TestReconcileOrderInsensitive(t *testing.T) {
+func TestReconcile_IgnoresSnapshotOrdering(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local")
 	a1 := Node{ID: "a", Host: "a.local.", Port: 1, Addresses: []string{"10.0.0.1", "10.0.0.2"}, TXT: []string{"x=1", "y=2"}}
 	a2 := Node{ID: "a", Host: "a.local.", Port: 1, Addresses: []string{"10.0.0.2", "10.0.0.1"}, TXT: []string{"y=2", "x=1"}}
@@ -233,7 +233,7 @@ func TestReconcileOrderInsensitive(t *testing.T) {
 	require.Empty(t, b.reconcile(seenSet(a2)), "reordered addresses/TXT emitted a spurious event")
 }
 
-func TestNoEviction(t *testing.T) {
+func TestReconcile_KeepsNodesWhenEvictionIsDisabled(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithNoEviction(), WithMissThreshold(1))
 	b.reconcile(seenSet(node("a")))
 	for i := 0; i < 5; i++ {
@@ -242,7 +242,7 @@ func TestNoEviction(t *testing.T) {
 	require.Len(t, b.Nodes(), 1, "no-evict browser dropped the node")
 }
 
-func TestLivenessProbeRetainsReachable(t *testing.T) {
+func TestLivenessProbe_RetainsReachable(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(2), WithLivenessProbe(func(Node) bool { return true }))
 	b.reconcile(seenSet(node("a")))
 	// Two misses cross the threshold, but the probe says the node is still up.
@@ -251,7 +251,7 @@ func TestLivenessProbeRetainsReachable(t *testing.T) {
 	require.Len(t, b.Nodes(), 1, "reachable node dropped")
 }
 
-func TestLivenessProbeEvictsUnreachable(t *testing.T) {
+func TestLivenessProbe_EvictsUnreachable(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithMissThreshold(2), WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a")))
 	b.reconcile(seenSet())
@@ -263,7 +263,7 @@ func TestLivenessProbeEvictsUnreachable(t *testing.T) {
 // unreachable address must not hold up the rest. Each probe blocks until
 // probeConcurrency of them are in flight, which can only complete if they run
 // together.
-func TestLivenessProbesOverlap(t *testing.T) {
+func TestLiveness_ProbesOverlap(t *testing.T) {
 	const nodes = probeConcurrency
 	release := make(chan struct{})
 	var started atomic.Int32
@@ -292,19 +292,19 @@ func TestLivenessProbesOverlap(t *testing.T) {
 	require.Len(t, b.Nodes(), nodes, "reachable nodes evicted")
 }
 
-func TestKeyFunc(t *testing.T) {
+func TestKeyFunc_UsesStableNodeIdentity(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithKeyFunc(func(n Node) string { return UUIDFromTXT(n.TXT) }))
 	assert.Equal(t, "abc", b.key(node("host", "uuid=abc")), "key with uuid")
 	// Falls back to instance name when the key func returns "".
 	assert.Equal(t, "host", b.key(node("host")), "key without uuid")
 }
 
-func TestUUIDFromTXT(t *testing.T) {
+func TestUUIDFromTXT_ExtractsNodeIdentity(t *testing.T) {
 	assert.Equal(t, "xyz", UUIDFromTXT([]string{"v=1", "uuid=xyz", "ip=1.2.3.4"}))
 	assert.Equal(t, "", UUIDFromTXT([]string{"v=1"}), "UUIDFromTXT with no uuid")
 }
 
-func TestSeed(t *testing.T) {
+func TestSeed_InitializesKnownNodes(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithKeyFunc(func(n Node) string { return UUIDFromTXT(n.TXT) }))
 	b.Seed(node("host-a", "uuid=a"), node("host-b", "uuid=b"))
 	require.Len(t, b.Nodes(), 2)
@@ -314,13 +314,13 @@ func TestSeed(t *testing.T) {
 	require.Len(t, b.Nodes(), 2, "re-seed changed node count")
 }
 
-func TestPollReturnsSnapshot(t *testing.T) {
+func TestPoll_ReturnsSnapshot(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local")
 	b.browseFunc = func(context.Context) map[string]Node { return seenSet(node("a"), node("b")) }
 	require.Len(t, b.Poll(context.Background()), 2)
 }
 
-func TestRunEmitsAndCloses(t *testing.T) {
+func TestRun_EmitsAndCloses(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithInterval(5*time.Millisecond), WithMissThreshold(1))
 	// First scan sees "a"; every subsequent scan is empty so it's removed.
 	var calls int
@@ -356,7 +356,7 @@ func TestRunEmitsAndCloses(t *testing.T) {
 	}
 }
 
-func TestSendMulticastQueryOnInterfaceUsesFirstIPv4AndMDNSTarget(t *testing.T) {
+func TestSendMulticastQueryOnInterface_UsesFirstIPv4AndMDNSTarget(t *testing.T) {
 	ifi := &net.Interface{Index: 7, Name: "eth0"}
 	wantSource := net.IPv4(192, 0, 2, 10)
 	addrs := []net.Addr{
@@ -392,7 +392,7 @@ func TestSendMulticastQueryOnInterfaceUsesFirstIPv4AndMDNSTarget(t *testing.T) {
 	assert.Equal(t, 5353, gotTarget.Port)
 }
 
-func TestSendMulticastQueryOnInterfaceReturnsSenderFailure(t *testing.T) {
+func TestSendMulticastQueryOnInterface_ReturnsSenderFailure(t *testing.T) {
 	wantErr := errors.New("send refused")
 	wantSource := net.IPv4(192, 0, 2, 10)
 	source, err := sendMulticastQueryOnInterface(
@@ -407,7 +407,7 @@ func TestSendMulticastQueryOnInterfaceReturnsSenderFailure(t *testing.T) {
 	require.ErrorIs(t, err, wantErr, "error")
 }
 
-func TestSendMulticastQueryOnInterfaceSkipsInterfacesWithoutIPv4(t *testing.T) {
+func TestSendMulticastQueryOnInterface_SkipsInterfacesWithoutIPv4(t *testing.T) {
 	called := false
 	source, err := sendMulticastQueryOnInterface(
 		[]byte("PTR query"),
@@ -426,7 +426,7 @@ func TestSendMulticastQueryOnInterfaceSkipsInterfacesWithoutIPv4(t *testing.T) {
 // TestSendFailuresNeedARunAndClearOnRecovery: this feeds address selection, so a
 // single blip must not move a host's canonical address, and one success must undo
 // the suppression immediately.
-func TestSendFailuresNeedARunAndClearOnRecovery(t *testing.T) {
+func TestMulticastSendFailure_RequiresRepeatedFailuresAndClearsOnRecovery(t *testing.T) {
 	b := New("_x._tcp", "local")
 	for range sendFailureThreshold - 1 {
 		b.recordSendOutcomes(map[string]bool{"eth0": false})
@@ -441,7 +441,7 @@ func TestSendFailuresNeedARunAndClearOnRecovery(t *testing.T) {
 // TestSendFailuresForgetAnInterfaceThatIsGone: a VPN adapter that comes and goes
 // would otherwise leave a run of failures behind that suppresses an address on an
 // interface no longer present, and grow the counter map for the process's life.
-func TestSendFailuresForgetAnInterfaceThatIsGone(t *testing.T) {
+func TestMulticastSendFailures_ClearStateForRemovedInterface(t *testing.T) {
 	b := New("_x._tcp", "local")
 	for range sendFailureThreshold {
 		b.recordSendOutcomes(map[string]bool{"eth0": false, "tun0": false})

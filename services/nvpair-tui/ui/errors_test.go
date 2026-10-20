@@ -23,7 +23,7 @@ import (
 // next sync from the node that owns it. The broker acknowledges the relay rather
 // than the outcome, so the reply is a success either way — which is why this has
 // to be decided before the call, not from its result.
-func TestClearIsOfferedOnlyWhereItSticks(t *testing.T) {
+func TestClear_IsOfferedOnlyWhereItSticks(t *testing.T) {
 	const self = "self-uuid"
 
 	mine := svcerrors.ServiceError{ID: "e-local", Message: "boom", NodeID: self}
@@ -56,7 +56,7 @@ func TestClearIsOfferedOnlyWhereItSticks(t *testing.T) {
 // TestNothingIsClearedBeforeThisMachineIsKnown checks the clear waits for the
 // identity it depends on. Before it arrives there is no telling this machine's
 // errors from a peer's, so offering the key meant guessing.
-func TestNothingIsClearedBeforeThisMachineIsKnown(t *testing.T) {
+func TestNothing_IsClearedBeforeThisMachineIsKnown(t *testing.T) {
 	v := newErrorsView(nil)
 	v.SetSize(100, 30)
 	v.setErrors([]svcerrors.ServiceError{{ID: "e", Message: "boom", NodeID: "some-uuid"}})
@@ -73,7 +73,7 @@ func TestNothingIsClearedBeforeThisMachineIsKnown(t *testing.T) {
 // errors:update lost at startup. The initial read's reply and the pushes arrive
 // by different paths, and a reply landing after a push replaced the newer
 // snapshot with an older one until the next change.
-func TestInitialReadDoesNotOverwriteANewerPush(t *testing.T) {
+func TestInitialRead_DoesNotOverwriteANewerPush(t *testing.T) {
 	v := newErrorsView(nil)
 	v.SetSize(100, 30)
 	params := []byte(`[{"id":"new","message":"fresh","severity":"error"}]`)
@@ -87,7 +87,7 @@ func TestInitialReadDoesNotOverwriteANewerPush(t *testing.T) {
 // TestErrorColumnsFitTheNarrowestTerminal checks the table's minimums fit the
 // forty-column floor. They summed past it, and what was clipped off the right
 // was the message — the one column this tab exists to show.
-func TestErrorColumnsFitTheNarrowestTerminal(t *testing.T) {
+func TestErrorColumns_FitNarrowTerminal(t *testing.T) {
 	v := newErrorsView(nil)
 	v.SetSize(minTerminalWidth, 20)
 	total := 0
@@ -108,7 +108,7 @@ func TestErrorColumnsFitTheNarrowestTerminal(t *testing.T) {
 // A failure is stamped with the engine, operation, and model it came from, but
 // only the message reached the table — so "install failed" arrived with no way
 // to tell which engine it meant on a node running two.
-func TestErrorContextIsShownForTheSelectedRow(t *testing.T) {
+func TestErrorContext_IsShownForTheSelectedRow(t *testing.T) {
 	v := newErrorsView(nil)
 	v.SetSize(100, 20)
 	v.setErrors([]svcerrors.ServiceError{{
@@ -135,7 +135,7 @@ func TestErrorContextIsShownForTheSelectedRow(t *testing.T) {
 // message. The table hard-truncates its MESSAGE cell — about forty characters at
 // eighty columns — and this tab exists to show that message, so a long one has
 // to be readable somewhere.
-func TestErrorContextShowsTheFullMessage(t *testing.T) {
+func TestErrorContext_ShowsTheFullMessage(t *testing.T) {
 	long := "install failed: could not resolve the download host after three attempts, " +
 		"check the machine's network configuration and proxy settings"
 
@@ -157,7 +157,7 @@ func TestErrorContextShowsTheFullMessage(t *testing.T) {
 
 // TestErrorContextOmitsAbsentFields checks a bare error adds no empty furniture
 // beyond its own message.
-func TestErrorContextOmitsAbsentFields(t *testing.T) {
+func TestErrorContext_OmitsAbsentFields(t *testing.T) {
 	v := newErrorsView(nil)
 	v.SetSize(100, 20)
 	v.setErrors([]svcerrors.ServiceError{{
@@ -176,7 +176,7 @@ func TestErrorContextOmitsAbsentFields(t *testing.T) {
 
 // TestErrorActionNoneIsNotAdvice checks the producer's way of saying "nothing to
 // do" is not rendered as a suggestion.
-func TestErrorActionNoneIsNotAdvice(t *testing.T) {
+func TestErrorActionNone_IsNotAdvice(t *testing.T) {
 	v := newErrorsView(nil)
 	v.SetSize(100, 20)
 	v.setErrors([]svcerrors.ServiceError{{
@@ -194,7 +194,7 @@ func TestErrorActionNoneIsNotAdvice(t *testing.T) {
 
 // TestErrorAgeRefreshesOnTick guards the column that used to freeze at whatever
 // it read when the error first arrived, making a week-old failure look new.
-func TestErrorAgeRefreshesOnTick(t *testing.T) {
+func TestErrorAge_RefreshesOnTick(t *testing.T) {
 	v := newErrorsView(nil)
 	v.SetSize(100, 20)
 	v.setErrors([]svcerrors.ServiceError{{

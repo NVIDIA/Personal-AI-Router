@@ -28,7 +28,7 @@ import (
 //
 // The test reproduces it directly: a competing caller hammers Refresh while the
 // watch is running, and the callback must still fire.
-func TestWatchReportsTransitionAConcurrentCallerAlreadyObserved(t *testing.T) {
+func TestWatch_ReportsTransitionAConcurrentCallerAlreadyObserved(t *testing.T) {
 	dir := t.TempDir()
 	m := Open(dir)
 	assert.False(t, m.Clustered(), "an empty cluster dir must start unclustered")

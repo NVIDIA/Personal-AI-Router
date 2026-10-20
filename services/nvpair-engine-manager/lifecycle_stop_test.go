@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStopGrace(t *testing.T) {
+func TestStop_TerminatesManagedEngineWithinGracePeriod(t *testing.T) {
 	tests := []struct {
 		name string
 		stop *StopSpec
@@ -59,7 +59,7 @@ func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 // TestStopReclaimsOurOrphanOnManagedPort proves a user Stop of an adopted
 // engine whose listener is our own managed binary (an orphan left on our
 // port) terminates it, stays off across a health interval, and records OFF.
-func TestStopReclaimsOurOrphanOnManagedPort(t *testing.T) {
+func TestStop_ReclaimsOurOrphanOnManagedPort(t *testing.T) {
 	baseDir := t.TempDir()
 	bin := filepath.Join(baseDir, "fake", "fakeorphan"+strconv.Itoa(os.Getpid())+exeExt())
 	require.NoError(t, os.MkdirAll(filepath.Dir(bin), 0o755))
@@ -95,7 +95,7 @@ func TestStopReclaimsOurOrphanOnManagedPort(t *testing.T) {
 	require.False(t, enabled, "desired state (%v, %v, %v)", enabled, known, err)
 }
 
-func TestStopDoesNotReclaimSameExternalImage(t *testing.T) {
+func TestStop_DoesNotReclaimSameExternalImage(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "external-ollama"+strconv.Itoa(os.Getpid())+exeExt())
 	copyFile(t, fakeEngineBin, bin)
 	port, err := freePort()
@@ -119,7 +119,7 @@ func TestStopDoesNotReclaimSameExternalImage(t *testing.T) {
 // adopted engine whose listener is a genuinely foreign process (a different
 // image) is declined with an error naming the offending PID and image, the
 // foreign process is left running, and OFF intent is still recorded.
-func TestStopDeclinesForeignListenerWithActionableError(t *testing.T) {
+func TestStop_RejectsForeignListenerWithActionableError(t *testing.T) {
 	dir := t.TempDir()
 	ourBin := filepath.Join(dir, "ourengine"+exeExt())
 	foreignBin := filepath.Join(dir, "foreignengine"+exeExt())
@@ -151,7 +151,7 @@ func TestStopDeclinesForeignListenerWithActionableError(t *testing.T) {
 	require.False(t, enabled, "desired state (%v, %v, %v)", enabled, known, err)
 }
 
-func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
+func TestStop_RejectsAdoptedProcessEngine(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -188,7 +188,7 @@ func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
 	}
 }
 
-func TestStopReconcilesAdoptedProcessAfterExternalStop(t *testing.T) {
+func TestStop_ReconcilesAdoptedProcessAfterExternalStop(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -211,7 +211,7 @@ func TestStopReconcilesAdoptedProcessAfterExternalStop(t *testing.T) {
 	require.False(t, st.Healthy, "closed external endpoint must reconcile to stopped (%v)", st)
 }
 
-func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
+func TestStop_KeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
 	var unhealthy atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if unhealthy.Load() {
@@ -239,7 +239,7 @@ func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
 	require.True(t, st.Running, "an unhealthy but reachable endpoint must not report stopped (%v)", st)
 }
 
-func TestCommandStopFailureKeepsLiveEngineRunning(t *testing.T) {
+func TestCommandStopFailure_KeepsLiveEngineRunning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -254,7 +254,7 @@ func TestCommandStopFailureKeepsLiveEngineRunning(t *testing.T) {
 	require.True(t, st.Healthy, "failed stop must keep the live engine running (%v)", st)
 }
 
-func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
+func TestCommandStopFailure_SucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -281,7 +281,7 @@ func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
 	require.False(t, st.Healthy, "closed endpoint must report stopped (%v)", st)
 }
 
-func TestCommandStopWithoutReadinessProbeUsesConfiguredCommand(t *testing.T) {
+func TestCommandStopWithoutReadinessProbe_UsesConfiguredCommand(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	ex := commandStopTestExecutor(t, "http://127.0.0.1:1", []string{fakeEngineBin, "touch", marker}, 1, false)
 	st, _ := ex.state("command")
@@ -294,7 +294,7 @@ func TestCommandStopWithoutReadinessProbeUsesConfiguredCommand(t *testing.T) {
 	require.False(t, status.Healthy, "legacy no-probe command stop must report stopped (%v)", status)
 }
 
-func TestCommandStopRejectsSuccessWhileEndpointIsLive(t *testing.T) {
+func TestCommandStop_RejectsSuccessWhileEndpointIsLive(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -308,7 +308,7 @@ func TestCommandStopRejectsSuccessWhileEndpointIsLive(t *testing.T) {
 	require.True(t, st.Healthy, "live endpoint must remain reported running (%v)", st)
 }
 
-func TestCommandStopRejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
+func TestCommandStop_RejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -321,7 +321,7 @@ func TestCommandStopRejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
 	require.True(t, st.Running, "an unhealthy but reachable endpoint must remain running (%v)", st)
 }
 
-func TestCommandStopFailureRestartsHealthMonitoring(t *testing.T) {
+func TestCommandStopFailure_RestartsHealthMonitoring(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -350,7 +350,7 @@ func TestCommandStopFailureRestartsHealthMonitoring(t *testing.T) {
 	require.FailNowf(t, "health monitoring did not resume after failed stop", "%+v", ex.snapshot("command", st))
 }
 
-func TestCommandStopReportsStoppedOnlyAfterEndpointCloses(t *testing.T) {
+func TestCommandStop_ReportsStoppedOnlyAfterEndpointCloses(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -25,7 +25,7 @@ import (
 // engine that discovers and advertises but never resolves a model owner —
 // which is invisible until inference is attempted. The existing manifest tests
 // validate content, not the set, so this closes the last gap.
-func TestBundledManifestSetMatchesEngineTable(t *testing.T) {
+func TestBundledManifestSet_MatchesEngineTable(t *testing.T) {
 	entries, err := fs.ReadDir(bundledManifests, "manifests")
 	require.NoError(t, err)
 

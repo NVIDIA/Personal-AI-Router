@@ -37,7 +37,7 @@ func (w *blockingWriter) Write(p []byte) (int, error) {
 // shutdown deadlock: a parent that stops reading must cost log lines a detour to
 // disk, never a writer's progress. A worker blocked in write() can never reach
 // process exit, and teardown waits for that exit.
-func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
+func TestStderrSink_NeverBlocksAndKeepsOverflow(t *testing.T) {
 	blocked := &blockingWriter{release: make(chan struct{})}
 	defer close(blocked.release)
 
@@ -77,7 +77,7 @@ func TestStderrSinkNeverBlocksAndKeepsOverflow(t *testing.T) {
 
 // TestStderrSinkPassesThroughWhenDrained checks the ordinary path is unchanged:
 // a reader that keeps up sees every byte and no spill file is created.
-func TestStderrSinkPassesThroughWhenDrained(t *testing.T) {
+func TestStderrSink_PassesThroughWhenDrained(t *testing.T) {
 	open := &blockingWriter{release: make(chan struct{})}
 	close(open.release)
 

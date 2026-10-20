@@ -21,7 +21,7 @@ import (
 // each step is observable. LM Studio's cmd-shape actions (lms get/ls/load)
 // and guarded filesystem deletion are covered separately, as is llama.cpp's
 // query-parameter delete endpoint.
-func TestModelLifecycle(t *testing.T) {
+func TestModelLifecycle_DownloadsLoadsUnloadsAndDeletes(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin) // already has list_models (GET /api/tags)
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 	m.Actions["run_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}}

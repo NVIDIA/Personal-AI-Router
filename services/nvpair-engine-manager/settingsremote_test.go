@@ -57,7 +57,7 @@ func settingsPin(t *testing.T, dir, id string, cert []byte) {
 	require.NoError(t, os.WriteFile(filepath.Join(path, id+".json"), data, 0600))
 }
 
-func TestNotifyPeerSettingsForwardsEverySupportedEngine(t *testing.T) {
+func TestNotifyPeerSettings_ForwardsEverySupportedEngine(t *testing.T) {
 	emitted := []settings.Snapshot{}
 	exec := &Executor{emit: func(method string, value any) {
 		require.Equal(t, "engine:settings-changed", method)
@@ -83,7 +83,7 @@ func TestNotifyPeerSettingsForwardsEverySupportedEngine(t *testing.T) {
 	}
 }
 
-func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
+func TestPairedSettings_PushesChangesAndRevokesObservers(t *testing.T) {
 	a, certA := settingsMesh(t, "a")
 	b, certB := settingsMesh(t, "b")
 	c, certC := settingsMesh(t, "c")
@@ -183,7 +183,7 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 
 // Ordinary environment options pass through for pinned peers. Only changes
 // to the engine's CORS environment require an edit on the owning device.
-func TestSettingsRemoteOnlyCORSIsLocalOnly(t *testing.T) {
+func TestSettingsRemoteOnlyCORS_IsLocalOnly(t *testing.T) {
 	a, certA := settingsMesh(t, "a")
 	b, certB := settingsMesh(t, "b")
 	settingsPin(t, a, "b", certB)
@@ -234,7 +234,7 @@ func TestSettingsRemoteOnlyCORSIsLocalOnly(t *testing.T) {
 	}
 }
 
-func TestSettingsRelayCorrelationCancellationAndCleanup(t *testing.T) {
+func TestSettingsRelay_CorrelatesResponsesAndCleansUpCancelledRequests(t *testing.T) {
 	sent := make(chan settings.Relay, 2)
 	canceled := make(chan string, 1)
 	relay := &settingsRelay{send: func(method string, value any) error {

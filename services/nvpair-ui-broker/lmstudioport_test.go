@@ -30,7 +30,7 @@ var (
 	lmstudioSetLocalBackend = lmstudioProxyProfile.addressed("node/set-local-backend")
 )
 
-func TestPlanManagedLMStudioPorts(t *testing.T) {
+func TestPlanManagedLMStudioPorts_AvoidsFacadeAndEnginePortConflicts(t *testing.T) {
 	free := func(ports ...int) func(int) bool {
 		set := map[int]bool{}
 		for _, port := range ports {
@@ -63,7 +63,7 @@ func TestPlanManagedLMStudioPorts(t *testing.T) {
 // The engine, its port, and the ignore-persisted decision travel in
 // facade/enable rather than on argv, because the broker plans a different port
 // per engine and a single-valued flag cannot carry two plans.
-func TestManagedLMStudioFacadeSpec(t *testing.T) {
+func TestLMStudioFacadeSpec_PreservesPortPolicyAndOmitsAliasAddresses(t *testing.T) {
 	b := &Broker{}
 	b.lmstudioState().startupPort.Store(managedLMStudioFacadePort)
 	want := enableFacadeRequest{
@@ -85,7 +85,7 @@ func TestManagedLMStudioFacadeSpec(t *testing.T) {
 	require.Empty(t, b.lmstudioFacadeSpec().AliasAddresses, "LM Studio facade spec carried alias addresses")
 }
 
-func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
+func TestManagedLMStudioReady_OpensGateAndPushesBackend(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
@@ -150,7 +150,7 @@ func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
 	}
 }
 
-func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
+func TestLMStudioReady_FallsBackAndWarnsForUnexpectedPort(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	errorsClient, errorsServer := net.Pipe()
 	t.Cleanup(func() {
@@ -238,7 +238,7 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 	}
 }
 
-func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
+func TestLMStudioRequests_WaitForPortGate(t *testing.T) {
 	tests := []struct {
 		method string
 		params string
@@ -314,7 +314,7 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 	}
 }
 
-func TestManagedLMStudioPortGateRequestMatcher(t *testing.T) {
+func TestLMStudioPortGate_MatchesRequestsThatRequireStablePorts(t *testing.T) {
 	for _, tc := range []struct {
 		method string
 		params string
@@ -337,7 +337,7 @@ func TestManagedLMStudioPortGateRequestMatcher(t *testing.T) {
 	}
 }
 
-func TestManagedLMStudioPortGateHonorsCancellation(t *testing.T) {
+func TestManagedLMStudioPortGate_HonorsCancellation(t *testing.T) {
 	b := &Broker{
 		ollamaPortReady:   make(chan struct{}),
 		lmstudioPortReady: make(chan struct{}),
@@ -347,7 +347,7 @@ func TestManagedLMStudioPortGateHonorsCancellation(t *testing.T) {
 	require.False(t, b.waitForManagedPortOwnership(ctx), "cancelled ownership wait reported ready")
 }
 
-func TestManagedLMStudioFallbackRemainsPendingUntilGateCloses(t *testing.T) {
+func TestManagedLMStudioFallback_RemainsPendingUntilGateCloses(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioState().managedFacade.Store(false) // fallback disables managed mode first
 	require.True(t, b.lmstudioPortOwnershipPending(), "fallback became observable before its proxy rebind completed")
@@ -355,7 +355,7 @@ func TestManagedLMStudioFallbackRemainsPendingUntilGateCloses(t *testing.T) {
 	require.False(t, b.lmstudioPortOwnershipPending(), "completed fallback still reports pending")
 }
 
-func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
+func TestManagedLMStudioConcurrentReady_WaitsForFallbackRebind(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	errorsClient, errorsServer := net.Pipe()
 	t.Cleanup(func() {
@@ -426,7 +426,7 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 // This used to end in a supervised restart of the process. It cannot now — the
 // same process hosts Ollama's facade — so the assertions are inverted: the gate
 // must open anyway, and the handle and supervisor must be left alone.
-func TestManagedLMStudioExhaustedFallbacksFinishOnlyThatEngine(t *testing.T) {
+func TestLMStudioFallback_FinishesOnlyFailedFacadeWhenPortsAreExhausted(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -471,7 +471,7 @@ func TestManagedLMStudioExhaustedFallbacksFinishOnlyThatEngine(t *testing.T) {
 	assert.False(t, b.lmstudioState().managedFacade.Load(), "managed mode survived exhausted fallbacks")
 }
 
-func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
+func TestPrepareManagedLMStudioFacade_MovesDefaultBackend(t *testing.T) {
 	settings, settingsCodec := newTestRPCWorkerPipe(t)
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
@@ -532,7 +532,7 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 	requireGateShutNow(t, b.lmstudioPortReady, "preparation before proxy readiness")
 }
 
-func TestPrepareUnmanagedLMStudioPreservesPortsAndWaitsForProxy(t *testing.T) {
+func TestPrepareUnmanagedLMStudio_PreservesPortsAndWaitsForProxy(t *testing.T) {
 	settings, settingsCodec := newTestRPCWorkerPipe(t)
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
@@ -565,7 +565,7 @@ func TestPrepareUnmanagedLMStudioPreservesPortsAndWaitsForProxy(t *testing.T) {
 	requireGateShutNow(t, b.lmstudioPortReady, "opt-out before the persisted proxy port was known")
 }
 
-func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
+func TestManagedLMStudioBindFailure_WaitsForFallbackReady(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioState().managedFacade.Store(true)
 	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
@@ -597,7 +597,7 @@ func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
 	requireGateOpens(t, b.lmstudioPortReady, "fallback readiness")
 }
 
-func TestManagedLMStudioRestartBindFailureChoosesFallback(t *testing.T) {
+func TestManagedLMStudioRestartBindFailure_ChoosesFallback(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioState().managedFacade.Store(true)
 	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
@@ -611,14 +611,14 @@ func TestManagedLMStudioRestartBindFailureChoosesFallback(t *testing.T) {
 	require.NotEqual(t, managedLMStudioBackendStart, fallback, "restart bind failure selected unsafe fallback")
 }
 
-func TestManagedLMStudioStaleReadyDoesNotOpenCurrentGate(t *testing.T) {
+func TestManagedLMStudioStaleReady_DoesNotOpenCurrentGate(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioProxyGeneration.Store(2)
 	b.forwardLMStudioProxyNotificationForGeneration(1, "ready", json.RawMessage(`{"port":1234}`))
 	requireGateStaysShut(t, b.lmstudioPortReady, "a stale proxy generation's ready")
 }
 
-func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
+func TestUnmanagedLMStudioProxyCollision_RebindsBeforeGate(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -681,7 +681,7 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 	require.Equal(t, 12400, got.Port, "local backend (%v)", got)
 }
 
-func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
+func TestUnmanagedLMStudioCollision_RebindsBeforeStatusProbe(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -730,7 +730,7 @@ func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
 	require.Equal(t, []string{lmstudioSetPort, "engine:status", lmstudioSetLocalBackend}, []string{<-order, <-order, <-order}, "collision reconciliation order")
 }
 
-func TestUnknownLMStudioBackendFallbackSkipsUnprovenPorts(t *testing.T) {
+func TestUnknownLMStudioBackendFallback_SkipsUnprovenPorts(t *testing.T) {
 	b := &Broker{}
 	fallback := b.setLMStudioProxyFallback()
 	require.NotEqual(t, 0, fallback, "unknown-backend fallback selected unproven port")
@@ -738,7 +738,7 @@ func TestUnknownLMStudioBackendFallbackSkipsUnprovenPorts(t *testing.T) {
 	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unknown-backend fallback selected unproven port")
 }
 
-func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
+func TestUnknownLMStudioBackend_MovesProxyBeforeStatusProbe(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -791,7 +791,7 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unknown-backend fallback used unsafe port")
 }
 
-func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
+func TestUnknownCustomBackend_KeepsRestoreGatedAfterStatusFailure(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -841,7 +841,7 @@ func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
 	}
 }
 
-func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *testing.T) {
+func TestEngineManagerRespawn_ReconcilesUnknownCustomBackendBeforeRestore(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()

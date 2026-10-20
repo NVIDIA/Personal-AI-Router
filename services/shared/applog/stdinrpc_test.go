@@ -18,7 +18,7 @@ import (
 // TestNotifyEmitsOneNewlineTerminatedNotification pins the wire form. A parent
 // reads this stream as newline-delimited JSON-RPC, so a missing newline or a
 // second frame's worth of bytes on one line stops it decoding anything further.
-func TestNotifyEmitsOneNewlineTerminatedNotification(t *testing.T) {
+func TestNotify_EmitsOneNewlineTerminatedNotification(t *testing.T) {
 	var buf bytes.Buffer
 	params := map[string][]string{"addresses": {"10.172.54.70", "10.0.0.5"}}
 	require.NoError(t, NewNotifier(&buf).Notify("nodeinfo:observed-addresses", params), "notify")
@@ -44,7 +44,7 @@ func TestNotifyEmitsOneNewlineTerminatedNotification(t *testing.T) {
 
 // A subprocess with no stdout channel gets a nil Notifier, and reporting must stay
 // a plain call at every site rather than a nil check per caller.
-func TestNilNotifierDropsFramesAndReportsSuccess(t *testing.T) {
+func TestNilNotifier_DropsFramesAndReportsSuccess(t *testing.T) {
 	var n *Notifier
 
 	assert.NoError(t, n.Notify("nodeinfo:observed-addresses", map[string][]string{"addresses": {"10.0.0.5"}}), "nil Notifier.Notify returned")
@@ -78,7 +78,7 @@ func (w splitWriter) Write(p []byte) (int, error) {
 // at all: a subprocess reports observations from whichever goroutine noticed
 // them, while StdinRPC writes control responses to the same stream. Two frames
 // sharing a line are unrecoverable for the parent's line-delimited reader.
-func TestNotifierSerializesConcurrentNotifyAndWrite(t *testing.T) {
+func TestNotifier_SerializesConcurrentNotifyAndWrite(t *testing.T) {
 	const writers = 8
 	const framesPerWriter = 100
 

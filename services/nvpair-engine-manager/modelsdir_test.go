@@ -24,7 +24,7 @@ import (
 //
 // The app data root always ends in the vendor/product segments, so this holds
 // the line for every target platform rather than only the test host's.
-func TestBundledModelStoresOutliveTheAppDataRoot(t *testing.T) {
+func TestBundledModelStores_RemainOutsideApplicationDataRoot(t *testing.T) {
 	forbidden := []string{"nvidia corporation", "personal ai router"}
 	for name, manifest := range bundledManifestSet(t) {
 		for key, platform := range manifest.Platforms {
@@ -53,7 +53,7 @@ func TestBundledModelStoresOutliveTheAppDataRoot(t *testing.T) {
 // TestBundledUninstallsKeepTheModelStore checks the other removal path: an
 // engine uninstall may remove a directory that contains the model store (LM
 // Studio keeps both under ~/.lmstudio), but never the store itself.
-func TestBundledUninstallsKeepTheModelStore(t *testing.T) {
+func TestBundledUninstalls_PreserveModelStore(t *testing.T) {
 	for name, manifest := range bundledManifestSet(t) {
 		for key, platform := range manifest.Platforms {
 			if platform.Uninstall == nil {
@@ -95,7 +95,7 @@ func destructiveToken(arg string) string {
 // the guard above: both spellings of the uninstall that deleted users' model
 // libraries have to be recognised, or the guard documents a protection it does
 // not provide.
-func TestDestructiveTokenCatchesTheOriginalUninstalls(t *testing.T) {
+func TestDestructiveToken_RecognizesOriginalUnsafeUninstallCommands(t *testing.T) {
 	originals := map[string]string{
 		"posix": `pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf "$HOME/.lmstudio"; sleep 1; [ -d "$HOME/.lmstudio" ] && exit 1; exit 0`,
 		"windows": `$root = Join-Path $env:USERPROFILE '.lmstudio'; Start-Sleep -Seconds 3; ` +
@@ -116,7 +116,7 @@ func TestDestructiveTokenCatchesTheOriginalUninstalls(t *testing.T) {
 // TestValidateRejectsRemovalsThatReachTheModelStore pins the load-time
 // rejections the manifest reference promises. Each of these was accepted before,
 // and each deletes part or all of a user's model library at uninstall time.
-func TestValidateRejectsRemovalsThatReachTheModelStore(t *testing.T) {
+func TestValidate_RejectsRemovalsThatReachTheModelStore(t *testing.T) {
 	for name, uninstall := range map[string]struct {
 		modelsDir string
 		remove    []string
@@ -138,7 +138,7 @@ func TestValidateRejectsRemovalsThatReachTheModelStore(t *testing.T) {
 	}
 }
 
-func TestRemoveTreePreservingKeepsNestedStore(t *testing.T) {
+func TestRemoveTreePreserving_KeepsNestedStore(t *testing.T) {
 	root := t.TempDir()
 	engineRoot := filepath.Join(root, ".lmstudio")
 	models := filepath.Join(engineRoot, "models", "publisher", "repo")
@@ -165,7 +165,7 @@ func TestRemoveTreePreservingKeepsNestedStore(t *testing.T) {
 // moved and linked back. With ~/.lmstudio/models a symlink to a sibling
 // directory, a removal that matched the store by path kept the link and deleted
 // the sibling, which is where the models were.
-func TestRemoveTreePreservingKeepsASymlinkedStore(t *testing.T) {
+func TestRemoveTreePreserving_KeepsASymlinkedStore(t *testing.T) {
 	engineRoot := filepath.Join(t.TempDir(), ".lmstudio")
 	weights := filepath.Join(engineRoot, "weights")
 	model := filepath.Join(weights, "model.gguf")
@@ -191,7 +191,7 @@ func TestRemoveTreePreservingKeepsASymlinkedStore(t *testing.T) {
 // TestRemoveTreePreservingKeepsADeeperStore covers a store more than one level
 // below the removal, where the removal recurses: the siblings at every level on
 // the way go, and the store stays.
-func TestRemoveTreePreservingKeepsADeeperStore(t *testing.T) {
+func TestRemoveTreePreserving_KeepsADeeperStore(t *testing.T) {
 	engineRoot := filepath.Join(t.TempDir(), ".engine")
 	model := filepath.Join(engineRoot, "data", "models", "model.gguf")
 	binary := filepath.Join(engineRoot, "bin", "engine")
@@ -214,7 +214,7 @@ func TestRemoveTreePreservingKeepsADeeperStore(t *testing.T) {
 // in a different case is kept wherever the filesystem treats both spellings as
 // one directory. That is a property of the filesystem, not the operating
 // system: a macOS volume can be case-sensitive.
-func TestRemoveTreePreservingKeepsAStoreSpelledInAnotherCase(t *testing.T) {
+func TestRemoveTreePreserving_KeepsAStoreSpelledInAnotherCase(t *testing.T) {
 	engineRoot := filepath.Join(t.TempDir(), ".engine")
 	model := filepath.Join(engineRoot, "Models", "model.gguf")
 	require.NoError(t, os.MkdirAll(filepath.Dir(model), 0o755))
@@ -228,7 +228,7 @@ func TestRemoveTreePreservingKeepsAStoreSpelledInAnotherCase(t *testing.T) {
 	assert.FileExists(t, model, "model weights were removed")
 }
 
-func TestRemoveTreePreservingRemovesUnrelatedTree(t *testing.T) {
+func TestRemoveTreePreserving_RemovesUnrelatedTree(t *testing.T) {
 	root := t.TempDir()
 	installDir := filepath.Join(root, "engine-bin", "ollama")
 	require.NoError(t, os.MkdirAll(installDir, 0o755))
@@ -240,7 +240,7 @@ func TestRemoveTreePreservingRemovesUnrelatedTree(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist, "install dir survived")
 }
 
-func TestRemoveTreePreservingRefusesTheStoreItself(t *testing.T) {
+func TestRemoveTreePreserving_RefusesTheStoreItself(t *testing.T) {
 	root := t.TempDir()
 	assert.Error(t, removeTreePreserving(root, root), "expected an error when the target is the preserved model store")
 }
@@ -248,7 +248,7 @@ func TestRemoveTreePreservingRefusesTheStoreItself(t *testing.T) {
 // TestRemoveTreePreservingRefusesInsideTheStore covers a manifest asking to
 // remove part of the model library. Refusing matters more than it looks:
 // falling through to a plain removal here would delete the models.
-func TestRemoveTreePreservingRefusesInsideTheStore(t *testing.T) {
+func TestRemoveTreePreserving_RefusesInsideTheStore(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "models")
 	inside := filepath.Join(store, "publisher")
 	require.NoError(t, os.MkdirAll(inside, 0o755))
@@ -261,7 +261,7 @@ func TestRemoveTreePreservingRefusesInsideTheStore(t *testing.T) {
 // unlinked rather than read. Reading it would follow the link and delete the
 // real directory's contents. Go reports a Windows junction differently from a
 // symlink, so modelsdir_windows_test.go covers that case with a real junction.
-func TestRemoveTreePreservingUnlinksSymlinkedTarget(t *testing.T) {
+func TestRemoveTreePreserving_UnlinksSymlinkedTarget(t *testing.T) {
 	root := t.TempDir()
 	victim := filepath.Join(root, "victim")
 	require.NoError(t, os.MkdirAll(filepath.Join(victim, "keep-me"), 0o755))
@@ -283,7 +283,7 @@ func TestRemoveTreePreservingUnlinksSymlinkedTarget(t *testing.T) {
 // stop the rest. A vendor daemon holding a file open used to leave the engine
 // binary in place, so detection kept reporting the engine and the uninstall
 // failed having half-removed it.
-func TestRemoveTreePreservingIsBestEffort(t *testing.T) {
+func TestRemoveTreePreserving_ReportsUndeletableEntriesAndRemovesOthers(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the directory permissions this test relies on")
 	}
@@ -304,6 +304,6 @@ func TestRemoveTreePreservingIsBestEffort(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "stopped early: the engine binary survived (remove err=%v)", err)
 }
 
-func TestRemoveTreePreservingMissingTargetIsNoOp(t *testing.T) {
+func TestRemoveTreePreserving_SucceedsWhenTargetIsMissing(t *testing.T) {
 	assert.NoError(t, removeTreePreserving(filepath.Join(t.TempDir(), "absent"), ""), "removing an absent path should be a no-op")
 }

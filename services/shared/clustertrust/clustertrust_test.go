@@ -58,7 +58,7 @@ func writePin(t *testing.T, clusterDir, uuid, certPEM string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, uuid+".json"), body, 0o600), "write pin")
 }
 
-func TestLoadIdentityAndUUID(t *testing.T) {
+func TestLoadIdentity_ExtractsCertificateAndNodeUUID(t *testing.T) {
 	dir := t.TempDir()
 	certPEM, keyPEM, _ := genLeaf(t, "uuid-self")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
@@ -74,7 +74,7 @@ func TestLoadIdentityAndUUID(t *testing.T) {
 	require.Error(t, err, "expected error loading identity from an empty dir")
 }
 
-func TestTrustPinMatchAndGate(t *testing.T) {
+func TestTrustPin_AuthorizesOnlyMatchingCertificate(t *testing.T) {
 	dir := t.TempDir()
 	selfCert, selfKey, _ := genLeaf(t, "uuid-self")
 	_ = os.WriteFile(filepath.Join(dir, "node.crt"), selfCert, 0o644)
@@ -108,7 +108,7 @@ func TestTrustPinMatchAndGate(t *testing.T) {
 	require.Len(t, sc.Certificates, 1, "server config: ClientAuth")
 }
 
-func TestVerifyClientPin(t *testing.T) {
+func TestVerifyClientPin_AcceptsPinnedCertificateAndRejectsUnpinnedClient(t *testing.T) {
 	dir := t.TempDir()
 	peerCertPEM, _, _ := genLeaf(t, "uuid-peer")
 	writePin(t, dir, "uuid-peer", string(peerCertPEM))
@@ -145,7 +145,7 @@ func TestVerifyClientPin(t *testing.T) {
 // browsed peer trusted. Self-trust still holds for a live member, so
 // DirectoryNode.Trusted stays false for real peers while the node can still
 // reach its own gated endpoints.
-func TestMeshClusterOfOneTrustsOnlyItself(t *testing.T) {
+func TestMeshClusterOfOne_TrustsOnlyItself(t *testing.T) {
 	dir := t.TempDir()
 	certPEM, keyPEM, _ := genLeaf(t, "self-uuid")
 	writeIdentity(t, dir, certPEM, keyPEM)
@@ -165,7 +165,7 @@ func TestMeshClusterOfOneTrustsOnlyItself(t *testing.T) {
 	assert.False(t, m.HasPin("self-uuid"), "a non-member must not resolve any principal, including its own")
 }
 
-func TestTrustReloadAndTamperSkip(t *testing.T) {
+func TestTrustReload_SkipsTamperedPins(t *testing.T) {
 	dir := t.TempDir()
 	aPEM, _, _ := genLeaf(t, "uuid-a")
 	writePin(t, dir, "uuid-a", string(aPEM))

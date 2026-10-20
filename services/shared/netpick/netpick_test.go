@@ -25,45 +25,45 @@ func TestRankRemote_DemotesOnlyUnusableClasses(t *testing.T) {
 // made a multi-homed host publish a two-host direct-connect link over its LAN,
 // and no address-only rule can tell those apart. Equal scores resolve by string
 // order, which is arbitrary but stable, and a connection attempt corrects it.
-func TestRankRemote_PrivateBlocksTie(t *testing.T) {
+func TestRankRemote_RanksPrivateAddressBlocksEqually(t *testing.T) {
 	assert.Equal(t, scoreIP(net.ParseIP("10.5.5.5")), scoreIP(net.ParseIP("192.168.1.20")), "scoreIP 192.168")
 	assert.Equal(t, scoreIP(net.ParseIP("10.5.5.5")), scoreIP(net.ParseIP("172.20.0.5")), "scoreIP 172.16/12")
 	// Docker's default bridge is the one 172.16/12 address that stays demoted.
 	assert.Less(t, scoreIP(net.ParseIP("172.17.0.1")), scoreIP(net.ParseIP("172.20.0.5")), "scoreIP 172.17 docker")
 }
 
-func TestRankRemote_PrivateBeatsPublic(t *testing.T) {
+func TestRankRemote_PrefersPrivateOverPublicAddresses(t *testing.T) {
 	got := RankRemote([]string{"8.8.8.8", "10.5.5.5"})
 	require.Len(t, got, 2)
 	assert.Equal(t, "10.5.5.5", got[0])
 }
 
-func TestRankRemote_DropsUnparseableAndStableTie(t *testing.T) {
+func TestRankRemote_DropsInvalidAddressesAndPreservesEqualRankOrder(t *testing.T) {
 	// Equal score -> string order, junk dropped.
 	assert.Equal(t, []string{"192.168.0.3", "192.168.0.9"}, RankRemote([]string{"not-an-ip", "192.168.0.9", "192.168.0.3", ""}))
 }
 
-func TestPrimary_TXTWins(t *testing.T) {
+func TestPrimary_PrefersPublishedTXTAddress(t *testing.T) {
 	// The node's own ip= TXT is authoritative even if the address list leads
 	// with something else.
 	assert.Equal(t, "192.168.1.5", Primary([]string{"ip=192.168.1.5"}, []string{"10.0.0.1", "192.168.1.5"}), "Primary with ip= TXT")
 }
 
-func TestPrimary_InvalidTXTFallsBackToRanked(t *testing.T) {
+func TestPrimary_UsesRankedAddressWhenTXTAddressIsInvalid(t *testing.T) {
 	assert.Equal(t, "10.0.0.1", Primary([]string{"ip=garbage", "other=x"}, []string{"10.0.0.1", "192.168.1.5"}), "Primary fallback")
 }
 
-func TestPrimary_Empty(t *testing.T) {
+func TestPrimary_ReturnsEmptyForNoCandidates(t *testing.T) {
 	assert.Equal(t, "", Primary(nil, nil))
 	assert.Equal(t, "", Primary(nil, []string{"junk"}), "Primary with only junk")
 }
 
-func TestIPFromTXT(t *testing.T) {
+func TestIPFromTXT_ExtractsPreferredAddress(t *testing.T) {
 	assert.Equal(t, "192.168.0.2", IPFromTXT([]string{"uuid=abc", "ip=192.168.0.2", "v=1"}))
 	assert.Equal(t, "", IPFromTXT([]string{"uuid=abc"}), "IPFromTXT without ip")
 }
 
-func TestIPsFromTXT(t *testing.T) {
+func TestIPsFromTXT_ExtractsPublishedAddresses(t *testing.T) {
 	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2", "192.168.240.6"},
 		IPsFromTXT([]string{"uuid=abc", "ips=10.172.54.70,192.168.240.2, 192.168.240.6 ,junk"}))
 	assert.Empty(t, IPsFromTXT([]string{"uuid=abc"}), "IPsFromTXT without ips")
@@ -94,7 +94,7 @@ func TestCandidates_Deduplicates(t *testing.T) {
 	))
 }
 
-func TestVirtualIface(t *testing.T) {
+func TestVirtualIface_RecognizesVirtualNetworkInterfaces(t *testing.T) {
 	assert.True(t, virtualIface("vEthernet (Default Switch)"))
 	assert.True(t, virtualIface("docker0"))
 	assert.True(t, virtualIface("br-1a2b"))
@@ -115,7 +115,7 @@ func TestVirtualIface(t *testing.T) {
 // documents: it does not itself recognize a virtual adapter, so a Windows
 // "vEthernet (...)" name would collect the Ethernet bonus. Callers must check
 // virtualIface first, and rankLocal does (see TestRankLocal_ExcludesVirtual).
-func TestPhysicalBonus_VEthernetIsCallerGated(t *testing.T) {
+func TestPhysicalBonus_AppliesVirtualEthernetBonusOnlyWhenCallerAllows(t *testing.T) {
 	assert.Equal(t, 15, physicalBonus("vEthernet (Default Switch)"))
 	assert.Greater(t, physicalBonus("Wi-Fi"), physicalBonus("Ethernet"), "physicalBonus Wi-Fi")
 	assert.Equal(t, 0, physicalBonus("someswitch0"))
@@ -158,7 +158,7 @@ func TestRankLocal_ExcludesVirtual(t *testing.T) {
 // external switch holds its LAN address on "vEthernet (...)" while the physical
 // NIC bound to that switch has none. Demoting overlay adapters must not become
 // publishing no address at all, which would make the host unreachable.
-func TestRankLocal_VirtualIsTheAnswerWhenItIsTheOnlyOne(t *testing.T) {
+func TestRankLocal_UsesVirtualInterfaceWhenNoPhysicalInterfaceQualifies(t *testing.T) {
 	ifaces := []localIface{
 		{name: "vEthernet (External Switch)", addrs: []localAddr{{ip: "192.168.1.40", prefixLen: 24}}},
 		{name: "docker0", addrs: []localAddr{{ip: "172.17.0.1", prefixLen: 16}}},
@@ -169,7 +169,7 @@ func TestRankLocal_VirtualIsTheAnswerWhenItIsTheOnlyOne(t *testing.T) {
 // TestRankLocal_VirtualNeverOutranksPhysical: the fallback is a last resort, not a
 // tier. One qualified physical address is enough to keep an overlay address off
 // the front of the list, whatever else favours it.
-func TestRankLocal_VirtualNeverOutranksPhysical(t *testing.T) {
+func TestRankLocal_PrefersPhysicalOverVirtualInterfaces(t *testing.T) {
 	ifaces := []localIface{
 		{name: "wg0", addrs: []localAddr{{ip: "10.99.0.2", prefixLen: 24}}},
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
@@ -182,7 +182,7 @@ func TestRankLocal_VirtualNeverOutranksPhysical(t *testing.T) {
 // unreachable from a peer that shares only a tunnel with us. A completed inbound
 // connection is proof from the other side, and the address that carried it is
 // published — behind the LAN, never as the canonical answer.
-func TestRankLocal_PeerProvenOverlayIsPublishedLast(t *testing.T) {
+func TestRankLocal_PublishesPeerConfirmedOverlayAfterPhysicalAddresses(t *testing.T) {
 	ifaces := []localIface{
 		{name: "wg0", addrs: []localAddr{{ip: "10.99.0.2", prefixLen: 24}}},
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
@@ -203,7 +203,7 @@ func TestRankLocal_PeerProvenOverlayIsPublishedLast(t *testing.T) {
 // produces a candidate — an unqualified one, the very kind this ranking demotes.
 // Gating the overlay pass on any physical candidate published the /30 and dropped
 // the LAN address entirely.
-func TestRankLocal_OverlayLANSurvivesADirectConnectNIC(t *testing.T) {
+func TestRankLocal_KeepsOverlayLANAlongsideDirectConnection(t *testing.T) {
 	ifaces := []localIface{
 		{name: "vEthernet (External Switch)", addrs: []localAddr{{ip: "192.168.1.40", prefixLen: 24}}},
 		{name: "Ethernet 5", addrs: []localAddr{{ip: "192.168.240.2", prefixLen: 30}}},
@@ -217,7 +217,7 @@ func TestRankLocal_OverlayLANSurvivesADirectConnectNIC(t *testing.T) {
 // TestRankLocal_OverlayRunsWhenNoPhysicalAddressQualifies covers the other
 // unqualified reason with no direct-connect link involved: the only physical NIC
 // cannot send at all, so the tunnel is the only address a peer can use.
-func TestRankLocal_OverlayRunsWhenNoPhysicalAddressQualifies(t *testing.T) {
+func TestRankLocal_UsesOverlayWhenNoPhysicalAddressQualifies(t *testing.T) {
 	ifaces := []localIface{
 		{name: "tailscale0", addrs: []localAddr{{ip: "100.101.102.103", prefixLen: 32}}},
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
@@ -236,7 +236,7 @@ func TestRankLocal_KeepsDirectConnectAsLastResort(t *testing.T) {
 // TestRankLocal_NarrowPrefixesAndPointToPoint pins both hard disqualifiers
 // independently of each other, and confirms an unknown prefix does not disqualify
 // (a platform that reports an address without a mask must not lose its LAN).
-func TestRankLocal_NarrowPrefixesAndPointToPoint(t *testing.T) {
+func TestRankLocal_DemotesNarrowPrefixesAndPointToPointInterfaces(t *testing.T) {
 	for _, prefixLen := range []int{30, 31, 32} {
 		ifaces := []localIface{
 			{name: "eth1", addrs: []localAddr{{ip: "10.9.9.1", prefixLen: prefixLen}}},
@@ -259,7 +259,7 @@ func TestRankLocal_NarrowPrefixesAndPointToPoint(t *testing.T) {
 // the kernel has no route out of that interface, which no peer's unicast
 // connection can work around. Hearing no replies is NOT recorded as failure —
 // a network that filters multicast still carries unicast.
-func TestRankLocal_SendFailureDisqualifies(t *testing.T) {
+func TestRankLocal_ExcludesInterfacesWithSendFailures(t *testing.T) {
 	ifaces := []localIface{
 		{name: "eth1", addrs: []localAddr{{ip: "10.9.9.1", prefixLen: 24}}},
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
@@ -271,7 +271,7 @@ func TestRankLocal_SendFailureDisqualifies(t *testing.T) {
 // TestRankLocal_EvidencePrecedence pins the tier order: proof from a peer beats a
 // peer merely being on-link, which beats the kernel's default route, which beats
 // every name or address heuristic.
-func TestRankLocal_EvidencePrecedence(t *testing.T) {
+func TestRankLocal_OrdersInterfacesByReachabilityEvidence(t *testing.T) {
 	ifaces := []localIface{
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 24}}},
 		{name: "eth1", addrs: []localAddr{{ip: "10.0.1.5", prefixLen: 24}}},
@@ -288,7 +288,7 @@ func TestRankLocal_EvidencePrecedence(t *testing.T) {
 	assert.Equal(t, "10.0.0.5", rankLocal(ifaces, ev, "10.0.2.5")[0], "peer-observed")
 }
 
-func TestFacingPeers(t *testing.T) {
+func TestFacingPeers_FindsPeerReachableInterfaceAddresses(t *testing.T) {
 	ifaces := sparkHost()
 	// The LAN peer is on-link for the LAN NIC; the direct-connect partner is
 	// on-link for its own /30.
@@ -308,7 +308,7 @@ func TestFacingPeers_IgnoresSelf(t *testing.T) {
 	assert.True(t, facingPeers(ifaces, []string{"10.0.0.9"})["eth0"], "facingPeers with a real peer")
 }
 
-func TestFacingPeers_NoPeersOrUnknownPrefix(t *testing.T) {
+func TestFacingPeers_ReturnsNoProofWithoutPeersOrKnownPrefix(t *testing.T) {
 	ifaces := []localIface{{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: -1}}}}
 	assert.Empty(t, facingPeers(ifaces, []string{"10.0.0.9"}), "facingPeers with an unknown prefix")
 	assert.Empty(t, facingPeers(sparkHost(), nil), "facingPeers with no peers")
@@ -317,7 +317,7 @@ func TestFacingPeers_NoPeersOrUnknownPrefix(t *testing.T) {
 // TestRankLocal_PeerProofRescuesUnqualified: hard disqualifiers are evidence, but
 // a peer actually connecting is stronger evidence. A LAN that reports a narrow
 // prefix must still win once a peer proves it works.
-func TestRankLocal_PeerProofOutranksUnqualified(t *testing.T) {
+func TestRankLocal_PrefersPeerConfirmedInterfaces(t *testing.T) {
 	ifaces := []localIface{
 		{name: "eth0", addrs: []localAddr{{ip: "10.0.0.5", prefixLen: 30}}},
 		{name: "eth1", addrs: []localAddr{{ip: "10.0.1.5", prefixLen: 30}}},
@@ -330,7 +330,7 @@ func TestRankLocal_PeerProofOutranksUnqualified(t *testing.T) {
 // addresses previously resolved by interface enumeration order, so a host
 // republished a different canonical address across restarts and network changes
 // and churned every consumer. Order must depend only on the described host.
-func TestRankLocal_DeterministicTieBreak(t *testing.T) {
+func TestRankLocal_BreaksEqualRanksDeterministically(t *testing.T) {
 	forward := rankLocal(sparkHost(), Evidence{}, "")
 	reversed := sparkHost()
 	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
@@ -349,13 +349,13 @@ func TestRankLocal_ExcludesLoopbackAndLinkLocal(t *testing.T) {
 	assert.Equal(t, []string{"10.0.0.5"}, rankLocal(ifaces, Evidence{}, ""))
 }
 
-func TestRankLocal_NoAddresses(t *testing.T) {
+func TestRankLocal_ReturnsEmptyForNoAddresses(t *testing.T) {
 	require.Empty(t, rankLocal(nil, Evidence{}, ""))
 }
 
 // TestLocalCandidates_Smoke is environment-dependent: it must not panic, and every
 // address it returns must be a publishable non-loopback IPv4.
-func TestLocalCandidates_Smoke(t *testing.T) {
+func TestLocalCandidates_ReturnsUsableLocalAddresses(t *testing.T) {
 	got := LocalCandidates(Evidence{})
 	for _, a := range got {
 		ip := net.ParseIP(a)
@@ -374,7 +374,7 @@ func TestLocalCandidates_Smoke(t *testing.T) {
 
 // TestRouteSourceIP_Smoke: the route lookup must never panic and must return
 // either "" (no default route) or a non-loopback IPv4.
-func TestRouteSourceIP_Smoke(t *testing.T) {
+func TestRouteSourceIP_ReturnsSourceAddressForPeer(t *testing.T) {
 	got := routeSourceIP()
 	if got == "" {
 		return

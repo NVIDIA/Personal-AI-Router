@@ -35,7 +35,7 @@ func assertFullyUnclustered(t *testing.T, m *Manager) {
 // guards handleInviteNode/runInitialExchange rely on — registerInviterSession
 // (session install) and withLivePairing (invite republication) — directly,
 // since the network exchange between them is not what the guards protect.
-func TestInitialExchangeTeardownBoundary(t *testing.T) {
+func TestInitialExchange_CannotCommitAcrossTeardown(t *testing.T) {
 	t.Run("teardown before initial invite publication leaves no pending invite", func(t *testing.T) {
 		m := newTestManagerPort(t, 15080)
 		pinMemberFixture(t, m, "peer-1")

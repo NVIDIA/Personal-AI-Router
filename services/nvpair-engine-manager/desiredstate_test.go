@@ -25,7 +25,7 @@ func desiredTestExecutor(t *testing.T, manifest *Manifest, baseDir string) *Exec
 	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
 }
 
-func TestDesiredStateStoresExplicitOffAndLeavesLegacyUnknown(t *testing.T) {
+func TestDesiredState_StoresExplicitOffAndLeavesLegacyUnknown(t *testing.T) {
 	store := newDesiredStateStore(t.TempDir())
 	enabled, known, err := store.get("fake")
 	require.NoError(t, err, "legacy state (%v, %v, %v)", enabled, known, err)
@@ -43,7 +43,7 @@ func TestDesiredStateStoresExplicitOffAndLeavesLegacyUnknown(t *testing.T) {
 	require.True(t, enabled, "saved ON (%v, %v, %v)", enabled, known, err)
 }
 
-func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
+func TestDesiredOn_SurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 	baseDir := t.TempDir()
 	ctx := context.Background()
 
@@ -66,7 +66,7 @@ func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 	require.False(t, st.Running, "OFF status (%v, %v)", st, err)
 }
 
-func TestFailedRestoreRetainsDesiredOnForRetry(t *testing.T) {
+func TestFailedRestore_RetainsDesiredOnForRetry(t *testing.T) {
 	baseDir := t.TempDir()
 	seed := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
 	require.NoError(t, seed.Start(context.Background(), "fake"), "seed start")
@@ -92,7 +92,7 @@ func TestFailedRestoreRetainsDesiredOnForRetry(t *testing.T) {
 // declined because the adopted listener is a genuinely foreign process (its
 // image is not our managed binary) still records the OFF intent, so a later
 // RestoreEnabled honors it rather than flipping the engine back on.
-func TestDeclinedAdoptedStopStillPersistsOffIntent(t *testing.T) {
+func TestDeclinedAdoptedStop_StillPersistsOffIntent(t *testing.T) {
 	baseDir := t.TempDir()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -131,7 +131,7 @@ func TestDeclinedAdoptedStopStillPersistsOffIntent(t *testing.T) {
 	require.False(t, st.Running, "declined-OFF engine was restarted: status (%v, %v)", st, err)
 }
 
-func TestConfirmedStopPersistsOffDespiteCommandExitError(t *testing.T) {
+func TestConfirmedStop_PersistsOffDespiteCommandExitError(t *testing.T) {
 	baseDir := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

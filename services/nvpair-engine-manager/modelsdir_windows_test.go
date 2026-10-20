@@ -38,7 +38,7 @@ func victimDir(t *testing.T, dir string) string {
 // elevated uninstaller through a junction. Go reports a junction as an irregular
 // file, not a symlink, so a check for symlinks alone let the removal follow one
 // into the directory it names and delete what was there.
-func TestRemoveTreePreservingUnlinksJunctionedTarget(t *testing.T) {
+func TestRemoveTreePreserving_UnlinksJunctionedTarget(t *testing.T) {
 	root := t.TempDir()
 	keep := victimDir(t, filepath.Join(root, "elsewhere"))
 	link := filepath.Join(root, ".lmstudio")
@@ -54,7 +54,7 @@ func TestRemoveTreePreservingUnlinksJunctionedTarget(t *testing.T) {
 // TestRemoveTreePreservingUnlinksJunctionOnTheWayToTheStore checks the same for
 // a junction met while descending toward the model store, where the removal
 // recurses rather than starting.
-func TestRemoveTreePreservingUnlinksJunctionOnTheWayToTheStore(t *testing.T) {
+func TestRemoveTreePreserving_UnlinksJunctionOnTheWayToTheStore(t *testing.T) {
 	root := t.TempDir()
 	keep := victimDir(t, filepath.Join(root, "elsewhere"))
 	engineRoot := filepath.Join(root, ".lmstudio")

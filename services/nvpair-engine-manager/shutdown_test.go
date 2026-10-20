@@ -22,7 +22,7 @@ import (
 // TestStopAllStopsEveryEngine guards the concurrent StopAll: with more than one
 // engine running, every engine must be stopped — a regression guard for the old
 // sequential loop where a slow first engine could leave later engines running.
-func TestStopAllStopsEveryEngine(t *testing.T) {
+func TestStopAll_StopsEveryEngine(t *testing.T) {
 	reg := NewRegistry()
 	names := []string{"fake-a", "fake-b"}
 	for _, name := range names {
@@ -49,7 +49,7 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 	require.ErrorIs(t, ex.Start(ctx, names[0]), context.Canceled, "start after StopAll error")
 }
 
-func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
+func TestStopAll_CancelsCommandStartWithoutError(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
 	t.Setenv("FAKE_PID_FILE", pidFile)
 
@@ -95,7 +95,7 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "shutdown cancellation retained a command-mode start-failed error")
 }
 
-func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
+func TestStopAll_StopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	dir := t.TempDir()
 	startMarker := filepath.Join(dir, "started")
 	stopMarker := filepath.Join(dir, "stopped")
@@ -184,7 +184,7 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 // prepare-shutdown or shutdown RPC. The EOF path must run StopAll and take the
 // engine's port down — this is the backstop the broker relies on now that it no
 // longer force-kills engine-manager on a timeout.
-func TestE2EStdinCloseStopsEngine(t *testing.T) {
+func TestE2EStdinClose_StopsEngine(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	for _, dir := range []string{

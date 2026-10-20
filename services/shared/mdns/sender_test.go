@@ -63,7 +63,7 @@ func captureDebugLogs(t *testing.T) *bytes.Buffer {
 	return logs
 }
 
-func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
+func TestWritePacket_ConfiguresMulticastAndWritesOnce(t *testing.T) {
 	ifi := &net.Interface{Index: 7, Name: "eth0"}
 	source := net.IPv4(192, 0, 2, 10)
 	target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort}
@@ -81,7 +81,7 @@ func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
 	assert.Same(t, target, writer.target)
 }
 
-func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
+func TestWritePacket_SkipsMulticastOptionsForUnicast(t *testing.T) {
 	source := net.IPv4(127, 0, 0, 1)
 	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
 	writer := &recordingPacketWriter{}
@@ -93,7 +93,7 @@ func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
 	assert.Equal(t, 1, writer.writes)
 }
 
-func TestWritePacketReturnsWriteFailure(t *testing.T) {
+func TestWritePacket_ReturnsWriteFailure(t *testing.T) {
 	wantErr := errors.New("send refused")
 	writer := &recordingPacketWriter{err: wantErr}
 	source := net.IPv4(127, 0, 0, 1)
@@ -103,7 +103,7 @@ func TestWritePacketReturnsWriteFailure(t *testing.T) {
 	assert.Equal(t, 1, writer.writes)
 }
 
-func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
+func TestWritePacket_LogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 	cases := []struct {
 		name           string
 		interfaceErr   error
@@ -169,7 +169,7 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 	}
 }
 
-func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
+func TestResponderSend_UsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 	ifi, source := loopbackIPv4(t)
 
 	lc := net.ListenConfig{Control: setReuseAddr}

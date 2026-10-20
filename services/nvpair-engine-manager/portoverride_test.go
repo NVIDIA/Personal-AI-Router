@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSetPortPreservesOtherOverrides(t *testing.T) {
+func TestSetPort_PreservesOtherOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ollama.json")
 	host := runtime.GOOS + "/" + runtime.GOARCH
@@ -62,7 +62,7 @@ func TestSetPortPreservesOtherOverrides(t *testing.T) {
 	require.Equal(t, "9007199254740993", string(exact["custom_counter"]), "unrelated numeric setting lost precision")
 }
 
-func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
+func TestPersistPort_OverridesBundledPlatformPort(t *testing.T) {
 	host := runtime.GOOS + "/" + runtime.GOARCH
 	raw, err := json.Marshal(map[string]any{
 		"engine": "platform-engine", "display_name": "Platform engine", "manifest_version": 1,
@@ -87,7 +87,7 @@ func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
 	}
 }
 
-func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
+func TestPersistPort_RefusesMalformedOverrideWithoutClobbering(t *testing.T) {
 	for _, data := range []string{
 		`{`, `null`, `[]`, `{}`, `{"runtime":{}}`, `{"engine":"another-engine"}`,
 		`{"engine":"ollama","runtime":null}`,
@@ -109,7 +109,7 @@ func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
 	}
 }
 
-func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
+func TestWriteJSONAtomic_ReplacesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	for _, port := range []int{24001, 24002} {
@@ -143,7 +143,7 @@ func bundledHostPlatform(t *testing.T, engine string) Platform {
 // moved it to, and takes nothing else from the override. The uninstaller runs
 // elevated on Windows, and the override is a file any process running as the
 // user can write.
-func TestUninstallerTakesOnlyLocationsFromAnOverride(t *testing.T) {
+func TestUninstaller_TakesOnlyLocationsFromAnOverride(t *testing.T) {
 	host := runtime.GOOS + "/" + runtime.GOARCH
 	want := bundledHostPlatform(t, "ollama")
 	dir := t.TempDir()
@@ -175,7 +175,7 @@ func TestUninstallerTakesOnlyLocationsFromAnOverride(t *testing.T) {
 // whose model store would contain a removal target is ignored whole, as startup
 // ignores it, rather than leaving the uninstaller with a store it must refuse
 // to remove around.
-func TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves(t *testing.T) {
+func TestUninstaller_IgnoresAnOverrideStoreHoldingWhatItRemoves(t *testing.T) {
 	host := runtime.GOOS + "/" + runtime.GOARCH
 	want := bundledHostPlatform(t, "lmstudio")
 	dir := t.TempDir()

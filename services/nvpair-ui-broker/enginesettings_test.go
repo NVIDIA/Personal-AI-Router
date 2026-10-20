@@ -190,7 +190,7 @@ func (h *settingsHarness) request(t *testing.T) settings.Request {
 	return settings.Request{Engine: "ollama", ExpectedRevision: s.Revision, RequestID: settingsID(), Settings: s.Settings}
 }
 
-func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
+func TestSettingsCoordinator_TracksRevisionsDeduplicatesAndReportsFailures(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
@@ -234,7 +234,7 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 	require.Equal(t, "succeeded", s.Phase, "retry lost resume intent (%v)", s)
 }
 
-func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
+func TestSettingsFailedApply_RestoresOnlyRunningReadyService(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		stopFails  bool
@@ -270,7 +270,7 @@ func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
 	}
 }
 
-func TestSettingsCoordinatorSerializesAndCancelsQueuedRequests(t *testing.T) {
+func TestSettingsCoordinator_SerializesAndCancelsQueuedRequests(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	p.Settings.LaunchText += " --first"
@@ -294,7 +294,7 @@ func TestSettingsCoordinatorSerializesAndCancelsQueuedRequests(t *testing.T) {
 // An apply stops and restarts an engine, which can run for minutes. Holding the
 // journal lock across that froze the other engine's editor and the refresh
 // poller for the whole restart.
-func TestSettingsApplyDoesNotBlockUnrelatedReads(t *testing.T) {
+func TestSettingsApply_DoesNotBlockUnrelatedReads(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	p.Settings.LaunchText += " --busy"
@@ -320,7 +320,7 @@ func TestSettingsApplyDoesNotBlockUnrelatedReads(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
-func TestSettingsResultPersistenceFailureReturnsFailedReceipt(t *testing.T) {
+func TestSettingsResultPersistenceFailure_ReturnsFailedReceipt(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	p.Settings.LaunchText += " --new"
@@ -331,7 +331,7 @@ func TestSettingsResultPersistenceFailureReturnsFailedReceipt(t *testing.T) {
 	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "result persistence failure claimed success (%v)", receipt)
 }
 
-func TestSettingsJournalFailureAndInterruptedRecovery(t *testing.T) {
+func TestSettingsJournal_ReportsPersistenceFailureAndRecoversInterruptedApply(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	p.Settings.LaunchText += " --new"
@@ -361,7 +361,7 @@ func TestSettingsJournalFailureAndInterruptedRecovery(t *testing.T) {
 	require.True(t, ok, "explicit startup preference lost")
 }
 
-func TestSettingsPortValidationIncludesStoppedEnginesAndAliases(t *testing.T) {
+func TestSettingsPortValidation_IncludesStoppedEnginesAndAliases(t *testing.T) {
 	h := newSettingsHarness(t)
 	p := h.request(t)
 	p.Settings.ProxyPort = p.Settings.ServerPort
@@ -387,7 +387,7 @@ func TestSettingsPortValidationIncludesStoppedEnginesAndAliases(t *testing.T) {
 	require.NotEmpty(t, preview.Errors, "proxy alias reservation ignored (%v)", preview)
 }
 
-func TestSettingsMigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {
+func TestSettings_MigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {
 	h := newSettingsHarness(t)
 	path, _ := h.b.engineSettingsPath()
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), []byte(`{"port":26080}`), 0600))

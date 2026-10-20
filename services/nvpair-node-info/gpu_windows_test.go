@@ -35,12 +35,12 @@ import (
 // If this assertion fires, a field has been reordered, retyped, or the build
 // has somehow targeted 32-bit Windows — none of which we want silently passing
 // garbage to DXGI.
-func TestDXGIAdapterDesc1Size(t *testing.T) {
+func TestDXGIAdapterDesc1_MatchesNativeStructureSize(t *testing.T) {
 	const expected = 312
 	require.Equal(t, uintptr(expected), unsafe.Sizeof(dxgiAdapterDesc1{}), "dxgiAdapterDesc1 size")
 }
 
-func TestIsVirtualDisplayAdapter(t *testing.T) {
+func TestIsVirtualDisplayAdapter_RecognizesVirtualAdapters(t *testing.T) {
 	cases := []struct {
 		name string
 		want bool
@@ -62,7 +62,7 @@ func TestIsVirtualDisplayAdapter(t *testing.T) {
 	}
 }
 
-func TestLuidUint64(t *testing.T) {
+func TestLuidUint64_CombinesHighAndLowParts(t *testing.T) {
 	cases := []struct {
 		low  uint32
 		high int32
@@ -78,7 +78,7 @@ func TestLuidUint64(t *testing.T) {
 	}
 }
 
-func TestKeepPhysicalAdapter(t *testing.T) {
+func TestKeepPhysicalAdapter_FiltersByPhysicalAdapterIdentity(t *testing.T) {
 	physical := map[uint64]struct{}{
 		0x1000: {},
 		0x2000: {},

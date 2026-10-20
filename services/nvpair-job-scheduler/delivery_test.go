@@ -17,7 +17,7 @@ type unavailableWriter struct{}
 func (unavailableWriter) Read([]byte) (int, error)  { return 0, io.EOF }
 func (unavailableWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
-func TestFailedNotificationDoesNotAdvanceStatus(t *testing.T) {
+func TestFailedNotification_DoesNotAdvanceStatus(t *testing.T) {
 	m := mgrWith(unavailableWriter{}, []string{"test-node-a"})
 	m.recomputeAll(false)
 	for _, engine := range schedulerEngines {
@@ -45,7 +45,7 @@ func (w *recoveringWriter) Write(data []byte) (int, error) {
 	return w.capRW.Write(data)
 }
 
-func TestFailedNotificationRetriesWithoutChangingRanks(t *testing.T) {
+func TestFailedNotification_RetriesWithoutChangingRanks(t *testing.T) {
 	for _, shortWrite := range []bool{false, true} {
 		name := "write-error"
 		if shortWrite {
@@ -67,7 +67,7 @@ func TestFailedNotificationRetriesWithoutChangingRanks(t *testing.T) {
 	}
 }
 
-func TestFailedChangedNotificationRetainsDeliveredRanks(t *testing.T) {
+func TestFailedChangedNotification_RetainsDeliveredRanks(t *testing.T) {
 	writer := &recoveringWriter{}
 	m := mgrWith(writer, []string{"test-node-a", "test-node-b"})
 	m.recomputeAll(false)
@@ -85,7 +85,7 @@ func TestFailedChangedNotificationRetainsDeliveredRanks(t *testing.T) {
 	assertStrs(t, orders[1], []string{"test-node-a", "test-node-b", "test-node-c"})
 }
 
-func TestFailedForcedNotificationRetainsDeliveredTimestamp(t *testing.T) {
+func TestFailedForcedNotification_RetainsDeliveredTimestamp(t *testing.T) {
 	writer := &recoveringWriter{}
 	m := mgrWith(writer, []string{"test-node-a"})
 	m.recomputeAll(false)

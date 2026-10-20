@@ -22,7 +22,7 @@ func withReleaseVersion(t *testing.T, v string) {
 	t.Cleanup(func() { ReleaseVersion = prev })
 }
 
-func TestNewerVersionComparesReleaseNumbers(t *testing.T) {
+func TestNewerVersion_ComparesReleaseNumbers(t *testing.T) {
 	cases := []struct {
 		running, latest string
 		want            bool
@@ -59,7 +59,7 @@ func TestNewerVersionComparesReleaseNumbers(t *testing.T) {
 	}
 }
 
-func TestUpdateCheckIsDisabledByEnvironment(t *testing.T) {
+func TestUpdateCheck_IsDisabledByEnvironment(t *testing.T) {
 	// A server reaching the internet unasked is a real objection, so the opt-out
 	// has to actually stop the request being built at all.
 	withReleaseVersion(t, "0.91.7")
@@ -71,7 +71,7 @@ func TestUpdateCheckIsDisabledByEnvironment(t *testing.T) {
 	assert.Nil(t, updateCheckTickCmd(), "the check must not be re-armed with the opt-out set")
 }
 
-func TestUpdateCheckIsSkippedForAnUnstampedBuild(t *testing.T) {
+func TestUpdateCheck_IsSkippedForAnUnstampedBuild(t *testing.T) {
 	// Running from source has nothing to compare, and a developer does not want
 	// to be told to go download a release.
 	withReleaseVersion(t, "dev")
@@ -79,7 +79,7 @@ func TestUpdateCheckIsSkippedForAnUnstampedBuild(t *testing.T) {
 	assert.Nil(t, checkUpdateCmd(), "a command must not be issued for an unstamped build")
 }
 
-func TestFetchLatestReleaseReadsTheTag(t *testing.T) {
+func TestFetchLatestRelease_ReadsTheTag(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "application/vnd.github+json", r.Header.Get("Accept"))
 		w.Header().Set("Content-Type", "application/json")
@@ -92,7 +92,7 @@ func TestFetchLatestReleaseReadsTheTag(t *testing.T) {
 	assert.Equal(t, "0.92.0", got, "tag should omit its v")
 }
 
-func TestFetchLatestReleaseIgnoresDraftsAndPrereleases(t *testing.T) {
+func TestFetchLatestRelease_IgnoresDraftsAndPrereleases(t *testing.T) {
 	for _, body := range []string{
 		`{"tag_name":"v0.92.0","draft":true,"prerelease":false}`,
 		`{"tag_name":"v0.92.0","draft":false,"prerelease":true}`,
@@ -107,7 +107,7 @@ func TestFetchLatestReleaseIgnoresDraftsAndPrereleases(t *testing.T) {
 	}
 }
 
-func TestFetchLatestReleaseHandlesNoReleases(t *testing.T) {
+func TestFetchLatestRelease_HandlesNoReleases(t *testing.T) {
 	// A repository with nothing published answers 404. There is nothing newer,
 	// and nothing to report.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -119,7 +119,7 @@ func TestFetchLatestReleaseHandlesNoReleases(t *testing.T) {
 	assert.Error(t, err, "a 404 must not be treated as a successful answer")
 }
 
-func TestFetchLatestReleaseRefusesRedirects(t *testing.T) {
+func TestFetchLatestRelease_RefusesRedirects(t *testing.T) {
 	// A redirect could point this at an arbitrary host, and a release feed has
 	// no legitimate reason to issue one.
 	var reached bool
@@ -146,7 +146,7 @@ func send(m Model, msg tea.Msg) Model {
 	return updated
 }
 
-func TestBannerAnnouncesOnlyANewerRelease(t *testing.T) {
+func TestBanner_AnnouncesOnlyANewerRelease(t *testing.T) {
 	withReleaseVersion(t, "0.91.7")
 
 	m := newTestModel(defaultViews(nil)...)
@@ -172,7 +172,7 @@ func TestBannerAnnouncesOnlyANewerRelease(t *testing.T) {
 	assert.Contains(t, banner, "ctrl+x")
 }
 
-func TestBannerShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
+func TestBanner_ShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
 	// The whole point of moving it out of the Service tab: the operator it is
 	// for is the one who never opens that tab.
 	withReleaseVersion(t, "0.91.7")
@@ -203,7 +203,7 @@ func TestBannerShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
 	assert.Contains(t, m.banner(), "0.93.0", "a release newer than the dismissed one must not be suppressed")
 }
 
-func TestBannerKeepsTheDismissHintAtEveryWidth(t *testing.T) {
+func TestBanner_KeepsTheDismissHintAtEveryWidth(t *testing.T) {
 	// The hint is the rightmost thing on the row, and the frame is clamped to
 	// the terminal — so an over-long banner loses exactly the one key that
 	// closes it, leaving a notice the operator cannot get rid of. The full
@@ -227,7 +227,7 @@ func TestBannerKeepsTheDismissHintAtEveryWidth(t *testing.T) {
 	}
 }
 
-func TestBannerComesOutOfTheContentBudget(t *testing.T) {
+func TestBanner_ComesOutOfTheContentBudget(t *testing.T) {
 	// A row added to the frame without coming out of the budget is a row the
 	// shell deletes from the bottom of the active view — and the bottom is where
 	// every view keeps its messages.

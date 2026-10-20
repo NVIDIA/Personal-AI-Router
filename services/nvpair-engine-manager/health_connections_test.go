@@ -18,7 +18,7 @@ import (
 	"nvpair-shared/httpcon/testclient"
 )
 
-func TestProbeHTTPReusesConnections(t *testing.T) {
+func TestProbeHTTP_ReusesConnections(t *testing.T) {
 	test := func(name string, chunked bool) {
 		t.Run(name, func(t *testing.T) {
 			var requests atomic.Int32
@@ -48,7 +48,7 @@ func TestProbeHTTPReusesConnections(t *testing.T) {
 	test("chunked", true)
 }
 
-func TestProbeHTTPMatchesJSONIdentity(t *testing.T) {
+func TestProbeHTTP_MatchesJSONIdentity(t *testing.T) {
 	test := func(name, body string, want bool) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
@@ -72,7 +72,7 @@ func TestProbeHTTPMatchesJSONIdentity(t *testing.T) {
 	test("malformed JSON", `{"service":`, false)
 }
 
-func TestProbeHTTPBoundsBodyDrain(t *testing.T) {
+func TestProbeHTTP_BoundsBodyDrain(t *testing.T) {
 	body := &healthProbeBody{reader: strings.NewReader(strings.Repeat("x", 4<<20))}
 	ex := &Executor{client: &http.Client{Transport: healthProbeTransport(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusAccepted, Body: body, Header: make(http.Header)}, nil
@@ -84,7 +84,7 @@ func TestProbeHTTPBoundsBodyDrain(t *testing.T) {
 	require.True(t, body.closed, "body read")
 }
 
-func TestProbeHTTPRejectsOversizedJSONIdentityBody(t *testing.T) {
+func TestProbeHTTP_RejectsOversizedJSONIdentityBody(t *testing.T) {
 	body := &healthProbeBody{reader: strings.NewReader(strings.Repeat("x", 4<<20))}
 	ex := &Executor{client: &http.Client{Transport: healthProbeTransport(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: body, Header: make(http.Header)}, nil
@@ -99,7 +99,7 @@ func TestProbeHTTPRejectsOversizedJSONIdentityBody(t *testing.T) {
 	require.True(t, body.closed, "body must be closed")
 }
 
-func TestProbeHTTPBodyDrainHonorsDeadline(t *testing.T) {
+func TestProbeHTTPBodyDrain_HonorsDeadline(t *testing.T) {
 	var body *healthProbeBody
 	ex := &Executor{client: &http.Client{Transport: healthProbeTransport(func(req *http.Request) (*http.Response, error) {
 		body = &healthProbeBody{ctx: req.Context()}

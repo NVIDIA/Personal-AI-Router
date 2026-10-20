@@ -98,7 +98,7 @@ func servePinnedErrorsMux(t *testing.T, mgr *Manager) (*httptest.Server, *http.C
 // member is accepted; a node that can complete the TLS handshake but is not
 // pinned by the receiver is rejected at the pin gate; and pushing to a peer we
 // hold no pin for can't even build a client.
-func TestErrorsPeerSync_MTLSGate(t *testing.T) {
+func TestErrorsPeerSync_RequiresPinnedMutualTLS(t *testing.T) {
 	aCert, aKey := genLeaf(t, "uuid-a")
 	bCert, bKey := genLeaf(t, "uuid-b")
 	cCert, cKey := genLeaf(t, "uuid-c")

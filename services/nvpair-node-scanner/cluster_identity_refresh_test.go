@@ -113,7 +113,7 @@ func seedPeer(d *daemon, hostUUID, clusterUUID string, niPort int) {
 //
 // No browse event occurs anywhere in this test. The peer's own HTTP report has to
 // be enough.
-func TestDepartedPeerConvergesWithoutMDNS(t *testing.T) {
+func TestDepartedPeer_ConvergesWithoutMDNS(t *testing.T) {
 	d := newIdentityRefreshTestDaemon()
 	const peerUUID = "peer-uuid"
 
@@ -132,7 +132,7 @@ func TestDepartedPeerConvergesWithoutMDNS(t *testing.T) {
 	assert.False(t, d.refreshNodeClusterIdentity(peerUUID, "127.0.0.1", niPort), "refresh emitted again for an unchanged peer")
 }
 
-func TestClusterIdentityRefreshFallsBackToASecondPublishedAddress(t *testing.T) {
+func TestClusterIdentityRefresh_FallsBackToASecondPublishedAddress(t *testing.T) {
 	d := newIdentityRefreshTestDaemon()
 	const peerUUID = "peer-multihomed"
 	_, niPort := startNodeInfoStub(t, `{"GPUs":[],"hostUuid":"peer-multihomed","clusterUuid":""}`)
@@ -148,7 +148,7 @@ func TestClusterIdentityRefreshFallsBackToASecondPublishedAddress(t *testing.T) 
 // the reason the refresh trusts only an explicit report: a peer that is genuinely
 // in a cluster we are not part of must keep its annotation, so the invite stays
 // suppressed rather than being offered and rejected.
-func TestPeerInForeignClusterStaysSuppressed(t *testing.T) {
+func TestPeerInForeignCluster_StaysSuppressed(t *testing.T) {
 	d := newIdentityRefreshTestDaemon()
 	const peerUUID = "peer-uuid"
 
@@ -168,7 +168,7 @@ func TestPeerInForeignClusterStaysSuppressed(t *testing.T) {
 // old to report clusterUuid says nothing about its membership, and silence must
 // not be read as "unclustered" — doing so would mark a clustered peer invitable,
 // the exact failure the annotation prevents.
-func TestPeerWithoutClusterFieldIsLeftAlone(t *testing.T) {
+func TestPeerWithoutClusterField_IsLeftAlone(t *testing.T) {
 	d := newIdentityRefreshTestDaemon()
 	const peerUUID = "peer-uuid"
 
@@ -182,7 +182,7 @@ func TestPeerWithoutClusterFieldIsLeftAlone(t *testing.T) {
 
 // TestUnreachablePeerKeepsItsAnnotation covers the same rule for a failed fetch:
 // no answer is not an answer.
-func TestUnreachablePeerKeepsItsAnnotation(t *testing.T) {
+func TestUnreachablePeer_KeepsItsAnnotation(t *testing.T) {
 	d := newIdentityRefreshTestDaemon()
 	const peerUUID = "peer-uuid"
 
@@ -198,7 +198,7 @@ func TestUnreachablePeerKeepsItsAnnotation(t *testing.T) {
 // TestSelfExcludedFromIdentityRefresh keeps the sweep off this node's own entry:
 // publishSelf owns the local principal from the registry, and a loopback HTTP read
 // must not become a second source for it.
-func TestSelfExcludedFromIdentityRefresh(t *testing.T) {
+func TestClusterIdentityRefresh_SkipsLocalNode(t *testing.T) {
 	d := newIdentityRefreshTestDaemon()
 	self := d.reg.record().HostUUID
 
@@ -217,7 +217,7 @@ func TestSelfExcludedFromIdentityRefresh(t *testing.T) {
 // a reused DHCP lease. node-info names who it really is, so its membership must
 // not be written onto the previous occupant's entry. That entry ages out through
 // the liveness probe's identity check instead, which owns the decision.
-func TestStrangerAtTheAddressIsNotApplied(t *testing.T) {
+func TestStrangerAtTheAddress_IsNotApplied(t *testing.T) {
 	d := newIdentityRefreshTestDaemon()
 	const peerUUID = "peer-uuid"
 
@@ -239,7 +239,7 @@ func TestStrangerAtTheAddressIsNotApplied(t *testing.T) {
 // actually runs: several peers at once, against a mesh holding a real pin. It
 // covers the three answers a peer can give in one pass, and puts concurrent load
 // on the fan-out so -race has something to observe.
-func TestSweepAnnotatesEveryPeerAgainstThePinSet(t *testing.T) {
+func TestSweep_AnnotatesEveryPeerAgainstThePinSet(t *testing.T) {
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	// This node is in a cluster and holds a pin for one of the peers below.
 	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", "pinned-principal")
@@ -286,7 +286,7 @@ func TestSweepAnnotatesEveryPeerAgainstThePinSet(t *testing.T) {
 // Asserted at the write path rather than by racing the two passes, so it fails
 // deterministically: a nil principal must leave the stored one alone, and the trust
 // it derives must come from that stored value.
-func TestPinSetPassCannotWriteBackAPrincipal(t *testing.T) {
+func TestPinSetPass_CannotWriteBackAPrincipal(t *testing.T) {
 	dir := newDirectory()
 	dir.upsert(noderec.DirectoryNode{HostUUID: "peer", ClusterUUID: "current-principal"})
 
@@ -309,7 +309,7 @@ func TestPinSetPassCannotWriteBackAPrincipal(t *testing.T) {
 // TestNodeInfoResponseDistinguishesAbsentFromEmpty pins the wire contract the
 // version-skew rule depends on: the pointer has to survive decoding so absent and
 // present-but-empty stay distinguishable.
-func TestNodeInfoResponseDistinguishesAbsentFromEmpty(t *testing.T) {
+func TestNodeInfoResponse_DistinguishesAbsentFromEmpty(t *testing.T) {
 	var absent NodeInfoResponse
 	require.NoError(t, json.Unmarshal([]byte(`{"GPUs":[]}`), &absent), "decode absent")
 	assert.Nil(t, absent.ClusterUUID, "absent clusterUuid decoded to")

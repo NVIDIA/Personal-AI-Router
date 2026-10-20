@@ -110,7 +110,7 @@ func TestPeerClientPool_ReusesOneConnection(t *testing.T) {
 // absence caused the leak: a hand-built Transport with no IdleConnTimeout never
 // reaps an idle connection, and its read loop keeps the Transport alive so the
 // socket outlives the request for the life of the process.
-func TestPeerClientPool_TransportBoundsIdleConnections(t *testing.T) {
+func TestPeerClientPool_BoundsIdleConnections(t *testing.T) {
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, _, _ := genLeaf(t, "uuid-peer")
 	selfMesh, _ := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
@@ -209,7 +209,7 @@ func TestPeerClientPool_RebuildsOnLocalCertRotation(t *testing.T) {
 // this node leaving the cluster) must close that peer's pooled connections and
 // refuse to hand out a client, so the pool can never be more permissive than the
 // mesh.
-func TestPeerClientPool_UnpinnedIsRefusedAndEvicted(t *testing.T) {
+func TestPeerClientPool_RejectsAndEvictsUnpinnedPeer(t *testing.T) {
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, _, _ := genLeaf(t, "uuid-peer")
 	selfMesh, dir := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
@@ -243,7 +243,7 @@ func TestPeerClientPool_UnpinnedIsRefusedAndEvicted(t *testing.T) {
 // stronger live authority than the Mesh's disk view. A failed durable delete
 // can leave the pin file behind, but revoking it in that authority must still
 // refuse future clients and evict the pooled sockets.
-func TestPeerClientPool_ResolverRevocationOverridesDiskPin(t *testing.T) {
+func TestPeerClientPool_HonorsResolverRevocationDespiteDurablePin(t *testing.T) {
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, _, _ := genLeaf(t, "uuid-peer")
 	selfMesh, _ := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
@@ -280,7 +280,7 @@ func TestPeerClientPool_ResolverRevocationOverridesDiskPin(t *testing.T) {
 }
 
 // TestPeerClientPool_CloseIdleEmptiesPool: shutdown must not leave sockets open.
-func TestPeerClientPool_CloseIdleEmptiesPool(t *testing.T) {
+func TestPeerClientPool_EmptiesPoolWhenClosingIdleConnections(t *testing.T) {
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, _, _ := genLeaf(t, "uuid-peer")
 	otherPEM, _, _ := genLeaf(t, "uuid-other")
@@ -302,7 +302,7 @@ func TestPeerClientPool_CloseIdleEmptiesPool(t *testing.T) {
 // TestPeerClientPool_UnclusteredYieldsNothing: a node that belongs to no cluster
 // holds no pins, so it can address no peer — the pool must not invent a
 // plaintext or unpinned path.
-func TestPeerClientPool_UnclusteredYieldsNothing(t *testing.T) {
+func TestPeerClientPool_ReturnsNoClientWithoutMembership(t *testing.T) {
 	pool := NewPeerClientPool(Open(t.TempDir()), time.Second)
 	_, ok := pool.Client("uuid-peer")
 	require.False(t, ok, "an unclustered node must yield no peer client")
@@ -312,7 +312,7 @@ func TestPeerClientPool_UnclusteredYieldsNothing(t *testing.T) {
 
 // TestPeerClientPoolOpts_TimeoutZeroKeepsStreamingAlive: engine-manager install
 // and pull streams run for minutes and must not be cut by http.Client.Timeout.
-func TestPeerClientPoolOpts_TimeoutZeroKeepsStreamingAlive(t *testing.T) {
+func TestPeerClientPoolOpts_AllowsStreamingWhenTimeoutIsZero(t *testing.T) {
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, peerKey, _ := genLeaf(t, "uuid-peer")
 	selfMesh, _ := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})
@@ -349,7 +349,7 @@ func TestPeerClientPoolOpts_TimeoutZeroKeepsStreamingAlive(t *testing.T) {
 // TestPeerClientPoolOpts_ResponseHeaderTimeoutFires: a peer that accepts the
 // connection but never writes headers must be cut by the transport, not by a
 // whole-request deadline.
-func TestPeerClientPoolOpts_ResponseHeaderTimeoutFires(t *testing.T) {
+func TestPeerClientPoolOpts_BoundsResponseHeaderWait(t *testing.T) {
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, peerKey, _ := genLeaf(t, "uuid-peer")
 	selfMesh, _ := meshDir(t, selfPEM, selfKey, map[string]string{"uuid-peer": string(peerPEM)})

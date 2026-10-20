@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLivePoundFixesOllama(t *testing.T) {
+func TestLivePound_RepairsOllamaListenerAndLifecycle(t *testing.T) {
 	if os.Getenv("NVPAIR_LIVE_OLLAMA") == "" {
 		t.Skip("set NVPAIR_LIVE_OLLAMA=1 (needs a real Ollama already serving on :11434)")
 	}

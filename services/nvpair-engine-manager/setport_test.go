@@ -103,7 +103,7 @@ func adoptedCommandEngineWithoutStopFixture(t *testing.T, engine string, port in
 // TestOverrideDeepMergePreservesBundled proves a partial port-only override
 // file pins runtime.port while inheriting the rest of the bundled manifest
 // (the single-source-of-truth merge that backs engine:set-port persistence).
-func TestOverrideDeepMergePreservesBundled(t *testing.T) {
+func TestOverrideDeepMerge_PreservesBundledFields(t *testing.T) {
 	dir := t.TempDir()
 	override := []byte(`{"engine":"ollama","runtime":{"port":54321}}`)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ollama.json"), override, 0o644))
@@ -126,7 +126,7 @@ func TestOverrideDeepMergePreservesBundled(t *testing.T) {
 // TestSetPortPersistsAndRestores covers the full engine:set-port contract for
 // a bundled engine that isn't running: the chosen port is written as a
 // manifest override and a fresh (startup-style) load comes back up on it.
-func TestSetPortPersistsAndRestores(t *testing.T) {
+func TestSetPort_PersistsAndRestores(t *testing.T) {
 	for _, tc := range []struct {
 		engine  string
 		port    int
@@ -167,7 +167,7 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 }
 
 // TestSetPortRejectsOutOfRange guards the validation boundary.
-func TestSetPortRejectsOutOfRange(t *testing.T) {
+func TestSetPort_RejectsOutOfRange(t *testing.T) {
 	ex := newBundledExecutor(t, t.TempDir())
 	for _, bad := range []int{0, -1, 70000} {
 		_, err := ex.SetPort(context.Background(), "ollama", bad)
@@ -175,7 +175,7 @@ func TestSetPortRejectsOutOfRange(t *testing.T) {
 	}
 }
 
-func TestSetPortMovesAdoptedCommandEngine(t *testing.T) {
+func TestSetPort_MovesAdoptedCommandEngine(t *testing.T) {
 	ex, stopped, started := adoptedCommandEngineFixture(t, "lmstudio", 1234)
 	status, err := ex.SetPort(context.Background(), "lmstudio", 1235)
 	require.NoError(t, err)
@@ -185,7 +185,7 @@ func TestSetPortMovesAdoptedCommandEngine(t *testing.T) {
 	require.True(t, status.Running, "moved status (%v)", status)
 }
 
-func TestSetPortStillRejectsAdoptedProcessEngine(t *testing.T) {
+func TestSetPort_RejectsAdoptedProcessEngine(t *testing.T) {
 	ex := adoptedProcessEngineFixture(t, "ollama", 11434)
 	_, err := ex.SetPort(context.Background(), "ollama", 11435)
 	require.Error(t, err, "adopted process engine unexpectedly moved")
@@ -197,7 +197,7 @@ func TestSetPortStillRejectsAdoptedProcessEngine(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist, "rejected process engine persisted an override")
 }
 
-func TestSetPortRejectsCommandEngineWithoutStopCommand(t *testing.T) {
+func TestSetPort_RejectsCommandEngineWithoutStopCommand(t *testing.T) {
 	ex := adoptedCommandEngineWithoutStopFixture(t, "external", 1234)
 	_, err := ex.SetPort(context.Background(), "external", 1235)
 	require.Error(t, err, "command engine without official stop unexpectedly moved")
@@ -209,7 +209,7 @@ func TestSetPortRejectsCommandEngineWithoutStopCommand(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist, "rejected command engine persisted an override")
 }
 
-func TestSetPortRestartsOldPortWhenPersistenceFails(t *testing.T) {
+func TestSetPort_RestartsOldPortWhenPersistenceFails(t *testing.T) {
 	ex, stopped, started := adoptedCommandEngineFixture(t, "lmstudio", 1234)
 	blocked := filepath.Join(t.TempDir(), "not-a-directory")
 	require.NoError(t, os.WriteFile(blocked, []byte("blocked"), 0o644))

@@ -49,7 +49,7 @@ func pinMemberFixture(t *testing.T, m *Manager, host string) pinFixture {
 // The test holds rosterMu to stand in for the reconcile mid compare-and-teardown,
 // launches each operation, and asserts it cannot commit while the boundary is
 // held; then it runs the teardown, releases, and checks the terminal state.
-func TestSelfRemoveTeardownSerializesRejoin(t *testing.T) {
+func TestSelfRemoveTeardown_SerializesRejoin(t *testing.T) {
 	cases := []struct {
 		name       string
 		rejoin     func(m *Manager, p2 pinFixture)

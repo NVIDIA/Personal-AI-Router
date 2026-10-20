@@ -16,7 +16,7 @@ import (
 // only go green. Readiness was set on :ready and never cleared, so a proxy that
 // failed kept advertising its port — pointing local clients at something that
 // had stopped listening, which is the one thing this strip exists to tell them.
-func TestProxyErrorTakesProxyDown(t *testing.T) {
+func TestProxyError_TakesProxyDown(t *testing.T) {
 	p := newProxyTracker()
 	p.handleNotification(&rpc.Message{
 		Method: "ollama-proxy:ready",
@@ -40,7 +40,7 @@ func TestProxyErrorTakesProxyDown(t *testing.T) {
 // TestProxyNotificationsAreScopedByPrefix checks the two proxies are told apart.
 // Their methods share a suffix, so a mix-up would report one proxy's state
 // against the other.
-func TestProxyNotificationsAreScopedByPrefix(t *testing.T) {
+func TestProxyNotifications_AreScopedByPrefix(t *testing.T) {
 	p := newProxyTracker()
 	p.handleNotification(&rpc.Message{
 		Method: "lmstudio-proxy:ready",
@@ -61,7 +61,7 @@ func TestProxyNotificationsAreScopedByPrefix(t *testing.T) {
 // still looked for the bare "proxy:" of the single-engine proxy this replaced,
 // so Ollama readiness and failure only ever reached the screen through the
 // periodic status poll — and a proxy that died read as up until the next one.
-func TestProxyPushesUseTheFacadePrefix(t *testing.T) {
+func TestProxyNotifications_UseEngineFacadePrefix(t *testing.T) {
 	p := newProxyTracker()
 	for _, e := range p.engines {
 		p.handleNotification(&rpc.Message{Method: e.prefix + ":ready", Params: []byte(`{"port":4000}`)})
@@ -81,7 +81,7 @@ func TestProxyPushesUseTheFacadePrefix(t *testing.T) {
 // TestFailedStatusReadTakesTheProxyDown checks a status read that failed is not
 // ignored. Ignoring it left the strip showing the last good answer — a green
 // port nothing may be listening on — for as long as the reads kept failing.
-func TestFailedStatusReadTakesTheProxyDown(t *testing.T) {
+func TestFailedStatusRead_TakesTheProxyDown(t *testing.T) {
 	p := newProxyTracker()
 	p.apply(proxyStatusMsg{idx: 0, ready: true, port: 11434})
 	p.apply(proxyStatusMsg{idx: 0, err: errFake{}})
@@ -93,7 +93,7 @@ func TestFailedStatusReadTakesTheProxyDown(t *testing.T) {
 // TestNotRunningKeepsTheLastKnownPort checks the broker's {ready:false, port:0}
 // for a facade it is not running does not blank the port — the same rule the
 // error push already followed, so the two paths no longer disagree.
-func TestNotRunningKeepsTheLastKnownPort(t *testing.T) {
+func TestProxyStatus_KeepsLastKnownPortWhenStopped(t *testing.T) {
 	p := newProxyTracker()
 	p.apply(proxyStatusMsg{idx: 0, ready: true, port: 11434})
 	p.apply(proxyStatusMsg{idx: 0, ready: false, port: 0})
@@ -105,7 +105,7 @@ func TestNotRunningKeepsTheLastKnownPort(t *testing.T) {
 // TestPortForEngineDistinguishesDownFromUnknown checks a port is not treated as
 // usable just because it is known: an engine with no proxy and a proxy that is
 // down both have to read as unusable.
-func TestPortForEngineDistinguishesDownFromUnknown(t *testing.T) {
+func TestPortForEngine_DistinguishesDownFromUnknown(t *testing.T) {
 	p := newProxyTracker()
 	_, ready := p.portForEngine("ollama")
 	assert.False(t, ready, "a proxy that has never reported reads as ready")

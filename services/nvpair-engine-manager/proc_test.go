@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsOurEngineImage(t *testing.T) {
+func TestIsOurEngineImage_RecognizesManagedExecutable(t *testing.T) {
 	bin := filepath.Join("/opt", "nvpair", "ollama.exe")
 	cases := []struct {
 		image string
@@ -29,7 +29,7 @@ func TestIsOurEngineImage(t *testing.T) {
 	require.False(t, isOurEngineImage(bin, ``), "empty binPath must not match")
 }
 
-func TestIsManagedInstallPath(t *testing.T) {
+func TestIsManagedInstallPath_RejectsPathsOutsideManagedRoot(t *testing.T) {
 	base := t.TempDir()
 	inside := filepath.Join(base, "ollama", "bin", "ollama"+exeExt())
 	outside := filepath.Join(t.TempDir(), "ollama"+exeExt())

@@ -21,7 +21,7 @@ import (
 // TestReconcileMTLSFanout drives the real mTLS roster endpoint over loopback
 // between two managers cross-pinned as if they had paired, with A also holding a
 // third member C endorsed by A. After one reconcile, B must transitively pin C.
-func TestReconcileMTLSFanout(t *testing.T) {
+func TestReconcile_ContactsPeersOverMutualTLS(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -107,7 +107,7 @@ func pinTrusted(t *testing.T, m *Manager, uuid, certPEM, fp string) {
 
 // TestMergeRosterTransitivePin verifies the core fan-out property: a node we
 // have never paired with gets pinned because a node we DO trust endorsed it.
-func TestMergeRosterTransitivePin(t *testing.T) {
+func TestMergeRoster_AdmitsTransitivelyEndorsedPeer(t *testing.T) {
 	m := newTestManager(t)
 
 	// A is directly trusted (as if we paired it).
@@ -135,7 +135,7 @@ func TestMergeRosterTransitivePin(t *testing.T) {
 // TestMergeRosterFixpoint verifies multi-hop transitive pinning: we trust A, A
 // endorses B, B endorses C; one merge must pin both B and C (C only becomes
 // acceptable after B is pinned in the same pass loop).
-func TestMergeRosterFixpoint(t *testing.T) {
+func TestMergeRoster_ResolvesTransitiveEndorsementsRegardlessOfOrder(t *testing.T) {
 	m := newTestManager(t)
 	aUUID, aCert, aFP, aPriv := makeNode(t, "node-a")
 	pinTrusted(t, m, aUUID, aCert, aFP)
@@ -158,7 +158,7 @@ func TestMergeRosterFixpoint(t *testing.T) {
 
 // TestMergeRosterRejectsUntrustedEndorser verifies the blast-radius bound: an
 // entry endorsed only by a node we do not trust is NOT pinned.
-func TestMergeRosterRejectsUntrustedEndorser(t *testing.T) {
+func TestMergeRoster_RejectsUntrustedEndorser(t *testing.T) {
 	m := newTestManager(t)
 
 	// X is a stranger (never pinned) who endorses C.
@@ -177,7 +177,7 @@ func TestMergeRosterRejectsUntrustedEndorser(t *testing.T) {
 // TestMergeRosterTamperedFingerprint verifies an endorsement cannot be replayed
 // onto a different cert: the entry's fingerprint must match its cert and the
 // endorsement.
-func TestMergeRosterTamperedFingerprint(t *testing.T) {
+func TestMergeRoster_RejectsTamperedFingerprint(t *testing.T) {
 	m := newTestManager(t)
 	aUUID, aCert, aFP, aPriv := makeNode(t, "node-a")
 	pinTrusted(t, m, aUUID, aCert, aFP)
@@ -197,7 +197,7 @@ func TestMergeRosterTamperedFingerprint(t *testing.T) {
 
 // TestMergeTombstoneRemoves verifies a signed removal from a trusted member
 // de-pins a node, and that a stale add cannot resurrect it.
-func TestMergeTombstoneRemoves(t *testing.T) {
+func TestMergeTombstone_RemovesRevokedMember(t *testing.T) {
 	m := newTestManager(t)
 	aUUID, aCert, aFP, aPriv := makeNode(t, "node-a")
 	pinTrusted(t, m, aUUID, aCert, aFP)

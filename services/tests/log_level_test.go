@@ -141,7 +141,7 @@ func countLogLinesAtLevel(stderr string, tag string) int {
 
 // TestLogSetLevelViaRPC verifies the log/set-level JSON-RPC contract and that
 // lowering the level at runtime silences debug/info output.
-func TestLogSetLevelViaRPC(t *testing.T) {
+func TestLogSetLevel_ChangesWorkerVerbosityOverRPC(t *testing.T) {
 	stdin, msgs, stderr, cleanup := startProxyWithLog(t, "debug")
 	t.Cleanup(cleanup)
 
@@ -200,7 +200,7 @@ func TestLogSetLevelViaRPC(t *testing.T) {
 
 // TestLogLevelEnvFallback verifies NVPAIR_LOG_LEVEL is honoured when --log-level
 // is not passed.
-func TestLogLevelEnvFallback(t *testing.T) {
+func TestLogLevel_UsesEnvironmentDefault(t *testing.T) {
 	// --log-level deliberately omitted, so the env fallback is what this
 	// exercises. No engine needed: log level is process-scoped.
 	cmd := exec.Command(proxyBin)

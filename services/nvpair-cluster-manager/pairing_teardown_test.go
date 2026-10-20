@@ -54,7 +54,7 @@ func putInviterSession(t *testing.T, m *Manager, inviteID, clusterID string) *pa
 // now abandons in-flight sessions/invites, and commitPairing rechecks both the
 // live cluster identity and the session under the same rosterMu boundary before
 // writing anything.
-func TestCommitPairingEpochGate(t *testing.T) {
+func TestCommitPairing_RejectsStaleAdmissionEpoch(t *testing.T) {
 	t.Run("commit after teardown is discarded", func(t *testing.T) {
 		m := newTestManagerPort(t, 15041) // clustered as cluster-1
 		f := newPinFixture(t, "peer-2")
@@ -168,7 +168,7 @@ func TestCommitPairingEpochGate(t *testing.T) {
 	})
 }
 
-func TestPairingCommitPersistenceFailureGrantsNoPin(t *testing.T) {
+func TestPairingCommitPersistenceFailure_GrantsNoPin(t *testing.T) {
 	m := newTestManagerPort(t, 15137)
 	f := newPinFixture(t, "peer-2")
 	pi, cert := pairingInfoFor(t, f)
@@ -191,7 +191,7 @@ func TestPairingCommitPersistenceFailureGrantsNoPin(t *testing.T) {
 // invite via a route that does NOT clear invites (a broker-driven
 // cluster:set-identity), the aborted completion must fail the invite rather than
 // leave a phantom "pending" one, and must drop the session.
-func TestFinalizePairingAbortFailsLingeringInvite(t *testing.T) {
+func TestFinalizePairingAbort_FailsLingeringInvite(t *testing.T) {
 	m := newTestManagerPort(t, 15045) // clustered as cluster-1
 	f := newPinFixture(t, "peer-2")
 	pi, cert := pairingInfoFor(t, f)
@@ -215,7 +215,7 @@ func TestFinalizePairingAbortFailsLingeringInvite(t *testing.T) {
 	require.False(t, ok, "session not deleted after an aborted completion")
 }
 
-func TestPairingCommitFailureSuppressesEAPSuccess(t *testing.T) {
+func TestPairingCommitFailure_SuppressesEAPSuccess(t *testing.T) {
 	success := []byte("synthetic-eap-success")
 	rr := httptest.NewRecorder()
 	respondPairingCommit(rr, success, errPairingCommitStale)

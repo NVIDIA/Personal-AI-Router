@@ -203,7 +203,7 @@ func portBusy(port int) bool {
 // every facade, so there is one supervisor and one name to report. A crash-id
 // naming a single engine would claim that only that engine went down when in
 // fact all of them did.
-func TestBrokerCrashSurfacingAndRestart(t *testing.T) {
+func TestBroker_ReportsWorkerCrashAndRestartsWorker(t *testing.T) {
 	if portBusy(14319) {
 		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
 	}
@@ -265,7 +265,7 @@ func mustPid(t *testing.T, line string) int {
 // Asserted on pids rather than on the code shape, because "one supervisor" is
 // an implementation detail and "one OS process serving every engine" is the
 // thing that actually makes the reservation map whole.
-func TestAllDefaultEnginesAreServedByOneProxyProcess(t *testing.T) {
+func TestAllDefaultEngines_AreServedByOneProxyProcess(t *testing.T) {
 	if portBusy(11435) || portBusy(1234) {
 		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
 	}
@@ -321,7 +321,7 @@ func TestAllDefaultEnginesAreServedByOneProxyProcess(t *testing.T) {
 // (no input arriving) — and that the supervisors do NOT resurrect the
 // workers during teardown. This guards the regression where Ctrl+C left
 // the broker hung and self-restarting its children.
-func TestBrokerShutsDownOnSignal(t *testing.T) {
+func TestBroker_ShutsDownOnSignal(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// os.Process.Signal(os.Interrupt) is unsupported on Windows — you
 		// can't deliver SIGINT to an arbitrary process there. The bug this
@@ -367,7 +367,7 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 // asserts each one is spawned (its "started" log line) and the broker
 // reaches app:ready. The advertiser is excluded — it's poll-driven and
 // only starts once local ollama is detected.
-func TestBrokerSpawnsAllModules(t *testing.T) {
+func TestBroker_SpawnsAllModules(t *testing.T) {
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
 		"--errors-path", errorsBin,
 		"--node-info-path", nodeInfoBin,
@@ -406,7 +406,7 @@ func TestBrokerSpawnsAllModules(t *testing.T) {
 // TestBrokerEngineRelay verifies the broker relays an engine-manager
 // request: engine:get-installed round-trips to the supervised
 // engine-manager and returns its (read-only) installed-engines snapshot.
-func TestBrokerEngineRelay(t *testing.T) {
+func TestBroker_RelaysEngineRequests(t *testing.T) {
 	stdin, msgs, _, cleanup := startBrokerWith(t, "--engine-manager-path", engineMgrBin)
 	t.Cleanup(cleanup)
 
@@ -446,7 +446,7 @@ func proxyStatus(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, id 
 // persisted port doesn't touch the developer's real config. With no engine
 // running, the requested port is free, so the broker relays it unchanged (no
 // bump) — exercising the interception + relay + rebind wiring end to end.
-func TestBrokerProxySetPortRebinds(t *testing.T) {
+func TestBrokerProxySetPort_Rebinds(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy default port 11435 already in use; skipping")
 	}
@@ -525,7 +525,7 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 
 // TestBrokerManualNodeMergedIntoDiscovery adds a manual node through the
 // broker and asserts it surfaces in the shared discovery snapshot.
-func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
+func TestBroker_MergesManualNodesIntoDiscovery(t *testing.T) {
 	const nodeName = "xproc-manual-merge-1"
 
 	stdin, msgs, _, cleanup := startBrokerWith(t, "--manual-nodes-path", manualNodesBin)

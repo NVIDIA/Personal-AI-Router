@@ -43,7 +43,7 @@ func unreachableNode(t *testing.T, hostUUID string) RawNode {
 // TestFreshActivityKeepsANodeNoProbeCanReach is the fix. Without it a node that
 // is streaming a generation back to us is evicted for failing a probe it was too
 // busy to answer.
-func TestFreshActivityKeepsANodeNoProbeCanReach(t *testing.T) {
+func TestFreshActivity_KeepsANodeNoProbeCanReach(t *testing.T) {
 	d := activityDaemon()
 	n := unreachableNode(t, "busy-node")
 
@@ -55,7 +55,7 @@ func TestFreshActivityKeepsANodeNoProbeCanReach(t *testing.T) {
 
 // Evidence has to expire, or a node that has genuinely gone would be held by a
 // report from an hour ago and never age out.
-func TestStaleActivityDoesNotKeepANode(t *testing.T) {
+func TestStaleActivity_DoesNotKeepANode(t *testing.T) {
 	d := activityDaemon()
 	n := unreachableNode(t, "departed-node")
 
@@ -65,7 +65,7 @@ func TestStaleActivityDoesNotKeepANode(t *testing.T) {
 
 // Activity is credited per node. One busy peer vouching for itself must not
 // vouch for a different peer that really has left.
-func TestActivityIsCreditedPerNode(t *testing.T) {
+func TestActivity_IsCreditedPerNode(t *testing.T) {
 	d := activityDaemon()
 	d.noteActivity("busy-node", 0)
 
@@ -74,7 +74,7 @@ func TestActivityIsCreditedPerNode(t *testing.T) {
 
 // The report carries an age rather than a timestamp so the two processes need no
 // agreement about clocks, which only works if the age is actually applied.
-func TestNoteActivityAppliesTheReportedAge(t *testing.T) {
+func TestNoteActivity_AppliesTheReportedAge(t *testing.T) {
 	d := activityDaemon()
 	d.noteActivity("node", 5_000)
 
@@ -86,7 +86,7 @@ func TestNoteActivityAppliesTheReportedAge(t *testing.T) {
 // Both proxies report independently and their notifications race through the
 // broker, so an older report arriving second must not pull the node's evidence
 // backwards and expose it to eviction.
-func TestOutOfOrderReportsKeepTheNewest(t *testing.T) {
+func TestActivityReports_KeepNewestTimestampWhenReportsArriveOutOfOrder(t *testing.T) {
 	d := activityDaemon()
 	d.noteActivity("node", 0)
 	d.noteActivity("node", 30_000)
@@ -99,7 +99,7 @@ func TestOutOfOrderReportsKeepTheNewest(t *testing.T) {
 // A negative age would place the observation in the future and keep the node
 // past activityFreshness. The wire value comes from another process, so it is
 // clamped rather than trusted.
-func TestNegativeReportedAgeIsClamped(t *testing.T) {
+func TestNegativeReportedAge_IsClamped(t *testing.T) {
 	d := activityDaemon()
 	d.noteActivity("node", -60_000)
 
@@ -108,7 +108,7 @@ func TestNegativeReportedAgeIsClamped(t *testing.T) {
 	require.GreaterOrEqual(t, since, time.Duration(0), "negative age was not clamped")
 }
 
-func TestUnreportedNodeHasNoActivity(t *testing.T) {
+func TestUnreportedNode_HasNoActivity(t *testing.T) {
 	d := activityDaemon()
 	_, ok := d.activitySince("never-seen")
 	require.False(t, ok, "a node nothing has reported must have no activity evidence")
@@ -117,7 +117,7 @@ func TestUnreportedNodeHasNoActivity(t *testing.T) {
 // A proxy resolves targets by URL and port and cannot tell which uuid is this
 // machine's, so it reports self too. Self is never evicted by a browse miss, so
 // recording it would only grow the map.
-func TestSelfActivityIsDropped(t *testing.T) {
+func TestSelfActivity_IsDropped(t *testing.T) {
 	d := activityDaemon()
 	d.reg = newRegistry("self-uuid", "", []string{"127.0.0.1"})
 
@@ -128,7 +128,7 @@ func TestSelfActivityIsDropped(t *testing.T) {
 
 // Eviction clears a node's caches; leaving activity behind would let a stale
 // report vouch for the node the moment it was rediscovered.
-func TestForgetClearsActivity(t *testing.T) {
+func TestForget_ClearsActivity(t *testing.T) {
 	d := activityDaemon()
 	d.lastInfo = make(map[string]NodeInfoResponse)
 	d.lastInfoAt = make(map[string]time.Time)
@@ -146,7 +146,7 @@ func TestForgetClearsActivity(t *testing.T) {
 // The relay arrives as a JSON-RPC frame from the broker, so the handler has to
 // claim the method and decode it — a silently unhandled method would leave the
 // whole signal dead with nothing failing.
-func TestHandleNodeActivityRecordsTheReport(t *testing.T) {
+func TestHandleNodeActivity_RecordsTheReport(t *testing.T) {
 	d := activityDaemon()
 
 	params, err := json.Marshal(noderec.NodeActivityParams{HostUUID: "node", MSSince: 1_000})

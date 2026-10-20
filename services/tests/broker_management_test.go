@@ -138,7 +138,7 @@ func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 // Ollama is reachable must be bridged into the proxy (node/add-manual) so it
 // shows up in ollama-proxy:nodes/list and can be routed to — even though it never
 // appears over mDNS.
-func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
+func TestBroker_BridgesManualNodeIntoProxy(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy port 11435 already in use; skipping")
 	}
@@ -189,7 +189,7 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 // scheduler use — so scheduler priority (node/set-priority) and scheduledOn
 // resolve to it. The candidate must therefore appear in ollama-proxy:nodes/list under
 // the learned hostUuid, not the user-supplied manual name.
-func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
+func TestBroker_BridgesManualNodeUnderLearnedUUID(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy port 11435 already in use; skipping")
 	}
@@ -241,7 +241,7 @@ func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
 // lmstudio-proxy, a manual node whose LM Studio is reachable must be bridged
 // into lmstudio-proxy (node/add-manual) so it shows up in
 // lmstudio-proxy:nodes/list — even though it never appears over mDNS.
-func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
+func TestBroker_BridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 	configDir := persistLMStudioProxyPort(t, freePort(t))
 	stopLM := fakeLMStudio(t) // skips if 1234 unavailable
 	t.Cleanup(stopLM)
@@ -285,7 +285,7 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 // errors:report (notification form) must be forwarded into nvpair-errors and
 // reflected in the next errors:update — the same as a supervised worker
 // emitting one on its stdout.
-func TestBrokerAcceptsClientErrorsReport(t *testing.T) {
+func TestBroker_AcceptsClientErrorsReport(t *testing.T) {
 	if portBusy(14319) {
 		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
 	}
@@ -309,7 +309,7 @@ func TestBrokerAcceptsClientErrorsReport(t *testing.T) {
 // TestBrokerAcceptsClientErrorsReportRequest covers the request form of
 // leg B: an id-bearing errors:report is acked with a null result and also
 // reflected in errors:update.
-func TestBrokerAcceptsClientErrorsReportRequest(t *testing.T) {
+func TestBroker_AcceptsClientErrorsReportRequest(t *testing.T) {
 	if portBusy(14319) {
 		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
 	}

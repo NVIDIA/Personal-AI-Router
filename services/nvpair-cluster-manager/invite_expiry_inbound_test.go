@@ -48,7 +48,7 @@ func putPendingJoinerSession(t *testing.T, m *Manager, inviteID, fromUUID, invit
 // the tentative member and EAP session and flipping the invite to expired — the
 // receiver's own reaper, not just the inviter's outbound sweep, returns it to a
 // usable state.
-func TestExpireInboundInviteTearsDownReceiver(t *testing.T) {
+func TestExpireInboundInvite_TearsDownReceiver(t *testing.T) {
 	m := newTestManager(t)
 	// A receiver deciding on an inbound invite is not itself clustered; clear the
 	// test manager's default identity so the setup matches a real joiner.
@@ -79,7 +79,7 @@ func TestExpireInboundInviteTearsDownReceiver(t *testing.T) {
 // TestExpireInboundInviteSignalsInviter verifies the receiver best-effort POSTs
 // a phase:"expire" terminal signal to the inviter on timeout, so the inviter can
 // tear its outbound invite down immediately rather than waiting for its own TTL.
-func TestExpireInboundInviteSignalsInviter(t *testing.T) {
+func TestExpireInboundInvite_SignalsInviter(t *testing.T) {
 	m := newTestManager(t)
 	m.setClusterIdentity("", "")
 
@@ -120,7 +120,7 @@ func TestExpireInboundInviteSignalsInviter(t *testing.T) {
 
 // TestExpireInboundInvitePreservesFresh verifies an inbound invite still inside
 // its TTL is left pending — the reaper only reaps genuinely stale prompts.
-func TestExpireInboundInvitePreservesFresh(t *testing.T) {
+func TestExpireInboundInvite_KeepsUnexpiredInvite(t *testing.T) {
 	m := newTestManager(t)
 	m.setClusterIdentity("", "")
 
@@ -143,7 +143,7 @@ func TestExpireInboundInvitePreservesFresh(t *testing.T) {
 // pending inbound invite whose joiner session is (unexpectedly) gone must still
 // be expired rather than lingering forever, since without a session it can no
 // longer be accepted either.
-func TestExpireInboundInviteNoSession(t *testing.T) {
+func TestExpireInboundInvite_RemovesInviteWithoutSession(t *testing.T) {
 	m := newTestManager(t)
 	m.setClusterIdentity("", "")
 
@@ -173,7 +173,7 @@ func TestExpireInboundInviteNoSession(t *testing.T) {
 // the invite out from under it. The reaper best-effort acquires sess.mu (TryLock)
 // and, failing that, leaves the invite pending for the next sweep — so a stale
 // TTL never tears down a pairing the local user is actively completing.
-func TestExpireInboundSkipsInFlightAccept(t *testing.T) {
+func TestExpireInbound_SkipsInFlightAccept(t *testing.T) {
 	m := newTestManager(t)
 	m.setClusterIdentity("", "")
 
@@ -219,7 +219,7 @@ func TestExpireInboundSkipsInFlightAccept(t *testing.T) {
 // invite timed out flips the matching outbound invite to expired and drops the
 // EAP session, instead of leaving the inviter stranded on a pending invite until
 // its own TTL. An intentional (non-invite-created) cluster is preserved.
-func TestHandlePairingExpiredTearsDownInviter(t *testing.T) {
+func TestHandlePairingExpired_TearsDownInviter(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	putPendingInviterSession(t, m, "inv-expire")

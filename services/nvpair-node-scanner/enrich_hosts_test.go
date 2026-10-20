@@ -60,7 +60,7 @@ func testKey() hostKey {
 // sweep repeats every peerRefreshInterval for as long as a node is advertised, so
 // starting at the top of its list each time paid the leading address's full fetch
 // timeout forever to reach the one that had already worked.
-func TestAskRememberedAsksOnlyTheAddressThatAnswered(t *testing.T) {
+func TestAskRemembered_AsksOnlyTheAddressThatAnswered(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"192.168.240.1", "169.254.7.7", "10.0.0.5"}
@@ -85,7 +85,7 @@ func TestAskRememberedAsksOnlyTheAddressThatAnswered(t *testing.T) {
 // TestAskRememberedKeepsAWorkingAddressWhenABetterRankedOneComesUp: nothing is
 // wrong with the address in use, and switching changes the address this node is
 // enriched and reported at to learn nothing.
-func TestAskRememberedKeepsAWorkingAddressWhenABetterRankedOneComesUp(t *testing.T) {
+func TestAskRemembered_KeepsAWorkingAddressWhenABetterRankedOneComesUp(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"192.168.240.1", "10.0.0.5"}
@@ -104,7 +104,7 @@ func TestAskRememberedKeepsAWorkingAddressWhenABetterRankedOneComesUp(t *testing
 
 // TestAskRememberedWalksAgainWhenTheRememberedAddressStops: its failure is the one
 // reason to look elsewhere, and the new answer is what gets remembered.
-func TestAskRememberedWalksAgainWhenTheRememberedAddressStops(t *testing.T) {
+func TestAskRemembered_WalksAgainWhenTheRememberedAddressStops(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"192.168.240.1", "10.0.0.5", "10.0.0.6"}
@@ -128,7 +128,7 @@ func TestAskRememberedWalksAgainWhenTheRememberedAddressStops(t *testing.T) {
 // TestAskRememberedForgetsAnAddressNobodyAnswersAt: with nothing answering there is
 // no address to remember, so the next sweep is free to find a recovery anywhere on
 // the list rather than being pinned to one that failed.
-func TestAskRememberedForgetsAnAddressNobodyAnswersAt(t *testing.T) {
+func TestAskRemembered_ForgetsAnAddressNobodyAnswersAt(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"10.0.0.5", "10.0.0.6"}
@@ -145,7 +145,7 @@ func TestAskRememberedForgetsAnAddressNobodyAnswersAt(t *testing.T) {
 // TestAskTogetherPrefersRankOverArrivalOrder: the node's ranking decides, not the
 // stopwatch. Taking the fastest responder would let two working addresses swap
 // places between sweeps on nothing but timing noise.
-func TestAskTogetherPrefersRankOverArrivalOrder(t *testing.T) {
+func TestAskTogether_PrefersRankOverArrivalOrder(t *testing.T) {
 	net := newAnswering("10.0.0.5", "10.0.0.6")
 	net.slow["10.0.0.5"] = 40 * time.Millisecond
 
@@ -157,7 +157,7 @@ func TestAskTogetherPrefersRankOverArrivalOrder(t *testing.T) {
 // TestAskTogetherPaysOneTimeoutForTheWholeList: an address that neither answers nor
 // refuses costs a whole fetch timeout, and asking in sequence paid that per address
 // — up to modelsFetchTimeout each — before reaching one that works.
-func TestAskTogetherPaysOneTimeoutForTheWholeList(t *testing.T) {
+func TestAskTogether_PaysOneTimeoutForTheWholeList(t *testing.T) {
 	const stall = 150 * time.Millisecond
 	net := newAnswering("10.0.0.9")
 	for _, host := range []string{"192.168.240.1", "169.254.7.7", "172.17.0.1"} {
@@ -176,7 +176,7 @@ func TestAskTogetherPaysOneTimeoutForTheWholeList(t *testing.T) {
 
 // TestAskTogetherSkipsBlankHosts guards the published-list edge: a record can carry
 // an empty entry, and it is not an address to fetch from.
-func TestAskTogetherSkipsBlankHosts(t *testing.T) {
+func TestAskTogether_SkipsBlankHosts(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	host, _, ok := askTogether([]string{"", "10.0.0.5"}, net.ask)
 	require.True(t, ok, "askTogether (%v, %v)", host, ok)

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLegacyPairingInfoMapsToFirstAdmission(t *testing.T) {
+func TestLegacyPairingInfo_MapsToFirstAdmission(t *testing.T) {
 	peer := newTestManagerPort(t, 15123)
 	raw, err := json.Marshal(PairingInfo{
 		V:         1,
@@ -32,7 +32,7 @@ func TestLegacyPairingInfoMapsToFirstAdmission(t *testing.T) {
 	require.Error(t, err, "v2 pairing info without admission epoch was accepted")
 }
 
-func TestRestartMigratesLegacyPinnedMemberAdmission(t *testing.T) {
+func TestRestart_MigratesLegacyPinnedMemberAdmission(t *testing.T) {
 	dir := t.TempDir()
 	m := testManagerAt(t, dir, 15124)
 	activateTestCluster(t, m, "cluster-1")

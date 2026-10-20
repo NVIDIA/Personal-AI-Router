@@ -50,7 +50,7 @@ func newTestModel(views ...View) Model {
 // bottom rows after a resize. The shell must emit exactly as many rows and
 // columns as the terminal has, whatever the active view renders: an over-tall
 // frame scrolls the alt screen and leaves the previous frame's tail behind.
-func TestViewFrameIsExactlyTerminalSized(t *testing.T) {
+func TestViewFrame_IsExactlyTerminalSized(t *testing.T) {
 	const termWidth, termHeight = 80, 24
 	cases := []struct {
 		name string
@@ -82,7 +82,7 @@ func TestViewFrameIsExactlyTerminalSized(t *testing.T) {
 // the budget hit the floor, and the frame came out thirteen rows tall. This
 // sweeps every height from one row up, at widths below, at, and above the
 // minimum, over every tab, the detail screen, full help, and the banner.
-func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
+func TestFrame_NeverOutgrowsTheTerminal(t *testing.T) {
 	withReleaseVersion(t, "0.91.7")
 	screens := func() []struct {
 		name  string
@@ -144,7 +144,7 @@ func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
 // At forty columns the padded tab bar was forty-six wide and lost its last tab
 // off the right, and the footer, truncated from the right, ended at "shift+tab
 // prev" — with quit and help both cut off.
-func TestMinimumWidthKeepsNavigationVisible(t *testing.T) {
+func TestMinimumWidth_KeepsNavigationVisible(t *testing.T) {
 	m := New(nil, nil, defaultViews(nil))
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: minTerminalWidth, Height: minTerminalHeight})
 	m = updated.(Model)
@@ -181,7 +181,7 @@ func TestMinimumWidthKeepsNavigationVisible(t *testing.T) {
 //
 // Swept across every supported height rather than sampled, and over the real
 // views, because the budget also depends on the active view's footer.
-func TestFrameStaysExactWithTheUpdateBanner(t *testing.T) {
+func TestFrame_StaysExactWithTheUpdateBanner(t *testing.T) {
 	withReleaseVersion(t, "0.91.7")
 
 	for h := minTerminalHeight; h <= 44; h++ {
@@ -211,7 +211,7 @@ func TestFrameStaysExactWithTheUpdateBanner(t *testing.T) {
 // switching to another tab and back put the operator inside that machine
 // again rather than on the list they asked for — the list one more keypress
 // away, with nothing on screen explaining why.
-func TestLeavingATabReturnsItToItsOwnFirstScreen(t *testing.T) {
+func TestLeavingATab_ReturnsItToItsOwnFirstScreen(t *testing.T) {
 	nodes := newNodesView(nil)
 	nodes.feeds.discovered = []availableNode{
 		{HostUUID: "u1", Name: "this-host", IPAddress: "10.0.0.1", Port: 1},
@@ -235,7 +235,7 @@ func TestLeavingATabReturnsItToItsOwnFirstScreen(t *testing.T) {
 
 // TestViewFrameHeightAcrossTerminalSizes checks the budget holds at the small
 // sizes where the header, tab bar, and footer alone can exceed the terminal.
-func TestViewFrameHeightAcrossTerminalSizes(t *testing.T) {
+func TestViewFrame_FillsTerminalHeight(t *testing.T) {
 	for _, h := range []int{4, 5, 10, 24, 60} {
 		m := New(nil, nil, []View{&stubView{title: "T", rows: 100, width: 10}})
 		m.width, m.height = 80, h
@@ -245,7 +245,7 @@ func TestViewFrameHeightAcrossTerminalSizes(t *testing.T) {
 
 // TestViewBeforeFirstResize checks the shell renders a placeholder rather than a
 // zero-sized frame before the terminal size arrives.
-func TestViewBeforeFirstResize(t *testing.T) {
+func TestView_RendersBeforeFirstResize(t *testing.T) {
 	m := New(nil, nil, []View{&stubView{title: "T", rows: 3, width: 10}})
 	assert.Equal(t, "starting...", m.View(), "pre-resize placeholder")
 }
@@ -258,7 +258,7 @@ func TestViewBeforeFirstResize(t *testing.T) {
 // "1-9 go to tab" against five tabs, advertising four keys that do nothing —
 // which is the more common failure, because the range is a string a reader has
 // to remember to update.
-func TestJumpDigitsMatchTheTabsExactly(t *testing.T) {
+func TestJumpDigits_MatchTabOrder(t *testing.T) {
 	views := defaultViews(nil)
 	keys := newGlobalKeyMap(len(views)).JumpTab
 
@@ -268,7 +268,7 @@ func TestJumpDigitsMatchTheTabsExactly(t *testing.T) {
 
 // TestJumpDigitsLabelDegenerateCounts covers the label at the edges, since it is
 // assembled rather than written out.
-func TestJumpDigitsLabelDegenerateCounts(t *testing.T) {
+func TestJumpDigits_LabelsZeroAndSingleTabCounts(t *testing.T) {
 	cases := map[int]string{1: "1", 2: "1-2", 5: "1-5", 9: "1-9"}
 	for tabs, want := range cases {
 		assert.Equal(t, want, tabDigitsHelp(tabs), "%d tabs", tabs)
@@ -286,7 +286,7 @@ func (c *closingView) close() { c.closed = true }
 // TestViewsAreReleasedWithoutTheFinalModel checks cleanup reaches the views
 // themselves. After a panic Bubble Tea's Run returns no model to release them
 // through, which left a running demo's dispatcher processes behind.
-func TestViewsAreReleasedWithoutTheFinalModel(t *testing.T) {
+func TestViews_AreReleasedWithoutTheFinalModel(t *testing.T) {
 	holding := &closingView{stubView: stubView{title: "Jobs"}}
 	closeViews([]View{&stubView{title: "Nodes"}, holding})
 	assert.True(t, holding.closed, "a view holding children was not released")
@@ -295,7 +295,7 @@ func TestViewsAreReleasedWithoutTheFinalModel(t *testing.T) {
 // TestMoreTabsThanDigitsIsRefused checks a tenth tab fails loudly instead of
 // quietly having no key. The tab set is fixed at build time, so this is a
 // mistake in how the shell was put together, found on the first run.
-func TestMoreTabsThanDigitsIsRefused(t *testing.T) {
+func TestMoreTabsThanDigits_IsRefused(t *testing.T) {
 	defer func() {
 		assert.NotNil(t, recover(), "a tenth tab was accepted without a key to select it")
 	}()
@@ -304,12 +304,12 @@ func TestMoreTabsThanDigitsIsRefused(t *testing.T) {
 
 // TestTheShellFitsItsDigitKeys keeps the real tab set inside that limit, so the
 // panic above is never what finds it.
-func TestTheShellFitsItsDigitKeys(t *testing.T) {
+func TestTheShell_FitsItsDigitKeys(t *testing.T) {
 	assert.LessOrEqual(t, len(defaultViews(nil)), maxTabs, "tabs have digit keys")
 }
 
 // TestDigitKeysSelectTabs pins the shortcut the numbered tab bar advertises.
-func TestDigitKeysSelectTabs(t *testing.T) {
+func TestDigitKeys_SelectTabs(t *testing.T) {
 	m := newTestModel(
 		&stubView{title: "One", rows: 1},
 		&stubView{title: "Two", rows: 1},
@@ -332,7 +332,7 @@ func TestDigitKeysSelectTabs(t *testing.T) {
 
 // TestTabWrapsBothDirections checks prev from the first tab lands on the last
 // rather than going negative.
-func TestTabWrapsBothDirections(t *testing.T) {
+func TestTab_WrapsBothDirections(t *testing.T) {
 	m := newTestModel(
 		&stubView{title: "One", rows: 1},
 		&stubView{title: "Two", rows: 1},
@@ -345,7 +345,7 @@ func TestTabWrapsBothDirections(t *testing.T) {
 
 // TestErrorTabLabelCarriesTheCount checks the tab bar is the error indicator, so
 // nothing extra is needed to notice a problem from another tab.
-func TestErrorTabLabelCarriesTheCount(t *testing.T) {
+func TestErrorTabLabel_CarriesTheCount(t *testing.T) {
 	v := newErrorsView(nil)
 
 	assert.Equal(t, "Errors", v.Title(), "clean label")
@@ -366,7 +366,7 @@ func TestErrorTabLabelCarriesTheCount(t *testing.T) {
 
 // TestErrorsTabIsReachableLikeAnyOther checks it behaves as a plain tab: the
 // digit selects it and nothing intercepts the keyboard.
-func TestErrorsTabIsReachableLikeAnyOther(t *testing.T) {
+func TestErrorsTab_IsReachableLikeAnyOther(t *testing.T) {
 	errors := newErrorsView(nil)
 	m := newTestModel(
 		&stubView{title: "One", rows: 1},
@@ -387,7 +387,7 @@ func TestErrorsTabIsReachableLikeAnyOther(t *testing.T) {
 
 // TestErrorsTabFrameStaysBounded checks a long error list obeys the same frame
 // budget as any other tab.
-func TestErrorsTabFrameStaysBounded(t *testing.T) {
+func TestErrorsTabFrame_StaysBounded(t *testing.T) {
 	errors := newErrorsView(nil)
 	m := newTestModel(errors)
 	m.resizeViews()
@@ -403,7 +403,7 @@ func TestErrorsTabFrameStaysBounded(t *testing.T) {
 	assert.LessOrEqual(t, lipgloss.Width(out), m.width, "frame width")
 }
 
-func TestFitLines(t *testing.T) {
+func TestFitLines_FitsContentToRequestedDimensions(t *testing.T) {
 	assert.Equal(t, "a\nb", fitLines("a\nb\nc", 2), "truncate")
 	assert.Equal(t, "a\n\n", fitLines("a", 3), "pad")
 	assert.Equal(t, "a\nb", fitLines("a\nb", 2), "exact")

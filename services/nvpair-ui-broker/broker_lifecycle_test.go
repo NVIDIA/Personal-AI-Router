@@ -23,7 +23,7 @@ import (
 // of that tree and the workers' only source of membership, so if the two resolved
 // different bases the node would pair into a directory nothing reads — a healthy
 // roster with no cluster traffic, and no restart left to mask it.
-func TestClusterManagerConfigDirTracksBrokerClusterDir(t *testing.T) {
+func TestClusterManagerConfigDir_TracksBrokerClusterDir(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "Personal AI Router")
 	b := &Broker{clusterDir: filepath.Join(base, "cluster")}
 	require.Equal(t, base, b.clusterManagerConfigDir(), "clusterManagerConfigDir")
@@ -34,7 +34,7 @@ func TestClusterManagerConfigDirTracksBrokerClusterDir(t *testing.T) {
 	require.Equal(t, "", (&Broker{}).clusterManagerConfigDir(), "clusterManagerConfigDir with no cluster dir")
 }
 
-func TestEngineAvailabilityWaitsForBothProxyOutcomes(t *testing.T) {
+func TestEngineAvailability_WaitsForBothProxyOutcomes(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	defer engineClient.Close()
 	defer engineServer.Close()
@@ -124,7 +124,7 @@ func (h *orderedLifecycleHandle) Stop() {
 // engine-manager is stopping engines. One proxy process holds every engine's
 // facade now, so there is one proxy stop rather than two — but it must still
 // precede engine-manager.
-func TestInferenceShutdownStopsTheProxyBeforeEngines(t *testing.T) {
+func TestInferenceShutdown_StopsTheProxyBeforeEngines(t *testing.T) {
 	order := make(chan string, 2)
 	proxy := newOrderedLifecycleHandle(engines.ProxyComponent, order)
 	proxySup := newSupervisor(engines.ProxyComponent, noRestartPolicy(),
@@ -156,7 +156,7 @@ func TestInferenceShutdownStopsTheProxyBeforeEngines(t *testing.T) {
 // A terminally failed proxy releases every engine's ownership gate. Shared fate
 // is the accepted cost of one process, so a caller waiting on LM Studio's gate
 // must not be left waiting because the failure was reported for the process.
-func TestTerminalProxyFailureOpensEveryEnginesGate(t *testing.T) {
+func TestTerminalProxyFailure_OpensEveryEnginesGate(t *testing.T) {
 	spawned := make(chan *fakeHandle, 1)
 	sup := newSupervisor(engines.ProxyComponent, noRestartPolicy(), func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -197,7 +197,7 @@ func TestTerminalProxyFailureOpensEveryEnginesGate(t *testing.T) {
 // restart to fix LM Studio's port would drop Ollama's listener and the
 // inference in flight on it. The handle assertion is the load-bearing one —
 // clearing it would strand every other facade's traffic.
-func TestUnbindableLMStudioFacadeFinishesWithoutRestartingTheProcess(t *testing.T) {
+func TestUnbindableLMStudioFacade_FinishesWithoutRestartingTheProcess(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()

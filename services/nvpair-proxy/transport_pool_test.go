@@ -14,7 +14,7 @@ import (
 	"nvpair-shared/clustertrusttest"
 )
 
-func TestCandidateTransportReusesPlainTransport(t *testing.T) {
+func TestCandidateTransport_ReusesPlainTransport(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	a := p.candidateTransport(candidate{})
 	b := p.candidateTransport(candidate{id: "manual"})
@@ -22,7 +22,7 @@ func TestCandidateTransportReusesPlainTransport(t *testing.T) {
 	require.NotNil(t, a, "plain Transport is nil")
 }
 
-func TestCandidateTransportReusesPeerTransport(t *testing.T) {
+func TestCandidateTransport_ReusesPeerTransport(t *testing.T) {
 	const peerUUID = "principal-peer"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
@@ -39,7 +39,7 @@ func TestCandidateTransportReusesPeerTransport(t *testing.T) {
 	require.NotSame(t, a, other, "unpinned peer reused pinned peer Transport")
 }
 
-func TestDropUnpinnedPeerTransportsRemovesEntry(t *testing.T) {
+func TestDropUnpinnedPeerTransports_RemovesEntry(t *testing.T) {
 	const peerUUID = "principal-peer"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)

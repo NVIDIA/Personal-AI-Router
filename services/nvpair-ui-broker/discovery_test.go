@@ -16,7 +16,7 @@ import (
 // TestDiscoveryStoreRekeysOnRename verifies that a discovered node changing
 // hostname (same host UUID, new mDNS instance name) updates its single
 // store entry in place rather than leaving a ghost under the old name.
-func TestDiscoveryStoreRekeysOnRename(t *testing.T) {
+func TestDiscoveryStore_RekeysOnRename(t *testing.T) {
 	s := newDiscoveryStore()
 	const uuid = "11111111-1111-1111-1111-111111111111"
 
@@ -31,7 +31,7 @@ func TestDiscoveryStoreRekeysOnRename(t *testing.T) {
 
 // TestDiscoveryStoreDistinctUUIDsSameName verifies the same-hostname collision
 // case: two different machines that share a hostname stay two entries.
-func TestDiscoveryStoreDistinctUUIDsSameName(t *testing.T) {
+func TestDiscoveryStore_KeepsNodesWithSameNameAndDifferentUUIDs(t *testing.T) {
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "aaaaaaaa-0000-0000-0000-000000000001"}, sourceScanner)
 	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "bbbbbbbb-0000-0000-0000-000000000002"}, sourceScanner)
@@ -41,7 +41,7 @@ func TestDiscoveryStoreDistinctUUIDsSameName(t *testing.T) {
 // TestManualToEnrichedHostUUID verifies the manual-node ingestion boundary: a
 // manual node keys by the remote's real hostUuid once node-info reports one, and
 // by its manual id until then.
-func TestManualToEnrichedHostUUID(t *testing.T) {
+func TestDiscoveryStore_RekeysManualNodeToLearnedHostUUID(t *testing.T) {
 	withUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9", HostUUID: "real-uuid"})
 	require.Equal(t, "real-uuid", withUUID.storeKey(), "store key")
 	noUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9"})
@@ -50,7 +50,7 @@ func TestManualToEnrichedHostUUID(t *testing.T) {
 
 // TestDiscoveryStoreRejectsEmptyKey verifies a node with no operational key is
 // dropped rather than silently keyed by name.
-func TestDiscoveryStoreRejectsEmptyKey(t *testing.T) {
+func TestDiscoveryStore_RejectsEmptyKey(t *testing.T) {
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "no-uuid"}, sourceManual) // HostUUID empty
 	require.Empty(t, s.Snapshot(), "a node with no hostUuid must be dropped")
@@ -61,7 +61,7 @@ func TestDiscoveryStoreRejectsEmptyKey(t *testing.T) {
 // either source keeps the record alive under the survivor; only when no source
 // claims it is it forgotten. This is what stops a manual remove (or a
 // manual-nodes crash) from evicting a still-live scanner node.
-func TestDiscoveryStoreSourceOwnership(t *testing.T) {
+func TestDiscoveryStore_PreservesClaimsFromOtherSources(t *testing.T) {
 	const uuid = "shared-uuid"
 
 	// Manual-remove overlap: scanner + manual both claim uuid; removing the
@@ -86,7 +86,7 @@ func TestDiscoveryStoreSourceOwnership(t *testing.T) {
 // TestDiscoveryStoreScannerProjectionWins: when both sources claim a node, the
 // scanner (mDNS) view is projected — it carries trusted/clusterUuid and
 // per-engine models the manual probe lacks.
-func TestDiscoveryStoreScannerProjectionWins(t *testing.T) {
+func TestDiscoveryStoreScannerProjection_Wins(t *testing.T) {
 	const uuid = "shared-uuid"
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "manual-host", HostUUID: uuid, Trusted: false}, sourceManual)
@@ -120,7 +120,7 @@ func manualStatus(id, addr, uuid string) manualNodeStatus {
 // to one HostUUID and share a single sourceManual slot. Removing one alias must
 // keep the node — reprojected from the surviving alias's payload so the removed
 // alias's address doesn't linger — and only the last removal releases the key.
-func TestManualAliasesShareKeyUntilLastRemoved(t *testing.T) {
+func TestManualAliases_KeepSharedKeyUntilLastAliasIsRemoved(t *testing.T) {
 	const uuid = "shared-uuid"
 	for _, tc := range []struct {
 		name         string
@@ -155,7 +155,7 @@ func TestManualAliasesShareKeyUntilLastRemoved(t *testing.T) {
 // rekeys onto its own distinct UUID (host replacement), the shared old key must
 // stay — reprojected from the alias that still owns it — alongside the rekeyed
 // alias's new record.
-func TestManualRekeyReprojectsSharedOldKey(t *testing.T) {
+func TestManualRekey_ReprojectsSharedOldKey(t *testing.T) {
 	b := newManualTestBroker()
 	const shared = "shared-uuid"
 
@@ -181,7 +181,7 @@ func TestManualRekeyReprojectsSharedOldKey(t *testing.T) {
 
 // TestDiscoveryStoreRemoveWrongSourceNoop: removing a source that never claimed
 // the record leaves it (and the other source) intact.
-func TestDiscoveryStoreRemoveWrongSourceNoop(t *testing.T) {
+func TestDiscoveryStore_IgnoresRemovalFromUnrelatedSource(t *testing.T) {
 	const uuid = "u"
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
@@ -192,7 +192,7 @@ func TestDiscoveryStoreRemoveWrongSourceNoop(t *testing.T) {
 
 // TestDiscoveryStoreRemoveReportsFinalClaim: Remove reports whether it dropped
 // the FINAL claim, so the node-loss sweep only fires when a node is truly gone.
-func TestDiscoveryStoreRemoveReportsFinalClaim(t *testing.T) {
+func TestDiscoveryStoreRemove_ReportsFinalClaim(t *testing.T) {
 	const uuid = "shared-uuid"
 	s := newDiscoveryStore()
 	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
@@ -216,7 +216,7 @@ func nodeRemovedFrame(t *testing.T, name, uuid string) json.RawMessage {
 // whose scanner claim drops is still present via the manual claim, so the
 // node-loss sweep must NOT fire — otherwise a still-reachable node's jobs get
 // wrongly failed.
-func TestHandleNotifyNodeLostOnlyOnFinalClaim(t *testing.T) {
+func TestHandleNotify_ReportsNodeLostOnlyAfterFinalClaimIsRemoved(t *testing.T) {
 	const uuid = "peer-uuid"
 	store := newDiscoveryStore()
 	store.Upsert(EnrichedNode{ID: "peer-friendly-name", HostUUID: uuid}, sourceScanner)
@@ -234,7 +234,7 @@ func TestHandleNotifyNodeLostOnlyOnFinalClaim(t *testing.T) {
 // TestHandleNotifyNodeLostUsesHostUUID: removing a node's final claim fires the
 // sweep with the node's stable HostUUID (what workloads are keyed by), not its
 // display hostname — the name != uuid case is exactly the bug.
-func TestHandleNotifyNodeLostUsesHostUUID(t *testing.T) {
+func TestHandleNotifyNodeLost_UsesHostUUID(t *testing.T) {
 	const uuid = "peer-uuid"
 	const name = "peer-friendly-name"
 	store := newDiscoveryStore()
@@ -251,7 +251,7 @@ func TestHandleNotifyNodeLostUsesHostUUID(t *testing.T) {
 	assert.Equal(t, name, gotName, "onNodeLost name")
 }
 
-func TestScannerProcessRoutesAndRemovesTelemetry(t *testing.T) {
+func TestScannerProcess_RoutesAndRemovesTelemetry(t *testing.T) {
 	want := noderec.NodeTelemetry{
 		HostUUID:          "peer-uuid",
 		GPUUtilizationPct: 84,

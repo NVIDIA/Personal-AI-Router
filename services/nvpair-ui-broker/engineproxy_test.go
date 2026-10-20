@@ -16,7 +16,7 @@ import (
 // order. Preparation order is load-bearing: Ollama goes first because its
 // preparation reserves any inherited OLLAMA_HOST alias that later engines have
 // to route around.
-func TestEngineProxyTableMatchesSharedEngines(t *testing.T) {
+func TestEngineProxyTable_MatchesSharedEngines(t *testing.T) {
 	require.NotEmpty(t, engineProxyProfiles, "no engine proxy profiles")
 	require.Equal(t, "ollama", engineProxyProfiles[0].Name, "first profile")
 	for _, p := range engineProxyProfiles {
@@ -32,7 +32,7 @@ func TestEngineProxyTableMatchesSharedEngines(t *testing.T) {
 
 // The probe path is the one advertiser value that is per-engine, and getting it
 // wrong makes a healthy engine look permanently down rather than failing loudly.
-func TestEngineHealthProbePaths(t *testing.T) {
+func TestEngineHealthProbe_UsesEngineSpecificEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		engine string
 		want   string
@@ -51,7 +51,7 @@ func TestEngineHealthProbePaths(t *testing.T) {
 // engine table already carries, because they feed int32 atomics throughout the
 // package. They are deleted when those files collapse; until then this is what
 // stops them drifting from the table.
-func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
+func TestBrokerConstants_MatchCanonicalEngineTable(t *testing.T) {
 	for _, tc := range []struct {
 		engine       string
 		facade       int
@@ -75,7 +75,7 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 // Every engine's relocation authority is pinned explicitly. Getting these
 // backwards does not fail
 // to compile — it silently changes which engine the broker believes it may stop.
-func TestEngineOwnershipAssignments(t *testing.T) {
+func TestEngineOwnership_AssignsManagedAndExternalListeners(t *testing.T) {
 	for _, tc := range []struct {
 		engine string
 		want   engineOwnership
@@ -101,7 +101,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 //
 // This is the regression guard for collapsing the two planners into one. A
 // change that makes both engines agree here has broken one of them.
-func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
+func TestOwnership_DecidesTheOccupiedFacadeOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		engine    string
 		wantMove  bool
@@ -130,7 +130,7 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 }
 
 // --proxy-engines selects which engines the one binary is started for.
-func TestParseProxyEngines(t *testing.T) {
+func TestParseProxyEngines_ValidatesSelectedEngineNames(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		csv     string
@@ -160,7 +160,7 @@ func TestParseProxyEngines(t *testing.T) {
 
 // An engine left out of --proxy-engines is not started, and neither is any
 // engine when the binary could not be resolved.
-func TestProxyEnabledHonorsSelectionAndBinary(t *testing.T) {
+func TestProxyEnabled_HonorsSelectionAndBinary(t *testing.T) {
 	b := &Broker{proxyPath: "/path/to/nvpair-proxy", proxyEngines: []string{"ollama"}}
 	assert.True(t, b.proxyEnabled(ollamaProxyProfile), "ollama was selected but is not enabled")
 	assert.False(t, b.proxyEnabled(lmstudioProxyProfile), "lmstudio was not selected but is enabled")
@@ -177,7 +177,7 @@ func TestProxyEnabledHonorsSelectionAndBinary(t *testing.T) {
 // Ollama cannot show the symptom, because its move is deferred until its proxy
 // proves it holds the facade. That asymmetry is exactly why the guard has to be
 // at the preparation call rather than relied on further down.
-func TestDeselectedEngineIsNotPrepared(t *testing.T) {
+func TestDeselectedEngine_IsNotPrepared(t *testing.T) {
 	settings, settingsCodec := newTestRPCWorkerPipe(t)
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 
@@ -236,7 +236,7 @@ func TestDeselectedEngineIsNotPrepared(t *testing.T) {
 // A stranger on the facade blocks both engines. This is the companion to the
 // test above: the divergence is about who the occupant is, not about whether an
 // occupied facade matters.
-func TestAStrangerOnTheFacadeBlocksEveryEngine(t *testing.T) {
+func TestAStrangerOnTheFacade_BlocksEveryEngine(t *testing.T) {
 	for _, p := range engineProxyProfiles {
 		t.Run(p.Name, func(t *testing.T) {
 			// The engine is stopped somewhere else entirely, so whoever holds

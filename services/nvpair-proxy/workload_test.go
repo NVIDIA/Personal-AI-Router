@@ -60,7 +60,7 @@ func (r *recRW) has(s string) bool {
 //
 // proxy/request-started also stays at the commit point, so it names the node
 // that actually served after any failover.
-func TestHandleHTTP_WorkloadVisibleBeforeFirstByte(t *testing.T) {
+func TestHandleHTTP_PublishesWorkloadBeforeFirstResponseByte(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		received := make(chan struct{}, 1)
 		release := make(chan struct{})

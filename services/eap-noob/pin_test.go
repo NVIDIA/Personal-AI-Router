@@ -41,7 +41,7 @@ func driveAllowFail(srv *Server, peer *Peer) bool {
 // direction using the caller-injected-Noob API (the path the cluster manager's
 // PIN flow takes): the server supplies the Noob via OOBOutputWith and the peer
 // records the same Noob via OOBInputNoob, with no OOBMessage/Hoob envelope.
-func TestCallerInjectedNoobPairs(t *testing.T) {
+func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
 	srv := NewServer(ServerConfig{Dirs: 2, ServerInfo: map[string]any{"role": "server"}}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: 2, PeerInfo: map[string]any{"role": "peer"}}, nil)
 
@@ -68,7 +68,7 @@ func TestCallerInjectedNoobPairs(t *testing.T) {
 
 // TestMismatchedInjectedNoobFails is the wrong-PIN case: the two sides inject
 // different Noobs, so the Completion MACs cannot agree and pairing must fail.
-func TestMismatchedInjectedNoobFails(t *testing.T) {
+func TestPairing_RejectsMismatchedCallerProvidedNoob(t *testing.T) {
 	srv := NewServer(ServerConfig{Dirs: 2}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
 
@@ -93,7 +93,7 @@ func TestMismatchedInjectedNoobFails(t *testing.T) {
 // 4001 MAC mismatch). If a future change moved detection so the Peer no longer
 // reports it this way, the cluster manager would silently degrade a wrong PIN to
 // a generic failure (empty reason) instead of reason:"incorrect-pin".
-func TestPeerWrongPinYieldsProtocolError(t *testing.T) {
+func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	srv := NewServer(ServerConfig{Dirs: 2}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
 
@@ -131,7 +131,7 @@ func TestPeerWrongPinYieldsProtocolError(t *testing.T) {
 }
 
 // TestOOBOutputWithRejectsBadLength guards the 16-byte contract.
-func TestOOBOutputWithRejectsBadLength(t *testing.T) {
+func TestOOBOutputWith_RejectsBadLength(t *testing.T) {
 	srv := NewServer(ServerConfig{Dirs: 2}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
 	driveConversation(t, srv, peer)

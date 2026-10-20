@@ -12,7 +12,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-func TestPeerDirectorySetAndLookup(t *testing.T) {
+func TestPeerDirectory_ReplacesEntriesAndResolvesPeers(t *testing.T) {
 	d := newPeerDirectory()
 	d.set([]noderec.DirectoryNode{
 		{
@@ -56,7 +56,7 @@ func TestPeerDirectorySetAndLookup(t *testing.T) {
 // (and addressed) by it, not the hostname — so a remote-control target survives
 // a rename and same-named peers stay distinct. A record without a
 // hostUuid falls back to the instance name.
-func TestPeerDirectoryKeysByHostUUID(t *testing.T) {
+func TestPeerDirectory_KeysByHostUUID(t *testing.T) {
 	d := newPeerDirectory()
 	d.set([]noderec.DirectoryNode{{
 		HostUUID: "uuid-b", Name: "nodeB", IP: "192.168.1.42", ClusterUUID: "cuuid-b",

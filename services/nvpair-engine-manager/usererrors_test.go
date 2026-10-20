@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUnwrapPullCause(t *testing.T) {
+func TestUnwrapPullCause_ExtractsUnderlyingDownloadFailure(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
@@ -31,7 +31,7 @@ func TestUnwrapPullCause(t *testing.T) {
 	}
 }
 
-func TestFormatEnginePullError(t *testing.T) {
+func TestFormatEnginePullError_ReportsActionableDownloadCause(t *testing.T) {
 	err := errors.New("action command failed: exit status 1: Error: Download failed: Timed-out. Please try to resume.")
 	got := formatEnginePullError("LM Studio", err)
 	want := "LM Studio experienced an error while downloading a model: Download failed: Timed-out. Please try to resume."
@@ -41,7 +41,7 @@ func TestFormatEnginePullError(t *testing.T) {
 	require.Equal(t, "LM Studio experienced an error while downloading a model.", got, "empty detail:")
 }
 
-func TestFormatEnginePullErrorNotRunning(t *testing.T) {
+func TestFormatEnginePullError_IdentifiesStoppedEngine(t *testing.T) {
 	err := errors.New(`engine "fake" is not running`)
 	got := formatEnginePullError("Fake Engine", err)
 	require.Contains(t, got, "Fake Engine experienced an error while downloading a model:", "unexpected prefix")

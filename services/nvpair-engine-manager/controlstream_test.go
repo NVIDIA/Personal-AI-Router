@@ -16,7 +16,7 @@ import (
 
 // TestStreamOpEmitsProgressThenResult verifies streamOp forwards published
 // progress frames and ends with the run's terminal result frame.
-func TestStreamOpEmitsProgressThenResult(t *testing.T) {
+func TestStreamOp_EmitsProgressThenResult(t *testing.T) {
 	exec := &Executor{progress: newProgressHub()}
 	s := &controlServer{exec: exec}
 
@@ -42,7 +42,7 @@ func TestStreamOpEmitsProgressThenResult(t *testing.T) {
 
 // TestStreamOpEmitsErrorFrame verifies a failing op yields a terminal error
 // frame rather than a result.
-func TestStreamOpEmitsErrorFrame(t *testing.T) {
+func TestStreamOp_EmitsErrorFrame(t *testing.T) {
 	exec := &Executor{progress: newProgressHub()}
 	s := &controlServer{exec: exec}
 
@@ -60,7 +60,7 @@ func TestStreamOpEmitsErrorFrame(t *testing.T) {
 }
 
 // TestHandleInstallRejectsMissingEngine verifies request-body validation.
-func TestHandleInstallRejectsMissingEngine(t *testing.T) {
+func TestHandleInstall_RejectsMissingEngine(t *testing.T) {
 	s := &controlServer{exec: &Executor{progress: newProgressHub()}}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", controlInstallPath, strings.NewReader(`{"opId":"x"}`))

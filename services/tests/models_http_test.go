@@ -25,7 +25,7 @@ import (
 	"github.com/grandcat/zeroconf"
 )
 
-func TestModelsHTTPEnrichment(t *testing.T) {
+func TestDiscovery_EnrichesModelsThroughHTTP(t *testing.T) {
 	// Stand-in engine-manager HTTP surface serving the model list.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {

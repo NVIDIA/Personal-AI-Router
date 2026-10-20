@@ -36,7 +36,7 @@ import (
 // method resolves to no facade — which looks like an unavailable proxy rather
 // than a broker bug. The two prefixes are deliberately different strings, so
 // the relay is a translation and this asserts both halves of it.
-func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
+func TestRelay_AddressesForwardedMethodToRequestedFacade(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			client, server := net.Pipe()
@@ -97,7 +97,7 @@ func (rwDiscard) Close() error                { return nil }
 // The call-site ordering itself is not reachable from a unit test — spawnProxy
 // launches a real binary — so this pins the property that makes the ordering
 // matter, and the sibling test below pins the other side of it.
-func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
+func TestBlockingAManagedFacade_KeepsTheAliasForTheRetry(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	b := &Broker{
 		nodeID:            "local-node",
@@ -119,7 +119,7 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 //
 // Without this the broker would hold a reservation for a facade that is never
 // coming back, and engine-manager could never be given that port.
-func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
+func TestSurvivingProcess_ReleasesTheAliasForAFailedFacade(t *testing.T) {
 	b := &Broker{
 		ollamaPortReady:   make(chan struct{}),
 		lmstudioPortReady: make(chan struct{}),
@@ -140,7 +140,7 @@ func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
 // Both halves matter and neither runs on the ordinary error return, so without
 // this test a later edit can either strand a live listener the broker reports
 // as unavailable, or publish a dead port the broker will never retry.
-func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
+func TestFacadeEnable_TrustsReadinessOnlyWhenRequestWasUnanswered(t *testing.T) {
 	engine := ollamaProxyProfile.Name
 	ready := &proxyProcess{facadeState: readyFacade(engine, 11434)}
 	notReady := &proxyProcess{}
@@ -192,7 +192,7 @@ func readyFacade(engine string, port int) map[string]proxyFacadeState {
 // different ports. A single port for the process would be whichever facade
 // readied last, so get-status would hand a client the other engine's port —
 // and its inference traffic with it.
-func TestReadinessIsTrackedPerEngine(t *testing.T) {
+func TestReadiness_IsTrackedPerEngine(t *testing.T) {
 	all := engines.All()
 	if len(all) < 2 {
 		t.Skip("needs at least two engines")
@@ -223,7 +223,7 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 	assert.Equal(t, 0, port, "an unannounced engine reported a port")
 }
 
-func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
+func TestBrokerFacadeMethods_FollowEngineProfile(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			client, server := net.Pipe()
@@ -295,7 +295,7 @@ func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
 // has to track a subscription per engine. A single id per process let the second
 // facade's subscribe replace the first's, which unsubscribed a live facade and
 // left that engine with a routing set that never updated again.
-func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
+func TestSubscriptions_AreTrackedPerEngine(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -340,7 +340,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 // A facade re-subscribing must drop only its own prior registration. Dropping
 // every one would silence the other engines, and dropping none would double-feed
 // this one.
-func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
+func TestResubscribe_ReplacesOnlyThatEnginesSubscription(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -390,7 +390,7 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 // The read pump reports ready and wires subscriptions by matching bare method
 // names, so it has to see through the address. An unaddressed notification is
 // process-scoped and passes through untouched.
-func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
+func TestFacadeMethodFor_StripsOnlyItsOwnEngine(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		profile engineProxyProfile

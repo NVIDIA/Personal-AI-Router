@@ -23,7 +23,7 @@ import (
 //
 // Cost measured at the time of writing: about 0.5ms per frame with a full
 // 5000-line log buffer, which is why the simplicity is worth the repeated work.
-func TestScrollSurvivesEveryFrame(t *testing.T) {
+func TestScroll_SurvivesEveryFrame(t *testing.T) {
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 120, 40
 	m.resizeViews()
@@ -58,7 +58,7 @@ func TestScrollSurvivesEveryFrame(t *testing.T) {
 }
 
 // The same question for the tables: the cursor must survive a repaint.
-func TestTableCursorSurvivesEveryFrame(t *testing.T) {
+func TestTableCursor_SurvivesEveryFrame(t *testing.T) {
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 120, 40
 	m.resizeViews()

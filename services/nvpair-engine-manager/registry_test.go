@@ -49,12 +49,12 @@ func validManifest() Manifest {
 	}
 }
 
-func TestValidateAcceptsValid(t *testing.T) {
+func TestValidate_AcceptsValidManifest(t *testing.T) {
 	m := validManifest()
 	require.NoError(t, m.Validate(), "valid manifest rejected")
 }
 
-func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
+func TestValidate_AcceptsCommandModeAndCmdAction(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
 	p.Runtime.Mode = "command"
@@ -68,7 +68,7 @@ func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
 	require.NoError(t, m.Validate(), "command-mode/cmd-action manifest rejected")
 }
 
-func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
+func TestValidate_AcceptsLlamaCPPModelPullProtocol(t *testing.T) {
 	m := validManifest()
 	m.Actions[pullModelAction] = Action{
 		HTTP:             &ActionHTTP{Method: "POST", Path: "/models"},
@@ -77,7 +77,7 @@ func TestValidateAcceptsLlamaCPPModelPullProtocol(t *testing.T) {
 	require.NoError(t, m.Validate(), "llama.cpp model pull protocol rejected")
 }
 
-func TestValidateAcceptsHTTPQueryParams(t *testing.T) {
+func TestValidate_AcceptsHTTPQueryParams(t *testing.T) {
 	m := validManifest()
 	m.Actions["delete_model"] = Action{
 		HTTP: &ActionHTTP{
@@ -89,7 +89,7 @@ func TestValidateAcceptsHTTPQueryParams(t *testing.T) {
 	require.NoError(t, m.Validate(), "HTTP query params rejected")
 }
 
-func TestValidateRejectsInvalidHTTPParamsLocation(t *testing.T) {
+func TestValidate_RejectsInvalidHTTPParamsLocation(t *testing.T) {
 	m := validManifest()
 	m.Actions["delete_model"] = Action{
 		HTTP: &ActionHTTP{
@@ -101,7 +101,7 @@ func TestValidateRejectsInvalidHTTPParamsLocation(t *testing.T) {
 	require.ErrorContains(t, m.Validate(), "http.params_in", "invalid HTTP params location accepted")
 }
 
-func TestValidateAcceptsNestedResultMatch(t *testing.T) {
+func TestValidate_AcceptsNestedResultMatch(t *testing.T) {
 	m := validManifest()
 	m.Actions["list_models"] = Action{
 		HTTP: &ActionHTTP{Method: "GET", Path: "/models"},
@@ -114,7 +114,7 @@ func TestValidateAcceptsNestedResultMatch(t *testing.T) {
 	require.NoError(t, m.Validate(), "nested result match rejected")
 }
 
-func TestValidateAcceptsProbeJSONMatch(t *testing.T) {
+func TestValidate_AcceptsProbeJSONMatch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
 	p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service.role", Value: "router"}
@@ -122,7 +122,7 @@ func TestValidateAcceptsProbeJSONMatch(t *testing.T) {
 	require.NoError(t, m.Validate(), "HTTP probe JSON match rejected")
 }
 
-func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
+func TestValidate_AcceptsUnpinnedFetch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
 	p.Install.Fetch.SHA256 = "" // unpinned: allowed (download runs HTTPS-only with a loud warning)
@@ -130,13 +130,13 @@ func TestValidateAcceptsUnpinnedFetch(t *testing.T) {
 	require.NoError(t, m.Validate(), "unpinned fetch should validate")
 }
 
-func TestValidateAcceptsNamedInstallArtifacts(t *testing.T) {
+func TestValidate_AcceptsNamedInstallArtifacts(t *testing.T) {
 	m := validManifest()
 	setInstallArtifacts(&m, validInstallArtifacts())
 	require.NoError(t, m.Validate(), "named install artifacts rejected")
 }
 
-func TestValidateRejectsDownloadInstallWithoutRun(t *testing.T) {
+func TestValidate_RejectsDownloadInstallWithoutRun(t *testing.T) {
 	test := func(name string, install *Install) {
 		t.Run(name, func(t *testing.T) {
 			m := validManifest()
@@ -165,7 +165,7 @@ func TestValidateRejectsDownloadInstallWithoutRun(t *testing.T) {
 	})
 }
 
-func TestValidateAcceptsScriptOnlyInstall(t *testing.T) {
+func TestValidate_AcceptsScriptOnlyInstall(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
 	p.Install = &Install{Script: []string{"sh", "installer.sh"}}
@@ -173,7 +173,7 @@ func TestValidateAcceptsScriptOnlyInstall(t *testing.T) {
 	require.NoError(t, m.Validate(), "script-only install rejected")
 }
 
-func TestValidateRejectsArtifactPlaceholderFromAnotherPlatform(t *testing.T) {
+func TestValidate_RejectsArtifactPlaceholderFromAnotherPlatform(t *testing.T) {
 	m := validManifest()
 	setInstallArtifacts(&m, validInstallArtifacts())
 	mac := Platform{
@@ -207,7 +207,7 @@ func setInstallArtifacts(m *Manifest, artifacts []InstallArtifact) {
 	m.Platforms["linux/amd64"] = p
 }
 
-func TestValidateRejectsBadEngineName(t *testing.T) {
+func TestValidate_RejectsBadEngineName(t *testing.T) {
 	for _, bad := range []string{"../evil", "a/b", `a\b`, "..", ".", "a b", ""} {
 		m := validManifest()
 		m.Engine = bad
@@ -215,7 +215,7 @@ func TestValidateRejectsBadEngineName(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsScriptWithFetch(t *testing.T) {
+func TestValidate_RejectsScriptWithFetch(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
 	p.Install.Script = []string{"sh", "-c", "curl x | sh"} // coexists with fetch+run
@@ -223,7 +223,7 @@ func TestValidateRejectsScriptWithFetch(t *testing.T) {
 	require.ErrorContains(t, m.Validate(), "mutually exclusive", "expected script+fetch rejection")
 }
 
-func TestValidateRejects(t *testing.T) {
+func TestValidate_RejectsInvalidManifests(t *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(*Manifest)
@@ -344,7 +344,7 @@ func TestValidateRejects(t *testing.T) {
 	}
 }
 
-func TestPlatformFor(t *testing.T) {
+func TestPlatformFor_ResolvesDeclaredPlatformAndRejectsMissingPlatform(t *testing.T) {
 	m := validManifest()
 	m.Platforms["windows/amd64"] = m.Platforms["linux/amd64"]
 	_, ok := m.PlatformFor("linux", "amd64")
@@ -353,7 +353,7 @@ func TestPlatformFor(t *testing.T) {
 	require.False(t, ok, "did not expect darwin/arm64 to resolve")
 }
 
-func TestResolvePlaceholders(t *testing.T) {
+func TestResolvePlaceholders_SubstitutesKnownTemplateValues(t *testing.T) {
 	vars := map[string]string{"port": "11434", "install_dir": "/opt/x", "bin": "/opt/x/ollama"}
 	got, err := resolvePlaceholders("http://127.0.0.1:{port}/", vars)
 	require.NoError(t, err, "resolve")
@@ -362,14 +362,14 @@ func TestResolvePlaceholders(t *testing.T) {
 	require.Error(t, err, "expected error for unresolved {download}")
 }
 
-func TestResolveArgs(t *testing.T) {
+func TestResolveArgs_SubstitutesArgumentTemplates(t *testing.T) {
 	vars := map[string]string{"download": "/tmp/x.tgz", "install_dir": "/opt/x"}
 	got, err := resolveArgs([]string{"tar", "xzf", "{download}", "-C", "{install_dir}"}, vars)
 	require.NoError(t, err, "resolveArgs")
 	require.Equal(t, []string{"tar", "xzf", "/tmp/x.tgz", "-C", "/opt/x"}, got, "resolved args")
 }
 
-func TestLoadRegistryOverride(t *testing.T) {
+func TestLoadRegistry_AppliesOverrideManifests(t *testing.T) {
 	bundled := t.TempDir()
 	userDir := t.TempDir()
 
@@ -396,7 +396,7 @@ func TestLoadRegistryOverride(t *testing.T) {
 	require.Equal(t, "Ollama (user)", m.DisplayName, "user override did not win (%v)", m)
 }
 
-func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
+func TestLoadOverrideDir_RejectsEmptyInstallRun(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "load bundled manifests")
 	base, ok := reg.Get("ollama")
@@ -417,14 +417,14 @@ func TestLoadOverrideDirRejectsEmptyInstallRun(t *testing.T) {
 	require.Equal(t, baseRun, got.Platforms["linux/amd64"].Install.Run, "invalid override changed the bundled install.run")
 }
 
-func TestLoadRegistryRejectsInvalidFile(t *testing.T) {
+func TestLoadRegistry_RejectsInvalidFile(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.json"), []byte(`{"engine":"x"}`), 0o644))
 	_, err := LoadRegistry(dir)
 	require.Error(t, err, "expected LoadRegistry to reject an invalid manifest")
 }
 
-func TestLoadRegistryMissingDirIsSkipped(t *testing.T) {
+func TestLoadRegistryMissingDir_IsSkipped(t *testing.T) {
 	reg, err := LoadRegistry(filepath.Join(t.TempDir(), "does-not-exist"))
 	require.NoError(t, err, "missing dir should be skipped")
 	require.Empty(t, reg.Names(), "expected empty registry")
@@ -434,7 +434,7 @@ func TestLoadRegistryMissingDirIsSkipped(t *testing.T) {
 // runtime/install block is inherited by each platform, per-platform keys
 // override, nested objects (env) deep-merge, and a platform can override
 // a shared scalar.
-func TestApplyPlatformDefaults(t *testing.T) {
+func TestApplyPlatformDefaults_InheritsBaseFieldsAndKeepsPlatformOverrides(t *testing.T) {
 	dir := t.TempDir()
 	raw := `{
   "engine": "demo",
@@ -496,7 +496,7 @@ func TestApplyPlatformDefaults(t *testing.T) {
 // TestBundledManifestsMerge guards the actual shipped manifests: they must
 // load, validate, and produce the right effective platforms after the
 // shared-base merge.
-func TestBundledManifestsMerge(t *testing.T) {
+func TestBundledManifests_MergePlatformDefaults(t *testing.T) {
 	reg, err := LoadRegistry("manifests")
 	require.NoError(t, err, "load bundled manifests")
 
@@ -527,7 +527,7 @@ func TestBundledManifestsMerge(t *testing.T) {
 // TestBundledOllamaReadinessBudget pins the finite startup allowance used by
 // every supported platform. Ollama does not serve /api/version until GPU
 // discovery completes, which can exceed the previous 30-second allowance.
-func TestBundledOllamaReadinessBudget(t *testing.T) {
+func TestBundledOllama_AllowsConfiguredStartupTime(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("ollama")
@@ -554,7 +554,7 @@ func writeManifest(t *testing.T, dir, name string, m Manifest) {
 // — cluster peers reach it only through the promoted proxy's pin-gated mTLS
 // ingress. OLLAMA_HOST stays templated on {host} (which now resolves to
 // loopback).
-func TestOllamaManifestBindsLoopback(t *testing.T) {
+func TestOllamaManifest_UsesDeclaredBindAddress(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("ollama")
@@ -569,7 +569,7 @@ func TestOllamaManifestBindsLoopback(t *testing.T) {
 // policy as Ollama: runtime.bind is 127.0.0.1 and the start command still
 // passes `--bind {host}` (which resolves to loopback), so the engine is reached
 // only through the promoted proxy's mTLS ingress, never directly on the LAN.
-func TestLMStudioManifestBindsLoopback(t *testing.T) {
+func TestLMStudioManifest_BindsLoopback(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
@@ -592,7 +592,7 @@ func TestLMStudioManifestBindsLoopback(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPManifestRequiresRouterIdentity(t *testing.T) {
+func TestLlamaCPPManifest_RequiresRouterIdentity(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("llamacpp")
@@ -612,7 +612,7 @@ func TestLlamaCPPManifestRequiresRouterIdentity(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPManifestDeclaresNativeCacheDelete(t *testing.T) {
+func TestLlamaCPPManifest_DeclaresNativeCacheDelete(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("llamacpp")
@@ -626,7 +626,7 @@ func TestLlamaCPPManifestDeclaresNativeCacheDelete(t *testing.T) {
 	assert.False(t, action.RestartAfter, "llamacpp delete_model must not restart the router")
 }
 
-func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {
+func TestLMStudioManifest_UsesNativeSystemInventory(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
@@ -644,7 +644,7 @@ func TestLMStudioManifestUsesNativeSystemInventory(t *testing.T) {
 // TestLMStudioInstallBootstrapSafety verifies that bootstrap fetch failures are
 // visible and Windows executes a downloaded .ps1
 // file rather than pipe remote content through Invoke-Expression.
-func TestLMStudioInstallBootstrapSafety(t *testing.T) {
+func TestLMStudioInstall_UsesSafeBootstrapCommands(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")

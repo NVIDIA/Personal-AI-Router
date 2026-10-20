@@ -36,7 +36,7 @@ import (
 //   - get-initial round-trip carries the current entry
 //   - clear   →  update broadcast with empty list
 //   - re-report after clear  →  resurrect (ack-until-reemit)
-func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
+func TestErrorsBrokerPipeline_RelaysReportsUpdatesAndClearsAcrossProcesses(t *testing.T) {
 	cmd := exec.Command(errorsBin)
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err, "stdin pipe")

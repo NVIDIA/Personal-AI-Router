@@ -23,7 +23,7 @@ import (
 // scheduler-spawn ordering: active workload upserts are queued first, followed
 // by telemetry and discovery, and a concurrent live transition can only follow
 // all three. Terminal history must never be replayed.
-func TestSchedulerFeedBaselinePrecedesConcurrentLiveWorkload(t *testing.T) {
+func TestSchedulerFeedBaseline_PrecedesConcurrentLiveWorkload(t *testing.T) {
 	brokerSide, schedulerSide := net.Pipe()
 	t.Cleanup(func() {
 		_ = brokerSide.Close()
@@ -111,7 +111,7 @@ func workloadIDFromParams(t *testing.T, params json.RawMessage) string {
 	return env.WorkloadInfo.ID
 }
 
-func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
+func TestDeliverPriority_SkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 	b := &Broker{}
 	oldInput := schedulerwire.Priority{
 		Nodes: []string{"old"},
@@ -188,7 +188,7 @@ func TestDeliverPrioritySkipsStaleGenerationsAndPreservesNewest(t *testing.T) {
 // dropped before it mints a generation: a second delivery of one recompute
 // clears the proxy's optimistic reservations a second time, discarding the
 // dispatches the first delivery's pending counts do not yet include.
-func TestDuplicatePerEngineEmissionDoesNotMintAGeneration(t *testing.T) {
+func TestDuplicatePerEngineEmission_DoesNotMintAGeneration(t *testing.T) {
 	b := &Broker{}
 	ranking := schedulerwire.Priority{
 		Nodes: []string{"b", "a"},
@@ -215,7 +215,7 @@ func TestDuplicatePerEngineEmissionDoesNotMintAGeneration(t *testing.T) {
 // An empty ranking is a legitimate state — it means the scheduler has no
 // influence — and must be distinguishable from having no ranking at all, or a
 // repush would either send nothing or send an uncached zero value.
-func TestEmptyRankingIsCachedNotTreatedAsAbsent(t *testing.T) {
+func TestEmptyRanking_IsCachedNotTreatedAsAbsent(t *testing.T) {
 	b := &Broker{}
 	_, fresh := b.cachePrioritySnapshot(schedulerwire.Priority{})
 	require.True(t, fresh, "first empty ranking was treated as a duplicate")
@@ -225,7 +225,7 @@ func TestEmptyRankingIsCachedNotTreatedAsAbsent(t *testing.T) {
 	require.True(t, have, "an empty ranking did not mark a ranking as cached, so repush would skip it")
 }
 
-func TestRepushPriorityDeliversCompleteSnapshotToReplacementProxy(t *testing.T) {
+func TestRepushPriority_DeliversCompleteSnapshotToReplacementProxy(t *testing.T) {
 	brokerSide, proxySide := net.Pipe()
 	t.Cleanup(func() {
 		_ = brokerSide.Close()

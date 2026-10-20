@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSettingsDerivesCORSGuardFromAuthenticatedCaller(t *testing.T) {
+func TestSettings_DerivesCORSGuardFromAuthenticatedCaller(t *testing.T) {
 	h := newSettingsHarness(t)
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)

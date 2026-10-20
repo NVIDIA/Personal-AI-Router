@@ -121,7 +121,7 @@ func writeRawFrame(t *testing.T, w io.Writer, frame string) {
 // workload event POSTed to the supervised manager's inter-node endpoint
 // must surface on the broker's workloads:* client stream as a
 // workloads:upsert, but only after the client has subscribed.
-func TestWorkloadManagerInboundRelay(t *testing.T) {
+func TestWorkloadManager_RelaysInboundPeerEventsToClients(t *testing.T) {
 	fx := newInterNodeCluster(t)
 	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
 		"--scanner-path", scannerBin,
@@ -159,7 +159,7 @@ func TestWorkloadManagerInboundRelay(t *testing.T) {
 // the same workload must leave the client's view failed — the late running is
 // dropped by the broker's store and never re-emitted — and workloads:get-initial
 // reports the authoritative terminal state.
-func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
+func TestWorkloadRelay_SuppressesOutOfOrderStateUpdates(t *testing.T) {
 	fx := newInterNodeCluster(t)
 	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
 		"--scanner-path", scannerBin,
@@ -235,7 +235,7 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 // workloads:upsert; the peer's mDNS record is then withdrawn, the scanner
 // evicts it (miss threshold + liveness probe), and the broker synthesizes the
 // terminal workloads:upsert(state=failed).
-func TestWorkloadFailedOnNodeLoss(t *testing.T) {
+func TestWorkloadRelay_FailsActiveWorkWhenNodeDisappears(t *testing.T) {
 	// The peer's mDNS instance name and its stable HostUUID differ on purpose:
 	// workloads are stamped/keyed by HostUUID, and the node-loss sweep
 	// must match on that UUID, not the display name. Keying by name would leave
@@ -313,7 +313,7 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 // real inference request through the supervised ollama-proxy produces a
 // workload event that the broker stamps and forwards to the manager, which
 // broadcasts it to a discovered peer.
-func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
+func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 	// Fake Ollama upstream the proxy forwards to (200 on any request).
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)

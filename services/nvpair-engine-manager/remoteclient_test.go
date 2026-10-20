@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
+func TestRemoteStart_UsesReadinessHeaderBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -38,7 +38,7 @@ func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
 // A remote Ollama load can withhold headers while a cold model loads. A remote
 // LM Studio delete can likewise restart the peer's engine before it replies.
 // Both need the longer response-header budget; other model calls remain bounded.
-func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
+func TestRemoteModelOperations_AllowReadinessResponseHeaderBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -64,7 +64,7 @@ func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
 	require.ErrorContains(t, err, "timeout awaiting response headers", "remote unload error")
 }
 
-func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
+func TestRemoteReadinessBudget_CoversEngineStartupAllowance(t *testing.T) {
 	require.Greater(t, remoteReadyResponseHeaderTimeout, remoteResponseHeaderTimeout, "readiness budget")
 	cases := []struct {
 		path   string
@@ -84,7 +84,7 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 	}
 }
 
-func TestRemoteStartHeaderWaitRemainsBounded(t *testing.T) {
+func TestRemoteStartHeaderWait_RemainsBounded(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-release

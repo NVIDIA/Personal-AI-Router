@@ -21,7 +21,7 @@ import (
 // path with compiled processes: the broker reads OLLAMA_HOST, passes a safe
 // loopback alias to ollama-proxy, and the alias uses the same routing/workload
 // handler as the primary compatibility facade.
-func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
+func TestOllamaHostAlias_ForwardsRequestsThroughBrokerManagedProxy(t *testing.T) {
 	if portBusy(11434) {
 		t.Skip("managed Ollama facade port 11434 already in use; skipping")
 	}

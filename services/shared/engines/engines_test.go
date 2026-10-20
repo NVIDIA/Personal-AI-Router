@@ -16,13 +16,13 @@ import (
 // preparation depends on: Ollama's preparation reserves any inherited
 // OLLAMA_HOST alias, and every later engine's port planning must route around
 // it. Reordering the table silently breaks that on roughly half of all runs.
-func TestOllamaIsPreparedFirst(t *testing.T) {
+func TestOllama_IsPreparedFirst(t *testing.T) {
 	got := Names()
 	require.NotEmpty(t, got)
 	assert.Equal(t, "ollama", got[0])
 }
 
-func TestNames(t *testing.T) {
+func TestEngineNames_ReturnsCanonicalOrder(t *testing.T) {
 	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp"}, Names())
 }
 
@@ -31,7 +31,7 @@ func TestNames(t *testing.T) {
 // were already "ollama-proxy" — two near-identical values that coincided for LM
 // Studio, which made them easy to mistake for one field. This pins the shape of
 // both so a new engine cannot reintroduce that ambiguity.
-func TestProxyIdentities(t *testing.T) {
+func TestEngineProfiles_DeclareProxyIdentities(t *testing.T) {
 	for _, e := range All() {
 		assert.Equal(t, e.Name+"-proxy", e.ComponentName())
 		// The bare prefix Ollama used to relay under must not come back.
@@ -50,7 +50,7 @@ func TestProxyIdentities(t *testing.T) {
 // TestFacadeAndEnginePortsDiffer guards the invariant that makes managed mode
 // coherent: the proxy claims the engine's stock port, so the engine has to move
 // somewhere else.
-func TestFacadeAndEnginePortsDiffer(t *testing.T) {
+func TestFacadeAndEnginePorts_Differ(t *testing.T) {
 	for _, e := range All() {
 		assert.NotEqual(t, e.EnginePortBase, e.FacadePort)
 		assert.Positive(t, e.FacadePort)
@@ -63,7 +63,7 @@ func TestFacadeAndEnginePortsDiffer(t *testing.T) {
 // rename the file under every existing install and orphan whatever port the
 // user had chosen. This test exists so a future tidy-up cannot quietly make
 // that trade.
-func TestPortFilesAreDeclaredNotDerived(t *testing.T) {
+func TestPortFiles_AreDeclaredNotDerived(t *testing.T) {
 	ollama, ok := ByName("ollama")
 	require.True(t, ok, "no ollama engine")
 	assert.Equal(t, "proxy-port.json", ollama.PortFile, "ollama PortFile")
@@ -73,7 +73,7 @@ func TestPortFilesAreDeclaredNotDerived(t *testing.T) {
 	}
 }
 
-func TestIdentitiesAreUnique(t *testing.T) {
+func TestIdentities_AreUnique(t *testing.T) {
 	names := map[string]bool{}
 	components := map[string]bool{}
 	services := map[noderec.ServiceKey]bool{}
@@ -97,7 +97,7 @@ func TestIdentitiesAreUnique(t *testing.T) {
 
 // TestAllReturnsACopy keeps a caller from reordering the shared table, which
 // would defeat TestOllamaIsPreparedFirst at a distance.
-func TestAllReturnsACopy(t *testing.T) {
+func TestAll_ReturnsACopy(t *testing.T) {
 	first := All()
 	require.GreaterOrEqual(t, len(first), 2, "expected at least two engines,")
 	first[0], first[1] = first[1], first[0]
@@ -105,7 +105,7 @@ func TestAllReturnsACopy(t *testing.T) {
 	assert.Equal(t, "ollama", Names()[0], "mutating the result of All() reordered the shared table")
 }
 
-func TestLookups(t *testing.T) {
+func TestEngineLookup_ResolvesDeclaredNamesAndKeys(t *testing.T) {
 	for _, e := range All() {
 		byName, ok := ByName(e.Name)
 		assert.True(t, ok, "ByName")
@@ -116,7 +116,7 @@ func TestLookups(t *testing.T) {
 	assert.False(t, ok, "ByName should report ok=false for an unknown engine")
 }
 
-func TestAddressedMethodRoundTrip(t *testing.T) {
+func TestAddressedMethod_RoundTripsEngineAndMethod(t *testing.T) {
 	for _, e := range All() {
 		for _, method := range []string{"ready", "nodes/list", "errors:report"} {
 			addressed := AddressMethod(e.Name, method)
@@ -130,7 +130,7 @@ func TestAddressedMethodRoundTrip(t *testing.T) {
 // Plenty of unaddressed methods contain a colon, so only a known engine id may
 // count as an address. Treating "errors:report" as engine "errors" would strip
 // a real method down to "report" and route it nowhere.
-func TestUnaddressedMethodsAreNotMistakenForAddressed(t *testing.T) {
+func TestUnaddressedMethods_AreNotMistakenForAddressed(t *testing.T) {
 	for _, method := range []string{
 		"ready",
 		"errors:report",
@@ -152,7 +152,7 @@ func TestUnaddressedMethodsAreNotMistakenForAddressed(t *testing.T) {
 // An engine id that is a prefix of another would make addresses ambiguous:
 // splitting on the first colon cannot tell "lm:x" from "lmstudio:x" if one id
 // is a prefix of the other and the separator is ever omitted.
-func TestNoEngineIDContainsTheAddressSeparator(t *testing.T) {
+func TestNoEngineID_ContainsTheAddressSeparator(t *testing.T) {
 	for _, e := range All() {
 		assert.NotContains(t, e.Name, ":", "engine id")
 	}

@@ -124,7 +124,7 @@ func serveEventsOverMTLS(t *testing.T, srv *Server, self, peer *clustertrust.Mes
 // pinned cluster members. A pinned member's broadcast is accepted (200); a node
 // that completes the TLS handshake but isn't pinned by the receiver is rejected
 // at the pin gate (403); and a peer we hold no pin for can't even build a client.
-func TestWorkloadBroadcast_MTLSGate(t *testing.T) {
+func TestWorkloadBroadcast_RequiresPinnedMutualTLS(t *testing.T) {
 	aCert, aKey := genLeaf(t, "uuid-a")
 	bCert, bKey := genLeaf(t, "uuid-b")
 	cCert, cKey := genLeaf(t, "uuid-c")
@@ -200,7 +200,7 @@ func TestWorkloadBroadcast_MTLSGate(t *testing.T) {
 // a peer's — the confidentiality half of the reported issue. The listener is mTLS
 // only, so in production such a caller never completes a handshake; this drives
 // the handler directly to prove the gate itself does not depend on membership.
-func TestWorkloadEvents_UnauthenticatedIsAlwaysRefused(t *testing.T) {
+func TestWorkloadEvents_RefusesUnauthenticatedRequests(t *testing.T) {
 	certPEM, keyPEM := genLeaf(t, "uuid-self")
 	dir := t.TempDir()
 	mesh := clustertrust.Open(dir)

@@ -37,7 +37,7 @@ const ioRegistryGPUFixture = `<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </array></plist>`
 
-func TestParseIORegistryGPUs(t *testing.T) {
+func TestParseIORegistryGPUs_ExtractsGPUInventoryAndMetrics(t *testing.T) {
 	const systemMemory = uint64(36 << 30)
 	records, err := parseIORegistryGPUs([]byte(ioRegistryGPUFixture), systemMemory)
 	require.NoError(t, err, "parseIORegistryGPUs() error")
@@ -60,7 +60,7 @@ func TestParseIORegistryGPUs(t *testing.T) {
 	require.True(t, discrete.utilizationValid, "discrete utilization")
 }
 
-func TestParseIORegistryGPUsRecursesAndOmitsMissingMetrics(t *testing.T) {
+func TestParseIORegistryGPUs_RecursesAndOmitsMissingMetrics(t *testing.T) {
 	const fixture = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><array><dict>
 <key>IORegistryEntryChildren</key><array><dict>
@@ -80,7 +80,7 @@ func TestParseIORegistryGPUsRecursesAndOmitsMissingMetrics(t *testing.T) {
 	require.False(t, got.utilizationValid, "missing metrics should remain zero (%v)", got)
 }
 
-func TestParseIORegistryGPUsPreservesDedicatedCounterPresence(t *testing.T) {
+func TestParseIORegistryGPUs_PreservesDedicatedCounterPresence(t *testing.T) {
 	const fixture = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><array>
 <dict>
@@ -127,7 +127,7 @@ func TestParseIORegistryGPUsPreservesDedicatedCounterPresence(t *testing.T) {
 	require.True(t, records[2].utilizationValid, "alias counters were not normalized")
 }
 
-func TestParseIORegistryGPUsRejectsMalformedPlist(t *testing.T) {
+func TestParseIORegistryGPUs_RejectsMalformedPlist(t *testing.T) {
 	_, err := parseIORegistryGPUs([]byte("<plist>"), 0)
 	require.Error(t, err, "malformed plist returned nil error")
 }

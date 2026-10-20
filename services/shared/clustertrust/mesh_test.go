@@ -38,7 +38,7 @@ func loadMeshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) *
 // TestMesh_Open_UnclusteredCases: an empty or identity-less dir yields a usable
 // but unclustered mesh, so the caller serves plain HTTP from the same object it
 // will later serve cluster mTLS from.
-func TestMesh_Open_UnclusteredCases(t *testing.T) {
+func TestMeshOpen_LeavesUnclusteredNodesWithoutPeerAuthorization(t *testing.T) {
 	for name, dir := range map[string]string{"no cluster dir": "", "empty cluster dir": t.TempDir()} {
 		m := Open(dir)
 		require.NotNil(t, m, "%s", name)
@@ -55,7 +55,7 @@ func TestMesh_Open_UnclusteredCases(t *testing.T) {
 // is accepted (self-trust) even though it isn't in trusted/, the UUID-less
 // any-pin client works, and a node that completes the handshake but isn't
 // pinned by the server is rejected at the gate.
-func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
+func TestMeshGate_RequiresMembershipAndPinnedIdentity(t *testing.T) {
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, peerKey, _ := genLeaf(t, "uuid-peer")
 	strangerPEM, strangerKey, _ := genLeaf(t, "uuid-stranger")
@@ -125,7 +125,7 @@ func TestMesh_GateSelfTrustAndAnyPin(t *testing.T) {
 // personality of that ALREADY-BOUND listener must follow membership. Before the
 // cluster dir is populated a peer handshake is refused; afterwards the very same
 // listener serves the pinned mTLS surface, with no rebind and no restart.
-func TestMesh_ServerTLSConfig_FollowsMembershipOnOneListener(t *testing.T) {
+func TestMeshServerTLSConfig_TracksMembershipOnExistingListener(t *testing.T) {
 	selfDir := t.TempDir()
 	selfPEM, selfKey, _ := genLeaf(t, "uuid-self")
 	peerPEM, peerKey, _ := genLeaf(t, "uuid-peer")
@@ -172,7 +172,7 @@ func TestMesh_ServerTLSConfig_FollowsMembershipOnOneListener(t *testing.T) {
 }
 
 // TestClusterUUIDFromTXT: reads cluster-uuid= and never node-info's host uuid=.
-func TestClusterUUIDFromTXT(t *testing.T) {
+func TestClusterUUIDFromTXT_ExtractsClusterIdentity(t *testing.T) {
 	assert.Equal(t, "abc-123", ClusterUUIDFromTXT([]string{"http=0", "cluster-uuid=abc-123", "mtls=1"}))
 	assert.Equal(t, "", ClusterUUIDFromTXT([]string{"uuid=host-level-id"}))
 	assert.Equal(t, "", ClusterUUIDFromTXT(nil))

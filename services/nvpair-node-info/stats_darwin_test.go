@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDarwinCPUUtilization(t *testing.T) {
+func TestDarwinCPUUtilization_ComputesUsageBetweenSamples(t *testing.T) {
 	valid := func(idle, total float64) darwinCPUTimes {
 		return darwinCPUTimes{idle: idle, total: total, valid: true}
 	}
@@ -38,7 +38,7 @@ func TestDarwinCPUUtilization(t *testing.T) {
 	}
 }
 
-func TestInitialDarwinMemorySnapshot(t *testing.T) {
+func TestDarwinMemorySnapshot_ReportsInitialSystemUsage(t *testing.T) {
 	snap := initialDarwinMemorySnapshot(func() (uint64, bool) {
 		return 12 << 30, true
 	})
@@ -50,7 +50,7 @@ func TestInitialDarwinMemorySnapshot(t *testing.T) {
 	require.Equal(t, uint64(0), snap.MemUsedBytes, "failed read published")
 }
 
-func TestDarwinCollectorPublishesAndStops(t *testing.T) {
+func TestDarwinCollector_PublishesAndStops(t *testing.T) {
 	var cpuReads atomic.Uint64
 	readCPU := func() darwinCPUTimes {
 		n := float64(cpuReads.Add(1))
@@ -88,7 +88,7 @@ func TestDarwinCollectorPublishesAndStops(t *testing.T) {
 	c.Stop()
 }
 
-func TestDarwinCollectorKeepsMemoryOnCPUFailure(t *testing.T) {
+func TestDarwinCollector_KeepsMemoryOnCPUFailure(t *testing.T) {
 	c := &statsCollector{
 		prevCPU: darwinCPUTimes{idle: 20, total: 100, valid: true},
 		readCPU: func() darwinCPUTimes {
@@ -103,7 +103,7 @@ func TestDarwinCollectorKeepsMemoryOnCPUFailure(t *testing.T) {
 	require.Equal(t, uint64(8<<30), snap.MemUsedBytes, "unexpected partial snapshot (%v)", snap)
 }
 
-func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
+func TestDarwinCollector_RetriesGPUAfterFailure(t *testing.T) {
 	var calls atomic.Uint64
 	c := &statsCollector{
 		prevCPU: darwinCPUTimes{idle: 20, total: 100, valid: true},
@@ -132,7 +132,7 @@ func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
 	require.Equal(t, uint32(77), c.Snapshot().GPU["ioreg:2a"].UtilizationPct, "retry utilization")
 }
 
-func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
+func TestDarwinCollector_RequiresUtilizationSample(t *testing.T) {
 	readings := []darwinGPUReading{
 		{
 			inventory: []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
@@ -175,7 +175,7 @@ func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
 	require.WithinDuration(t, idle.GPUSampledAt, retained.GPUSampledAt, 0, "missing utilization replaced last valid reading: (%v, %v)", retained, idle)
 }
 
-func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
+func TestDarwinCollector_PublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	started := make(chan struct{})
 	readGPU := func(ctx context.Context) (darwinGPUReading, error) {
 		close(started)
@@ -212,7 +212,7 @@ func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	}
 }
 
-func TestDynamicGPUReadingFromIORegistry(t *testing.T) {
+func TestDynamicGPUReading_ExtractsIORegistryMetrics(t *testing.T) {
 	reading, err := dynamicGPUReadingFromIORegistry([]byte(ioRegistryGPUFixture), 36<<30)
 	require.NoError(t, err, "dynamicGPUReadingFromIORegistry() error")
 	apple := reading.stats["ioreg:2a"]

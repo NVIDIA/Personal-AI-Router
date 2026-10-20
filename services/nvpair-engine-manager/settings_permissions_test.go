@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSettingsOverrideRestrictsExistingPermissions(t *testing.T) {
+func TestSettingsOverride_RestrictsExistingPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits are not enforced on Windows")
 	}

@@ -20,7 +20,7 @@ import (
 
 // TestProgressHubFanOutAndFilter verifies a subscriber receives only its
 // engine's events and that cancel closes the channel.
-func TestProgressHubFanOutAndFilter(t *testing.T) {
+func TestProgressHub_FansOutEventsToMatchingSubscribers(t *testing.T) {
 	h := newProgressHub()
 	ch, cancel := h.subscribe("ollama")
 
@@ -50,7 +50,7 @@ func TestProgressHubFanOutAndFilter(t *testing.T) {
 // TestProgressHubDropsWhenFull ensures a full subscriber buffer drops frames
 // rather than blocking the publisher (an install must never stall on a slow
 // consumer).
-func TestProgressHubDropsWhenFull(t *testing.T) {
+func TestProgressHub_DropsWhenFull(t *testing.T) {
 	h := newProgressHub()
 	_, cancel := h.subscribe("ollama")
 	defer cancel()
@@ -72,7 +72,7 @@ func TestProgressHubDropsWhenFull(t *testing.T) {
 
 // TestEmitInstallProgressPublishesToHub verifies the executor helper both
 // notifies and feeds the hub.
-func TestEmitInstallProgressPublishesToHub(t *testing.T) {
+func TestEmitInstallProgress_PublishesToHub(t *testing.T) {
 	var gotParams map[string]any
 	e := &Executor{
 		progress: newProgressHub(),
@@ -100,7 +100,7 @@ func TestEmitInstallProgressPublishesToHub(t *testing.T) {
 // TestEmitInstallProgressOmitsIndeterminatePercent verifies an unmeasurable
 // install step (percent 0) reaches the wire without a percent, so the UI shows
 // the stage alone instead of a made-up number.
-func TestEmitInstallProgressOmitsIndeterminatePercent(t *testing.T) {
+func TestEmitInstallProgress_OmitsIndeterminatePercent(t *testing.T) {
 	var gotParams map[string]any
 	e := &Executor{
 		progress: newProgressHub(),
@@ -128,7 +128,7 @@ func TestEmitInstallProgressOmitsIndeterminatePercent(t *testing.T) {
 // TestInstallFlowReportsOnlyMeasurablePercents drives a full fetch+run install
 // and checks that only measurable (download) and terminal frames carry a
 // percent; the verified and installing steps are indeterminate.
-func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
+func TestInstallFlow_ReportsOnlyMeasurablePercents(t *testing.T) {
 	payload := []byte("engine payload")
 	sum := sha256.Sum256(payload)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -198,7 +198,7 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 // TestEmitPullProgressNotifiesAndPublishes verifies the pull helper emits the
 // local engine:pull-progress notification (with op/message) and also feeds the
 // hub, so a local pull surfaces progress like a remote pull.
-func TestEmitPullProgressNotifiesAndPublishes(t *testing.T) {
+func TestEmitPullProgress_NotifiesAndPublishes(t *testing.T) {
 	var gotMethod string
 	var gotParams map[string]any
 	e := &Executor{

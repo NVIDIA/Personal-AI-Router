@@ -29,7 +29,7 @@ func identityFrame(t *testing.T, clusterUUID string) applog.StdinMessage {
 // no cluster" — which would have it clear a correct annotation and offer an invite
 // its target rejects. So "not yet told" has to stay absent on the wire, not
 // collapse into the empty string it happens to be stored as.
-func TestClusterIdentityStartsUnknown(t *testing.T) {
+func TestClusterIdentity_StartsUnknown(t *testing.T) {
 	var identity clusterIdentity
 	uuid, told := identity.get()
 	require.False(t, told, "fresh identity (%v, %v)", uuid, told)
@@ -44,7 +44,7 @@ func TestClusterIdentityStartsUnknown(t *testing.T) {
 
 // TestHandleClusterIdentityAppliesPush drives the real stdin handler for the
 // three cases it sees: a principal, a departure, and a frame that is not ours.
-func TestHandleClusterIdentityAppliesPush(t *testing.T) {
+func TestHandleClusterIdentity_AppliesPush(t *testing.T) {
 	var identity clusterIdentity
 
 	handleClusterIdentity(identityFrame(t, "our-principal"), &identity)
@@ -69,7 +69,7 @@ func TestHandleClusterIdentityAppliesPush(t *testing.T) {
 // TestHandleClusterIdentityIgnoresMalformed keeps a bad payload from latching a
 // wrong membership: the broker re-pushes on every change, so dropping it is
 // recoverable while acting on it is not.
-func TestHandleClusterIdentityIgnoresMalformed(t *testing.T) {
+func TestHandleClusterIdentity_IgnoresMalformed(t *testing.T) {
 	var identity clusterIdentity
 	handleClusterIdentity(identityFrame(t, "our-principal"), &identity)
 
@@ -89,7 +89,7 @@ func TestHandleClusterIdentityIgnoresMalformed(t *testing.T) {
 // one as "unclustered", so adding omitempty to a non-pointer field — or dropping
 // the pointer — would silently stop peers converging while every other test in the
 // tree still passed.
-func TestBuildResponseClusterUUIDWireStates(t *testing.T) {
+func TestBuildResponse_DistinguishesUnknownAndEmptyClusterIdentity(t *testing.T) {
 	raw := func(clusterUUID *string) map[string]any {
 		t.Helper()
 		var out map[string]any

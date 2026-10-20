@@ -213,7 +213,7 @@ func waitForPort(t *testing.T, host string, port int, timeout time.Duration) {
 	require.FailNow(t, fmt.Sprintf("port %s:%d did not start listening within %s", host, port, timeout))
 }
 
-func TestNodeInfoHTTPSWithMTLS(t *testing.T) {
+func TestNodeInfoHTTPS_RequiresClientCertificateWhenConfigured(t *testing.T) {
 	dir := t.TempDir()
 	caPEM, scPEM, skPEM, ccPEM, ckPEM := generateTestPKI(t, "localhost")
 	caPath := writePEM(t, dir, "ca.pem", caPEM)
@@ -262,7 +262,7 @@ func TestNodeInfoHTTPSWithMTLS(t *testing.T) {
 	assert.False(t, portReachable("127.0.0.1", httpPort), "HTTP port (%v)", httpPort)
 }
 
-func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
+func TestNodeInfoHTTPS_AcceptsPlainHTTPOnSharedListener(t *testing.T) {
 	dir := t.TempDir()
 	caPEM, scPEM, skPEM, _, _ := generateTestPKI(t, "localhost")
 	scPath := writePEM(t, dir, "server.crt", scPEM)
@@ -302,7 +302,7 @@ func TestNodeInfoHTTPSAcceptHTTP(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "HTTPS GET status")
 }
 
-func TestNodeInfoPlainHTTPDefaultUnchanged(t *testing.T) {
+func TestNodeInfo_UsesPlainHTTPByDefault(t *testing.T) {
 	httpPort := freePort(t)
 	instance := fmt.Sprintf("plain-%d", httpPort)
 

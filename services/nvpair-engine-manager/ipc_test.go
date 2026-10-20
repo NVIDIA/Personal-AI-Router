@@ -17,7 +17,7 @@ import (
 // (a named pipe on Windows, a Unix socket elsewhere) accepts the
 // manager's dial, then we drive the JSON-RPC handshake over that
 // connection. Confirms dialIPC + the codec work off stdio.
-func TestIPCTransport(t *testing.T) {
+func TestEngineManager_RespondsToRequestsOverIPC(t *testing.T) {
 	ln, path := ipcListener(t)
 	defer ln.Close()
 

@@ -17,7 +17,7 @@ import (
 // not stall the whole leave for the full pairingHTTPTimeout (10s). The
 // departure-tombstone pushes run concurrently under leaveNotifyTimeout, then
 // teardown proceeds; the stuck peer converges later from the gossiped tombstone.
-func TestHandleLeave_NotBlockedByUnreachableMember(t *testing.T) {
+func TestHandleLeave_CompletesWhenMemberIsUnreachable(t *testing.T) {
 	m := newTestManager(t) // clustered as "cluster-1"
 
 	// A listener that accepts but never responds, so the mTLS reconcile POST

@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPersistManualNodeRoundTripsAndRemoves(t *testing.T) {
+func TestPersistManualNode_RoundTripsAndRemoves(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	b := &Broker{manualNodesConfigPath: path}
 
@@ -32,7 +32,7 @@ func TestPersistManualNodeRoundTripsAndRemoves(t *testing.T) {
 	assert.Empty(t, entries, "entries after remove")
 }
 
-func TestReplayPersistedManualNodesIntoWorker(t *testing.T) {
+func TestReplayPersistedManualNodes_ResendsSavedNodesToWorker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	require.NoError(t, writePersistedManualNodes(path, []persistedManualNode{{ID: "lab", Address: "node.local", Name: "lab"}}))
 
@@ -68,13 +68,13 @@ func TestReplayPersistedManualNodesIntoWorker(t *testing.T) {
 	}
 }
 
-func TestManualAliasForOperationalKey(t *testing.T) {
+func TestManualAliasForKey_PrefersMatchingAliasAndFallsBackDeterministically(t *testing.T) {
 	b := &Broker{manualNodeKeys: map[string]string{"second": "node-uuid", "first": "node-uuid"}}
 	assert.Equal(t, "first", b.manualAliasForKey("node-uuid"))
 	assert.Equal(t, "second", b.manualAliasForKey("second"))
 }
 
-func TestManualNodeRelayPersistsSuccessfulAdd(t *testing.T) {
+func TestManualNodeRelay_PersistsSuccessfulAdd(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	clientBroker, clientSide := net.Pipe()
 	workerBroker, workerSide := net.Pipe()
@@ -114,7 +114,7 @@ func TestManualNodeRelayPersistsSuccessfulAdd(t *testing.T) {
 	assert.Equal(t, "node.local", entries[0].Address)
 }
 
-func TestManualNodeRelayRemovesByOperationalKey(t *testing.T) {
+func TestManualNodeRelay_RemovesByOperationalKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	require.NoError(t, writePersistedManualNodes(path, []persistedManualNode{{ID: "lab", Address: "node.local", Name: "lab"}}))
 	clientBroker, clientSide := net.Pipe()

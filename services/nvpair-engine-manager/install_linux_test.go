@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLlamaCPPInstallPreservesShellArtifactArguments(t *testing.T) {
+func TestLlamaCPPInstall_PreservesShellArtifactArguments(t *testing.T) {
 	// Both archives wrap their contents in one top-level directory, as every
 	// llama.cpp release tarball does, and the two wrappers are named
 	// differently — the server's after the build tag, the CUDA runtime's after

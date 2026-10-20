@@ -72,7 +72,7 @@ func relayHarness(t *testing.T) (*Broker, <-chan *Message) {
 // nobody reads — once per node every couple of seconds for as long as inference
 // streams. This is the shape the relay was first written in, and nothing else
 // would catch a regression to it.
-func TestActivityIsRelayedAsANotificationNotARequest(t *testing.T) {
+func TestActivity_IsRelayedAsANotificationNotARequest(t *testing.T) {
 	b, relayed := relayHarness(t)
 
 	b.forwardProxyNotificationForGeneration(b.currentOllamaProxyGeneration(),
@@ -85,7 +85,7 @@ func TestActivityIsRelayedAsANotificationNotARequest(t *testing.T) {
 // A scanner that never acks must not wedge the relay: the queue keeps draining
 // and later reports still arrive. With an id-bearing call each report blocked a
 // goroutine until its timeout instead.
-func TestUnacknowledgedReportsDoNotStallTheRelay(t *testing.T) {
+func TestActivityReports_DoNotStallRelayWithoutAcknowledgment(t *testing.T) {
 	b, relayed := relayHarness(t)
 
 	for i := 0; i < 3; i++ {
@@ -97,7 +97,7 @@ func TestUnacknowledgedReportsDoNotStallTheRelay(t *testing.T) {
 	awaitRelay(t, relayed)
 }
 
-func TestOllamaProxyActivityReachesTheScanner(t *testing.T) {
+func TestOllamaProxyActivity_ReachesTheScanner(t *testing.T) {
 	b, relayed := relayHarness(t)
 
 	b.forwardProxyNotificationForGeneration(b.currentOllamaProxyGeneration(),
@@ -113,7 +113,7 @@ func TestOllamaProxyActivityReachesTheScanner(t *testing.T) {
 // Both proxies produce this signal, so both forwarding paths must carry it. The
 // LM Studio path is a separate function and has been missed by feature work
 // before.
-func TestLMStudioProxyActivityReachesTheScanner(t *testing.T) {
+func TestLMStudioProxyActivity_ReachesTheScanner(t *testing.T) {
 	b, relayed := relayHarness(t)
 
 	b.forwardLMStudioProxyNotification(noderec.NotifyNodeActivity,
@@ -126,7 +126,7 @@ func TestLMStudioProxyActivityReachesTheScanner(t *testing.T) {
 // The report crosses two pipes and a goroutine hop, and the scanner measures
 // freshness against the age it is given, so the delay in transit has to be added
 // to the age the proxy reported rather than replacing it.
-func TestRelayedActivityAgeAccumulatesTransitDelay(t *testing.T) {
+func TestRelayedActivityAge_AccumulatesTransitDelay(t *testing.T) {
 	b, relayed := relayHarness(t)
 
 	b.forwardProxyNotificationForGeneration(b.currentOllamaProxyGeneration(),
@@ -141,7 +141,7 @@ func TestRelayedActivityAgeAccumulatesTransitDelay(t *testing.T) {
 // which is the operation that overflows. An overflowed value goes NEGATIVE, which
 // places the observation in the future — and a future observation never expires,
 // so the node could never be probed again.
-func TestReportedAgeIsClampedAtBothEnds(t *testing.T) {
+func TestReportedAge_IsClampedAtBothEnds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		msSince int64
@@ -162,7 +162,7 @@ func TestReportedAgeIsClampedAtBothEnds(t *testing.T) {
 
 // An unidentified peer cannot be vouched for: relaying it would credit whichever
 // node ends up keyed by the empty string.
-func TestActivityWithoutAHostUUIDIsNotRelayed(t *testing.T) {
+func TestActivityWithoutAHostUUID_IsNotRelayed(t *testing.T) {
 	b, relayed := relayHarness(t)
 
 	b.forwardProxyNotificationForGeneration(b.currentOllamaProxyGeneration(),
@@ -178,7 +178,7 @@ func TestActivityWithoutAHostUUIDIsNotRelayed(t *testing.T) {
 // Activity is discovery input, not a proxy control-plane event. Forwarding it on
 // to proxy:subscribe clients would put a per-request frame on the client stream
 // that no client has any use for.
-func TestActivityIsNotForwardedToClients(t *testing.T) {
+func TestActivity_IsNotForwardedToClients(t *testing.T) {
 	brokerSide, scannerSide := net.Pipe()
 	t.Cleanup(func() {
 		_ = brokerSide.Close()

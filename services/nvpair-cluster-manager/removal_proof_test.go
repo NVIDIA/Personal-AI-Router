@@ -62,7 +62,7 @@ func cloneProof(t *testing.T, p RemovalProof) RemovalProof {
 	return out
 }
 
-func TestAdmissionEpochPersistsAndAdvancesOnReadmission(t *testing.T) {
+func TestAdmissionEpoch_PersistsAndAdvancesOnReadmission(t *testing.T) {
 	dir := t.TempDir()
 	first := testManagerAt(t, dir, 15101)
 	epoch1 := activateTestCluster(t, first, "cluster-1")
@@ -80,7 +80,7 @@ func TestAdmissionEpochPersistsAndAdvancesOnReadmission(t *testing.T) {
 	require.Greater(t, epoch2, epoch1, "same-cluster readmission epoch")
 }
 
-func TestRemovalProofTargetsExactAdmission(t *testing.T) {
+func TestRemovalProof_TargetsExactAdmission(t *testing.T) {
 	victim := newTestManagerPort(t, 15102)
 	remover := newTestManagerPort(t, 15103)
 	pinTrusted(t, victim, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
@@ -99,7 +99,7 @@ func TestRemovalProofTargetsExactAdmission(t *testing.T) {
 	require.False(t, victim.rejectionProvesRemoval(body, remover.identity.NodeUUID), "old admission proof evicted a legitimate same-cluster readmission")
 }
 
-func TestRemovalProofRelaysUnknownRemover(t *testing.T) {
+func TestRemovalProof_RelaysUnknownRemover(t *testing.T) {
 	victim := newTestManagerPort(t, 15104)
 	relay := newTestManagerPort(t, 15105)
 	remover := newTestManagerPort(t, 15106)
@@ -120,7 +120,7 @@ func TestRemovalProofRelaysUnknownRemover(t *testing.T) {
 	require.True(t, victim.rejectionProvesRemoval(proofRejectionBody(t, relayed), relay.identity.NodeUUID), "victim could not verify unknown remover through trusted relay")
 }
 
-func TestRemovalProofSurvivesRestartBeyondTwentyFourHours(t *testing.T) {
+func TestRemovalProof_SurvivesRestartBeyondTwentyFourHours(t *testing.T) {
 	relayDir := t.TempDir()
 	relay := testManagerAt(t, relayDir, 15107)
 	activateTestCluster(t, relay, "cluster-1")
@@ -153,7 +153,7 @@ func TestRemovalProofSurvivesRestartBeyondTwentyFourHours(t *testing.T) {
 	require.True(t, victim.rejectionProvesRemoval(proofRejectionBody(t, persisted), restarted.identity.NodeUUID), "victim could not verify persisted proof after relay restart")
 }
 
-func TestRemovalProofReplayFinishesInterruptedRemoval(t *testing.T) {
+func TestRemovalProofReplay_FinishesInterruptedRemoval(t *testing.T) {
 	dir := t.TempDir()
 	remover := testManagerAt(t, dir, 15117)
 	activateTestCluster(t, remover, "cluster-1")
@@ -180,7 +180,7 @@ func TestRemovalProofReplayFinishesInterruptedRemoval(t *testing.T) {
 	require.True(t, ok, "replay discarded proof before a newer admission superseded it")
 }
 
-func TestLegacyTombstoneCannotProveSelfRemoval(t *testing.T) {
+func TestLegacyTombstone_CannotProveSelfRemoval(t *testing.T) {
 	victim := newTestManagerPort(t, 15119)
 	peer := newTestManagerPort(t, 15120)
 	pinTrusted(t, victim, peer.identity.NodeUUID, string(peer.identity.CertPEM), peer.identity.CertFingerprint)
@@ -191,7 +191,7 @@ func TestLegacyTombstoneCannotProveSelfRemoval(t *testing.T) {
 	require.False(t, victim.rejectionProvesRemoval(body, peer.identity.NodeUUID), "legacy timestamp-only tombstone was accepted as self-removal proof")
 }
 
-func TestRemovalProofTamperingFailsClosed(t *testing.T) {
+func TestRemovalProofTampering_FailsClosed(t *testing.T) {
 	victim := newTestManagerPort(t, 15110)
 	relay := newTestManagerPort(t, 15111)
 	remover := newTestManagerPort(t, 15112)
@@ -226,7 +226,7 @@ func TestRemovalProofTamperingFailsClosed(t *testing.T) {
 	}
 }
 
-func TestNewerAdmissionSupersedesProofAndStaleGossip(t *testing.T) {
+func TestNewerAdmission_SupersedesProofAndStaleGossip(t *testing.T) {
 	m := newTestManagerPort(t, 15113)
 	endorser := newTestManagerPort(t, 15114)
 	pinTrusted(t, m, endorser.identity.NodeUUID, string(endorser.identity.CertPEM), endorser.identity.CertFingerprint)
@@ -265,7 +265,7 @@ func TestNewerAdmissionSupersedesProofAndStaleGossip(t *testing.T) {
 	require.Equal(t, uint64(2), pin.AdmissionEpoch, "stale gossip downgraded admission to")
 }
 
-func TestUnboundHighEpochProofCannotPoisonReadmission(t *testing.T) {
+func TestUnboundHighEpochProof_CannotPoisonReadmission(t *testing.T) {
 	m := newTestManagerPort(t, 15121)
 	remover := newTestManagerPort(t, 15122)
 	pinTrusted(t, m, remover.identity.NodeUUID, string(remover.identity.CertPEM), remover.identity.CertFingerprint)
@@ -287,7 +287,7 @@ func TestUnboundHighEpochProofCannotPoisonReadmission(t *testing.T) {
 	require.True(t, m.applyMembers([]RosterEntry{entry}, "cluster-1", remover.identity.NodeUUID), "invented high epoch blocked a legitimate admission")
 }
 
-func TestRemovalPersistenceFailureLeavesMemberIntact(t *testing.T) {
+func TestRemovalPersistenceFailure_LeavesMemberIntact(t *testing.T) {
 	m := newTestManagerPort(t, 15115)
 	peer := newTestManagerPort(t, 15116)
 	pinTrusted(t, m, peer.identity.NodeUUID, string(peer.identity.CertPEM), peer.identity.CertFingerprint)

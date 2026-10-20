@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIdentityMintAndReload(t *testing.T) {
+func TestIdentity_MintsAndReloadsStableCredentials(t *testing.T) {
 	dir := t.TempDir()
 	first, err := loadOrMintIdentity(dir)
 	require.NoError(t, err, "mint")
@@ -25,7 +25,7 @@ func TestIdentityMintAndReload(t *testing.T) {
 	require.Equal(t, first.CertFingerprint, second.CertFingerprint, "fingerprint changed across reload")
 }
 
-func TestIdentityLostKeyFailsLoud(t *testing.T) {
+func TestIdentity_RejectsReloadWhenPrivateKeyIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	_, err := loadOrMintIdentity(dir)
 	require.NoError(t, err, "mint")
@@ -34,7 +34,7 @@ func TestIdentityLostKeyFailsLoud(t *testing.T) {
 	require.Error(t, err, "expected a loud failure when identity.json exists but the key is gone")
 }
 
-func TestPINNoobRoundTrip(t *testing.T) {
+func TestPIN_RoundTripsThroughNoobEncoding(t *testing.T) {
 	cases := []string{"000000", "000123", "402199", "999999"}
 	for _, pin := range cases {
 		noob := noobFromPIN(pin)

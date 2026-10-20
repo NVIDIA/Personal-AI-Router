@@ -259,7 +259,7 @@ func isBindRace(e *jsonrpc.RPCError) bool {
 // TestLMStudioFacadeChildPersistsUnderPrivateBase proves a real proxy child
 // writes its persisted LM Studio port under the TestMain config base, so no
 // cross-process test can clobber the developer's saved port.
-func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
+func TestLMStudioFacadeChild_PersistsUnderPrivateBase(t *testing.T) {
 	cmd := exec.Command(proxyBin)
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)

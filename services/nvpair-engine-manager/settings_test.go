@@ -100,7 +100,7 @@ func assertNoSettingsOverride(t *testing.T, e *Executor) {
 	require.Empty(t, entries, "rejected operation wrote configuration")
 }
 
-func TestSettingsPreviewPreservesLiteralArguments(t *testing.T) {
+func TestSettingsPreview_PreservesLiteralArguments(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		request := settingsRequest(t, e)
 		request.Settings.LaunchText += ` --parallel 3 "two words" "" "{port}" "$HOME"`
@@ -112,7 +112,7 @@ func TestSettingsPreviewPreservesLiteralArguments(t *testing.T) {
 	})
 }
 
-func TestSettingsPreviewPortConflict(t *testing.T) {
+func TestSettingsPreview_ReportsPortConflict(t *testing.T) {
 	test := func(name, resolution string) {
 		t.Run(name, func(t *testing.T) {
 			eachEngineMode(t, func(t *testing.T, e *Executor) {
@@ -142,7 +142,7 @@ func TestSettingsPreviewPortConflict(t *testing.T) {
 	test("uses launch port", "launch")
 }
 
-func TestSettingsPreviewChecksOnlyDeclaredControls(t *testing.T) {
+func TestSettingsPreview_ChecksOnlyDeclaredControls(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		for _, suffix := range []string{" | other", " && other"} {
 			p := settingsRequest(t, e)
@@ -165,7 +165,7 @@ func TestSettingsPreviewChecksOnlyDeclaredControls(t *testing.T) {
 	})
 }
 
-func TestSettingsDoesNotGuessNetworkOptionSemantics(t *testing.T) {
+func TestSettings_DoesNotGuessNetworkOptionSemantics(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
 		want := []string{"--bind-address", "0.0.0.0", "--set", "host=0.0.0.0", "--set=port=22", "--set=--bind=0.0.0.0", "--hostname=anything", "--listen=anything"}
@@ -178,7 +178,7 @@ func TestSettingsDoesNotGuessNetworkOptionSemantics(t *testing.T) {
 	})
 }
 
-func TestSettingsPreviewAcceptsUnrelatedOptions(t *testing.T) {
+func TestSettingsPreview_AcceptsUnrelatedOptions(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		request := settingsRequest(t, e)
 		want := []string{"--transport", "grpc", "-v", "--max-tokens", "not-a-number",
@@ -196,7 +196,7 @@ func TestSettingsPreviewAcceptsUnrelatedOptions(t *testing.T) {
 	})
 }
 
-func TestSettingsArgumentsDoNotIncludeExecutableOrSubcommand(t *testing.T) {
+func TestSettingsArguments_DoNotIncludeExecutableOrSubcommand(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
 		require.NotContains(t, p.Settings.LaunchText, fakeEngineBin, "manifest command leaked into editor")
@@ -222,7 +222,7 @@ func TestSettingsArgumentsDoNotIncludeExecutableOrSubcommand(t *testing.T) {
 	})
 }
 
-func TestSettingsMigratesFullCommandWithoutChangingArguments(t *testing.T) {
+func TestSettings_MigratesFullCommandWithoutChangingArguments(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
 		launch, err := launchForState(settingsState(t, e), p.Settings.ServerPort)
@@ -238,7 +238,7 @@ func TestSettingsMigratesFullCommandWithoutChangingArguments(t *testing.T) {
 	})
 }
 
-func TestSettingsEmptyArgumentsRestoreManagedDefaults(t *testing.T) {
+func TestSettings_RestoresManagedDefaultsForEmptyArguments(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
 		p.Settings.LaunchText = ""
@@ -273,7 +273,7 @@ const (
 	restartsProcess
 )
 
-func TestSettingsConfigureLifecycle(t *testing.T) {
+func TestConfigureLaunch_AppliesSettingsForEachEngineLifecycleState(t *testing.T) {
 	test := func(name string, want lifecycle, edit func(*testing.T, *settings.Request)) {
 		t.Run(name, func(t *testing.T) {
 			e := settingsExecutor(t, false)
@@ -347,7 +347,7 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 
 // A no-op Apply still persists an empty launch_env; log capture must survive.
 
-func TestSettingsNoOpApplyKeepsEngineLogCapture(t *testing.T) {
+func TestSettingsNoOpApply_KeepsEngineLogCapture(t *testing.T) {
 	e := settingsExecutor(t, false)
 	st := settingsState(t, e)
 	require.NoError(t, e.Start(context.Background(), "fake"))
@@ -369,7 +369,7 @@ func TestSettingsNoOpApplyKeepsEngineLogCapture(t *testing.T) {
 	require.NotEqual(t, before, len(st.logs.snapshot()), "engine log capture stopped after a no-op Apply persisted an empty launch_env")
 }
 
-func TestSettingsEarlyLaunchFailureRetainsDesiredOptions(t *testing.T) {
+func TestSettingsEarlyLaunchFailure_RetainsDesiredOptions(t *testing.T) {
 	e := settingsExecutor(t, false)
 	require.NoError(t, e.Start(context.Background(), "fake"))
 	p := settingsRequest(t, e)
@@ -388,7 +388,7 @@ func TestSettingsEarlyLaunchFailureRetainsDesiredOptions(t *testing.T) {
 	require.False(t, hasErr(errors, exitedID("fake")), "settings failure was also reported through the global dialog (%v)", errors)
 }
 
-func TestEarlyExitHasOneStartError(t *testing.T) {
+func TestEarlyExit_HasOneStartError(t *testing.T) {
 	e := settingsExecutor(t, false)
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += " --fail-launch"
@@ -401,7 +401,7 @@ func TestEarlyExitHasOneStartError(t *testing.T) {
 	require.False(t, hasErr(errors, exitedID("fake")), "expected one start failure (%v)", errors)
 }
 
-func TestSettingsCORSOriginsValidationAndNormalization(t *testing.T) {
+func TestSettings_ValidatesAndNormalizesCORSOrigins(t *testing.T) {
 	preview := func(t *testing.T, origins string) (*Executor, settings.Preview) {
 		t.Helper()
 		e := settingsExecutor(t, false)
@@ -441,7 +441,7 @@ func TestSettingsCORSOriginsValidationAndNormalization(t *testing.T) {
 	reject("wildcard in origin list", "http://localhost,*", "every origin")
 }
 
-func TestSettingsCORSIsOptionalAndIndependentOfEngine(t *testing.T) {
+func TestSettingsCORS_IsOptionalAndIndependentOfEngine(t *testing.T) {
 	setup := func(t *testing.T, corsEnv, corsFlag, prefix, suffix string) (*Executor, settings.Request, settings.Preview) {
 		t.Helper()
 		e := settingsExecutor(t, false)
@@ -492,7 +492,7 @@ func TestSettingsCORSIsOptionalAndIndependentOfEngine(t *testing.T) {
 	reject("declared flag rejects missing value", "", "--browser-origins", "", " --browser-origins", "missing its value")
 }
 
-func TestSettingsPassesUnknownEnvironmentNamesAndValues(t *testing.T) {
+func TestSettings_PassesUnknownEnvironmentNamesAndValues(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		request := settingsRequest(t, e)
 		want := []string{"FUTURE_ENGINE_SETTING=unknown-value", "OLLAMA_CONTEXT_LENGTH=not-a-number",
@@ -524,7 +524,7 @@ func manifestSettingsRequest(t *testing.T, platform string) (*Executor, settings
 	return e, request, tokens
 }
 
-func TestSettingsManifestEnvironmentCanBeOverridden(t *testing.T) {
+func TestSettingsManifestEnvironment_CanBeOverridden(t *testing.T) {
 	test := func(name, platform, replacement string) {
 		t.Run(name, func(t *testing.T) {
 			e, request, tokens := manifestSettingsRequest(t, platform)
@@ -550,7 +550,7 @@ func TestSettingsManifestEnvironmentCanBeOverridden(t *testing.T) {
 	test("arm64 literal template", "linux/arm64", "{install_dir}/other")
 }
 
-func TestSettingsSafeEditPreservesManifestEnvironment(t *testing.T) {
+func TestSettingsSafeEdit_PreservesManifestEnvironment(t *testing.T) {
 	test := func(name, platform string, omitFixed bool) {
 		t.Run(name, func(t *testing.T) {
 			e, request, tokens := manifestSettingsRequest(t, platform)
@@ -581,7 +581,7 @@ func TestSettingsSafeEditPreservesManifestEnvironment(t *testing.T) {
 	test("arm64 restores omitted assignment", "linux/arm64", true)
 }
 
-func TestSettingsBudgetCoversBundledReadiness(t *testing.T) {
+func TestSettingsBudget_CoversBundledReadiness(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	for _, name := range reg.Names() {
 		manifest, ok := reg.Get(name)
@@ -603,7 +603,7 @@ func TestSettingsBudgetCoversBundledReadiness(t *testing.T) {
 	require.Greater(t, settings.RelayBudget, settings.CallBudget, "settings callers must leave headroom above the operation they await")
 }
 
-func TestSavedLaunchOverridesManifestEnvironmentLiterally(t *testing.T) {
+func TestSavedLaunch_OverridesManifestEnvironmentLiterally(t *testing.T) {
 	rt := Runtime{
 		EditableLaunch: &EditableLaunch{FixedArgs: []string{"serve"}},
 		Env:            map[string]string{"LD_LIBRARY_PATH": "{install_dir}/lib"},
@@ -617,7 +617,7 @@ func TestSavedLaunchOverridesManifestEnvironmentLiterally(t *testing.T) {
 	}
 }
 
-func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
+func TestSettings_SwapsLiveServerAndProxyPorts(t *testing.T) {
 	e := settingsExecutor(t, false)
 	require.NoError(t, e.Start(context.Background(), "fake"))
 	proxy, err := net.Listen("tcp", "127.0.0.1:0")
@@ -651,7 +651,7 @@ func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
 	require.Equal(t, 1, rebinds, "live swap (%v, %v, %v)", result, rebinds, err)
 }
 
-func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T) {
+func TestSettingsCommandLaunch_PreservesLiteralsAndCleansFailedStart(t *testing.T) {
 	e := settingsExecutor(t, true)
 	st := settingsState(t, e)
 	capture := filepath.Join(t.TempDir(), "argv.json")
@@ -685,7 +685,7 @@ func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T
 	require.FileExists(t, stopped, "failed first command did not run official cleanup")
 }
 
-func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) {
+func TestSettingsEnvironment_ReachesEngineAndCanBeEditedAndRemoved(t *testing.T) {
 	for _, command := range []bool{false, true} {
 		t.Run(fmt.Sprint(command), func(t *testing.T) {
 			e := settingsExecutor(t, command)
@@ -740,7 +740,7 @@ func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) 
 	}
 }
 
-func TestSettingsEnvironmentValidation(t *testing.T) {
+func TestSettings_RejectsInvalidEnvironmentAssignments(t *testing.T) {
 	e := settingsExecutor(t, false)
 	for _, prefix := range []string{"9BAD=value", "BAD-NAME=value", "PAIR_TEST=x PAIR_TEST=y"} {
 		p := settingsRequest(t, e)
@@ -754,7 +754,7 @@ func TestSettingsEnvironmentValidation(t *testing.T) {
 // A stop that fails has to leave the saved configuration alone. Persisting
 // first would put the new launch on disk while the live process kept the old
 // one, and the next start would adopt settings the user was told had failed.
-func TestSettingsFailedStopLeavesSavedConfigurationIntact(t *testing.T) {
+func TestSettingsFailedStop_LeavesSavedConfigurationIntact(t *testing.T) {
 	e := settingsExecutor(t, true)
 	st := settingsState(t, e)
 	capture := filepath.Join(t.TempDir(), "argv.json")
@@ -781,7 +781,7 @@ func TestSettingsFailedStopLeavesSavedConfigurationIntact(t *testing.T) {
 	require.NotContains(t, live.LaunchText, "--parallel 7", "in-memory launch adopted the rejected change")
 }
 
-func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
+func TestSettings_RejectsInvalidChangesBeforeMutationAndRetainsAcceptedFailure(t *testing.T) {
 	e := settingsExecutor(t, false)
 	request := settingsRequest(t, e)
 	st := settingsState(t, e)
@@ -803,7 +803,7 @@ func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
 	require.Contains(t, result.LaunchText, "--new", "accepted desired config not retained (%v, %v)", result, err)
 }
 
-func TestSettingsSupportsEngineWithoutStartupSubcommand(t *testing.T) {
+func TestSettings_SupportsEngineWithoutStartupSubcommand(t *testing.T) {
 	e := settingsExecutor(t, false)
 	st := settingsState(t, e)
 	st.plat.Runtime.Args = nil

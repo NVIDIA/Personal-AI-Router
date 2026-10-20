@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSetLoopbackAliasValidation(t *testing.T) {
+func TestSetLoopbackAlias_RejectsUnsafeAddresses(t *testing.T) {
 	for _, tc := range []struct {
 		address  string
 		wantErr  bool
@@ -44,7 +44,7 @@ func TestSetLoopbackAliasValidation(t *testing.T) {
 	}
 }
 
-func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
+func TestLoopbackAlias_UsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 	redirectConfigDir(t)
 	rec := &recRW{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +93,7 @@ func TestLoopbackAliasUsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 	require.True(t, bound.IsLoopback(), "alias bound non-loopback address (%v)", bound)
 }
 
-func TestOccupiedLoopbackAliasLeavesOwnerAndPrimaryRunning(t *testing.T) {
+func TestOccupiedLoopbackAlias_LeavesOwnerAndPrimaryRunning(t *testing.T) {
 	rec := &recRW{}
 	owner := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "owner")
@@ -133,7 +133,7 @@ func TestOccupiedLoopbackAliasLeavesOwnerAndPrimaryRunning(t *testing.T) {
 	}
 }
 
-func TestAliasPortIsAProxySelfTarget(t *testing.T) {
+func TestAliasPort_IsAProxySelfTarget(t *testing.T) {
 	primaryPort := freeTCPPort(t)
 	aliasPort := freeTCPPort(t)
 	for aliasPort == primaryPort {
@@ -154,7 +154,7 @@ func TestAliasPortIsAProxySelfTarget(t *testing.T) {
 	require.Equal(t, "real", candidates[0].id, "non-self candidate was lost (%v)", candidates)
 }
 
-func TestAliasSelfTargetMatchesBoundLoopbackAddressNotPortAlone(t *testing.T) {
+func TestAliasSelfTarget_MatchesBoundLoopbackAddressNotPortAlone(t *testing.T) {
 	// Proving the guard matches the bound address rather than the port alone
 	// needs a second loopback address. Linux aliases all of 127.0.0.0/8 to lo
 	// so this runs there and in CI; macOS binds only 127.0.0.1 unless an alias
@@ -184,7 +184,7 @@ func TestAliasSelfTargetMatchesBoundLoopbackAddressNotPortAlone(t *testing.T) {
 	require.Equal(t, "same-port-other-address", candidates[0].id, "candidates (%v)", candidates)
 }
 
-func TestFailedAliasBindDoesNotClaimOwnersEndpointAsSelf(t *testing.T) {
+func TestFailedAliasBind_DoesNotClaimOwnersEndpointAsSelf(t *testing.T) {
 	owner := mustLoopbackListener(t)
 	defer owner.Close()
 	aliasPort := owner.Addr().(*net.TCPAddr).Port
@@ -205,13 +205,13 @@ func TestFailedAliasBindDoesNotClaimOwnersEndpointAsSelf(t *testing.T) {
 	require.Equal(t, "owner", candidates[0].id, "candidates (%v)", candidates)
 }
 
-func TestAliasSelfTargetTreatsLocalhostAsCanonicalIPv6Loopback(t *testing.T) {
+func TestAliasSelfTarget_TreatsLocalhostAsCanonicalIPv6Loopback(t *testing.T) {
 	target := &url.URL{Host: "localhost:11433"}
 	require.True(t, isAliasSelfTarget(target, "[::1]:11433"), "localhost target did not match an owned IPv6 loopback alias")
 	require.False(t, isAliasSelfTarget(target, "127.0.0.2:11433"), "localhost target incorrectly matched a distinct 127/8 alias")
 }
 
-func TestIPv6AliasCandidatePreservesAddressForSelfCheck(t *testing.T) {
+func TestIPv6AliasCandidate_PreservesAddressForSelfCheck(t *testing.T) {
 	localAddrsMu.RLock()
 	original := make(map[string]bool, len(localAddrs))
 	for address, local := range localAddrs {
@@ -228,7 +228,7 @@ func TestIPv6AliasCandidatePreservesAddressForSelfCheck(t *testing.T) {
 	require.True(t, isAliasSelfTarget(&url.URL{Host: targets[0]}, "[::1]:11433"), "IPv6 alias candidate was not recognized as the owned endpoint")
 }
 
-func TestLoopbackAliasOwnsBothLocalhostFamilies(t *testing.T) {
+func TestLoopbackAlias_OwnsBothLocalhostFamilies(t *testing.T) {
 	var port int
 	for attempt := 0; attempt < 10 && port == 0; attempt++ {
 		ipv6, err := net.Listen("tcp", "[::1]:0")
@@ -262,7 +262,7 @@ func TestLoopbackAliasOwnsBothLocalhostFamilies(t *testing.T) {
 	}
 }
 
-func TestDualAliasBindIsAtomic(t *testing.T) {
+func TestDualAliasBind_IsAtomic(t *testing.T) {
 	owner, err := net.Listen("tcp", "[::1]:0")
 	if err != nil {
 		t.Skipf("IPv6 loopback unavailable: %v", err)

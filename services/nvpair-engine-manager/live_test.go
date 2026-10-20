@@ -41,7 +41,7 @@ import (
 // no-UAC zip (ollama-windows-amd64.zip), not the GUI OllamaSetup.exe —
 // into a temp dir on an auto-assigned port, then exercises the full
 // lifecycle via the API without disturbing any GUI Ollama on the box.
-func TestLiveOllamaCleanRoom(t *testing.T) {
+func TestLiveOllama_InstallsStartsAndUninstallsInCleanEnvironment(t *testing.T) {
 	if os.Getenv("NVPAIR_LIVE_OLLAMA") == "" {
 		t.Skip("set NVPAIR_LIVE_OLLAMA=1 to run the Ollama standalone clean-room test")
 	}
@@ -176,7 +176,7 @@ func TestLiveOllamaCleanRoom(t *testing.T) {
 // — install (vendor script), start (daemon via `lms`), list models
 // (HTTP), stop, uninstall — runs entirely through the API against the
 // bundled manifest, with no LM-Studio-specific code.
-func TestLiveLMStudioCleanRoom(t *testing.T) {
+func TestLiveLMStudio_InstallsStartsAndUninstallsInCleanEnvironment(t *testing.T) {
 	if os.Getenv("NVPAIR_LIVE_LMSTUDIO") == "" {
 		t.Skip("set NVPAIR_LIVE_LMSTUDIO=1 to run the LM Studio clean-room install test (this installs LM Studio)")
 	}

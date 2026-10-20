@@ -13,7 +13,7 @@ import (
 	"nvpair-shared/engines"
 )
 
-func TestProfilesMatchSharedEngines(t *testing.T) {
+func TestProxyProfiles_MatchCanonicalEngineList(t *testing.T) {
 	names := make([]string, len(profiles))
 	for i, profile := range profiles {
 		names[i] = profile.Name
@@ -21,7 +21,7 @@ func TestProfilesMatchSharedEngines(t *testing.T) {
 	require.Equal(t, engines.Names(), names, "proxy profiles must match the canonical engines")
 }
 
-func TestLlamaCPPProfile(t *testing.T) {
+func TestLlamaCPPProfile_DeclaresChatRouteAndReservedEnginePort(t *testing.T) {
 	profile, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")
 	role, ok := profile.roleFor("POST", "/v1/chat/completions")
@@ -32,7 +32,7 @@ func TestLlamaCPPProfile(t *testing.T) {
 	require.Equal(t, 8081, profile.ReservedPersistedPort, "reserved engine port")
 }
 
-func TestLlamaCPPModelListRoutes(t *testing.T) {
+func TestLlamaCPPModelList_UsesNativeInventoryForBothPublicRoutes(t *testing.T) {
 	profile, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")
 	for _, path := range []string{"/models", "/v1/models"} {
@@ -49,7 +49,7 @@ func TestLlamaCPPModelListRoutes(t *testing.T) {
 // loopback path into handleHTTP with no filtering, so a path the table does
 // not mention must still reach the upstream verbatim — that is how /api/pull,
 // /api/ps, /api/version and OPTIONS preflights keep working.
-func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
+func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	ollama, ok := profileFor("ollama")
 	require.True(t, ok, "ollama profile missing")
 	lmstudio, ok := profileFor("lmstudio")
@@ -104,7 +104,7 @@ func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	reject("llamacpp models post passthrough", llamacpp, http.MethodPost, "/models")
 }
 
-func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
+func TestIsInferenceRequest_FollowsTheProfile(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
@@ -119,7 +119,7 @@ func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
 // One naming convention governs both the federated list's dedupe key and the
 // routing gate. If they disagreed the proxy could advertise a model it then
 // refuses to route.
-func TestModelNaming(t *testing.T) {
+func TestModelNames_FollowEngineNormalizationRules(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
@@ -151,7 +151,7 @@ func TestModelNaming(t *testing.T) {
 	}
 }
 
-func TestNodeAdvertisesModelUsesTheProfilesNaming(t *testing.T) {
+func TestNodeAdvertisesModel_UsesEngineSpecificModelNames(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
@@ -165,7 +165,7 @@ func TestNodeAdvertisesModelUsesTheProfilesNaming(t *testing.T) {
 // used to return on the first path match, which made the second entry
 // unreachable — it would be forwarded verbatim instead of classified, and
 // nothing would say so.
-func TestRoleForFindsAPathDeclaredUnderTwoMethods(t *testing.T) {
+func TestRoleFor_FindsAPathDeclaredUnderTwoMethods(t *testing.T) {
 	p := engineProfile{Routes: []route{
 		{Path: "/v1/models", Role: roleInferencePOST},
 		{Path: "/v1/models", Role: roleModelListOpenAIGET},
@@ -183,7 +183,7 @@ func TestRoleForFindsAPathDeclaredUnderTwoMethods(t *testing.T) {
 
 // No shipped engine declares the same (path, method) twice; a duplicate would
 // make whichever entry came second dead.
-func TestNoDuplicateRoutePerMethod(t *testing.T) {
+func TestEngineProfiles_DeclareEachMethodAndPathOnce(t *testing.T) {
 	for _, p := range profiles {
 		seen := map[string]bool{}
 		for _, r := range p.Routes {
@@ -198,7 +198,7 @@ func TestNoDuplicateRoutePerMethod(t *testing.T) {
 // broker's expectations. The persisted-port filename deliberately does NOT
 // derive: Ollama's predates the multi-engine world, and deriving it would
 // rename the file under every existing install and orphan the port a user set.
-func TestDerivedIdentifiers(t *testing.T) {
+func TestEngineProfiles_PreservePortFilesAndDeriveErrorIdentifiers(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
@@ -210,7 +210,7 @@ func TestDerivedIdentifiers(t *testing.T) {
 
 // chooseStartupPort restores a previously chosen port, except when the broker
 // forces one or when the stored value belongs to the engine itself.
-func TestChooseStartupPort(t *testing.T) {
+func TestChooseStartupPort_RespectsOverridesAndReservedPorts(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 

@@ -14,7 +14,7 @@ import (
 	"nvpair-shared/clustertrust"
 )
 
-func TestHTTPServersConfigureIdleTimeouts(t *testing.T) {
+func TestHTTPServers_ConfigureIdleConnectionTimeouts(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	p.mesh = clustertrust.Open(t.TempDir())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

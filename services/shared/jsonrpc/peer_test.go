@@ -27,7 +27,7 @@ func pipePeers(t *testing.T) (a, b *Peer) {
 	return a, b
 }
 
-func TestPeerCallReturnsResult(t *testing.T) {
+func TestPeerCall_ReturnsResult(t *testing.T) {
 	a, b := pipePeers(t)
 	go b.Serve(func(req *Message) {
 		go b.Respond(req.ID, map[string]string{"echo": req.Method})
@@ -44,7 +44,7 @@ func TestPeerCallReturnsResult(t *testing.T) {
 	assert.Equal(t, "ping", out["echo"], "unexpected result")
 }
 
-func TestPeerCallReturnsRPCError(t *testing.T) {
+func TestPeerCall_ReturnsRPCError(t *testing.T) {
 	a, b := pipePeers(t)
 	go b.Serve(func(req *Message) {
 		go b.RespondError(req.ID, -32601, "method not found")
@@ -59,7 +59,7 @@ func TestPeerCallReturnsRPCError(t *testing.T) {
 	assert.Equal(t, -32601, rpcErr.Code)
 }
 
-func TestPeerSimultaneousInboundRequest(t *testing.T) {
+func TestPeer_HandlesInboundRequestsWhileCallIsPending(t *testing.T) {
 	// Both peers Call each other while both are serving inbound requests. The
 	// read pump is separate from Call, so neither side deadlocks.
 	a, b := pipePeers(t)
@@ -91,7 +91,7 @@ func TestPeerSimultaneousInboundRequest(t *testing.T) {
 	}
 }
 
-func TestPeerNotificationOrdering(t *testing.T) {
+func TestPeer_DeliversNotificationsInOrder(t *testing.T) {
 	a, b := pipePeers(t)
 	got := make(chan string, 16)
 	go b.Serve(nil, func(method string, _ json.RawMessage) { got <- method })
@@ -111,7 +111,7 @@ func TestPeerNotificationOrdering(t *testing.T) {
 	}
 }
 
-func TestPeerCallCtxCancel(t *testing.T) {
+func TestPeerCall_ReturnsWhenContextIsCancelled(t *testing.T) {
 	a, b := pipePeers(t)
 	go b.Serve(func(*Message) {}, nil) // never responds
 	go a.Serve(nil, nil)
@@ -122,7 +122,7 @@ func TestPeerCallCtxCancel(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled, "want context.Canceled")
 }
 
-func TestPeerCloseWakesPendingCall(t *testing.T) {
+func TestPeerClose_UnblocksPendingCalls(t *testing.T) {
 	c1, c2 := net.Pipe()
 	a := NewPeer(NewCodec(c1))
 	b := NewPeer(NewCodec(c2))
@@ -143,14 +143,14 @@ func TestPeerCloseWakesPendingCall(t *testing.T) {
 	}
 }
 
-func TestPeerCallAfterCloseFailsFast(t *testing.T) {
+func TestPeerCallAfterClose_FailsFast(t *testing.T) {
 	a, _ := pipePeers(t)
 	a.Close()
 	_, _, err := a.Call(context.Background(), "m", nil)
 	assert.ErrorIs(t, err, ErrPeerClosed, "want ErrPeerClosed after Close")
 }
 
-func TestPeerRelayRequest(t *testing.T) {
+func TestPeer_RelaysRequestAndResponse(t *testing.T) {
 	a, b := pipePeers(t)
 	go b.Serve(func(req *Message) {
 		go b.Respond(req.ID, map[string]int{"ok": 1})

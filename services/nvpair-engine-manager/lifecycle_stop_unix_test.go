@@ -45,7 +45,7 @@ while :; do sleep 1; done`
 	return proc
 }
 
-func TestStopHonorsProcessSignalPolicy(t *testing.T) {
+func TestStop_HonorsProcessSignalPolicy(t *testing.T) {
 	test := func(t *testing.T, stop StopSpec, minElapsed, maxElapsed time.Duration) {
 		t.Helper()
 		proc := startTermIgnoringProcess(t)

@@ -17,7 +17,7 @@ import (
 
 // TestMaybeLeavePreservesIntentionalSolo verifies that an explicitly created
 // cluster of one must survive a declined invite. leaveIfSolo used to erase it.
-func TestMaybeLeavePreservesIntentionalSolo(t *testing.T) {
+func TestMaybeLeave_PreservesIntentionalSolo(t *testing.T) {
 	m := newTestManager(t) // clustered as "cluster-1", inviteCreated=false
 	m.addSelfMember()
 
@@ -37,7 +37,7 @@ func TestMaybeLeavePreservesIntentionalSolo(t *testing.T) {
 // TestMaybeLeaveKeepsSiblingPendingInvite verifies that declining one outbound
 // invite while another is still pending must not tear down an invite-created
 // cluster — otherwise the sibling Completion could join a vanished cluster id.
-func TestMaybeLeaveKeepsSiblingPendingInvite(t *testing.T) {
+func TestMaybeLeave_KeepsSiblingPendingInvite(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	m.setInviteCreatedCluster(true)
@@ -70,7 +70,7 @@ func TestMaybeLeaveKeepsSiblingPendingInvite(t *testing.T) {
 // TestExpirePendingInviteCleansThrowaway is the lost-decline fallback: if the
 // joiner's decline POST never arrives, the inviter expires the pending invite
 // after the TTL and dissolves an invite-created solo cluster.
-func TestExpirePendingInviteCleansThrowaway(t *testing.T) {
+func TestExpirePendingInvite_CleansThrowaway(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	m.setInviteCreatedCluster(true)
@@ -104,7 +104,7 @@ func TestExpirePendingInviteCleansThrowaway(t *testing.T) {
 // inviter's outbound invite clears too. This replaces the older inviter->joiner
 // cancel-on-expiry path — the receiver now owns its own teardown, and each side's
 // own TTL remains a local fallback.
-func TestExpirePendingInviteClearsBothSides(t *testing.T) {
+func TestExpirePendingInvite_ClearsBothSides(t *testing.T) {
 	inviter := newTestManager(t)
 	receiver := newTestManager(t)
 	const inviteID = "inv-expire-remote"
@@ -185,7 +185,7 @@ func TestExpirePendingInviteClearsBothSides(t *testing.T) {
 
 // TestExpirePendingInvitePreservesIntentionalSolo verifies TTL expiry does not
 // dissolve a user-founded cluster of one.
-func TestExpirePendingInvitePreservesIntentionalSolo(t *testing.T) {
+func TestExpirePendingInvite_PreservesIntentionalSolo(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	// inviteCreated remains false (intentional).
@@ -214,7 +214,7 @@ func TestExpirePendingInvitePreservesIntentionalSolo(t *testing.T) {
 // lost-decline fallback. Pairing sessions are intentionally in-memory, so after
 // restart a durably marked invite-created solo cluster can no longer complete
 // and must be cleaned up when its identity is restored.
-func TestInviteCreatedProvenanceSurvivesRestart(t *testing.T) {
+func TestInviteCreatedProvenance_SurvivesRestart(t *testing.T) {
 	configDir := t.TempDir()
 	newManager := func() *Manager {
 		t.Helper()

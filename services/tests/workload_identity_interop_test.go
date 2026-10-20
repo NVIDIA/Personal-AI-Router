@@ -46,7 +46,7 @@ import (
 // per-process runId, which must keep them as two separate records on the
 // broker's workloads:* stream. Before the identity fix the (origin,id) store
 // key collapsed them into one.
-func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
+func TestWorkloadIdentity_DistinguishesEnginesAcrossProcesses(t *testing.T) {
 	if portBusy(11435) || portBusy(1234) {
 		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
 	}
@@ -153,7 +153,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 // it and replays the still-active local workload. A discovered stub peer must
 // hear the running workload AGAIN from the restarted manager — which only
 // happens if the broker rehydrated the fresh process's active set.
-func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
+func TestWorkloadManager_RehydratesActiveWorkloadOnRestart(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy default port 11435 already in use; skipping")
 	}
@@ -279,7 +279,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 // just active workloads) so the restarted manager re-asserts the completed
 // state — otherwise a peer's wrongly-inferred "failed" (or a missed terminal)
 // can never be repaired after a restart.
-func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
+func TestWorkloadManager_RehydratesRecentTerminalOnRestart(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy default port 11435 already in use; skipping")
 	}

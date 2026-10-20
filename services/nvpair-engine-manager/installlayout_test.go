@@ -54,7 +54,7 @@ func bundledManifestSet(t *testing.T) map[string]*Manifest {
 // in a build-tagged directory the install has to strip, while Ollama's Linux
 // archive is already bin/ and lib/ and must not be stripped. A convention
 // asserted here would only encode one vendor's habit as if it were a contract.
-func TestBundledRuntimeBinIsDetected(t *testing.T) {
+func TestBundledRuntimeBin_IsDetected(t *testing.T) {
 	for name, manifest := range bundledManifestSet(t) {
 		for key, platform := range manifest.Platforms {
 			bin := platform.Runtime.Bin
@@ -84,7 +84,7 @@ func TestBundledRuntimeBinIsDetected(t *testing.T) {
 // the archive it reads is the one fetched here.
 //
 //	NVPAIR_LIVE_LAYOUT=1 go test -run TestBundledInstallLayout -v -timeout 3600s
-func TestBundledInstallLayout(t *testing.T) {
+func TestBundledInstallLayout_MatchesRuntimeExecutablePaths(t *testing.T) {
 	if os.Getenv("NVPAIR_LIVE_LAYOUT") == "" {
 		t.Skip("set NVPAIR_LIVE_LAYOUT=1 to download every engine archive and verify its layout")
 	}

@@ -114,7 +114,7 @@ func assertScheduleOrder(t *testing.T, engine string, got, want []string) {
 // TestSchedulerRanksNodeWideWithoutWaitingForTimer uses a one-hour periodic
 // interval: the mixed-engine C,B,A result must therefore come from immediate
 // workload-event recomputation, not the timer.
-func TestSchedulerRanksNodeWideWithoutWaitingForTimer(t *testing.T) {
+func TestScheduler_RanksNodeWideWithoutWaitingForTimer(t *testing.T) {
 	stdin, msgs, cleanup := startSchedulerProc(t, "--interval", "1h")
 	t.Cleanup(cleanup)
 
@@ -134,7 +134,7 @@ func TestSchedulerRanksNodeWideWithoutWaitingForTimer(t *testing.T) {
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"c", "b", "a"})
 }
 
-func TestSchedulerRanksFreshUnknownAndStaleTelemetry(t *testing.T) {
+func TestScheduler_RanksFreshUnknownAndStaleTelemetry(t *testing.T) {
 	stdin, msgs, cleanup := startSchedulerProc(t, "--interval", "1h")
 	t.Cleanup(cleanup)
 
@@ -175,7 +175,7 @@ func TestSchedulerRanksFreshUnknownAndStaleTelemetry(t *testing.T) {
 	})
 }
 
-func TestSchedulerRestartBaselineUsesTelemetryReplay(t *testing.T) {
+func TestSchedulerRestartBaseline_UsesTelemetryReplay(t *testing.T) {
 	stdin, msgs, stopFirst := startSchedulerProc(t, "--interval", "1h")
 	t.Cleanup(stopFirst)
 	waitForMethod(t, msgs, "ready", 10*time.Second)
@@ -216,7 +216,7 @@ func assertPriorityPair(
 // TestSchedulerSyntheticMixedEngineBurst feeds each emitted first choice back
 // as the next assignment. Across 50 alternating-engine jobs, node depths must
 // remain within one even after every node is well above depth three.
-func TestSchedulerSyntheticMixedEngineBurst(t *testing.T) {
+func TestScheduler_BalancesMixedEngineBurstAcrossNodes(t *testing.T) {
 	stdin, msgs, cleanup := startSchedulerProc(t, "--interval", "1h")
 	t.Cleanup(cleanup)
 
@@ -275,7 +275,7 @@ func rankSyntheticDepths(depths map[string]int) []string {
 // binaries against blocked upstream HTTP servers. Because every request stays
 // in flight until all destinations have been observed, scheduler feedback
 // cannot explain the distribution: the proxy's atomic reservations must do it.
-func TestProxyConcurrentBurstDistribution(t *testing.T) {
+func TestProxy_DistributesConcurrentRequestsAcrossNodes(t *testing.T) {
 	t.Run("equal load", func(t *testing.T) {
 		pending := []int{0, 0, 0, 0}
 		pressure := []int{0, 0, 0, 0}
@@ -490,7 +490,7 @@ func assertBurstTotalsSkew(
 
 // TestProxySetPriorityViaBroker: the proxy's node/set-priority is reachable
 // through the broker's ollama-proxy:<method> relay and returns {count}.
-func TestProxySetPriorityViaBroker(t *testing.T) {
+func TestProxy_AppliesPrioritySnapshotRelayedByBroker(t *testing.T) {
 	stdin, msgs, cleanup := startBrokerProc(t,
 		"--scanner-path", scannerBin,
 		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
@@ -516,7 +516,7 @@ func TestProxySetPriorityViaBroker(t *testing.T) {
 // emits a node-wide ranking that may include peers without LM Studio. The
 // lmstudio-proxy must intersect that list with its own discovery set and never
 // dial a priority id that never advertised the lm service.
-func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
+func TestLMStudioProxy_IgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 	if portBusy(1234) {
 		t.Skip("lmstudio-proxy default port 1234 already in use; skipping")
 	}
@@ -576,7 +576,7 @@ func TestLMStudioProxyIgnoresPriorityNodesAbsentFromDiscovery(t *testing.T) {
 // TestBrokerSpawnsScheduler: with the scheduler adopted, the broker still
 // reaches app:ready (a fatal spawn would abort startup) and a log/set-level
 // round-trips (proving the read loop is alive with the scheduler in the tree).
-func TestBrokerSpawnsScheduler(t *testing.T) {
+func TestBroker_SpawnsScheduler(t *testing.T) {
 	stdin, msgs, cleanup := startBrokerProc(t,
 		"--scanner-path", scannerBin,
 		"--scheduler-path", schedulerBin,

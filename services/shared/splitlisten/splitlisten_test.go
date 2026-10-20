@@ -51,14 +51,14 @@ func newSplitter(t *testing.T) (addr string, cleanup func()) {
 	}
 }
 
-func TestPlainConnectionRoutesToPlainServer(t *testing.T) {
+func TestPlainConnection_RoutesToPlainServer(t *testing.T) {
 	addr, cleanup := newSplitter(t)
 	defer cleanup()
 
 	assert.Equal(t, "plain", httpGet(t, "http://"+addr+"/", nil))
 }
 
-func TestTLSConnectionRoutesToTLSServer(t *testing.T) {
+func TestTLSConnection_RoutesToTLSServer(t *testing.T) {
 	addr, cleanup := newSplitter(t)
 	defer cleanup()
 
@@ -69,7 +69,7 @@ func TestTLSConnectionRoutesToTLSServer(t *testing.T) {
 // complete (a silent client that sends no byte, and one that connects then
 // immediately closes) and confirms the dispatcher drops them without blocking:
 // a normal plain request afterwards must still succeed.
-func TestMalformedConnectionDoesNotWedgeDispatch(t *testing.T) {
+func TestMalformedConnection_DoesNotWedgeDispatch(t *testing.T) {
 	old := peekTimeout
 	peekTimeout = 200 * time.Millisecond
 	defer func() { peekTimeout = old }()
@@ -91,7 +91,7 @@ func TestMalformedConnectionDoesNotWedgeDispatch(t *testing.T) {
 	_ = silent.Close()
 }
 
-func TestCloseStopsAccepting(t *testing.T) {
+func TestClose_StopsAccepting(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err, "listen")
 	s := New(ln)
@@ -121,7 +121,7 @@ func TestCloseStopsAccepting(t *testing.T) {
 // TestChanListenerCloseUnblocksInFlightPush confirms Close wakes a push blocked
 // on the unbuffered handoff and closes that connection, and that a push after
 // Close is closed rather than handed off.
-func TestChanListenerCloseUnblocksInFlightPush(t *testing.T) {
+func TestChanListenerClose_UnblocksInFlightPush(t *testing.T) {
 	l := newChanListener(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 
 	peer, queued := net.Pipe()
@@ -268,7 +268,7 @@ func (fatalNetError) Temporary() bool { return false }
 
 // TestFatalAcceptClosesBase confirms a non-temporary Accept error closes the
 // base listener (and sub-listeners) so the port cannot remain in zombie LISTEN.
-func TestFatalAcceptClosesBase(t *testing.T) {
+func TestFatalAccept_ClosesBase(t *testing.T) {
 	base := newScriptedListener(func(call int) (net.Conn, error) {
 		return nil, fatalNetError{}
 	})
@@ -299,7 +299,7 @@ func TestFatalAcceptClosesBase(t *testing.T) {
 
 // TestTemporaryAcceptRetries confirms a temporary Accept error does not tear
 // down the splitter: a later successful Accept is still dispatched.
-func TestTemporaryAcceptRetries(t *testing.T) {
+func TestTemporaryAccept_Retries(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 
@@ -344,7 +344,7 @@ func TestTemporaryAcceptRetries(t *testing.T) {
 // TestPushTimeoutClosesConnWhenAcceptStops confirms that if a sub-listener is
 // not Accepting, connections are closed after pushTimeout instead of pinning
 // FDs forever, and the base Accept loop keeps draining.
-func TestPushTimeoutClosesConnWhenAcceptStops(t *testing.T) {
+func TestPushTimeout_ClosesConnWhenAcceptStops(t *testing.T) {
 	old := pushTimeout
 	pushTimeout = 50 * time.Millisecond
 	defer func() { pushTimeout = old }()
@@ -393,7 +393,7 @@ func TestPushTimeoutClosesConnWhenAcceptStops(t *testing.T) {
 // TestChanListenerPushTimeoutWithoutAccept is the direct unit form of the
 // timeout-until-Accept guarantee: with no Accept, push closes the conn within
 // pushTimeout rather than parking it in a backlog forever.
-func TestChanListenerPushTimeoutWithoutAccept(t *testing.T) {
+func TestChanListenerPush_StopsAtTimeoutWithoutAccept(t *testing.T) {
 	old := pushTimeout
 	pushTimeout = 50 * time.Millisecond
 	defer func() { pushTimeout = old }()

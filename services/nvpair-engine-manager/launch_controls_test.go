@@ -18,7 +18,7 @@ import (
 	settings "nvpair-shared/enginesettings"
 )
 
-func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
+func TestLaunchControls_BuildEquivalentLaunchesAcrossSources(t *testing.T) {
 	for _, definition := range []string{
 		`[{"value":"{server.port}","env":["SERVER_PORT","PORT_ALIAS"]},{"value":"{server.host}","env":["SERVER_HOST","HOST_ALIAS"]},{"value":"{cors.enabled}","flags":["--browser-access","-c"],"env":["BROWSER_ACCESS","CORS_ALIAS"]}]`,
 		`[{"value":"{server.host}:{server.port}","flags":["--listen","-l"],"env":["LISTEN","LISTEN_ALIAS"]},{"value":"{cors.origins}","flags":["--origins","-o"],"env":["ORIGINS","ORIGIN_ALIAS"]}]`,
@@ -59,7 +59,7 @@ func TestGenericControlSourcesAndLaunchConstruction(t *testing.T) {
 	}
 }
 
-func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
+func TestSavedControls_CannotBypassLaunchValidation(t *testing.T) {
 	for _, command := range []bool{false, true} {
 		e := settingsExecutor(t, command)
 		rt := settingsState(t, e).plat.Runtime
@@ -89,7 +89,7 @@ func TestSavedControlsCannotBypassLaunchValidation(t *testing.T) {
 	}
 }
 
-func TestBundledLlamaCPPDisablesCORSByDefault(t *testing.T) {
+func TestBundledLlamaCPP_DisablesCORSByDefault(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	manifest, ok := reg.Get("llamacpp")
 	require.True(t, ok, "llama.cpp manifest not loaded")
@@ -106,7 +106,7 @@ func TestBundledLlamaCPPDisablesCORSByDefault(t *testing.T) {
 	}
 }
 
-func TestBundledNetworkingControls(t *testing.T) {
+func TestBundledManifests_DeclareReviewedNetworkingControls(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	// Adding a bundled engine requires an explicit networking review and cases.
 	wantEngines := []string{"llamacpp", "lmstudio", "ollama"}
@@ -162,7 +162,7 @@ func TestBundledNetworkingControls(t *testing.T) {
 	}
 }
 
-func TestNetworkingControlAliasesAreEngineIndependent(t *testing.T) {
+func TestNetworkingControlAliases_AreEngineIndependent(t *testing.T) {
 	e := settingsExecutor(t, true)
 	p := settingsState(t, e).plat.Runtime.EditableLaunch
 	p.Controls = []LaunchControl{
@@ -188,7 +188,7 @@ func TestNetworkingControlAliasesAreEngineIndependent(t *testing.T) {
 	}
 }
 
-func TestCORSCanonicalization(t *testing.T) {
+func TestCORSOrigins_NormalizesEquivalentPolicies(t *testing.T) {
 	for _, text := range []string{`"*"`, `'*'`, `" * "`, `"http://*"`, "http://*:80", "*://*", "https://example.test,*", "https://foo*", "https://*.*", "https://example.test/path", "https://user@example.test", "https://example.test?query", "https://example.test#fragment", "https://example.test:65536", `https://example.test\anything`} {
 		_, err := normalizeCORSOrigins(text)
 		assert.Error(t, err, "accepted (%v)", text)
@@ -206,7 +206,7 @@ func TestCORSCanonicalization(t *testing.T) {
 	}
 }
 
-func TestRemoteCORSUsesCanonicalPolicyAndAuthoritativePreview(t *testing.T) {
+func TestRemoteCORS_UsesCanonicalPolicyAndAuthoritativePreview(t *testing.T) {
 	for _, command := range []bool{false, true} {
 		t.Run(fmt.Sprint(command), func(t *testing.T) {
 			e := settingsExecutor(t, command)
@@ -239,7 +239,7 @@ func TestRemoteCORSUsesCanonicalPolicyAndAuthoritativePreview(t *testing.T) {
 }
 
 // Removing a disabling override may restore permissive inherited/default values.
-func TestRemoteCORSCannotRemoveExplicitDisablingValues(t *testing.T) {
+func TestRemoteCORS_CannotRemoveExplicitDisablingValues(t *testing.T) {
 	for _, kind := range []string{"cors.enabled", "cors.origins"} {
 		t.Run(kind, func(t *testing.T) {
 			e := settingsExecutor(t, true)
@@ -263,7 +263,7 @@ func TestRemoteCORSCannotRemoveExplicitDisablingValues(t *testing.T) {
 	}
 }
 
-func TestNetworkingManifestRejectsAmbiguousDeclarations(t *testing.T) {
+func TestNetworkingManifest_RejectsAmbiguousDeclarations(t *testing.T) {
 	for _, controls := range [][]LaunchControl{
 		{{Value: "{server.port}"}},
 		{{Value: "{server.port}", Flags: []string{"--port"}}, {Value: "{server.host}", Flags: []string{"--port"}}},

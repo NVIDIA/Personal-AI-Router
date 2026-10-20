@@ -20,7 +20,7 @@ import (
 // mDNS record actually moves. Routing must still pick the peer up the moment the
 // pin lands, and drop it again the moment the pin is removed, because it reads
 // the live pin set rather than a trust flag cached at discovery time.
-func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
+func TestResolveCandidates_FollowsLivePinSet(t *testing.T) {
 	const peerUUID = "principal-peer"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 
@@ -57,7 +57,7 @@ func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
 // honest now that trust is read locally: a peer that advertises a cluster
 // principal we hold no pin for is not routable, even though this node is itself
 // a healthy cluster member. Two clusters on one LAN must not route to each other.
-func TestResolveCandidatesRejectsUnpinnedClusteredPeer(t *testing.T) {
+func TestResolveCandidates_RejectsUnpinnedClusteredPeer(t *testing.T) {
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	clustertrusttest.Join(t, clusterDir, "cluster-ours", "principal-self", "principal-ourpeer")
 

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResolveMintsAndPersists(t *testing.T) {
+func TestResolve_MintsAndPersists(t *testing.T) {
 	base := t.TempDir()
 	first := Resolve(base)
 	assert.NotEqual(t, "", first, "Resolve returned empty UUID")
@@ -21,7 +21,7 @@ func TestResolveMintsAndPersists(t *testing.T) {
 	assert.Equal(t, first, Resolve(base), "Resolve not stable")
 }
 
-func TestResolvePrefersClusterIdentity(t *testing.T) {
+func TestResolve_PrefersClusterIdentity(t *testing.T) {
 	base := t.TempDir()
 	clusterDir := filepath.Join(base, "cluster")
 	require.NoError(t, os.MkdirAll(clusterDir, 0o700))

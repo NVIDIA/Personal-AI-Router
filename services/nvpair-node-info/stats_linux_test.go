@@ -15,7 +15,7 @@ import (
 // derives CPU % from the delta of two of these samples, so a regression here
 // (e.g. picking up a per-core "cpuN" line, or miscounting idle) would make
 // every Linux node report a wrong or zero utilization.
-func TestParseProcStat(t *testing.T) {
+func TestParseProcStat_ExtractsIdleAndTotalCPUTicks(t *testing.T) {
 	cases := []struct {
 		name      string
 		in        string
@@ -68,7 +68,7 @@ func TestParseProcStat(t *testing.T) {
 
 // TestCPUUtilization exercises the delta math and every guard: invalid
 // samples, counter resets, zero elapsed time, and rounding.
-func TestCPUUtilization(t *testing.T) {
+func TestCPUUtilization_ComputesUsageBetweenSamples(t *testing.T) {
 	cases := []struct {
 		name string
 		prev cpuTimes
@@ -128,7 +128,7 @@ func TestCPUUtilization(t *testing.T) {
 // TestInitialMemorySnapshot verifies that startup publishes a usable memory
 // sample before the first ticker event while preserving omission semantics
 // when /proc/meminfo cannot be read.
-func TestInitialMemorySnapshot(t *testing.T) {
+func TestMemorySnapshot_ReportsInitialSystemUsage(t *testing.T) {
 	cases := []struct {
 		name     string
 		readUsed func() (uint64, bool)
@@ -160,7 +160,7 @@ func TestInitialMemorySnapshot(t *testing.T) {
 // TestParseMeminfoUsed pins the MemTotal-MemAvailable computation, the
 // MemFree fallback for pre-3.14 kernels, the kB->bytes conversion, and the
 // failure cases (missing total, underflow).
-func TestParseMeminfoUsed(t *testing.T) {
+func TestParseMeminfoUsed_ComputesUsedMemoryFromAvailableMemory(t *testing.T) {
 	cases := []struct {
 		name     string
 		in       string
@@ -204,7 +204,7 @@ func TestParseMeminfoUsed(t *testing.T) {
 // TestParseNvidiaStatic pins the static enumeration parse: name + total VRAM
 // (MiB->bytes) keyed by UUID, with skips for malformed rows, plus UMA [N/A]
 // detection.
-func TestParseNvidiaStatic(t *testing.T) {
+func TestParseNvidiaStatic_ExtractsGPUInventory(t *testing.T) {
 	cases := []struct {
 		name    string
 		in      string
@@ -265,7 +265,7 @@ func TestParseNvidiaStatic(t *testing.T) {
 // separate count of successfully parsed utilization samples. A numeric 0 is a
 // valid idle sample; [N/A] and malformed values leave display data intact but
 // must not make node-wide telemetry valid.
-func TestParseNvidiaDynamic(t *testing.T) {
+func TestParseNvidiaDynamic_ExtractsGPUUsage(t *testing.T) {
 	cases := []struct {
 		name        string
 		in          string
@@ -324,7 +324,7 @@ func TestParseNvidiaDynamic(t *testing.T) {
 }
 
 // TestIsNvidiaSmiNA pins recognition of nvidia-smi not-applicable sentinels.
-func TestIsNvidiaSmiNA(t *testing.T) {
+func TestIsNvidiaSmiNA_RecognizesUnavailableValues(t *testing.T) {
 	cases := []struct {
 		in   string
 		want bool

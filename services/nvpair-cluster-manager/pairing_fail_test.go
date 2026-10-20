@@ -32,7 +32,7 @@ func putPendingInviterSession(t *testing.T, m *Manager, inviteID string) {
 // text is sanitized to empty so a peer can't inject arbitrary copy onto the
 // invite, and an empty reason (e.g. a transport-failure fail) still cleans up.
 // Every case ends the invite in state:"failed".
-func TestHandlePairingFailedReasonGuard(t *testing.T) {
+func TestHandlePairingFailed_RejectsInvalidFailureReasons(t *testing.T) {
 	cases := []struct {
 		name       string
 		sentReason string
@@ -72,7 +72,7 @@ func TestHandlePairingFailedReasonGuard(t *testing.T) {
 // a silent no-op: once the invite is terminal and the session evicted, a second
 // delivery (even one carrying a different reason) neither panics nor rewrites
 // the already-stamped outcome.
-func TestHandlePairingFailedIdempotent(t *testing.T) {
+func TestHandlePairingFailed_IgnoresRepeatedFailure(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	putPendingInviterSession(t, m, "inv-dup")
@@ -99,7 +99,7 @@ func TestHandlePairingFailedIdempotent(t *testing.T) {
 // TestHandlePairingFailedNonInviterIgnored verifies the guard on session role:
 // a fail signal that correlates to a non-inviter (or unknown) session is
 // ignored, so it can't flip an unrelated or inbound invite to failed.
-func TestHandlePairingFailedNonInviterIgnored(t *testing.T) {
+func TestHandlePairingFailed_IgnoresSenderOtherThanInviter(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 

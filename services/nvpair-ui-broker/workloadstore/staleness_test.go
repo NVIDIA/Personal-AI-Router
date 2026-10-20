@@ -30,7 +30,7 @@ func clockStore(t *testing.T) (*Store, *time.Time) {
 // Stamping LastSeen from any wall-only source (time.UnixMilli, a parsed
 // timestamp) would quietly lose the property, so it is asserted against the real
 // clock rather than the test seam.
-func TestLastSeenCarriesAMonotonicReading(t *testing.T) {
+func TestLastSeen_CarriesAMonotonicReading(t *testing.T) {
 	// Check the detector against a known wall-only value first, so a broken
 	// detector cannot let this test pass vacuously.
 	require.False(t, hasMonotonic(time.UnixMilli(1_700_000_000_000)), "detector is wrong: a time.UnixMilli value carries no monotonic reading")
@@ -53,7 +53,7 @@ func hasMonotonic(t time.Time) bool { return t != t.Round(0) }
 // must advance anyway, otherwise "the origin still says running" is
 // indistinguishable from "the origin went silent" and the sweep would retire
 // live work.
-func TestLastSeenTracksOriginReassertion(t *testing.T) {
+func TestLastSeen_TracksOriginReassertion(t *testing.T) {
 	s, now := clockStore(t)
 
 	require.True(t, s.Apply(mkIn("1", "peer", "running", "peer", 100)), "first running must be a forward change")
@@ -72,7 +72,7 @@ func TestLastSeenTracksOriginReassertion(t *testing.T) {
 // assertions count as sightings. A local guess must not make a record look
 // freshly confirmed (it would defeat the sweep), and a stale generation is not
 // evidence of anything.
-func TestLastSeenIgnoresInferredAndStale(t *testing.T) {
+func TestLastSeen_IgnoresInferredAndStale(t *testing.T) {
 	s, now := clockStore(t)
 	s.Apply(mkIn("1", "peer", "running", "peer", 200))
 	first := *now
@@ -98,7 +98,7 @@ func TestLastSeenIgnoresInferredAndStale(t *testing.T) {
 // terminal one is history, not stale; and this node's own workloads are never
 // swept because its proxies are their authority and never re-assert into the
 // store.
-func TestStaleForeignSelectsOnlySilentRemoteWork(t *testing.T) {
+func TestStaleForeign_SelectsOnlySilentRemoteWork(t *testing.T) {
 	s, now := clockStore(t)
 	const ttl = 5 * time.Minute
 
@@ -123,7 +123,7 @@ func TestStaleForeignSelectsOnlySilentRemoteWork(t *testing.T) {
 // and applies them as two steps, so an origin heartbeat can land in between. The
 // guarded apply must drop a guess whose sighting is already obsolete, rather than
 // marking genuinely running work failed until the next heartbeat.
-func TestApplyInferredUnchangedSinceGuardsTheSweepRace(t *testing.T) {
+func TestApplyInferredUnchangedSince_GuardsTheSweepRace(t *testing.T) {
 	s, now := clockStore(t)
 	const ttl = 5 * time.Minute
 
@@ -158,7 +158,7 @@ func TestApplyInferredUnchangedSinceGuardsTheSweepRace(t *testing.T) {
 // selection and apply must stay removed. Without the presence check the merge
 // takes its "new record" branch and re-creates the workload as a synthesized
 // terminal, which then reaches clients and the scheduler.
-func TestApplyInferredUnchangedSinceWillNotResurrect(t *testing.T) {
+func TestApplyInferredUnchangedSince_DoesNotRestoreRemovedWorkload(t *testing.T) {
 	s, now := clockStore(t)
 	const ttl = 5 * time.Minute
 
@@ -182,7 +182,7 @@ func TestApplyInferredUnchangedSinceWillNotResurrect(t *testing.T) {
 // engine — so the executing node has no independent signal that would ever clear
 // the record. Exempting it converts a bounded staleness window into a permanent
 // phantom on the one node least able to notice.
-func TestStaleForeignSweepsWorkThisNodeIsExecuting(t *testing.T) {
+func TestStaleForeign_SweepsWorkThisNodeIsExecuting(t *testing.T) {
 	s, now := clockStore(t)
 	const ttl = 5 * time.Minute
 
@@ -207,7 +207,7 @@ func TestStaleForeignSweepsWorkThisNodeIsExecuting(t *testing.T) {
 // collides in practice. Emitting a synthesized terminal for one generation would
 // land on whichever generation currently holds the key — possibly a live job — so
 // an ambiguous candidate is left alone.
-func TestStaleForeignSkipsCollidingClientKeys(t *testing.T) {
+func TestStaleForeign_SkipsCollidingClientKeys(t *testing.T) {
 	s, now := clockStore(t)
 	const ttl = 5 * time.Minute
 
@@ -233,7 +233,7 @@ func TestStaleForeignSkipsCollidingClientKeys(t *testing.T) {
 // TestStaleForeignInferredFailIsReconcilable closes the loop: retiring a stale
 // record uses the inferred path, so an origin that was merely unable to reach us
 // un-sticks its own workload with its next authoritative event.
-func TestStaleForeignInferredFailIsReconcilable(t *testing.T) {
+func TestStaleForeignInferredFail_IsReconcilable(t *testing.T) {
 	s, now := clockStore(t)
 	const ttl = 5 * time.Minute
 

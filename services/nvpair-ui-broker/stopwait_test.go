@@ -35,7 +35,7 @@ func (c *closeRecorder) wasClosed() bool {
 // TestWaitForStdinCloseWaitsForOrderlyExit covers the ordinary path: signal
 // shutdown by closing stdin, then let the worker finish on its own. Nothing may
 // be signalled while the worker is still inside its grace.
-func TestWaitForStdinCloseWaitsForOrderlyExit(t *testing.T) {
+func TestWaitForStdinClose_WaitsForOrderlyExit(t *testing.T) {
 	resetTeardownClock()
 	stdin := &closeRecorder{}
 	done := make(chan struct{})
@@ -64,7 +64,7 @@ func TestWaitForStdinCloseWaitsForOrderlyExit(t *testing.T) {
 // worker that never exits must not park teardown forever: before this was
 // bounded, a worker blocked in write() on a full stderr pipe held the broker here
 // until it was force-killed from outside, skipping its remaining shutdown work.
-func TestWaitForStdinCloseGivesUpWithoutProcess(t *testing.T) {
+func TestWaitForStdinClose_GivesUpWithoutProcess(t *testing.T) {
 	resetTeardownClock()
 	stdin := &closeRecorder{}
 	done := make(chan struct{})
@@ -87,7 +87,7 @@ func TestWaitForStdinCloseGivesUpWithoutProcess(t *testing.T) {
 
 // TestWaitForStdinCloseKillsWorkerThatIgnoresShutdown checks the escalation
 // actually reaches a real process that will not leave on its own.
-func TestWaitForStdinCloseKillsWorkerThatIgnoresShutdown(t *testing.T) {
+func TestWaitForStdinClose_KillsWorkerThatIgnoresShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell to spawn a signal-ignoring sleeper")
 	}
@@ -131,7 +131,7 @@ func TestWaitForStdinCloseKillsWorkerThatIgnoresShutdown(t *testing.T) {
 // cannot add up. The joins run sequentially, so eleven workers that each hang for
 // their own grace would take far longer than the parent waits before killing this
 // process — and being killed mid-teardown skips the rest of shutdown.
-func TestTeardownBudgetCapsAggregateWait(t *testing.T) {
+func TestTeardownBudget_CapsAggregateWait(t *testing.T) {
 	resetTeardownClock()
 	beginTeardown()
 
@@ -160,7 +160,7 @@ func TestTeardownBudgetCapsAggregateWait(t *testing.T) {
 // at ordinary runtime — LM Studio port reconciliation does it on every rebind — and
 // arming the budget there left it permanently spent, so the real shutdown gave
 // every worker the floor and signalled engine-manager almost immediately.
-func TestGraceForIgnoresBudgetOutsideTeardown(t *testing.T) {
+func TestGraceFor_IgnoresBudgetOutsideTeardown(t *testing.T) {
 	resetTeardownClock()
 
 	// A restart-shaped stop, long before any shutdown. It must not be clipped, and
@@ -179,7 +179,7 @@ func TestGraceForIgnoresBudgetOutsideTeardown(t *testing.T) {
 // TestGraceForReservesEngineManagerAllowance covers join order: engine-manager is
 // joined eighth of eleven, so without a reservation the workers ahead of it decide
 // how long it gets to stop its engines.
-func TestGraceForReservesEngineManagerAllowance(t *testing.T) {
+func TestGraceFor_ReservesEngineManagerAllowance(t *testing.T) {
 	// Earlier joins have spent the budget down to just over engine-manager's
 	// reserve, so an ordinary worker is left with less than the floor.
 	setTeardownStart(time.Now().Add(-(teardownBudget - engineManagerStopGrace - 100*time.Millisecond)))
@@ -192,7 +192,7 @@ func TestGraceForReservesEngineManagerAllowance(t *testing.T) {
 
 // TestEngineShutdownDeadlineDrawsOnTheBudget checks the one step that used to have
 // no deadline at all cannot spend the whole window before a worker is joined.
-func TestEngineShutdownDeadlineDrawsOnTheBudget(t *testing.T) {
+func TestEngineShutdownDeadline_DrawsOnTheBudget(t *testing.T) {
 	resetTeardownClock()
 	require.Equal(t, engineStopAllBudget, engineShutdownDeadline(), "deadline outside teardown")
 
@@ -205,7 +205,7 @@ func TestEngineShutdownDeadlineDrawsOnTheBudget(t *testing.T) {
 	require.Equal(t, minWorkerGrace, engineShutdownDeadline(), "deadline with a spent budget")
 }
 
-func TestGraceForClipsToRemainingBudget(t *testing.T) {
+func TestGraceFor_ClipsToRemainingBudget(t *testing.T) {
 	setTeardownStart(time.Now())
 
 	require.Equal(t, workerStopGrace, graceFor("scanner"), "first worker grace")
@@ -231,7 +231,7 @@ func setTeardownStart(at time.Time) {
 // TestStopGraceForGivesEngineManagerRoom guards the one worker whose shutdown does
 // real work: it stops the engine processes it launched, and cutting that short is
 // what orphans them.
-func TestStopGraceForGivesEngineManagerRoom(t *testing.T) {
+func TestStopGraceFor_GivesEngineManagerRoom(t *testing.T) {
 	require.Equal(t, engineManagerStopGrace, stopGraceFor(engineManagerWorkerName), "engine-manager grace")
 	require.Equal(t, workerStopGrace, stopGraceFor("scanner"), "scanner grace")
 	require.Greater(t, engineManagerStopGrace, workerStopGrace, "engine-manager must get more room than an ordinary worker")

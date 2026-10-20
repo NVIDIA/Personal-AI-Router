@@ -25,7 +25,7 @@ import (
 // the tick, is what schedules the next poll, so a reply from a previous visit
 // to the same node would start a second chain alongside the current one and
 // double the poll rate on every close-and-reopen.
-func TestTelemetryReplyIsGenerationScoped(t *testing.T) {
+func TestTelemetryReply_IsGenerationScoped(t *testing.T) {
 	node := nodeRow{key: "n1", name: "n1", address: "10.0.0.4", port: 14318}
 	first := newNodeDetail(nil, node)
 	second := newNodeDetail(nil, node)
@@ -50,7 +50,7 @@ func TestTelemetryReplyIsGenerationScoped(t *testing.T) {
 // discovery resolved it still gets telemetry. Nothing schedules a tick when
 // there is nothing to poll, and the reply is what continues the chain, so
 // without an explicit restart the panel read "unavailable" for the whole visit.
-func TestTelemetryStartsWhenAnAddressArrivesLate(t *testing.T) {
+func TestTelemetry_StartsWhenAnAddressArrivesLate(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{key: "peer", name: "peer"}) // no address yet
 	d.SetSize(100, 30)
 
@@ -73,7 +73,7 @@ func TestTelemetryStartsWhenAnAddressArrivesLate(t *testing.T) {
 // re-opening a node's detail screen left the old chain's tick in flight; keyed
 // on the node alone it was accepted and extended, and every re-open added
 // another chain polling the same endpoint forever.
-func TestTelemetryChainsAreGenerationScoped(t *testing.T) {
+func TestTelemetryChains_AreGenerationScoped(t *testing.T) {
 	node := nodeRow{key: "n1", name: "n1", address: "10.0.0.4", port: 14318}
 
 	first := newNodeDetail(nil, node)
@@ -97,7 +97,7 @@ func TestTelemetryChainsAreGenerationScoped(t *testing.T) {
 // published addresses. A multi-homed node's first address may be a link this
 // machine cannot reach, and giving up on it reported the node as having no
 // telemetry at all.
-func TestPollTelemetryWalksEveryAddress(t *testing.T) {
+func TestPollTelemetry_WalksEveryAddress(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"telemetryValid":true}`))
 	}))
@@ -118,7 +118,7 @@ func TestPollTelemetryWalksEveryAddress(t *testing.T) {
 
 // TestNodeInfoURL pins the endpoint shape, including the fallback for an entry
 // whose node-info port is not known yet.
-func TestNodeInfoURL(t *testing.T) {
+func TestNodeInfoURL_UsesNodeAddressAndServicePort(t *testing.T) {
 	assert.Equal(t, "http://10.0.0.5:14318/v1/node-info", nodeInfoURL("10.0.0.5", 14318))
 	assert.Contains(t, nodeInfoURL("10.0.0.5", 0), strconv.Itoa(nodeInfoDefaultPort), "default port when none is known")
 	// An IPv6 literal has to be bracketed or the port parses as part of the host.
@@ -127,7 +127,7 @@ func TestNodeInfoURL(t *testing.T) {
 
 // TestTelemetryHostUsesLoopbackForSelf checks this machine is polled over
 // loopback: its advertised address may be a link only peers can reach.
-func TestTelemetryHostsUseLoopbackForSelf(t *testing.T) {
+func TestTelemetryHosts_UseLoopbackForLocalNode(t *testing.T) {
 	assert.Equal(t, []string{nodeInfoSelfHost}, telemetryHosts(nodeRow{self: true, address: "10.0.0.5"}))
 	assert.Equal(t, []string{"10.0.0.5"}, telemetryHosts(nodeRow{address: "10.0.0.5"}))
 }
@@ -135,7 +135,7 @@ func TestTelemetryHostsUseLoopbackForSelf(t *testing.T) {
 // TestPollTelemetryDecodesResponse exercises the real HTTP path against a stub
 // serving the node-info contract, so the JSON tags stay pinned to the producer's
 // (notably the capitalised "GPUs" key).
-func TestPollTelemetryDecodesResponse(t *testing.T) {
+func TestPollTelemetry_DecodesResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, nodeInfoPath, r.URL.Path, "polled endpoint")
 		w.Header().Set("Content-Type", "application/json")
@@ -167,7 +167,7 @@ func TestPollTelemetryDecodesResponse(t *testing.T) {
 
 // TestPollTelemetryReportsFailure checks a non-200 is an error rather than being
 // decoded as an empty reading, which would render as a machine with no hardware.
-func TestPollTelemetryReportsFailure(t *testing.T) {
+func TestPollTelemetry_ReportsFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -180,14 +180,14 @@ func TestPollTelemetryReportsFailure(t *testing.T) {
 
 // TestPollTelemetrySkipsUnknownAddress checks a node with no address issues no
 // request at all.
-func TestPollTelemetrySkipsUnknownAddress(t *testing.T) {
+func TestPollTelemetry_SkipsUnknownAddress(t *testing.T) {
 	assert.Nil(t, pollTelemetryCmd("key", 1, nil, 14318, ""), "polled a node with no known address")
 }
 
 // TestTelemetryFromAnotherMachineIsRefused is the regression guard for an
 // address that has passed to another machine. Its readings were shown under the
 // name of the machine that used to hold it.
-func TestTelemetryFromAnotherMachineIsRefused(t *testing.T) {
+func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
 	}))
@@ -208,7 +208,7 @@ func TestTelemetryFromAnotherMachineIsRefused(t *testing.T) {
 // TestTelemetryTriesTheAddressThatAnswered is the regression guard for a poll
 // that walked every unreachable address, each to its full timeout, before the
 // one that had answered last time.
-func TestTelemetryTriesTheAddressThatAnswered(t *testing.T) {
+func TestTelemetry_TriesTheAddressThatAnswered(t *testing.T) {
 	addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 	assert.Equal(t, []string{"10.0.0.3", "10.0.0.1", "10.0.0.2"}, preferAddress(addresses, "10.0.0.3"), "address that answered first")
 	for _, last := range []string{"", "10.0.0.1", "10.9.9.9"} {
@@ -225,7 +225,7 @@ func TestTelemetryTriesTheAddressThatAnswered(t *testing.T) {
 
 // TestTelemetrySummaryOmitsUtilizationWhenStale checks an unusable sample does
 // not print 0%, which would read as an idle GPU.
-func TestTelemetrySummaryOmitsUtilizationWhenStale(t *testing.T) {
+func TestTelemetrySummary_OmitsUtilizationWhenStale(t *testing.T) {
 	tel := nodeTelemetry{
 		GPUs:           []noderec.GPUInfo{{Name: "GPU", VramBytes: 1 << 30, UtilizationPercent: 0}},
 		TelemetryValid: false,
@@ -239,11 +239,11 @@ func TestTelemetrySummaryOmitsUtilizationWhenStale(t *testing.T) {
 	assert.Contains(t, strings.Join(tel.summary(), "\n"), "55%", "valid sample renders utilization")
 }
 
-func TestTelemetrySummaryEmpty(t *testing.T) {
+func TestTelemetrySummary_HandlesMissingMetrics(t *testing.T) {
 	assert.Empty(t, (nodeTelemetry{}).summary())
 }
 
-func TestHumanBytes(t *testing.T) {
+func TestHumanBytes_FormatsByteCounts(t *testing.T) {
 	cases := map[uint64]string{
 		0:              "0 B",
 		512:            "512 B",
@@ -262,7 +262,7 @@ func TestHumanBytes(t *testing.T) {
 
 // TestDetailHardwareUnavailableWhenPollFails checks the panel is explicit rather
 // than silently blank when a node cannot be reached.
-func TestDetailHardwareUnavailableWhenPollFails(t *testing.T) {
+func TestDetailHardware_ReportsUnavailableAfterPollFailure(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{key: "k", name: "peer", presence: presenceOffline})
 	assert.Contains(t, d.hardwareBlock(), "not reachable", "hardware block explains the failure")
 
@@ -279,7 +279,7 @@ func TestDetailHardwareUnavailableWhenPollFails(t *testing.T) {
 
 // TestDetailIgnoresTelemetryForOtherNodes checks a late reply for a node the
 // operator has navigated away from does not overwrite the current one.
-func TestDetailIgnoresTelemetryForOtherNodes(t *testing.T) {
+func TestDetail_IgnoresTelemetryForOtherNodes(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{key: "current", self: true})
 	d.update(nodeTelemetryMsg{
 		nodeKey: "stale", gen: d.telemetryGen,

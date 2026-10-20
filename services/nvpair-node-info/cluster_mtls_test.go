@@ -73,7 +73,7 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 // rejected at the gate (403), and — the behavior node-info specifically needs —
 // the node can read its OWN inventory over the same mTLS path via self-trust
 // (so the local scanner's self-read still works with no plaintext loopback).
-func TestNodeInfoHandler_MTLSGate(t *testing.T) {
+func TestNodeInfoHandler_RequiresConfiguredMutualTLS(t *testing.T) {
 	aCert, aKey := genLeaf(t, "uuid-a")
 	bCert, bKey := genLeaf(t, "uuid-b")
 	cCert, cKey := genLeaf(t, "uuid-c")

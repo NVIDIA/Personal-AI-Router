@@ -33,7 +33,7 @@ func testResponder(txt []string) *Responder {
 	return r
 }
 
-func TestNewResponderValidation(t *testing.T) {
+func TestNewResponder_RejectsInvalidRegistration(t *testing.T) {
 	// These cases return before any interface enumeration, so they're
 	// environment-independent.
 	cases := []struct {
@@ -53,7 +53,7 @@ func TestNewResponderValidation(t *testing.T) {
 	}
 }
 
-func TestNewResponderNormalizesNames(t *testing.T) {
+func TestNewResponder_NormalizesNames(t *testing.T) {
 	// The success path needs a real multicast-capable interface; skip where
 	// there isn't one (e.g. a locked-down CI sandbox) rather than fail.
 	r, err := NewResponder(".myhost.", "._nvpair-test._tcp.", "", 14318, []string{"v=1"})
@@ -65,14 +65,14 @@ func TestNewResponderNormalizesNames(t *testing.T) {
 	assert.Equal(t, "myhost._nvpair-test._tcp.local.", r.instanceName)
 }
 
-func TestNewResponderCopiesTXT(t *testing.T) {
+func TestNewResponder_CopiesTXT(t *testing.T) {
 	in := []string{"v=1"}
 	r := testResponder(in)
 	in[0] = "mutated"
 	assert.Equal(t, "v=1", r.currentTXT()[0], "currentTXT tracked caller's slice mutation")
 }
 
-func TestSrvRR(t *testing.T) {
+func TestSrvRR_EncodesServiceTargetAndPort(t *testing.T) {
 	r := testResponder(nil)
 	srv := r.srvRR(false)
 	assert.Equal(t, uint16(14318), srv.Port, "SRV port")
@@ -82,20 +82,20 @@ func TestSrvRR(t *testing.T) {
 	assert.NotEqual(t, uint16(0), r.srvRR(true).Hdr.Class&cacheFlush, "SRV class missing cache-flush bit when flushCache=true")
 }
 
-func TestTxtRR(t *testing.T) {
+func TestTxtRR_EncodesConfiguredTXTValues(t *testing.T) {
 	r := testResponder([]string{"v=1", "ip=192.168.1.10"})
 	txt := r.txtRR(false)
 	assert.Equal(t, []string{"v=1", "ip=192.168.1.10"}, txt.Txt, "TXT records")
 	assert.Equal(t, "myhost._nvpair-test._tcp.local.", txt.Hdr.Name, "TXT name")
 }
 
-func TestTxtRREmptyFallback(t *testing.T) {
+func TestTxtRR_UsesFallbackForEmptyTXT(t *testing.T) {
 	r := testResponder(nil)
 	txt := r.txtRR(false)
 	assert.Equal(t, []string{""}, txt.Txt, "empty TXT set should emit one empty string")
 }
 
-func TestUpdateTXTSwapsRecords(t *testing.T) {
+func TestUpdateTXT_SwapsRecords(t *testing.T) {
 	// No interfaces => the re-announce that UpdateTXT triggers is a no-op, so
 	// this stays a pure in-memory test.
 	r := &Responder{ifaceAddrs: map[int][]net.IP{}}
@@ -111,7 +111,7 @@ func TestUpdateTXTSwapsRecords(t *testing.T) {
 	assert.Equal(t, "v=1", r.currentTXT()[0], "currentTXT returned a mutable reference to internal state")
 }
 
-func TestAddrsForResponse(t *testing.T) {
+func TestAddrsForResponse_PrefersReceivingInterfaceAddresses(t *testing.T) {
 	r := testResponder(nil)
 
 	got := r.addrsForResponse(1)
@@ -123,7 +123,7 @@ func TestAddrsForResponse(t *testing.T) {
 	assert.Len(t, r.addrsForResponse(0), 2)
 }
 
-func TestAppendBrowseRRs(t *testing.T) {
+func TestAppendBrowseRRs_IncludesServiceRecords(t *testing.T) {
 	r := testResponder([]string{"v=1"})
 	resp := new(dns.Msg)
 	r.appendBrowseRRs(resp, 1)
@@ -150,7 +150,7 @@ func TestAppendBrowseRRs(t *testing.T) {
 	assert.Equal(t, 1, aCount, "browse Extra A count")
 }
 
-func TestIfaceAddrsEqual(t *testing.T) {
+func TestIfaceAddrsEqual_IgnoresAddressOrdering(t *testing.T) {
 	base := map[int][]net.IP{
 		1: {net.IPv4(192, 168, 1, 10), net.IPv4(192, 168, 1, 11)},
 		2: {net.IPv4(10, 0, 0, 5)},

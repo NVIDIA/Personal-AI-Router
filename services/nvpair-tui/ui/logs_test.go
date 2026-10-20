@@ -46,7 +46,7 @@ func logsKey(v *logsView, k string) {
 // The viewport binds f to page-down. Binding the follow toggle to the same key
 // meant the standard paging key threw the operator to the bottom of the buffer
 // on first press, in the view they had opened to scroll back through.
-func TestLogsFollowKeyDoesNotCollideWithPaging(t *testing.T) {
+func TestLogsFollowKey_DoesNotCollideWithPaging(t *testing.T) {
 	for _, reserved := range []string{"f", "b", "u", "d", "g", "G", " "} {
 		assert.NotContains(t, logFollowKey.Keys(), reserved, "the viewport uses this key for scrolling")
 	}
@@ -60,7 +60,7 @@ func TestLogsFollowKeyDoesNotCollideWithPaging(t *testing.T) {
 
 // TestLogsFilterRoundTrip covers opening the filter, applying it, and clearing
 // it — the whole reason the tab is useful when something has gone wrong.
-func TestLogsFilterRoundTrip(t *testing.T) {
+func TestLogsFilter_AppliesAndRestoresFilter(t *testing.T) {
 	v := logsWith(t, 0)
 	logLine(v, "engine started ok")
 	logLine(v, "cluster pairing failed")
@@ -86,7 +86,7 @@ func TestLogsFilterRoundTrip(t *testing.T) {
 
 // TestLogsFilterCanBeAbandoned checks esc leaves the previous filter alone
 // rather than committing a half-typed one.
-func TestLogsFilterCanBeAbandoned(t *testing.T) {
+func TestLogsFilter_CanBeAbandoned(t *testing.T) {
 	v := logsWith(t, 5)
 	v.filter = "engine"
 
@@ -102,7 +102,7 @@ func TestLogsFilterCanBeAbandoned(t *testing.T) {
 
 // TestLogsHelpReflectsTheFieldState checks the footer names the keys that work
 // while the filter has the keyboard, rather than the ones that now type.
-func TestLogsHelpReflectsTheFieldState(t *testing.T) {
+func TestLogsHelp_ReflectsTheFieldState(t *testing.T) {
 	v := logsWith(t, 5)
 	logsKey(v, "/")
 
@@ -118,7 +118,7 @@ func TestLogsHelpReflectsTheFieldState(t *testing.T) {
 
 // TestLogsSaveWritesTheWholeBuffer checks the file contains every line, not
 // just what a transient filter was showing — a saved log is evidence.
-func TestLogsSaveWritesTheWholeBuffer(t *testing.T) {
+func TestLogsSave_WritesTheWholeBuffer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // Windows
@@ -141,7 +141,7 @@ func TestLogsSaveWritesTheWholeBuffer(t *testing.T) {
 
 // TestLogsSaveNeverOverwrites checks a second save in the same second does not
 // destroy the first, which is exactly the capture-twice case.
-func TestLogsSaveNeverOverwrites(t *testing.T) {
+func TestLogsSave_NeverOverwrites(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)

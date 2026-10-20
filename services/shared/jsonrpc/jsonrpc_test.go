@@ -23,7 +23,7 @@ type rw struct {
 func writeCodec(w io.Writer) *Codec { return NewCodec(rw{Reader: bytes.NewReader(nil), Writer: w}) }
 func readCodec(r io.Reader) *Codec  { return NewCodec(rw{Reader: r, Writer: io.Discard}) }
 
-func TestClassifiers(t *testing.T) {
+func TestJSONRPCMessage_DistinguishesRequestsNotificationsAndResponses(t *testing.T) {
 	id := json.RawMessage("1")
 	req := &Message{JSONRPC: "2.0", ID: &id, Method: "m"}
 	note := &Message{JSONRPC: "2.0", Method: "m"}
@@ -40,7 +40,7 @@ func TestClassifiers(t *testing.T) {
 	assert.False(t, resp.IsNotification(), "response misclassified")
 }
 
-func TestNotifyRoundTrip(t *testing.T) {
+func TestNotify_RoundTripsNotification(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, writeCodec(&buf).Notify("node/discovered", map[string]string{"id": "n1"}), "Notify")
 	assert.True(t, bytes.HasSuffix(buf.Bytes(), []byte("\n")), "frame not newline-terminated")
@@ -53,7 +53,7 @@ func TestNotifyRoundTrip(t *testing.T) {
 	assert.Equal(t, "n1", params["id"], "params round-trip failed")
 }
 
-func TestRespondAndError(t *testing.T) {
+func TestCodec_EncodesSuccessAndErrorResponses(t *testing.T) {
 	id := json.RawMessage("7")
 
 	var okBuf bytes.Buffer
@@ -84,7 +84,7 @@ func (w *oneByteWriter) Write(p []byte) (int, error) {
 	return 1, nil
 }
 
-func TestShortWriteWritesFullFrame(t *testing.T) {
+func TestShortWrite_WritesFullFrame(t *testing.T) {
 	var w oneByteWriter
 	require.NoError(t, writeCodec(&w).Notify("m", map[string]string{"k": "value-that-spans-many-writes"}), "Notify")
 	msg, err := readCodec(bytes.NewReader(w.buf.Bytes())).Read()
@@ -94,14 +94,14 @@ func TestShortWriteWritesFullFrame(t *testing.T) {
 	assert.Equal(t, "value-that-spans-many-writes", params["k"], "short-write corrupted frame")
 }
 
-func TestReadRejectsBadVersionAndEOF(t *testing.T) {
+func TestRead_RejectsBadVersionAndEOF(t *testing.T) {
 	_, err := readCodec(strings.NewReader(`{"jsonrpc":"1.0","method":"m"}` + "\n")).Read()
 	require.Error(t, err, "expected error for unsupported jsonrpc version")
 	_, err = readCodec(strings.NewReader("")).Read()
 	assert.ErrorIs(t, err, io.EOF, "expected io.EOF on empty stream")
 }
 
-func TestReadMalformedFrameIsRecoverableDecodeError(t *testing.T) {
+func TestReadMalformedFrame_IsRecoverableDecodeError(t *testing.T) {
 	// Both bad JSON and a bad version are recoverable *DecodeError so a read
 	// loop can continue rather than treating them as terminal.
 	for _, frame := range []string{"{not json}\n", `{"jsonrpc":"1.0"}` + "\n"} {
@@ -111,7 +111,7 @@ func TestReadMalformedFrameIsRecoverableDecodeError(t *testing.T) {
 	}
 }
 
-func TestRespondErrorDataRoundTrip(t *testing.T) {
+func TestRespondError_RoundTripsErrorData(t *testing.T) {
 	id := json.RawMessage("3")
 	var buf bytes.Buffer
 	require.NoError(t, writeCodec(&buf).RespondErrorData(&id, -32602, "bad", map[string]string{"field": "port"}), "RespondErrorData")
@@ -129,7 +129,7 @@ func TestRespondErrorDataRoundTrip(t *testing.T) {
 	require.Empty(t, m2.Error.Data, "expected empty data for nil")
 }
 
-func TestNewCodecMaxFrameAcceptsLargeFrame(t *testing.T) {
+func TestNewCodecMaxFrame_AcceptsLargeFrame(t *testing.T) {
 	big := strings.Repeat("x", 2<<20) // 2 MiB, over the 1 MiB default
 	var buf bytes.Buffer
 	require.NoError(t, writeCodec(&buf).Notify("m", map[string]string{"blob": big}), "Notify")

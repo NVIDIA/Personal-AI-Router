@@ -33,7 +33,7 @@ func newPair(t *testing.T) (*Client, *Codec, net.Conn) {
 	return client, NewCodec(c2, c2), c2
 }
 
-func TestCodecRoundTrip(t *testing.T) {
+func TestCodec_RoundTripsJSONRPCFrames(t *testing.T) {
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -51,7 +51,7 @@ func TestCodecRoundTrip(t *testing.T) {
 	assert.Equal(t, `{"x":1}`, string(msg.Params))
 }
 
-func TestClientCallMatchesResponse(t *testing.T) {
+func TestClientCall_MatchesResponse(t *testing.T) {
 	client, server, _ := newPair(t)
 
 	// Server: read the request and echo a result tagged with its id.
@@ -70,7 +70,7 @@ func TestClientCallMatchesResponse(t *testing.T) {
 	assert.Equal(t, `{"pong":true}`, string(resp.Result))
 }
 
-func TestClientCallSurfacesRPCError(t *testing.T) {
+func TestClientCall_SurfacesRPCError(t *testing.T) {
 	client, server, _ := newPair(t)
 	go func() {
 		req, err := server.Read()
@@ -102,7 +102,7 @@ func (w *recordingWriter) Write(p []byte) (int, error) {
 // caller has already given up or the connection is gone. Sent, the broker
 // would carry it out regardless — for a mutation, while the caller reported
 // that it had not happened.
-func TestClientCallRefusesBeforeWriting(t *testing.T) {
+func TestClientCall_RefusesBeforeWriting(t *testing.T) {
 	w := &recordingWriter{}
 	client := NewClient(strings.NewReader(""), w)
 
@@ -119,7 +119,7 @@ func TestClientCallRefusesBeforeWriting(t *testing.T) {
 	assert.Zero(t, w.writes, "a call on a closed connection wrote frames")
 }
 
-func TestClientDeliversNotifications(t *testing.T) {
+func TestClient_DeliversNotifications(t *testing.T) {
 	client, server, _ := newPair(t)
 	go func() {
 		_ = server.Write(&Message{JSONRPC: "2.0", Method: "errors:update", Params: json.RawMessage(`[]`)})
@@ -134,7 +134,7 @@ func TestClientDeliversNotifications(t *testing.T) {
 	}
 }
 
-func TestClientDisconnectClosesNotifications(t *testing.T) {
+func TestClientDisconnect_ClosesNotifications(t *testing.T) {
 	client, _, srv := newPair(t)
 	srv.Close() // broker drops the connection -> client read loop hits EOF
 

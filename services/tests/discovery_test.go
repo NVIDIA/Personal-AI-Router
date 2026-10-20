@@ -17,7 +17,7 @@ import (
 
 const testDomain = "local."
 
-func TestInProcessDiscovery(t *testing.T) {
+func TestDiscovery_ResolvesRegisteredNode(t *testing.T) {
 	const (
 		service  = "_test-disc._tcp"
 		instance = "in-proc-test"
@@ -61,7 +61,7 @@ func TestInProcessDiscovery(t *testing.T) {
 	}
 }
 
-func TestInProcessMultipleInstances(t *testing.T) {
+func TestDiscovery_ResolvesMultipleRegisteredNodes(t *testing.T) {
 	const service = "_test-multi._tcp"
 	instances := []string{"node-alpha", "node-beta", "node-gamma"}
 
@@ -103,7 +103,7 @@ func TestInProcessMultipleInstances(t *testing.T) {
 	t.Logf("OK: discovered %d/%d instances", len(foundSet), len(instances))
 }
 
-func TestInProcessRemoval(t *testing.T) {
+func TestDiscovery_RemovesDepartedNode(t *testing.T) {
 	const (
 		service  = "_test-rmv._tcp"
 		instance = "removable-node"

@@ -89,7 +89,7 @@ func writeActiveAdmission(t *testing.T, dir string) {
 // TestRemoteEngineGetInstalled drives engine:remote-get-installed from node A to
 // node B over the pin-gated ec mTLS surface and asserts B's engine list comes
 // back.
-func TestRemoteEngineGetInstalled(t *testing.T) {
+func TestRemoteEngine_ReturnsInstalledEnginesForPeer(t *testing.T) {
 	dirA, dirB := t.TempDir(), t.TempDir()
 	const uuidA, uuidB = "test-node-a", "test-node-b"
 	certA := mintClusterIdentity(t, dirA, uuidA)
@@ -135,7 +135,7 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 // TestRemoteEngineRejectsUntrusted verifies the ec pin gate: node A can dial B
 // (it pins B's server cert) but B does NOT pin A, so the request is refused with
 // a 403 that surfaces as a JSON-RPC error rather than an engine list.
-func TestRemoteEngineRejectsUntrusted(t *testing.T) {
+func TestRemoteEngine_RejectsUntrusted(t *testing.T) {
 	dirA, dirB := t.TempDir(), t.TempDir()
 	const uuidA, uuidB = "untrusted-a", "server-b"
 	_ = mintClusterIdentity(t, dirA, uuidA)

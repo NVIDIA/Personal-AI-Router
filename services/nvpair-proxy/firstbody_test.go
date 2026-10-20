@@ -73,7 +73,7 @@ func newStalledEngine(t *testing.T) stalledEngine {
 // engine that accepts and stalls. The first owner sends headers and no content;
 // the request must move to the next owner rather than binding itself to a node
 // that has not started generating.
-func TestHandleHTTP_HeadersWithoutContentFailsOver(t *testing.T) {
+func TestHandleHTTP_FailsOverWhenHeadersArriveWithoutBody(t *testing.T) {
 	setForTest(t, &firstBodyTimeout, testFirstBodyTimeout)
 
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
@@ -109,7 +109,7 @@ func TestHandleHTTP_HeadersWithoutContentFailsOver(t *testing.T) {
 // upstream body (spec §5.2).
 //
 // 504 rather than 502: the node answered, it just never produced anything.
-func TestHandleHTTP_NoContentOnFinalAttemptTerminates(t *testing.T) {
+func TestHandleHTTP_ReturnsTimeoutWhenFinalAttemptHasNoBody(t *testing.T) {
 	setForTest(t, &firstBodyTimeout, testFirstBodyTimeout)
 
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
@@ -148,7 +148,7 @@ func TestHandleHTTP_NoContentOnFinalAttemptTerminates(t *testing.T) {
 // committed response would be served a byte short. Compared bytewise rather
 // than as JSON, since losing the first byte is exactly what would still parse
 // as something.
-func TestHandleHTTP_FirstBytePreservedOnCommit(t *testing.T) {
+func TestHandleHTTP_PreservesFirstBodyByteWhenCommittingResponse(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		const payload = `{"response":"whole body intact","done":true}`
 		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +171,7 @@ func TestHandleHTTP_FirstBytePreservedOnCommit(t *testing.T) {
 
 // TestHandleHTTP_EmptyBodyCommits: a 200 with no body at all commits rather
 // than burning the budget waiting for content that is never coming (spec §5.2).
-func TestHandleHTTP_EmptyBodyCommits(t *testing.T) {
+func TestHandleHTTP_CommitsEmptyBodyResponse(t *testing.T) {
 	// Long, so a wait would be unmistakable: if the empty body were treated as
 	// a stall, the guard below would trip well before this expires.
 	setForTest(t, &firstBodyTimeout, 30*time.Second)
@@ -206,7 +206,7 @@ func TestHandleHTTP_EmptyBodyCommits(t *testing.T) {
 // A control endpoint's headers mean what they say, and some of them (a pull's
 // progress stream) legitimately produce their first byte late, so waiting there
 // would add latency for no benefit.
-func TestHandleHTTP_NonInferenceCommitsOnHeaders(t *testing.T) {
+func TestHandleHTTP_CommitsNonInferenceResponseOnHeaders(t *testing.T) {
 	setForTest(t, &firstBodyTimeout, testFirstBodyTimeout)
 
 	forEachEngine(t, func(t *testing.T, tc engineCase) {

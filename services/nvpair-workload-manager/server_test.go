@@ -18,7 +18,7 @@ import (
 // TestServer_InterNodeDedupRecordedOnlyAfterSuccessfulEmit verifies that a
 // failed broker emit does not record a dedup key, so the peer can retry, while
 // a successful emit prevents later duplicates from reaching the broker.
-func TestServer_InterNodeDedupRecordedOnlyAfterSuccessfulEmit(t *testing.T) {
+func TestServer_RecordsPeerEventOnlyAfterSuccessfulEmission(t *testing.T) {
 	test := func(name string, frame []byte, wantUpserts, wantRemoves int) {
 		t.Run(name, func(t *testing.T) {
 			self, peer := newPinnedPeerMeshes(t)

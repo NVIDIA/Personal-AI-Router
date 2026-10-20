@@ -114,7 +114,7 @@ func findEntity(entities []*Entity, value string) *Entity {
 	return nil
 }
 
-func TestDiscoveryLinksNodeIdentifiers(t *testing.T) {
+func TestDiscovery_LinksNodeIdentifiers(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	require.Len(t, res.nodes, 2)
@@ -146,7 +146,7 @@ func TestDiscoveryLinksNodeIdentifiers(t *testing.T) {
 
 // Four-part version strings parse as valid addresses. Treating one as an address
 // would replace it and make the log misleading.
-func TestVersionStringIsNotTreatedAsAddress(t *testing.T) {
+func TestVersionString_IsNotTreatedAsAddress(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	assert.Nil(t, findEntity(res.entities, "14.8.178.33"), "version must not be treated as an address")
@@ -163,7 +163,7 @@ func TestVersionStringIsNotTreatedAsAddress(t *testing.T) {
 // would leave those in place. nodesInitial is keyed by node UUID, which is now
 // deliberately readable, so this exercises the traversal with a value that is
 // still replaced.
-func TestObjectKeysAreSanitized(t *testing.T) {
+func TestObjectKeys_AreSanitized(t *testing.T) {
 	src := `{"level":"info","time":"2026-07-21T22:11:31.000Z","sublevel":"a",` +
 		`"message":"state","data":{"byHost":{"TESTHOST-A":{"ok":true}},` +
 		`"id":"11111111-2222-4333-8444-555555555555","ipAddress":"192.168.50.10",` +
@@ -178,7 +178,7 @@ func TestObjectKeysAreSanitized(t *testing.T) {
 }
 
 // Node and cluster UUIDs are left readable on purpose.
-func TestUUIDsAreLeftReadable(t *testing.T) {
+func TestUUIDs_AreLeftReadable(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	state := sectionJSON(t, res, "Current Modular State")
@@ -204,7 +204,7 @@ func TestUUIDsAreLeftReadable(t *testing.T) {
 // The desktop logger encodes a message that the Go logger already quoted, so a
 // path arrives double-escaped. Replacing on decoded values and re-marshalling
 // must preserve the original escape depth.
-func TestNestedEscapingRoundTrip(t *testing.T) {
+func TestNestedEscaping_RoundTripsSanitizedOutput(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	assert.NotContains(t, res.output, "testuser", "username survived in the output")
@@ -212,7 +212,7 @@ func TestNestedEscapingRoundTrip(t *testing.T) {
 	assert.Contains(t, res.output, `path=\"C:`, "inner Go quoting was not preserved")
 }
 
-func TestLoopbackLeftInTheClear(t *testing.T) {
+func TestLoopbackAddresses_RemainReadable(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	e := findEntity(res.entities, "127.0.0.1")
@@ -223,7 +223,7 @@ func TestLoopbackLeftInTheClear(t *testing.T) {
 
 // A certificate fingerprint is a long run of colon-separated hex pairs whose
 // first six pairs look exactly like a MAC address.
-func TestFingerprintIsNotPartiallyMatchedAsMAC(t *testing.T) {
+func TestFingerprint_IsNotPartiallyMatchedAsMAC(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
@@ -235,7 +235,7 @@ func TestFingerprintIsNotPartiallyMatchedAsMAC(t *testing.T) {
 	assert.NotContains(t, res.output, `"mac":"aa:bb:cc:dd:ee:ff"`, "MAC address was not replaced")
 }
 
-func TestDedupeCollapsesCopiesButKeepsRealRepeats(t *testing.T) {
+func TestDedupe_CollapsesCopiesButKeepsRealRepeats(t *testing.T) {
 	deduped := runPipeline(t, fixture, true)
 	assert.Equal(t, 1, deduped.dropped, "duplicate copies collapsed")
 	assert.Equal(t, 1, strings.Count(deduped.output, "settings loaded"), "the duplicated line should appear once")
@@ -247,7 +247,7 @@ func TestDedupeCollapsesCopiesButKeepsRealRepeats(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(raw.output, "settings loaded"), "both copies should be kept without dedupe")
 }
 
-func TestVerificationPassesOnSanitizedOutput(t *testing.T) {
+func TestVerification_PassesOnSanitizedOutput(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	v := newVerifier(res.entities)
@@ -263,7 +263,7 @@ func TestVerificationPassesOnSanitizedOutput(t *testing.T) {
 
 // The verifier must fail when a learned value is present, otherwise it offers no
 // guarantee.
-func TestVerificationDetectsALeak(t *testing.T) {
+func TestVerification_DetectsALeak(t *testing.T) {
 	entities := []*Entity{
 		{Kind: KindHostname, Value: "TESTHOST-A", Token: "node-a"},
 		{Kind: KindIPv4, Value: "192.168.50.10", Token: "node-a-ip", Class: "lan"},
@@ -279,7 +279,7 @@ func TestVerificationDetectsALeak(t *testing.T) {
 	assert.GreaterOrEqual(t, len(v.findings), 2, "want a finding per leaked value")
 }
 
-func TestIsHostnameRejectsNonHosts(t *testing.T) {
+func TestIsHostname_RejectsNonHosts(t *testing.T) {
 	assert.False(t, isHostname("qwen3.6:27b"))                          // model tag
 	assert.False(t, isHostname("engine:status"))                        // JSON-RPC method
 	assert.False(t, isHostname("ollama"))                               // engine name
@@ -295,7 +295,7 @@ func TestIsHostnameRejectsNonHosts(t *testing.T) {
 	assert.True(t, isHostname("node-01.lan"))
 }
 
-func TestClassifyIP(t *testing.T) {
+func TestClassifyIP_DistinguishesPrivatePublicAndLoopbackAddresses(t *testing.T) {
 	cases := map[string]struct {
 		class string
 		keep  bool
@@ -319,7 +319,7 @@ func TestClassifyIP(t *testing.T) {
 
 // Tokens must be identical across runs on the same input, otherwise two
 // collections of the same logs cannot be compared.
-func TestTokenAssignmentIsDeterministic(t *testing.T) {
+func TestTokenAssignment_IsDeterministic(t *testing.T) {
 	first := runPipeline(t, fixture, true)
 	second := runPipeline(t, fixture, true)
 
@@ -333,7 +333,7 @@ func TestTokenAssignmentIsDeterministic(t *testing.T) {
 
 // Hostnames are only trusted from structured fields. An input without them must
 // say so, because verification passing does not mean nothing was missed.
-func TestFragmentInputWarnsAboutUndetectedHostnames(t *testing.T) {
+func TestFragmentInput_WarnsAboutUndetectedHostnames(t *testing.T) {
 	fragment := `{"level":"info","time":"2026-07-21T22:11:31.000Z","sublevel":"x","message":"host WORKSTATION-9 at 192.168.77.5"}` + "\n"
 	path := filepath.Join(t.TempDir(), "fragment.jsonl")
 	require.NoError(t, os.WriteFile(path, []byte(fragment), 0o600))
@@ -353,7 +353,7 @@ func TestFragmentInputWarnsAboutUndetectedHostnames(t *testing.T) {
 }
 
 // A full bundle has the structured fields, so it must not carry that warning.
-func TestFullBundleDoesNotWarnAboutHostnames(t *testing.T) {
+func TestFullBundle_DoesNotWarnAboutHostnames(t *testing.T) {
 	d := newDiscovery(false)
 	require.NoError(t, scanFile(fixture, visitor{
 		onRecord: func(rec Record, _ string) error { d.scanRecord(rec); return nil },
@@ -375,7 +375,7 @@ func TestFullBundleDoesNotWarnAboutHostnames(t *testing.T) {
 
 // An exported bundle must come back as a bundle, with its header intact and a
 // single record section — not split into separate files.
-func TestBundleFormatIsPreservedAsOneFile(t *testing.T) {
+func TestBundleFormat_IsPreservedAsOneFile(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	assert.True(t, res.bundle, "fixture is an exported bundle but was not detected as one")
@@ -391,7 +391,7 @@ func TestBundleFormatIsPreservedAsOneFile(t *testing.T) {
 }
 
 // A raw nvpair.jsonl has no header, so it comes back as plain JSONL.
-func TestRawJSONLInputStaysJSONL(t *testing.T) {
+func TestRawJSONLInput_StaysJSONL(t *testing.T) {
 	src := `{"level":"info","time":"2026-07-21T22:11:31.000Z","source":"x","sublevel":"y","message":"listening","data":{"addr":"127.0.0.1"}}` + "\n"
 	path := filepath.Join(t.TempDir(), "nvpair.jsonl")
 	require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
@@ -406,7 +406,7 @@ func TestRawJSONLInputStaysJSONL(t *testing.T) {
 // Each bundle was produced by a different machine. Reading several must not
 // collapse their producers into one node, and an identifier seen in both must
 // resolve to the same token.
-func TestSeveralBundlesKeepProducersDistinct(t *testing.T) {
+func TestLogBundles_KeepProducersDistinct(t *testing.T) {
 	const fixtureB = "testdata/sample-bundle-b.txt"
 
 	d := newDiscovery(false)
@@ -472,7 +472,7 @@ func TestSeveralBundlesKeepProducersDistinct(t *testing.T) {
 // Two inputs from the same machine each create a node group, and one is merged
 // away during scanning. The group a source points at must still resolve to a
 // label, or its output file would fall back to a source number.
-func TestSameProducerTwiceStillNamesBothOutputs(t *testing.T) {
+func TestRepeatedProducer_KeepsBothOutputNames(t *testing.T) {
 	d := newDiscovery(false)
 	var groups []inputGroup
 	for _, path := range []string{fixture, fixture} {
@@ -505,7 +505,7 @@ func TestSameProducerTwiceStillNamesBothOutputs(t *testing.T) {
 // A line that is not a record is dropped rather than sanitized. That is safe but
 // silent, so it must be counted — otherwise pointing the tool at the wrong file
 // yields an empty output that looks like a sanitized log.
-func TestUnrecognisedLinesAreCounted(t *testing.T) {
+func TestUnrecognisedLines_AreCounted(t *testing.T) {
 	content := "not json at all\n" +
 		`{"level":"info","time":"2026-07-21T22:11:31.000Z","sublevel":"a","message":"ok"}` + "\n" +
 		`{"level":"info","time":"2026-07-21T22:11:32.000Z","sublevel":"a","message":"trunc`
@@ -525,7 +525,7 @@ func TestUnrecognisedLinesAreCounted(t *testing.T) {
 
 // A bundle's title line and the blank lines around its sections are structure, not
 // discarded content, and must not be reported as dropped.
-func TestBundleStructureIsNotCountedAsSkipped(t *testing.T) {
+func TestBundleStructure_IsNotCountedAsSkipped(t *testing.T) {
 	skipped := 0
 	require.NoError(t, scanFile(fixture, visitor{
 		onRecord:  func(Record, string) error { return nil },
@@ -537,7 +537,7 @@ func TestBundleStructureIsNotCountedAsSkipped(t *testing.T) {
 
 // A custom install directory can carry a name its owner chose. The root is
 // replaced and the tail kept, so the layout still reads normally.
-func TestInstallRootIsReplacedAtEveryEscapeDepth(t *testing.T) {
+func TestInstallRoot_IsReplacedAtEveryEscapeDepth(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	root := findEntity(res.entities, `C:\Program Files\Seth Custom PAIR`)
@@ -563,7 +563,7 @@ func TestInstallRootIsReplacedAtEveryEscapeDepth(t *testing.T) {
 
 // An install root must never be so shallow that replacing it swallows the drive
 // or the filesystem root.
-func TestInstallRootRejectsShallowPaths(t *testing.T) {
+func TestInstallRoot_RejectsShallowPaths(t *testing.T) {
 	assert.Equal(t, "", installRoot(`C:\resources\cli-bin`)) // one segment before resources
 	assert.Equal(t, "", installRoot(`/resources/cli-bin`))
 	assert.Equal(t, "", installRoot(`resources/cli-bin`))
@@ -574,7 +574,7 @@ func TestInstallRootRejectsShallowPaths(t *testing.T) {
 
 // A cluster's friendly name is free text the user typed. No shape test can find
 // it, so it is recognised by the key that carried it.
-func TestClusterFriendlyNameIsReplaced(t *testing.T) {
+func TestClusterFriendlyName_IsReplaced(t *testing.T) {
 	res := runPipeline(t, fixture, true)
 
 	label := findEntity(res.entities, "Seth's Basement Lab")
@@ -586,7 +586,7 @@ func TestClusterFriendlyNameIsReplaced(t *testing.T) {
 
 // Model names stay readable unless asked for, because model identity is usually
 // what a routing problem is about.
-func TestModelNamesOnlyReplacedWhenRequested(t *testing.T) {
+func TestModelNames_AreReplacedOnlyWhenRequested(t *testing.T) {
 	off := runPipelineOpts(t, fixture, true, false)
 	assert.Contains(t, off.output, "qwen3.6:27b", "model names should stay readable by default")
 
@@ -604,7 +604,7 @@ func TestModelNamesOnlyReplacedWhenRequested(t *testing.T) {
 // A key-driven rule describes what a value means and must not fire on the key
 // text. In "models":[{"model":"x"}] the key "model" arrives under the path
 // "models", and was previously read as a model named "model".
-func TestKeyTextIsNotTreatedAsAValue(t *testing.T) {
+func TestKeyText_IsNotTreatedAsAValue(t *testing.T) {
 	src := `{"level":"info","time":"2026-07-21T22:11:31.000Z","sublevel":"a",` +
 		`"message":"m","data":{"models":[{"model":"qwen3.6:27b"}],` +
 		`"clusterFriendlyName":"Lab One"}}` + "\n"

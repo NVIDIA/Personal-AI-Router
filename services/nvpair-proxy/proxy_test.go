@@ -14,7 +14,7 @@ import (
 // de-duplication of a node's advertised addresses. Local-address rewriting is
 // not exercised (it depends on the host's interfaces); these addresses are
 // chosen to be non-local.
-func TestNodeCandidates(t *testing.T) {
+func TestNodeCandidates_UsesPublishedAddressOrder(t *testing.T) {
 	tests := []struct {
 		name string
 		node Node
@@ -53,7 +53,7 @@ func TestNodeCandidates(t *testing.T) {
 	}
 }
 
-func TestUUIDFromTXT(t *testing.T) {
+func TestUUIDFromTXT_ExtractsNodeIdentity(t *testing.T) {
 	assert.Equal(t, "abc-123", uuidFromTXT([]string{"models=a;b", "uuid=abc-123"}))
 	assert.Equal(t, "", uuidFromTXT([]string{"models=a;b"}))
 }
@@ -64,7 +64,7 @@ func TestUUIDFromTXT(t *testing.T) {
 // local-address shortcut is not exercised here because it depends on
 // the host's network interfaces (see init() in proxy.go) and would be
 // flaky across environments.
-func TestNodeURL(t *testing.T) {
+func TestNodeURL_FormatsIPv4IPv6AndServicePort(t *testing.T) {
 	// Pick addresses that are unlikely to appear on any local interface.
 	tests := []struct {
 		name     string

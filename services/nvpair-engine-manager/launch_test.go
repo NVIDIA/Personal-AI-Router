@@ -22,7 +22,7 @@ func (command launchCommand) text() (string, error) {
 	return formatLaunchParts(command.Env, append([]string{command.Bin}, command.Args...))
 }
 
-func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
+func TestResolvedLaunch_MatchesBundledEngines(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	vars := map[string]string{"host": "127.0.0.1", "port": "12345", "cli": "/test path/lms", "install_dir": "/test path", "models_dir": "/test models"}
 	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
@@ -67,14 +67,14 @@ func TestResolvedLaunchMatchesBundledEngines(t *testing.T) {
 	require.NotContains(t, vars, "bin", "process builder mutated caller's resolution context")
 }
 
-func TestLaunchEnvironmentFormattingIsDeterministic(t *testing.T) {
+func TestLaunchEnvironmentFormatting_IsDeterministic(t *testing.T) {
 	launch := launchCommand{Bin: "engine", Env: map[string]string{"Z_SETTING": "z", "A_SETTING": "a b"}}
 	text, err := launch.text()
 	require.NoError(t, err, "unstable environment order or quoting (%v, %v)", text, err)
 	require.Equal(t, `A_SETTING="a b" Z_SETTING="z" engine`, text, "unstable environment order or quoting (%v, %v)", text, err)
 }
 
-func TestLiteralEnvironment(t *testing.T) {
+func TestLiteralEnvironment_ParsesAssignmentsAndRejectsInvalidNames(t *testing.T) {
 	accept := func(name string, assignments []string, want map[string]string) {
 		t.Run(name, func(t *testing.T) {
 			got, err := literalEnvironment(assignments)
@@ -120,7 +120,7 @@ func TestLiteralEnvironment(t *testing.T) {
 	reject("rejects invalid UTF-8", []string{"TOKEN=\xff"}, "valid UTF-8")
 }
 
-func TestLiteralEnvironmentNameCaseSensitivity(t *testing.T) {
+func TestLiteralEnvironment_UsesPlatformNameCaseSensitivity(t *testing.T) {
 	assignments := []string{"MODEL_DIR=/first", "model_dir=/second"}
 	env, err := literalEnvironment(assignments)
 	if runtime.GOOS == "windows" {
@@ -133,7 +133,7 @@ func TestLiteralEnvironmentNameCaseSensitivity(t *testing.T) {
 	assert.Equal(t, want, env)
 }
 
-func TestRuntimeLaunchOverridesJSONRoundTrip(t *testing.T) {
+func TestRuntimeLaunchOverrides_RoundTripsJSONAndPreservesEmptySlices(t *testing.T) {
 	test := func(name string, args, env []string) {
 		t.Run(name, func(t *testing.T) {
 			original := Runtime{LaunchArgs: args, LaunchEnv: env}
@@ -158,7 +158,7 @@ func TestRuntimeLaunchOverridesJSONRoundTrip(t *testing.T) {
 	test("literal overrides stay intact", []string{"{port}", "", "two words"}, []string{"MODEL_DIR={install_dir}/models", "EMPTY="})
 }
 
-func TestSavedLaunchArgumentsReplaceManifestDefaults(t *testing.T) {
+func TestSavedLaunchArguments_ReplaceManifestDefaults(t *testing.T) {
 	test := func(name, mode string, args, want []string) {
 		t.Run(name, func(t *testing.T) {
 			rt := Runtime{
@@ -192,7 +192,7 @@ func TestSavedLaunchArgumentsReplaceManifestDefaults(t *testing.T) {
 	test("command replaces defaults", "command", []string{"--user-option"}, []string{"serve", "--user-option"})
 }
 
-func TestCommandLaunchRejectsEmptyExecutable(t *testing.T) {
+func TestCommandLaunch_RejectsEmptyExecutable(t *testing.T) {
 	for _, template := range [][]string{{"", "start"}, {"{cli}", "start"}} {
 		_, err := resolveCommandLaunch(template, map[string]string{"cli": ""})
 		require.Error(t, err, "empty executable must fail rather than skip the start command")
@@ -201,7 +201,7 @@ func TestCommandLaunchRejectsEmptyExecutable(t *testing.T) {
 
 // The child receives the parser's output directly. This catches escaping
 // differences in the real Windows/POSIX argv path, not just parser symmetry.
-func TestLaunchTextReachesChildLiterally(t *testing.T) {
+func TestLaunchText_ReachesChildLiterally(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "captured args.json")
 	want := []string{"", "two words", "日本語", `C:\new\tools\`, `\\server\share`, `a"b`, "$HOME", "%USERPROFILE%", "{port}", "$(ignored)", "line\nbreak"}
 	tokens := append([]string{fakeEngineBin, "captureargs", path}, want...)
@@ -220,7 +220,7 @@ func TestLaunchTextReachesChildLiterally(t *testing.T) {
 	assertCapturedArgs(t, path, want)
 }
 
-func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
+func TestLifecycle_UsesResolvedLaunchBuilder(t *testing.T) {
 	for _, mode := range []string{"process", "command"} {
 		t.Run(mode, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "captured args.json")

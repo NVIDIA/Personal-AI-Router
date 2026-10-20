@@ -26,7 +26,7 @@ func (nopReadWriter) Write(p []byte) (int, error) { return len(p), nil }
 // localNodeID), so the self-check and EvictNode survive a peer's PC rename and
 // never conflate two same-named peers. Host stays the hostname for dialing /
 // display.
-func TestDirectoryToPeerKeysByHostUUID(t *testing.T) {
+func TestDirectoryToPeer_KeysByHostUUID(t *testing.T) {
 	n := noderec.DirectoryNode{
 		HostUUID: "uuid-x",
 		Name:     "host-x",
@@ -43,7 +43,7 @@ func TestDirectoryToPeerKeysByHostUUID(t *testing.T) {
 
 // TestSetLocalNodeID: the broker's --node-id override replaces the hostname
 // default so local errors are attributed to this node's stable UUID.
-func TestSetLocalNodeID(t *testing.T) {
+func TestSetLocalNodeID_RekeysLocalErrors(t *testing.T) {
 	m := NewManager(NewCodec(nopReadWriter{}))
 	m.SetLocalNodeID("uuid-self")
 	assert.Equal(t, "uuid-self", m.LocalNodeID())

@@ -20,7 +20,7 @@ import (
 // consumer that needs them. Nothing else connects the two, so a broker that drops
 // the notification leaves address ranking with no peer evidence at all while every
 // component's own unit tests still pass.
-func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
+func TestForwardNodeInfoObservedAddresses_ReachesTheScanner(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		from  string

@@ -143,7 +143,7 @@ func decodeResult[T any](t *testing.T, msg jsonrpc.Message) T {
 // TestClusterManagerPairing exercises the full happy path across two real
 // processes: create -> invite -> respond (PIN) -> paired -> remove, over stdio
 // JSON-RPC and the HTTP/mTLS inter-node channel.
-func TestClusterManagerPairing(t *testing.T) {
+func TestClusterManager_PairsNodesOverAuthenticatedExchange(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14821)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14822)
@@ -221,7 +221,7 @@ func TestClusterManagerPairing(t *testing.T) {
 // cluster:invite-node, with no separate cluster:create step. The founding is
 // authoritative and idempotent: it emits cluster:identity-changed, the invite
 // still proceeds to a pending PIN, and a second invite does not re-found.
-func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
+func TestInvite_FoundsClusterWhenLocalNodeIsUnclustered(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14831)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14832)
@@ -273,7 +273,7 @@ func TestInviteAutoFoundsClusterWhenUnclustered(t *testing.T) {
 // standalone node leaves exactly the newest pairing session usable. This keeps
 // PIN-only clients from seeing multiple indistinguishable inbound invites from
 // one sender while preserving the separate-sender race covered below.
-func TestRepeatedInviteSameSenderSupersedesPrior(t *testing.T) {
+func TestRepeatedInviteSameSender_SupersedesPrior(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14911)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14912)
@@ -386,7 +386,7 @@ func waitMembers(t *testing.T, p *cmProc, want int) {
 // TestClusterFanout verifies transitive trust: A founds a cluster and invites B
 // then C in two independent pairings; B and C must end up trusting each other
 // without any direct B<->C pairing, and a removal must fan out cluster-wide.
-func TestClusterFanout(t *testing.T) {
+func TestCluster_ReconcilesMembershipAcrossPeers(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14841)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14842)
@@ -430,7 +430,7 @@ func TestClusterFanout(t *testing.T) {
 // TestClusterLeave verifies a node can cleanly unjoin itself: after C leaves a
 // 3-node cluster, C ends up unclustered with no members, and A and B drop C.
 // It also checks that nodes:remove refuses to remove self.
-func TestClusterLeave(t *testing.T) {
+func TestClusterLeave_RemovesMembershipAndTrust(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14851)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14852)
@@ -475,7 +475,7 @@ func TestClusterLeave(t *testing.T) {
 // A cancels, the still-valid PIN no longer works — B entering the correct PIN is
 // rejected and never joins — and B is told to drop its prompt
 // (cluster:invite-canceled) and clears the pending-inbound member.
-func TestClusterCancelInvite(t *testing.T) {
+func TestClusterCancelInvite_ClearsPendingPairing(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14861)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14862)
@@ -549,7 +549,7 @@ func TestClusterCancelInvite(t *testing.T) {
 // NVPAIR_TEST_PAIR_COMMIT_DELAY_MS so onInviterPaired pauses (holding sess.mu,
 // after the pending check, before the commit); the joiner's accept is launched
 // first, then cancel is fired mid-pause so it contends for the same lock.
-func TestClusterCancelInviteRace(t *testing.T) {
+func TestClusterCancelInvite_PreservesConsistentOutcomeDuringConcurrentAccept(t *testing.T) {
 	const commitDelayMS = 800
 	a := startCMEnv(t, t.TempDir(), 14871, []string{
 		fmt.Sprintf("NVPAIR_TEST_PAIR_COMMIT_DELAY_MS=%d", commitDelayMS),
@@ -652,7 +652,7 @@ func TestClusterCancelInviteRace(t *testing.T) {
 // after B declines, A's invite-status flips to declined, A emits
 // cluster:invite-declined, and — because A's cluster was invite-created — A
 // leaves so both sides end standalone. A late Completion cannot pair.
-func TestClusterDeclineInvite(t *testing.T) {
+func TestClusterDeclineInvite_ClearsPendingPairing(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14871)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14872)
@@ -711,7 +711,7 @@ func TestClusterDeclineInvite(t *testing.T) {
 // invite expires on its own; A is given a long TTL so its outbound invite can
 // only be torn down by B's phase:"expire" signal — proving the two-sided
 // teardown, not merely each side's independent timer.
-func TestClusterInviteExpiresBothSides(t *testing.T) {
+func TestClusterInvite_ExpiresBothSides(t *testing.T) {
 	a := startCMEnv(t, t.TempDir(), 14911, []string{
 		"NVPAIR_TEST_INVITE_TTL_MS=60000", // A won't self-expire during the test
 		"NVPAIR_TEST_INVITE_EXPIRY_INTERVAL_MS=300",
@@ -769,7 +769,7 @@ func TestClusterInviteExpiresBothSides(t *testing.T) {
 
 // TestClusterDeclinePreservesIntentionalSolo verifies an explicitly created
 // cluster of one is not dissolved when an invite is declined.
-func TestClusterDeclinePreservesIntentionalSolo(t *testing.T) {
+func TestClusterDecline_PreservesIntentionalSolo(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14881)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14882)
@@ -809,7 +809,7 @@ func TestClusterDeclinePreservesIntentionalSolo(t *testing.T) {
 // TestClusterDeclineKeepsSiblingPendingInvite verifies that with two pending
 // outbound invites, declining one keeps the invite-created cluster alive so the
 // sibling session can still complete against a stable cluster id.
-func TestClusterDeclineKeepsSiblingPendingInvite(t *testing.T) {
+func TestClusterDecline_KeepsSiblingPendingInvite(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14891)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14892)
@@ -868,7 +868,7 @@ func TestClusterDeclineKeepsSiblingPendingInvite(t *testing.T) {
 // cluster:invite-failed, its invite-status flips to failed (reason
 // incorrect-pin), and — because its cluster was invite-created — it leaves so
 // both sides end standalone. Neither side pins the other.
-func TestClusterWrongPinFailsBothSides(t *testing.T) {
+func TestClusterWrongPin_FailsBothSides(t *testing.T) {
 	portB := freePort(t)
 	a := startCM(t, t.TempDir(), freePort(t))
 	defer a.stop()
@@ -926,7 +926,7 @@ func TestClusterWrongPinFailsBothSides(t *testing.T) {
 // TestClusterWrongPinPreservesIntentionalSolo verifies an explicitly created
 // cluster of one is not dissolved when a pairing fails on a wrong PIN,
 // mirroring the decline variant.
-func TestClusterWrongPinPreservesIntentionalSolo(t *testing.T) {
+func TestClusterWrongPin_PreservesIntentionalSolo(t *testing.T) {
 	portB := freePort(t)
 	a := startCM(t, t.TempDir(), freePort(t))
 	defer a.stop()
@@ -1039,7 +1039,7 @@ func waitUnclusteredWithin(t *testing.T, p *cmProc, timeout time.Duration) {
 // receives the members/remove notification, so on return it would still believe
 // it is clustered while every peer has dropped its pin. The periodic reconcile
 // must detect that unanimous 403 and self-remove.
-func TestClusterSelfRemoveWhenRemovedOffline(t *testing.T) {
+func TestCluster_RemovesLocalMembershipAfterVerifiedOfflineRemoval(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
 	portB := freePort(t)
 	a := startCM(t, baseA, freePort(t))
@@ -1090,7 +1090,7 @@ func TestClusterSelfRemoveWhenRemovedOffline(t *testing.T) {
 // leave drops the leaver's pins (so the returning survivor's reconcile gets a
 // 403) but leaves no removal tombstone naming the survivor, so that 403 carries
 // no authenticated proof — and a bare 403 must not tear the survivor down.
-func TestClusterNoSelfRemoveWhenPeerLeft(t *testing.T) {
+func TestCluster_KeepsMembershipWhenPeerLeaves(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
 	portA, portB := freePort(t), freePort(t)
 	a := startCM(t, baseA, portA)
@@ -1152,7 +1152,7 @@ func assertStillClustered(t *testing.T, p *cmProc, wait time.Duration) {
 // must NOT self-remove. Only a *unanimous* 403 tears down, so a 200 from the
 // (single) peer has to block it — otherwise a healthy or still-converging
 // cluster could self-evict.
-func TestClusterNoSelfRemoveWhenPeerAccepts(t *testing.T) {
+func TestCluster_KeepsMembershipWhenPeerAcceptsReconciliation(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
 	portB := freePort(t)
 	a := startCM(t, baseA, freePort(t))
@@ -1189,7 +1189,7 @@ func TestClusterNoSelfRemoveWhenPeerAccepts(t *testing.T) {
 // an unreachable peer counts as neither accept nor reject, so it must block
 // teardown rather than trigger it. A transient outage (peer down but not
 // removed) must never make the surviving node self-evict.
-func TestClusterNoSelfRemoveWhenPeerUnreachable(t *testing.T) {
+func TestCluster_KeepsMembershipWhenPeerIsUnreachable(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
 	portB := freePort(t)
 	a := startCM(t, baseA, freePort(t))
@@ -1227,7 +1227,7 @@ func TestClusterNoSelfRemoveWhenPeerUnreachable(t *testing.T) {
 // once a node is clustered it refuses a fresh pairing with state:"rejected"
 // (reason "already-clustered", no PIN), and only accepts an invite again after
 // it leaves the cluster.
-func TestClusterInviteAlreadyClusteredRejected(t *testing.T) {
+func TestClusterInvite_RejectsNodeAlreadyInCluster(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14881)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14882)
@@ -1276,7 +1276,7 @@ func TestClusterInviteAlreadyClusteredRejected(t *testing.T) {
 // B before B joins anything; B accepts A (adopting A's cluster), then accepting
 // C's already-pending invite must be rejected -- B must stay in A's cluster and
 // never adopt C's or trust C.
-func TestClusterInviteTwoPendingThenClustered(t *testing.T) {
+func TestClusterInvite_RejectsPendingInviteAfterJoiningCluster(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14891)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14892)
@@ -1349,7 +1349,7 @@ func TestClusterInviteTwoPendingThenClustered(t *testing.T) {
 // cluster for the invite, the target rejects it, and the inviter must dissolve
 // that solo cluster again (provenance-safe cleanup) rather than stay stuck in a
 // one-node cluster it only created to make the rejected invite.
-func TestClusterInviteRejectedDissolvesAutoFoundedSolo(t *testing.T) {
+func TestClusterInvite_DissolvesTemporarySoloClusterAfterRejection(t *testing.T) {
 	a := startCM(t, t.TempDir(), 14901)
 	defer a.stop()
 	b := startCM(t, t.TempDir(), 14902)

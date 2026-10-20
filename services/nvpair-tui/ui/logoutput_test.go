@@ -16,7 +16,7 @@ import (
 // TestOwnLogReachesTheLogsTab checks this program's log goes where it can be
 // read. While the full-screen program runs, stderr is behind it; each line has
 // to arrive on the Logs channel instead, and pass through to stderr otherwise.
-func TestOwnLogReachesTheLogsTab(t *testing.T) {
+func TestOwnLog_ReachesTheLogsTab(t *testing.T) {
 	var stderr bytes.Buffer
 	out := &logOutput{fallback: &stderr}
 
@@ -43,7 +43,7 @@ func TestOwnLogReachesTheLogsTab(t *testing.T) {
 // TestOwnLogNeverBlocksOnAFullTab checks a full buffer drops a line rather
 // than waiting. The update loop that drains the channel also logs, so a
 // blocking write from there would wait on itself.
-func TestOwnLogNeverBlocksOnAFullTab(t *testing.T) {
+func TestOwnLog_NeverBlocksOnAFullTab(t *testing.T) {
 	out := &logOutput{fallback: &bytes.Buffer{}}
 	lines := make(chan string, 1)
 	out.attach(lines)
@@ -62,7 +62,7 @@ func TestOwnLogNeverBlocksOnAFullTab(t *testing.T) {
 
 // TestDecodeOrLogReportsAMismatch checks a shape the broker and this client
 // disagree about is reported rather than read as zero values.
-func TestDecodeOrLogReportsAMismatch(t *testing.T) {
+func TestDecodeOrLog_ReportsAMismatch(t *testing.T) {
 	var into struct {
 		Port int `json:"port"`
 	}

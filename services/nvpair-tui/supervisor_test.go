@@ -74,7 +74,7 @@ func runSilentBroker() {
 	}
 }
 
-func TestResolveBrokerPathOverride(t *testing.T) {
+func TestResolveBrokerPath_UsesConfiguredOverride(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-broker")
 	require.NoError(t, os.WriteFile(bin, []byte("x"), 0o755))
@@ -91,7 +91,7 @@ func TestResolveBrokerPathOverride(t *testing.T) {
 // If a broker that stopped answering could stall shutdown, pressing q would
 // leave a terminal that has stopped redrawing and an operator reaching for
 // ctrl+c — which kills the tree the clean shutdown existed to avoid.
-func TestShutdownIsBoundedWhenTheBrokerIsSilent(t *testing.T) {
+func TestShutdown_IsBoundedWhenTheBrokerIsSilent(t *testing.T) {
 	t.Setenv("NVPAIR_TUI_SILENT_BROKER", "1")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,7 +121,7 @@ func TestShutdownIsBoundedWhenTheBrokerIsSilent(t *testing.T) {
 	}
 }
 
-func TestSupervisorReadyAndShutdown(t *testing.T) {
+func TestSupervisor_WaitsForReadyAndShutsDownBroker(t *testing.T) {
 	t.Setenv("NVPAIR_TUI_FAKE_BROKER", "1")
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStaticGPUsFromIORegistry(t *testing.T) {
+func TestStaticGPUs_ExtractsInventoryFromIORegistry(t *testing.T) {
 	const systemMemory = uint64(36 << 30)
 	gpus, err := staticGPUsFromIORegistry([]byte(ioRegistryGPUFixture), systemMemory)
 	require.NoError(t, err, "staticGPUsFromIORegistry() error")
@@ -33,7 +33,7 @@ func TestStaticGPUsFromIORegistry(t *testing.T) {
 	require.Equal(t, "ioreg:63", discrete.statsKey, "unexpected discrete GPU (%v)", discrete)
 }
 
-func TestReadDarwinIORegistryTimeout(t *testing.T) {
+func TestReadDarwinIORegistry_StopsAtTimeout(t *testing.T) {
 	_, err := readDarwinIORegistryWithRunner(context.Background(), time.Millisecond, func(ctx context.Context) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()

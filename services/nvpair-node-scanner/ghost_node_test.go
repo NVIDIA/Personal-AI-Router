@@ -94,7 +94,7 @@ func rawNode(txt ...string) RawNode {
 // cached address and ports are live — they belong to the machine's NEW
 // incarnation — so a TCP-only probe reports the stale record alive forever. The
 // probe must ask WHO answers, not just WHETHER anything answers.
-func TestReachableRejectsSupersededIdentity(t *testing.T) {
+func TestReachable_RejectsSupersededIdentity(t *testing.T) {
 	host, port := nodeInfoServer(t, "new-uuid-after-wipe")
 	d := probeDaemon()
 
@@ -105,7 +105,7 @@ func TestReachableRejectsSupersededIdentity(t *testing.T) {
 // TestReachableAcceptsMatchingIdentity guards the other direction: a peer that
 // merely dropped off multicast must survive the probe, or a transient mDNS gap
 // would evict healthy nodes.
-func TestReachableAcceptsMatchingIdentity(t *testing.T) {
+func TestReachable_AcceptsMatchingIdentity(t *testing.T) {
 	host, port := nodeInfoServer(t, "steady-uuid")
 	d := probeDaemon()
 
@@ -117,7 +117,7 @@ func TestReachableAcceptsMatchingIdentity(t *testing.T) {
 // unavailable. None of them may change today's behaviour: an open ni/em port
 // still means alive, so no node that used to survive a probe starts evicting.
 // Inference ports (ol/lm) are never used as the TCP fallback.
-func TestReachableFallsBackWithoutIdentity(t *testing.T) {
+func TestReachable_FallsBackWithoutIdentity(t *testing.T) {
 	tcpPort := openPort(t)
 	niHost, niPort := nodeInfoServer(t, "") // answers, but reports no identity
 
@@ -153,7 +153,7 @@ func TestReachableFallsBackWithoutIdentity(t *testing.T) {
 
 // TestReachableEvictsWhenNothingAnswers keeps the base case honest: a node that
 // is genuinely gone still evicts.
-func TestReachableEvictsWhenNothingAnswers(t *testing.T) {
+func TestReachable_EvictsWhenNothingAnswers(t *testing.T) {
 	d := probeDaemon()
 	dead := rawNode("v=1", "uuid=gone", "ip=127.0.0.1",
 		fmt.Sprintf("ni=%d", closedPort(t)), fmt.Sprintf("ol=%d", closedPort(t)))
@@ -180,7 +180,7 @@ func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // node-info timeout on every departed node, serially, inside the browser's scan
 // cycle. The verdicts are identical either way, so nothing but a request count
 // can catch a regression here.
-func TestReachableSkipsIdentityWhenNothingAnswers(t *testing.T) {
+func TestReachable_SkipsIdentityWhenNothingAnswers(t *testing.T) {
 	counter := &countingTransport{}
 	d := &daemon{http: &http.Client{Transport: counter, Timeout: nodeInfoFetchTimeout}}
 
@@ -237,7 +237,7 @@ func candidateUUIDs(nodes []noderec.DirectoryNode) string {
 // machine reappears under a new uuid at the same address and hostname, the
 // record it replaced is put forward for confirmation — and left in place until
 // it is confirmed.
-func TestSupersedeCandidatesNominatesGhost(t *testing.T) {
+func TestSupersedeCandidates_NominatesGhost(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("old-uuid", "192.168.1.10", 3600))
 
@@ -251,7 +251,7 @@ func TestSupersedeCandidatesNominatesGhost(t *testing.T) {
 // TestSupersedeCandidatesKeepFreshNeighbours is the false-positive guard: two
 // records observed at about the same time are the shape a misconfiguration
 // takes, not a wipe, and are not worth a probe.
-func TestSupersedeCandidatesKeepFreshNeighbours(t *testing.T) {
+func TestSupersedeCandidates_KeepFreshNeighbourRecords(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("peer-a", "192.168.1.10", supersedeMinAge-1))
 
@@ -262,7 +262,7 @@ func TestSupersedeCandidatesKeepFreshNeighbours(t *testing.T) {
 // machines colliding on an address almost never also collide on a hostname, so a
 // name mismatch means we are not looking at one machine. The wiped-AND-renamed
 // case is left to the miss-threshold path, which reaches the same proof.
-func TestSupersedeCandidatesRequireSameHostname(t *testing.T) {
+func TestSupersedeCandidates_RequireMatchingHostname(t *testing.T) {
 	d := newDirectory()
 	d.upsert(named("old-uuid", "old-name", "192.168.1.10", 3600))
 
@@ -275,7 +275,7 @@ func TestSupersedeCandidatesRequireSameHostname(t *testing.T) {
 // other direction, sharing an address is no longer a reason to nominate
 // anything, which is what stopped two hosts on a direct-connect link from
 // putting each other forward.
-func TestSupersedeCandidatesIgnoreTheAddress(t *testing.T) {
+func TestSupersedeCandidates_IgnoreAddressWhenComparingIdentity(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("peer-a", "192.168.1.10", 3600))
 
@@ -295,7 +295,7 @@ func TestSupersedeCandidatesIgnoreTheAddress(t *testing.T) {
 // can legitimately look stale — it must not be displaceable by a peer claiming
 // its address. Evicting the local node is a failure mode this daemon has hit
 // before (see the self-guard in onBrowse).
-func TestSupersedeCandidatesNeverIncludeSelf(t *testing.T) {
+func TestSupersedeCandidates_NeverIncludeSelf(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("self-uuid", "192.168.1.10", 3600))
 
@@ -309,7 +309,7 @@ func TestSupersedeCandidatesNeverIncludeSelf(t *testing.T) {
 
 // TestSupersedeCandidatesAreDeterministic pins the order, since the caller turns
 // the confirmed subset into a stream of node-removed notifications.
-func TestSupersedeCandidatesAreDeterministic(t *testing.T) {
+func TestSupersedeCandidates_AreDeterministic(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("uuid-c", "192.168.1.10", 3600))
 	d.upsert(ghost("uuid-a", "192.168.1.10", 7200))
@@ -322,7 +322,7 @@ func TestSupersedeCandidatesAreDeterministic(t *testing.T) {
 // is a network read, so the directory is unlocked while it runs and the entry
 // under judgement can change underneath it. A verdict formed against a state
 // that no longer exists must not be applied to the state that replaced it.
-func TestUpsertEvictingRejudgesRecordsThatMoved(t *testing.T) {
+func TestUpsertEvicting_RechecksRecordsWhoseAddressChanged(t *testing.T) {
 	d := newDirectory()
 	judged := named("old-uuid", "wiped-host", "192.168.1.10", 3600)
 	d.upsert(judged)
@@ -345,7 +345,7 @@ func TestUpsertEvictingRejudgesRecordsThatMoved(t *testing.T) {
 // would let anything on the LAN delete a live node by claiming its address —
 // and the browser re-reports a node only when its record CHANGES, so the peer
 // might never come back. Nothing is deleted without an answer from the machine.
-func TestSupersedingUpsertRequiresIdentityProof(t *testing.T) {
+func TestSupersedingUpsert_RequiresIdentityProof(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
 	// Nothing is listening on the record's own ni port, so it cannot speak for
 	// itself and the claimant's answer is the only evidence in play.
@@ -383,7 +383,7 @@ func TestSupersedingUpsertRequiresIdentityProof(t *testing.T) {
 // the pair is now told apart by asking the older record's own endpoint who it
 // is. A record that names itself is a live peer, not a leftover, whatever
 // address the arriving node claims.
-func TestSupersedingUpsertKeepsARecordThatAnswersForItself(t *testing.T) {
+func TestSupersedingUpsert_KeepsARecordThatAnswersForItself(t *testing.T) {
 	host, livePort := nodeInfoServer(t, "peer-a")
 	_, claimPort := nodeInfoServer(t, "peer-b")
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
@@ -401,7 +401,7 @@ func TestSupersedingUpsertKeepsARecordThatAnswersForItself(t *testing.T) {
 // defence: with no ni port to ask, a live namesake and a leftover look
 // identical, so the record stays and the miss-threshold path reaches it when it
 // stops advertising.
-func TestSupersedingUpsertKeepsAnUnaskableRecord(t *testing.T) {
+func TestSupersedingUpsert_KeepsAnUnaskableRecord(t *testing.T) {
 	host, claimPort := nodeInfoServer(t, "claimant-uuid")
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
 	d.dir.upsert(named("live-uuid", "wiped-host", host, 3600))
@@ -415,7 +415,7 @@ func TestSupersedingUpsertKeepsAnUnaskableRecord(t *testing.T) {
 // TestOnBrowseEmitsSupersededRemoval covers the wiring: the daemon must tell the
 // broker the ghost is gone, and drop its cached enrichment so a later
 // rediscovery under that uuid re-probes instead of resurrecting stale metrics.
-func TestOnBrowseEmitsSupersededRemoval(t *testing.T) {
+func TestOnBrowse_EmitsSupersededRemoval(t *testing.T) {
 	host, port := nodeInfoServer(t, "new-uuid")
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
 	d.dir.upsert(withNodeInfo(ghost("old-uuid", host, 3600), closedPort(t)))

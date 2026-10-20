@@ -62,7 +62,7 @@ func typeSearch(b *catalogBrowser, text string) tea.Cmd {
 // TestSearchableCatalogSearchesUpstream checks a source that can search is
 // searched rather than filtered. llama.cpp's browse list is a few publishers'
 // repos, and filtering it locally could never find a model outside them.
-func TestSearchableCatalogSearchesUpstream(t *testing.T) {
+func TestSearchableCatalog_SearchesUpstream(t *testing.T) {
 	client, calls := catalogBroker(t)
 	b := newCatalogBrowser(client, "llamacpp", "llama.cpp", "this-host", false)
 	b.SetSize(100, 24)
@@ -91,7 +91,7 @@ func TestSearchableCatalogSearchesUpstream(t *testing.T) {
 
 // TestSupersededSearchIsDropped checks a reply to a search the operator has
 // since replaced or cleared does not overwrite what is on screen.
-func TestSupersededSearchIsDropped(t *testing.T) {
+func TestSupersededSearch_IsDropped(t *testing.T) {
 	b := newCatalogBrowser(nil, "llamacpp", "llama.cpp", "this-host", false)
 	b.SetSize(100, 24)
 	b.update(catalogLoadedMsg{engine: "llamacpp", gen: b.gen, searchable: true,
@@ -129,7 +129,7 @@ func searchingBrowser() *catalogBrowser {
 // the operator can no longer see. While a search is in flight the list is
 // replaced by "Searching for ...", and enter used to download the row selected
 // before it.
-func TestEnterDuringASearchDownloadsNothing(t *testing.T) {
+func TestEnterDuringASearch_DownloadsNothing(t *testing.T) {
 	b := searchingBrowser()
 	picked, open := browserKey(b, "enter")
 	assert.Empty(t, picked, "enter during a search must select nothing")
@@ -138,7 +138,7 @@ func TestEnterDuringASearchDownloadsNothing(t *testing.T) {
 
 // TestEnterAfterAFailedSearchDownloadsNothing checks a failed search leaves no
 // earlier row to download behind its explanation.
-func TestEnterAfterAFailedSearchDownloadsNothing(t *testing.T) {
+func TestEnterAfterAFailedSearch_DownloadsNothing(t *testing.T) {
 	b := searchingBrowser()
 	b.update(catalogLoadedMsg{engine: "llamacpp", gen: b.gen, err: errFake{}})
 	picked, open := browserKey(b, "enter")
@@ -148,7 +148,7 @@ func TestEnterAfterAFailedSearchDownloadsNothing(t *testing.T) {
 
 // TestUnsearchableCatalogStillFiltersLocally checks a source that cannot search
 // keeps the local filter, which issues no request.
-func TestUnsearchableCatalogStillFiltersLocally(t *testing.T) {
+func TestUnsearchableCatalog_StillFiltersLocally(t *testing.T) {
 	b := loadedBrowser()
 	assert.Nil(t, typeSearch(b, "qwen"), "filtering a source that cannot search sent a request")
 	assert.Empty(t, b.query, "local filtering must not send a query")
@@ -185,7 +185,7 @@ func browserKey(b *catalogBrowser, k string) (string, bool) {
 }
 
 // TestCatalogListsModels checks a loaded catalogue reaches the table.
-func TestCatalogListsModels(t *testing.T) {
+func TestCatalog_ListsModels(t *testing.T) {
 	b := loadedBrowser()
 	assert.False(t, b.loading, "still loading after the reply landed")
 	require.Len(t, b.table.Rows(), 3)
@@ -196,7 +196,7 @@ func TestCatalogListsModels(t *testing.T) {
 
 // TestCatalogFilterNarrowsLocally is the point of the browser: search over the
 // whole list without another request, since there is no server-side search.
-func TestCatalogFilterNarrowsLocally(t *testing.T) {
+func TestCatalogFilter_NarrowsLocally(t *testing.T) {
 	b := loadedBrowser()
 
 	b.filter = "qwen"
@@ -223,7 +223,7 @@ func TestCatalogFilterNarrowsLocally(t *testing.T) {
 
 // TestCatalogSortCyclesAndOrders checks the sort key cycles and that size sorts
 // largest-first.
-func TestCatalogSortCyclesAndOrders(t *testing.T) {
+func TestCatalogSort_CyclesAndOrders(t *testing.T) {
 	b := loadedBrowser()
 	require.Equal(t, catalogSortDefault, b.sortBy, "did not open on the backend's order")
 
@@ -241,7 +241,7 @@ func TestCatalogSortCyclesAndOrders(t *testing.T) {
 
 // TestCatalogEnterReturnsPullReadyName checks selecting a model closes the
 // browser and hands back the name the engine's download action accepts.
-func TestCatalogEnterReturnsPullReadyName(t *testing.T) {
+func TestCatalogEnter_ReturnsPullReadyName(t *testing.T) {
 	b := loadedBrowser()
 	b.table.SetCursor(1)
 
@@ -251,7 +251,7 @@ func TestCatalogEnterReturnsPullReadyName(t *testing.T) {
 }
 
 // TestCatalogEscapeSelectsNothing checks backing out downloads nothing.
-func TestCatalogEscapeSelectsNothing(t *testing.T) {
+func TestCatalogEscape_SelectsNothing(t *testing.T) {
 	b := loadedBrowser()
 	picked, open := browserKey(b, "esc")
 	assert.False(t, open, "esc left the browser open")
@@ -265,7 +265,7 @@ func TestCatalogEscapeSelectsNothing(t *testing.T) {
 // that owns the browser: an earlier version of this test called a
 // CapturingInput method on the browser that nothing in production consulted, so
 // it proved a path that never ran.
-func TestCatalogSearchCapturesKeys(t *testing.T) {
+func TestCatalogSearch_CapturesKeys(t *testing.T) {
 	b := loadedBrowser()
 	browserKey(b, "/")
 	require.True(t, b.searching, "search did not take the keyboard")
@@ -281,7 +281,7 @@ func TestCatalogSearchCapturesKeys(t *testing.T) {
 
 // TestCatalogLoadFailureExplainsItself checks a failed load says so instead of
 // showing an empty list that reads as "this engine has nothing".
-func TestCatalogLoadFailureExplainsItself(t *testing.T) {
+func TestCatalogLoadFailure_ExplainsItself(t *testing.T) {
 	b := newCatalogBrowser(nil, "ollama", "Ollama", "this-host", false)
 	b.SetSize(100, 24)
 	b.update(catalogLoadedMsg{engine: "ollama", err: errFake{}})
@@ -292,7 +292,7 @@ func TestCatalogLoadFailureExplainsItself(t *testing.T) {
 
 // TestCatalogLoadFailureCanBeRetried is the regression guard for a failed load
 // with no way forward but closing the browser and opening it again.
-func TestCatalogLoadFailureCanBeRetried(t *testing.T) {
+func TestCatalogLoadFailure_CanBeRetried(t *testing.T) {
 	b := newCatalogBrowser(nil, "ollama", "Ollama", "this-host", false)
 	b.SetSize(100, 24)
 	cmd, _, _ := b.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
@@ -312,7 +312,7 @@ func TestCatalogLoadFailureCanBeRetried(t *testing.T) {
 
 // TestCatalogIgnoresOtherEnginesReply checks a late reply for an engine the
 // operator has moved on from does not populate this browser.
-func TestCatalogIgnoresOtherEnginesReply(t *testing.T) {
+func TestCatalog_IgnoresOtherEnginesReply(t *testing.T) {
 	b := newCatalogBrowser(nil, "ollama", "Ollama", "this-host", false)
 	b.SetSize(100, 24)
 	b.update(catalogLoadedMsg{
@@ -324,7 +324,7 @@ func TestCatalogIgnoresOtherEnginesReply(t *testing.T) {
 
 // TestCatalogEmptyCatalogIsDistinctFromNoMatch checks the two empty states read
 // differently, because the fixes are different.
-func TestCatalogEmptyCatalogIsDistinctFromNoMatch(t *testing.T) {
+func TestCatalogEmptyCatalog_IsDistinctFromNoMatch(t *testing.T) {
 	b := newCatalogBrowser(nil, "vllm", "vLLM", "this-host", false)
 	b.SetSize(100, 24)
 	b.update(catalogLoadedMsg{engine: "vllm", models: nil})
@@ -336,7 +336,7 @@ func TestCatalogEmptyCatalogIsDistinctFromNoMatch(t *testing.T) {
 // both halves of what it was filtered for. The operating system alone does not
 // decide what installs: an Intel Mac and an Apple Silicon one are offered
 // different LM Studio lists.
-func TestPeerCatalogNamesTheMachineItWasFilteredFor(t *testing.T) {
+func TestPeerCatalog_NamesTheMachineItWasFilteredFor(t *testing.T) {
 	b := newCatalogBrowser(nil, "lmstudio", "LM Studio", "peer-host", true)
 	b.SetSize(100, 24)
 	b.update(catalogLoadedMsg{
@@ -352,7 +352,7 @@ func TestPeerCatalogNamesTheMachineItWasFilteredFor(t *testing.T) {
 	assert.NotContains(t, local.summary(), "filtered for", "local summary carries a caveat meant for peers")
 }
 
-func TestShortDate(t *testing.T) {
+func TestShortDate_ExtractsCalendarDateAndPreservesShortInput(t *testing.T) {
 	assert.Equal(t, "2026-07-21", shortDate("2026-07-21T02:07:47.321Z"))
 	assert.Equal(t, "short", shortDate("short"))
 }

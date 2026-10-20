@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLMStudioDeleteModelRemovePath(t *testing.T) {
+func TestLMStudioDeleteModel_RemovesResolvedModelPath(t *testing.T) {
 	root := t.TempDir()
 	modelRel := "publisher/demo-model"
 	modelDir := filepath.Join(root, modelRel)
@@ -87,7 +87,7 @@ func engineRun(t *testing.T, ex *Executor, engine string) (generation int64, run
 // delete_model declares restart_after: the files are gone, but its server keeps
 // answering /v1/models from an index built at startup, and it offers no rescan.
 // The engine must come back up, not merely stop.
-func TestDeleteModelRestartAfterBouncesRunningEngine(t *testing.T) {
+func TestDeleteModelRestartAfter_BouncesRunningEngine(t *testing.T) {
 	root := t.TempDir()
 	modelRel := "publisher/demo-model"
 	require.NoError(t, os.MkdirAll(filepath.Join(root, modelRel), 0o755))
@@ -109,7 +109,7 @@ func TestDeleteModelRestartAfterBouncesRunningEngine(t *testing.T) {
 // TestDeleteModelRestartAfterLeavesStoppedEngineDown covers the other half of
 // the contract: a stopped engine serves nothing, so there is no stale index to
 // reconcile and restart_after must not start it behind the user's back.
-func TestDeleteModelRestartAfterLeavesStoppedEngineDown(t *testing.T) {
+func TestDeleteModelRestartAfter_LeavesStoppedEngineDown(t *testing.T) {
 	root := t.TempDir()
 	modelRel := "publisher/demo-model"
 	require.NoError(t, os.MkdirAll(filepath.Join(root, modelRel), 0o755))
@@ -129,7 +129,7 @@ func TestDeleteModelRestartAfterLeavesStoppedEngineDown(t *testing.T) {
 // restart_after and its delete must leave the engine's process completely alone
 // — no bounce, no interrupted inference. The restart is opt-in per action, never
 // a property of deleting.
-func TestDeleteModelWithoutRestartAfterDoesNotBounce(t *testing.T) {
+func TestDeleteModelWithoutRestartAfter_DoesNotBounce(t *testing.T) {
 	root := t.TempDir()
 	modelRel := "publisher/demo-model"
 	require.NoError(t, os.MkdirAll(filepath.Join(root, modelRel), 0o755))
@@ -159,7 +159,7 @@ func TestDeleteModelWithoutRestartAfterDoesNotBounce(t *testing.T) {
 // happened" — the desktop bridge keys its "deleted, but the engine did not come
 // back" wording off exactly this message rather than re-reporting a failed
 // delete and inviting a retry that would hit "not found on disk".
-func TestDeleteModelRestartFailureFailsTheAction(t *testing.T) {
+func TestDeleteModelRestartFailure_FailsTheAction(t *testing.T) {
 	root := t.TempDir()
 	modelRel := "publisher/demo-model"
 	require.NoError(t, os.MkdirAll(filepath.Join(root, modelRel), 0o755))
@@ -190,7 +190,7 @@ func TestDeleteModelRestartFailureFailsTheAction(t *testing.T) {
 // new manifest ever needs it, that is a deliberate decision — and it also has to
 // be mirrored in the desktop's EngineCapabilities so the UI still confirms
 // first (see desktop/tests/modular/delete-model-restart.test.ts).
-func TestBundledManifestsRestartOnlyLMStudio(t *testing.T) {
+func TestBundledManifests_RestartOnlyLMStudioAfterModelDeletion(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "LoadFS bundled")
 	for engine, m := range reg.engines {
@@ -212,7 +212,7 @@ func TestBundledManifestsRestartOnlyLMStudio(t *testing.T) {
 // cancels the peer's handler mid-restart: files gone, engine down, reported as
 // a plain delete failure. Every restart_after platform must therefore finish
 // inside the remote readiness budget.
-func TestRestartAfterFitsRemoteReadinessBudget(t *testing.T) {
+func TestRestartAfter_FitsRemoteReadinessBudget(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "LoadFS bundled")
 	for engine, m := range reg.engines {
@@ -242,7 +242,7 @@ func hasRestartAfter(m *Manifest) bool {
 // TestRestartAfterRequiresReadinessProbe covers the load-time guard: the promise
 // restart_after makes ("the effect is visible when this replies") is only
 // keepable if doStart waits for a readiness probe.
-func TestRestartAfterRequiresReadinessProbe(t *testing.T) {
+func TestRestartAfter_RequiresReadinessProbe(t *testing.T) {
 	m := deleteModelRestartManifest(t, t.TempDir(), fakeEngineBin)
 	for key, p := range m.Platforms {
 		p.Runtime.Ready = nil
@@ -251,7 +251,7 @@ func TestRestartAfterRequiresReadinessProbe(t *testing.T) {
 	require.ErrorContains(t, m.Validate(), "runtime.ready", "Validate accepted restart_after without a readiness probe")
 }
 
-func TestModelActionWireOllamaUnload(t *testing.T) {
+func TestOllamaUnload_SendsZeroKeepAlive(t *testing.T) {
 	action, params, err := modelActionWire("ollama", "unload", "llama3.2")
 	require.NoError(t, err)
 	require.Equal(t, "unload_model", action, "action")

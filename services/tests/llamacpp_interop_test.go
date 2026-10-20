@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLlamaCPPProxyIsIncludedInBrokerDefaults(t *testing.T) {
+func TestLlamaCPPProxy_IsIncludedInBrokerDefaults(t *testing.T) {
 	stdin, msgs, stderr, cleanup := startBrokerWith(t, "--proxy-path", proxyBin)
 	t.Cleanup(cleanup)
 	go func() {
@@ -30,7 +30,7 @@ func TestLlamaCPPProxyIsIncludedInBrokerDefaults(t *testing.T) {
 	assert.Greater(t, waitEngineProxyReady(t, "llamacpp-proxy", stdin, msgs, 15*time.Second), 0, "default llama.cpp facade must listen")
 }
 
-func TestBrokerLlamaCPPProxySetPortRejectsInvalidPorts(t *testing.T) {
+func TestBrokerLlamaCPPProxySetPort_RejectsInvalidPorts(t *testing.T) {
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
 		"--proxy-path", proxyBin, "--proxy-engines", "llamacpp",
 	)
@@ -60,7 +60,7 @@ func TestBrokerLlamaCPPProxySetPortRejectsInvalidPorts(t *testing.T) {
 	}
 }
 
-func TestLlamaCPPFacadeUsesRouterInventoryAndExactModelIDs(t *testing.T) {
+func TestLlamaCPPFacade_UsesRouterInventoryAndExactModelIDs(t *testing.T) {
 	const model = "org/router-model-GGUF:Q4_K_M"
 	var modelListHits atomic.Int32
 	var inferenceHits atomic.Int32

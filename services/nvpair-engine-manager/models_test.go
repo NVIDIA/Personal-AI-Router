@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExtractStrings(t *testing.T) {
+func TestExtractStrings_ReadsConfiguredResultPath(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
@@ -103,7 +103,7 @@ func TestExtractStrings(t *testing.T) {
 	}
 }
 
-func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
+func TestExtractStringsResult_DistinguishesEmptyFromUnknown(t *testing.T) {
 	spec := &ActionResult{Array: "models", Field: "key"}
 	got, ok := extractStringsResult(json.RawMessage(`{"models":[]}`), spec)
 	require.True(t, ok, "explicit empty inventory (%v, %v)", got, ok)
@@ -125,7 +125,7 @@ func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
 // TestModels drives Models() against the running fake engine: a running engine
 // with a Result-bearing list_models action contributes its models; a stopped
 // engine contributes nothing.
-func TestModels(t *testing.T) {
+func TestModels_ReturnsInventoryOnlyForRunningEngines(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
@@ -149,7 +149,7 @@ func TestModels(t *testing.T) {
 // TestModelsResult drives ModelsResult() against the running fake engine: the
 // flat union and the per-engine attribution are both derived from one sweep,
 // and a stopped engine yields neither.
-func TestModelsResult(t *testing.T) {
+func TestModelsResult_GroupsRunningEngineInventory(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
@@ -213,7 +213,7 @@ func setLoaded(t *testing.T, ex *Executor, names []string) {
 // declares loaded_models reports its resident subset in LoadedByEngine, and an
 // eviction leaves the engine key present with an empty list ("running, nothing
 // loaded") while the installed list is unchanged.
-func TestModelsResultLoaded(t *testing.T) {
+func TestModelsResult_TracksLoadedModelsWithoutChangingInventory(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -232,7 +232,7 @@ func TestModelsResultLoaded(t *testing.T) {
 // TestModelsResultNoLoadedActionOmitsKey confirms an engine with no loaded_models
 // action contributes no LoadedByEngine key (the map stays nil), so the field is
 // omitted on the wire for engines that don't support loaded reporting.
-func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
+func TestModelsResultNoLoadedAction_OmitsKey(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
@@ -251,7 +251,7 @@ func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
 // watchLoaded, suppresses its emit), a subsequent identical sweep reports no
 // change, and a sweep after an eviction reports the engine as changed and
 // carries the fresh full model result as the push payload.
-func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
+func TestSweepLoaded_SeedsThenEmitsOnChange(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -276,7 +276,7 @@ func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
 // engine that drops out of a sweep (a transient loaded_models miss, indistinct
 // from a stop) is NOT reported as changed and keeps its last-good baseline, so a
 // single blip can't emit a spurious drop-then-re-add pair.
-func TestSweepLoadedRetainsLastGoodOnTransientMiss(t *testing.T) {
+func TestSweepLoaded_RetainsLastGoodOnTransientMiss(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	prev := map[string][]string{"fake": {"llama3.2:1b"}}
 	// The engine isn't started, so ModelsResult reports it neither running nor
@@ -286,7 +286,7 @@ func TestSweepLoadedRetainsLastGoodOnTransientMiss(t *testing.T) {
 	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, next, "baseline after miss")
 }
 
-func TestChangedEngines(t *testing.T) {
+func TestChangedEngines_IdentifiesInventoryDifferences(t *testing.T) {
 	tests := []struct {
 		name      string
 		prev, cur map[string][]string
@@ -307,7 +307,7 @@ func TestChangedEngines(t *testing.T) {
 	}
 }
 
-func TestSameStringSet(t *testing.T) {
+func TestSameStringSet_IgnoresOrdering(t *testing.T) {
 	tests := []struct {
 		name string
 		a, b []string

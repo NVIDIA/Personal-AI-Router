@@ -102,7 +102,7 @@ func (c *Chooser) expireCooldown(key string) {
 // TestChooseFailsOverToASecondAddress is the reported defect: a peer publishing an
 // address this host cannot reach, alongside one it can, must be dialed at the one
 // it can. Before this, the unreachable address was the only one tried.
-func TestChooseFailsOverToASecondAddress(t *testing.T) {
+func TestChoose_FailsOverToASecondAddress(t *testing.T) {
 	f := newFakeNet("10.172.55.129:14321")
 	c := newTestChooser(f)
 	assert.Equal(t, "10.172.55.129:14321", choose(c, "peer", []string{"192.168.240.1:14321", "10.172.55.129:14321"}))
@@ -113,7 +113,7 @@ func TestChooseFailsOverToASecondAddress(t *testing.T) {
 // together, the answer still has to be the node's own ranking rather than whichever
 // handshake happened to land first. Otherwise two equally reachable addresses would
 // trade places on timing noise, and every swap costs a reconnect for nothing.
-func TestChoosePrefersTheBestRankedAcceptingAddress(t *testing.T) {
+func TestChoose_PrefersTheBestRankedAcceptingAddress(t *testing.T) {
 	f := newFakeNet("10.0.0.1:14321", "10.0.0.2:14321")
 	c := newTestChooser(f)
 	assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}))
@@ -121,7 +121,7 @@ func TestChoosePrefersTheBestRankedAcceptingAddress(t *testing.T) {
 
 // TestFirstPrefersRankOverArrivalOrder states that directly: the better-ranked
 // address wins even when a lower-ranked one answers first.
-func TestFirstPrefersRankOverArrivalOrder(t *testing.T) {
+func TestFirst_PrefersRankOverArrivalOrder(t *testing.T) {
 	dial := func(_, address string, _ time.Duration) (net.Conn, error) {
 		if address == "10.0.0.1:1" {
 			time.Sleep(40 * time.Millisecond)
@@ -140,7 +140,7 @@ func TestFirstPrefersRankOverArrivalOrder(t *testing.T) {
 // timeout. Probing in sequence paid that per address, so a node whose leading
 // addresses blackhole could burn a caller's whole budget before reaching one that
 // works.
-func TestFirstPaysOneTimeoutForTheWholeList(t *testing.T) {
+func TestFirst_PaysOneTimeoutForTheWholeList(t *testing.T) {
 	const timeout = 150 * time.Millisecond
 	dial := func(_, address string, timeout time.Duration) (net.Conn, error) {
 		if address != "10.0.0.4:1" {
@@ -166,7 +166,7 @@ func TestFirstPaysOneTimeoutForTheWholeList(t *testing.T) {
 
 // TestChooseCachesTheConfirmedAddress: a repeated dial must cost nothing. Without
 // this, every request would re-walk the candidate list.
-func TestChooseCachesTheConfirmedAddress(t *testing.T) {
+func TestChoose_CachesTheConfirmedAddress(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321")
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}
@@ -180,7 +180,7 @@ func TestChooseCachesTheConfirmedAddress(t *testing.T) {
 
 // TestForgetReprobes: a caller reporting a failure is what retires an answer.
 // Without it, a node whose network moved would be dialed at a dead address forever.
-func TestForgetReprobes(t *testing.T) {
+func TestForget_Reprobes(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321")
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}
@@ -199,7 +199,7 @@ func TestForgetReprobes(t *testing.T) {
 // which is precisely the wrong-machine case being reported — so recording its
 // verdict afterwards would settle the node on the address just retired, and a
 // settled entry has nothing left to retire it.
-func TestForgetDiscardsAnInFlightConfirmation(t *testing.T) {
+func TestForget_DiscardsAnInFlightConfirmation(t *testing.T) {
 	const wrong, working = "10.0.0.1:14321", "10.0.0.2:14321"
 	candidates := []string{wrong, working}
 
@@ -264,7 +264,7 @@ func TestForgetDiscardsAnInFlightConfirmation(t *testing.T) {
 
 // TestChooseReprobesWhenTheNodeStopsPublishingTheAddress: an address the node no
 // longer claims cannot be kept, so the new list is confirmed from scratch.
-func TestChooseReprobesWhenTheNodeStopsPublishingTheAddress(t *testing.T) {
+func TestChoose_ReprobesWhenTheNodeStopsPublishingTheAddress(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321", "10.0.9.9:14321")
 	c := newTestChooser(f)
 	choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"})
@@ -276,7 +276,7 @@ func TestChooseReprobesWhenTheNodeStopsPublishingTheAddress(t *testing.T) {
 // made is direct evidence of how this host reaches it. As long as the node still
 // claims that address, keep it — re-probing to switch off an address with nothing
 // wrong with it costs a reconnect and can land somewhere worse.
-func TestChooseKeepsAWorkingAddressAcrossARerank(t *testing.T) {
+func TestChoose_KeepsAWorkingAddressAcrossARerank(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321", "10.0.9.9:14321")
 	c := newTestChooser(f)
 	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}))
@@ -295,7 +295,7 @@ func TestChooseKeepsAWorkingAddressAcrossARerank(t *testing.T) {
 // every discovered node on every inference request, including nodes the request
 // will not be routed to, so nothing here may wait on a connect. The answer is the
 // node's own ranking, immediately, and the confirmation happens behind it.
-func TestPreferNeverBlocksARequest(t *testing.T) {
+func TestPrefer_NeverBlocksARequest(t *testing.T) {
 	blocked := make(chan struct{})
 	defer close(blocked)
 	var dials atomic.Int64
@@ -344,7 +344,7 @@ func waitFor(t *testing.T, done func() bool, what string) {
 // TestPreferUsesTheConfirmedAddressOnceItIsKnown: the point of confirming at all.
 // The request that discovers a new node uses its published ranking; the ones behind
 // it use the address that answered.
-func TestPreferUsesTheConfirmedAddressOnceItIsKnown(t *testing.T) {
+func TestPrefer_UsesTheConfirmedAddressOnceItIsKnown(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321")
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}
@@ -359,7 +359,7 @@ func TestPreferUsesTheConfirmedAddressOnceItIsKnown(t *testing.T) {
 
 // TestPreferStopsProbingAnUnreachableNode: with nothing answering, requests must
 // keep being answered instantly and the confirmation must not restart on every one.
-func TestPreferStopsProbingAnUnreachableNode(t *testing.T) {
+func TestPrefer_StopsProbingAnUnreachableNode(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321", "10.0.0.3:14321"}
@@ -373,7 +373,7 @@ func TestPreferStopsProbingAnUnreachableNode(t *testing.T) {
 
 // TestChooseFallsBackWhenNothingAccepts: a transient blip must not become a hard
 // failure. The caller's own error path is better placed to report what happened.
-func TestChooseFallsBackWhenNothingAccepts(t *testing.T) {
+func TestChoose_FallsBackWhenNothingAccepts(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
 	assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", []string{"10.0.0.1:14321", "10.0.0.2:14321"}))
@@ -382,14 +382,14 @@ func TestChooseFallsBackWhenNothingAccepts(t *testing.T) {
 // TestChooseSingleCandidateSkipsTheHandshake: with one address there is nothing to
 // choose between, and confirming it would only duplicate the connection the caller
 // is about to make anyway.
-func TestChooseSingleCandidateSkipsTheHandshake(t *testing.T) {
+func TestChooseSingleCandidate_SkipsTheHandshake(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
 	assert.Equal(t, "10.0.0.1:14321", choose(c, "peer", []string{"10.0.0.1:14321"}))
 	assert.Equal(t, int64(0), f.dials.Load())
 }
 
-func TestChooseNoCandidates(t *testing.T) {
+func TestChoose_ReturnsNoAddressForEmptyCandidates(t *testing.T) {
 	c := newTestChooser(newFakeNet())
 	assert.Equal(t, "", choose(c, "peer", nil))
 }
@@ -398,7 +398,7 @@ func TestChooseNoCandidates(t *testing.T) {
 // there is no confirmed answer, so the top candidate is returned but not kept.
 // Keeping it would pin a briefly-unreachable node to the wrong address until some
 // caller happened to report a failure against it.
-func TestChooseRecoversFromAnUnconfirmedFallbackWithoutForget(t *testing.T) {
+func TestChoose_RecoversFromAnUnconfirmedFallbackWithoutForget(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
 	candidates := []string{"192.168.240.1:14321", "10.0.0.9:14321"}
@@ -417,7 +417,7 @@ func TestChooseRecoversFromAnUnconfirmedFallbackWithoutForget(t *testing.T) {
 // entry. Callers choose per request — a proxy resolves every discovered node on
 // every inference request — so an offline multi-homed node must not make each one
 // pay the whole candidate list.
-func TestChooseDoesNotRewalkADeadListEveryCall(t *testing.T) {
+func TestChoose_DoesNotRewalkADeadListEveryCall(t *testing.T) {
 	f := newFakeNet()
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321", "10.0.0.3:14321"}
@@ -438,7 +438,7 @@ func TestChooseDoesNotRewalkADeadListEveryCall(t *testing.T) {
 // that found nothing. A confirmed address is retired by evidence — a caller
 // reporting a failure, or the node dropping it from its list — never by time, which
 // would spend connections to learn nothing on a stable network.
-func TestChooseKeepsAConfirmedAddressIndefinitely(t *testing.T) {
+func TestChoose_KeepsAConfirmedAddressIndefinitely(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321")
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}
@@ -452,7 +452,7 @@ func TestChooseKeepsAConfirmedAddressIndefinitely(t *testing.T) {
 // TestFirstReportsWhenNothingIsReachable: the distinction matters for one-shot,
 // user-initiated work, where "no address answered" is a clear, immediate result
 // and a caller's expiring timeout is not.
-func TestFirstReportsWhenNothingIsReachable(t *testing.T) {
+func TestFirst_ReportsWhenNothingIsReachable(t *testing.T) {
 	f := newFakeNet()
 	_, ok := first(f.dial, []string{"10.0.0.1:1", "10.0.0.2:1"}, time.Millisecond, time.Time{})
 	require.False(t, ok, "first reported success with nothing accepting")
@@ -468,7 +468,7 @@ func TestFirstReportsWhenNothingIsReachable(t *testing.T) {
 // operation must not have an uncapped walk over the same list run first. The
 // candidates are probed together and every probe is clamped to what is left of the
 // budget, so the confirmation cannot outlive the operation it belongs to.
-func TestChooseWithinStopsWhenTheCallersBudgetIsSpent(t *testing.T) {
+func TestChooseWithin_StopsWhenTheCallersBudgetIsSpent(t *testing.T) {
 	blocked := make(chan struct{})
 	defer close(blocked)
 	var dials atomic.Int64
@@ -498,7 +498,7 @@ func TestChooseWithinStopsWhenTheCallersBudgetIsSpent(t *testing.T) {
 	assert.Equal(t, int64(3), dials.Load())
 }
 
-func TestChooseIsConcurrencySafe(t *testing.T) {
+func TestChoose_IsConcurrencySafe(t *testing.T) {
 	f := newFakeNet("10.0.0.2:14321")
 	c := newTestChooser(f)
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}

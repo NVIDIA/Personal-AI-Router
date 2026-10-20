@@ -21,7 +21,7 @@ import (
 
 // TestToastExpires is the regression guard for status lines that never went
 // away: an outcome must stop rendering once its TTL has passed.
-func TestToastExpires(t *testing.T) {
+func TestToast_Expires(t *testing.T) {
 	var s toast
 	s.ok("accept invite ok")
 	require.NotEmpty(t, s.render(), "a message just set should render")
@@ -32,7 +32,7 @@ func TestToastExpires(t *testing.T) {
 
 // TestToastErrorsOutliveSuccesses checks a failure stays readable for longer
 // than a success, since the operator needs time to act on it.
-func TestToastErrorsOutliveSuccesses(t *testing.T) {
+func TestToastErrors_OutliveSuccesses(t *testing.T) {
 	var ok, bad toast
 	ok.ok("done")
 	bad.error("it broke")
@@ -49,7 +49,7 @@ func TestToastErrorsOutliveSuccesses(t *testing.T) {
 
 // TestPinnedToastNeverExpires covers the pairing PIN. The operator reads it
 // aloud to someone at another machine, so a timer must not remove it.
-func TestPinnedToastNeverExpires(t *testing.T) {
+func TestPinnedToast_NeverExpires(t *testing.T) {
 	var s toast
 	s.pin("invite sent - PIN 123456")
 	s.at = time.Now().Add(-24 * time.Hour)
@@ -63,7 +63,7 @@ func TestPinnedToastNeverExpires(t *testing.T) {
 
 // TestSetReplacesPinned checks a later ordinary message drops the sticky flag,
 // so a pinned PIN cannot make every subsequent message permanent.
-func TestSetReplacesPinned(t *testing.T) {
+func TestToastSet_ReplacesPinnedToast(t *testing.T) {
 	var s toast
 	s.pin("invite sent - PIN 123456")
 	s.info("inviting other-host...")
@@ -72,7 +72,7 @@ func TestSetReplacesPinned(t *testing.T) {
 	assert.Empty(t, s.render(), "message set after a pin inherited its stickiness")
 }
 
-func TestInviteOutcome(t *testing.T) {
+func TestInviteOutcome_LabelsTerminalInviteEvents(t *testing.T) {
 	resolved := []string{
 		"cluster:invite-declined",
 		"cluster:invite-expired",
@@ -102,7 +102,7 @@ func notify(method string) NotificationMsg {
 // TestNodesViewRetiresPinOnInviteDeclined is the regression guard for the
 // pairing dead end: a PIN pinned on the Nodes tab must be replaced once the
 // cluster manager reports the invite is no longer pending.
-func TestNodesViewRetiresPinOnInviteDeclined(t *testing.T) {
+func TestNodesView_RetiresPinOnInviteDeclined(t *testing.T) {
 	v := newNodesView(nil)
 	v.invitedKey = "peer-uuid"
 	v.outboundInviteID = "inv-1"
@@ -118,7 +118,7 @@ func TestNodesViewRetiresPinOnInviteDeclined(t *testing.T) {
 
 // TestNodesViewRetiresPinOnPairingSuccess covers the one outcome with no
 // terminal notification: success shows up as the invited node becoming a member.
-func TestNodesViewRetiresPinOnPairingSuccess(t *testing.T) {
+func TestNodesView_RetiresPinOnPairingSuccess(t *testing.T) {
 	v := newNodesView(nil)
 	v.invitedKey = "peer-uuid"
 	v.status.pin("invite sent to peer - PIN 123456")
@@ -132,7 +132,7 @@ func TestNodesViewRetiresPinOnPairingSuccess(t *testing.T) {
 
 // TestNodesViewKeepsPinWhileInvitePending checks an unrelated snapshot does not
 // retire a PIN that is still live.
-func TestNodesViewKeepsPinWhileInvitePending(t *testing.T) {
+func TestNodesView_KeepsPinWhileInvitePending(t *testing.T) {
 	v := newNodesView(nil)
 	v.invitedKey = "peer-uuid"
 	v.status.pin("invite sent to peer - PIN 123456")
@@ -169,7 +169,7 @@ func inviteReceived(inviteID, from string) NotificationMsg {
 // It was both a pinned status line and a row of the frame. Two prompts for one
 // fact read as two requests, and the pinned one also outranked the status
 // line, so nothing that happened next could be reported there.
-func TestInboundPairingIsPromptedOnce(t *testing.T) {
+func TestInboundPairing_IsPromptedOnce(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("inv-1", "M2GT9CR405"))
@@ -186,7 +186,7 @@ func TestInboundPairingIsPromptedOnce(t *testing.T) {
 //
 // Both used to be pinned to the status line, which holds one message, so the
 // inbound request replaced the PIN the operator was about to read out.
-func TestInboundInviteDoesNotHideOutboundPIN(t *testing.T) {
+func TestInboundInvite_DoesNotHideOutboundPIN(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "outbound", pin: "123456"})
@@ -206,7 +206,7 @@ func TestInboundInviteDoesNotHideOutboundPIN(t *testing.T) {
 // Pressing accept does not finish anything — it opens the PIN field — so a
 // prompt still offering "a to accept" told the operator to do what they had
 // just done, while the PIN it actually wanted sat on the line below.
-func TestAcceptingPairingChangesThePrompt(t *testing.T) {
+func TestAcceptingPairing_ChangesThePrompt(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("inv-2", "M2GT9CR405"))
@@ -225,7 +225,7 @@ func TestAcceptingPairingChangesThePrompt(t *testing.T) {
 // pairings clobbering each other. The manager supports several at once and
 // stamps an inviteId on every terminal event, so an unrelated invite's decline
 // must not clear the PIN or prompt belonging to a different session.
-func TestInviteOutcomeMatchesBySession(t *testing.T) {
+func TestInviteOutcome_MatchesBySession(t *testing.T) {
 	v := newNodesView(nil)
 	v.outboundInviteID = "mine"
 	v.invitedKey = "peer-uuid"
@@ -260,7 +260,7 @@ func TestInviteOutcomeMatchesBySession(t *testing.T) {
 // TestInviteByAddressRetiresItsPin is the regression guard for the by-address
 // path: it has no node UUID, so without matching on the address the PIN it
 // pinned stayed on screen forever after the peer joined.
-func TestInviteByAddressRetiresItsPin(t *testing.T) {
+func TestInviteByAddress_RetiresItsPin(t *testing.T) {
 	v := newNodesView(nil)
 	v.Update(nodeInviteMsg{
 		name: "10.0.0.7", address: "10.0.0.7", inviteID: "inv", pin: "123456",
@@ -280,7 +280,7 @@ func TestInviteByAddressRetiresItsPin(t *testing.T) {
 
 // TestAddressMatches checks the host comparison used to recognise a peer invited
 // by address, including a typed host:port form and the node's other addresses.
-func TestAddressMatches(t *testing.T) {
+func TestAddressMatches_RecognizesEquivalentAddresses(t *testing.T) {
 	row := nodeRow{
 		name:      "host-a",
 		address:   "10.0.0.7",
@@ -297,7 +297,7 @@ func TestAddressMatches(t *testing.T) {
 // TestRemoveMemberRequiresConfirmation checks un-pairing a peer is armed rather
 // than immediate, matching leave-cluster. It acts on someone else's row, so a
 // stray keystroke is worse there, not better.
-func TestRemoveMemberRequiresConfirmation(t *testing.T) {
+func TestRemoveMember_RequiresConfirmation(t *testing.T) {
 	v := newNodesView(nil)
 	v.feeds.discovered = []availableNode{{
 		HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.2", Trusted: true,
@@ -324,7 +324,7 @@ func TestRemoveMemberRequiresConfirmation(t *testing.T) {
 // answer produced a tab identical to a quiet network. Those need opposite
 // responses from the operator — wait, or go look at the service — so the screen
 // has to say which one it is.
-func TestNodesViewExplainsAnEmptyTable(t *testing.T) {
+func TestNodesView_ExplainsAnEmptyTable(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 
@@ -341,7 +341,7 @@ func TestNodesViewExplainsAnEmptyTable(t *testing.T) {
 // TestNodesViewWarnsWhenPopulatedButIncomplete checks a partial failure is
 // reported too. A table with rows in it looks authoritative, so a missing feed
 // there is more misleading than an empty one, not less.
-func TestNodesViewWarnsWhenPopulatedButIncomplete(t *testing.T) {
+func TestNodesView_WarnsWhenPopulatedButIncomplete(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	v.feeds.discovered = []availableNode{{HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.2"}}
@@ -354,7 +354,7 @@ func TestNodesViewWarnsWhenPopulatedButIncomplete(t *testing.T) {
 // TestNodesViewClearsFeedWarningOnRecovery checks the warning is a live
 // condition, not a permanent mark: a feed that starts working again stops
 // being reported.
-func TestNodesViewClearsFeedWarningOnRecovery(t *testing.T) {
+func TestNodesView_ClearsFeedWarningOnRecovery(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 
@@ -369,7 +369,7 @@ func TestNodesViewClearsFeedWarningOnRecovery(t *testing.T) {
 // is shown and nothing else. The cluster summary and the pairing-completion
 // check are about the cluster, not about what the operator is looking at, so a
 // filter must not shrink the member count or strand a pinned PIN.
-func TestNodesFilterNarrowsWithoutLosingTheCluster(t *testing.T) {
+func TestNodesFilter_NarrowsWithoutLosingTheCluster(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	v.identity.ClusterID = "cluster-1"
@@ -395,7 +395,7 @@ func TestNodesFilterNarrowsWithoutLosingTheCluster(t *testing.T) {
 // TestNodesFilterRetiresPinForAHiddenPeer checks a peer that joins while
 // filtered out still retires its PIN. The pairing completed; whether the
 // operator can currently see the row is irrelevant.
-func TestNodesFilterRetiresPinForAHiddenPeer(t *testing.T) {
+func TestNodesFilter_RetiresPinForAHiddenPeer(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	v.Update(nodeInviteMsg{name: "beta", inviteID: "inv", pin: "123456"})
@@ -416,7 +416,7 @@ func TestNodesFilterRetiresPinForAHiddenPeer(t *testing.T) {
 // replies do not say which request they answer. A second invite sent while the
 // first was pending could show one peer's PIN while watching for the other to
 // join, or have the older request's failure cancel the newer one.
-func TestSecondInviteWaitsForTheFirst(t *testing.T) {
+func TestSecondInvite_WaitsForTheFirst(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	v.feeds.discovered = []availableNode{
@@ -457,7 +457,7 @@ func TestSecondInviteWaitsForTheFirst(t *testing.T) {
 // push does not replace it. Both are whole rosters, but the reply and the push
 // arrive by different paths, and a reply landing second put the older roster
 // back until the next change.
-func TestRosterReadDoesNotOverwriteANewerPush(t *testing.T) {
+func TestRosterRead_DoesNotOverwriteANewerPush(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	// A read sent before the push, whose reply lands after it.
@@ -483,7 +483,7 @@ func TestRosterReadDoesNotOverwriteANewerPush(t *testing.T) {
 // lost to a typo. The cluster manager refuses a PIN that is not six digits with
 // an error and leaves the session open, but the prompt was cleared before the
 // answer went out, so there was nothing left to answer again.
-func TestMalformedPINKeepsTheRequest(t *testing.T) {
+func TestMalformedPIN_KeepsTheRequest(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("inv-1", "peer"))
@@ -507,7 +507,7 @@ func TestMalformedPINKeepsTheRequest(t *testing.T) {
 // request being replaced by the next. Both are live sessions another machine
 // is waiting on; the newer one used to overwrite the one being read, leaving
 // no way back to it.
-func TestInboundRequestsWaitTheirTurn(t *testing.T) {
+func TestInboundInvites_ArePromptedInArrivalOrder(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("first", "alpha"))
@@ -527,7 +527,7 @@ func TestInboundRequestsWaitTheirTurn(t *testing.T) {
 // for one request answering the next. The request on screen expired while its
 // PIN field was open, the next one came up under the same field, and enter
 // sent the first request's PIN as the answer to the second.
-func TestDroppedRequestTakesItsPINWithIt(t *testing.T) {
+func TestDroppedRequest_TakesItsPINWithIt(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("first", "alpha"))
@@ -551,7 +551,7 @@ func TestDroppedRequestTakesItsPINWithIt(t *testing.T) {
 // left waiting after this machine joined a cluster. None could be accepted any
 // more, yet each came up in turn looking answerable, and each sender went on
 // showing its PIN until its invite expired.
-func TestJoiningDeclinesEveryOtherRequest(t *testing.T) {
+func TestJoining_DeclinesOtherPendingInvites(t *testing.T) {
 	c1, c2 := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
@@ -622,7 +622,7 @@ func TestJoiningDeclinesEveryOtherRequest(t *testing.T) {
 
 // TestJoiningWithNothingWaitingDeclinesNothing checks the ordinary case still
 // reads as it did: one request, accepted, and nothing else said.
-func TestJoiningWithNothingWaitingDeclinesNothing(t *testing.T) {
+func TestJoining_SendsNoDeclinesWhenNoInvitesAreWaiting(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	v.Update(inviteReceived("a", "alpha"))
@@ -635,7 +635,7 @@ func TestJoiningWithNothingWaitingDeclinesNothing(t *testing.T) {
 // TestPairingStaysVisibleOverTheDetailScreen is the regression guard for a
 // pairing request or a live PIN disappearing while a node's detail screen was
 // open, which replaces the list they are shown on.
-func TestPairingStaysVisibleOverTheDetailScreen(t *testing.T) {
+func TestPairing_StaysVisibleOverTheDetailScreen(t *testing.T) {
 	const height = 30
 	v := newNodesView(nil)
 	v.SetSize(120, height)
@@ -656,7 +656,7 @@ func TestPairingStaysVisibleOverTheDetailScreen(t *testing.T) {
 // manager leaves a way to try again. The PIN was cleared before the call went
 // out, so a failure left a live invite with nothing on screen and nothing to
 // press.
-func TestFailedCancelCanBeRetried(t *testing.T) {
+func TestFailedCancel_CanBeRetried(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "inv", pin: "123456"})
@@ -675,7 +675,7 @@ func TestFailedCancelCanBeRetried(t *testing.T) {
 // the remedy for the reason actually given. "Remove the existing relationship
 // first" was attached to every rejection, including ones with no relationship
 // to remove.
-func TestRejectionAdviceMatchesTheReason(t *testing.T) {
+func TestRejectionAdvice_MatchesTheReason(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(120, 30)
 
@@ -695,7 +695,7 @@ func TestRejectionAdviceMatchesTheReason(t *testing.T) {
 // failed invite read as a sent one. The manager answers "failed", with no PIN,
 // when the first exchange does not complete, and anything short of "rejected"
 // was reported as "invite sent" and left pending.
-func TestInviteThatDidNotGoOutIsNotReportedSent(t *testing.T) {
+func TestInviteThatDidNotGoOut_IsNotReportedSent(t *testing.T) {
 	for _, state := range []string{"failed", "canceled"} {
 		v := newNodesView(nil)
 		v.SetSize(120, 30)
@@ -719,7 +719,7 @@ func TestInviteThatDidNotGoOutIsNotReportedSent(t *testing.T) {
 // TestCancelInviteClearsThePinImmediately checks the inviter's half of decline.
 // Without it a PIN read to the wrong person could only be retired by waiting
 // for it to expire, staying answerable the whole time.
-func TestCancelInviteClearsThePinImmediately(t *testing.T) {
+func TestCancelInvite_ClearsThePinImmediately(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 	v.Update(nodeInviteMsg{name: "peer", inviteID: "inv-1", pin: "123456"})
@@ -742,7 +742,7 @@ func TestCancelInviteClearsThePinImmediately(t *testing.T) {
 // a green "accept pairing ok" for a pairing that had just been rejected — and
 // because the prompt is cleared by then, nothing later corrected it. The
 // operator would go looking for a peer that was never going to appear.
-func TestWrongPinIsNotReportedAsSuccess(t *testing.T) {
+func TestWrongPin_IsNotReportedAsSuccess(t *testing.T) {
 	v := newNodesView(nil)
 	v.SetSize(100, 30)
 
@@ -756,7 +756,7 @@ func TestWrongPinIsNotReportedAsSuccess(t *testing.T) {
 
 // TestPairingOutcomesAreDistinguished checks each terminal state gets its own
 // answer, since they call for different things from the operator.
-func TestPairingOutcomesAreDistinguished(t *testing.T) {
+func TestPairingOutcomes_AreDistinguished(t *testing.T) {
 	cases := []struct {
 		state, reason string
 		want          string
@@ -776,7 +776,7 @@ func TestPairingOutcomesAreDistinguished(t *testing.T) {
 
 // TestNodesViewClearsInboundInviteOnExpiry checks an inbound prompt stops
 // offering accept/decline once the invite is gone.
-func TestNodesViewClearsInboundInviteOnExpiry(t *testing.T) {
+func TestNodesView_ClearsInboundInviteOnExpiry(t *testing.T) {
 	// Both the prompt and the assertion read the key off the binding. Spelling
 	// it out meant that when accept moved from p to a, this went on checking
 	// that p was absent — and p by then was "pair", which is always offered, so
@@ -802,7 +802,7 @@ func TestNodesViewClearsInboundInviteOnExpiry(t *testing.T) {
 // TestNodesViewSelectionSurvivesReorder is the guard for selection tracked by
 // key rather than row index: the list re-sorts as nodes come and go, and an
 // index would quietly move the operator onto a different machine.
-func TestNodesViewSelectionSurvivesReorder(t *testing.T) {
+func TestNodesViewSelection_SurvivesReorder(t *testing.T) {
 	v := newNodesView(nil)
 	v.feeds.discovered = []availableNode{
 		{HostUUID: "a", Name: "aaa", LastSeen: time.Now().Unix()},
@@ -831,7 +831,7 @@ func TestNodesViewSelectionSurvivesReorder(t *testing.T) {
 // node that already has a relationship. The old split tabs guarded the
 // discovered-node path only, so the by-address path could still send a doomed
 // invite.
-func TestNodesViewGuardsInviteOnEveryPath(t *testing.T) {
+func TestNodesView_GuardsInviteOnEveryPath(t *testing.T) {
 	cases := []struct {
 		name string
 		node availableNode
@@ -855,7 +855,7 @@ func TestNodesViewGuardsInviteOnEveryPath(t *testing.T) {
 
 // TestNodesViewRefusesSelfInvite checks this machine cannot be invited to its
 // own cluster.
-func TestNodesViewRefusesSelfInvite(t *testing.T) {
+func TestNodesView_RefusesSelfInvite(t *testing.T) {
 	v := newNodesView(nil)
 	v.feeds.discovered = []availableNode{{HostUUID: "me", Name: "this", LastSeen: time.Now().Unix()}}
 	v.feeds.selfUUID = "me"

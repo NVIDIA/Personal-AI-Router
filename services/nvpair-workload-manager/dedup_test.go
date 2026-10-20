@@ -160,7 +160,7 @@ func TestDedupIndex_WaiterRetriesAfterFailedEmit(t *testing.T) {
 	assert.Equal(t, int32(1), retries.Load(), "retry emits")
 }
 
-func TestDedupEmitOnce(t *testing.T) {
+func TestDedup_EmitsMatchingEventOnce(t *testing.T) {
 	d := newDedupIndex(8)
 
 	assert.False(t, emitDedupKey(t, d, "a"), "first sighting of a should be new")
@@ -168,7 +168,7 @@ func TestDedupEmitOnce(t *testing.T) {
 	assert.False(t, emitDedupKey(t, d, "b"), "first sighting of b should be new")
 }
 
-func TestDedupEviction(t *testing.T) {
+func TestDedup_EvictsExpiredEntries(t *testing.T) {
 	d := newDedupIndex(2)
 
 	emitDedupKey(t, d, "a") // {a}
@@ -178,7 +178,7 @@ func TestDedupEviction(t *testing.T) {
 	assert.False(t, emitDedupKey(t, d, "a"), "a should have been evicted and read as new")
 }
 
-func TestDedupKeysDistinguishStateAndKind(t *testing.T) {
+func TestDedupKeys_DistinguishStateAndEventKind(t *testing.T) {
 	d := newDedupIndex(8)
 
 	w := &Workload{ID: "wl-1", OriginatedFrom: "node-A", State: StateQueued}
@@ -195,7 +195,7 @@ func TestDedupKeysDistinguishStateAndKind(t *testing.T) {
 // only unique per node (spec §11), so the same id+state from two different
 // nodes must be treated as two distinct workloads, never deduplicated against
 // each other.
-func TestDedupDistinguishesNodes(t *testing.T) {
+func TestDedup_DistinguishesNodes(t *testing.T) {
 	d := newDedupIndex(8)
 
 	nodeA := &Workload{ID: "wl-1", OriginatedFrom: "node-A", State: StateQueued}
@@ -209,7 +209,7 @@ func TestDedupDistinguishesNodes(t *testing.T) {
 // TestDedupDistinguishesEngineAndRun guards the identity fix: id "1" is reused
 // by the two engine proxies (each counts from 1) and after a restart (new
 // runId). The dedup must treat those as distinct workloads, not collapse them.
-func TestDedupDistinguishesEngineAndRun(t *testing.T) {
+func TestDedup_DistinguishesEngineAndRun(t *testing.T) {
 	d := newDedupIndex(8)
 	ollama := &Workload{ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r1", State: StateRunning}
 	lmstudio := &Workload{ID: "1", OriginatedFrom: "host", Engine: "lmstudio", RunID: "r2", State: StateRunning}
@@ -228,7 +228,7 @@ func TestDedupDistinguishesEngineAndRun(t *testing.T) {
 // the job on the node it was first sent to for the rest of its life. A repeat
 // of the same placement must still dedup, which is what keeps a broadcast
 // retry from being re-applied.
-func TestDedupDistinguishesPlacement(t *testing.T) {
+func TestDedup_DistinguishesPlacement(t *testing.T) {
 	d := newDedupIndex(8)
 
 	first := &Workload{ID: "1", OriginatedFrom: "host", Engine: "ollama", RunID: "r1", State: StateRunning, ScheduledOn: "node-A"}
@@ -251,7 +251,7 @@ func TestDedupDistinguishesPlacement(t *testing.T) {
 //
 // The redelivery case still has to dedup, because that is what stops an
 // out-of-order broadcast retry from reverting a placement.
-func TestDedupDistinguishesRepeatedPlacements(t *testing.T) {
+func TestDedup_DistinguishesRepeatedPlacements(t *testing.T) {
 	d := newDedupIndex(8)
 
 	base := func(seq int64, node string) *Workload {
@@ -277,7 +277,7 @@ func TestDedupDistinguishesRepeatedPlacements(t *testing.T) {
 // TestDedupRemovalDistinguishesNodes mirrors TestDedupDistinguishesNodes for
 // the removal path: the same workloadId removed on two nodes must be two
 // distinct dedup entries.
-func TestDedupRemovalDistinguishesNodes(t *testing.T) {
+func TestDedupRemoval_DistinguishesNodes(t *testing.T) {
 	d := newDedupIndex(8)
 
 	assert.False(t, emitDedupKey(t, d, keyRemove("node-A", "wl-1")), "removal of node-A wl-1 should be new")

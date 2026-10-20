@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseLaunchText(t *testing.T) {
+func TestParseLaunchText_PreservesLiteralArgumentsAndEnvironment(t *testing.T) {
 	test := func(name, text string, want []string) {
 		t.Run(name, func(t *testing.T) {
 			got, err := parseLaunchText(text)
@@ -37,7 +37,7 @@ func TestParseLaunchText(t *testing.T) {
 	test("terminator", `lms -- --port=9000`, []string{"lms", "--", "--port=9000"})
 }
 
-func TestParseLaunchTextRejectsInvalidInput(t *testing.T) {
+func TestParseLaunchText_RejectsInvalidInput(t *testing.T) {
 	for _, text := range []string{
 		`lms "unterminated`, `lms 'unterminated`, "lms \x00argument",
 		"lms \x7f", "lms \xff", `lms | other`, `lms > file`, `lms < file`,

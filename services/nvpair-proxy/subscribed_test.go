@@ -16,7 +16,7 @@ import (
 // subscribed nodes merge into Nodes() alongside the separate manual overlay. A
 // later snapshot omitting a node drops it while manual nodes survive. The browser
 // isn't running, so Nodes() reflects only the overlays.
-func TestSubscribedOverlayMerge(t *testing.T) {
+func TestSubscribedOverlay_MergesDiscoveryAndManualNodes(t *testing.T) {
 	d := NewDiscovery()
 
 	d.AddManual(Node{ID: "m1", Port: 11434, Addresses: []string{"10.0.0.1"}})
@@ -43,7 +43,7 @@ func TestSubscribedOverlayMerge(t *testing.T) {
 // TestSubscribedDiff covers the diff SetSubscribed returns so the proxy can emit
 // node/discovered|updated|removed for the relay-fed set (the signal the UI uses to
 // show which peers run this engine).
-func TestSubscribedDiff(t *testing.T) {
+func TestSubscribedDiff_ReportsAddedChangedAndRemovedNodes(t *testing.T) {
 	d := NewDiscovery()
 
 	s1 := Node{ID: "s1", Port: 11434, Addresses: []string{"10.0.0.2"}, IP: "10.0.0.2"}
@@ -93,7 +93,7 @@ func TestSubscribedDiff(t *testing.T) {
 // carried one each — Ollama rejected a non-engine service, LM Studio rejected
 // the other engine. Both run for both engines here, because the second is what
 // regresses if the projection ever loses its service-key filter.
-func TestSubscribedToNode(t *testing.T) {
+func TestSubscribedToNode_ProjectsDiscoveryFields(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		other := otherEngine(t, tc)
 
@@ -165,7 +165,7 @@ func TestSubscribedToNode(t *testing.T) {
 // hostUuid, not the hostname — so routing, scheduledOn, node selection, and the
 // scheduler's priority list all survive a PC rename and never conflate two
 // same-named machines. Host stays the hostname for display.
-func TestSubscribedToNodeKeysByHostUUID(t *testing.T) {
+func TestSubscribedToNode_KeysByHostUUID(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		const uuid = "11111111-1111-1111-1111-111111111111"
 		n := noderec.DirectoryNode{

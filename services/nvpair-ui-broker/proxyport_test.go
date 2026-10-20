@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
+func TestEnabledEngineRestore_WaitsForBothPortGates(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
@@ -59,7 +59,7 @@ func TestEnabledEngineRestoreWaitsForBothPortGates(t *testing.T) {
 	require.True(t, <-done, "restore wait reported cancellation")
 }
 
-func TestPlanManagedOllamaPorts(t *testing.T) {
+func TestPlanManagedOllamaPorts_AvoidsFacadeAndEnginePortConflicts(t *testing.T) {
 	free := func(ports ...int) func(int) bool {
 		set := map[int]bool{}
 		for _, port := range ports {
@@ -135,12 +135,12 @@ func TestPlanManagedOllamaPorts(t *testing.T) {
 	}
 }
 
-func TestNextAvailablePortExcludingCustomBackend(t *testing.T) {
+func TestNextAvailablePort_SkipsConfiguredEnginePort(t *testing.T) {
 	available := func(port int) bool { return port == 11435 || port == 11436 }
 	require.Equal(t, 11436, nextAvailablePortExcluding(11435, []int{11435}, available), "fallback must skip the configured backend")
 }
 
-func TestTakePendingManagedOllamaBackendOnce(t *testing.T) {
+func TestTakePendingManagedOllamaBackend_ConsumesPendingPortOnce(t *testing.T) {
 	b := &Broker{}
 	b.ollamaState().managedFacade.Store(true)
 	b.managedOllamaBackend.Store(11435)
@@ -150,14 +150,14 @@ func TestTakePendingManagedOllamaBackendOnce(t *testing.T) {
 	require.Equal(t, 0, b.takePendingManagedOllamaBackend(managedOllamaFacadePort), "duplicate reconciliation consumed backend twice")
 }
 
-func TestOllamaBackendSourcePort(t *testing.T) {
+func TestOllamaBackendSourcePort_UsesReportedOrFallbackPort(t *testing.T) {
 	b := &Broker{}
 	require.Equal(t, managedOllamaFacadePort, b.ollamaBackendSourcePort(), "unset source")
 	b.ollamaState().backendPort.Store(managedOllamaBackendStart)
 	require.Equal(t, managedOllamaBackendStart, b.ollamaBackendSourcePort(), "configured source")
 }
 
-func TestDuplicateOllamaReadyDoesNotOpenGateDuringMove(t *testing.T) {
+func TestDuplicateOllamaReady_DoesNotOpenGateDuringMove(t *testing.T) {
 	b := &Broker{ollamaPortReady: make(chan struct{})}
 	b.ollamaState().managedFacade.Store(true)
 	b.managedOllamaBackend.Store(managedOllamaBackendStart + 1)
@@ -168,7 +168,7 @@ func TestDuplicateOllamaReadyDoesNotOpenGateDuringMove(t *testing.T) {
 	requireGateShutNow(t, b.ollamaPortReady, "a duplicate ready while the backend move was in flight")
 }
 
-func TestOwningOllamaReadyOpensGateAfterMove(t *testing.T) {
+func TestOwningOllamaReady_OpensGateAfterMove(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	defer engineClient.Close()
 	defer engineServer.Close()
@@ -194,7 +194,7 @@ func TestOwningOllamaReadyOpensGateAfterMove(t *testing.T) {
 	requireGateOpenNow(t, b.ollamaPortReady, "a successful backend move")
 }
 
-func TestEnginePortAssignmentRequest(t *testing.T) {
+func TestEnginePortAssignment_ValidatesRequestedPort(t *testing.T) {
 	engine, port, ok := enginePortAssignmentRequest("engine:set-port", []byte(`{"engine":"ollama","port":11434}`))
 	require.True(t, ok, "valid engine set-port request")
 	require.Equal(t, "ollama", engine, "valid engine set-port request")
@@ -215,7 +215,7 @@ func TestEnginePortAssignmentRequest(t *testing.T) {
 	}
 }
 
-func TestLMStudioSetPortRequest(t *testing.T) {
+func TestLMStudioSetPort_RelaysRequestedPort(t *testing.T) {
 	port, ok := lmstudioSetPortRequest("engine:set-port", []byte(`{"engine":"lmstudio","port":1234}`))
 	require.True(t, ok, "valid LM Studio request")
 	require.Equal(t, managedLMStudioFacadePort, port, "valid LM Studio request")
@@ -233,7 +233,7 @@ func TestLMStudioSetPortRequest(t *testing.T) {
 	}
 }
 
-func TestManagedLMStudioRejectsFacadeBackendPort(t *testing.T) {
+func TestManagedLMStudio_RejectsFacadeBackendPort(t *testing.T) {
 	brokerClient, brokerServer := net.Pipe()
 	defer brokerClient.Close()
 	defer brokerServer.Close()
@@ -264,7 +264,7 @@ func TestManagedLMStudioRejectsFacadeBackendPort(t *testing.T) {
 	}
 }
 
-func TestLMStudioSetPortUpdatesBackendCache(t *testing.T) {
+func TestLMStudioSetPort_UpdatesBackendCache(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	brokerClient, brokerServer := net.Pipe()
 	defer engineClient.Close()
@@ -317,7 +317,7 @@ func TestLMStudioSetPortUpdatesBackendCache(t *testing.T) {
 	require.Equal(t, int32(12400), b.lmstudioState().backendPort.Load(), "cached LM Studio backend")
 }
 
-func TestRelayRejectsEnginePortAssignmentToActiveOllamaHostAlias(t *testing.T) {
+func TestRelay_RejectsEnginePortAssignmentToActiveOllamaHostAlias(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		method string
@@ -371,7 +371,7 @@ func TestRelayRejectsEnginePortAssignmentToActiveOllamaHostAlias(t *testing.T) {
 	}
 }
 
-func TestBrokerRejectsLMStudioProxyPortAssignmentToActiveOllamaHostAlias(t *testing.T) {
+func TestBroker_RejectsLMStudioProxyPortAssignmentToActiveOllamaHostAlias(t *testing.T) {
 	brokerConn, clientConn := net.Pipe()
 	defer brokerConn.Close()
 	defer clientConn.Close()
@@ -408,7 +408,7 @@ func TestBrokerRejectsLMStudioProxyPortAssignmentToActiveOllamaHostAlias(t *test
 	}
 }
 
-func TestRelayCachesActualOllamaPortFromResponse(t *testing.T) {
+func TestRelay_CachesActualOllamaPortFromResponse(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	defer engineClient.Close()
 	defer engineServer.Close()
@@ -452,7 +452,7 @@ func TestRelayCachesActualOllamaPortFromResponse(t *testing.T) {
 	require.Equal(t, int32(11435), b.ollamaState().backendPort.Load(), "cached Ollama backend port")
 }
 
-func TestBrokerDoesNotExposeInternalReservationSetter(t *testing.T) {
+func TestBroker_DoesNotExposeInternalReservationSetter(t *testing.T) {
 	brokerConn, clientConn := net.Pipe()
 	defer brokerConn.Close()
 	defer clientConn.Close()
@@ -481,7 +481,7 @@ func TestBrokerDoesNotExposeInternalReservationSetter(t *testing.T) {
 	}
 }
 
-func TestNeedsOllamaPortGate(t *testing.T) {
+func TestNeedsOllamaPortGate_IdentifiesRequestsRequiringStablePort(t *testing.T) {
 	for _, tc := range []struct {
 		method string
 		params string
@@ -500,7 +500,7 @@ func TestNeedsOllamaPortGate(t *testing.T) {
 	}
 }
 
-func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
+func TestOllamaPresenceRequest_WaitsForPortGate(t *testing.T) {
 	workerClient, workerServer := net.Pipe()
 	defer workerClient.Close()
 	defer workerServer.Close()
@@ -569,7 +569,7 @@ func TestOllamaPresenceRequestWaitsForPortGate(t *testing.T) {
 	}
 }
 
-func TestNextFreeProxyPort(t *testing.T) {
+func TestNextFreeProxyPort_SkipsOccupiedPorts(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		want  int

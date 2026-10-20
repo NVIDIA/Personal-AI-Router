@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStartupOutputPreservesExplanationAndRedactsValues(t *testing.T) {
+func TestStartupOutput_PreservesExplanationAndRedactsValues(t *testing.T) {
 	o := newStartupOutput([]string{"--future-option", "private-value"}, map[string]string{"FUTURE_ENV": "private-env"})
 	_, err := o.Write([]byte("unknown option --future-option; input=private-value env=private-env\n"))
 	require.NoError(t, err)
@@ -23,7 +23,7 @@ func TestStartupOutputPreservesExplanationAndRedactsValues(t *testing.T) {
 	require.NotContains(t, err.Error(), "private-env", "lost diagnostic or leaked supplied value (%v)", err)
 }
 
-func TestStartupOutputBoundsLargeWritesAndStopsCapturing(t *testing.T) {
+func TestStartupOutput_BoundsLargeWritesAndStopsCapturing(t *testing.T) {
 	o := newStartupOutput([]string{"x", "x", "x"}, nil)
 	data := []byte(strings.Repeat("x", maxStartupOutput*4) + "last diagnostic")
 	n, err := o.Write(data)
@@ -39,7 +39,7 @@ func TestStartupOutputBoundsLargeWritesAndStopsCapturing(t *testing.T) {
 	require.Same(t, cause, o.failure(cause), "startup capture retained output after successful startup")
 }
 
-func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
+func TestStartupOutput_RedactsAcrossCaptureBoundaries(t *testing.T) {
 	test := func(name, value, before, after string, chunkSize int) {
 		t.Run(name, func(t *testing.T) {
 			// Exercise both argument and environment collection without relying on
@@ -75,7 +75,7 @@ func TestStartupOutputRedactsAcrossCaptureBoundaries(t *testing.T) {
 	test("expanding replacements", "x", strings.Repeat("x", maxStartupOutput*2), "; useful diagnostic", 517)
 }
 
-func TestStartupOutputPrefersLongestPrivateValueAcrossWrites(t *testing.T) {
+func TestStartupOutput_PrefersLongestPrivateValueAcrossWrites(t *testing.T) {
 	o := newStartupOutput([]string{"private", "private-longer-value"}, nil)
 	for _, part := range []string{"input=private", "-longer-value; useful diagnostic"} {
 		_, err := o.Write([]byte(part))

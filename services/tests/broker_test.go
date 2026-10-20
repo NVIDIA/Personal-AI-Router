@@ -175,7 +175,7 @@ func waitForPushContaining(t *testing.T, msgs <-chan jsonrpc.Message, instance s
 	}
 }
 
-func TestCrossProcessBrokerSubscription(t *testing.T) {
+func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 	const (
 		inst1 = "xproc-broker-1"
 		inst2 = "xproc-broker-2"

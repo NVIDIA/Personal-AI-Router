@@ -19,7 +19,7 @@ import (
 // unreadable read as "this node trusts nobody" would drop every peer out of the
 // cluster for a tick and restore them on the next, emitting the churn in
 // between. A dir we cannot read is missing information, not a revocation.
-func TestReloadKeepsPinsWhenDirUnreadable(t *testing.T) {
+func TestReload_KeepsPinsWhenDirUnreadable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod-based unreadable dir is not portable to Windows ACLs")
 	}
@@ -58,7 +58,7 @@ func TestReloadKeepsPinsWhenDirUnreadable(t *testing.T) {
 // trusted/ dir is the durable statement that this node trusts no peer (it is
 // unclustered, or its cluster was torn down), so it must publish the empty set
 // rather than preserving whatever it last held.
-func TestReloadEmptiesWhenDirAbsent(t *testing.T) {
+func TestTrustReload_EmptiesPinsWhenDirectoryIsAbsent(t *testing.T) {
 	clusterDir := t.TempDir()
 	certPEM, _, _ := genLeaf(t, "uuid-peer")
 	writePin(t, clusterDir, "uuid-peer", string(certPEM))
@@ -76,7 +76,7 @@ func TestReloadEmptiesWhenDirAbsent(t *testing.T) {
 // case: a pin that reads but does not validate is dropped rather than carried,
 // because honoring a certificate whose provenance no longer checks out is the
 // one failure this store exists to prevent.
-func TestReloadDropsUnparseablePin(t *testing.T) {
+func TestReload_DropsUnparseablePin(t *testing.T) {
 	clusterDir := t.TempDir()
 	certPEM, _, _ := genLeaf(t, "uuid-peer")
 	writePin(t, clusterDir, "uuid-peer", string(certPEM))

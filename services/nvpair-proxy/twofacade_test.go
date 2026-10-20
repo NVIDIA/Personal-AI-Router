@@ -99,7 +99,7 @@ func twoFacadeProxy(t *testing.T) *Proxy {
 // Each facade binds its own listener and keeps its own dialect. A shared port
 // or a shared profile would mean one engine's clients reaching the other's
 // translation.
-func TestTwoFacadesKeepSeparatePortsAndProfiles(t *testing.T) {
+func TestFacades_KeepSeparatePortsAndProfiles(t *testing.T) {
 	p := twoFacadeProxy(t)
 
 	ports := map[int]string{}
@@ -115,7 +115,7 @@ func TestTwoFacadesKeepSeparatePortsAndProfiles(t *testing.T) {
 // Enabling an engine twice is an idempotent success on the existing listener,
 // so a redelivered enable cannot tear down a working facade or displace its
 // sibling.
-func TestReEnablingOneFacadeLeavesBothIntact(t *testing.T) {
+func TestReEnablingOneFacade_LeavesBothIntact(t *testing.T) {
 	p := twoFacadeProxy(t)
 
 	first := engines.All()[0]
@@ -134,7 +134,7 @@ func TestReEnablingOneFacadeLeavesBothIntact(t *testing.T) {
 // An enable that loses a bind race withdraws only its own engine. This is the
 // property that made the collapse acceptable: before, a lost race ended the
 // process, which with several facades would take working listeners down.
-func TestOneFacadeFailingToBindLeavesTheOthersServing(t *testing.T) {
+func TestOneFacadeFailingToBind_LeavesTheOthersServing(t *testing.T) {
 	redirectConfigDir(t)
 
 	all := engines.All()
@@ -168,7 +168,7 @@ func TestOneFacadeFailingToBindLeavesTheOthersServing(t *testing.T) {
 
 // A facade-scoped request reaches only the engine it names, and an engine with
 // no facade is refused rather than served by whichever one happens to exist.
-func TestAddressedRequestReachesOnlyItsOwnFacade(t *testing.T) {
+func TestAddressedRequest_ReachesOnlyItsOwnFacade(t *testing.T) {
 	p := twoFacadeProxy(t)
 
 	all := engines.All()
@@ -202,7 +202,7 @@ func TestAddressedRequestReachesOnlyItsOwnFacade(t *testing.T) {
 // once are competing for the same node's GPU; per-facade state would let both
 // pick the same idle node in the same instant, which is the whole reason for
 // hosting them together.
-func TestFacadesShareSchedulerStateAndReservations(t *testing.T) {
+func TestFacades_ShareSchedulerStateAndReservations(t *testing.T) {
 	p := twoFacadeProxy(t)
 
 	all := engines.All()
@@ -235,7 +235,7 @@ func TestFacadesShareSchedulerStateAndReservations(t *testing.T) {
 // node/select reads the facade's discovery, so a nil discovery panics there
 // rather than at the boundary, which is what makes this a test of containment
 // and not of argument validation.
-func TestPanicHandlingOneEngineLeavesTheOtherServing(t *testing.T) {
+func TestPanicHandlingOneEngine_LeavesTheOtherServing(t *testing.T) {
 	p := twoFacadeProxy(t)
 
 	all := engines.All()
@@ -275,7 +275,7 @@ func TestPanicHandlingOneEngineLeavesTheOtherServing(t *testing.T) {
 // rollback, because a panic skips the error return entirely. Without a test,
 // dropping the defer (or the listener close inside start) leaves a published
 // facade holding a port with no serving loop, and CI stays green.
-func TestPanicDuringEnableWithdrawsOnlyThatFacade(t *testing.T) {
+func TestPanicDuringEnable_WithdrawsOnlyThatFacade(t *testing.T) {
 	redirectConfigDir(t)
 
 	all := engines.All()
@@ -329,7 +329,7 @@ func TestPanicDuringEnableWithdrawsOnlyThatFacade(t *testing.T) {
 // arrive in facade/enable now rather than on argv, and the alias listener is a
 // plaintext one, so a weakened check here would put a LAN plaintext listener in
 // front of the router.
-func TestEnableFacadeRejectsUnsafeAliasAddresses(t *testing.T) {
+func TestEnableFacade_RejectsUnsafeAliasAddresses(t *testing.T) {
 	redirectConfigDir(t)
 
 	var aliasEngine, plainEngine engines.Engine
@@ -376,7 +376,7 @@ func TestEnableFacadeRejectsUnsafeAliasAddresses(t *testing.T) {
 // Facade notifications are addressed, so the broker can attribute a bare
 // "ready" to an engine when several share the stream. Without the address the
 // two facades' events are indistinguishable on the wire.
-func TestBothFacadesAddressTheirNotifications(t *testing.T) {
+func TestFacades_AddressNotificationsToTheirEngine(t *testing.T) {
 	redirectConfigDir(t)
 
 	recorded := &recordingWriter{}
