@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"log/slog"
-	"net/http"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
@@ -49,16 +48,12 @@ type Scanner struct {
 	cancel context.CancelFunc
 }
 
-// NewScanner builds the scanner around the promoted daemon. mesh (non-nil when
-// this node is clustered) is threaded to the daemon for the trust annotation on
-// browsed nodes; clusterDir lets the daemon resolve its node identity from the
-// same base cluster-manager persists to (empty selects the shared default).
-// tlsHTTP is nil unless the operator opted node-info enrichment onto HTTPS via
-// the --client-cert/--client-key/--ca-bundle flags.
-func NewScanner(codec *Codec, mesh *clustertrust.Mesh, clusterDir string, tlsHTTP *http.Client) *Scanner {
+// NewScanner uses the live mesh for authenticated discovery. clusterDir also
+// selects the local identity root shared with cluster-manager.
+func NewScanner(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *Scanner {
 	return &Scanner{
 		codec:  codec,
-		daemon: newDaemon(codec, mesh, clusterDir, tlsHTTP),
+		daemon: newDaemon(codec, mesh, clusterDir),
 	}
 }
 

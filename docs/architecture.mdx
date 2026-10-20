@@ -98,7 +98,7 @@ the layers that are checked:
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
 | The broker | A `ping` request clients can call, which the terminal interface's **Service** tab uses. |
-| Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
+| Peer nodes | Reachability, not health: missed announcements are checked against recent authenticated node-info samples and inference activity. The inference proxies report activity but are never probed. |
 
 Worker supervision is restart-based. An unexpected exit is retried with
 exponential backoff from roughly one second to 16, with a budget of five attempts
@@ -249,13 +249,23 @@ fresh. Scanner's owned local registry supplies node-info's peer metadata over th
 reverse IPC path; discovered announcements cannot supply local measurements or
 metadata.
 
+Scanner keeps unverified announcements under separate discovery record IDs.
+It promotes a candidate only after reading peer node inventory over exact-pin
+mTLS and checking both response identities against that certificate. The peer's
+name, addresses, service ports, and hardware then come from the authenticated
+response. Discovery claims and public HTTP cannot replace that canonical peer
+record. Candidate authentication has separate worker permits from verified
+telemetry polling. Scanner rechecks live pins before accepting results, including
+results returned over reused connections.
+
 Electron polls every discovered node's `/v1/node-info` directly because that
 detail is richer than the broker's control surface exposes. Healthy nodes are
 sampled every two seconds; consecutive failures back off to 4, 8, 16, then 30
 seconds and reset on success. This is the one place Electron makes service-data
-HTTP calls of its own. Separately, the backend scanner samples a compact
-maximum-GPU utilization value for scheduling with the same healthy cadence and
-capped failure backoff, which the broker relays straight to the job scheduler.
+HTTP calls of its own. Separately, the backend scanner reads each verified peer's
+complete node-info response over pinned mTLS with the same healthy cadence and
+capped failure backoff. Each accepted response updates inventory and supplies
+compact maximum-GPU telemetry, which the broker relays to the job scheduler.
 Routing never depends on renderer metrics.
 
 ## Inference Data Flow
@@ -627,58 +637,44 @@ long-lived receiver.
 Announcements supply discovery candidates and advertised service ports. Scanner
 enriches node records with details from two services:
 
-- GPU, CPU, and memory inventory from node-info, currently over public HTTP for
-  remote nodes and private worker IPC for the local host
+- GPU, CPU, and memory inventory from node-info, over pinned mutual TLS for
+  verified remote peers and private worker IPC for the local host
 - Its model list from engine-manager, over pinned mutual TLS for remote peers or
   loopback HTTP for the local host, as a flat union, a per-engine breakdown, and
   the per-engine set of models currently loaded in memory
 
-The peer node inventory handler is available, but migrating remote hardware
-reads to pinned mutual TLS and promoting verified records remain pending work
-in the [scanner specification](../services/nvpair-node-scanner/spec.md).
+Authenticated node-info supplies the canonical peer's name, addresses, and
+registered ports as well as hardware. Scanner replaces only the successful
+discovery with this verified record. Other observations remain independently
+unverified. Consumer merge and replay enforcement remain subsequent work in the
+[scanner specification](../services/nvpair-node-scanner/spec.md).
 
 Each enrichment keeps a last-good value, so one failed fetch dims nothing. A
 node's card does not blank out because a single poll timed out.
 
-With a cluster directory configured, a browsed peer whose `cluster-uuid=` matches
-a pin this node holds is annotated as trusted, which is how the interface can
-distinguish a paired node from a stranger it can merely see. This annotation
-matches an advertised identity to a saved pin; it does not authenticate the
-announcing endpoint.
+`trusted` requires a completed peer read against the current exact pin. A pin
+addition schedules authentication; it never makes an announcement trusted.
 
 ### Node Eviction
 
 The scanner scans every five seconds. Once a node has missed three scans in a
 row, about fifteen seconds, the scanner checks on it at every scan, and any answer
 resets the count. It drops the node only after twelve consecutive misses, about a
-minute, with every check along the way failing. These are the checks:
+minute, with every check along the way failing. For a promoted peer the checks are:
 
 - Inference the node served in the last minute, which the proxies report
-- Recent telemetry from that node
-- A direct request to the node's node-info endpoint
-- A probe of the engine-manager port
+- Authenticated inventory from that node in the last ten seconds
 
-The activity check comes first because a node under load is the one most likely
-to miss an announcement, and evicting it would pull a working machine out of the
-routing pool at its busiest.
+These checks use accepted evidence without starting another network request.
+The canonical sampling loop continues independently, so multicast loss does not
+add synchronous probes to discovery processing. Recent inventory or inference
+activity keeps a healthy node in the routing pool through Wi-Fi, VPN, and sleep
+or wake gaps. Inference proxy ports are never probed for liveness.
 
-The remaining checks deliberately avoid the inference proxy ports. Those ports
-exist to serve requests, and using them as a liveness test would put connection
-attempts on the serving path every time multicast dropped a packet.
-
-Multicast is lossy, and Wi-Fi, VPN adapters, and sleeping network interfaces all
-produce gaps that have nothing to do with a node's health. Without that probe a
-momentary gap would evict a perfectly healthy node and take its models out of the
-routing pool.
-
-Discovery holds record replacement to the same standard. A node can reappear with
-a new identity, for example after a reset. The old entry then looks superseded,
-and leaving both in place would list the machine twice. But a matching address
-and hostname arrive in an unauthenticated announcement that anything on the
-network can send, so those signals only mark the old record as a suspect.
-Discovery confirms the node's identity before dropping that record. A stale
-duplicate therefore cannot linger, and nothing can displace a peer by claiming
-its address.
+A reset node may reappear under a new identity. Its unverified announcement
+cannot replace a verified record by matching its name or address. The old
+record follows authenticated liveness and trust invalidation. Public HTTP
+identity reports and open TCP ports cannot remove or retain verified peers.
 
 ### Manual Nodes
 

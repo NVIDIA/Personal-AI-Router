@@ -44,8 +44,11 @@ func unreachableNode(t *testing.T, hostUUID string) RawNode {
 // is streaming a generation back to us is evicted for failing a probe it was too
 // busy to answer.
 func TestFreshActivity_KeepsANodeNoProbeCanReach(t *testing.T) {
-	d := activityDaemon()
-	n := unreachableNode(t, "busy-node")
+	f := newDiscoveryPeerFixture(t, "busy-node")
+	f.discover(t)
+	d, n := f.daemon, f.raw
+	f.server.Close()
+	delete(d.lastInfoAt, "busy-node")
 
 	require.False(t, d.reachable(n), "precondition: a node with no listener must fail the probe when nothing vouches for it")
 
@@ -130,11 +133,7 @@ func TestSelfActivity_IsDropped(t *testing.T) {
 // report vouch for the node the moment it was rediscovered.
 func TestForget_ClearsActivity(t *testing.T) {
 	d := activityDaemon()
-	d.lastInfo = make(map[string]NodeInfoResponse)
 	d.lastInfoAt = make(map[string]time.Time)
-	d.lastModels = make(map[string][]string)
-	d.lastModelsByEngine = make(map[string]map[string][]string)
-	d.lastLoadedByEngine = make(map[string]map[string][]string)
 	d.nodeInfoDown = make(map[string]bool)
 
 	d.noteActivity("node", 0)

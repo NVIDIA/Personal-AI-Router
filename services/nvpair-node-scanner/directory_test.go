@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,22 +36,54 @@ func TestApplyLocalInfo_UpdatesOnlyHardware(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
-func TestToDirectoryNode_ProjectsIdentityServicesAndTrust(t *testing.T) {
+func TestDirectory_IdenticalPeerRefreshPreservesModelsAndTimestamp(t *testing.T) {
+	dir := newDirectory()
+	old := noderec.DirectoryNode{
+		HostUUID: "peer-uuid", DiscoveryRecordID: "peer:peer-uuid",
+		IdentityVerification: noderec.IdentityPinned, ClusterUUID: "peer-uuid", Trusted: true,
+		Name: "peer", IP: "192.0.2.20", IPs: []string{"192.0.2.20"},
+		Services:       map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceNodeInfo: {Port: 14318}},
+		GPUs:           []GPUInfo{{Name: "GPU", UtilizationPercent: 61}},
+		CPU:            &CPUInfo{Name: "CPU"},
+		Memory:         &MemoryInfo{TotalBytes: 1024},
+		Models:         []string{"current-model"},
+		ModelsByEngine: map[string][]string{"ollama": {"current-model"}},
+		LoadedByEngine: map[string][]string{"ollama": {"current-model"}},
+		LastSeen:       1,
+	}
+	dir.upsert(old)
+	// A new response has equal values in separately allocated slices, maps,
+	// and hardware pointers. It supplies neither models nor a change timestamp.
+	body, err := json.Marshal(old)
+	require.NoError(t, err)
+	var refreshed noderec.DirectoryNode
+	require.NoError(t, json.Unmarshal(body, &refreshed))
+	refreshed.Models, refreshed.ModelsByEngine, refreshed.LoadedByEngine = nil, nil, nil
+	refreshed.LastSeen = 0
+	_, discovered, changed := dir.promote("", refreshed)
+	assert.False(t, discovered)
+	assert.False(t, changed)
+	got, present := dir.get(old.HostUUID)
+	require.True(t, present)
+	assert.Equal(t, old, got)
+}
+
+func TestToDirectoryNode_ProjectsClaimsWithoutGrantingTrust(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostA",
 		Host:      "hostA.local.",
 		Addresses: []string{"10.221.0.9", "192.168.1.10"},
 		TXT:       []string{"v=1", "uuid=host-uuid", "cluster-uuid=clu", "ip=192.168.1.10", "ni=14318", "ol=11434"},
 	}
-	n, ok := toDirectoryNode(raw, true)
+	n, ok := toDirectoryNode(raw)
 	require.True(t, ok, "a record with uuid= should project")
 	assert.Equal(t, "host-uuid", n.HostUUID)
 	assert.Equal(t, "hostA", n.Name)
 	assert.Equal(t, "192.168.1.10", n.IP)
-	assert.True(t, n.Trusted, "Trusted should reflect the caller-supplied flag")
-	assert.True(t, n.HasService(noderec.ServiceNodeInfo), "services wrong")
-	assert.True(t, n.HasService(noderec.ServiceOllama), "services wrong")
-	assert.Equal(t, 11434, n.Services[noderec.ServiceOllama].Port, "ol port")
+	assert.False(t, n.Trusted)
+	assert.True(t, n.HasService(noderec.ServiceNodeInfo))
+	assert.True(t, n.HasService(noderec.ServiceOllama))
+	assert.Equal(t, 11434, n.Services[noderec.ServiceOllama].Port)
 }
 
 // TestToDirectoryNodeIgnoresSRVPort asserts the locked-decision contract: the
@@ -66,10 +99,10 @@ func TestToDirectoryNode_IgnoresSRVPort(t *testing.T) {
 		Addresses: []string{"192.168.1.30"},
 		TXT:       []string{"v=1", "uuid=host-c", "ip=192.168.1.30", "ni=14318", "ol=11434"},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	require.True(t, ok, "a record with uuid= should project")
-	assert.Equal(t, 14318, n.Services[noderec.ServiceNodeInfo].Port, "ni port")
-	assert.Equal(t, 11434, n.Services[noderec.ServiceOllama].Port, "ol port")
+	assert.Equal(t, 14318, n.Services[noderec.ServiceNodeInfo].Port)
+	assert.Equal(t, 11434, n.Services[noderec.ServiceOllama].Port)
 	for svc, st := range n.Services {
 		assert.NotEqual(t, 65000, st.Port, "the non-authoritative SRV port leaked into service (%v)", svc)
 	}
@@ -84,8 +117,8 @@ func TestToDirectoryNode_SkipsWithoutUUID(t *testing.T) {
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
 		TXT:       []string{"v=1", "er=14319"},
 	}
-	_, ok := toDirectoryNode(raw, false)
-	assert.False(t, ok, "a record without uuid= must be skipped, not projected")
+	_, ok := toDirectoryNode(raw)
+	assert.False(t, ok)
 }
 
 // TestToDirectoryNodeIPFallback: with a uuid= but no ip=, every advertised address
@@ -101,11 +134,11 @@ func TestToDirectoryNode_UsesRecordIPWhenAddressesAreAbsent(t *testing.T) {
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
 		TXT:       []string{"v=1", "uuid=host-b", "er=14319"},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	require.True(t, ok, "a record with uuid= should project")
-	assert.Equal(t, "10.221.0.9", n.IP, "IP fallback")
+	assert.Equal(t, "10.221.0.9", n.IP)
 	assert.Equal(t, []string{"10.221.0.9", "192.168.1.20"}, n.IPs)
-	assert.False(t, n.Clustered(), "no cluster-uuid should mean not clustered")
+	assert.False(t, n.Clustered())
 }
 
 // TestToDirectoryNodePreservesPublishedOrder: a node's own ips= order survives
@@ -121,9 +154,9 @@ func TestToDirectoryNode_PreservesPublishedOrder(t *testing.T) {
 			"ips=10.172.54.70,192.168.240.2", "ni=14318",
 		},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	require.True(t, ok, "a record with uuid= should project")
-	assert.Equal(t, "10.172.54.70", n.IP, "canonical")
+	assert.Equal(t, "10.172.54.70", n.IP)
 	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2"}, n.IPs)
 }
 
@@ -135,9 +168,9 @@ func TestToDirectoryNode_UnionsUnpublishedAddresses(t *testing.T) {
 		Addresses: []string{"10.0.9.9"},
 		TXT:       []string{"v=1", "uuid=host-c", "ip=10.0.0.5", "ips=10.0.0.5"},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	require.True(t, ok, "a record with uuid= should project")
-	assert.Equal(t, []string{"10.0.0.5", "10.0.9.9"}, n.IPs, "candidates")
+	assert.Equal(t, []string{"10.0.0.5", "10.0.9.9"}, n.IPs)
 }
 
 func TestDirectory_UpdatesRemovesAndSnapshotsNodes(t *testing.T) {
@@ -177,10 +210,10 @@ func observationFixture() RawNode {
 func TestToDirectoryNode_AddressOrderAndClaimChangesPreserveDiscoveryRecordID(t *testing.T) {
 	test := func(name string, candidate RawNode) {
 		t.Run(name, func(t *testing.T) {
-			original, ok := toDirectoryNode(observationFixture(), false)
-			require.True(t, ok, "original observation must be projected")
-			next, ok := toDirectoryNode(candidate, false)
-			require.True(t, ok, "candidate observation must be projected")
+			original, ok := toDirectoryNode(observationFixture())
+			require.True(t, ok, "original observation was not projected")
+			next, ok := toDirectoryNode(candidate)
+			require.True(t, ok, "candidate observation was not projected")
 			require.NotEmpty(t, original.DiscoveryRecordID)
 			assert.Equal(t, original.DiscoveryRecordID, next.DiscoveryRecordID)
 		})
@@ -198,10 +231,10 @@ func TestToDirectoryNode_AddressOrderAndClaimChangesPreserveDiscoveryRecordID(t 
 func TestToDirectoryNode_DifferencesInDiscoveryFieldsYieldDifferentDiscoveryRecordIDs(t *testing.T) {
 	test := func(name string, candidate RawNode) {
 		t.Run(name, func(t *testing.T) {
-			original, ok := toDirectoryNode(observationFixture(), false)
-			require.True(t, ok, "original observation must be projected")
-			next, ok := toDirectoryNode(candidate, false)
-			require.True(t, ok, "candidate observation must be projected")
+			original, ok := toDirectoryNode(observationFixture())
+			require.True(t, ok, "original observation was not projected")
+			next, ok := toDirectoryNode(candidate)
+			require.True(t, ok, "candidate observation was not projected")
 			require.NotEmpty(t, original.DiscoveryRecordID)
 			require.NotEmpty(t, next.DiscoveryRecordID)
 			assert.NotEqual(t, original.DiscoveryRecordID, next.DiscoveryRecordID)
@@ -225,8 +258,8 @@ func TestToDirectoryNode_DifferencesInDiscoveryFieldsYieldDifferentDiscoveryReco
 	test("different node-info port", port)
 }
 
-func TestToDirectoryNode_TrustedFlagDoesNotVerifyIdentity(t *testing.T) {
-	node, ok := toDirectoryNode(observationFixture(), true)
-	require.True(t, ok, "observation must be projected")
+func TestToDirectoryNode_ClaimsNeverVerifyIdentity(t *testing.T) {
+	node, ok := toDirectoryNode(observationFixture())
+	require.True(t, ok, "observation was not projected")
 	assert.Equal(t, noderec.IdentityUnverified, node.IdentityVerification)
 }

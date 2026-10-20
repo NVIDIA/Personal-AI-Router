@@ -97,11 +97,13 @@ records and may read public hardware measurements separately for display.
 - The local host, verified peers, unverified discoveries, and manually configured
   servers have separate records. A claimed node identifier, a UUID, cannot cause
   unverified data to be merged into a local or verified peer record.
-- Scanner refreshes inventory every 15 seconds and reads healthy node-info
+- Scanner refreshes models every 15 seconds and reads healthy node-info
   servers every two seconds with stable per-node jitter, a small fixed timing
   offset that spreads requests across nodes. Failed remote reads use backoff,
   increasing the wait: 4, 8, 16, then 30 seconds between retries, returning to the
-  normal interval on success. Local reads stay at the normal interval.
+  normal interval on success. Each accepted peer response updates metadata,
+  hardware inventory, and scheduling telemetry together. Local hardware arrives
+  over owned worker IPC at the normal interval.
 - Scanner retains the last successfully read inventory during temporary failures.
   Samples retain their validity and age, including time spent in requests, queues,
   and caches. Forwarding or resending old data must not make it look new.
@@ -117,7 +119,7 @@ records and may read public hardware measurements separately for display.
   authenticated inventory reads or inference responses, not just an open TCP
   port or unverified network claims.
   If a verified peer remains after its last discovery expires, Scanner continues
-  checking availability during inventory refresh. After a minute without
+  checking availability through the same canonical sampling loop. After a minute without
   authenticated inventory or inference activity, Scanner removes its record and
   caches while preserving membership and saved certificates.
 - Scanner applies trust changes while running. Removed or replaced pins clear
@@ -368,8 +370,10 @@ Scanner reads a peer's models using the verified engine-manager (`em`) service
 details and `GET /v1/models` over pinned mTLS. For the local host, Scanner uses
 its own registry and unencrypted HTTP over loopback. It adds the combined model
 list, `modelsByEngine`, and `loadedByEngine` to the directory, retaining the last
-successfully read data during temporary failures. A newly authenticated peer
-schedules a model refresh without waiting for the next periodic inventory sweep.
+successfully read data during temporary failures. Local publication uses retained
+models without waiting for HTTP while holding the local identity lock. A local
+registration or newly authenticated peer schedules the existing model sweep
+without waiting for its next periodic run.
 
 Scanner compares model lists without depending on their order. A present engine entry
 with an empty list reports no models for that engine; a missing entry means
@@ -559,7 +563,7 @@ sequenceDiagram
 ```
 
 The diagram shows separate display and service paths. HTTP display readings
-never flow into scheduler or verified peer records. Service inventory refreshes
-every 15 seconds and measurements every two seconds, independently of mDNS
-changes. The broker forwards trust changes to Scanner and clears affected
+never flow into scheduler or verified peer records. Models refresh every 15 seconds;
+peer metadata, hardware, and measurements share the two-second sampling loop,
+independently of mDNS changes. The broker forwards trust changes to Scanner and clears affected
 verification and service samples when membership or pins change.

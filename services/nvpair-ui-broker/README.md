@@ -653,10 +653,10 @@ Attach to a pre-existing endpoint:
   TLS flags or a custom port.
 - **Manual-node persistence across restarts.** `nvpair-manual-nodes` remains an in-memory worker; the broker owns `configs/manual-nodes.json`, clears stale live projections when the worker exits, and replays the durable entries into its replacement.
 - **Per-event push semantics.** `discovery:nodes-changed` always carries the full current snapshot, not a delta. For small N this is fine and lets the client treat the payload as authoritative without state reconciliation. `errors:update` is likewise a full snapshot.
-- **BYO-TLS node-info discovery.** The broker does not expose scanner's operator
-  TLS flags. Scanner's remote hardware reads currently use public HTTP, even
-  though node-info also offers peer node inventory over pinned mTLS.
-  Migrating those reads remains pending work in the [scanner spec](../nvpair-node-scanner/spec.md).
+- **Hardware provenance.** Scanner reads verified remote inventory over exact-pin
+  mTLS and local inventory over private worker IPC. The
+  [scanner spec](../nvpair-node-scanner/spec.md) defines the ownership and
+  authentication requirements for hardware used by services.
 - **Per-worker log-level granularity.** `log/set-level` fans the broker's single level out to every running child, but there's no way to set a different level per worker — it's one level for the whole process tree.
 - **AuthN / AuthZ.** Transport security relies on the parent's pipe / socket ACL. There is no per-message token.
 - **HTTP / WebSocket transport.** JSON-RPC over stdio or pipe only — no web bridge yet. Likely lives in a separate component if/when added.

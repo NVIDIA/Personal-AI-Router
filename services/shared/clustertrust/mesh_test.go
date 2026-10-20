@@ -5,6 +5,7 @@ package clustertrust
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,28 @@ func writeIdentity(t *testing.T, dir string, certPEM, keyPEM []byte) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
+}
+
+func TestMesh_VerifyPeerCertificateUsesCurrentExactPin(t *testing.T) {
+	selfPEM, selfKey, _ := genLeaf(t, "self")
+	peerPEM, _, peerDER := genLeaf(t, "peer")
+	replacementPEM, _, replacementDER := genLeaf(t, "peer")
+	mesh := loadMeshDir(t, selfPEM, selfKey, map[string]string{"peer": string(peerPEM)})
+	peer, err := x509.ParseCertificate(peerDER)
+	require.NoError(t, err)
+	replacement, err := x509.ParseCertificate(replacementDER)
+	require.NoError(t, err)
+	require.True(t, mesh.VerifyPeerCertificate("peer", peer))
+	assert.False(t, mesh.VerifyPeerCertificate("another-peer", peer))
+	assert.False(t, mesh.VerifyPeerCertificate("peer", replacement))
+	assert.False(t, mesh.VerifyPeerCertificate("peer", nil))
+	writePin(t, mesh.dir, "peer", string(replacementPEM))
+	mesh.Refresh()
+	assert.False(t, mesh.VerifyPeerCertificate("peer", peer))
+	require.True(t, mesh.VerifyPeerCertificate("peer", replacement))
+	require.NoError(t, os.Remove(filepath.Join(mesh.dir, "trusted", "peer.json")))
+	mesh.Refresh()
+	assert.False(t, mesh.VerifyPeerCertificate("peer", replacement))
 }
 
 func loadMeshDir(t *testing.T, certPEM, keyPEM []byte, pins map[string]string) *Mesh {
