@@ -17,10 +17,7 @@ import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/s
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
 import type { ClusterNode, Invite, NodeIdentityVerification } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
-import {
-    MODULAR_NODE_INFO_SELF_HOST,
-    MODULAR_SUPERSEDE_MIN_AGE_MS
-} from '@/shared/constants/modular-runtime'
+import { MODULAR_NODE_INFO_SELF_HOST } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
 import {
     emptyEngineStatus,
@@ -84,12 +81,11 @@ interface RemoteEngineFacts {
 interface ModularNode {
     discoveryRecordId?: string
     identityVerification?: NodeIdentityVerification
-    // Canonical cross-domain node key = the backend's stable per-host UUID
-    // (`shared/nodeid`). The broker carries it on `AvailableNode.hostUuid`, the
-    // proxies key `Node.ID` by it, and `/v1/node-info` reports it, so every
-    // domain now agrees on this id: workload `originatedFrom`/`scheduledOn`,
-    // error `nodeId`, and proxy routing all resolve against it. Never key,
-    // dedupe, or attribute by hostname — that is display only (`name`).
+    // Row key: host UUID for local/pinned hosts, discovery record ID for
+    // unverified discoveries. Proxy-only rows keep the proxy's operational key,
+    // which may identify a configured manual engine target. An unverified
+    // record cannot join a host's row just by claiming its UUID. The hostname
+    // is display only (`name`), never a correlation key.
     id: string
     sources: BrokerNodeSource[]
     // Display hostname (broker `AvailableNode.name` / proxy `Node.Host`). Shown
@@ -701,8 +697,8 @@ function toEngineStatus(
 function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
-    // The proxy keys `Node.ID` by the stable per-host UUID (and rejects empty),
-    // so this is already the canonical node key — no TXT parsing needed.
+    // The proxy supplies the operational node key: a host UUID or a separate
+    // configured manual target key. Use it directly, without parsing TXT claims.
     const id = stringValue(obj.id)
     if (!id) return null
     const engines = emptyEngines()
@@ -763,9 +759,8 @@ function identityVerificationValue(
 function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
-    // `AvailableNode.hostUuid` is the canonical node key. The broker's discovery
-    // store rejects an empty UUID, so every node it reports carries one; a
-    // payload without it is malformed and dropped rather than keyed by hostname.
+    // Verified hosts use their operational UUID. An unverified claim keeps its
+    // independent discovery record key, even when it claims that same UUID.
     const hostUuid = stringValue(obj.hostUuid)
     if (!hostUuid) return null
     // `AvailableNode.id`/`.name` are the mDNS instance hostname (display only).
@@ -779,14 +774,14 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const discoveryRecordId = stringValue(obj.discoveryRecordId)
     const identityVerification = identityVerificationValue(obj.identityVerification)
     return {
-        id: hostUuid,
+        id: identityVerification === 'unverified' ? discoveryRecordId : hostUuid,
         ...(discoveryRecordId ? { discoveryRecordId } : {}),
         ...(identityVerification ? { identityVerification } : {}),
         sources: ['broker'],
         name: hostname,
         host: ipAddress,
         // Broker discovery is authoritative for trust/cluster membership state.
-        trusted: booleanValue(obj.trusted),
+        trusted: identityVerification !== 'unverified' && booleanValue(obj.trusted),
         clustered: booleanValue(obj.clustered),
         nodeInfoPort: port,
         nodeInfoUp: Boolean(ipAddress) && port > 0,
@@ -1069,9 +1064,10 @@ class ModularBridgeState {
     /**
      * Fix the local node id to the cluster-manager's stable node UUID
      * (`cluster:get-node-id` → `nodeUuid`). This is the sole self-identity
-     * source: discovery and proxy ids are the same UUID key, so there is no
-     * hostname guessing to guard against. A no-op when unchanged; a change
-     * triggers a renderer refresh so per-node views re-resolve self.
+     * source: the local discovery and proxy rows use this UUID. Unverified
+     * discoveries keep separate record IDs and cannot establish self identity.
+     * A no-op when unchanged; a change triggers a renderer refresh so per-node
+     * views re-resolve self.
      */
     setSelfId(nodeUuid: string): void {
         const trimmed = nodeUuid.trim()
@@ -1166,6 +1162,10 @@ class ModularBridgeState {
         })
     }
 
+    getNodeIdentityVerification(nodeId: string): NodeIdentityVerification | undefined {
+        return this.nodes.get(nodeId)?.identityVerification
+    }
+
     getNodeInfoPollTargets(): { id: string; hosts: string[]; port: number }[] {
         const targets: { id: string; hosts: string[]; port: number }[] = []
         for (const node of Array.from(this.nodes.values())) {
@@ -1185,9 +1185,9 @@ class ModularBridgeState {
                 continue
             }
             // Lead with the canonical display address, then retain the node's
-            // published alternatives. The poller walks them in order and verifies
-            // hostUuid, so a direct-connect address that resolves to another host
-            // cannot hide telemetry available at a later address.
+            // published alternatives. For verified rows, the poller requires a
+            // matching response host UUID and otherwise tries the next address.
+            // Unverified rows permit hardware previews without trusting UUID claims.
             const hosts = mergeAddresses([primaryNodeAddress(node)], nodeAddresses(node))
             if (hosts.length === 0) continue
             targets.push({ id: node.id, hosts, port: node.nodeInfoPort })
@@ -1202,11 +1202,12 @@ class ModularBridgeState {
         const obj = objectValue(response)
         if (!obj) return
 
-        // `/v1/node-info` now reports the node's own hostUuid. If it disagrees
-        // with the node we polled (the address resolved to a different host),
-        // skip the merge rather than attribute another host's telemetry here.
+        // Outside unverified previews, require a matching response host UUID.
+        // An unverified row is keyed by its discovery record ID, so its public
+        // UUID claim need not match that key. Only hardware fields are merged;
+        // the response cannot change the row's broker-owned identity or trust.
         const reportedUuid = stringValue(obj.hostUuid)
-        if (reportedUuid && reportedUuid !== nodeId) return
+        if (node.identityVerification !== 'unverified' && reportedUuid !== nodeId) return
 
         const gpus = gpuArrayValue(obj.GPUs)
         const cpu = cpuValue(obj.cpu)
@@ -1222,8 +1223,7 @@ class ModularBridgeState {
             gpus,
             cpu,
             memory,
-            inferenceHardwareIds,
-            nodeInfoUp: true
+            inferenceHardwareIds
         })
     }
 
@@ -2348,6 +2348,32 @@ class ModularBridgeState {
     }
 
     private handleBrokerNotification(notification: JsonRpcNotification): void {
+        if (notification.method === 'discovery:node-info') {
+            const snapshot = objectValue(notification.params)
+            if (!snapshot) return
+            const id = stringValue(snapshot.hostUuid)
+            const node = this.nodes.get(id)
+            const info = objectValue(snapshot.info)
+            if (!node || !info) {
+                // There must be an existing row and hardware payload to update.
+                return
+            }
+            if (node.discoveryRecordId !== stringValue(snapshot.discoveryRecordId)) {
+                // A shared host UUID cannot attach another record's snapshot.
+                return
+            }
+            if (
+                node.identityVerification !==
+                    identityVerificationValue(snapshot.identityVerification) ||
+                node.identityVerification === 'unverified'
+            ) {
+                // Match the row's current verification state. Unverified rows
+                // cannot consume the broker's authenticated hardware stream.
+                return
+            }
+            this.mergeNodeInfoResponse(id, info)
+            return
+        }
         if (notification.method !== 'discovery:nodes-changed') return
 
         const nodes = brokerNodesValue(notification.params)
@@ -2406,12 +2432,6 @@ class ModularBridgeState {
         // so there is no hostname guessing here — `setSelfId` is the sole source.
         const existing = this.nodes.get(node.id)
         const merged = this.mergeNode(existing, node, source)
-        // Collapse a wiped-and-rejoined host onto its new UUID before storing,
-        // so the pre-wipe record never reaches the map (see resolveAddressCollision).
-        if (this.resolveAddressCollision(merged)) {
-            this.removeNodeEntry(merged.id)
-            return
-        }
         if (existing && sameNode(existing, merged)) return
         this.nodes.set(merged.id, merged)
         this.emitNodeChanged(merged)
@@ -2444,66 +2464,6 @@ class ModularBridgeState {
                 }
             }
         }
-    }
-
-    /**
-     * Collapse two UUIDs that are really one machine.
-     *
-     * A node whose appdata is wiped mints a fresh hostUuid, so peers advertise
-     * the same machine under a new key while the pre-wipe key survives — the
-     * fleet sees a duplicate "ghost" row. Nothing on the wire marks the two as
-     * the same host, so this infers it from the three signals the node-scanner
-     * uses to nominate a superseded record (`directory.supersedeCandidates`):
-     * same address, same hostname, and a `lastSeen` gap of at least
-     * MODULAR_SUPERSEDE_MIN_AGE_MS.
-     *
-     * It stops there, and the scanner does not. Those signals come from an
-     * unauthenticated mDNS advertisement, and `lastSeen` is not a liveness
-     * clock — the backend re-stamps a node only when its record CHANGES, so a
-     * healthy peer's `lastSeen` freezes exactly like a ghost's. The scanner
-     * therefore treats them as a suspicion and deletes only once node-info
-     * names a different host. This has no such proof available, so it must stay
-     * a display-side collapse: it hides a row until the next snapshot, and must
-     * never be read as the directory having evicted anything.
-     *
-     * Two caveats on how faithfully this can mirror the backend, both stemming
-     * from a proxy-sourced node carrying less than a discovery record does:
-     * `parseProxyNode` stamps `lastSeen` locally rather than echoing the
-     * backend's, and `primaryNodeAddress` falls back to `host` (a hostname for a
-     * proxy node), which can collapse the address and name conditions into one.
-     * Both only ever make this rule fire LESS often than the scanner's, so the
-     * node list stays a subset of the directory rather than contradicting it.
-     *
-     * Returns true when `node` is the STALE side and must not be stored — a
-     * backend that has not yet evicted the ghost keeps re-publishing it in every
-     * `discovery:nodes-changed` snapshot, so refusing it on arrival is what
-     * makes the eviction stick. Otherwise the losing entries are evicted here.
-     */
-    private resolveAddressCollision(node: ModularNode): boolean {
-        const address = primaryNodeAddress(node)
-        if (!address || !node.name) return false
-        const rivals: ModularNode[] = []
-        for (const other of this.nodes.values()) {
-            if (other.id === node.id || other.id === this.selfId) continue
-            if (primaryNodeAddress(other) !== address || other.name !== node.name) continue
-            rivals.push(other)
-        }
-        // Self is pinned by the cluster-manager's node UUID, so it is always the
-        // live identity for this machine's address: skipped above so it can
-        // never be evicted, and skipped as a claimant below so it never evicts.
-        // The backend applies the same asymmetry (directory.supersedeCandidates).
-        if (node.id === this.selfId) return false
-        // Decide before mutating. Returning mid-loop would strand entries
-        // already marked stale, leaving a partially applied collapse.
-        if (rivals.some(other => other.lastSeen - node.lastSeen >= MODULAR_SUPERSEDE_MIN_AGE_MS)) {
-            return true
-        }
-        for (const other of rivals) {
-            if (node.lastSeen - other.lastSeen >= MODULAR_SUPERSEDE_MIN_AGE_MS) {
-                this.removeNodeEntry(other.id)
-            }
-        }
-        return false
     }
 
     /** Delete a node and clean every index that referenced it. */

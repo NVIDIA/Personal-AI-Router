@@ -65,6 +65,7 @@ func TestTelemetryDispatch_UpdatesInventoryAndSchedulingTogether(t *testing.T) {
 	assert.Equal(t, f.info.CPU, node.CPU)
 	assert.Equal(t, f.info.GPUs, node.GPUs)
 	var telemetry noderec.NodeTelemetry
+	var snapshot noderec.NodeInfoEvent
 	decoder := json.NewDecoder(&output)
 	for decoder.More() {
 		var message Message
@@ -72,11 +73,15 @@ func TestTelemetryDispatch_UpdatesInventoryAndSchedulingTogether(t *testing.T) {
 		switch message.Method {
 		case noderec.NotifyNodeTelemetry:
 			require.NoError(t, json.Unmarshal(message.Params, &telemetry))
+		case noderec.NotifyNodeInfo:
+			require.NoError(t, json.Unmarshal(message.Params, &snapshot))
 		}
 	}
 	assert.Equal(t, "peer-uuid", telemetry.HostUUID)
 	assert.True(t, telemetry.TelemetryValid)
 	assert.Equal(t, uint32(95), telemetry.GPUUtilizationPct)
+	assert.Equal(t, f.info.CPU, snapshot.Info.CPU)
+	assert.Equal(t, f.info.GPUs, snapshot.Info.GPUs)
 }
 
 func TestTelemetryDispatch_BackoffDoesNotInterruptHealthyPeer(t *testing.T) {

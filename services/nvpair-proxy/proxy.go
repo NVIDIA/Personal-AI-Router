@@ -2530,12 +2530,21 @@ func (p *Proxy) setPriorityLocked(priority schedulerwire.Priority) int {
 	return len(cleaned)
 }
 
-// subscribedToNode projects a relay DirectoryNode onto the proxy's routable Node
-// for the ol service, returning false when the node doesn't advertise ol or has
-// no dialable address. The engine port comes from the ol service key (the real
-// Ollama port the broker's engine poller registered, not the proxy's listen
-// port).
+// subscribedToNode projects a local record or a trusted pinned peer into a
+// routable node for this engine. It requires the engine's advertised service
+// and a dialable IP. The service supplies the engine's registered server port.
 func subscribedToNode(p engineProfile, n noderec.DirectoryNode) (Node, bool) {
+	verification := n.IdentityVerification
+	if verification != noderec.IdentityLocal && verification != noderec.IdentityPinned {
+		// UUID, trusted, and loopback claims cannot make an unverified
+		// advertisement eligible for inference routing.
+		return Node{}, false
+	}
+	if verification == noderec.IdentityPinned && !n.Trusted {
+		// A proved remote identity still needs current trust. Local records
+		// come from the owned worker and do not require a peer pin.
+		return Node{}, false
+	}
 	svc, ok := n.Services[p.DiscoveryService]
 	if !ok || n.IP == "" {
 		return Node{}, false

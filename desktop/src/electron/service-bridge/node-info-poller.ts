@@ -253,9 +253,10 @@ function withinWalkCooldown(choice: PollChoice | undefined, targetKey: string): 
 }
 
 /**
- * One attempt against one address, returning what it reported if it answered for
- * this node. Probing is kept separate from {@link accept} so several addresses can
- * be asked at once while only the best-ranked answer is the one used.
+ * Probe one address for display hardware. Rows keyed by a host UUID require a
+ * matching response UUID; unverified rows permit the preview under their own
+ * discovery record ID. Probing is separate from {@link accept} so several
+ * addresses can be asked at once while only the best-ranked answer is used.
  */
 async function probeHost(
     nodeId: string,
@@ -270,17 +271,22 @@ async function probeHost(
     if (run.aborted) return { parsed: null, reason: '' }
     if (!probe.parsed) return probe
 
-    // A reused/shared address can answer for another machine. That response is not
-    // success for this node, but neither should it stop failover to the remaining
-    // addresses the intended node published.
+    // A reused address may answer for another host. Outside unverified previews,
+    // skip that response and continue failover. An unverified row's key is a
+    // discovery record ID, so comparing its public UUID claim to that key would
+    // reject the intended preview. Neither path authenticates the HTTP response.
     const reportedUuid = nodeInfoHostUuid(probe.parsed)
-    if (reportedUuid && reportedUuid !== nodeId) {
+    const verification = getModularBridgeState().getNodeIdentityVerification(nodeId)
+    if (verification !== 'unverified' && reportedUuid !== nodeId) {
         log.verbose({
             sublevel: 'node-info',
-            message: 'Node info candidate answered for a different host; trying next',
+            message: 'Node info candidate did not identify the expected host; trying next',
             data: { nodeId, reportedUuid, url: nodeInfoUrl(host, port) }
         })
-        return { parsed: null, reason: `answered for ${reportedUuid}` }
+        return {
+            parsed: null,
+            reason: reportedUuid ? `answered for ${reportedUuid}` : 'missing hostUuid'
+        }
     }
     return probe
 }

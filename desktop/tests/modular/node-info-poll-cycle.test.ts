@@ -9,12 +9,14 @@ import {
     MODULAR_NODE_INFO_WALK_COOLDOWN_MS
 } from '@/shared/constants/modular-runtime'
 import type { getModularBridgeState } from '@/electron/service-bridge/modular-state'
+import type { JsonValue } from '@/electron/service-bridge/json-rpc-subprocess'
 
 type BridgeState = ReturnType<typeof getModularBridgeState>
 
 const mocks = vi.hoisted(() => ({
     state: {
         getNodeInfoPollTargets: vi.fn<BridgeState['getNodeInfoPollTargets']>(),
+        getNodeIdentityVerification: vi.fn<BridgeState['getNodeIdentityVerification']>(),
         mergeNodeInfoResponse: vi.fn<BridgeState['mergeNodeInfoResponse']>()
     },
     logged: [] as {
@@ -121,6 +123,7 @@ describe('node info polling', () => {
         vi.stubGlobal('fetch', fetchMock)
         fetchMock.mockReset()
         mocks.state.getNodeInfoPollTargets.mockReturnValue([])
+        mocks.state.getNodeIdentityVerification.mockReturnValue(undefined)
         mocks.logged.length = 0
     })
 
@@ -128,6 +131,89 @@ describe('node info polling', () => {
         stopNodeInfoPoller()
         vi.unstubAllGlobals()
         vi.useRealTimers()
+    })
+
+    // A candidate row is keyed by its discovery record ID, so its public UUID
+    // need not match that key. Deliver the response to the requested preview
+    // row without treating the claimed UUID as authenticated identity.
+    const preview = (name: string, response: JsonValue): void => {
+        it(name, async () => {
+            const discoveryRecordId = 'candidate:display'
+            const address = '127.0.0.1'
+            const nodeInfoPort = 14318
+            mocks.state.getNodeInfoPollTargets.mockReturnValue([
+                {
+                    id: discoveryRecordId,
+                    hosts: [address],
+                    port: nodeInfoPort
+                }
+            ])
+            mocks.state.getNodeIdentityVerification.mockReturnValue('unverified')
+            fetchMock.mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }))
+
+            startNodeInfoPoller()
+            await vi.advanceTimersByTimeAsync(0)
+
+            expect(mocks.state.mergeNodeInfoResponse).toHaveBeenCalledWith(
+                discoveryRecordId,
+                response
+            )
+        })
+    }
+    preview('merges public hardware into the unverified record despite its claimed UUID', {
+        hostUuid: 'a-public-claim'
+    })
+    preview('merges public hardware into an unverified preview without hostUuid', {
+        GPUs: [{ name: 'Preview GPU' }]
+    })
+
+    // Recheck the current record after HTTP completes so a removed discovery
+    // cannot retain the preview exception from when its request started.
+    it('does not accept an unverified preview after its record disappears during the request', async () => {
+        const discoveryRecordId = 'candidate:removed-during-poll'
+        mocks.state.getNodeInfoPollTargets.mockReturnValue([
+            { id: discoveryRecordId, hosts: ['127.0.0.1'], port: 14318 }
+        ])
+        mocks.state.getNodeIdentityVerification.mockReturnValue('unverified')
+        const response = Promise.withResolvers<Response>()
+        fetchMock.mockReturnValue(response.promise)
+
+        startNodeInfoPoller()
+        await vi.advanceTimersByTimeAsync(0)
+        mocks.state.getNodeIdentityVerification.mockReturnValue(undefined)
+        mocks.state.getNodeInfoPollTargets.mockReturnValue([])
+        response.resolve(new Response(JSON.stringify({ GPUs: [{ name: 'Old preview GPU' }] })))
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(mocks.state.mergeNodeInfoResponse).not.toHaveBeenCalled()
+    })
+
+    it('tries the next address when a verified response omits hostUuid', async () => {
+        const hostUuid = 'verified-missing-identity'
+        const firstAddress = '192.0.2.20'
+        const nextAddress = '192.0.2.21'
+        const nodeInfoPort = 14318
+        mocks.state.getNodeInfoPollTargets.mockReturnValue([
+            { id: hostUuid, hosts: [firstAddress, nextAddress], port: nodeInfoPort }
+        ])
+        mocks.state.getNodeIdentityVerification.mockReturnValue('pinned')
+        fetchMock.mockImplementation(input =>
+            Promise.resolve(
+                String(input).includes(firstAddress)
+                    ? new Response(JSON.stringify({ GPUs: [{ name: 'Unidentified GPU' }] }), {
+                          status: 200
+                      })
+                    : answersFor(hostUuid)
+            )
+        )
+
+        startNodeInfoPoller()
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(mocks.state.mergeNodeInfoResponse).toHaveBeenCalledExactlyOnceWith(hostUuid, {
+            hostUuid
+        })
+        expect(outageWarnings()).toHaveLength(0)
     })
 
     it('reaches a working address past ones that drop connections', async () => {

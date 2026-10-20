@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/netpick"
+	"nvpair-shared/noderec"
 
 	"github.com/grandcat/zeroconf"
 )
@@ -80,18 +82,45 @@ func (c *interNodeCluster) clientAsPeer(t *testing.T) *http.Client {
 }
 
 // startStubClusterPeer runs a stub inter-node peer for this cluster over cluster
-// mTLS and advertises it as a single _nvpair-node record carrying wl=<port> and
-// its cluster principal. The principal is what lets the node under test resolve
-// its pin for the stub: the scanner annotates the browsed record as trusted and
-// the workload-manager keys its pinned client on it. Without mTLS and that TXT
-// key, the stub is simply not a routable cluster target and is never dialed.
+// mTLS and advertises node-info and workload services on one port. Scanner must
+// authenticate its inventory before workload-manager may use it as a peer, so
+// the host UUID, cluster principal, and certificate identity must agree.
 //
-// It returns the channel of frames the stub received. instance/hostUUID keep the
-// record distinct from the node under test's own.
-func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID string) <-chan jsonrpc.Message {
+// It returns received frames and an idempotent stop function for node-loss
+// tests. Cleanup also stops the peer. Its name and pinned UUID keep its record
+// distinct from the node under test's own.
+func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance string) (<-chan jsonrpc.Message, func()) {
 	t.Helper()
+	addresses := netpick.LocalCandidates(netpick.Evidence{})
+	require.NotEmpty(t, addresses, "stub peer needs a non-loopback address for discovery")
+	if len(addresses) > noderec.MaxAdvertisedIPs {
+		addresses = addresses[:noderec.MaxAdvertisedIPs]
+	}
+	// Listen on all interfaces: scanner and workload-manager use the advertised
+	// local interface addresses rather than the test's loopback address.
+	ln, err := net.Listen("tcp", ":0")
+	require.NoError(t, err, "stub peer listen")
+	port := ln.Addr().(*net.TCPAddr).Port
+
 	received := make(chan jsonrpc.Message, 128)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := c.peer.VerifyClientPin(r); !ok {
+			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
+			return
+		}
+		info := noderec.NodeInfo{
+			HostUUID: c.peerUUID, ClusterUUID: &c.peerUUID,
+			Peer: &noderec.PeerMetadata{
+				Name: instance, Addresses: addresses,
+				Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: port, noderec.ServiceWorkload: port},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(info); err != nil {
+			t.Errorf("encode stub peer inventory: %v", err)
+		}
+	})
 	mux.HandleFunc("/v1/workloads/events", func(w http.ResponseWriter, r *http.Request) {
 		// The sender must present the leaf this peer pins — the outbound half of
 		// the gate, so a broadcast is authenticated in both directions.
@@ -111,22 +140,27 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Listen on all interfaces: zeroconf advertises the host's real interface
-	// IP(s), so the manager dials the peer there, not at 127.0.0.1.
-	ln, err := net.Listen("tcp", ":0")
-	require.NoError(t, err, "stub peer listen")
-	port := ln.Addr().(*net.TCPAddr).Port
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(tls.NewListener(ln, c.peer.ServerTLSConfig()))
 	t.Cleanup(func() { _ = srv.Close() })
 
-	txt := []string{"v=1", "uuid=" + hostUUID, fmt.Sprintf("wl=%d", port),
+	txt := []string{"v=1", "uuid=" + c.peerUUID, "ip=" + addresses[0], "ips=" + strings.Join(addresses, ","),
+		fmt.Sprintf("ni=%d", port), fmt.Sprintf("wl=%d", port),
 		clustertrust.ClusterUUIDTXTKey + "=" + c.peerUUID}
 	adv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
 	require.NoError(t, err, "register stub peer")
-	t.Cleanup(adv.Shutdown)
-	t.Logf("stub cluster peer advertising %s (wl=%d, cluster-uuid=%s)", nodeRecordService, port, c.peerUUID)
-	return received
+	var stopped sync.Once
+	stop := func() {
+		stopped.Do(func() {
+			adv.Shutdown()
+			if err := srv.Close(); err != nil {
+				t.Errorf("close stub peer: %v", err)
+			}
+		})
+	}
+	t.Cleanup(stop)
+	t.Logf("stub cluster peer advertising %s (ni=%d, wl=%d, cluster-uuid=%s)", nodeRecordService, port, port, c.peerUUID)
+	return received, stop
 }
 
 // waitTCP blocks until addr accepts a TCP connection. Every "this request must be

@@ -68,12 +68,6 @@ func TestReplayPersistedManualNodes_ResendsSavedNodesToWorker(t *testing.T) {
 	}
 }
 
-func TestManualAliasForKey_PrefersMatchingAliasAndFallsBackDeterministically(t *testing.T) {
-	b := &Broker{manualNodeKeys: map[string]string{"second": "node-uuid", "first": "node-uuid"}}
-	assert.Equal(t, "first", b.manualAliasForKey("node-uuid"))
-	assert.Equal(t, "second", b.manualAliasForKey("second"))
-}
-
 func TestManualNodeRelay_PersistsSuccessfulAdd(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	clientBroker, clientSide := net.Pipe()
@@ -114,7 +108,7 @@ func TestManualNodeRelay_PersistsSuccessfulAdd(t *testing.T) {
 	assert.Equal(t, "node.local", entries[0].Address)
 }
 
-func TestManualNodeRelay_RemovesByOperationalKey(t *testing.T) {
+func TestManualNodeRelay_RemovesByNodeKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	require.NoError(t, writePersistedManualNodes(path, []persistedManualNode{{ID: "lab", Address: "node.local", Name: "lab"}}))
 	clientBroker, clientSide := net.Pipe()
@@ -152,7 +146,7 @@ func TestManualNodeRelay_RemovesByOperationalKey(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      &id,
 		Method:  "node/remove",
-		Params:  json.RawMessage(`{"id":"node-uuid"}`),
+		Params:  json.RawMessage(`{"nodeId":"node-uuid"}`),
 	})
 	response, err := NewCodec(clientSide).Read()
 	require.NoError(t, err, "read remove response")

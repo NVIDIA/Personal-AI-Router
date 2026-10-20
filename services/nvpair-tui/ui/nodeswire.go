@@ -84,9 +84,10 @@ type clusterInvite struct {
 // (services/nvpair-manual-nodes/manager.go), the element of the broker's
 // nodes/list reply, that the Nodes tab uses.
 type manualNode struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Address string `json:"address"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	Name                 string                       `json:"name"`
+	Address              string                       `json:"address"`
 	// HostUUID is the machine's own identity, read from its node-info. It is
 	// what joins a hand-typed hostname to the same machine discovered by IP.
 	HostUUID   string `json:"hostUuid"`

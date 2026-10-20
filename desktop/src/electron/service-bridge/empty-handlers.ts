@@ -629,10 +629,10 @@ async function handleNodeRemoveMember(
     const selfId = state.getSelfId()
     const isSelfLeave = selfId !== null && payload.nodeId === selfId
 
-    // The broker owns manual-node persistence and resolves a stable node UUID
-    // back to the manual alias expected by nvpair-manual-nodes. For a purely
-    // discovered peer this remains a harmless no-op.
-    supervisor.callProcess('broker', 'node/remove', { id: payload.nodeId }).catch(() => {})
+    // The broker resolves this node key to its manual entry, if any. Keeping it
+    // separate from the worker's entry ID prevents a matching user-supplied name
+    // from selecting a different configuration for removal.
+    supervisor.callProcess('broker', 'node/remove', { nodeId: payload.nodeId }).catch(() => {})
 
     if (isSelfLeave) {
         // Self-departure is `cluster:leave`, not `nodes:remove` (the cluster-manager

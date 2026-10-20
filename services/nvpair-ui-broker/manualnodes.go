@@ -26,20 +26,21 @@ import (
 // (bridgeManualNode); the rest project into the discovery store via
 // manualToEnriched.
 type manualNodeStatus struct {
-	ID             string      `json:"id"`
-	Address        string      `json:"address"`
-	OllamaUp       bool        `json:"ollama_up"`
-	OllamaPort     int         `json:"ollama_port"`
-	OllamaModels   []string    `json:"ollama_models,omitempty"`
-	LMStudioUp     bool        `json:"lmstudio_up"`
-	LMStudioPort   int         `json:"lmstudio_port"`
-	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
-	NodeInfoPort   int         `json:"node_info_port"`
-	GPUs           []GPUInfo   `json:"gpus"`
-	CPU            *CPUInfo    `json:"cpu"`
-	Memory         *MemoryInfo `json:"memory"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	Address              string                       `json:"address"`
+	OllamaUp             bool                         `json:"ollama_up"`
+	OllamaPort           int                          `json:"ollama_port"`
+	OllamaModels         []string                     `json:"ollama_models,omitempty"`
+	LMStudioUp           bool                         `json:"lmstudio_up"`
+	LMStudioPort         int                          `json:"lmstudio_port"`
+	LMStudioModels       []string                     `json:"lmstudio_models,omitempty"`
+	NodeInfoPort         int                          `json:"node_info_port"`
+	GPUs                 []GPUInfo                    `json:"gpus"`
+	CPU                  *CPUInfo                     `json:"cpu"`
+	Memory               *MemoryInfo                  `json:"memory"`
+	TelemetryValid       bool                         `json:"telemetryValid"`
+	MSSince              int64                        `json:"msSince"`
 	// HostUUID is the remote's stable per-host identity, learned from its
 	// node-info /v1/node-info. It lets a manual node key by the same permanent
 	// identity as mDNS-discovered nodes (and dedup with itself when the same
@@ -50,6 +51,13 @@ type manualNodeStatus struct {
 type manualNodeStatusEntry struct {
 	status     manualNodeStatus
 	receivedAt time.Time
+}
+
+// manualNodeRemoveParams distinguishes a worker entry ID from a broker node key.
+// The caller must supply exactly one selector.
+type manualNodeRemoveParams struct {
+	ID     string `json:"id,omitempty"`
+	NodeID string `json:"nodeId,omitempty"`
 }
 
 type persistedManualNode struct {
@@ -185,22 +193,18 @@ func (b *Broker) replayPersistedManualNodes(worker *rpcWorker) {
 	}
 }
 
-func (b *Broker) manualAliasForKey(id string) string {
+// manualAliasForKey resolves only broker node keys. A matching entry ID cannot
+// take precedence over another entry's node key. No match returns an empty ID.
+func (b *Broker) manualAliasForKey(key string) string {
 	b.manualMu.Lock()
 	defer b.manualMu.Unlock()
-	if _, ok := b.manualNodeKeys[id]; ok {
-		return id
-	}
 	best := ""
-	for alias, key := range b.manualNodeKeys {
-		if key == id && (best == "" || alias < best) {
+	for alias, nodeKey := range b.manualNodeKeys {
+		if nodeKey == key && (best == "" || alias < best) {
 			best = alias
 		}
 	}
-	if best != "" {
-		return best
-	}
-	return id
+	return best
 }
 
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {
@@ -221,33 +225,37 @@ func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeT
 // manualToEnriched projects a manual node's status onto the EnrichedNode
 // the discovery store holds, so manual nodes share the single
 // discovery:get-nodes / discovery:nodes-changed snapshot with mDNS nodes.
-// Port is the node-info HTTP port the prober reached (mirroring the SRV
+// Port is the node-info HTTPS port the prober attempted (mirroring the SRV
 // port the scanner records for mDNS nodes); the user-entered address
 // becomes the node's host/address so the snapshot's ipAddress projection
 // can resolve it when the address is an IP literal.
 func manualToEnriched(s manualNodeStatus) EnrichedNode {
-	// Every node carries a non-empty operational key by the time it reaches the
-	// store: the remote's real hostUuid once node-info reports it, else the
-	// manual id (the user's name or "manual:<address>") until then. This is the
-	// manual-node ingestion boundary — downstream keys off HostUUID with no
-	// fallback. Once the real UUID is learned, a manually-added machine
-	// that's also discovered over mDNS collapses to the one hostUuid-keyed entry.
+	// Only a pinned response may join a canonical host. The explicit manual
+	// engine target otherwise uses a separate key shared with its proxy route.
+	// Treat the worker's ID as opaque: an unnamed "1.2.3.4" entry already has
+	// ID "manual:1.2.3.4", so our namespace produces "manual:manual:1.2.3.4".
+	// Stripping that inner prefix would collide with a named "1.2.3.4" entry,
+	// whose worker ID is "1.2.3.4" and whose broker key is "manual:1.2.3.4".
 	hostUUID := s.HostUUID
-	if hostUUID == "" {
-		hostUUID = s.ID
+	if hostUUID == "" || s.IdentityVerification != noderec.IdentityPinned {
+		hostUUID = "manual:" + s.ID
 	}
 	en := EnrichedNode{
 		DiscoveryRecordID:    "manual:" + s.ID,
-		IdentityVerification: noderec.IdentityUnverified,
+		IdentityVerification: s.IdentityVerification,
 		ID:                   s.ID,
 		HostUUID:             hostUUID,
 		Host:                 s.Address,
 		Port:                 s.NodeInfoPort,
-		GPUs:                 s.GPUs,
-		CPU:                  s.CPU,
-		Memory:               s.Memory,
 		Models:               mergeModels(s.OllamaModels, s.LMStudioModels),
 		ModelsByEngine:       manualModelsByEngine(s),
+	}
+	if s.IdentityVerification == noderec.IdentityPinned {
+		en.GPUs, en.CPU, en.Memory = s.GPUs, s.CPU, s.Memory
+		en.Trusted = true
+		en.Clustered = true
+	} else {
+		en.IdentityVerification = noderec.IdentityUnverified
 	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}

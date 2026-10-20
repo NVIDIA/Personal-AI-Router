@@ -8,7 +8,77 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"nvpair-shared/noderec"
 )
+
+// An unverified discovery can claim the local UUID, loopback address, and trust.
+// None of those claims may bypass verification to create an inference target.
+func TestSubscribedToNode_RejectsUnverifiedLoopbackClaims(t *testing.T) {
+	node := noderec.DirectoryNode{
+		HostUUID:             "self",
+		IP:                   "127.0.0.1",
+		Trusted:              true,
+		IdentityVerification: noderec.IdentityUnverified,
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceOllama: {Port: 11434},
+		},
+	}
+	profile, ok := profileFor("ollama")
+	require.True(t, ok)
+	_, accepted := subscribedToNode(profile, node)
+	assert.False(t, accepted)
+}
+
+// Otherwise routable peer records must fail independently when verification
+// is absent or unverified, or when a proved peer no longer has current trust.
+func TestSubscribedToNode_RejectsUnverifiedOrUntrustedPeers(t *testing.T) {
+	profile, ok := profileFor("ollama")
+	require.True(t, ok)
+	test := func(name string, verification noderec.IdentityVerification, trusted bool) {
+		t.Run(name, func(t *testing.T) {
+			node := noderec.DirectoryNode{
+				HostUUID:             "peer",
+				IP:                   "192.0.2.20",
+				IdentityVerification: verification,
+				Trusted:              trusted,
+				Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+					noderec.ServiceOllama: {Port: 11434},
+				},
+			}
+
+			_, accepted := subscribedToNode(profile, node)
+
+			assert.False(t, accepted)
+		})
+	}
+	test("unverified identity with claimed trust", noderec.IdentityUnverified, true)
+	test("missing verification with claimed trust", "", true)
+	test("pinned identity without current trust", noderec.IdentityPinned, false)
+}
+
+// The owned local record is eligible before joining a cluster, so it does not
+// need a remote peer pin or the corresponding trusted flag to remain routable.
+func TestSubscribedToNode_AcceptsLocalRecordsWithoutPeerTrust(t *testing.T) {
+	const hostUUID = "self"
+	const enginePort = 11434
+	profile, ok := profileFor("ollama")
+	require.True(t, ok)
+	node := noderec.DirectoryNode{
+		HostUUID:             hostUUID,
+		IP:                   "127.0.0.1",
+		IdentityVerification: noderec.IdentityLocal,
+		Trusted:              false,
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceOllama: {Port: enginePort},
+		},
+	}
+
+	projected, accepted := subscribedToNode(profile, node)
+
+	require.True(t, accepted)
+	assert.Equal(t, hostUUID, projected.ID)
+	assert.Equal(t, enginePort, projected.Port)
+}
 
 // TestNodeCandidates covers the deterministic, loopback-first ordering and
 // de-duplication of a node's advertised addresses. Local-address rewriting is

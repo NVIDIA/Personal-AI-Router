@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-shared/noderec"
 	"nvpair-tui/rpc"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -127,6 +128,74 @@ func TestNodesView_RetiresPinOnPairingSuccess(t *testing.T) {
 
 	assert.Empty(t, v.invitedKey, "pending invite still tracked after the peer joined")
 	assert.NotContains(t, v.status.render(), "123456", "PIN still on screen after pairing completed")
+}
+
+// Pairing proves a host UUID, replacing the unverified discovery row's key.
+// That change must retire the displayed PIN and allow another pairing.
+func TestDiscoveredNodePairing_ClearsInviteAfterPeerJoins(t *testing.T) {
+	const discoveryRecordID = "observation:peer"
+	const peerUUID = "peer-uuid"
+	const peerAddress = "192.0.2.20"
+	const inviteID = "invite-peer"
+	clientConn, brokerConn := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		assert.NoError(t, clientConn.Close())
+		assert.NoError(t, brokerConn.Close())
+	})
+	require.NoError(t, brokerConn.SetDeadline(time.Now().Add(2*time.Second)))
+	client := rpc.NewClient(clientConn, clientConn)
+	go client.Run(ctx)
+	broker := rpc.NewCodec(brokerConn, brokerConn)
+	v := newNodesView(client)
+	v.feeds.discovered = []availableNode{{
+		DiscoveryRecordID: discoveryRecordID, IdentityVerification: noderec.IdentityUnverified,
+		HostUUID: peerUUID, Name: "peer", IPAddress: peerAddress, Port: 14318,
+	}}
+	v.rebuild()
+	v.selectedKey = discoveryRecordID
+	pressPair := func() tea.Cmd {
+		return v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	}
+	cmd := pressPair()
+	require.NotNil(t, cmd)
+	results := make(chan tea.Msg, 1)
+	go func() { results <- cmd() }()
+	request, err := broker.Read()
+	require.NoError(t, err)
+	require.Equal(t, "cluster:invite-node", request.Method)
+	require.NoError(t, broker.Write(&rpc.Message{
+		JSONRPC: "2.0", ID: request.ID,
+		Result: json.RawMessage(`{"inviteId":"invite-peer","state":"pending","pin":"123456"}`),
+	}))
+	select {
+	case result := <-results:
+		v.Update(result)
+	case <-time.After(2 * time.Second):
+		t.Fatal("pairing did not report its pending invitation")
+	}
+	require.Equal(t, inviteID, v.outboundInviteID)
+	require.Contains(t, v.status.render(), "123456")
+
+	v.feeds.discovered = []availableNode{
+		{
+			DiscoveryRecordID: "peer:verified", IdentityVerification: noderec.IdentityPinned,
+			HostUUID: peerUUID, Name: "peer", IPAddress: peerAddress, Port: 14318, Trusted: true,
+		},
+		{
+			DiscoveryRecordID: "observation:next", IdentityVerification: noderec.IdentityUnverified,
+			HostUUID: "next-uuid", Name: "next", IPAddress: "192.0.2.30", Port: 14318,
+		},
+	}
+	v.feeds.members = []clusterNode{{NodeUUID: peerUUID, Name: "peer", State: "member"}}
+	v.rebuild()
+
+	assert.Empty(t, v.outboundInviteID)
+	assert.Empty(t, v.invitedKey)
+	assert.NotContains(t, v.status.render(), "123456")
+	v.selectedKey = "observation:next"
+	assert.NotNil(t, pressPair(), "a completed pairing must not block the next invitation")
 }
 
 // TestNodesViewKeepsPinWhileInvitePending checks an unrelated snapshot does not

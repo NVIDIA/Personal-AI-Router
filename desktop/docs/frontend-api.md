@@ -67,14 +67,17 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 ### `pairApi.discovery`
 
 - `getNodes()` returns discoverable nodes. Each `AvailableNode` carries the
-  backend `id` (the stable per-host UUID that keys every domain), the display
-  `name` (hostname), the reachable `ipAddress`/`port`, and the `trusted` and
-  `clustered` flags. A `clustered` node already belongs to some cluster and is
+  backend `id` (the host UUID for verified rows, or the discovery record ID for
+  unverified rows), the display `name` (hostname), the reachable
+  `ipAddress`/`port`, and the `trusted` and `clustered` flags. A `clustered` node
+  already belongs to some cluster and is
   rendered non-invitable.
   Broker records also carry `discoveryRecordId` and `identityVerification` (`local`,
   `pinned`, or `unverified`). The bridge retains these provenance fields through
   proxy updates and clears them when the broker withdraws the record; public
-  hardware readings cannot change them.
+  hardware readings cannot change them. Verified rows require a matching
+  response `hostUuid` before accepting public hardware readings, including
+  local rows. Unverified previews may omit that field.
 - `onNodesChanged(callback)` reports discovery changes.
 
 ### `pairApi.engines`

@@ -95,23 +95,30 @@ func TestSubscribedDiff_ReportsAddedChangedAndRemovedNodes(t *testing.T) {
 // regresses if the projection ever loses its service-key filter.
 func TestSubscribedToNode_ProjectsDiscoveryFields(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		const hostUUID = "uuid-a"
+		const address = "10.0.0.5"
+		const modelName = "llama"
+		const ownModel = "mine"
+		const otherModel = "theirs"
 		other := otherEngine(t, tc)
 
 		withService := noderec.DirectoryNode{
-			HostUUID: "uuid-a",
-			Name:     "host-a",
-			IP:       "10.0.0.5",
-			Models:   []string{"llama"},
+			IdentityVerification: noderec.IdentityPinned,
+			Trusted:              true,
+			HostUUID:             hostUUID,
+			Name:                 "host-a",
+			IP:                   address,
+			Models:               []string{modelName},
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 				tc.profile.DiscoveryService: {Port: tc.profile.FacadePort},
 			},
 		}
 		got, ok := subscribedToNode(tc.profile, withService)
 		require.True(t, ok, "node advertising this engine + IP should project")
-		require.Equal(t, "uuid-a", got.ID, "unexpected projection (%v)", got)
+		require.Equal(t, hostUUID, got.ID, "unexpected projection (%v)", got)
 		require.Equal(t, tc.profile.FacadePort, got.Port, "unexpected projection (%v)", got)
-		require.Equal(t, "10.0.0.5", got.IP, "unexpected projection (%v)", got)
-		require.Equal(t, []string{"llama"}, got.Models, "unexpected projection (%v)", got)
+		require.Equal(t, address, got.IP, "unexpected projection (%v)", got)
+		require.Equal(t, []string{modelName}, got.Models, "unexpected projection (%v)", got)
 
 		noIP := withService
 		noIP.IP = ""
@@ -121,35 +128,45 @@ func TestSubscribedToNode_ProjectsDiscoveryFields(t *testing.T) {
 		// A node advertising only a non-engine service (node-info) is not a
 		// routing target.
 		niOnly := noderec.DirectoryNode{
-			Name:     "host-c",
-			IP:       "10.0.0.6",
-			Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceNodeInfo: {Port: 14318}},
+			IdentityVerification: noderec.IdentityPinned,
+			Trusted:              true,
+			HostUUID:             "uuid-c",
+			Name:                 "host-c",
+			IP:                   "10.0.0.6",
+			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+				noderec.ServiceNodeInfo: {Port: 14318},
+			},
 		}
 		_, ok = subscribedToNode(tc.profile, niOnly)
 		require.False(t, ok, "node without this engine's service should not project")
 
 		// Nor is a node running only the *other* engine.
 		otherOnly := noderec.DirectoryNode{
-			Name: "host-e",
-			IP:   "10.0.0.8",
+			IdentityVerification: noderec.IdentityPinned,
+			Trusted:              true,
+			HostUUID:             "uuid-e",
+			Name:                 "host-e",
+			IP:                   "10.0.0.8",
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 				other.DiscoveryService: {Port: other.FacadePort},
 			},
 		}
 		_, ok = subscribedToNode(tc.profile, otherOnly)
-		require.False(t, ok, "a node running only")
+		require.False(t, ok, "node running only another engine must not project")
 
 		// Per-engine attribution: a dual-engine node projects ONLY this
 		// engine's models, never the cross-engine union, so a model served
 		// solely via the other engine is not ranked as an owner here.
 		dual := noderec.DirectoryNode{
-			HostUUID: "uuid-d",
-			Name:     "host-d",
-			IP:       "10.0.0.7",
-			Models:   []string{"mine", "theirs"},
+			IdentityVerification: noderec.IdentityPinned,
+			Trusted:              true,
+			HostUUID:             "uuid-d",
+			Name:                 "host-d",
+			IP:                   "10.0.0.7",
+			Models:               []string{ownModel, otherModel},
 			ModelsByEngine: map[string][]string{
-				tc.profile.Name: {"mine"},
-				other.Name:      {"theirs"},
+				tc.profile.Name: {ownModel},
+				other.Name:      {otherModel},
 			},
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 				tc.profile.DiscoveryService: {Port: tc.profile.FacadePort},
@@ -157,7 +174,7 @@ func TestSubscribedToNode_ProjectsDiscoveryFields(t *testing.T) {
 		}
 		got, ok = subscribedToNode(tc.profile, dual)
 		require.True(t, ok, "dual-engine node advertising this engine should project")
-		require.Equal(t, []string{"mine"}, got.Models, "dual-engine projection Models")
+		require.Equal(t, []string{ownModel}, got.Models, "dual-engine projection Models")
 	})
 }
 
@@ -168,10 +185,13 @@ func TestSubscribedToNode_ProjectsDiscoveryFields(t *testing.T) {
 func TestSubscribedToNode_KeysByHostUUID(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		const uuid = "11111111-1111-1111-1111-111111111111"
+		const name = "host-a"
 		n := noderec.DirectoryNode{
-			HostUUID: uuid,
-			Name:     "host-a",
-			IP:       "10.0.0.5",
+			IdentityVerification: noderec.IdentityPinned,
+			Trusted:              true,
+			HostUUID:             uuid,
+			Name:                 name,
+			IP:                   "10.0.0.5",
 			Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 				tc.profile.DiscoveryService: {Port: tc.profile.FacadePort},
 			},
@@ -179,6 +199,6 @@ func TestSubscribedToNode_KeysByHostUUID(t *testing.T) {
 		got, ok := subscribedToNode(tc.profile, n)
 		require.True(t, ok, "node advertising this engine + IP should project")
 		require.Equal(t, uuid, got.ID, "ID (%v)", uuid)
-		require.Equal(t, "host-a", got.Host)
+		require.Equal(t, name, got.Host)
 	})
 }
