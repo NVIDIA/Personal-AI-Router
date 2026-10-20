@@ -4,20 +4,22 @@
 package main
 
 import (
+	"crypto/x509"
 	"log/slog"
+	"slices"
 	"sync"
 
 	"nvpair-shared/noderec"
 )
 
-// modelInventory is a node engine manager's /v1/models answer, carried as one
-// value so the concurrent ask can return it and the last-good cache keeps every
-// part of it together.
+// modelInventory carries engine-manager's model lists and, for remote responses,
+// the certificate used to authenticate the server.
 type modelInventory struct {
 	models             []string
 	byEngine           map[string][]string
 	loadedByEngine     map[string][]string
 	downloadedByEngine map[string][]string
+	certificate        *x509.Certificate
 }
 
 // applyTo copies the inventory onto a directory entry's model fields.
@@ -82,8 +84,10 @@ func (m *hostMemory) forget(key hostKey) {
 // different machine, which is not an answer for this one.
 func askRemembered[T any](mem *hostMemory, key hostKey, hosts []string, ask func(host string) (T, bool)) (string, T, bool) {
 	if remembered := mem.get(key); remembered != "" {
-		if value, ok := ask(remembered); ok {
-			return remembered, value, true
+		if slices.Contains(hosts, remembered) {
+			if value, ok := ask(remembered); ok {
+				return remembered, value, true
+			}
 		}
 		mem.forget(key)
 		slog.Debug("enrichment: the remembered address stopped answering; trying the rest of the list",

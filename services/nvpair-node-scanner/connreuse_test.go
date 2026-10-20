@@ -74,10 +74,8 @@ func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 	const rounds = 5
 	for i := range rounds {
 		inventory, ok := d.fetchModels("localhost", port, "uuid-peer")
-		models := inventory.models
-		require.True(t, ok, "round (%v, %v, %v)", i, ok, models)
-		require.Len(t, models, 1, "round (%v, %v, %v)", i, ok, models)
-		require.Equal(t, "m", models[0], "round (%v, %v, %v)", i, ok, models)
+		require.True(t, ok, "round %d", i)
+		assert.Equal(t, []string{"m"}, inventory.models, "round %d", i)
 	}
 
 	mu.Lock()
