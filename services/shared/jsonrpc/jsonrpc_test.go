@@ -104,11 +104,15 @@ func TestRead_RejectsBadVersionAndEOF(t *testing.T) {
 func TestReadMalformedFrame_IsRecoverableDecodeError(t *testing.T) {
 	// Both bad JSON and a bad version are recoverable *DecodeError so a read
 	// loop can continue rather than treating them as terminal.
-	for _, frame := range []string{"{not json}\n", `{"jsonrpc":"1.0"}` + "\n"} {
-		_, err := readCodec(strings.NewReader(frame)).Read()
-		var de *DecodeError
-		assert.ErrorAs(t, err, &de, "frame %q", frame)
+	test := func(name, frame string) {
+		t.Run(name, func(t *testing.T) {
+			_, err := readCodec(strings.NewReader(frame)).Read()
+			var de *DecodeError
+			assert.ErrorAs(t, err, &de)
+		})
 	}
+	test("bad JSON", "{not json}\n")
+	test("unsupported version", `{"jsonrpc":"1.0"}`+"\n")
 }
 
 func TestRespondError_RoundTripsErrorData(t *testing.T) {

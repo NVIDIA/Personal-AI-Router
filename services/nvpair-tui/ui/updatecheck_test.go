@@ -93,18 +93,19 @@ func TestFetchLatestRelease_ReadsTheTag(t *testing.T) {
 }
 
 func TestFetchLatestRelease_IgnoresDraftsAndPrereleases(t *testing.T) {
-	for _, body := range []string{
-		`{"tag_name":"v0.92.0","draft":true,"prerelease":false}`,
-		`{"tag_name":"v0.92.0","draft":false,"prerelease":true}`,
-	} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(body))
-		}))
-		got, err := fetchLatestRelease(srv.URL)
-		srv.Close()
-		require.NoError(t, err, "fetchLatestRelease")
-		assert.Empty(t, got, "drafts and prereleases must be ignored: %s", body)
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			got, err := fetchLatestRelease(srv.URL)
+			require.NoError(t, err, "fetchLatestRelease")
+			assert.Empty(t, got)
+		})
 	}
+	test("draft", `{"tag_name":"v0.92.0","draft":true,"prerelease":false}`)
+	test("prerelease", `{"tag_name":"v0.92.0","draft":false,"prerelease":true}`)
 }
 
 func TestFetchLatestRelease_HandlesNoReleases(t *testing.T) {

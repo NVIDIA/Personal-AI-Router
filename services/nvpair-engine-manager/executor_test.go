@@ -295,15 +295,15 @@ func TestStart_UsesRequestedPort(t *testing.T) {
 }
 
 func TestEffectiveBind_PrefersExplicitOverrideOverManifest(t *testing.T) {
-	cases := []struct{ manifest, override, want string }{
-		{"", "", "127.0.0.1"},                 // ordinary engine: safe default
-		{"0.0.0.0", "", "0.0.0.0"},            // inference engine declares open
-		{"0.0.0.0", "127.0.0.1", "127.0.0.1"}, // per-call lock-down wins
-		{"", "192.168.1.5", "192.168.1.5"},    // per-call specific interface
+	test := func(name, manifest, override, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, effectiveBind(manifest, override))
+		})
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, effectiveBind(c.manifest, c.override), "effectiveBind")
-	}
+	test("safe default", "", "", "127.0.0.1")
+	test("manifest declares open", "0.0.0.0", "", "0.0.0.0")
+	test("per-call lock-down wins", "0.0.0.0", "127.0.0.1", "127.0.0.1")
+	test("per-call specific interface", "", "192.168.1.5", "192.168.1.5")
 }
 
 // TestStatusReportsExternallyRunning covers the adoption false-negative:

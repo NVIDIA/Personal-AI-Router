@@ -73,19 +73,18 @@ func TestToastSet_ReplacesPinnedToast(t *testing.T) {
 }
 
 func TestInviteOutcome_LabelsTerminalInviteEvents(t *testing.T) {
-	resolved := []string{
-		"cluster:invite-declined",
-		"cluster:invite-expired",
-		"cluster:invite-canceled",
-		"cluster:invite-failed",
+	test := func(name, method string) {
+		t.Run(name, func(t *testing.T) {
+			outcome, ok := inviteOutcome(method)
+			if assert.True(t, ok, "recognised as a terminal invite event") {
+				assert.NotEmpty(t, outcome.label, "operator-facing label")
+			}
+		})
 	}
-	for _, method := range resolved {
-		outcome, ok := inviteOutcome(method)
-		if !assert.True(t, ok, "%s is not recognised as a terminal invite event", method) {
-			continue
-		}
-		assert.NotEmpty(t, outcome.label, "%s has no operator-facing label", method)
-	}
+	test("declined", "cluster:invite-declined")
+	test("expired", "cluster:invite-expired")
+	test("canceled", "cluster:invite-canceled")
+	test("failed", "cluster:invite-failed")
 
 	// An invite arriving is not an invite resolving.
 	_, ok := inviteOutcome("cluster:invite-received")
@@ -286,12 +285,18 @@ func TestAddressMatches_RecognizesEquivalentAddresses(t *testing.T) {
 		address:   "10.0.0.7",
 		addresses: []string{"10.0.0.7", "192.168.1.9"},
 	}
-	for _, in := range []string{"10.0.0.7", "10.0.0.7:14321", "192.168.1.9", "HOST-A"} {
-		assert.True(t, addressMatches(row, in), "addressMatches(%q)", in)
+	test := func(name, in string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, addressMatches(row, in))
+		})
 	}
-	for _, in := range []string{"", "10.0.0.8", "other-host"} {
-		assert.False(t, addressMatches(row, in), "addressMatches(%q)", in)
-	}
+	test("primary address", "10.0.0.7", true)
+	test("address with port", "10.0.0.7:14321", true)
+	test("secondary address", "192.168.1.9", true)
+	test("case insensitive hostname", "HOST-A", true)
+	test("empty", "", false)
+	test("different address", "10.0.0.8", false)
+	test("different hostname", "other-host", false)
 }
 
 // TestRemoveMemberRequiresConfirmation checks un-pairing a peer is armed rather
@@ -682,13 +687,17 @@ func TestRejectionAdvice_MatchesTheReason(t *testing.T) {
 	v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reasonAlreadyClustered})
 	assert.Contains(t, v.status.render(), "leave that cluster", "an already-clustered peer is told what to do")
 
-	for _, reason := range []string{"", "evil-arbitrary-text"} {
-		v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reason})
-		got := v.status.render()
-		assert.NotContains(t, got, "leave that cluster", "reason %q got advice meant for an already-clustered peer", reason)
-		assert.NotContains(t, got, "relationship", "reason %q got advice meant for an already-clustered peer", reason)
-		assert.Contains(t, got, "rejected the invite", "reason %q: rejection is reported", reason)
+	test := func(name, reason string) {
+		t.Run(name, func(t *testing.T) {
+			v.Update(nodeInviteMsg{name: "peer", rejected: true, reason: reason})
+			got := v.status.render()
+			assert.NotContains(t, got, "leave that cluster", "advice meant for an already-clustered peer")
+			assert.NotContains(t, got, "relationship", "advice meant for an already-clustered peer")
+			assert.Contains(t, got, "rejected the invite", "rejection is reported")
+		})
 	}
+	test("no reason", "")
+	test("unrecognised reason", "evil-arbitrary-text")
 }
 
 // TestInviteThatDidNotGoOutIsNotReportedSent is the regression guard for a
@@ -696,18 +705,21 @@ func TestRejectionAdvice_MatchesTheReason(t *testing.T) {
 // when the first exchange does not complete, and anything short of "rejected"
 // was reported as "invite sent" and left pending.
 func TestInviteThatDidNotGoOut_IsNotReportedSent(t *testing.T) {
-	for _, state := range []string{"failed", "canceled"} {
-		v := newNodesView(nil)
-		v.SetSize(120, 30)
-		v.invitedKey, v.inviteSending = "peer-uuid", true
-
-		v.Update(inviteResultMsg("peer", "", inviteNodeResult{InviteID: "inv", State: state}, nil))
-		got := v.status.render()
-		assert.NotContains(t, got, "invite sent", "a %q reply", state)
-		assert.Contains(t, got, "did not go out", "a %q reply", state)
-		assert.Empty(t, v.invitedKey, "a %q reply left the invite pending", state)
-		assert.Empty(t, v.outboundInviteID, "a %q reply left the invite pending", state)
+	test := func(name, state string) {
+		t.Run(name, func(t *testing.T) {
+			v := newNodesView(nil)
+			v.SetSize(120, 30)
+			v.invitedKey, v.inviteSending = "peer-uuid", true
+			v.Update(inviteResultMsg("peer", "", inviteNodeResult{InviteID: "inv", State: state}, nil))
+			got := v.status.render()
+			assert.NotContains(t, got, "invite sent")
+			assert.Contains(t, got, "did not go out")
+			assert.Empty(t, v.invitedKey, "invite must not remain pending")
+			assert.Empty(t, v.outboundInviteID, "invite must not remain pending")
+		})
 	}
+	test("failed", "failed")
+	test("canceled", "canceled")
 
 	pin := "123456"
 	v := newNodesView(nil)
@@ -757,21 +769,18 @@ func TestWrongPin_IsNotReportedAsSuccess(t *testing.T) {
 // TestPairingOutcomesAreDistinguished checks each terminal state gets its own
 // answer, since they call for different things from the operator.
 func TestPairingOutcomes_AreDistinguished(t *testing.T) {
-	cases := []struct {
-		state, reason string
-		want          string
-	}{
-		{state: "paired", want: "paired with peer"},
-		{state: "failed", reason: reasonIncorrectPIN, want: "wrong PIN"},
-		{state: "failed", reason: "unreachable", want: "failed"},
-		{state: "declined", want: "declined"},
+	test := func(name, state, reason, want string) {
+		t.Run(name, func(t *testing.T) {
+			v := newNodesView(nil)
+			v.SetSize(100, 30)
+			v.Update(pairingResultMsg{from: "peer", state: state, reason: reason})
+			assert.Contains(t, v.status.render(), want)
+		})
 	}
-	for _, tc := range cases {
-		v := newNodesView(nil)
-		v.SetSize(100, 30)
-		v.Update(pairingResultMsg{from: "peer", state: tc.state, reason: tc.reason})
-		assert.Contains(t, v.status.render(), tc.want, "state=%q reason=%q", tc.state, tc.reason)
-	}
+	test("paired", "paired", "", "paired with peer")
+	test("incorrect PIN", "failed", reasonIncorrectPIN, "wrong PIN")
+	test("unreachable", "failed", "unreachable", "failed")
+	test("declined", "declined", "", "declined")
 }
 
 // TestNodesViewClearsInboundInviteOnExpiry checks an inbound prompt stops
@@ -832,17 +841,10 @@ func TestNodesViewSelection_SurvivesReorder(t *testing.T) {
 // discovered-node path only, so the by-address path could still send a doomed
 // invite.
 func TestNodesView_GuardsInviteOnEveryPath(t *testing.T) {
-	cases := []struct {
-		name string
-		node availableNode
-	}{
-		{"already a member of our cluster", availableNode{HostUUID: "k", Name: "peer", Trusted: true}},
-		{"a member of another cluster", availableNode{HostUUID: "k", Name: "peer", Clustered: true}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, node availableNode) {
+		t.Run(name, func(t *testing.T) {
 			v := newNodesView(nil)
-			v.feeds.discovered = []availableNode{tc.node}
+			v.feeds.discovered = []availableNode{node}
 			v.rebuild()
 			v.selectedKey = "k"
 
@@ -851,6 +853,8 @@ func TestNodesView_GuardsInviteOnEveryPath(t *testing.T) {
 			assert.NotEmpty(t, v.status.render(), "invite blocked with no explanation to the operator")
 		})
 	}
+	test("already a member of our cluster", availableNode{HostUUID: "k", Name: "peer", Trusted: true})
+	test("a member of another cluster", availableNode{HostUUID: "k", Name: "peer", Clustered: true})
 }
 
 // TestNodesViewRefusesSelfInvite checks this machine cannot be invited to its

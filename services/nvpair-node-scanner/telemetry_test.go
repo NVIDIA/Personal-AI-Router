@@ -144,20 +144,17 @@ func TestTelemetryIntervalForNode_IsStableAndBounded(t *testing.T) {
 }
 
 func TestTelemetryRetryDelay_BoundsBackoff(t *testing.T) {
-	cases := []struct {
-		failures int
-		want     time.Duration
-	}{
-		{0, 2 * time.Second},
-		{1, 4 * time.Second},
-		{2, 8 * time.Second},
-		{3, 16 * time.Second},
-		{4, 30 * time.Second},
-		{100, 30 * time.Second},
+	test := func(name string, failures int, want time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, telemetryRetryDelay(failures))
+		})
 	}
-	for _, test := range cases {
-		assert.Equal(t, test.want, telemetryRetryDelay(test.failures), "telemetryRetryDelay(%d)", test.failures)
-	}
+	test("initial delay", 0, 2*time.Second)
+	test("one failure", 1, 4*time.Second)
+	test("two failures", 2, 8*time.Second)
+	test("three failures", 3, 16*time.Second)
+	test("maximum delay", 4, 30*time.Second)
+	test("delay stays capped", 100, 30*time.Second)
 }
 
 func TestTelemetryRetryGate_BacksOffAndResets(t *testing.T) {
@@ -185,11 +182,7 @@ func TestTelemetryRetryGate_BacksOffAndResets(t *testing.T) {
 
 func TestTelemetryRetryGateChangedTarget_WaitsForActiveAttempt(t *testing.T) {
 	oldTarget := telemetryTargetKey([]string{"192.0.2.1"}, 14318)
-	changedTargets := map[string]string{
-		"hosts": telemetryTargetKey([]string{"10.0.0.1"}, 14318),
-		"port":  telemetryTargetKey([]string{"192.0.2.1"}, 14319),
-	}
-	for name, changedTarget := range changedTargets {
+	test := func(name, changedTarget string) {
 		t.Run(name, func(t *testing.T) {
 			var gate telemetryRetryGate
 			now := time.Unix(1_500, 0)
@@ -203,6 +196,8 @@ func TestTelemetryRetryGateChangedTarget_WaitsForActiveAttempt(t *testing.T) {
 			require.True(t, ok, "old endpoint failure backed off the changed endpoint")
 		})
 	}
+	test("hosts", telemetryTargetKey([]string{"10.0.0.1"}, 14318))
+	test("port", telemetryTargetKey([]string{"192.0.2.1"}, 14319))
 }
 
 func TestTelemetryRetryGateRemoveRediscover_PreservesActiveClaim(t *testing.T) {

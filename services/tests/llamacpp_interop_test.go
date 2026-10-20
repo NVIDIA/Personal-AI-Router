@@ -40,15 +40,9 @@ func TestBrokerLlamaCPPProxySetPort_RejectsInvalidPorts(t *testing.T) {
 		}
 	}()
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
-	for i, tc := range []struct{ name, params string }{
-		{"missing port", `{}`},
-		{"zero port", `{"port":0}`},
-		{"negative port", `{"port":-1}`},
-		{"oversized port", `{"port":65536}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			id := 7300 + i
-			_, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:set-port","params":%s}`+"\n", id, tc.params)
+	test := func(name, params string, id int) {
+		t.Run(name, func(t *testing.T) {
+			_, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"llamacpp-proxy:set-port","params":%s}`+"\n", id, params)
 			require.NoError(t, err, "write proxy port request")
 			response := waitForResponse(t, msgs, 10*time.Second)
 			require.NotNil(t, response.ID, "response ID")
@@ -58,6 +52,10 @@ func TestBrokerLlamaCPPProxySetPort_RejectsInvalidPorts(t *testing.T) {
 			assert.Equal(t, "port must be between 1 and 65535", response.Error.Message)
 		})
 	}
+	test("missing port", `{}`, 7300)
+	test("zero port", `{"port":0}`, 7301)
+	test("negative port", `{"port":-1}`, 7302)
+	test("oversized port", `{"port":65536}`, 7303)
 }
 
 func TestLlamaCPPFacade_UsesRouterInventoryAndExactModelIDs(t *testing.T) {

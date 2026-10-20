@@ -198,20 +198,21 @@ func TestLmStudioCatalog_BacksOffWithNothingCached(t *testing.T) {
 }
 
 func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {
-	expectNormalized := func(in, want string) {
-		t.Helper()
-		assert.Equal(t, want, normalizeCatalogEngine(in), "normalizeCatalogEngine(%q)", in)
+	test := func(name, input, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, normalizeCatalogEngine(input))
+		})
 	}
-	expectNormalized("ollama", "ollama")
-	expectNormalized("Ollama", "ollama")
-	expectNormalized("  ollama ", "ollama")
-	expectNormalized("lmstudio", "lmstudio")
-	expectNormalized("LM Studio", "lmstudio")
-	expectNormalized("lm-studio", "lmstudio")
-	expectNormalized("llamacpp", "llamacpp")
-	expectNormalized("llama-cpp", "llamacpp")
-	expectNormalized("llama.cpp", "llamacpp")
-	expectNormalized("vllm", "vllm")
+	test("canonical Ollama", "ollama", "ollama")
+	test("case insensitive Ollama", "Ollama", "ollama")
+	test("trimmed Ollama", "  ollama ", "ollama")
+	test("canonical LM Studio", "lmstudio", "lmstudio")
+	test("spaced LM Studio", "LM Studio", "lmstudio")
+	test("hyphenated LM Studio", "lm-studio", "lmstudio")
+	test("canonical llama.cpp", "llamacpp", "llamacpp")
+	test("hyphenated llama.cpp", "llama-cpp", "llamacpp")
+	test("dotted llama.cpp", "llama.cpp", "llamacpp")
+	test("other engine preserved", "vllm", "vllm")
 }
 
 // TestCatalogRejectsUnknownEngine checks an engine with no curated source errors
@@ -255,17 +256,18 @@ func TestFilterForTarget_RestrictsMLXModelsToAppleSilicon(t *testing.T) {
 	}
 
 	assert.Len(t, filterForTarget(models, "darwin", "arm64"), 2, "Apple Silicon target must keep both models")
-	for _, target := range []struct{ platform, arch string }{
-		{"darwin", "amd64"},
-		{"darwin", ""},
-		{"linux", "arm64"},
-		{"windows", "amd64"},
-	} {
-		got := filterForTarget(models, target.platform, target.arch)
-		if assert.Len(t, got, 1, "%s/%s target must keep only the portable model", target.platform, target.arch) {
-			assert.Equal(t, "plain/gguf", got[0].ID, "%s/%s target", target.platform, target.arch)
-		}
+	test := func(name, platform, arch string) {
+		t.Run(name, func(t *testing.T) {
+			got := filterForTarget(models, platform, arch)
+			if assert.Len(t, got, 1, "target must keep only the portable model") {
+				assert.Equal(t, "plain/gguf", got[0].ID)
+			}
+		})
 	}
+	test("Intel Mac", "darwin", "amd64")
+	test("Mac with unknown architecture", "darwin", "")
+	test("ARM Linux", "linux", "arm64")
+	test("Windows", "windows", "amd64")
 }
 
 // TestCatalogEchoesTarget checks the reply says which machine it was filtered

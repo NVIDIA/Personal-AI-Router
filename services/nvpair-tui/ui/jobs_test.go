@@ -144,10 +144,14 @@ func TestJobs_SortNewestFirst(t *testing.T) {
 // TestJobIDTellsSimultaneousJobsApart checks two jobs for the same model, from
 // the same node, started at the same moment, do not read as one row twice.
 func TestJobID_TellsSimultaneousJobsApart(t *testing.T) {
-	cases := map[string]string{"1": "1", "123456": "123456", "burst-1042": "…-1042"}
-	for id, want := range cases {
-		assert.Equal(t, want, shortJobID(id), "shortJobID(%q)", id)
+	test := func(name, id, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, shortJobID(id))
+		})
 	}
+	test("short id", "1", "1")
+	test("id fits column", "123456", "123456")
+	test("long id keeps suffix", "burst-1042", "…-1042")
 
 	v := newJobsView(nil)
 	v.upsert(workload{ID: "7", Model: "m", OriginatedFrom: "n", State: "running", CreatedAt: 5})

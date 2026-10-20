@@ -200,9 +200,14 @@ func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 	assert.NoError(t, pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg).err, "an unchecked poll was refused")
 
 	assert.Equal(t, "uuid-a", telemetryIdentity(nodeRow{key: "uuid-a"}), "a discovered node is checked against its UUID")
-	for _, row := range []nodeRow{{key: "manual:1"}, {key: "name:lab"}, {key: "uuid-self", self: true}} {
-		assert.Empty(t, telemetryIdentity(row), "%q has nothing to check", row.key)
+	test := func(name string, row nodeRow) {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, telemetryIdentity(row), "row has nothing to check")
+		})
 	}
+	test("manual entry", nodeRow{key: "manual:1"})
+	test("name-only entry", nodeRow{key: "name:lab"})
+	test("self entry", nodeRow{key: "uuid-self", self: true})
 }
 
 // TestTelemetryTriesTheAddressThatAnswered is the regression guard for a poll
@@ -211,9 +216,14 @@ func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 func TestTelemetry_TriesTheAddressThatAnswered(t *testing.T) {
 	addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 	assert.Equal(t, []string{"10.0.0.3", "10.0.0.1", "10.0.0.2"}, preferAddress(addresses, "10.0.0.3"), "address that answered first")
-	for _, last := range []string{"", "10.0.0.1", "10.9.9.9"} {
-		assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, preferAddress(addresses, last), "after %q: node's own order", last)
+	test := func(name, last string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, preferAddress(addresses, last), "node's own order")
+		})
 	}
+	test("no address answered", "")
+	test("first address answered", "10.0.0.1")
+	test("unlisted address answered", "10.9.9.9")
 	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, addresses, "the node's own address list was reordered in place")
 
 	d := newNodeDetail(nil, nodeRow{key: "peer", addresses: addresses, presence: presenceOnline})
@@ -244,20 +254,20 @@ func TestTelemetrySummary_HandlesMissingMetrics(t *testing.T) {
 }
 
 func TestHumanBytes_FormatsByteCounts(t *testing.T) {
-	cases := map[uint64]string{
-		0:              "0 B",
-		512:            "512 B",
-		1024:           "1.0 KiB",
-		1 << 30:        "1.0 GiB",
-		8 * (1 << 30):  "8.0 GiB",
-		32 * (1 << 30): "32.0 GiB",
-		// At three digits the decimal stops earning its place.
-		128 * (1 << 30): "128 GiB",
-		4 * (1 << 40):   "4.0 TiB",
+	test := func(name string, in uint64, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, humanBytes(in))
+		})
 	}
-	for in, want := range cases {
-		assert.Equal(t, want, humanBytes(in), "humanBytes(%d)", in)
-	}
+	test("zero bytes", 0, "0 B")
+	test("bytes below one KiB", 512, "512 B")
+	test("one KiB", 1024, "1.0 KiB")
+	test("one GiB", 1<<30, "1.0 GiB")
+	test("eight GiB", 8*(1<<30), "8.0 GiB")
+	test("thirty-two GiB", 32*(1<<30), "32.0 GiB")
+	// At three digits the decimal stops earning its place.
+	test("three digits omit the decimal", 128*(1<<30), "128 GiB")
+	test("four TiB", 4*(1<<40), "4.0 TiB")
 }
 
 // TestDetailHardwareUnavailableWhenPollFails checks the panel is explicit rather

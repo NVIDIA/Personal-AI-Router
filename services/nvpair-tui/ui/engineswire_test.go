@@ -37,14 +37,18 @@ func actionOf(t *testing.T, envelope map[string]any) (string, map[string]any) {
 // `lms get {model}` CLI placeholder). Sending only "name" silently ran
 // `lms get "" --yes`, so the download never reached LM Studio.
 func TestPull_SendsBothKeys(t *testing.T) {
-	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
-		envelope := wireOf(t, engine, "pull", "owner/model")
-		require.Equal(t, engine, envelope["engine"])
-		action, params := actionOf(t, envelope)
-		require.Equal(t, "pull_model", action, "%s", engine)
-		assert.Equal(t, "owner/model", params["name"], "%s: pull must set name", engine)
-		assert.Equal(t, "owner/model", params["model"], "%s: pull must set model", engine)
+	test := func(name, engine string) {
+		t.Run(name, func(t *testing.T) {
+			envelope := wireOf(t, engine, "pull", "owner/model")
+			require.Equal(t, engine, envelope["engine"])
+			action, params := actionOf(t, envelope)
+			require.Equal(t, "pull_model", action)
+			assert.Equal(t, "owner/model", params["name"], "pull must set name")
+			assert.Equal(t, "owner/model", params["model"], "pull must set model")
+		})
 	}
+	test("Ollama", engines.NameOllama)
+	test("LM Studio", engines.NameLMStudio)
 }
 
 // TestOllamaLoadUsesRunModel guards the contract the two engines do NOT share.
@@ -134,13 +138,17 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 // TestDeleteSendsBothKeys checks delete works on either engine, since Ollama
 // keys it as "name" and LM Studio as "model".
 func TestDelete_SendsBothKeys(t *testing.T) {
-	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
-		envelope := wireOf(t, engine, "delete", "victim")
-		action, params := actionOf(t, envelope)
-		assert.Equal(t, "delete_model", action, "%s", engine)
-		assert.Equal(t, "victim", params["name"], "%s: delete must set name", engine)
-		assert.Equal(t, "victim", params["model"], "%s: delete must set model", engine)
+	test := func(name, engine string) {
+		t.Run(name, func(t *testing.T) {
+			envelope := wireOf(t, engine, "delete", "victim")
+			action, params := actionOf(t, envelope)
+			assert.Equal(t, "delete_model", action)
+			assert.Equal(t, "victim", params["name"], "delete must set name")
+			assert.Equal(t, "victim", params["model"], "delete must set model")
+		})
 	}
+	test("Ollama", engines.NameOllama)
+	test("LM Studio", engines.NameLMStudio)
 }
 
 // TestLlamaCPPSendsTheModelAlone checks every llama.cpp model operation carries
@@ -148,16 +156,18 @@ func TestDelete_SendsBothKeys(t *testing.T) {
 // for it does. Its delete sends the params as a query string, so an extra
 // "name" would reach the engine as a parameter it does not take.
 func TestLlamaCPP_SendsTheModelAlone(t *testing.T) {
-	want := map[string]string{
-		"load": "load_model", "unload": "unload_model",
-		"delete": "delete_model", "pull": "pull_model",
+	test := func(name, op, action string) {
+		t.Run(name, func(t *testing.T) {
+			envelope := wireOf(t, engines.NameLlamaCPP, op, "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M")
+			got, params := actionOf(t, envelope)
+			assert.Equal(t, action, got)
+			assert.Equal(t, map[string]any{"model": "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M"}, params, "params must contain only the model")
+		})
 	}
-	for op, action := range want {
-		envelope := wireOf(t, engines.NameLlamaCPP, op, "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M")
-		got, params := actionOf(t, envelope)
-		assert.Equal(t, action, got, "%s", op)
-		assert.Equal(t, map[string]any{"model": "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M"}, params, "%s: params must contain only the model", op)
-	}
+	test("load", "load", "load_model")
+	test("unload", "unload", "unload_model")
+	test("delete", "delete", "delete_model")
+	test("pull", "pull", "pull_model")
 }
 
 // TestDownloadPromptUsesTheEnginesSpelling is the regression guard for an

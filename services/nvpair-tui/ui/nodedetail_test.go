@@ -268,23 +268,18 @@ func TestSettingsEditors_AreDistinct(t *testing.T) {
 	d.refreshEngines()
 	seedSettings(d, ollamaSettings())
 
-	cases := []struct {
-		key   string
-		mode  detailInputMode
-		value string
-		label string
-	}{
-		{"e", detailInputEnginePort, "11434", "engine"},
-		{"p", detailInputProxyPort, "11435", "proxy"},
-		{"a", detailInputLaunchArgs, "OLLAMA_KEEP_ALIVE=5m", "arguments"},
+	test := func(name, key string, mode detailInputMode, value, label string) {
+		t.Run(name, func(t *testing.T) {
+			d.mode = detailInputNone
+			d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			require.Equal(t, mode, d.mode)
+			assert.Equal(t, value, d.input.Value())
+			assert.Contains(t, d.inputLabel(), label, "label identifies field")
+		})
 	}
-	for _, tc := range cases {
-		d.mode = detailInputNone
-		d.handleEngineKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
-		require.Equal(t, tc.mode, d.mode, "%q editor mode", tc.key)
-		assert.Equal(t, tc.value, d.input.Value(), "%q initial value", tc.key)
-		assert.Contains(t, d.inputLabel(), tc.label, "label identifies field")
-	}
+	test("engine port", "e", detailInputEnginePort, "11434", "engine")
+	test("proxy port", "p", detailInputProxyPort, "11435", "proxy")
+	test("launch arguments", "a", detailInputLaunchArgs, "OLLAMA_KEEP_ALIVE=5m", "arguments")
 }
 
 // TestSettingsRefusalComesFromTheBackend checks an engine the backend will not
@@ -325,34 +320,16 @@ func TestSettingsWrite_CarriesTheRevisionAndResolution(t *testing.T) {
 	snap := ollamaSettings()
 	seedSettings(d, snap)
 
-	cases := []struct {
-		name       string
-		mode       detailInputMode
-		value      string
-		resolution string
-		check      func(enginesettings.Config) error
-	}{
-		{
-			name:       "the port field wins over the command",
-			mode:       detailInputEnginePort,
-			value:      "11500",
-			resolution: resolutionServer,
-		},
-		{
-			name:       "the command wins over the port field",
-			mode:       detailInputLaunchArgs,
-			value:      "OLLAMA_HOST=127.0.0.1:11500",
-			resolution: resolutionLaunch,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req, ok := d.settingsRequest(snap, tc.mode, tc.value)
+	test := func(name string, mode detailInputMode, value, resolution string) {
+		t.Run(name, func(t *testing.T) {
+			req, ok := d.settingsRequest(snap, mode, value)
 			require.True(t, ok, "the request was rejected")
 			assert.Equal(t, snap.Revision, req.ExpectedRevision, "snapshot revision")
-			assert.Equal(t, tc.resolution, req.Resolution)
+			assert.Equal(t, resolution, req.Resolution)
 		})
 	}
+	test("the port field wins over the command", detailInputEnginePort, "11500", resolutionServer)
+	test("the command wins over the port field", detailInputLaunchArgs, "OLLAMA_HOST=127.0.0.1:11500", resolutionLaunch)
 }
 
 // TestLaunchTextIsSentAsTyped checks the arguments field is not tidied here.
@@ -533,39 +510,23 @@ func TestSettingsRestart_IsConfirmed(t *testing.T) {
 // TestSettingsPreviewFailuresAreExplained checks a rejected draft says why and
 // saves nothing.
 func TestSettingsPreviewFailures_AreExplained(t *testing.T) {
-	cases := []struct {
-		name    string
-		preview enginesettings.Preview
-		err     error
-		want    string
-	}{
-		{
-			name:    "a field the backend rejected",
-			preview: enginesettings.Preview{Errors: map[string]string{"launchText": "unbalanced quote"}},
-			want:    "unbalanced quote",
-		},
-		{
-			name:    "the two ports disagree",
-			preview: enginesettings.Preview{Conflict: &enginesettings.Conflict{ServerPort: 11434, LaunchPort: 11500}},
-			want:    "11500",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name string, preview enginesettings.Preview, want string) {
+		t.Run(name, func(t *testing.T) {
 			d := localDetail()
 			d.engines = []engineStatus{{Engine: "ollama", Installed: true}}
 			d.refreshEngines()
 
 			cmd := d.applySettingsPreview(enginePreviewMsg{
 				request: enginesettings.Request{Engine: "ollama"},
-				preview: tc.preview,
-				err:     tc.err,
+				preview: preview,
 			})
 			assert.Nil(t, cmd, "a rejected draft was sent anyway")
 			assert.Nil(t, d.settingsConfirm, "a rejected draft was armed for confirmation")
-			assert.Contains(t, d.status.render(), tc.want)
+			assert.Contains(t, d.status.render(), want)
 		})
 	}
+	test("a field the backend rejected", enginesettings.Preview{Errors: map[string]string{"launchText": "unbalanced quote"}}, "unbalanced quote")
+	test("the two ports disagree", enginesettings.Preview{Conflict: &enginesettings.Conflict{ServerPort: 11434, LaunchPort: 11500}}, "11500")
 }
 
 // TestSettingsErrorsReadTheSameEveryTime checks the per-field errors are
@@ -1174,25 +1135,23 @@ func TestEmptyEngineList_ExplainsItself(t *testing.T) {
 // rendered as "not answering" — beside a hardware readout, polled over an
 // endpoint that needs no pairing, visibly updating for the same machine.
 func TestUnpairedNode_IsNotCalledSilent(t *testing.T) {
-	cases := map[nodeMembership]string{
-		membershipNone:    "not in this cluster",
-		membershipForeign: "another cluster",
-		membershipPending: "still pairing",
+	test := func(name string, membership nodeMembership, want string) {
+		t.Run(name, func(t *testing.T) {
+			d := remoteDetail()
+			d.node.membership = membership
+			assert.Nil(t, d.enginesCmd(), "asked for engines over a link that cannot carry the question")
+			got := d.emptyEnginesHint()
+			assert.Contains(t, got, want)
+			assert.NotContains(t, got, "not answering", "hint calls a reachable node silent")
+			// Discovery needs no pairing, so the models pane must not blame a
+			// stopped engine for what it cannot see either way.
+			d.node.presence = presenceOnline
+			assert.NotContains(t, d.emptyModelsHint(), "start an engine", "models hint claims an engine needs starting")
+		})
 	}
-	for membership, want := range cases {
-		d := remoteDetail()
-		d.node.membership = membership
-
-		assert.Nil(t, d.enginesCmd(), "%v: asked for engines over a link that cannot carry the question", membership)
-		got := d.emptyEnginesHint()
-		assert.Contains(t, got, want, "%v: unpaired hint", membership)
-		assert.NotContains(t, got, "not answering", "%v: hint calls a reachable node silent", membership)
-		// Models come from what the node advertises over discovery, which
-		// needs no pairing, so the models pane must not blame a stopped engine
-		// for what it cannot see either way.
-		d.node.presence = presenceOnline
-		assert.NotContains(t, d.emptyModelsHint(), "start an engine", "%v: models hint claims an engine needs starting", membership)
-	}
+	test("standalone node", membershipNone, "not in this cluster")
+	test("foreign cluster member", membershipForeign, "another cluster")
+	test("pairing in progress", membershipPending, "still pairing")
 
 	// A member is still asked, and is still allowed to be silent.
 	member := remoteDetail()
@@ -1444,17 +1403,29 @@ func (d *nodeDetail) handleKeyForTest(t *testing.T, k string) tea.Cmd {
 }
 
 func TestParsePort_RejectsInvalidAndOutOfRangeValues(t *testing.T) {
-	valid := map[string]int{"1": 1, "11434": 11434, "65535": 65535}
-	for in, want := range valid {
-		got, ok := parsePort(in)
-		if assert.True(t, ok, "parsePort(%q)", in) {
-			assert.Equal(t, want, got, "parsePort(%q)", in)
-		}
+	accept := func(name, in string, want int) {
+		t.Run(name, func(t *testing.T) {
+			got, ok := parsePort(in)
+			if assert.True(t, ok) {
+				assert.Equal(t, want, got)
+			}
+		})
 	}
-	for _, in := range []string{"", "0", "-1", "65536", "abc", "80x"} {
-		_, ok := parsePort(in)
-		assert.False(t, ok, "parsePort(%q) accepted an invalid port", in)
+	reject := func(name, in string) {
+		t.Run(name, func(t *testing.T) {
+			_, ok := parsePort(in)
+			assert.False(t, ok, "accepted an invalid port")
+		})
 	}
+	accept("minimum port", "1", 1)
+	accept("usual engine port", "11434", 11434)
+	accept("maximum port", "65535", 65535)
+	reject("empty", "")
+	reject("zero", "0")
+	reject("negative", "-1")
+	reject("above maximum", "65536")
+	reject("not a number", "abc")
+	reject("trailing text", "80x")
 }
 
 // TestServiceTabNoLongerOffersPorts checks the ports are configured in exactly

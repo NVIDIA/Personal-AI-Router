@@ -180,13 +180,17 @@ func TestOneStepKDF_DerivesRepeatableKeys(t *testing.T) {
 }
 
 func TestJWK_RoundTripsPublicKeys(t *testing.T) {
-	for _, id := range []int{1, 2} {
-		cs, err := suiteByID(id)
-		require.NoError(t, err)
-		priv, jwk, err := cs.generateKeypair()
-		require.NoError(t, err, "generate:")
-		pub, err := cs.decodeJWK(jwk)
-		require.NoError(t, err, "decode JWK:")
-		assert.Equal(t, priv.PublicKey().Bytes(), pub.Bytes(), "suite %d: JWK round-trip mismatch", id)
+	test := func(name string, id int) {
+		t.Run(name, func(t *testing.T) {
+			cs, err := suiteByID(id)
+			require.NoError(t, err)
+			priv, jwk, err := cs.generateKeypair()
+			require.NoError(t, err, "generate keypair")
+			pub, err := cs.decodeJWK(jwk)
+			require.NoError(t, err, "decode JWK")
+			assert.Equal(t, priv.PublicKey().Bytes(), pub.Bytes(), "JWK round-trip mismatch")
+		})
 	}
+	test("suite 1", 1)
+	test("suite 2", 2)
 }

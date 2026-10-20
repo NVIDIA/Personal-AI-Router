@@ -404,19 +404,19 @@ func TestUpstreamErrorBody_NeverReachesLogs(t *testing.T) {
 	require.NoError(t, err, "read result log")
 	errors, err := os.ReadFile(errorLog)
 	require.NoError(t, err, "read error log")
-	for name, content := range map[string]string{
-		"stdout":     stdout.String(),
-		"stderr":     stderr.String(),
-		"result log": string(results),
-		"error log":  string(errors),
-	} {
-		assert.NotContains(t, content, "quarterly", "%s leaked the upstream error body", name)
-		assert.NotContains(t, content, echoed, "%s leaked the upstream error body", name)
-		if name == "stdout" {
-			continue
-		}
-		assert.Contains(t, content, "400 Bad Request", "%s dropped the HTTP status", name)
+	test := func(name, content string, wantStatus bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.NotContains(t, content, "quarterly", "upstream error body must not leak")
+			assert.NotContains(t, content, echoed, "upstream error body must not leak")
+			if wantStatus {
+				assert.Contains(t, content, "400 Bad Request", "HTTP status must be preserved")
+			}
+		})
 	}
+	test("stdout", stdout.String(), false)
+	test("stderr", stderr.String(), true)
+	test("result log", string(results), true)
+	test("error log", string(errors), true)
 }
 
 func TestPromptDigest_DoesNotLeakPromptText(t *testing.T) {

@@ -45,18 +45,16 @@ func TestHandlePull_RejectsMissingTarget(t *testing.T) {
 }
 
 func TestModelFromParams_ExtractsRequestedModel(t *testing.T) {
-	cases := []struct {
-		params, want string
-	}{
-		{`{"name":"llama3.2"}`, "llama3.2"},      // Ollama body key
-		{`{"model":"owner/repo"}`, "owner/repo"}, // generic placeholder
-		{`{"name":"a","model":"b"}`, "a"},        // name wins
-		{`{}`, ""},                               // neither present
-		{``, ""},                                 // empty params
+	test := func(name, params, want string) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, modelFromParams([]byte(params)))
+		})
 	}
-	for _, c := range cases {
-		require.Equal(t, c.want, modelFromParams([]byte(c.params)), "modelFromParams")
-	}
+	test("Ollama body key", `{"name":"llama3.2"}`, "llama3.2")
+	test("generic placeholder", `{"model":"owner/repo"}`, "owner/repo")
+	test("name wins", `{"name":"a","model":"b"}`, "a")
+	test("neither present", `{}`, "")
+	test("empty params", ``, "")
 }
 
 func TestLlamaCPPModelsEventPercent_AggregatesFiles(t *testing.T) {

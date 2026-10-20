@@ -96,46 +96,43 @@ func destructiveToken(arg string) string {
 // libraries have to be recognised, or the guard documents a protection it does
 // not provide.
 func TestDestructiveToken_RecognizesOriginalUnsafeUninstallCommands(t *testing.T) {
-	originals := map[string]string{
-		"posix": `pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf "$HOME/.lmstudio"; sleep 1; [ -d "$HOME/.lmstudio" ] && exit 1; exit 0`,
-		"windows": `$root = Join-Path $env:USERPROFILE '.lmstudio'; Start-Sleep -Seconds 3; ` +
-			`Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue`,
+	test := func(name, argument string, destructive bool) {
+		t.Run(name, func(t *testing.T) {
+			if destructive {
+				assert.NotEmpty(t, destructiveToken(argument), "the original LM Studio uninstall was not recognised as deleting files")
+			} else {
+				assert.Empty(t, destructiveToken(argument), "harmless argument must not be treated as deleting files")
+			}
+		})
 	}
-	for name, argument := range originals {
-		assert.NotEmpty(t, destructiveToken(argument), "%s: the original LM Studio uninstall was not recognised as deleting files", name)
-	}
-	for _, harmless := range []string{
-		"pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; exit 0",
-		"server",
-		"--strip-components=1",
-	} {
-		assert.Empty(t, destructiveToken(harmless), "argument %q deletes nothing", harmless)
-	}
+	test("posix uninstall", `pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf "$HOME/.lmstudio"; sleep 1; [ -d "$HOME/.lmstudio" ] && exit 1; exit 0`, true)
+	test("windows uninstall", `$root = Join-Path $env:USERPROFILE '.lmstudio'; Start-Sleep -Seconds 3; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue`, true)
+	test("stop processes", "pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; exit 0", false)
+	test("server command", "server", false)
+	test("extraction flag", "--strip-components=1", false)
 }
 
 // TestValidateRejectsRemovalsThatReachTheModelStore pins the load-time
 // rejections the manifest reference promises. Each of these was accepted before,
 // and each deletes part or all of a user's model library at uninstall time.
 func TestValidate_RejectsRemovalsThatReachTheModelStore(t *testing.T) {
-	for name, uninstall := range map[string]struct {
-		modelsDir string
-		remove    []string
-	}{
-		"no store to preserve":  {modelsDir: "", remove: []string{"~/.engine"}},
-		"the store itself":      {modelsDir: "~/.engine/models", remove: []string{"~/.engine/models"}},
-		"inside the store":      {modelsDir: "~/.engine/models", remove: []string{"~/.engine/models/publisher"}},
-		"the store, templated":  {modelsDir: "~/.engine/models", remove: []string{"{models_dir}"}},
-		"inside it, templated":  {modelsDir: "~/.engine/models", remove: []string{"{models_dir}/publisher"}},
-		"the store, mixed case": {modelsDir: "~/.engine/models", remove: []string{"~/.engine/Models"}},
-	} {
-		platform := Platform{
-			Detect:    []string{"{install_dir}/engine"},
-			ModelsDir: uninstall.modelsDir,
-			Uninstall: &Uninstall{Remove: uninstall.remove},
-			Runtime:   Runtime{Bin: "{install_dir}/engine"},
-		}
-		assert.Error(t, platform.validate(runtime.GOOS+"/"+runtime.GOARCH), "%s: accepted uninstall.remove %v with models_dir %q", name, uninstall.remove, uninstall.modelsDir)
+	test := func(name, modelsDir string, remove []string) {
+		t.Run(name, func(t *testing.T) {
+			platform := Platform{
+				Detect:    []string{"{install_dir}/engine"},
+				ModelsDir: modelsDir,
+				Uninstall: &Uninstall{Remove: remove},
+				Runtime:   Runtime{Bin: "{install_dir}/engine"},
+			}
+			assert.Error(t, platform.validate(runtime.GOOS+"/"+runtime.GOARCH), "uninstall.remove must preserve the model store")
+		})
 	}
+	test("no store to preserve", "", []string{"~/.engine"})
+	test("the store itself", "~/.engine/models", []string{"~/.engine/models"})
+	test("inside the store", "~/.engine/models", []string{"~/.engine/models/publisher"})
+	test("the store, templated", "~/.engine/models", []string{"{models_dir}"})
+	test("inside it, templated", "~/.engine/models", []string{"{models_dir}/publisher"})
+	test("the store, mixed case", "~/.engine/models", []string{"~/.engine/Models"})
 }
 
 func TestRemoveTreePreserving_KeepsNestedStore(t *testing.T) {
