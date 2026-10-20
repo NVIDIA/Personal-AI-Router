@@ -31,7 +31,7 @@ func TestEnabledEngineRestore_WaitsForBothPortGates(t *testing.T) {
 		var msg struct {
 			Method string `json:"method"`
 		}
-		if json.NewDecoder(server).Decode(&msg) == nil {
+		if assert.NoError(t, json.NewDecoder(server).Decode(&msg)) {
 			method <- msg.Method
 		}
 	}()
@@ -141,8 +141,8 @@ func TestOwningOllamaReady_OpensGateAfterMove(t *testing.T) {
 	go func() {
 		codec := NewCodec(engineServer)
 		msg, err := codec.Read()
-		if err == nil {
-			_ = codec.Respond(msg.ID, ollamaPortStatus{Port: managedOllamaBackendStart + 1})
+		if assert.NoError(t, err) {
+			assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Port: managedOllamaBackendStart + 1}))
 		}
 	}()
 
@@ -233,11 +233,11 @@ func TestLMStudioSetPort_UpdatesBackendCache(t *testing.T) {
 	go func() {
 		codec := NewCodec(engineServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		request <- msg
-		_ = codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400})
+		assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400}))
 	}()
 	response := make(chan *Message, 1)
 	go func() {
@@ -372,12 +372,13 @@ func TestRelay_CachesActualOllamaPortFromResponse(t *testing.T) {
 		codec := NewCodec(engineServer)
 		request, err := codec.Read()
 		if err == nil {
-			_ = codec.Respond(request.ID, map[string]any{"engine": "ollama", "port": 11435})
+			assert.NoError(t, codec.Respond(request.ID, map[string]any{"engine": "ollama", "port": 11435}))
 		}
 	}()
 	response := make(chan *Message, 1)
 	go func() {
-		msg, _ := NewCodec(clientConn).Read()
+		msg, err := NewCodec(clientConn).Read()
+		assert.NoError(t, err)
 		response <- msg
 	}()
 
@@ -407,7 +408,8 @@ func TestBroker_DoesNotExposeInternalReservationSetter(t *testing.T) {
 	id := json.RawMessage(`10`)
 	response := make(chan *Message, 1)
 	go func() {
-		msg, _ := NewCodec(clientConn).Read()
+		msg, err := NewCodec(clientConn).Read()
+		assert.NoError(t, err)
 		response <- msg
 	}()
 

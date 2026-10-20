@@ -179,7 +179,7 @@ func TestDirectoryNode_RoundTripsJSON(t *testing.T) {
 }
 
 func TestValidateTXTSize_RejectsOversizedEntries(t *testing.T) {
-	assert.NoError(t, ValidateTXTSize([]string{"v=1", "ni=14318"}), "small TXT flagged")
+	require.NoError(t, ValidateTXTSize([]string{"v=1", "ni=14318"}), "small TXT flagged")
 	big := "x=" + strings.Repeat("m", 300)
 	assert.Error(t, ValidateTXTSize([]string{"v=1", big}), "oversized TXT entry not flagged")
 }

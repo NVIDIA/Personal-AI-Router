@@ -316,9 +316,11 @@ func TestProbe_AsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing
 	raw, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
 	args := strings.Fields(string(raw))
-	for _, want := range []string{"--backend", "ollama", "--port", "11434", "--list-models"} {
-		assert.Contains(t, args, want, "dispatcher argument")
-	}
+	assert.Contains(t, args, "--backend", "dispatcher argument")
+	assert.Contains(t, args, "ollama", "dispatcher argument")
+	assert.Contains(t, args, "--port", "dispatcher argument")
+	assert.Contains(t, args, "11434", "dispatcher argument")
+	assert.Contains(t, args, "--list-models", "dispatcher argument")
 }
 
 func TestProbe_TreatsAnUnreachableEngineAsNoTargets(t *testing.T) {

@@ -19,7 +19,7 @@ func TestRemoteStart_UsesReadinessHeaderBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"engine":"remote-only","running":true,"healthy":true}`))
+		writeTestResponse(t, w, []byte(`{"engine":"remote-only","running":true,"healthy":true}`))
 	}))
 	defer srv.Close()
 
@@ -42,7 +42,7 @@ func TestRemoteModelOperations_AllowReadinessResponseHeaderBudget(t *testing.T) 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		writeTestResponse(t, w, []byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
 
@@ -84,7 +84,7 @@ func TestRemoteStartHeaderWait_RemainsBounded(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-release
-		_, _ = w.Write([]byte(`{"engine":"ollama"}`))
+		writeTestResponse(t, w, []byte(`{"engine":"ollama"}`))
 	}))
 	defer func() {
 		close(release)

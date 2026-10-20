@@ -41,7 +41,7 @@ func TestCodec_RoundTripsJSONRPCFrames(t *testing.T) {
 	b := NewCodec(c2, c2)
 
 	go func() {
-		_ = a.Write(&Message{JSONRPC: "2.0", Method: "hello", Params: json.RawMessage(`{"x":1}`)})
+		assert.NoError(t, a.Write(&Message{JSONRPC: "2.0", Method: "hello", Params: json.RawMessage(`{"x":1}`)}))
 	}()
 
 	msg, err := b.Read()
@@ -57,10 +57,10 @@ func TestClientCall_MatchesResponse(t *testing.T) {
 	// Server: read the request and echo a result tagged with its id.
 	go func() {
 		req, err := server.Read()
-		if err != nil {
+		if !assert.NoError(t, err) {
 			return
 		}
-		_ = server.Write(&Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"pong":true}`)})
+		assert.NoError(t, server.Write(&Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"pong":true}`)}))
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -74,10 +74,10 @@ func TestClientCall_SurfacesRPCError(t *testing.T) {
 	client, server, _ := newPair(t)
 	go func() {
 		req, err := server.Read()
-		if err != nil {
+		if !assert.NoError(t, err) {
 			return
 		}
-		_ = server.Write(&Message{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32000, Message: "boom"}})
+		assert.NoError(t, server.Write(&Message{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32000, Message: "boom"}}))
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -122,7 +122,7 @@ func TestClientCall_RefusesBeforeWriting(t *testing.T) {
 func TestClient_DeliversNotifications(t *testing.T) {
 	client, server, _ := newPair(t)
 	go func() {
-		_ = server.Write(&Message{JSONRPC: "2.0", Method: "errors:update", Params: json.RawMessage(`[]`)})
+		assert.NoError(t, server.Write(&Message{JSONRPC: "2.0", Method: "errors:update", Params: json.RawMessage(`[]`)}))
 	}()
 
 	select {
@@ -136,7 +136,7 @@ func TestClient_DeliversNotifications(t *testing.T) {
 
 func TestClientDisconnect_ClosesNotifications(t *testing.T) {
 	client, _, srv := newPair(t)
-	srv.Close() // broker drops the connection -> client read loop hits EOF
+	require.NoError(t, srv.Close()) // broker drops the connection -> client read loop hits EOF
 
 	done := make(chan struct{})
 	go func() {

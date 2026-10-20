@@ -72,7 +72,7 @@ func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Messag
 	require.NoError(t, cmd.Start(), "start broker")
 	t.Logf("broker started: pid=%d", cmd.Process.Pid)
 
-	ch := startMsgReader(stdoutPipe)
+	ch := startMsgReader(t, stdoutPipe)
 
 	return stdinPipe, ch, func() {
 		stdinPipe.Close()
@@ -140,7 +140,8 @@ func pollNodeListed(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, 
 				require.False(t, allowPush != nil && !allowPush(nodes), "unexpected discovery:nodes-changed")
 			case msg.Method == "" && msg.ID != nil:
 				var res availableNodesResult
-				if json.Unmarshal(msg.Result, &res) == nil && containsNode(res.Nodes, instance) {
+				require.NoError(t, json.Unmarshal(msg.Result, &res))
+				if containsNode(res.Nodes, instance) {
 					return
 				}
 			}
@@ -212,10 +213,11 @@ func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 			switch {
 			case msg.Method == "" && msg.ID != nil:
 				var sr subscriptionResult
-				if json.Unmarshal(msg.Result, &sr) == nil {
-					assert.True(t, sr.Subscribed, "subscribe ack subscribed=false, want true")
-					gotAck = true
-				}
+				require.NoError(t, json.Unmarshal(msg.Result, &sr))
+
+				assert.True(t, sr.Subscribed, "subscribe ack subscribed=false, want true")
+				gotAck = true
+
 			case msg.Method == "discovery:nodes-changed":
 				var nodes []availableNode
 				require.NoError(t, json.Unmarshal(msg.Params, &nodes), "unmarshal baseline")
@@ -246,10 +248,11 @@ func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 			// effect; ignore them and wait for the ack.
 			if msg.Method == "" && msg.ID != nil {
 				var sr subscriptionResult
-				if json.Unmarshal(msg.Result, &sr) == nil {
-					assert.False(t, sr.Subscribed, "unsubscribe ack subscribed=true, want false")
-					ackd = true
-				}
+				require.NoError(t, json.Unmarshal(msg.Result, &sr))
+
+				assert.False(t, sr.Subscribed, "unsubscribe ack subscribed=true, want false")
+				ackd = true
+
 			}
 		case <-deadline:
 			require.FailNow(t, "timed out waiting for unsubscribe ack")

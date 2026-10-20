@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
@@ -38,11 +39,11 @@ func TestForwardNodeInfoObservedAddresses_ReachesTheScanner(t *testing.T) {
 			go func() {
 				codec := NewCodec(scannerSide)
 				msg, err := codec.Read()
-				if err != nil {
+				if !assertRPCRead(t, err) {
 					return
 				}
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 				relayed <- msg
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
 			}()
 
 			b.forwardNodeInfoNotification(noderec.NotifyObservedAddresses, json.RawMessage(from))

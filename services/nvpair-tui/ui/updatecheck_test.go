@@ -83,7 +83,8 @@ func TestFetchLatestRelease_ReadsTheTag(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "application/vnd.github+json", r.Header.Get("Accept"))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tag_name":"v0.92.0","draft":false,"prerelease":false}`))
+		_, err := w.Write([]byte(`{"tag_name":"v0.92.0","draft":false,"prerelease":false}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
@@ -96,7 +97,8 @@ func TestFetchLatestRelease_IgnoresDraftsAndPrereleases(t *testing.T) {
 	test := func(name, body string) {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = w.Write([]byte(body))
+				_, err := w.Write([]byte(body))
+				assert.NoError(t, err)
 			}))
 			defer srv.Close()
 			got, err := fetchLatestRelease(srv.URL)
@@ -126,7 +128,8 @@ func TestFetchLatestRelease_RefusesRedirects(t *testing.T) {
 	var reached bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
-		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+		_, err := w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+		assert.NoError(t, err)
 	}))
 	defer target.Close()
 
@@ -135,7 +138,8 @@ func TestFetchLatestRelease_RefusesRedirects(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, _ := fetchLatestRelease(srv.URL)
+	got, err := fetchLatestRelease(srv.URL)
+	assert.Error(t, err, "redirect must be refused")
 	assert.False(t, reached, "the redirect was followed")
 	assert.NotEqual(t, "9.9.9", got, "a redirected body must not be accepted")
 }

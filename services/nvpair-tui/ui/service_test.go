@@ -307,7 +307,7 @@ func resetBroker(t *testing.T, result string) (*rpc.Client, <-chan string) {
 			} else {
 				reply.Result = json.RawMessage(`{}`)
 			}
-			_ = broker.Write(reply)
+			assert.NoError(t, broker.Write(reply))
 		}
 	}()
 	return client, called

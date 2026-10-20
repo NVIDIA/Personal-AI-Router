@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +34,8 @@ func TestOllamaHostAlias_ForwardsRequestsThroughBrokerManagedProxy(t *testing.T)
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":"routed-through-alias"},"done":true}`)
+		_, writeErr := io.WriteString(w, `{"message":{"role":"assistant","content":"routed-through-alias"},"done":true}`)
+		assert.NoError(t, writeErr)
 	}))
 	defer upstream.Close()
 	upstreamPort := upstream.Listener.Addr().(*net.TCPAddr).Port
@@ -64,8 +66,9 @@ func TestOllamaHostAlias_ForwardsRequestsThroughBrokerManagedProxy(t *testing.T)
 				"application/json",
 				strings.NewReader(`{"model":"alias-e2e-model","messages":[]}`),
 			)
-			require.NoError(t, err, "POST through inherited OLLAMA_HOST alias (%v, %v)", host, err)
-			body, _ := io.ReadAll(resp.Body)
+			require.NoError(t, err, "POST through inherited OLLAMA_HOST alias")
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
 			_ = resp.Body.Close()
 			require.Equal(t, http.StatusOK, resp.StatusCode, "alias response %s", body)
 			require.Contains(t, string(body), "routed-through-alias", "alias response")
@@ -89,7 +92,8 @@ func TestOllamaHostAlias_ForwardsRequestsThroughBrokerManagedProxy(t *testing.T)
 					State string `json:"state"`
 				} `json:"workloadInfo"`
 			}
-			if json.Unmarshal(msg.Params, &p) == nil && p.WorkloadInfo.Model == "alias-e2e-model" {
+			require.NoError(t, json.Unmarshal(msg.Params, &p))
+			if p.WorkloadInfo.Model == "alias-e2e-model" {
 				wantStates[p.WorkloadInfo.State] = true
 			}
 		case <-deadline:

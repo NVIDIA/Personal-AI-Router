@@ -65,7 +65,8 @@ func TestRunOp_StartsEngineAfterInstallation(t *testing.T) {
 	id := json.RawMessage("1")
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:install",
 		Params: json.RawMessage(`{"engine":"fake","start":true}`)})
-	st, _ := ex.Status("fake")
+	st, err := ex.Status("fake")
+	require.NoError(t, err)
 	require.True(t, st.Running, "expected running after install+autostart (%v)", st)
 }
 
@@ -81,8 +82,10 @@ func TestStatusQueries_DoNotBlockMessageDispatchDuringEngineOperation(t *testing
 			m := NewManager(NewCodec(managerConn), ex, nil)
 			id := json.RawMessage("1")
 			response := make(chan string, 1)
+			readErr := make(chan error, 1)
 			go func() {
-				line, _ := bufio.NewReader(clientConn).ReadString('\n')
+				line, err := bufio.NewReader(clientConn).ReadString('\n')
+				readErr <- err
 				response <- line
 			}()
 
@@ -112,6 +115,7 @@ func TestStatusQueries_DoNotBlockMessageDispatchDuringEngineOperation(t *testing
 			st.opMu.Unlock()
 			select {
 			case line := <-response:
+				require.NoError(t, <-readErr)
 				require.Contains(t, line, `"id":1`)
 			case <-time.After(2 * time.Second):
 				require.FailNow(t, "no response after the engine operation completed")

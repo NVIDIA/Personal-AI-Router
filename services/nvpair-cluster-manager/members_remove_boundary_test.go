@@ -79,7 +79,7 @@ func TestMembersRemove_RevalidatesAfterBlockedBody(t *testing.T) {
 	victim.addSelfMember()
 	_, err = pw.Write(payload)
 	require.NoError(t, err)
-	_ = pw.Close()
+	require.NoError(t, pw.Close())
 
 	select {
 	case <-done:

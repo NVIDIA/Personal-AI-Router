@@ -59,7 +59,7 @@ func (r *installProgressRecorder) assertSingleTerminal(t *testing.T, want string
 func TestInstall_DownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
 	payload := []byte("artifact")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(payload)
+		writeTestResponse(t, w, payload)
 	}))
 	defer server.Close()
 
@@ -87,7 +87,7 @@ func TestInstall_DownloadsAllNamedArtifactsBeforeRunning(t *testing.T) {
 func TestInstall_RejectsBadSecondArtifactBeforeCommand(t *testing.T) {
 	payload := []byte("artifact")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(payload)
+		writeTestResponse(t, w, payload)
 	}))
 	defer server.Close()
 
@@ -112,10 +112,10 @@ func TestInstallCancellation_RemovesDownloadedArtifacts(t *testing.T) {
 	secondStarted := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/server.zip" {
-			_, _ = w.Write(firstPayload)
+			writeTestResponse(t, w, firstPayload)
 			return
 		}
-		_, _ = w.Write([]byte("partial"))
+		writeTestResponse(t, w, []byte("partial"))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}

@@ -33,8 +33,10 @@ func remoteDetail() *nodeDetail {
 }
 
 // discoveryPush builds a discovery:nodes-changed notification.
-func discoveryPush(nodes ...availableNode) NotificationMsg {
-	params, _ := json.Marshal(nodes)
+func discoveryPush(t *testing.T, nodes ...availableNode) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(nodes)
+	require.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{Method: "discovery:nodes-changed", Params: params}}
 }
 
@@ -51,7 +53,7 @@ func TestRemoteDetail_FollowsDiscoveryModels(t *testing.T) {
 	d.models = modelsResult{Models: []string{"old-model"}}
 	d.refreshModels()
 
-	d.update(discoveryPush(availableNode{
+	d.update(discoveryPush(t, availableNode{
 		HostUUID:       "peer",
 		Name:           "peer-host",
 		Models:         []string{"old-model", "new-model"},
@@ -69,7 +71,7 @@ func TestRemoteDetail_IgnoresOtherNodesDiscovery(t *testing.T) {
 	d.models = modelsResult{Models: []string{"mine"}}
 	d.refreshModels()
 
-	d.update(discoveryPush(availableNode{
+	d.update(discoveryPush(t, availableNode{
 		HostUUID: "somebody-else",
 		Name:     "other-host",
 		Models:   []string{"theirs"},
@@ -110,7 +112,7 @@ func TestLocalDetail_IgnoresDiscoveryModels(t *testing.T) {
 	d.models = modelsResult{Models: []string{"authoritative"}}
 	d.refreshModels()
 
-	d.update(discoveryPush(availableNode{
+	d.update(discoveryPush(t, availableNode{
 		HostUUID: "self",
 		Name:     "this-host",
 		Models:   []string{"stale-summary"},
@@ -379,8 +381,10 @@ func TestSettingsApply_UsesTheNormalizedDraft(t *testing.T) {
 }
 
 // settingsPush builds an engine:settings-changed notification.
-func settingsPush(snap enginesettings.Snapshot) NotificationMsg {
-	params, _ := json.Marshal(snap)
+func settingsPush(t *testing.T, snap enginesettings.Snapshot) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(snap)
+	require.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{Method: "engine:settings-changed", Params: params}}
 }
 
@@ -402,7 +406,7 @@ func TestLocalSettingsPush_IsNotDiscarded(t *testing.T) {
 	moved := ollamaSettings()
 	moved.NodeID = uuid
 	moved.Revision = 8
-	d.handleNotification(settingsPush(moved).Msg)
+	d.handleNotification(settingsPush(t, moved).Msg)
 
 	require.Equal(t, uint64(8), d.settings["ollama"].Revision, "cached revision after a push for this machine")
 
@@ -410,7 +414,7 @@ func TestLocalSettingsPush_IsNotDiscarded(t *testing.T) {
 	other := ollamaSettings()
 	other.NodeID = "some-other-node"
 	other.Revision = 99
-	d.handleNotification(settingsPush(other).Msg)
+	d.handleNotification(settingsPush(t, other).Msg)
 	assert.Equal(t, uint64(8), d.settings["ollama"].Revision, "a peer's snapshot overwrote this machine's")
 }
 
@@ -959,8 +963,10 @@ func TestSecondSettingsChange_WaitsForTheFirst(t *testing.T) {
 }
 
 // progressPush builds a progress notification from its fields as sent.
-func progressPush(method string, fields map[string]any) NotificationMsg {
-	params, _ := json.Marshal(fields)
+func progressPush(t *testing.T, method string, fields map[string]any) NotificationMsg {
+	t.Helper()
+	params, err := json.Marshal(fields)
+	require.NoError(t, err)
 	return NotificationMsg{Msg: &rpc.Message{Method: method, Params: params}}
 }
 
@@ -968,7 +974,7 @@ func progressPush(method string, fields map[string]any) NotificationMsg {
 // is not reported on a peer's screen. The payload carries no node, so shown
 // there it read as the peer installing something.
 func TestInstallProgress_StaysOnThisMachine(t *testing.T) {
-	frame := progressPush("engine:install-progress",
+	frame := progressPush(t, "engine:install-progress",
 		map[string]any{"engine": "ollama", "stage": "downloading", "percent": 40})
 
 	peer := remoteDetail()
@@ -986,21 +992,21 @@ func TestInstallProgress_StaysOnThisMachine(t *testing.T) {
 // "(0%)" and "(-1%)".
 func TestProgressWithoutAPercent_ShowsNone(t *testing.T) {
 	peer := remoteDetail()
-	peer.update(progressPush("engine:remote-progress",
+	peer.update(progressPush(t, "engine:remote-progress",
 		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "pulling manifest"}))
 	got := peer.status.render()
 	assert.Contains(t, got, "pulling manifest", "indeterminate remote progress")
 	assert.NotContains(t, got, "%", "indeterminate remote progress")
-	peer.update(progressPush("engine:remote-progress",
+	peer.update(progressPush(t, "engine:remote-progress",
 		map[string]any{"node": "peer", "engine": "ollama", "op": "pull", "stage": "downloading", "percent": 25}))
 	assert.Contains(t, peer.status.render(), "downloading (25%)", "reported percent is kept")
 
 	local := localDetail()
-	local.update(progressPush("engine:pull-progress",
+	local.update(progressPush(t, "engine:pull-progress",
 		map[string]any{"engine": "ollama", "stage": "pulling manifest"}))
 	assert.NotContains(t, local.status.render(), "%", "indeterminate pull progress")
 
-	local.update(progressPush("engine:install-progress",
+	local.update(progressPush(t, "engine:install-progress",
 		map[string]any{"engine": "ollama", "stage": "failed", "percent": -1, "error": "disk full"}))
 	got = local.status.render()
 	assert.NotContains(t, got, "%", "failed install")
@@ -1076,13 +1082,13 @@ func TestOpenDetail_FollowsPresenceAndMembership(t *testing.T) {
 
 	// The peer leaves the cluster but is still on the network.
 	peer.Trusted = false
-	v.Update(discoveryPush(peer))
+	v.Update(discoveryPush(t, peer))
 	assert.NotEqual(t, membershipMember, d.node.membership, "the detail still reads Member after the peer left the cluster")
 	assert.Empty(t, d.engines, "engine controls are still offered for a node no longer in the cluster")
 	assert.Contains(t, d.View(), "not in this cluster", "engines pane says why the list went")
 
 	// And then drops off the network entirely.
-	v.Update(discoveryPush())
+	v.Update(discoveryPush(t))
 	assert.NotEqual(t, presenceOnline, d.node.presence, "the detail still reads Online after the node dropped out of every feed")
 }
 

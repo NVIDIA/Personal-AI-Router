@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,7 +82,7 @@ func TestNodeInfoConnect_GivesUpBeforeTheRequestBudget(t *testing.T) {
 	start := time.Now()
 	conn, err := nodeInfoTransport(nil).DialContext(context.Background(), "tcp", "192.0.2.1:14300")
 	if err == nil {
-		_ = conn.Close()
+		require.NoError(t, conn.Close())
 		require.FailNow(t, "nothing may answer at a documentation address")
 	}
 	require.Less(t, time.Since(start), nodeInfoFetchTimeout, "connect must give up at the dial budget %v", nodeInfoDialTimeout)
@@ -99,7 +100,7 @@ func TestNodeInfoFetches_UseIndependentRequestBudgets(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		time.Sleep(responseDelay)
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
 	}))
 	var connections atomic.Int32
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
@@ -161,10 +162,11 @@ func TestNodeInfoErrorBody_IsDrainedForConnectionReuse(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if requests.Add(1) == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("temporarily unavailable"))
+			_, err := w.Write([]byte("temporarily unavailable"))
+			assert.NoError(t, err)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
 	}))
 	var connections atomic.Int32
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {

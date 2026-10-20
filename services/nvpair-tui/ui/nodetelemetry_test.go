@@ -57,9 +57,10 @@ func TestTelemetry_StartsWhenAnAddressArrivesLate(t *testing.T) {
 	require.Nil(t, d.telemetryCmd(), "polled a node with no address")
 	require.False(t, d.telemetryRunning, "claims a chain is running with nothing to poll")
 
-	params, _ := json.Marshal([]availableNode{{
+	params, err := json.Marshal([]availableNode{{
 		HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.9", Port: 14318,
 	}})
+	require.NoError(t, err)
 	cmd := d.handleNotification(&rpc.Message{
 		Method: "discovery:nodes-changed", Params: params,
 	})
@@ -99,13 +100,15 @@ func TestTelemetryChains_AreGenerationScoped(t *testing.T) {
 // telemetry at all.
 func TestPollTelemetry_WalksEveryAddress(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"telemetryValid":true}`))
+		_, err := w.Write([]byte(`{"telemetryValid":true}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
 	host, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
 	require.NoError(t, err, "split test server address")
-	p, _ := strconv.Atoi(port)
+	p, err := strconv.Atoi(port)
+	require.NoError(t, err)
 
 	// An unreachable address first — the reserved TEST-NET-1 block — then the
 	// one that answers.
@@ -139,13 +142,14 @@ func TestPollTelemetry_DecodesResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, nodeInfoPath, r.URL.Path, "polled endpoint")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		_, err := w.Write([]byte(`{
 			"GPUs":[{"name":"Test GPU","vram_bytes":8589934592,"vram_used_bytes":1073741824,"utilization_percent":42}],
 			"cpu":{"name":"Test CPU","cores":8,"utilization_percent":13},
 			"memory":{"total_bytes":34359738368,"used_bytes":8589934592},
 			"telemetryValid":true,
 			"msSince":120
 		}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
@@ -189,15 +193,16 @@ func TestPollTelemetry_SkipsUnknownAddress(t *testing.T) {
 // name of the machine that used to hold it.
 func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
+		_, err := w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 	host, port := splitTestServer(t, srv.URL)
 
 	assert.Error(t, pollTelemetryCmd("uuid-a", 1, []string{host}, port, "uuid-a")().(nodeTelemetryMsg).err, "another machine's readings were accepted for this one")
-	assert.NoError(t, pollTelemetryCmd("uuid-b", 1, []string{host}, port, "uuid-b")().(nodeTelemetryMsg).err, "the machine's own readings were refused")
+	require.NoError(t, pollTelemetryCmd("uuid-b", 1, []string{host}, port, "uuid-b")().(nodeTelemetryMsg).err, "the machine's own readings were refused")
 	// A row with nothing to check against takes whichever machine answers.
-	assert.NoError(t, pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg).err, "an unchecked poll was refused")
+	require.NoError(t, pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg).err, "an unchecked poll was refused")
 
 	assert.Equal(t, "uuid-a", telemetryIdentity(nodeRow{key: "uuid-a"}), "a discovered node is checked against its UUID")
 	test := func(name string, row nodeRow) {

@@ -96,7 +96,7 @@ func TestLmStudioCatalog_CoalescesConcurrentCallers(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		<-release // hold the request open so the callers genuinely overlap
-		_, _ = w.Write([]byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
+		writeTestResponse(t, w, []byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
 	}))
 	defer srv.Close()
 
@@ -123,7 +123,7 @@ func TestLmStudioCatalog_CoalescesConcurrentCallers(t *testing.T) {
 
 	assert.Equal(t, int32(1), requests.Load(), "upstream requests from %d callers", callers)
 	for i := range callers {
-		assert.NoError(t, errs[i], "caller %d", i)
+		require.NoError(t, errs[i], "caller %d", i)
 		assert.Equal(t, 1, counts[i], "caller %d model count", i)
 	}
 }
@@ -140,7 +140,7 @@ func TestLmStudioCatalog_BacksOffAfterFailure(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
+		writeTestResponse(t, w, []byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
 	}))
 	defer srv.Close()
 
@@ -193,7 +193,8 @@ func TestLmStudioCatalog_BacksOffWithNothingCached(t *testing.T) {
 	c.lmStudio.mu.Lock()
 	c.lmStudio.failed = time.Now().Add(-2 * catalogRetryAfterFailure)
 	c.lmStudio.mu.Unlock()
-	_, _, _ = c.lmStudio.get(context.Background())
+	_, _, err := c.lmStudio.get(context.Background())
+	assert.Error(t, err, "retry against a failing upstream must still report failure")
 	assert.Equal(t, int32(2), requests.Load(), "backoff expiry must permit a second attempt")
 }
 
@@ -441,7 +442,7 @@ func llamaCPPServer(t *testing.T, failAuthor string) (*httptest.Server, func() [
 		case search != "":
 			rows = []hfModelRow{ggufRow("found/"+strings.ReplaceAll(search, " ", "-"), 1)}
 		}
-		_ = json.NewEncoder(w).Encode(rows)
+		assert.NoError(t, json.NewEncoder(w).Encode(rows), "encode catalog response")
 	}))
 	t.Cleanup(srv.Close)
 	return srv, func() []string {

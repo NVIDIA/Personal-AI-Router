@@ -81,21 +81,28 @@ func newTestManager(t *testing.T) (*Manager, *captureRW, string) {
 	return m, rw, path
 }
 
-func requestMessage(id int, method string, params any) *Message {
-	idData, _ := json.Marshal(id)
+func requestMessage(t *testing.T, id int, method string, params any) *Message {
+	t.Helper()
+	idData, err := json.Marshal(id)
+	require.NoError(t, err)
 	idRaw := json.RawMessage(idData)
-	paramsRaw, _ := json.Marshal(params)
+	paramsRaw, err := json.Marshal(params)
+	require.NoError(t, err)
 	return &Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: paramsRaw}
 }
 
-func requestMessageRaw(id int, method string, params json.RawMessage) *Message {
-	idData, _ := json.Marshal(id)
+func requestMessageRaw(t *testing.T, id int, method string, params json.RawMessage) *Message {
+	t.Helper()
+	idData, err := json.Marshal(id)
+	require.NoError(t, err)
 	idRaw := json.RawMessage(idData)
 	return &Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: params}
 }
 
-func notificationMessage(method string, params any) *Message {
-	paramsRaw, _ := json.Marshal(params)
+func notificationMessage(t *testing.T, method string, params any) *Message {
+	t.Helper()
+	paramsRaw, err := json.Marshal(params)
+	require.NoError(t, err)
 	return &Message{JSONRPC: "2.0", Method: method, Params: paramsRaw}
 }
 
@@ -167,13 +174,16 @@ func decodeResult[T any](t *testing.T, msg Message) T {
 	return result
 }
 
-func responseWithID(id int) func(Message) bool {
+func responseWithID(t *testing.T, id int) func(Message) bool {
+	t.Helper()
 	return func(msg Message) bool {
+		t.Helper()
 		if msg.ID == nil {
 			return false
 		}
 		var got int
-		return json.Unmarshal(*msg.ID, &got) == nil && got == id
+		require.NoError(t, json.Unmarshal(*msg.ID, &got))
+		return got == id
 	}
 }
 
@@ -183,17 +193,17 @@ func responseWithID(id int) func(Message) bool {
 // Anything that produces an RPC error fails the test via decodeResult.
 func callAndDecode[T any](t *testing.T, m *Manager, rw *captureRW, id int, method string, params any) T {
 	t.Helper()
-	m.handleMessage(requestMessage(id, method, params))
+	m.handleMessage(requestMessage(t, id, method, params))
 	resp := readCaptureFrame(t, rw)
-	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
+	require.True(t, responseWithID(t, id)(resp), "response id mismatch: (%v, %v)", resp, id)
 	return decodeResult[T](t, resp)
 }
 
 func callExpectError(t *testing.T, m *Manager, rw *captureRW, id int, method string, params any, wantCode int) *RPCError {
 	t.Helper()
-	m.handleMessage(requestMessage(id, method, params))
+	m.handleMessage(requestMessage(t, id, method, params))
 	resp := readCaptureFrame(t, rw)
-	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
+	require.True(t, responseWithID(t, id)(resp), "response id mismatch: (%v, %v)", resp, id)
 	require.NotNil(t, resp.Error, "expected error (%v)", wantCode)
 	require.Equal(t, wantCode, resp.Error.Code, "error code")
 	return resp.Error
@@ -359,7 +369,7 @@ func TestRun_EmitsOnlyReadyOnStartup(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		_ = m.Run(ctx)
+		assert.NoError(t, m.Run(ctx))
 		close(done)
 	}()
 
@@ -598,7 +608,7 @@ func TestTypeValidation_RejectsWrongTypeAndMissingValue(t *testing.T) {
 
 	test := func(name string, id int, method, params string) {
 		t.Run(name, func(t *testing.T) {
-			m.handleMessage(requestMessageRaw(id, method, json.RawMessage(params)))
+			m.handleMessage(requestMessageRaw(t, id, method, json.RawMessage(params)))
 			resp := readCaptureFrame(t, rw)
 			require.NotNil(t, resp.Error)
 			assert.Equal(t, -32602, resp.Error.Code)
@@ -620,19 +630,19 @@ func TestLogSetLevel_AcceptsRequestsAndNotifications(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
 	// Request form: replies with {"level": "debug"}.
-	m.handleMessage(requestMessage(1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
+	m.handleMessage(requestMessage(t, 1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
 	resp := readCaptureFrame(t, rw)
 	result := decodeResult[map[string]string](t, resp)
 	assert.Equal(t, "debug", result["level"], "log/set-level result (%v)", result)
 
 	// Invalid level: -32602 in request form.
-	m.handleMessage(requestMessage(2, applog.SetLevelMethod, applog.SetLevelParams{Level: "shouty"}))
+	m.handleMessage(requestMessage(t, 2, applog.SetLevelMethod, applog.SetLevelParams{Level: "shouty"}))
 	resp = readCaptureFrame(t, rw)
 	require.NotNil(t, resp.Error, "invalid log/set-level error")
 	assert.Equal(t, -32602, resp.Error.Code, "invalid log/set-level error")
 
 	// Notification form (no id) — applied silently, no response frame.
-	m.handleMessage(notificationMessage(applog.SetLevelMethod, applog.SetLevelParams{Level: "info"}))
+	m.handleMessage(notificationMessage(t, applog.SetLevelMethod, applog.SetLevelParams{Level: "info"}))
 	select {
 	case f := <-rw.responses:
 		require.FailNow(t, fmt.Sprintf("log/set-level notification should not respond (%v)", f))
@@ -643,7 +653,7 @@ func TestLogSetLevel_AcceptsRequestsAndNotifications(t *testing.T) {
 func TestNotification_IsIgnored(t *testing.T) {
 	m, rw, _ := newTestManager(t)
 
-	m.handleMessage(notificationMessage("settings/set-cluster-id", map[string]string{"value": "cluster-zzz"}))
+	m.handleMessage(notificationMessage(t, "settings/set-cluster-id", map[string]string{"value": "cluster-zzz"}))
 
 	// State should be unchanged (no response, and a get returns the default).
 	got := callAndDecode[map[string]string](t, m, rw, 1, "settings/get-cluster-id", nil)
@@ -673,7 +683,7 @@ func TestShutdownRequest_CancelsRun(t *testing.T) {
 
 	writePipeRequest(t, client, 7, "shutdown", nil)
 	resp := readPipeFrame(t, client, reader)
-	assert.True(t, responseWithID(7)(resp), "shutdown response (%v)", resp)
+	assert.True(t, responseWithID(t, 7)(resp), "shutdown response (%v)", resp)
 	require.Nil(t, resp.Error, "shutdown response (%v)", resp)
 
 	select {

@@ -23,7 +23,8 @@ func TestSettings_DerivesCORSGuardFromAuthenticatedCaller(t *testing.T) {
 	h := newSettingsHarness(t)
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	uri, _ := url.Parse("urn:nvpair:node:paired-caller")
+	uri, err := url.Parse("urn:nvpair:node:paired-caller")
+	require.NoError(t, err)
 	cert := &x509.Certificate{SerialNumber: big.NewInt(1), URIs: []*url.URL{uri}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
 	require.NoError(t, err)

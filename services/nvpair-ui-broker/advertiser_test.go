@@ -60,14 +60,14 @@ func TestLMStudioFallback_NeverAdvertisesItsProxy(t *testing.T) {
 	go func() {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var got proxyLocalBackend
-		if json.Unmarshal(msg.Params, &got) == nil {
+		if assert.NoError(t, json.Unmarshal(msg.Params, &got)) {
 			localBackend <- got
 		}
-		_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 	}()
 
 	b := &Broker{regCache: relay.NewRegistrationCache()}
@@ -166,8 +166,8 @@ func attachAdvertiserProxy(
 	t.Helper()
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
-		_ = proxyClient.Close()
-		_ = proxyServer.Close()
+		assert.NoError(t, proxyClient.Close())
+		assert.NoError(t, proxyServer.Close())
 	})
 	proxy := &proxyProcess{
 		peer:        NewPeer(NewCodec(proxyClient)),
@@ -181,14 +181,14 @@ func attachAdvertiserProxy(
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			var update proxyLocalBackend
-			if json.Unmarshal(msg.Params, &update) == nil {
+			if assert.NoError(t, json.Unmarshal(msg.Params, &update)) {
 				updates <- update
 			}
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+			assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 		}
 	}()
 	return updates

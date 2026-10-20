@@ -99,7 +99,8 @@ func TestPersistPort_RefusesMalformedOverrideWithoutClobbering(t *testing.T) {
 			got, err := os.ReadFile(path)
 			require.NoError(t, err, "read invalid override")
 			require.Equal(t, data, string(got), "invalid override changed")
-			status, _ := ex.Status("ollama")
+			status, err := ex.Status("ollama")
+			require.NoError(t, err)
 			require.Equal(t, 11434, status.Port, "failed persistence changed runtime port (%v)", status)
 		})
 	}

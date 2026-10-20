@@ -204,11 +204,12 @@ func setLoaded(t *testing.T, ex *Executor, names []string) {
 	t.Helper()
 	st, err := ex.Status("fake")
 	require.NoError(t, err, "status")
-	body, _ := json.Marshal(map[string][]string{"names": names})
+	body, err := json.Marshal(map[string][]string{"names": names})
+	require.NoError(t, err)
 	url := fmt.Sprintf("http://127.0.0.1:%d/testctl/loaded", st.Port)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 	require.NoError(t, err, "set loaded")
-	_ = resp.Body.Close()
+	require.NoError(t, resp.Body.Close())
 }
 
 // TestModelsResultLoaded covers the loaded surface: a running engine that

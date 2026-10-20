@@ -388,9 +388,7 @@ func TestFacades_AddressNotificationsToTheirEngine(t *testing.T) {
 		var msg struct {
 			Method string `json:"method"`
 		}
-		if json.Unmarshal(line, &msg) != nil {
-			continue
-		}
+		require.NoError(t, json.Unmarshal(line, &msg))
 		engine, bare := engines.SplitAddressedMethod(msg.Method)
 		if bare != "ready" {
 			continue

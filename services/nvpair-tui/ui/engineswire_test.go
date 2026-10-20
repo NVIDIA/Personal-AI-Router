@@ -95,7 +95,7 @@ func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
 	require.NotNil(t, msg, "a pull that outran its deadline produced no message at all")
 	op, ok := msg.(engineOpMsg)
 	require.True(t, ok, "result must be engineOpMsg")
-	assert.NoError(t, op.err, "a still-running download must not be reported as failed")
+	require.NoError(t, op.err, "a still-running download must not be reported as failed")
 	assert.True(t, op.detached, "a still-running download must not be reported as complete")
 }
 
@@ -115,19 +115,32 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// Start and restart wait on the engine's readiness probe, which the
 	// manifests allow up to ten minutes, so a deadline on either is a slow
 	// reply rather than a failed start.
-	for _, op := range []string{"pull", "load", "install", "uninstall", "start", "restart"} {
-		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-		require.True(t, ok, "%s: unexpected message type", op)
-		assert.True(t, result.detached, "%s timing out should be reported as still running", op)
-		assert.NoError(t, result.err, "%s is still running", op)
+	longRunning := func(name, op string) {
+		t.Run(name, func(t *testing.T) {
+			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
+			require.True(t, ok, "result must be engineOpMsg")
+			assert.True(t, result.detached, "a timed-out long operation must be reported as still running")
+			require.NoError(t, result.err, "operation is still running")
+		})
 	}
+	longRunning("pull remains running", "pull")
+	longRunning("load remains running", "load")
+	longRunning("install remains running", "install")
+	longRunning("uninstall remains running", "uninstall")
+	longRunning("start remains running", "start")
+	longRunning("restart remains running", "restart")
 
-	for _, op := range []string{"unload", "delete", "stop"} {
-		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-		require.True(t, ok, "%s: unexpected message type", op)
-		assert.False(t, result.detached, "%s: a quick operation that times out has really failed", op)
-		assert.Error(t, result.err, "%s timing out must not be reported as success", op)
+	quick := func(name, op string) {
+		t.Run(name, func(t *testing.T) {
+			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
+			require.True(t, ok, "result must be engineOpMsg")
+			assert.False(t, result.detached, "a quick operation that times out has really failed")
+			assert.Error(t, result.err, "a timeout must not be reported as success")
+		})
 	}
+	quick("unload times out", "unload")
+	quick("delete times out", "delete")
+	quick("stop times out", "stop")
 
 	// A real error is still an error, however long the operation usually takes.
 	result, _ := classifyOpResult("x", "ollama", "pull", errors.New("no such model")).(engineOpMsg)
@@ -189,7 +202,7 @@ func TestEveryEngine_HasAModelWire(t *testing.T) {
 	for _, e := range engines.All() {
 		for op := range modelActions {
 			_, err := modelActionWire(e.Name, op, "m")
-			assert.NoError(t, err, "%s must have a local wire for %s", e.Name, op)
+			require.NoError(t, err, "%s must have a local wire for %s", e.Name, op)
 		}
 	}
 	_, err := modelActionWire("vllm", "load", "m")

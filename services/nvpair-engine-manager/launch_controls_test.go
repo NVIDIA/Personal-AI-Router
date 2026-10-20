@@ -209,7 +209,7 @@ func TestCORSOrigins_NormalizesEquivalentPolicies(t *testing.T) {
 	test := func(name, input, want string) {
 		t.Run(name, func(t *testing.T) {
 			got, err := normalizeCORSOrigins(input)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, want, got)
 		})
 	}

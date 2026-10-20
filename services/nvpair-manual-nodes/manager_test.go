@@ -86,7 +86,8 @@ func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 	return m, rw, rt
 }
 
-func configureHealthyNode(rt *fakeRoundTripper, addr string, models []string, info NodeInfoResponse) {
+func configureHealthyNode(t *testing.T, rt *fakeRoundTripper, addr string, models []string, info NodeInfoResponse) {
+	t.Helper()
 	host := net.JoinHostPort(addr, "11434")
 	rt.set(http.MethodGet, host, "/", func(*http.Request) (*http.Response, error) {
 		return httpJSON(http.StatusOK, `{}`)
@@ -102,13 +103,15 @@ func configureHealthyNode(rt *fakeRoundTripper, addr string, models []string, in
 				Name string `json:"name"`
 			}{Name: name})
 		}
-		data, _ := json.Marshal(payload)
+		data, err := json.Marshal(payload)
+		assert.NoError(t, err, "marshal model inventory")
 		return httpJSON(http.StatusOK, string(data))
 	})
 
 	infoHost := net.JoinHostPort(addr, "14318")
 	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
-		data, _ := json.Marshal(info)
+		data, err := json.Marshal(info)
+		assert.NoError(t, err, "marshal node info")
 		return httpJSON(http.StatusOK, string(data))
 	})
 }
@@ -116,7 +119,8 @@ func configureHealthyNode(rt *fakeRoundTripper, addr string, models []string, in
 // configureHealthyLMStudio registers a 200 GET /v1/models on addr:1234
 // returning the given model ids in the OpenAI list shape, so probeLMStudio
 // reports the node up with those models.
-func configureHealthyLMStudio(rt *fakeRoundTripper, addr string, models []string) {
+func configureHealthyLMStudio(t *testing.T, rt *fakeRoundTripper, addr string, models []string) {
+	t.Helper()
 	host := net.JoinHostPort(addr, "1234")
 	rt.set(http.MethodGet, host, "/v1/models", func(*http.Request) (*http.Response, error) {
 		var payload struct {
@@ -131,7 +135,8 @@ func configureHealthyLMStudio(rt *fakeRoundTripper, addr string, models []string
 				ID string `json:"id"`
 			}{ID: id})
 		}
-		data, _ := json.Marshal(payload)
+		data, err := json.Marshal(payload)
+		assert.NoError(t, err, "marshal LM Studio model inventory")
 		return httpJSON(http.StatusOK, string(data))
 	})
 }
@@ -141,7 +146,7 @@ func configureHealthyLMStudio(rt *fakeRoundTripper, addr string, models []string
 // one (no handler registered, so the request errors) reports down.
 func TestProbeLMStudio_ReportsModels(t *testing.T) {
 	m, _, rt := newTestManager()
-	configureHealthyLMStudio(rt, "node.local", []string{"qwen2.5-7b", "llama-3.1-8b"})
+	configureHealthyLMStudio(t, rt, "node.local", []string{"qwen2.5-7b", "llama-3.1-8b"})
 
 	up, models := m.probeLMStudio("node.local", lmStudioPort)
 	require.True(t, up, "expected lmstudio up")
@@ -152,21 +157,28 @@ func TestProbeLMStudio_ReportsModels(t *testing.T) {
 	assert.Nil(t, downModels, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
 }
 
-func requestMessage(id int, method string, params any) *Message {
-	idData, _ := json.Marshal(id)
+func requestMessage(t *testing.T, id int, method string, params any) *Message {
+	t.Helper()
+	idData, err := json.Marshal(id)
+	require.NoError(t, err, "marshal request ID")
 	idRaw := json.RawMessage(idData)
-	paramsRaw, _ := json.Marshal(params)
+	paramsRaw, err := json.Marshal(params)
+	require.NoError(t, err, "marshal request params")
 	return &Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: paramsRaw}
 }
 
-func requestMessageRaw(id int, method string, params json.RawMessage) *Message {
-	idData, _ := json.Marshal(id)
+func requestMessageRaw(t *testing.T, id int, method string, params json.RawMessage) *Message {
+	t.Helper()
+	idData, err := json.Marshal(id)
+	require.NoError(t, err, "marshal request ID")
 	idRaw := json.RawMessage(idData)
 	return &Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: params}
 }
 
-func notificationMessage(method string, params any) *Message {
-	paramsRaw, _ := json.Marshal(params)
+func notificationMessage(t *testing.T, method string, params any) *Message {
+	t.Helper()
+	paramsRaw, err := json.Marshal(params)
+	require.NoError(t, err, "marshal notification params")
 	return &Message{JSONRPC: "2.0", Method: method, Params: paramsRaw}
 }
 
@@ -232,13 +244,15 @@ func decodeParams[T any](t *testing.T, msg Message) T {
 	return result
 }
 
-func responseWithID(id int) func(Message) bool {
+func responseWithID(t *testing.T, id int) func(Message) bool {
+	t.Helper()
 	return func(msg Message) bool {
 		if msg.ID == nil {
 			return false
 		}
 		var got int
-		return json.Unmarshal(*msg.ID, &got) == nil && got == id
+		require.NoError(t, json.Unmarshal(*msg.ID, &got), "decode response ID")
+		return got == id
 	}
 }
 
@@ -268,11 +282,11 @@ func TestNodeID_PrefersConfiguredNameOverAddressFallback(t *testing.T) {
 
 func TestNodeAdd_RespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) {
 	m, rw, rt := newTestManager()
-	configureHealthyNode(rt, "node.local", []string{"llama3", "mistral"}, sampleInfo())
+	configureHealthyNode(t, rt, "node.local", []string{"llama3", "mistral"}, sampleInfo())
 
-	m.handleMessage(requestMessage(1, "node/add", ManualEntry{Address: "node.local", Name: "lab"}))
+	m.handleMessage(requestMessage(t, 1, "node/add", ManualEntry{Address: "node.local", Name: "lab"}))
 
-	resp := readCaptureUntil(t, rw, responseWithID(1))
+	resp := readCaptureUntil(t, rw, responseWithID(t, 1))
 	initial := decodeResult[ManualNodeStatus](t, resp)
 	assert.Equal(t, "lab", initial.ID, "initial status (%v)", initial)
 	assert.Equal(t, "node.local", initial.Address, "initial status (%v)", initial)
@@ -307,21 +321,21 @@ func TestNodeAdd_RejectsInvalidParameters(t *testing.T) {
 			assert.Equal(t, -32602, resp.Error.Code)
 		})
 	}
-	test("malformed params", requestMessageRaw(1, "node/add", json.RawMessage(`"bad"`)))
-	test("missing address", requestMessage(2, "node/add", ManualEntry{}))
+	test("malformed params", requestMessageRaw(t, 1, "node/add", json.RawMessage(`"bad"`)))
+	test("missing address", requestMessage(t, 2, "node/add", ManualEntry{}))
 
 	require.Empty(t, m.listNodes(), "validation errors added nodes")
 }
 
 func TestNodesList_ReturnsCurrentStatuses(t *testing.T) {
 	m, rw, rt := newTestManager()
-	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
+	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, sampleInfo())
 
-	m.handleMessage(requestMessage(1, "node/add", ManualEntry{Address: "node.local"}))
+	m.handleMessage(requestMessage(t, 1, "node/add", ManualEntry{Address: "node.local"}))
 	_ = readCaptureUntil(t, rw, methodIs("node/discovered"))
 
-	m.handleMessage(requestMessage(2, "nodes/list", nil))
-	resp := readCaptureUntil(t, rw, responseWithID(2))
+	m.handleMessage(requestMessage(t, 2, "nodes/list", nil))
+	resp := readCaptureUntil(t, rw, responseWithID(t, 2))
 	var result struct {
 		Nodes []ManualNodeStatus `json:"nodes"`
 	}
@@ -338,18 +352,18 @@ func TestNodeRemove_ReturnsRemovedAndNotifies(t *testing.T) {
 		status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318},
 	}
 
-	m.handleMessage(requestMessage(1, "node/remove", map[string]string{"id": "lab"}))
+	m.handleMessage(requestMessage(t, 1, "node/remove", map[string]string{"id": "lab"}))
 	removed := readCaptureFrame(t, rw)
 	assert.Equal(t, "node/removed", removed.Method, "first remove frame (%v)", removed)
 	status := decodeParams[ManualNodeStatus](t, removed)
 	assert.Equal(t, "lab", status.ID, "removed params (%v)", status)
-	resp := readCaptureUntil(t, rw, responseWithID(1))
+	resp := readCaptureUntil(t, rw, responseWithID(t, 1))
 	result := decodeResult[map[string]bool](t, resp)
 	assert.True(t, result["removed"], "removed result (%v)", result)
 	require.Empty(t, m.listNodes(), "node still listed after removal")
 
-	m.handleMessage(requestMessage(2, "node/remove", map[string]string{"id": "lab"}))
-	resp = readCaptureUntil(t, rw, responseWithID(2))
+	m.handleMessage(requestMessage(t, 2, "node/remove", map[string]string{"id": "lab"}))
+	resp = readCaptureUntil(t, rw, responseWithID(t, 2))
 	result = decodeResult[map[string]bool](t, resp)
 	assert.False(t, result["removed"], "second removal result (%v)", result)
 	assertNoCaptureMethod(t, rw, "node/removed")
@@ -392,12 +406,12 @@ func TestProbeNode_EmitsUpdatedOnStateChange(t *testing.T) {
 	m, rw, rt := newTestManager()
 	m.nodes["lab"] = &trackedNode{entry: ManualEntry{Name: "lab", Address: "node.local"}, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
 
-	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
+	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, sampleInfo())
 	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
 	first := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	assert.Equal(t, []string{"llama3"}, first.OllamaModels, "first update models")
 
-	configureHealthyNode(rt, "node.local", []string{"mistral"}, sampleInfo())
+	configureHealthyNode(t, rt, "node.local", []string{"mistral"}, sampleInfo())
 	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
 	second := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	assert.Equal(t, []string{"mistral"}, second.OllamaModels, "second update models")
@@ -407,7 +421,7 @@ func TestProbeNode_EmitsNothingWhenStateIsUnchanged(t *testing.T) {
 	m, rw, rt := newTestManager()
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
 	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
-	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
+	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, sampleInfo())
 
 	m.probeNode(entry)
 	_ = readCaptureUntil(t, rw, methodIs("node/updated"))
@@ -461,7 +475,7 @@ func TestProbeFailure_PreservesHostUUID(t *testing.T) {
 
 	info := sampleInfo()
 	info.HostUUID = "node-uuid"
-	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
+	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, info)
 
 	// First probe learns the UUID.
 	m.probeNode(entry)
@@ -478,7 +492,7 @@ func TestProbeFailure_PreservesHostUUID(t *testing.T) {
 	assert.Equal(t, "node-uuid", down.HostUUID, "HostUUID dropped on node-info failure")
 
 	// node-info recovers: still the same UUID (no flap).
-	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
+	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, info)
 	m.probeNode(entry)
 	up := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	assert.Equal(t, "node-uuid", up.HostUUID, "HostUUID after recovery")
@@ -497,7 +511,7 @@ func TestTelemetryEquality_DistinguishesMissingCPUAndMemoryReadings(t *testing.T
 
 func TestUnknownMethod_ReturnsMethodNotFound(t *testing.T) {
 	m, rw, _ := newTestManager()
-	m.handleMessage(requestMessage(1, "bogus", nil))
+	m.handleMessage(requestMessage(t, 1, "bogus", nil))
 	resp := readCaptureFrame(t, rw)
 	require.NotNil(t, resp.Error, "unknown method error")
 	assert.Equal(t, -32601, resp.Error.Code, "unknown method error")
@@ -505,12 +519,12 @@ func TestUnknownMethod_ReturnsMethodNotFound(t *testing.T) {
 
 func TestLogSetLevel_AppliesRequestedVerbosity(t *testing.T) {
 	m, rw, _ := newTestManager()
-	m.handleMessage(requestMessage(1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
+	m.handleMessage(requestMessage(t, 1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
 	resp := readCaptureFrame(t, rw)
 	result := decodeResult[map[string]string](t, resp)
 	assert.Equal(t, "debug", result["level"], "log/set-level result (%v)", result)
 
-	m.handleMessage(requestMessage(2, applog.SetLevelMethod, applog.SetLevelParams{Level: "not-a-level"}))
+	m.handleMessage(requestMessage(t, 2, applog.SetLevelMethod, applog.SetLevelParams{Level: "not-a-level"}))
 	resp = readCaptureFrame(t, rw)
 	require.NotNil(t, resp.Error, "invalid log/set-level error")
 	assert.Equal(t, -32602, resp.Error.Code, "invalid log/set-level error")
@@ -536,7 +550,7 @@ func TestShutdownRequest_CancelsRun(t *testing.T) {
 
 	writePipeRequest(t, client, 7, "shutdown", nil)
 	resp := readPipeFrame(t, client, reader)
-	assert.True(t, responseWithID(7)(resp), "shutdown response (%v)", resp)
+	assert.True(t, responseWithID(t, 7)(resp), "shutdown response (%v)", resp)
 	require.Nil(t, resp.Error, "shutdown response (%v)", resp)
 
 	select {
@@ -549,7 +563,7 @@ func TestShutdownRequest_CancelsRun(t *testing.T) {
 
 func TestNotification_IsIgnored(t *testing.T) {
 	m, rw, _ := newTestManager()
-	m.handleMessage(notificationMessage("node/add", ManualEntry{Address: "node.local"}))
+	m.handleMessage(notificationMessage(t, "node/add", ManualEntry{Address: "node.local"}))
 	require.Empty(t, m.listNodes(), "notification mutated state")
 	assertNoCaptureMethod(t, rw, "")
 }

@@ -139,11 +139,11 @@ func TestInferenceShutdown_StopsTheProxyBeforeEngines(t *testing.T) {
 	go func() {
 		codec := NewCodec(engineServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		order <- "engine-manager"
-		_ = codec.Respond(msg.ID, nil)
+		assert.NoError(t, codec.Respond(msg.ID, nil))
 	}()
 
 	b := &Broker{proxySup: proxySup}
@@ -222,10 +222,10 @@ func TestUnbindableLMStudioFacade_FinishesWithoutRestartingTheProcess(t *testing
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
-			_ = codec.Respond(msg.ID, proxyReadyParams{Port: 1})
+			assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: 1}))
 		}
 	}()
 

@@ -42,7 +42,8 @@ func newCountingServer(t *testing.T, status int, body string) (serverURL string,
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		n.Add(1)
 		w.WriteHeader(status)
-		io.WriteString(w, body)
+		_, err := io.WriteString(w, body)
+		assert.NoError(t, err)
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL, func() int { return int(n.Load()) }
@@ -201,11 +202,13 @@ func TestHandleHTTP_RetriesTheOnlyOwner(t *testing.T) {
 		flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if hits.Add(1) <= 2 {
 				w.WriteHeader(http.StatusServiceUnavailable)
-				io.WriteString(w, `{"error":"loading model"}`)
+				_, err := io.WriteString(w, `{"error":"loading model"}`)
+				assert.NoError(t, err)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{"done":true}`)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
 		}))
 		defer flaky.Close()
 
@@ -425,7 +428,8 @@ func TestHandleHTTP_AbortsAttemptWhenTargetLeavesDiscovery(t *testing.T) {
 
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `{"done":true}`)
+		_, err := io.WriteString(w, `{"done":true}`)
+		assert.NoError(t, err)
 	}))
 	defer good.Close()
 

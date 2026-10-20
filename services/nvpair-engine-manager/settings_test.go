@@ -617,7 +617,7 @@ func TestSavedLaunch_OverridesManifestEnvironmentLiterally(t *testing.T) {
 			env := []string{"LD_LIBRARY_PATH=" + value}
 			rt.LaunchEnv = env
 			launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"})
-			assert.NoError(t, err, "saved launch environment")
+			require.NoError(t, err, "saved launch environment")
 			assert.Equal(t, value, launch.Env["LD_LIBRARY_PATH"], "saved launch environment")
 		})
 	}
@@ -650,7 +650,7 @@ func TestSettings_SwapsLiveServerAndProxyPorts(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_ = proxy.Close()
+		require.NoError(t, proxy.Close())
 		proxy = next
 		return nil
 	})

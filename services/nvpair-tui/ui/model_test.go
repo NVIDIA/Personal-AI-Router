@@ -146,9 +146,8 @@ func TestMinimumWidth_KeepsNavigationVisible(t *testing.T) {
 	lines := strings.Split(m.View(), "\n")
 	assert.Contains(t, lines[1], "Logs", "last tab is hidden at minimum width")
 	footer := lines[len(lines)-1]
-	for _, want := range []string{"quit", "help"} {
-		assert.Contains(t, footer, want, "footer at minimum width")
-	}
+	assert.Contains(t, footer, "quit", "footer at minimum width")
+	assert.Contains(t, footer, "help", "footer at minimum width")
 
 	// With an error count the names no longer fit, and every tab must still be
 	// reachable by the number the bar shows for it.

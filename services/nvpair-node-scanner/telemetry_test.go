@@ -33,7 +33,7 @@ func TestRefreshNodeTelemetry_EmitsFreshnessAndUtilization(t *testing.T) {
 		HostUUID:       "node-a",
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(response)
+		assert.NoError(t, json.NewEncoder(w).Encode(response))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -59,10 +59,10 @@ func TestRefreshNodeTelemetry_EmitsFreshnessAndUtilization(t *testing.T) {
 
 func TestRefreshNodeTelemetry_RejectsMismatchedIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID:       "node-b",
 			TelemetryValid: true,
-		})
+		}))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -84,11 +84,11 @@ func TestRefreshNodeTelemetry_RejectsMismatchedIdentity(t *testing.T) {
 // published list.
 func TestRefreshTelemetry_FailsOverToAnAnsweringAddress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID:       "node-a",
 			TelemetryValid: true,
 			GPUs:           []GPUInfo{{Name: "GPU 0", UtilizationPercent: 61}},
-		})
+		}))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -219,7 +219,7 @@ func TestRefreshTelemetry_SkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testin
 	var backedOffCalls atomic.Int32
 	backedOff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		backedOffCalls.Add(1)
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-backed-off"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-backed-off"}))
 	}))
 	defer backedOff.Close()
 	backedOffURL, err := url.Parse(backedOff.URL)
@@ -230,7 +230,7 @@ func TestRefreshTelemetry_SkipsBackedOffPeerWithoutDelayingHealthyPeer(t *testin
 	var healthyCalls atomic.Int32
 	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		healthyCalls.Add(1)
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"}))
 	}))
 	defer healthy.Close()
 	healthyURL, err := url.Parse(healthy.URL)
@@ -274,7 +274,7 @@ func TestBrowseTXTUpdate_PreservesTelemetryRetry(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -350,7 +350,7 @@ func TestBrowseEndpointUpdate_WaitsForOldTelemetryBeforeClaimingReplacement(t *t
 	newServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		newEntered <- struct{}{}
 		<-releaseNew
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
 	}))
 	oldEntered := make(chan struct{}, 1)
 	releaseOld := make(chan struct{}, 1)
@@ -459,7 +459,7 @@ func TestTelemetryLoop_KeepsHealthyNodeOnCadenceWhilePeerIsBlocked(t *testing.T)
 			default:
 			}
 		}
-		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"})
+		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-healthy"}))
 	}))
 	defer healthy.Close()
 	healthyURL, err := url.Parse(healthy.URL)
@@ -528,7 +528,7 @@ func TestTelemetryLoop_DoesNotOverlapNodePolls(t *testing.T) {
 		}
 		select {
 		case <-time.After(20 * time.Millisecond):
-			_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-a"})
+			assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "node-a"}))
 		case <-r.Context().Done():
 		}
 	}))

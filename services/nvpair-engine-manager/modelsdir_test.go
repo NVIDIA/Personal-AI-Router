@@ -180,7 +180,7 @@ func TestRemoveTreePreserving_KeepsASymlinkedStore(t *testing.T) {
 
 	assert.FileExists(t, model, "deleted the directory the store links to")
 	_, err := os.Lstat(store)
-	assert.NoError(t, err, "removed the store's link")
+	require.NoError(t, err, "removed the store's link")
 	_, err = os.Stat(filepath.Dir(binary))
 	assert.ErrorIs(t, err, os.ErrNotExist, "the engine's own files survived")
 }
@@ -251,7 +251,7 @@ func TestRemoveTreePreserving_RefusesInsideTheStore(t *testing.T) {
 	require.NoError(t, os.MkdirAll(inside, 0o755))
 	assert.Error(t, removeTreePreserving(inside, store), "expected an error when the target is inside the model store")
 	_, err := os.Stat(inside)
-	assert.NoError(t, err, "a refused removal still deleted %q", inside)
+	require.NoError(t, err, "a refused removal still deleted %q", inside)
 }
 
 // TestRemoveTreePreservingUnlinksSymlinkedTarget checks a symlinked target is
@@ -273,7 +273,7 @@ func TestRemoveTreePreserving_UnlinksSymlinkedTarget(t *testing.T) {
 	_, err := os.Lstat(link)
 	assert.ErrorIs(t, err, os.ErrNotExist, "the link survived")
 	_, err = os.Stat(filepath.Join(victim, "keep-me"))
-	assert.NoError(t, err, "followed the link and deleted the real directory's contents")
+	require.NoError(t, err, "followed the link and deleted the real directory's contents")
 }
 
 // TestRemoveTreePreservingIsBestEffort pins that one undeletable entry does not
@@ -293,7 +293,7 @@ func TestRemoveTreePreserving_ReportsUndeletableEntriesAndRemovesOthers(t *testi
 	// Read-only parent: the child cannot be unlinked, so "locked" fails while
 	// "bin" — which sorts after it — must still go.
 	require.NoError(t, os.Chmod(locked, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(locked, 0o700), "restore directory permissions") })
 
 	err := removeTreePreserving(engineRoot, filepath.Join(engineRoot, "models"))
 	assert.Error(t, err, "expected the undeletable entry to be reported")
@@ -302,5 +302,5 @@ func TestRemoveTreePreserving_ReportsUndeletableEntriesAndRemovesOthers(t *testi
 }
 
 func TestRemoveTreePreserving_SucceedsWhenTargetIsMissing(t *testing.T) {
-	assert.NoError(t, removeTreePreserving(filepath.Join(t.TempDir(), "absent"), ""), "removing an absent path should be a no-op")
+	require.NoError(t, removeTreePreserving(filepath.Join(t.TempDir(), "absent"), ""), "removing an absent path should be a no-op")
 }

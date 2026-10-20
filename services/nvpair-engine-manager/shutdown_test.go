@@ -36,7 +36,8 @@ func TestStopAll_StopsEveryEngine(t *testing.T) {
 	ports := make([]int, len(names))
 	for i, name := range names {
 		require.NoError(t, ex.Start(ctx, name), "start (%v)", name)
-		st, _ := ex.Status(name)
+		st, err := ex.Status(name)
+		require.NoError(t, err)
 		require.True(t, st.Running, " (%v, %v)", name, st)
 		require.NotEqual(t, 0, st.Port, " (%v, %v)", name, st)
 		ports[i] = st.Port

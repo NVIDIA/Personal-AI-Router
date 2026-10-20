@@ -27,7 +27,8 @@ func TestLegacyPairingInfo_MapsToFirstAdmission(t *testing.T) {
 
 	info.AdmissionEpoch = 0
 	info.V = pairingInfoVersion
-	raw, _ = json.Marshal(info)
+	raw, err = json.Marshal(info)
+	require.NoError(t, err)
 	_, _, err = parsePairingInfo(raw)
 	require.Error(t, err, "v2 pairing info without admission epoch was accepted")
 }

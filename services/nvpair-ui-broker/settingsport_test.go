@@ -20,7 +20,10 @@ import (
 func callBrokerPortRequest(t *testing.T, b *Broker, method string, params json.RawMessage) *Message {
 	t.Helper()
 	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	t.Cleanup(func() {
+		assert.NoError(t, client.Close())
+		assert.NoError(t, server.Close())
+	})
 	require.NoError(t, client.SetReadDeadline(time.Now().Add(5*time.Second)), "set response deadline")
 	b.codec = NewCodec(server)
 	id := json.RawMessage(`1`)
@@ -108,7 +111,7 @@ func TestBrokerLlamaCPPProxySetPort_RejectsConflicts(t *testing.T) {
 	test("occupied listener", func(t *testing.T, h *settingsHarness, before settings.Snapshot) int {
 		ln, err := net.Listen("tcp", ":0")
 		require.NoError(t, err, "bind occupied port")
-		t.Cleanup(func() { _ = ln.Close() })
+		t.Cleanup(func() { assert.NoError(t, ln.Close()) })
 		return ln.Addr().(*net.TCPAddr).Port
 	})
 }

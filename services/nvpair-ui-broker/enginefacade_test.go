@@ -49,8 +49,8 @@ func TestDefaultEngineFacade_RetriesAwayFromReservedPorts(t *testing.T) {
 
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
-		_ = proxyClient.Close()
-		_ = proxyServer.Close()
+		assert.NoError(t, proxyClient.Close())
+		assert.NoError(t, proxyServer.Close())
 	})
 	proxy := &proxyProcess{peer: NewPeer(NewCodec(proxyClient))}
 	go proxy.peer.Serve(nil, nil)
@@ -98,7 +98,7 @@ func TestLlamaCPPFacadePreparation_PreservesConfiguredPorts(t *testing.T) {
 			go func() {
 				for {
 					msg, err := codec.Read()
-					if err != nil {
+					if !assertRPCRead(t, err) {
 						return
 					}
 					calls.Add(1)
@@ -157,8 +157,8 @@ func TestLlamaCPPEngineStatus_RelaysBeforeOtherPortGates(t *testing.T) {
 	t.Cleanup(func() {
 		close(b.ollamaPortReady)
 		close(b.lmstudioPortReady)
-		_ = client.Close()
-		_ = server.Close()
+		assert.NoError(t, client.Close())
+		assert.NoError(t, server.Close())
 	})
 	b.codec = NewCodec(server)
 	id := json.RawMessage(`1`)
@@ -178,8 +178,8 @@ func TestLlamaCPPProxyNotificationDispatch_PreservesFacadeAddress(t *testing.T) 
 	profile := mustEngineProxyProfile("llamacpp")
 	client, server := net.Pipe()
 	t.Cleanup(func() {
-		_ = client.Close()
-		_ = server.Close()
+		assert.NoError(t, client.Close())
+		assert.NoError(t, server.Close())
 	})
 	b := &Broker{codec: NewCodec(server)}
 	b.proxyMu.Lock()
