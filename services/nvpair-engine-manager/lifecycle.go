@@ -64,6 +64,9 @@ type startOpts struct {
 	RequireOwned bool
 	Port         int
 	Bind         string
+	// Wake starts an engine that is marked running but has no process, one that
+	// was unloaded for being idle, instead of treating it as already started.
+	Wake bool
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -122,7 +125,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.mu.Lock()
 	running := st.running
 	adopted := st.adopted
-	if running && !adopted {
+	if running && !adopted && !opts.Wake {
 		st.mu.Unlock()
 		return nil
 	}

@@ -112,7 +112,11 @@ holds the connection, starts the engine behind itself, and forwards the request
 once it is ready, so the first request waits for the load (about 25 s for an 8B
 model). Requests that arrive together share one start, a client that gives up
 does not abandon the load, and the proxy's 120 s limit is the ceiling for a very
-large model. A load that fails answers 503 saying so, and leaves the engine idle,
+large model. While it is unloaded and while it loads, the engine stays marked
+running and idle, goes on advertising the model it is set to serve, and the
+gateway answers `GET /v1/models` with that model, so the proxy, which routes by
+the advertised models and builds its own list from that call, keeps sending the
+request here instead of refusing it. A load that fails answers 503 saying so, and leaves the engine idle,
 not stopped, so the next request tries again. Reads such as `/health` and
 `/v1/models` never load the model.
 

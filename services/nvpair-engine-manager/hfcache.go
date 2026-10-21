@@ -353,18 +353,3 @@ func (e *Executor) servedModel(engine string) (string, error) {
 	}
 	return model, nil
 }
-
-// servedModelNoWait is servedModel for a reader that must not wait on a
-// lifecycle operation, such as the model inventory: while one is running it
-// reports an error and the caller tries again at its next poll.
-func (e *Executor) servedModelNoWait(engine string) (string, error) {
-	st, err := e.state(engine)
-	if err != nil {
-		return "", err
-	}
-	if !st.opMu.TryLock() {
-		return "", fmt.Errorf("a lifecycle operation is in progress")
-	}
-	st.opMu.Unlock()
-	return e.servedModel(engine)
-}

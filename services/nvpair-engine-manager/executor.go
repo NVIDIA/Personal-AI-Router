@@ -82,6 +82,10 @@ type engineState struct {
 	// idle is set while front's engine is unloaded for being idle: the engine is
 	// ON (running is true) but has no process.
 	idle bool
+	// idleModel is the model the engine was set to serve when it was unloaded. It
+	// is kept so the engine goes on advertising it, without reading the launch
+	// settings while a lifecycle operation holds them.
+	idleModel string
 }
 
 // Executor owns engine lifecycle for every engine known on this host.

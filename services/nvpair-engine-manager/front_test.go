@@ -801,3 +801,83 @@ func TestIdleEngineStillAdvertisesItsModel(t *testing.T) {
 		t.Fatalf("loaded = %v (%v), want queried and empty", loaded, ok)
 	}
 }
+
+// A request through the proxy is routed by the node's advertised models, so the
+// engine must never drop its model from the inventory while it unloads or loads:
+// in that gap the proxy has no node for the model and refuses the request.
+func TestTheModelStaysAdvertisedThroughAnUnloadAndALoad(t *testing.T) {
+	t.Setenv("FAKE_START_DELAY", "800ms")
+	e, public, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+
+	var missing atomic.Int32
+	var samples atomic.Int32
+	stop := make(chan struct{})
+	var watchers sync.WaitGroup
+	watchers.Add(1)
+	go func() {
+		defer watchers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			res := e.ModelsResult(context.Background())
+			samples.Add(1)
+			if got := res.ByEngine["fronted"]; len(got) == 0 {
+				missing.Add(1)
+			}
+		}
+	}()
+
+	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK {
+		t.Fatalf("the request that loads the engine answered %d", got)
+	}
+	close(stop)
+	watchers.Wait()
+	if !up(backend) {
+		t.Fatal("not loaded")
+	}
+	if missing.Load() != 0 {
+		t.Fatalf("the model was missing from the inventory in %d of %d samples during the unload and load", missing.Load(), samples.Load())
+	}
+}
+
+func TestTheModelListIsAnsweredWhileUnloadedAndWhileLoading(t *testing.T) {
+	t.Setenv("FAKE_START_DELAY", "1s")
+	e, public, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	list := func() (int, string) {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", public))
+		if err != nil {
+			return 0, ""
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	if code, body := list(); code != http.StatusOK || !strings.Contains(body, `"id":"org/m"`) {
+		t.Fatalf("while unloaded: %d %s, want the model it serves", code, body)
+	}
+
+	go post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)) // loads it
+	time.Sleep(400 * time.Millisecond)
+	if st, _ := e.Status("fronted"); !st.Running {
+		t.Fatalf("status = %+v: an engine that is loading must not look stopped", st)
+	}
+	if code, body := list(); code != http.StatusOK || !strings.Contains(body, `"id":"org/m"`) {
+		t.Fatalf("while loading: %d %s, want the model it serves", code, body)
+	}
+	eventually(t, "the load", 10*time.Second, func() bool { return up(backend) })
+}

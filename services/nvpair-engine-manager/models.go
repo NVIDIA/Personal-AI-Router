@@ -115,7 +115,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			if st.Idle && loadedSpec != nil {
 				// Unloaded for being idle: nothing is resident, but the engine still
 				// answers for the model it is set to serve, by loading it on demand.
-				if model, err := e.servedModelNoWait(name); err == nil {
+				if model := e.idleModelOf(name); model != "" {
 					idleModel[i] = model
 					loaded[i], loadedOK[i] = []string{}, true
 				}
@@ -133,6 +133,16 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			}
 			if loadedSpec != nil {
 				if raw, err := e.Action(ctx, name, "loaded_models", nil); err != nil {
+					// The engine may have been unloaded between the status read and this
+					// query, which then fails. It is idle, not missing: it still answers
+					// for its model.
+					if fresh, _ := e.Status(name); fresh.Idle {
+						if model := e.idleModelOf(name); model != "" {
+							idleModel[i] = model
+							loaded[i], loadedOK[i] = []string{}, true
+							return
+						}
+					}
 					slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, loadedSpec); ok {
 					// A successful query — even an empty result — records the key

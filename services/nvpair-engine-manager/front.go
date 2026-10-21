@@ -85,6 +85,9 @@ type frontGateway struct {
 	// Requests that arrive meanwhile wait on it.
 	wakeFn func(context.Context) error
 	wakeSt *wakeState
+	// model is the model the engine serves, so that the model list can be
+	// answered while the engine is unloaded.
+	model string
 }
 
 // wakeState is one load of an unloaded engine. Every request that needs the
@@ -186,8 +189,19 @@ func (g *frontGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if g.idle {
+		if g.idle || (g.wakeSt != nil && r.Method == http.MethodGet && r.URL.Path == "/v1/models") {
+			model := g.model
 			g.mu.Unlock()
+			if r.Method == http.MethodGet && r.URL.Path == "/v1/models" && model != "" {
+				// The proxy builds its model list from this call, and an engine that is
+				// only unloaded still answers for its model.
+				body, _ := json.Marshal(map[string]any{"object": "list", "data": []map[string]any{
+					{"id": model, "object": "model", "created": 0, "owned_by": "vllm"},
+				}})
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(body)
+				return
+			}
 			if r.URL.Path == "/health" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"status":"idle"}`))
@@ -414,14 +428,32 @@ func (e *Executor) unloadFront(st *engineState, engine string, g *frontGateway, 
 	proc := st.proc
 	ok := st.running && !st.stopping && !st.idle && st.front == g && proc != nil
 	st.mu.Unlock()
-	if !ok || !g.enterIdle(timeout, force) {
+	if !ok {
+		return false
+	}
+	// Read while this holds the lifecycle lock: the engine goes on advertising
+	// this model, and nothing may read the launch settings during the unload.
+	model, _ := e.servedModelLocked(engine, st)
+	g.mu.Lock()
+	g.model = model
+	g.mu.Unlock()
+	// The state says idle before the gateway does, so a reader of the inventory
+	// never sees an engine that is neither loaded nor idle and drops its model.
+	st.mu.Lock()
+	st.idle = true
+	st.idleModel = model
+	st.mu.Unlock()
+	if !g.enterIdle(timeout, force) {
+		st.mu.Lock()
+		st.idle = false
+		st.idleModel = ""
+		st.mu.Unlock()
 		return false
 	}
 	st.mu.Lock()
 	// The process is released from the state before it is stopped, so its exit is
 	// not taken for a crash.
 	st.proc = nil
-	st.idle = true
 	st.mu.Unlock()
 	slog.Info("unloading an idle engine", "engine", engine, "forced", force)
 	e.emitState(engine)
@@ -471,9 +503,6 @@ func (e *Executor) wakeEngine(ctx context.Context, engine string) error {
 		st.mu.Unlock()
 		return nil
 	}
-	// doStart does nothing for an engine marked running, so it is marked stopped
-	// for the duration of the start.
-	st.running, st.healthy, st.idle = false, false, false
 	st.mu.Unlock()
 	limit := 10 * time.Minute
 	if ready := st.plat.Runtime.Ready; ready != nil && ready.TimeoutS > 0 {
@@ -481,15 +510,20 @@ func (e *Executor) wakeEngine(ctx context.Context, engine string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	if err := e.doStart(ctx, st, engine, startOpts{}); err != nil {
+	// The engine stays marked running and idle throughout, so the status and the
+	// model inventory do not flicker while it loads.
+	if err := e.doStart(ctx, st, engine, startOpts{Wake: true}); err != nil {
 		st.mu.Lock()
-		if st.front != nil && st.front.alive() {
-			st.running, st.healthy, st.idle = true, true, true
-		}
+		st.stopping = false
 		st.mu.Unlock()
 		e.emitState(engine)
 		return err
 	}
+	st.mu.Lock()
+	st.idle = false
+	st.idleModel = ""
+	st.mu.Unlock()
+	e.emitState(engine)
 	return nil
 }
 
@@ -593,4 +627,30 @@ func (e *Executor) presenceForStart(ctx context.Context, engine string, st *engi
 		return presenceResult{}
 	}
 	return e.reconcilePresence(ctx, engine, st, pathInstalled, port, true)
+}
+
+// servedModelLocked is the model the engine's launch names. The caller holds the
+// lifecycle lock, which the launch settings are read under.
+func (e *Executor) servedModelLocked(engine string, st *engineState) (string, error) {
+	state := e.launchStateLocked(engine, st)
+	tokens, err := parseLaunchText(state.LaunchText)
+	if err != nil {
+		return "", err
+	}
+	model, ok := launchFlagValue(tokens, "--model")
+	if !ok || model == "" {
+		return "", fmt.Errorf("the launch arguments name no --model")
+	}
+	return model, nil
+}
+
+// idleModelOf is the model an unloaded engine goes on advertising.
+func (e *Executor) idleModelOf(engine string) string {
+	st, err := e.state(engine)
+	if err != nil {
+		return ""
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.idleModel
 }
