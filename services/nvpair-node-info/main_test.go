@@ -28,6 +28,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 )
@@ -82,6 +83,45 @@ func TestNodeInfo_StreamsPrivateSnapshotsAndAcceptsMetadata(t *testing.T) {
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 	assert.Equal(t, hostUUID, public.HostUUID)
 	assert.NotNil(t, public.GPUs)
+	assert.Nil(t, public.Peer)
+}
+
+// Drive membership on disk while a real owned worker is running. Its private
+// stream and public hardware display must work before join and after leave.
+func TestNodeInfo_PrivateIPCContinuesAcrossJoinAndLeave(t *testing.T) {
+	const hostUUID = "owned-host"
+	dir := t.TempDir()
+	process := startNodeInfoForTest(t, hostUUID, "--cluster-dir", dir)
+	initial := process.nextSnapshot(t)
+	assert.True(t, initial.ClusterUUID == nil || *initial.ClusterUUID == "")
+
+	clustertrusttest.Join(t, dir, "test-cluster", hostUUID)
+	var joined noderec.NodeInfo
+	for joined.ClusterUUID == nil || *joined.ClusterUUID != hostUUID {
+		joined = process.nextSnapshot(t)
+	}
+	// A polling reader can still hold the admission file open during departure.
+	// Clear active membership in place so departure also works with that reader.
+	admissionReader, err := os.Open(filepath.Join(dir, "admission.json"))
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, admissionReader.Close()) })
+	clustertrusttest.WriteAdmission(t, dir, "", 0)
+	left := process.nextSnapshot(t)
+	for left.ClusterUUID != nil && *left.ClusterUUID != "" {
+		left = process.nextSnapshot(t)
+	}
+	assert.Equal(t, initial.HostUUID, left.HostUUID)
+	assert.NotNil(t, left.GPUs)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	t.Cleanup(client.CloseIdleConnections)
+	response, err := client.Get(process.inventoryURL)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, response.Body.Close()) }()
+	var public noderec.NodeInfo
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&public))
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+	assert.Equal(t, hostUUID, public.HostUUID)
 	assert.Nil(t, public.Peer)
 }
 

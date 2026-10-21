@@ -87,6 +87,13 @@ membership, or registrations change, and is replayed after node-info restarts.
 Remote discovery claims cannot populate this metadata. These links are internal
 worker IPC; desktop and TUI continue using public HTTP for hardware displays.
 
+Verified record IDs bind scanner and manual proofs to current pins and local
+membership. Trust changes withdraw affected records, full hardware snapshots,
+and scheduling samples from both sources. Queued events and scheduler replay
+recheck that binding. A scanner crash withdraws its entire directory; its
+replacement authenticates remote records again while local IPC replays retain
+their age. Notifications from a previous worker cannot restore its records.
+
 ## CLI Flags
 
 | Flag | Default | Description |
@@ -574,6 +581,10 @@ Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, tls_port?, mtls
 Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. The broker persists successful `node/add` operations to `configs/manual-nodes.json` in the per-user data directory and replays them into a replacement `nvpair-manual-nodes` worker after startup. Successful `node/remove` operations update the same durable list. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
 
 **Manual → proxy bridge.** When the broker supervises both `nvpair-manual-nodes` and a proxy, it also bridges a manual node whose engine is reachable into that proxy via `node/add-manual` (host/port from the node's per-engine status), so inference can route to it through `ollama-proxy:node/select` / `lmstudio-proxy:node/select` just like a relay-discovered node. This is per-engine: a node whose `ollama_*` status is up is bridged into `ollama-proxy` (host/port from `ollama_port`), and one whose `lmstudio_*` status is up into `lmstudio-proxy` (from `lmstudio_port`) — a node running both is bridged into both. Manual nodes are by definition the ones that never appear via the daemon's `_nvpair-node` discovery, so this explicit add is what makes them routable. The bridge tracks reachability: an engine that goes down (or a node that is removed, or whose prober crashes) is pulled back out with `node/remove-manual`. A proxy that isn't supervised → that leg is a no-op; manual nodes still appear in the discovery snapshot as before.
+
+Each engine has one ordered bridge sender outside the discovery lock. It keeps the latest desired target per key, coalescing intermediate status updates while the proxy is slow. Withdrawals follow any in-flight add, and a later status update retries a failed add or removal. A replacement proxy receives the current targets after its facades are enabled; a canceled configuration is not replayed. Manual bridge calls therefore do not hold the discovery lock while waiting for a proxy.
+
+Proxy discovery subscriptions likewise queue their latest complete snapshot per engine. One sender per proxy process writes these notifications outside the discovery and relay locks, preserving empty withdrawals and replacing pending snapshots from retired subscriptions. A blocked proxy therefore cannot hold those locks through either its manual bridge or its discovery subscription.
 
 #### `cluster:<method>` / `nodes:<method>` (generic relay)
 

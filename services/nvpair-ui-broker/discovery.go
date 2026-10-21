@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/clustertrust"
 	"nvpair-shared/netpick"
 	"nvpair-shared/noderec"
 
@@ -271,6 +272,36 @@ func newDiscoveryStore() *discoveryStore {
 	return &discoveryStore{nodes: make(map[string]storedNode)}
 }
 
+func (s *discoveryStore) sourceNodes(source nodeSource) []EnrichedNode {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var nodes []EnrichedNode
+	for _, stored := range s.nodes {
+		node := stored.scanner
+		if source == sourceManual {
+			node = stored.manual
+		}
+		if node != nil {
+			nodes = append(nodes, *node)
+		}
+	}
+	return nodes
+}
+
+func (s *discoveryStore) sourceNode(key string, source nodeSource) (EnrichedNode, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	stored := s.nodes[key]
+	node := stored.scanner
+	if source == sourceManual {
+		node = stored.manual
+	}
+	if node == nil {
+		return EnrichedNode{}, false
+	}
+	return *node, true
+}
+
 // SetOnChange installs (or removes, with nil) the post-mutation hook.
 // Setting it after a sequence of mutations is the broker's way of
 // silencing the notification stream during startup: by attaching the
@@ -295,6 +326,9 @@ func (s *discoveryStore) Upsert(n EnrichedNode, source nodeSource) {
 	cp := n
 	s.mu.Lock()
 	sn := s.nodes[key]
+	if source == sourceScanner && sn.scanner != nil && sn.scanner.DiscoveryRecordID != n.DiscoveryRecordID {
+		sn.info = nil
+	}
 	sn.setSource(source, &cp)
 	sn.lastSeen = time.Now()
 	s.nodes[key] = sn
@@ -434,6 +468,9 @@ func (sn storedNode) toAvailable() AvailableNode {
 // subscribe to the promoted daemon and reading its acks — while
 // the scanner's node/* notifications are routed into the discovery store.
 type scannerProcess struct {
+	stateMu  *sync.Mutex
+	mesh     *clustertrust.Mesh
+	stopped  bool // protected by stateMu, alongside directory mutations
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	peer     *Peer
@@ -494,6 +531,8 @@ func (s *scannerProcess) Done() <-chan struct{} { return s.done }
 func startScanner(
 	binaryPath, logLevel string,
 	store *discoveryStore,
+	stateMu *sync.Mutex,
+	mesh *clustertrust.Mesh,
 	relayDir *relay.Directory,
 	onNodeLost func(uuid, name string),
 	onTelemetry func(noderec.NodeTelemetry),
@@ -522,6 +561,8 @@ func startScanner(
 	}
 
 	sp := &scannerProcess{
+		stateMu:            stateMu,
+		mesh:               mesh,
 		cmd:                cmd,
 		stdin:              stdin,
 		peer:               NewPeer(NewCodec(readWriter{stdout, stdin})),
@@ -691,12 +732,33 @@ func (s *scannerProcess) pushUnregister(svc noderec.ServiceKey) {
 // is logged. Responses to broker-issued Calls are demuxed by the peer itself and
 // never reach here; any other notification is ignored.
 func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
+	receivedAt := time.Now()
+	if s.stateMu != nil {
+		s.stateMu.Lock()
+		defer s.stateMu.Unlock()
+	}
+	if s.stopped {
+		return
+	}
+	if s.mesh != nil {
+		s.mesh.Refresh()
+	}
 	switch method {
 	case noderec.NotifyNodeDiscovered, noderec.NotifyNodeUpdated, noderec.NotifyNodeRemoved:
 		var ev noderec.NodeEvent
 		if err := json.Unmarshal(params, &ev); err != nil {
 			slog.Warn("daemon emitted invalid node event", "method", method, "err", err)
 			return
+		}
+		if method != noderec.NotifyNodeRemoved && !s.currentRecord(ev.Node.HostUUID, ev.Node.DiscoveryRecordID, ev.Node.IdentityVerification) {
+			return
+		}
+		if method == noderec.NotifyNodeRemoved && s.store != nil {
+			// A delayed removal for a previous pin must not remove its newly
+			// authenticated replacement under the same canonical host UUID.
+			if node, present := s.store.sourceNode(directoryToEnriched(ev.Node).storeKey(), sourceScanner); present && node.DiscoveryRecordID != ev.Node.DiscoveryRecordID {
+				return
+			}
 		}
 		if method != noderec.NotifyNodeRemoved && s.onLocalNode != nil {
 			s.onLocalNode(ev.Node)
@@ -726,6 +788,10 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 					s.onNodeLost(ev.Node.HostUUID, ev.Node.Name)
 				}
 			} else {
+				previous, present := s.store.sourceNode(directoryToEnriched(ev.Node).storeKey(), sourceScanner)
+				if present && previous.DiscoveryRecordID != ev.Node.DiscoveryRecordID && s.onTelemetryRemoved != nil {
+					s.onTelemetryRemoved(ev.Node.HostUUID)
+				}
 				s.store.Upsert(directoryToEnriched(ev.Node), sourceScanner)
 			}
 		}
@@ -739,12 +805,20 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 			slog.Warn("daemon emitted node telemetry without hostUuid")
 			return
 		}
+		if !s.currentHost(telemetry.HostUUID) {
+			return
+		}
 		if s.store != nil && s.store.verifiedSource(telemetry.HostUUID, sourceScanner) && s.onTelemetry != nil {
+			telemetry = telemetry.Aged(time.Since(receivedAt))
 			s.onTelemetry(telemetry)
 		}
 	case noderec.NotifyNodeInfo:
 		var value noderec.NodeInfoEvent
-		if json.Unmarshal(params, &value) != nil || s.store == nil || !s.store.AcceptInfo(value, time.Now()) {
+		if json.Unmarshal(params, &value) != nil || s.store == nil || !s.currentRecord(value.HostUUID, value.DiscoveryRecordID, value.IdentityVerification) {
+			return
+		}
+		value.Info = value.Info.Aged(time.Since(receivedAt))
+		if !s.store.AcceptInfo(value, time.Now()) {
 			return
 		}
 		if s.onNodeInfo != nil {
@@ -753,6 +827,21 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 	case "ready":
 		slog.Info("scanner reported ready", "params", string(params))
 	}
+}
+
+func (s *scannerProcess) currentRecord(uuid, recordID string, verification noderec.IdentityVerification) bool {
+	if s.mesh == nil || verification != noderec.IdentityPinned {
+		return true
+	}
+	return recordID != "" && recordID == s.mesh.PeerRecordID(uuid)
+}
+
+func (s *scannerProcess) currentHost(uuid string) bool {
+	if s.store == nil {
+		return false
+	}
+	node, present := s.store.sourceNode(uuid, sourceScanner)
+	return present && node.IdentityVerification != noderec.IdentityUnverified && s.currentRecord(uuid, node.DiscoveryRecordID, node.IdentityVerification)
 }
 
 // writeSetLevelFrame marshals a newline-delimited log/set-level

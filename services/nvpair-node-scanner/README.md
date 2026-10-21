@@ -20,6 +20,8 @@ Concretely, the daemon:
   `pinned` peer record, replacing only that successful discovery. Failed
   candidates stay separate and `unverified`. Public HTTP is never a scanner
   measurement source, and operator CAs cannot substitute for cluster pins.
+  Verified record IDs are opaque and change with the local certificate or
+  admission and the peer's exact pin or admission. Host UUIDs remain stable.
 - **Refreshes models** every 15 seconds from verified endpoints, preserving
   the last successful inventory during outages. A newly authenticated peer
   schedules a model refresh immediately. Remote model lists use pinned

@@ -162,6 +162,9 @@ func (b *Broker) removeTelemetry(source nodeSource, hostUUID string) {
 func (b *Broker) fanTelemetryToScheduler(telemetry noderec.NodeTelemetry, projectedAt time.Time) {
 	b.schedulerFeedMu.Lock()
 	defer b.schedulerFeedMu.Unlock()
+	if telemetry.TelemetryValid && b.clusterDir != "" && !b.currentTelemetrySource(telemetry.HostUUID) {
+		telemetry = noderec.NodeTelemetry{HostUUID: telemetry.HostUUID}
+	}
 
 	scheduler := b.getScheduler()
 	if scheduler == nil {
@@ -181,7 +184,12 @@ func (b *Broker) replayTelemetryToScheduler(scheduler *rpcWorker) int {
 		return 0
 	}
 	replayed := 0
-	for _, telemetry := range b.telemetry.Snapshot(time.Now()) {
+	snapshotAt := time.Now()
+	for _, telemetry := range b.telemetry.Snapshot(snapshotAt) {
+		if b.clusterDir != "" && !b.currentTelemetrySource(telemetry.HostUUID) {
+			continue
+		}
+		telemetry = telemetry.Aged(time.Since(snapshotAt))
 		if err := scheduler.Notify(schedulerwire.MethodTelemetry, telemetry); err != nil {
 			slog.Warn("replay telemetry to scheduler failed", "host_uuid", telemetry.HostUUID, "err", err)
 			break
@@ -189,4 +197,20 @@ func (b *Broker) replayTelemetryToScheduler(scheduler *rpcWorker) int {
 		replayed++
 	}
 	return replayed
+}
+
+// currentTelemetrySource checks the source the cache would project, rather
+// than allowing a different, surviving source to authorize its old sample.
+func (b *Broker) currentTelemetrySource(uuid string) bool {
+	b.telemetry.mu.RLock()
+	sources := b.telemetry.nodes[uuid]
+	source := sourceManual
+	if sources.scanner != nil {
+		source = sourceScanner
+	}
+	b.telemetry.mu.RUnlock()
+	mesh := b.currentDiscoveryMesh()
+	mesh.Refresh()
+	node, present := b.store.sourceNode(uuid, source)
+	return present && (node.IdentityVerification == noderec.IdentityLocal || (node.IdentityVerification == noderec.IdentityPinned && node.Trusted && node.DiscoveryRecordID != "" && node.DiscoveryRecordID == mesh.PeerRecordID(uuid)))
 }

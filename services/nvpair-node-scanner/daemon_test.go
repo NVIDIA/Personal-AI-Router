@@ -467,7 +467,7 @@ func TestDiscovery_PublishesAuthenticatedHardwareSnapshots(t *testing.T) {
 		}
 		var snapshot hardwareSnapshot
 		require.NoError(t, json.Unmarshal(message.Params, &snapshot))
-		assert.Equal(t, "peer:peer-uuid", snapshot.DiscoveryRecordID)
+		assert.Equal(t, f.daemon.mesh.PeerRecordID("peer-uuid"), snapshot.DiscoveryRecordID)
 		assert.Equal(t, noderec.IdentityPinned, snapshot.IdentityVerification)
 		assert.Equal(t, f.info.GPUs, snapshot.Info.GPUs)
 		snapshots++
@@ -789,24 +789,25 @@ func TestDiscovery_RejectsMissingOrInvalidPeerDetails(t *testing.T) {
 }
 
 func TestDiscovery_RejectsCertificatesThatDoNotMatchExpectedPeer(t *testing.T) {
+	const expectedPeerUUID = "peer-uuid"
+
 	test := func(name, presentedUUID string) {
 		t.Run(name, func(t *testing.T) {
-			f := newDiscoveryPeerFixture(t, "peer-uuid")
+			f := newDiscoveryPeerFixture(t, expectedPeerUUID)
 			wrongDir := t.TempDir()
 			clustertrusttest.Join(t, wrongDir, "test-cluster", presentedUUID)
-			// A certificate saved for another peer cannot authenticate this peer.
+			// Keep the expected peer's original pin, even when the presented UUID
+			// is also trusted. Another trusted peer cannot authenticate this one.
 			writePinFromCert(t, f.selfDir, presentedUUID, filepath.Join(wrongDir, "node.crt"))
-			if presentedUUID == "peer-uuid" {
-				writePinFromCert(t, f.selfDir, "peer-uuid", filepath.Join(f.peerDir, "node.crt"))
-			}
+			writePinFromCert(t, f.selfDir, expectedPeerUUID, filepath.Join(f.peerDir, "node.crt"))
 			wrongMesh := clustertrust.Open(wrongDir)
 			f.server.TLS.GetConfigForClient = wrongMesh.ServerTLSConfig().GetConfigForClient
 			f.discover(t)
-			_, present := f.daemon.dir.get("peer-uuid")
+			_, present := f.daemon.dir.get(expectedPeerUUID)
 			assert.False(t, present)
 		})
 	}
-	test("new certificate for same UUID does not match saved certificate", "peer-uuid")
+	test("new certificate for same UUID does not match saved certificate", expectedPeerUUID)
 	test("saved certificate belongs to another peer", "other-peer")
 }
 
@@ -826,6 +827,9 @@ func TestDiscovery_DiscardsResultsInvalidatedDuringRead(t *testing.T) {
 		require.NoError(t, os.Remove(filepath.Join(f.selfDir, "admission.json")))
 	})
 	test("local certificate replaced", func(t *testing.T, f *discoveryPeerFixture) { clustertrusttest.WriteKeypair(t, f.selfDir, "self-uuid") })
+	test("local node readmitted with the same certificate", func(t *testing.T, f *discoveryPeerFixture) {
+		clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+	})
 	test("discovery removed", func(t *testing.T, f *discoveryPeerFixture) {
 		f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: f.raw})
 	})
@@ -860,15 +864,29 @@ func (f *discoveryPeerFixture) invalidateDuringRead(t *testing.T, invalidate fun
 func TestDiscovery_ReauthenticatesAfterSavedCertificateChanges(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
+	previous, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
 	clustertrusttest.WriteKeypair(t, f.peerDir, "peer-uuid")
 	writePinFromCert(t, f.selfDir, "peer-uuid", filepath.Join(f.peerDir, "node.crt"))
 	f.daemon.reloadTrust()
-	_, present := f.daemon.dir.get("peer-uuid")
+	_, present = f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
 	f.daemon.refreshCandidatesOnce(context.Background())
 	node, present := f.daemon.dir.get("peer-uuid")
 	require.True(t, present)
 	assert.True(t, node.Trusted)
+	assert.NotEqual(t, previous.DiscoveryRecordID, node.DiscoveryRecordID)
+}
+
+func TestDiscovery_LocalCertificateReplacementDiscardsVerifiedInventory(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+
+	clustertrusttest.WriteKeypair(t, f.selfDir, "self-uuid")
+	f.daemon.reloadTrust()
+
+	_, present := f.daemon.dir.get("peer-uuid")
+	assert.False(t, present)
 }
 
 type heldModelResponseTransport struct {
@@ -1329,7 +1347,7 @@ func TestDiscovery_RetainedPeerExpiresAfterAvailabilityEvidenceEnds(t *testing.T
 	var removed noderec.NodeEvent
 	require.NoError(t, json.Unmarshal(message.Params, &removed))
 	assert.Equal(t, noderec.NotifyNodeRemoved, message.Method)
-	assert.Equal(t, "peer:peer-uuid", removed.Node.DiscoveryRecordID)
+	assert.Equal(t, f.daemon.mesh.PeerRecordID("peer-uuid"), removed.Node.DiscoveryRecordID)
 	f.daemon.mesh.Refresh()
 	assert.True(t, f.daemon.mesh.Clustered())
 	assert.True(t, f.daemon.mesh.HasPin("peer-uuid"))
@@ -1600,4 +1618,23 @@ func TestDiscovery_DiscardsQueuedModelsForChangedAddresses(t *testing.T) {
 	require.True(t, present)
 	assert.Equal(t, before, after)
 	assert.Empty(t, output.Bytes())
+}
+
+func TestPeerReachable_RejectsCachedLivenessAfterReadmission(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	f.daemon.noteActivity("peer-uuid", 0)
+	require.True(t, f.daemon.peerReachable("peer-uuid"))
+	require.True(t, f.daemon.reachable(f.raw))
+
+	// Readmission changes the proof binding even when both certificates remain.
+	// Availability checks must reject old evidence before a reload notification.
+	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+
+	assert.False(t, f.daemon.peerReachable("peer-uuid"))
+	assert.False(t, f.daemon.reachable(f.raw))
+
+	f.daemon.reloadTrust()
+	f.daemon.refreshCandidatesOnce(context.Background())
+	assert.True(t, f.daemon.reachable(f.raw))
 }

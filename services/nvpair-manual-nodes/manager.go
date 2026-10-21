@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"sync"
 	"time"
@@ -68,11 +70,13 @@ type MemoryInfo struct {
 }
 
 type NodeInfoResponse struct {
-	GPUs           []GPUInfo   `json:"GPUs"`
-	CPU            *CPUInfo    `json:"cpu,omitempty"`
-	Memory         *MemoryInfo `json:"memory,omitempty"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
+	discoveryRecordID string
+	receivedAt        time.Time
+	GPUs              []GPUInfo   `json:"GPUs"`
+	CPU               *CPUInfo    `json:"cpu,omitempty"`
+	Memory            *MemoryInfo `json:"memory,omitempty"`
+	TelemetryValid    bool        `json:"telemetryValid"`
+	MSSince           int64       `json:"msSince"`
 	// HostUUID is the remote node's stable per-host identity, reported by
 	// node-info. We surface it so a manual node is tracked by the same permanent
 	// identity as the rest of the fleet — including deduping with the same
@@ -100,6 +104,7 @@ type ManualEntry struct {
 // they do not describe whether the hardware probe uses TLS (it always does).
 // NodeInfoPort is the attempted HTTPS port, even when that probe fails.
 type ManualNodeStatus struct {
+	DiscoveryRecordID    string                       `json:"discoveryRecordId,omitempty"`
 	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
 	ID                   string                       `json:"id"`
 	Name                 string                       `json:"name,omitempty"`
@@ -131,7 +136,8 @@ type ManualNodeStatus struct {
 // sameAvailability compares identity, configuration, engine models, and service
 // availability. Every authenticated hardware sample is published independently.
 func (s ManualNodeStatus) sameAvailability(other ManualNodeStatus) bool {
-	return s.IdentityVerification == other.IdentityVerification &&
+	return s.DiscoveryRecordID == other.DiscoveryRecordID &&
+		s.IdentityVerification == other.IdentityVerification &&
 		s.ID == other.ID &&
 		s.Name == other.Name &&
 		s.Address == other.Address &&
@@ -146,6 +152,15 @@ func (s ManualNodeStatus) sameAvailability(other ManualNodeStatus) bool {
 		s.TLSEnabled == other.TLSEnabled &&
 		s.MTLSRequired == other.MTLSRequired &&
 		s.HostUUID == other.HostUUID
+}
+
+func (s ManualNodeStatus) withoutVerification() ManualNodeStatus {
+	s.IdentityVerification = noderec.IdentityUnverified
+	s.DiscoveryRecordID, s.HostUUID = "", ""
+	s.NodeInfoUp = false
+	s.GPUs, s.CPU, s.Memory = nil, nil, nil
+	s.TelemetryValid, s.MSSince = false, 0
+	return s
 }
 
 type ReadyParams struct {
@@ -163,6 +178,16 @@ type trackedNode struct {
 	// probeFailThreshold so a single transient failure doesn't
 	// generate UI noise.
 	consecutiveFails int
+	observedAt       time.Time
+}
+
+// statusAt projects cached hardware at send time without resetting its age.
+func (n *trackedNode) statusAt(now time.Time) ManualNodeStatus {
+	status := n.status
+	if status.TelemetryValid {
+		status.MSSince = (noderec.NodeInfo{TelemetryValid: true, MSSince: status.MSSince}).Aged(now.Sub(n.observedAt)).MSSince
+	}
+	return status
 }
 
 // Manager keeps manual entries in memory and publishes their probe results.
@@ -222,8 +247,40 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 
 	go m.probeLoop(ctx)
+	go m.watchTrust(ctx)
 
 	return m.readLoop(ctx)
+}
+
+func (m *Manager) watchTrust(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.reconcileTrust()
+		}
+	}
+}
+
+// reconcileTrust withdraws cached proofs independently of slow engine probes.
+// Status writes and notifications share mu with removal and probe completion.
+func (m *Manager) reconcileTrust() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mesh.Refresh()
+	for _, node := range m.nodes {
+		status := node.status
+		if status.IdentityVerification == noderec.IdentityPinned && (status.DiscoveryRecordID == "" || status.DiscoveryRecordID != m.mesh.PeerRecordID(status.HostUUID)) {
+			node.status = status.withoutVerification()
+			if err := m.codec.Notify("node/updated", node.status); err != nil {
+				slog.Warn("failed to withdraw manual hardware", "node_id", status.ID, "err", err)
+			}
+		}
+	}
+	m.peerClients.DropUnpinned()
 }
 
 func (m *Manager) probeLoop(ctx context.Context) {
@@ -264,6 +321,12 @@ func (m *Manager) probeAll(ctx context.Context) {
 func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
+	m.mu.RLock()
+	tracked := m.nodes[id]
+	m.mu.RUnlock()
+	if tracked == nil || tracked.entry != entry {
+		return
+	}
 
 	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
 	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
@@ -278,6 +341,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	// uses its host's exact pin; an unknown endpoint may present any current
 	// pin, then must bind its response identities to that certificate.
 	m.mesh.Refresh()
+	localRecordID := m.mesh.PeerRecordID(m.mesh.NodeUUID())
 	nodeInfoUp, info := false, NodeInfoResponse{}
 	m.mu.RLock()
 	var knownUUID string
@@ -286,7 +350,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	}
 	m.mu.RUnlock()
 	if client, ok := m.peerClients.Client(knownUUID); knownUUID != "" && ok {
-		nodeInfoUp, info = m.probeNodeInfo(client, addr, nodeInfoPort)
+		nodeInfoUp, info = m.probeNodeInfo(client, addr, nodeInfoPort, localRecordID)
 	} else if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
 		client := &http.Client{
 			Timeout: probeTimeout,
@@ -298,11 +362,12 @@ func (m *Manager) probeNode(entry ManualEntry) {
 				return http.ErrUseLastResponse
 			},
 		}
-		nodeInfoUp, info = m.probeNodeInfo(client, addr, nodeInfoPort)
+		nodeInfoUp, info = m.probeNodeInfo(client, addr, nodeInfoPort, localRecordID)
 	}
 	m.peerClients.DropUnpinned()
 
 	newStatus := ManualNodeStatus{
+		DiscoveryRecordID:    info.discoveryRecordID,
 		IdentityVerification: noderec.IdentityUnverified,
 		ID:                   id,
 		Name:                 entry.Name,
@@ -324,31 +389,35 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		MSSince:              info.MSSince,
 		HostUUID:             info.HostUUID,
 	}
-	if nodeInfoUp {
+	if newStatus.NodeInfoUp {
 		newStatus.IdentityVerification = noderec.IdentityPinned
 	}
 
-	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
-
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
-	if !exists {
+	if !exists || tn != tracked {
 		m.mu.Unlock()
 		return
 	}
+	defer m.mu.Unlock()
+	m.mesh.Refresh()
+	if newStatus.NodeInfoUp && (newStatus.DiscoveryRecordID == "" || newStatus.DiscoveryRecordID != m.mesh.PeerRecordID(newStatus.HostUUID)) {
+		newStatus = newStatus.withoutVerification()
+	}
+	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
 
 	prev := tn.status
 	prevFails := tn.consecutiveFails
 	// A failed authenticated read clears service measurements and proof. The
 	// configured engine target remains independently available when it answers.
 	tn.status = newStatus
+	tn.observedAt = info.receivedAt
 	if reachable {
 		tn.consecutiveFails = 0
 	} else {
 		tn.consecutiveFails++
 	}
 	curFails := tn.consecutiveFails
-	m.mu.Unlock()
 
 	changed := !prev.sameAvailability(newStatus)
 
@@ -362,8 +431,8 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			"node_id", id, "addr", addr,
 			"ollama_up", newStatus.OllamaUp, "node_info_up", newStatus.NodeInfoUp)
 	}
-	if changed || nodeInfoUp {
-		if err := m.codec.Notify("node/updated", newStatus); err != nil {
+	if changed || newStatus.NodeInfoUp {
+		if err := m.codec.Notify("node/updated", tn.statusAt(time.Now())); err != nil {
 			slog.Warn("failed to publish manual node status", "node_id", id, "err", err)
 		}
 	}
@@ -516,10 +585,21 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 // Success means the remote identity was authenticated, not that GPU telemetry
 // is valid. Any transport, decoding, or identity failure returns false and an
 // empty response so stale or unverified measurements cannot survive the probe.
-func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int) (bool, NodeInfoResponse) {
+func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int, localRecordID string) (bool, NodeInfoResponse) {
 	url := "https://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/node-info"
 	start := time.Now()
-	request, err := http.NewRequest(http.MethodGet, url, nil)
+	// Capture authorization before writing the request, including on reused
+	// connections and when the endpoint's peer UUID was initially unknown.
+	var recordID string
+	trace := &httptrace.ClientTrace{GotConn: func(connection httptrace.GotConnInfo) {
+		if conn, ok := connection.Conn.(*tls.Conn); ok {
+			state := conn.ConnectionState()
+			if len(state.PeerCertificates) > 0 {
+				recordID = m.mesh.PeerRecordID(clustertrust.UUIDFromCert(state.PeerCertificates[0]))
+			}
+		}
+	}}
+	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, url, nil)
 	if err != nil {
 		return false, NodeInfoResponse{}
 	}
@@ -554,6 +634,9 @@ func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int) (boo
 		return false, NodeInfoResponse{}
 	}
 	m.mesh.Refresh()
+	if localRecordID == "" || localRecordID != m.mesh.PeerRecordID(m.mesh.NodeUUID()) {
+		return false, NodeInfoResponse{}
+	}
 	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
 		// Without the server's TLS certificate, the response has no identity
 		// proof to check against our pins.
@@ -574,11 +657,16 @@ func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int) (boo
 		// may have been removed or replaced since the TLS handshake completed.
 		return false, NodeInfoResponse{}
 	}
+	if recordID == "" || recordID != m.mesh.PeerRecordID(result.HostUUID) {
+		return false, NodeInfoResponse{}
+	}
 	aged := (noderec.NodeInfo{
 		TelemetryValid: result.TelemetryValid,
 		MSSince:        result.MSSince,
 	}).Aged(time.Since(start))
 	result.MSSince = aged.MSSince
+	result.discoveryRecordID = recordID
+	result.receivedAt = time.Now()
 	slog.Debug("manual probe node-info up",
 		"addr", addr, "port", port, "gpus", len(result.GPUs),
 		"has_cpu", result.CPU != nil, "has_memory", result.Memory != nil,
@@ -604,21 +692,20 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 		MTLSRequired:         entry.TLSPort > 0 && entry.MTLS,
 	}
 
+	tracked := &trackedNode{entry: entry, status: status}
 	m.mu.Lock()
-	m.nodes[id] = &trackedNode{entry: entry, status: status}
+	m.nodes[id] = tracked
 	m.mu.Unlock()
 
 	go func() {
 		m.probeNode(entry)
-		m.mu.RLock()
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		tn, exists := m.nodes[id]
-		if !exists {
-			m.mu.RUnlock()
+		if !exists || tn != tracked {
 			return
 		}
-		status = tn.status
-		m.mu.RUnlock()
-		m.codec.Notify("node/discovered", status)
+		m.codec.Notify("node/discovered", tn.statusAt(time.Now()))
 	}()
 
 	return status
@@ -626,11 +713,11 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 
 func (m *Manager) removeNode(id string) bool {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	_, exists := m.nodes[id]
 	if exists {
 		delete(m.nodes, id)
 	}
-	m.mu.Unlock()
 
 	if exists {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: id})
@@ -649,11 +736,12 @@ func (m *Manager) removeNode(id string) bool {
 }
 
 func (m *Manager) listNodes() []ManualNodeStatus {
+	m.reconcileTrust()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]ManualNodeStatus, 0, len(m.nodes))
 	for _, tn := range m.nodes {
-		result = append(result, tn.status)
+		result = append(result, tn.statusAt(time.Now()))
 	}
 	return result
 }

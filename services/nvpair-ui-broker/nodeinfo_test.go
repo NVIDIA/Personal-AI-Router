@@ -24,7 +24,7 @@ func TestLocalNodeInfo_RelaysOwnedWorkerSamples(t *testing.T) {
 	b := &Broker{nodeID: "owned-host"}
 	sp, messages := localInfoScanner(t)
 	b.setScanner(sp)
-	b.forwardNodeInfoNotification(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","GPUs":[{"name":"GPU","utilization_percent":61}],"telemetryValid":true,"msSince":137}}`))
+	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","GPUs":[{"name":"GPU","utilization_percent":61}],"telemetryValid":true,"msSince":137}}`))
 	info := readLocalInfo(t, messages)
 	assert.Equal(t, "owned-host", info.HostUUID)
 	assert.True(t, info.TelemetryValid)
@@ -38,7 +38,7 @@ func TestLocalNodeInfo_ReplayPreservesSampleAge(t *testing.T) {
 	// Replaying it must include that wait in its age so an old measurement
 	// cannot appear freshly sampled after scanner restarts.
 	b := &Broker{nodeID: "owned-host"}
-	b.forwardNodeInfoNotification(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":137}}`))
+	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":137}}`))
 	require.NotNil(t, b.localInfo)
 	b.localInfo.receivedAt = time.Now().Add(-3 * time.Second)
 	sp, messages := localInfoScanner(t)
@@ -52,8 +52,23 @@ func TestLocalNodeInfo_RejectsForeignWorkerIdentity(t *testing.T) {
 	// A snapshot naming another host must not enter the locally owned sample
 	// cache, even when it reports valid telemetry.
 	b := &Broker{nodeID: "owned-host"}
-	b.forwardNodeInfoNotification(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"someone-else","telemetryValid":true}}`))
+	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"someone-else","telemetryValid":true}}`))
 	assert.Nil(t, b.localInfo)
+}
+
+func TestNodeInfoRestart_RejectsSnapshotsFromPreviousWorker(t *testing.T) {
+	b := &Broker{nodeID: "owned-host"}
+	previous := b.nodeInfoNotificationHandler(b.nodeInfoGeneration)
+	previous(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":137}}`))
+	require.NotNil(t, b.localInfo)
+	retained := *b.localInfo
+
+	b.clearNodeInfoState()
+	previous(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":0}}`))
+
+	assert.Equal(t, retained, *b.localInfo)
+	b.nodeInfoNotificationHandler(b.nodeInfoGeneration)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":42}}`))
+	assert.Equal(t, int64(42), b.localInfo.info.MSSince)
 }
 
 // localInfoScanner connects the broker's production relay to an in-memory
@@ -302,6 +317,42 @@ func TestPeerMetadata_CoalescesUpdatesWhileWorkerIsBlocked(t *testing.T) {
 			Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: 14318},
 		},
 	}, got)
+}
+
+func TestPeerMetadata_ReplaysLatestSnapshotAfterBlockedWorkerIsReplaced(t *testing.T) {
+	// Closing the old stdin must release the sole sender so restart replay can
+	// deliver updates that arrived while the retired worker was blocked.
+	b := &Broker{nodeID: "owned-host"}
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		assert.NoError(t, client.Close())
+		assert.NoError(t, server.Close())
+	})
+	writer := &blockedMetadataWriter{Conn: client, started: make(chan struct{})}
+	b.setNodeInfo(&nodeInfoProcess{stdin: writer})
+	node := noderec.DirectoryNode{HostUUID: "owned-host", IdentityVerification: noderec.IdentityLocal, Name: "initial"}
+	b.updateLocalPeerMetadata(node)
+	select {
+	case <-writer.started:
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "metadata write did not start")
+	}
+	node.Name = "latest"
+	b.updateLocalPeerMetadata(node)
+	b.clearNodeInfoState()
+	replacement := &nodeInfoFrameWriter{frames: make(chan []byte, 4)}
+	b.setNodeInfo(&nodeInfoProcess{stdin: replacement})
+	b.pushPeerMetadata()
+
+	require.NoError(t, client.Close())
+	waitForMetadataSender(t, b)
+
+	require.Len(t, replacement.frames, 1)
+	var frame Message
+	require.NoError(t, json.Unmarshal(<-replacement.frames, &frame))
+	var got noderec.PeerMetadataParams
+	require.NoError(t, json.Unmarshal(frame.Params, &got))
+	assert.Equal(t, "latest", got.Peer.Name)
 }
 
 func TestPeerMetadata_ClosingWorkerPipeReleasesSender(t *testing.T) {

@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -421,10 +420,10 @@ type discoveryCandidate struct {
 }
 
 type peerInfoSample struct {
-	info             NodeInfoResponse
-	certificate      *x509.Certificate
-	localCertificate []byte
-	receivedAt       time.Time
+	info        NodeInfoResponse
+	certificate *x509.Certificate
+	recordID    string
+	receivedAt  time.Time
 }
 
 func newNodeInfoClients(mesh *clustertrust.Mesh) *clustertrust.PeerClientPool {
@@ -526,10 +525,6 @@ func (d *daemon) readPeerInfo(ctx context.Context, node noderec.DirectoryNode) (
 	if port < 1 || port > 65535 {
 		return peerInfoSample{}, false
 	}
-	config, ok := d.mesh.ClientTLSConfig(principal)
-	if !ok {
-		return peerInfoSample{}, false
-	}
 	ask := func(host string) (peerInfoSample, bool) {
 		started := time.Now()
 		origin := "https://" + net.JoinHostPort(host, strconv.Itoa(port))
@@ -546,6 +541,7 @@ func (d *daemon) readPeerInfo(ctx context.Context, node noderec.DirectoryNode) (
 		defer release()
 		requestCtx, cancel := context.WithTimeout(ctx, nodeInfoFetchTimeout)
 		defer cancel()
+		recordID := d.mesh.PeerRecordID(principal)
 		client, ok := d.nodeInfoClients.Client(principal)
 		if !ok {
 			return peerInfoSample{}, false
@@ -576,7 +572,7 @@ func (d *daemon) readPeerInfo(ctx context.Context, node noderec.DirectoryNode) (
 		if info.HostUUID != principal || info.ClusterUUID == nil || *info.ClusterUUID != principal || !validPeerMetadata(info.Peer) {
 			return peerInfoSample{}, false
 		}
-		sample := peerInfoSample{info: info.Aged(time.Since(started)), certificate: resp.TLS.PeerCertificates[0], localCertificate: config.Certificates[0].Certificate[0], receivedAt: time.Now()}
+		sample := peerInfoSample{info: info.Aged(time.Since(started)), certificate: resp.TLS.PeerCertificates[0], recordID: recordID, receivedAt: time.Now()}
 		if !d.currentPin(sample) {
 			return peerInfoSample{}, false
 		}
@@ -610,8 +606,7 @@ func validPeerMetadata(peer *noderec.PeerMetadata) bool {
 
 func (d *daemon) currentPin(sample peerInfoSample) bool {
 	d.mesh.Refresh()
-	config, ok := d.mesh.ClientTLSConfig(sample.info.HostUUID)
-	return ok && bytes.Equal(sample.localCertificate, config.Certificates[0].Certificate[0]) && d.mesh.VerifyPeerCertificate(sample.info.HostUUID, sample.certificate)
+	return sample.recordID != "" && sample.recordID == d.mesh.PeerRecordID(sample.info.HostUUID) && d.mesh.VerifyPeerCertificate(sample.info.HostUUID, sample.certificate)
 }
 
 // currentPeerResult also rejects results for an endpoint replaced while a read
@@ -643,7 +638,7 @@ func (d *daemon) publishPeerInfo(candidateID string, sample peerInfoSample) {
 		services[key] = noderec.ServiceStatus{Port: port}
 	}
 	node := noderec.DirectoryNode{
-		DiscoveryRecordID: "peer:" + info.HostUUID, IdentityVerification: noderec.IdentityPinned,
+		DiscoveryRecordID: sample.recordID, IdentityVerification: noderec.IdentityPinned,
 		HostUUID: info.HostUUID, ClusterUUID: *info.ClusterUUID, Trusted: true,
 		Name: info.Peer.Name, IP: info.Peer.Addresses[0], IPs: info.Peer.Addresses, Services: services,
 		GPUs: info.GPUs, CPU: info.CPU, Memory: info.Memory,
@@ -731,9 +726,9 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 				}
 			}
 			if peer, present := d.dir.get(candidate.peerUUID); present {
+				d.forget(peer.HostUUID)
 				d.dir.remove(peer.HostUUID)
 				delete(d.peerCertificates, peer.HostUUID)
-				d.forget(peer.HostUUID)
 				d.emit(noderec.NotifyNodeRemoved, peer)
 			}
 		}
@@ -798,7 +793,8 @@ func (d *daemon) reconcileTrust() {
 	d.peerMu.Lock()
 	defer d.peerMu.Unlock()
 	for uuid, cert := range d.peerCertificates {
-		if d.mesh.VerifyPeerCertificate(uuid, cert) {
+		node, present := d.dir.get(uuid)
+		if present && node.DiscoveryRecordID == d.mesh.PeerRecordID(uuid) && d.mesh.VerifyPeerCertificate(uuid, cert) {
 			continue
 		}
 		delete(d.peerCertificates, uuid)
@@ -809,8 +805,8 @@ func (d *daemon) reconcileTrust() {
 			}
 		}
 		if node, ok := d.dir.get(uuid); ok {
-			d.dir.remove(uuid)
 			d.forget(uuid)
+			d.dir.remove(uuid)
 			d.emit(noderec.NotifyNodeRemoved, node)
 		}
 	}
@@ -1210,7 +1206,7 @@ func (d *daemon) peerReachable(uuid string) bool {
 	node, ok := d.dir.get(uuid)
 	cert := d.peerCertificates[uuid]
 	d.mesh.Refresh()
-	valid := ok && d.mesh.VerifyPeerCertificate(node.ClusterUUID, cert)
+	valid := ok && node.DiscoveryRecordID == d.mesh.PeerRecordID(uuid) && d.mesh.VerifyPeerCertificate(node.ClusterUUID, cert)
 	d.peerMu.Unlock()
 	if !valid {
 		return false
@@ -1498,9 +1494,9 @@ func (d *daemon) expireRetainedPeer(target noderec.DirectoryNode) {
 	if since, ok := d.activitySince(peer.HostUUID); ok && since < activityFreshness {
 		return
 	}
+	d.forget(peer.HostUUID)
 	d.dir.remove(peer.HostUUID)
 	delete(d.peerCertificates, peer.HostUUID)
-	d.forget(peer.HostUUID)
 	d.emit(noderec.NotifyNodeRemoved, peer)
 }
 
@@ -1562,6 +1558,7 @@ func (d *daemon) refreshNodeModels(hostUUID, ip string, emPort int, clusterUUID 
 // askRemembered retains a working address across model sweeps until it fails or
 // is withdrawn from the current record.
 func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []string, emPort int, clusterUUID string) bool {
+	original, _ := d.dir.get(hostUUID)
 	if d.reg != nil && hostUUID == d.reg.record().HostUUID {
 		hosts = []string{loopbackHost}
 		clusterUUID = ""
@@ -1580,6 +1577,8 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 	d.mesh.Refresh()
 	if target, present := d.dir.get(hostUUID); present && target.IdentityVerification == noderec.IdentityPinned {
 		if target.ClusterUUID != clusterUUID ||
+			target.DiscoveryRecordID != original.DiscoveryRecordID ||
+			target.DiscoveryRecordID != d.mesh.PeerRecordID(clusterUUID) ||
 			!slices.Equal(target.CandidateIPs(), hosts) ||
 			!d.mesh.VerifyPeerCertificate(clusterUUID, inventory.certificate) ||
 			!d.mesh.VerifyPeerCertificate(clusterUUID, d.peerCertificates[hostUUID]) {
@@ -1617,7 +1616,11 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 // re-discovery re-probes from scratch rather than resurrecting stale metrics.
 func (d *daemon) forget(hostUUID string) {
 	d.telemetryRetries.forget(hostUUID)
-	d.enrichHosts.forget(hostKey{hostUUID: "peer:" + hostUUID, service: noderec.ServiceNodeInfo})
+	if d.dir != nil {
+		if node, present := d.dir.get(hostUUID); present {
+			d.enrichHosts.forget(hostKey{hostUUID: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
+		}
+	}
 	d.enrichHosts.forget(hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager})
 	d.infoMu.Lock()
 	delete(d.lastInfoAt, hostUUID)
