@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -96,7 +97,7 @@ func TestSelfRemoveTeardown_SerializesRejoin(t *testing.T) {
 		// The broker reflecting its still-persisted clusterId (same id)
 		// after the node has already been unclustered by the teardown.
 		params, err := json.Marshal(map[string]string{"clusterId": "cluster-1", "clusterFriendlyName": "Restored"})
-		require.NoError(t, err)
+		assert.NoError(t, err)
 		m.handleSetIdentity(&Message{Params: params})
 	}, func(t *testing.T, m *Manager, p1, _ pinFixture) {
 		id, _ := m.clusterIdentity()
@@ -108,7 +109,7 @@ func TestSelfRemoveTeardown_SerializesRejoin(t *testing.T) {
 	test("full pairing commit stays atomic across teardown", func(t *testing.T, m *Manager, p2 pinFixture) {
 		m.withClusterComposition(func() {
 			m.setClusterIdentity("cluster-2", "Rejoined")
-			require.NoError(t, m.trust.Pin(&TrustedPin{
+			assert.NoError(t, m.trust.Pin(&TrustedPin{
 				NodeUUID: p2.uuid, NodeID: "peer-2", ClusterID: "cluster-2",
 				CertPem: p2.cert, CertFingerprint: p2.fp, PinnedAt: time.Now().UnixMilli(),
 			}))

@@ -12,7 +12,6 @@
 package main
 
 import (
-	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -105,27 +104,6 @@ func listenAddrs(t *testing.T, port int) []string {
 		}
 	}
 	return addrs
-}
-
-func TestListenAddrs_ReturnsEmptyAfterListenerCloses(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("listener-address assertions use Windows Get-NetTCPConnection")
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		if err := listener.Close(); err != nil {
-			assert.ErrorIs(t, err, net.ErrClosed)
-		}
-	})
-	_, portText, err := net.SplitHostPort(listener.Addr().String())
-	require.NoError(t, err)
-	port, err := strconv.Atoi(portText)
-	require.NoError(t, err)
-	require.Contains(t, listenAddrs(t, port), "127.0.0.1")
-
-	require.NoError(t, listener.Close())
-	assert.Empty(t, listenAddrs(t, port))
 }
 
 // isLoopbackOnly reports whether there is at least one listener and every

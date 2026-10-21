@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
@@ -92,8 +93,7 @@ func idEquals(t *testing.T, raw *json.RawMessage, id int) bool {
 		return false
 	}
 	var got int
-	require.NoError(t, json.Unmarshal(*raw, &got))
-	return got == id
+	return assert.NoError(t, json.Unmarshal(*raw, &got)) && got == id
 }
 
 func (p *cmProc) call(method string, params any) jsonrpc.Message {
@@ -125,7 +125,7 @@ func (p *cmProc) callExpectError(method string, params any) jsonrpc.Message {
 		req["params"] = params
 	}
 	b, err := json.Marshal(req)
-	require.NoError(p.t, err, "encode %s", method)
+	assert.NoError(p.t, err, "encode %s", method)
 	b = append(b, '\n')
 	_, err = p.stdin.Write(b)
 	require.NoError(p.t, err, "write %s", method)
