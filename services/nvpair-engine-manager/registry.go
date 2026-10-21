@@ -352,6 +352,10 @@ type ActionRemovePath struct {
 // which the ordinary result extractor reads with array "data" and field "id".
 type ActionHFCache struct {
 	Dir string `json:"dir"`
+	// Delete turns the action into the removal of one model, named by the
+	// caller's {"model": "<org/name>"} param, from that cache. Only a
+	// delete_model action may set it.
+	Delete bool `json:"delete,omitempty"`
 }
 
 // ActionHFPull downloads a model repository. Tool is the file name of the
@@ -1014,6 +1018,9 @@ func (a *Action) validate(name string) error {
 	}
 	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
 		return fmt.Errorf("action %q: hf_cache.dir is required", name)
+	}
+	if hasHFCache && a.HFCache.Delete && name != "delete_model" {
+		return fmt.Errorf("action %q: hf_cache.delete belongs to delete_model", name)
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {

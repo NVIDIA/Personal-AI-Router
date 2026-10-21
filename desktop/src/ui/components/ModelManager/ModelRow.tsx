@@ -63,12 +63,18 @@ function ModelRowInner({
             })
         }
         if (capabilities.hasDeleteModel) {
-            items.push({ id: 'delete', children: 'Delete', danger: true, disabled: busy })
+            items.push({
+                id: 'delete',
+                children: 'Delete',
+                danger: true,
+                disabled: busy || (isLoaded && !!capabilities.deleteBlockedWhileLoaded)
+            })
         }
         return items
     }, [
         capabilities.hasEject,
         capabilities.hasDeleteModel,
+        capabilities.deleteBlockedWhileLoaded,
         isLoaded,
         isRunning,
         model.downloaded,

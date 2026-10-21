@@ -44,10 +44,12 @@ describe('engine identity', () => {
         expect(engineTypeFromManagerName('vllm')).toBe('vllm')
         expect(isEngineType('vllm')).toBe(true)
         expect(EngineDisplayNames.vllm).toBe('vLLM')
-        // vLLM has no unload or delete, but downloads from Hugging Face.
+        // vLLM has no unload, but downloads from and deletes in the Hugging Face
+        // cache, except the model it is serving.
         expect(EngineCapabilities.vllm).toMatchObject({
             hasEject: false,
-            hasDeleteModel: false,
+            hasDeleteModel: true,
+            deleteBlockedWhileLoaded: true,
             hasPullModel: true,
             hubSearch: true,
             hasInstall: ['linux'],

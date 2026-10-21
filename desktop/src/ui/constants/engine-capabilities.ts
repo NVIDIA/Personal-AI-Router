@@ -80,9 +80,10 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
-        // The engine manager declares no delete_model for vLLM; weights live in
-        // the shared Hugging Face cache.
-        hasDeleteModel: false,
+        // delete_model removes a model from the shared Hugging Face cache. The
+        // model vLLM is serving cannot be deleted: the engine manager refuses it.
+        hasDeleteModel: true,
+        deleteBlockedWhileLoaded: true,
         // The engine manager downloads a Hugging Face repo into the shared cache
         // with the engine's own `hf` tool (pull_model). The model list is what
         // that cache holds, and Load switches the served model by restarting vLLM.

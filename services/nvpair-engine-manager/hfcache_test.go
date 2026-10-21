@@ -4,9 +4,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -155,7 +157,7 @@ func TestHFCacheActionResultFeedsTheModelListExtractor(t *testing.T) {
 	writeHFRepo(t, cache, "Qwen/Qwen3-8B", llmFiles(map[string]string{"model.safetensors": "w"}))
 
 	e := &Executor{}
-	raw, err := e.runHFCacheAction(&engineState{}, Action{HFCache: &ActionHFCache{Dir: cache}})
+	raw, err := e.runHFCacheAction(&engineState{}, "vllm", Action{HFCache: &ActionHFCache{Dir: cache}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +180,93 @@ func TestHFCacheActionValidation(t *testing.T) {
 	}
 	if err := (&Action{HFCache: &ActionHFCache{Dir: "{models_dir}/hub"}}).validate("list_models"); err != nil {
 		t.Errorf("a valid hf_cache action was rejected: %v", err)
+	}
+}
+
+func TestHFCacheDeleteActionValidation(t *testing.T) {
+	del := &ActionHFCache{Dir: "{models_dir}/hub", Delete: true}
+	if err := (&Action{HFCache: del}).validate("delete_model"); err != nil {
+		t.Errorf("a delete_model hf_cache delete was rejected: %v", err)
+	}
+	if err := (&Action{HFCache: del}).validate("list_models"); err == nil {
+		t.Error("hf_cache.delete is only for delete_model")
+	}
+}
+
+func TestDeleteHFModel(t *testing.T) {
+	cache := t.TempDir()
+	e := switchModelExecutor(t, "--model")
+	if _, err := loadModel(t, e, "org/served"); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	m, _ := e.reg.Get("fake")
+	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true}}
+	writeHFRepo(t, cache, "org/served", llmFiles(map[string]string{"model.safetensors": "w"}))
+	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "wwww"}))
+	if err := os.MkdirAll(filepath.Join(cache, ".locks", "models--org--other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	del := func(model string) (json.RawMessage, error) {
+		return e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+	}
+
+	if _, err := del("org/served"); err == nil || !strings.Contains(err.Error(), "switch to another model first") {
+		t.Fatalf("the model being served must be refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cache, "models--org--served")); err != nil {
+		t.Fatal("a refused delete must leave the model in place")
+	}
+
+	res, err := del("org/other")
+	if err != nil || !strings.Contains(string(res), `"deleted":"org/other"`) {
+		t.Fatalf("delete: %s %v", res, err)
+	}
+	for _, gone := range []string{"models--org--other", filepath.Join(".locks", "models--org--other")} {
+		if _, err := os.Stat(filepath.Join(cache, gone)); err == nil {
+			t.Fatalf("%s should have been removed", gone)
+		}
+	}
+	if ids := scannedIDs(t, cache); !slices.Equal(ids, []string{"org/served"}) {
+		t.Fatalf("remaining models = %v", ids)
+	}
+
+	for _, bad := range []string{"org/missing", "../escape", "--help", ""} {
+		if _, err := del(bad); err == nil {
+			t.Errorf("deleting %q should fail", bad)
+		}
+	}
+}
+
+// With the bundled manifest and no saved settings the served model is the
+// default launch's, even in a manager that has not been asked about the engine
+// yet. Deleting also fails closed, rather than assuming nothing is served, when
+// the served model cannot be told.
+func TestDeleteHFModelRefusesTheBundledDefaultModel(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the bundled vllm manifest is Linux only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	cache := filepath.Join(home, ".cache", "huggingface", "hub")
+	writeHFRepo(t, cache, "Qwen/Qwen2.5-0.5B-Instruct", llmFiles(map[string]string{"model.safetensors": "w"}))
+	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "w"}))
+
+	reg := loadWithOverrides(t, t.TempDir())
+	e := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	act := func(model string) error {
+		_, err := e.Action(context.Background(), "vllm", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+		return err
+	}
+
+	// The bundled default launch serves Qwen/Qwen2.5-0.5B-Instruct.
+	if err := act("Qwen/Qwen2.5-0.5B-Instruct"); err == nil {
+		t.Fatal("the default served model was deleted by a manager that had not detected the engine")
+	}
+	if _, err := os.Stat(filepath.Join(cache, "models--Qwen--Qwen2.5-0.5B-Instruct")); err != nil {
+		t.Fatal("the served model is gone from the cache")
+	}
+	if err := act("org/other"); err != nil {
+		t.Fatalf("another model should be deletable: %v", err)
 	}
 }

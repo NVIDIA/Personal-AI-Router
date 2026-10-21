@@ -37,10 +37,13 @@ var hfShardRe = regexp.MustCompile(`^.+-(\d+)-of-(\d+)\.(?:safetensors|bin)$`)
 
 // runHFCacheAction lists the models in act.HFCache.Dir. It needs no running
 // engine, so the list is available while the engine is stopped.
-func (e *Executor) runHFCacheAction(st *engineState, act Action) (json.RawMessage, error) {
+func (e *Executor) runHFCacheAction(st *engineState, engine string, act Action, params json.RawMessage) (json.RawMessage, error) {
 	dir, err := resolvePlaceholders(act.HFCache.Dir, st.pathVars())
 	if err != nil {
 		return nil, err
+	}
+	if act.HFCache.Delete {
+		return e.deleteHFModel(engine, expandPath(dir), params)
 	}
 	models, err := scanHFCache(expandPath(dir))
 	if err != nil {
@@ -216,4 +219,67 @@ func hasAny(files map[string]int64, names []string) bool {
 		}
 	}
 	return false
+}
+
+// deleteHFModel removes one model's repository folder from the hub cache, and
+// its download locks. The model the engine is serving, or will serve at its next
+// start, is refused: deleting it would break the running engine, or make the next
+// start download the model again without being asked.
+func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || !hfModelIDRe.MatchString(strings.TrimSpace(p.Model)) {
+		return nil, fmt.Errorf("delete: params.model must be a Hugging Face model id such as org/name")
+	}
+	id := strings.TrimSpace(p.Model)
+	served, err := e.servedModel(engine)
+	if err != nil {
+		return nil, fmt.Errorf("delete: cannot tell which model %s is set to serve, so nothing was deleted: %w", engine, err)
+	}
+	if served == id {
+		return nil, fmt.Errorf("delete: %s is the model %s is set to serve; switch to another model first", id, engine)
+	}
+	name := "models--" + strings.ReplaceAll(id, "/", "--")
+	repo := filepath.Join(hubDir, name)
+	if rel, err := filepath.Rel(hubDir, repo); err != nil || rel != name {
+		return nil, fmt.Errorf("delete: refusing a path outside the model cache")
+	}
+	if _, err := os.Stat(repo); err != nil {
+		return nil, fmt.Errorf("delete: %s is not in the model cache", id)
+	}
+	freed := hfBlobBytes(repo)
+	if err := os.RemoveAll(repo); err != nil {
+		return nil, fmt.Errorf("delete %s: %w", id, err)
+	}
+	_ = os.RemoveAll(filepath.Join(hubDir, ".locks", name))
+	return json.Marshal(map[string]any{"deleted": id, "freed": freed})
+}
+
+// servedModel returns the model the engine is set to serve, from its effective
+// launch arguments. It fails when that cannot be determined, so a caller that
+// must not touch the served model fails closed. The engine's binary is detected
+// first, because the launch cannot be resolved before that.
+func (e *Executor) servedModel(engine string) (string, error) {
+	state, err := e.LaunchSettings(engine)
+	if err != nil {
+		return "", err
+	}
+	if state.LaunchText == "" {
+		if _, err := e.Detect(engine); err != nil {
+			return "", err
+		}
+		if state, err = e.LaunchSettings(engine); err != nil {
+			return "", err
+		}
+	}
+	tokens, err := parseLaunchText(state.LaunchText)
+	if err != nil {
+		return "", err
+	}
+	model, ok := launchFlagValue(tokens, "--model")
+	if !ok || model == "" {
+		return "", fmt.Errorf("the launch arguments name no --model")
+	}
+	return model, nil
 }

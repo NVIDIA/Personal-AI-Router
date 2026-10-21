@@ -54,6 +54,12 @@ export interface EngineCaps {
      */
     restartsOnModelDelete?: boolean
     /**
+     * When true, the model an engine is serving cannot be deleted, so Delete is
+     * disabled for it. An engine that serves one model per process breaks if its
+     * model files go, so the backend refuses it and the UI does not offer it.
+     */
+    deleteBlockedWhileLoaded?: boolean
+    /**
      * If the engine has its own public model catalog (e.g. ollama.com), provide the
      * hub config here. Presence doubles as the truthy flag for the hub source selector.
      */

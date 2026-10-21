@@ -93,10 +93,12 @@ func TestBundledVLLMManifest(t *testing.T) {
 	if load := manifest.Actions["load_model"]; load.LaunchModel == nil || load.LaunchModel.Flag != "--model" {
 		t.Errorf("load_model must switch the model through --model, got %+v", load)
 	}
-	for _, name := range []string{"unload_model", "delete_model"} {
-		if _, ok := manifest.Actions[name]; ok {
-			t.Errorf("vllm serves one model per process and must not declare %s", name)
-		}
+	if _, ok := manifest.Actions["unload_model"]; ok {
+		t.Errorf("vllm serves one model per process and must not declare unload_model")
+	}
+	// Deleting is a removal from the shared cache that needs no running engine.
+	if del := manifest.Actions["delete_model"]; del.HFCache == nil || !del.HFCache.Delete || del.HFCache.Dir != "{models_dir}/hub" {
+		t.Errorf("delete_model must remove from the hub cache, got %+v", del)
 	}
 	// Downloads go through the hf tool that ships in the engine's virtualenv.
 	if pull := manifest.Actions["pull_model"]; pull.HFPull == nil || pull.HFPull.Tool != "hf" || pull.HFPull.Dir != "{models_dir}/hub" {

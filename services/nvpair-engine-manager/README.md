@@ -89,6 +89,8 @@ switches the served model: it writes `--model <id>` into the saved launch
 arguments and restarts vLLM on it, restoring the previous model if the new one
 does not start (for example it does not fit in GPU memory).
 
+`delete_model` removes a model's folder from the hub cache (an `hf_cache` action with `delete`); the model vLLM is set to serve, running or not, is refused so a switch has to come first.
+
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not
 GGUF, ONNX, pickle copies of weights that also exist as safetensors, or a
