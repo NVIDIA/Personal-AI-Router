@@ -191,7 +191,7 @@ into a private virtualenv through a checksum-pinned `uv` bootstrap, or adopts a
 behind the proxy facade on `8000`. vLLM serves one model per process and has no
 load or unload API, so the engine manager puts a gateway on its port (`front`):
 Start and the restore after a restart bring it up idle with nothing loaded, the
-first request or a Load loads the model, it unloads after an idle limit (ten
+first request or a Load loads the model, it unloads after an idle limit (five
 minutes by default, `get_idle_timeout` and `set_idle_timeout`, shown as the
 model row's expiry control), and Eject (`unload_model`, a `stop_engine` action)
 unloads it on demand while the engine stays on; the card shows an idle engine

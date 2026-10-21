@@ -24,6 +24,7 @@ import {
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
+import { DefaultIdleExpiry, EnginesWithIdleTimeout } from '@/shared/constants/engines'
 import {
     emptyEngineStatus,
     engineManagerName,
@@ -1374,7 +1375,8 @@ class ModularBridgeState {
     /** The expiry the models of an engine show: its idle limit, or the default. */
     private expiryFor(engineType: EngineType): ModelExpiry {
         const seconds = this.idleSeconds.get(engineType)
-        return seconds === undefined ? '10m' : idleSecondsToExpiry(seconds)
+        if (seconds !== undefined) return idleSecondsToExpiry(seconds)
+        return EnginesWithIdleTimeout.includes(engineType) ? DefaultIdleExpiry : '10m'
     }
 
     /**

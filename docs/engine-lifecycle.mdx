@@ -106,7 +106,7 @@ When you install an engine, consider the following:
   start a server: it takes about a second and the card reads "Idle · loads on next
   request". The model loads when the first request arrives (the request waits for
   it, about 25 seconds for an 8B model) or when you press **Load**, and the same
-  happens after PAIR restarts. After ten minutes without a request vLLM unloads
+  happens after PAIR restarts. After five minutes without a request vLLM unloads
   the model and frees the GPU, but stays on, and the next request loads it again;
   the "Unloads after … idle" control on the model row changes the time, or keeps
   it loaded. **Eject** does the same unload on demand, and **Stop** turns the

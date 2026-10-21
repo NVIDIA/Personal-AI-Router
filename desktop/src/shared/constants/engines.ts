@@ -28,6 +28,9 @@ export const EnginesWithIdleTimeout: readonly EngineType[] = ['vllm']
 /** The idle limits offered, as expiry values. Idle limits are never shorter than a minute: reloading takes longer than that to pay off. */
 export const IdleTimeoutExpiries: readonly ModelExpiry[] = ['1m', '5m', '10m', '30m', '1h', '-1']
 
+/** The idle limit shown until the engine manager reports the real one; it is the manifest's default. */
+export const DefaultIdleExpiry: ModelExpiry = '5m'
+
 /**
  * How `nvpair-engine-manager` spells each engine on the wire. This is the
  * single translation table — use `engineManagerName()` and

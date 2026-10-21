@@ -96,7 +96,7 @@ func TestOnlyVLLMHasAFront(t *testing.T) {
 		}
 	}
 	vllm, _ := reg.Get("vllm")
-	if front := vllm.Platforms["linux/amd64"].Runtime.Front; front == nil || front.BackendPortOffset != 10000 || front.IdleTimeoutS != 600 {
+	if front := vllm.Platforms["linux/amd64"].Runtime.Front; front == nil || front.BackendPortOffset != 10000 || front.IdleTimeoutS != 300 {
 		t.Errorf("vllm front = %+v", front)
 	}
 }

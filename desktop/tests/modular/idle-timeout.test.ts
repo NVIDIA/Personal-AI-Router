@@ -106,13 +106,13 @@ describe('an engine that is on with nothing loaded', () => {
         const state = getModularBridgeState()
         state.applyEngineManagerStatus(statusOf('vllm'))
         state.setLocalEngineModels('vllm', ['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
-        expect(vllmExpiries()).toEqual(['10m', '10m'])
+        expect(vllmExpiries()).toEqual(['5m', '5m']) // the default, until the limit is read
 
-        state.setEngineIdleSeconds('vllm', 300)
-        expect(vllmExpiries()).toEqual(['5m', '5m'])
+        state.setEngineIdleSeconds('vllm', 1800)
+        expect(vllmExpiries()).toEqual(['30m', '30m'])
 
         state.setLocalEngineModels('vllm', ['Qwen/Qwen3-8B'])
-        expect(vllmExpiries()).toEqual(['5m'])
+        expect(vllmExpiries()).toEqual(['30m'])
 
         state.setEngineIdleSeconds('vllm', 0)
         expect(vllmExpiries()).toEqual(['-1'])

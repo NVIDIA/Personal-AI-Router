@@ -104,7 +104,7 @@ as a port already in use, is still refused at Start. Applying launch settings an
 switching the model load it straight away, so a bad setting is found then and
 rolled back.
 
-After 10 minutes with no inference request (`front.idle_timeout_s`, 0 to never)
+After 5 minutes with no inference request (`front.idle_timeout_s`, 0 to never)
 the manager stops the `vllm serve` process, which frees the GPU, but keeps the
 gateway and the engine ON: `engine:status` reports `idle: true`, `/health` still
 answers 200, and `engine:models` still advertises the model it is set to serve

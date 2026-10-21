@@ -353,7 +353,7 @@ port at that offset (8001 becomes 18001). Clients, the proxy and probes keep usi
 the public port; the gateway forwards every request unchanged, streams responses
 as they arrive, stops the engine's work when the client leaves, and answers 503
 until the engine is ready. The launch a user sees and edits keeps the public
-port: only the spawned process is repointed. `idle_timeout_s` (default 600 for
+port: only the spawned process is repointed. `idle_timeout_s` (default 300 for
 vLLM, 0 never) unloads the engine after that long with no inference request:
 its process is stopped and its GPU memory freed, while the gateway, and the
 engine's ON state, stay. Only requests that change something count as activity
