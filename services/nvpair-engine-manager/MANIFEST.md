@@ -342,6 +342,11 @@ its `list_models` offers many models it could be switched to. With `"loaded"`,
 `list_models` is not queried for `engine:models`, and a `loaded_models` action is
 required.
 
+An **`hf_pull`** action (`{"tool": "hf", "dir": "{models_dir}/hub"}`, only as
+`pull_model`) downloads a Hugging Face repository with the named tool, looked up
+in the directory that holds the engine binary, and reports byte progress taken
+from the cache directory. It needs no running engine.
+
 A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536}`)
 lets the manager add start-time arguments that depend on the model and the
 machine. For `hf_context` it reads the served model's `config.json` from the

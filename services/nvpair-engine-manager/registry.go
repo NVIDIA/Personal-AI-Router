@@ -287,6 +287,9 @@ type Action struct {
 	// LaunchModel makes the action switch the model an engine is serving, for an
 	// engine that has no load call because the model is a launch argument.
 	LaunchModel *ActionLaunchModel `json:"launch_model,omitempty"`
+	// HFPull downloads a Hugging Face repository into the hub cache with the
+	// engine's own `hf` tool, reporting byte progress. Only pull_model uses it.
+	HFPull *ActionHFPull `json:"hf_pull,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -349,6 +352,15 @@ type ActionRemovePath struct {
 // which the ordinary result extractor reads with array "data" and field "id".
 type ActionHFCache struct {
 	Dir string `json:"dir"`
+}
+
+// ActionHFPull downloads a model repository. Tool is the file name of the
+// Hugging Face CLI, looked up in the directory that holds the engine binary
+// (a vLLM virtualenv ships `hf` beside `vllm`). Dir is the hub cache directory,
+// normally "{models_dir}/hub".
+type ActionHFPull struct {
+	Tool string `json:"tool"`
+	Dir  string `json:"dir"`
 }
 
 // ActionLaunchModel names the launch flag that selects the engine's model, such
@@ -965,6 +977,7 @@ func (a *Action) validate(name string) error {
 	hasRemovePath := a.RemovePath != nil
 	hasHFCache := a.HFCache != nil
 	hasLaunchModel := a.LaunchModel != nil
+	hasHFPull := a.HFPull != nil
 	kinds := 0
 	if hasHTTP {
 		kinds++
@@ -981,8 +994,17 @@ func (a *Action) validate(name string) error {
 	if hasLaunchModel {
 		kinds++
 	}
+	if hasHFPull {
+		kinds++
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, or launch_model is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, or hf_pull is required", name)
+	}
+	if hasHFPull {
+		tool := a.HFPull.Tool
+		if name != pullModelAction || tool == "" || tool != filepath.Base(tool) || strings.TrimSpace(a.HFPull.Dir) == "" {
+			return fmt.Errorf("action %q: hf_pull belongs to pull_model and needs a tool file name and a dir", name)
+		}
 	}
 	if hasLaunchModel {
 		flag := a.LaunchModel.Flag
@@ -1127,6 +1149,9 @@ func (m *Manifest) actionTemplatedStrings() []string {
 		if act.RemovePath != nil {
 			out = append(out, act.RemovePath.Root)
 			// Path may template caller params (e.g. {model}); validated at call time.
+		}
+		if act.HFPull != nil {
+			out = append(out, act.HFPull.Dir)
 		}
 		if act.HFCache != nil {
 			out = append(out, act.HFCache.Dir)

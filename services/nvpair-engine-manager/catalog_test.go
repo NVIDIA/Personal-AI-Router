@@ -221,8 +221,7 @@ func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {
 // rather than returning an empty list that reads as "nothing available".
 func TestCatalog_RejectsUnknownEngine(t *testing.T) {
 	c := newCatalogService()
-	// vLLM is a known engine that deliberately has no curated catalog.
-	for _, engine := range []string{"vllm", "nosuchengine"} {
+	for _, engine := range []string{"nosuchengine"} {
 		_, err := c.Catalog(context.Background(), engine, "linux", "amd64", "")
 		assert.Error(t, err, "%s returned a catalog", engine)
 	}

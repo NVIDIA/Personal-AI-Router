@@ -215,11 +215,19 @@ type hfModelRow struct {
 	Gated       json.RawMessage `json:"gated"`
 	PipelineTag string          `json:"pipeline_tag"`
 	Siblings    []hfSibling     `json:"siblings"`
+	// Safetensors is present when the listing asks to expand it: the parameter
+	// count per tensor type, which gives a model's size without a second request.
+	Safetensors struct {
+		Parameters map[string]int64 `json:"parameters"`
+		Total      int64            `json:"total"`
+	} `json:"safetensors"`
 }
 
 // hfSibling is one file in a Hugging Face repo.
 type hfSibling struct {
 	RFilename string `json:"rfilename"`
+	// Size is reported only when the repo is asked for with blobs=true.
+	Size int64 `json:"size"`
 }
 
 // catalogService answers engine:catalog. The embedded list is parsed once; each
@@ -234,6 +242,7 @@ type catalogService struct {
 
 	lmStudio *listingCache
 	llamaCPP *listingCache
+	vllm     *listingCache
 
 	// searchMu guards the llama.cpp searches, kept by lowercased query with
 	// searchOrder from least to most recently used.
@@ -286,6 +295,7 @@ func newCatalogService() *catalogService {
 	}
 	c.lmStudio = &listingCache{label: "lm studio catalog", fetch: c.fetchLmStudio}
 	c.llamaCPP = &listingCache{label: "llama.cpp catalog", fetch: c.fetchLlamaCPP}
+	c.vllm = &listingCache{label: "vllm catalog", fetch: c.fetchVLLM}
 	return c
 }
 
@@ -337,6 +347,28 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		return CatalogResult{
 			// GGUF has no machine-locked quantizations, so nothing is filtered
 			// for the target.
+			Models:     models,
+			Source:     source,
+			Platform:   platform,
+			Arch:       arch,
+			FetchedAt:  fetchedAt.UTC().Format(time.RFC3339),
+			Searchable: true,
+			Query:      query,
+		}, nil
+	case "vllm":
+		query, err := catalogQuery(query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		models, fetchedAt, err := c.vllmCatalog(ctx, query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		source := hfModelsAPI + "?filter=safetensors&author=" + strings.Join(vllmPublishers, ",")
+		if query != "" {
+			source = hfModelsAPI + "?filter=safetensors&search=" + url.QueryEscape(query)
+		}
+		return CatalogResult{
 			Models:     models,
 			Source:     source,
 			Platform:   platform,
@@ -402,6 +434,8 @@ func normalizeCatalogEngine(engine string) string {
 		return "lmstudio"
 	case "llama-cpp", "llama.cpp", "llamacpp":
 		return "llamacpp"
+	case "vllm":
+		return "vllm"
 	default:
 		return e
 	}
@@ -579,22 +613,24 @@ func (c *catalogService) llamaCPPCatalog(ctx context.Context, query string) ([]C
 // llamaCPPSearch is the cache for one query, created on first use. Queries
 // differing only in case share one.
 func (c *catalogService) llamaCPPSearch(query string) *listingCache {
-	key := strings.ToLower(query)
+	return c.searchCache("llamacpp:"+strings.ToLower(query), "llama.cpp search", func(ctx context.Context) ([]CatalogModel, error) {
+		rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
+		if err != nil {
+			return nil, err
+		}
+		return normalizeLlamaCPPRows(rows), nil
+	})
+}
+
+// searchCache returns the cache for one search, creating it on first use and
+// marking it most recently used. The set of possible queries is unbounded, so
+// the least recently used are evicted past llamaCPPSearchCacheLimit.
+func (c *catalogService) searchCache(key, label string, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
 	search, ok := c.llamaSearches[key]
 	if !ok {
-		search = &listingCache{
-			label:   "llama.cpp search",
-			emptyOK: true,
-			fetch: func(ctx context.Context) ([]CatalogModel, error) {
-				rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
-				if err != nil {
-					return nil, err
-				}
-				return normalizeLlamaCPPRows(rows), nil
-			},
-		}
+		search = &listingCache{label: label, emptyOK: true, fetch: fetch}
 		c.llamaSearches[key] = search
 	}
 	for i, k := range c.searchOrder {

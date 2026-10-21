@@ -65,6 +65,10 @@
       "description": "Serve a different model (params: {\"model\": \"<Hugging Face id>\"}). vLLM serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored.",
       "launch_model": { "flag": "--model" }
     },
+    "pull_model": {
+      "description": "Download a model from Hugging Face into the shared cache (params: {\"model\": \"<org/name>\"}). Needs no running engine. Once downloaded it appears in list_models and can be served with load_model.",
+      "hf_pull": { "tool": "hf", "dir": "{models_dir}/hub" }
+    },
     "loaded_models": {
       "description": "List the model this vLLM server is serving (it serves exactly one). This is what peers and the proxy are told it can answer for.",
       "http": { "method": "GET", "path": "/v1/models" },
