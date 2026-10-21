@@ -13,9 +13,69 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/noderec"
 	"nvpair-shared/schedulerwire"
 )
+
+func TestTelemetryReplay_DiscardsSamplesWhosePinWasRemoved(t *testing.T) {
+	b := newManualTestBroker()
+	b.clusterDir = t.TempDir()
+	clustertrusttest.Join(t, b.clusterDir, "cluster", "self", "peer")
+	mesh := clustertrust.Open(b.clusterDir)
+	b.store.Upsert(EnrichedNode{HostUUID: "peer", DiscoveryRecordID: mesh.PeerRecordID("peer"), IdentityVerification: noderec.IdentityPinned, Trusted: true}, sourceScanner)
+	b.ingestTelemetry(sourceScanner, noderec.NodeTelemetry{HostUUID: "peer", TelemetryValid: true})
+	clustertrusttest.RemovePeerPin(t, b.clusterDir, "peer")
+	var output bytes.Buffer
+	scheduler := &rpcWorker{peer: NewPeer(NewCodec(&output))}
+
+	b.schedulerFeedMu.Lock()
+	replayed := b.replayTelemetryToScheduler(scheduler)
+	b.schedulerFeedMu.Unlock()
+
+	assert.Zero(t, replayed)
+	assert.Empty(t, output.Bytes())
+}
+
+type delayedTelemetryWriter struct {
+	bytes.Buffer
+	delay  time.Duration
+	writes int
+}
+
+func (w *delayedTelemetryWriter) Write(data []byte) (int, error) {
+	w.writes++
+	if w.writes == 1 {
+		time.Sleep(w.delay)
+	}
+	return w.Buffer.Write(data)
+}
+
+func TestTelemetryReplay_IncludesTimeWaitingBehindEarlierSamples(t *testing.T) {
+	const delay = 100 * time.Millisecond
+	b := newManualTestBroker()
+	now := time.Now()
+	b.telemetry.Upsert(sourceScanner, noderec.NodeTelemetry{HostUUID: "first", TelemetryValid: true}, now, now)
+	b.telemetry.Upsert(sourceScanner, noderec.NodeTelemetry{HostUUID: "second", TelemetryValid: true}, now, now)
+	output := &delayedTelemetryWriter{delay: delay}
+	scheduler := &rpcWorker{peer: NewPeer(NewCodec(output))}
+
+	b.schedulerFeedMu.Lock()
+	replayed := b.replayTelemetryToScheduler(scheduler)
+	b.schedulerFeedMu.Unlock()
+
+	require.Equal(t, 2, replayed)
+	codec := NewCodec(output)
+	_, err := codec.Read()
+	require.NoError(t, err)
+	message, err := codec.Read()
+	require.NoError(t, err)
+	var sample noderec.NodeTelemetry
+	require.NoError(t, json.Unmarshal(message.Params, &sample))
+	assert.Equal(t, "second", sample.HostUUID)
+	assert.GreaterOrEqual(t, sample.MSSince, delay.Milliseconds())
+}
 
 func TestTelemetryCache_IncludesElapsedTimeInObservationAge(t *testing.T) {
 	cache := newTelemetryCache()

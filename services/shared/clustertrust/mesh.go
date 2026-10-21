@@ -5,6 +5,7 @@ package clustertrust
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -71,6 +72,9 @@ type Mesh struct {
 	// admission.json, trusted/). Empty means this service was given no cluster
 	// dir and is unclustered for its whole life.
 	dir string
+	// Serialize disk reloads so a read started before revocation cannot finish
+	// after a newer refresh and overwrite its view with older pins.
+	refreshMu sync.Mutex
 
 	// mu guards the identity and the derived membership answer. trust carries
 	// its own lock and is replaced only in Open.
@@ -78,6 +82,7 @@ type Mesh struct {
 	id        *Identity
 	idCertPEM []byte
 	clustered bool
+	admission admissionRecord
 
 	trust *Trust
 }
@@ -120,6 +125,8 @@ func (m *Mesh) Refresh() {
 	if m == nil || m.dir == "" {
 		return
 	}
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
 	m.trust.Reload()
 
 	certPEM, certErr := os.ReadFile(filepath.Join(m.dir, "node.crt"))
@@ -134,11 +141,42 @@ func (m *Mesh) Refresh() {
 			m.id, m.idCertPEM = id, certPEM
 		}
 	}
+	// Keep the previous admission on a read failure. An absent, cleared, or
+	// malformed record still replaces it, so departures remain authoritative.
+	if admission, err := readAdmission(m.dir); err == nil {
+		m.admission = admission
+	}
 	// Membership is a usable identity AND either a live admission (authoritative
 	// and durable across restarts, including a cluster of one with no peers) or
 	// at least one pinned peer (a confirmed peer means clustered even on a
 	// cluster dir written before admission.json existed).
-	m.clustered = m.id != nil && (hasActiveAdmission(m.dir) || m.trust.Count() > 0)
+	m.clustered = m.id != nil && ((m.admission.ClusterID != "" && m.admission.Epoch != 0) || m.trust.Count() > 0)
+}
+
+// PeerRecordID identifies a proof made with the current local identity,
+// admission, and exact peer pin. It is an opaque discovery record key, not an
+// authenticator: only an owned worker's successful mTLS read can publish it.
+// Call Refresh first. Empty means the principal is currently unauthorized.
+func (m *Mesh) PeerRecordID(uuid string) string {
+	if m == nil || uuid == "" {
+		return ""
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.clustered || m.id == nil {
+		return ""
+	}
+	der := selfLeafDER(m.id)
+	peerKey := ""
+	if uuid != m.id.NodeUUID {
+		pin, ok := m.trust.pin(uuid)
+		if !ok {
+			return ""
+		}
+		der, peerKey = pin.der, ":"+pin.recordKey
+	}
+	key := fmt.Sprintf("%x:%x:%s:%d%s", sha256.Sum256(selfLeafDER(m.id)), sha256.Sum256(der), m.admission.ClusterID, m.admission.Epoch, peerKey)
+	return fmt.Sprintf("peer:%s:%x", uuid, sha256.Sum256([]byte(key)))
 }
 
 // Clustered reports whether this node is CURRENTLY a cluster member, as of the
