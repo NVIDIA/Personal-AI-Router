@@ -40,6 +40,9 @@ type EngineStatus struct {
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port,omitempty"`
+	// Idle is true for an engine that is ON with its model unloaded because it
+	// was idle, and will load again on demand. Omitted otherwise.
+	Idle bool `json:"idle,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -76,6 +79,9 @@ type engineState struct {
 	// front is the gateway in front of an engine that declares one (Runtime.Front);
 	// nil for every other engine.
 	front *frontGateway
+	// idle is set while front's engine is unloaded for being idle: the engine is
+	// ON (running is true) but has no process.
+	idle bool
 }
 
 // Executor owns engine lifecycle for every engine known on this host.

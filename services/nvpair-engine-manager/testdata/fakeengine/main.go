@@ -334,6 +334,12 @@ func main() {
 	mux.HandleFunc("/api/error", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
+	// /slow?ms=N answers after N milliseconds, as a long generation does.
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		ms, _ := strconv.Atoi(r.URL.Query().Get("ms"))
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/exit", func(w http.ResponseWriter, r *http.Request) {
 		os.Exit(1) // simulate an unexpected engine crash
 	})

@@ -17,7 +17,7 @@
       ]
     },
     "args": ["serve", "--model", "Qwen/Qwen2.5-0.5B-Instruct", "--host", "{host}", "--port", "{port}"],
-    "front": { "backend_port_offset": 10000 },
+    "front": { "backend_port_offset": 10000, "idle_timeout_s": 600 },
     "auto_launch": { "kind": "hf_context", "context_tokens": 65536 },
     "env": { "HF_HOME": "{models_dir}", "VLLM_USE_FLASHINFER_SAMPLER": "0" },
     "bind": "127.0.0.1",

@@ -96,7 +96,17 @@ clients see no difference; the cost measured on Qwen2.5-0.5B was about 2 ms per
 request. If the engine is not up, the gateway answers 503. A vLLM left running
 on the internal port by a crashed run is stopped and replaced on the next start.
 
-`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
+After 10 minutes with no inference request (`front.idle_timeout_s`, 0 to never)
+the manager stops the `vllm serve` process, which frees the GPU, but keeps the
+gateway and the engine ON: `engine:status` reports `idle: true`, `/health` still
+answers 200, and `engine:models` still advertises the model it is set to serve
+with nothing loaded. Health checks, monitors and the model list do not count as
+activity, and a request still running keeps the engine loaded. Eject
+(`unload_model`) does the same on demand. `load_model` of the model it is set to
+serve loads it again; a request while unloaded is answered 503 until it loads on
+demand arrives. A failed load leaves the engine idle, not stopped.
+
+`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops its process, which frees all of its GPU memory, while the gateway and the engine stay ON (an engine with no gateway is stopped) and the saved model choice is kept; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 
 `delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model vLLM is set to serve, running or not, is refused so a switch has to come first.
 

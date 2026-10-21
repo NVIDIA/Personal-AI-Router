@@ -825,6 +825,9 @@ const (
 
 func (p *Platform) validate(key string) error {
 	if front := p.Runtime.Front; front != nil {
+		if front.IdleTimeoutS < 0 || front.IdleTimeoutS > 86400 {
+			return fmt.Errorf("platform %q: front.idle_timeout_s must be between 0 and 86400", key)
+		}
 		if front.BackendPortOffset < 1 || front.BackendPortOffset > 60000 {
 			return fmt.Errorf("platform %q: front.backend_port_offset must be between 1 and 60000", key)
 		}

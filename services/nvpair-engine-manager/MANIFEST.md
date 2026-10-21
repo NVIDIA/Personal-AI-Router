@@ -353,7 +353,14 @@ port at that offset (8001 becomes 18001). Clients, the proxy and probes keep usi
 the public port; the gateway forwards every request unchanged, streams responses
 as they arrive, stops the engine's work when the client leaves, and answers 503
 until the engine is ready. The launch a user sees and edits keeps the public
-port: only the spawned process is repointed. The fixed offset lets a stale engine
+port: only the spawned process is repointed. `idle_timeout_s` (default 600 for
+vLLM, 0 never) unloads the engine after that long with no inference request:
+its process is stopped and its GPU memory freed, while the gateway, and the
+engine's ON state, stay. Only requests that change something count as activity
+(not GET, HEAD or OPTIONS, which is what health checks, monitors and the model
+list use), and a request still running keeps the engine loaded. While unloaded
+the gateway answers `/health` with 200, refuses inference with 503, and
+`engine:status` reports `idle: true`. The fixed offset lets a stale engine
 left by a crashed run be found and reclaimed. It requires a process-mode runtime
 whose `editable_launch` has a flag control for `{server.port}`, and only
 `vllm.json` declares one.

@@ -81,6 +81,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	loaded := make([][]string, len(engineNames))
 	loadedOK := make([]bool, len(engineNames))
 	advertiseLoaded := make([]bool, len(engineNames))
+	idleModel := make([]string, len(engineNames))
 	var wg sync.WaitGroup
 	for i, name := range engineNames {
 		mf, ok := e.reg.Get(name)
@@ -109,6 +110,15 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			defer wg.Done()
 			st, err := e.Status(name)
 			if err != nil || !st.Running {
+				return
+			}
+			if st.Idle && loadedSpec != nil {
+				// Unloaded for being idle: nothing is resident, but the engine still
+				// answers for the model it is set to serve, by loading it on demand.
+				if model, err := e.servedModelNoWait(name); err == nil {
+					idleModel[i] = model
+					loaded[i], loadedOK[i] = []string{}, true
+				}
 				return
 			}
 			if listSpec != nil {
@@ -143,6 +153,9 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	for i, models := range perEngine {
 		if advertiseLoaded[i] {
 			models, listOK[i] = loaded[i], loadedOK[i]
+			if idleModel[i] != "" {
+				models, listOK[i] = []string{idleModel[i]}, true
+			}
 		}
 		if listOK[i] {
 			if res.ByEngine == nil {

@@ -144,7 +144,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if err := e.reservedPortError(port); err != nil {
 		return err
 	}
-	presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, true)
+	presence := e.presenceForStart(ctx, engine, st, pathInstalled, port)
 	if presence.Identified {
 		if opts.RequireOwned {
 			return fmt.Errorf("cannot apply launch settings: another process already owns the server port")
@@ -192,15 +192,18 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	// process so that readiness probes on the public port see it; it answers 503
 	// until the engine is ready.
 	var gateway *frontGateway
+	reusedGateway := false
 	if rt.Front != nil {
-		g, err := e.startFront(st, engine, rt, vars["host"], port)
+		g, reused, err := e.startFront(st, engine, rt, vars["host"], port)
 		if err != nil {
 			return err
 		}
-		gateway = g
+		gateway, reusedGateway = g, reused
 	}
 	if err := e.bringUp(ctx, st, engine, rt, port, vars); err != nil {
-		gateway.close()
+		if !reusedGateway {
+			gateway.close()
+		}
 		return err
 	}
 
@@ -223,6 +226,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		e.watch(st, engine, proc)
 		if gateway != nil {
 			gateway.closeWhen(proc.done)
+			gateway.markUp()
 		}
 	}
 
@@ -455,6 +459,12 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 		st.mu.Unlock()
 		return nil
 	}
+	if st.idle {
+		// Unloaded for being idle: there is no process, only the gateway.
+		st.mu.Unlock()
+		e.markStopped(st, engine)
+		return nil
+	}
 	proc := st.proc
 	port := st.port
 	adopted := st.adopted
@@ -626,6 +636,7 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 	st.stopping = true
 	st.adopted = false
 	st.proc = nil
+	st.idle = false
 	front := st.front
 	st.front = nil
 	st.mu.Unlock()

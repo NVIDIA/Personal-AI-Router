@@ -60,6 +60,14 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		}{model, restarted})
 	}
 	if !changed && current.Running {
+		// An engine unloaded for being idle serves nothing, so asking for the model
+		// it is set to serve is asking to load it.
+		if status, _ := e.Status(engine); status.Idle {
+			if err := e.wakeIdle(ctx, engine); err != nil {
+				return nil, fmt.Errorf("loading %s failed: %w", model, err)
+			}
+			return result(true)
+		}
 		return result(false)
 	}
 	if !current.Running {
@@ -177,9 +185,24 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 	if !state.Running {
 		return stopped(false)
 	}
+	status, _ := e.Status(engine)
+	idle := status.Idle
 	if model := strings.TrimSpace(request.Model); model != "" {
 		if served, err := e.servedModel(engine); err == nil && served != model {
 			return nil, fmt.Errorf("%s is not the model %s is serving (%s)", model, engine, served)
+		}
+	}
+	// An engine behind a gateway is ejected the way the other engines unload a
+	// model: its process goes and the GPU is freed, but the engine stays ON.
+	if st, err := e.state(engine); err == nil {
+		st.mu.Lock()
+		g := st.front
+		st.mu.Unlock()
+		if g != nil {
+			if idle {
+				return stopped(false)
+			}
+			return stopped(e.unloadFront(st, engine, g, 0, true))
 		}
 	}
 	if err := e.Stop(engine); err != nil {

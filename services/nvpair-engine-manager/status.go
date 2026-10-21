@@ -143,6 +143,7 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Running:     st.running,
 		Healthy:     st.healthy,
 		Port:        st.port,
+		Idle:        st.idle,
 	}
 }
 

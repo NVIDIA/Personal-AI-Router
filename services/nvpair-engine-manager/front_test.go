@@ -93,7 +93,7 @@ func TestOnlyVLLMHasAFront(t *testing.T) {
 		}
 	}
 	vllm, _ := reg.Get("vllm")
-	if front := vllm.Platforms["linux/amd64"].Runtime.Front; front == nil || front.BackendPortOffset != 10000 {
+	if front := vllm.Platforms["linux/amd64"].Runtime.Front; front == nil || front.BackendPortOffset != 10000 || front.IdleTimeoutS != 600 {
 		t.Errorf("vllm front = %+v", front)
 	}
 }
@@ -271,7 +271,7 @@ func TestFrontGatewayCloseFreesThePortAndIsIdempotent(t *testing.T) {
 
 // frontExecutor builds an engine whose process listens where the launch flag
 // says, so the gateway in front of it can be exercised end to end.
-func frontExecutor(t *testing.T) (e *Executor, public, backend int) {
+func frontExecutor(t *testing.T, idleSeconds int) (e *Executor, public, backend int) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses the fake engine's --listen flag")
@@ -294,12 +294,20 @@ func frontExecutor(t *testing.T) (e *Executor, public, backend int) {
 	p := m.Platforms[key]
 	p.Runtime.Port = public
 	p.Runtime.Env = nil
-	p.Runtime.Args = []string{"serve", "--listen", "{host}:{port}"}
+	p.Runtime.Args = []string{"serve", "--model", "org/m", "--listen", "{host}:{port}"}
 	p.Runtime.EditableLaunch = &EditableLaunch{FixedArgs: []string{"serve"}, Controls: []LaunchControl{
 		{Flags: []string{"--listen"}, Value: "{server.host}:{server.port}"},
 	}}
-	p.Runtime.Front = &Front{BackendPortOffset: 1}
+	p.Runtime.Front = &Front{BackendPortOffset: 1, IdleTimeoutS: idleSeconds}
 	m.Platforms[key] = p
+	// The engine advertises only what it has loaded, as vLLM does; Eject and Load
+	// are the same actions vLLM declares.
+	m.AdvertisedModels = advertisedModelsLoaded
+	m.Actions = map[string]Action{
+		"loaded_models": {HTTP: &ActionHTTP{Method: "GET", Path: "/api/ps"}, Result: &ActionResult{Array: "models", Field: "name"}},
+		"unload_model":  {StopEngine: true},
+		"load_model":    {LaunchModel: &ActionLaunchModel{Flag: "--model"}},
+	}
 	if err := m.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +330,7 @@ func statusCode(url string) int {
 }
 
 func TestFrontedEngineIsReachedThroughItsPublicPort(t *testing.T) {
-	e, public, backend := frontExecutor(t)
+	e, public, backend := frontExecutor(t, 0)
 	if err := e.Start(context.Background(), "fronted"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -356,7 +364,7 @@ func TestFrontedEngineIsReachedThroughItsPublicPort(t *testing.T) {
 }
 
 func TestFrontedEngineGatewayGoesWithACrashedEngine(t *testing.T) {
-	e, public, _ := frontExecutor(t)
+	e, public, _ := frontExecutor(t, 0)
 	if err := e.Start(context.Background(), "fronted"); err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +382,7 @@ func TestFrontedEngineGatewayGoesWithACrashedEngine(t *testing.T) {
 }
 
 func TestFrontedEngineRefusesABackendPortSomethingElseHolds(t *testing.T) {
-	e, public, backend := frontExecutor(t)
+	e, public, backend := frontExecutor(t, 0)
 	squatter, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", backend))
 	if err != nil {
 		t.Skipf("backend port taken: %v", err)
@@ -387,5 +395,267 @@ func TestFrontedEngineRefusesABackendPortSomethingElseHolds(t *testing.T) {
 	}
 	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/", public)); got != 0 {
 		t.Fatalf("a failed start left a gateway on the public port (%d)", got)
+	}
+}
+
+func post(url string) int {
+	resp, err := http.Post(url, "application/json", strings.NewReader("{}"))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func eventually(t *testing.T, what string, within time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func up(port int) bool {
+	return statusCode(fmt.Sprintf("http://127.0.0.1:%d/api/tags", port)) == http.StatusOK
+}
+
+func TestIsActivity(t *testing.T) {
+	for method, want := range map[string]bool{"GET": false, "HEAD": false, "OPTIONS": false, "POST": true, "PUT": true, "DELETE": true} {
+		if got := isActivity(&http.Request{Method: method}); got != want {
+			t.Errorf("%s: isActivity = %v, want %v", method, got, want)
+		}
+	}
+}
+
+func TestGatewayIdleAccounting(t *testing.T) {
+	g := &frontGateway{closed: make(chan struct{})}
+	if g.expired(0) || g.enterIdle(0, false) {
+		t.Fatal("a gateway whose engine is not up cannot go idle")
+	}
+	g.markUp()
+	if g.expired(time.Hour) {
+		t.Fatal("a fresh engine is not idle")
+	}
+	g.mu.Lock()
+	g.lastActive = time.Now().Add(-time.Minute)
+	g.inflight = 1
+	g.mu.Unlock()
+	if g.expired(time.Second) || g.enterIdle(time.Second, false) {
+		t.Fatal("a request in flight keeps the engine loaded")
+	}
+	if !g.enterIdle(time.Second, true) {
+		t.Fatal("an explicit eject ignores in-flight work")
+	}
+	if g.enterIdle(time.Second, true) {
+		t.Fatal("an engine already idle cannot be unloaded twice")
+	}
+}
+
+func TestIdleEngineIsUnloadedAfterTheTimeout(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	if !up(public) {
+		t.Fatal("not serving")
+	}
+	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
+
+	st, _ := e.Status("fronted")
+	if !st.Running || !st.Idle || st.Port != public {
+		t.Fatalf("status = %+v, want ON, idle, on the public port", st)
+	}
+	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != http.StatusOK {
+		t.Fatalf("an idle engine must still pass health checks: %d", got)
+	}
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusServiceUnavailable {
+		t.Fatalf("inference while unloaded answered %d, want 503", got)
+	}
+}
+
+func TestInferenceKeepsAnEngineLoadedButMonitoringDoesNot(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	// Requests every 300 ms against a 1 s limit: never idle.
+	end := time.Now().Add(2500 * time.Millisecond)
+	for time.Now().Before(end) {
+		post(fmt.Sprintf("http://127.0.0.1:%d/api/generate", public))
+		time.Sleep(300 * time.Millisecond)
+	}
+	if !up(backend) {
+		t.Fatal("the engine was unloaded while it was being used")
+	}
+	// Polling health and the model list, as the proxy and monitors do, does not count.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public))
+				statusCode(fmt.Sprintf("http://127.0.0.1:%d/api/tags", public))
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}()
+	defer close(stop)
+	eventually(t, "unload despite monitoring traffic", 10*time.Second, func() bool { return !up(backend) })
+}
+
+func TestARequestInFlightKeepsTheEngineLoaded(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() { done <- post(fmt.Sprintf("http://127.0.0.1:%d/slow?ms=2500", public)) }()
+	time.Sleep(1800 * time.Millisecond) // well past the 1 s limit
+	if !up(backend) {
+		t.Fatal("the engine was unloaded under a request that was still running")
+	}
+	if got := <-done; got != http.StatusOK {
+		t.Fatalf("the long request answered %d", got)
+	}
+}
+
+func TestZeroTimeoutNeverUnloads(t *testing.T) {
+	e, _, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if !up(backend) {
+		t.Fatal("an engine with no idle timeout was unloaded")
+	}
+}
+
+func TestStoppingAnIdleEngineStopsEverything(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
+	if err := e.Stop("fronted"); err != nil {
+		t.Fatalf("stop while idle: %v", err)
+	}
+	if st, _ := e.Status("fronted"); st.Running || st.Idle {
+		t.Fatalf("status = %+v, want stopped", st)
+	}
+	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != 0 {
+		t.Fatalf("the gateway outlived the stop (%d)", got)
+	}
+	if err := e.Start(context.Background(), "fronted"); err != nil || !up(public) {
+		t.Fatalf("starting after a stop from idle: %v", err)
+	}
+}
+
+func TestWakeLoadsTheEngineBackBehindTheSameGateway(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	for cycle := 0; cycle < 2; cycle++ {
+		eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
+		if err := e.wakeIdle(context.Background(), "fronted"); err != nil {
+			t.Fatalf("wake %d: %v", cycle, err)
+		}
+		if !up(public) || !up(backend) {
+			t.Fatalf("wake %d: the engine is not serving", cycle)
+		}
+		if st, _ := e.Status("fronted"); !st.Running || st.Idle || !st.Healthy {
+			t.Fatalf("wake %d: status = %+v", cycle, st)
+		}
+	}
+	// A crash after a wake still takes the gateway with it.
+	_ = statusCode(fmt.Sprintf("http://127.0.0.1:%d/exit", backend))
+	eventually(t, "the gateway to close", 10*time.Second, func() bool {
+		return statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)) == 0
+	})
+}
+
+func TestFailedWakeLeavesTheEngineIdle(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
+	squatter, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", backend))
+	if err != nil {
+		t.Skipf("backend port taken: %v", err)
+	}
+	if err := e.wakeIdle(context.Background(), "fronted"); err == nil {
+		t.Fatal("a wake onto an occupied port succeeded")
+	}
+	st, _ := e.Status("fronted")
+	if !st.Running || !st.Idle {
+		t.Fatalf("status = %+v, want still ON and idle after a failed wake", st)
+	}
+	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != http.StatusOK {
+		t.Fatalf("the idle gateway stopped answering health checks (%d)", got)
+	}
+	squatter.Close()
+	if err := e.wakeIdle(context.Background(), "fronted"); err != nil || !up(public) {
+		t.Fatalf("a second wake after the port was freed: %v", err)
+	}
+}
+
+func TestEjectUnloadsButKeepsTheEngineOn(t *testing.T) {
+	e, public, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{"model":"org/m"}`))
+	if err != nil || !strings.Contains(string(raw), `"stopped":true`) {
+		t.Fatalf("eject: %s %v", raw, err)
+	}
+	if up(backend) {
+		t.Fatal("eject must free the engine's process")
+	}
+	if st, _ := e.Status("fronted"); !st.Running || !st.Idle {
+		t.Fatalf("status = %+v, want the engine still ON, idle", st)
+	}
+	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != http.StatusOK {
+		t.Fatalf("health after eject: %d", got)
+	}
+	raw, err = e.Action(context.Background(), "fronted", "unload_model", []byte(`{"model":"org/m"}`))
+	if err != nil || !strings.Contains(string(raw), `"stopped":false`) {
+		t.Fatalf("ejecting an unloaded engine is a no-op: %s %v", raw, err)
+	}
+	// Load of the model it is set to serve loads it again.
+	if _, err := e.Action(context.Background(), "fronted", "load_model", []byte(`{"model":"org/m"}`)); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !up(public) || !up(backend) {
+		t.Fatal("load did not bring the model back")
+	}
+}
+
+func TestIdleEngineStillAdvertisesItsModel(t *testing.T) {
+	e, _, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	res := e.ModelsResult(context.Background())
+	if len(res.LoadedByEngine["fronted"]) == 0 {
+		t.Fatalf("a loaded engine reports what is loaded: %+v", res)
+	}
+	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if up(backend) {
+		t.Fatal("not unloaded")
+	}
+	res = e.ModelsResult(context.Background())
+	if got := res.ByEngine["fronted"]; len(got) != 1 || got[0] != "org/m" {
+		t.Fatalf("advertised = %v, want the model it is set to serve, so requests reach it", got)
+	}
+	if loaded, ok := res.LoadedByEngine["fronted"]; !ok || len(loaded) != 0 {
+		t.Fatalf("loaded = %v (%v), want queried and empty", loaded, ok)
 	}
 }
