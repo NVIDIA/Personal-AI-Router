@@ -57,8 +57,7 @@ type localInfoObservation struct {
 
 // acceptLocalInfo caches an owned-worker snapshot matching this host and queues
 // it for a running scanner. Receipt time is retained for age-preserving replay.
-func (b *Broker) acceptLocalInfo(params json.RawMessage) {
-	receivedAt := time.Now()
+func (b *Broker) acceptLocalInfo(params json.RawMessage, receivedAt time.Time) {
 	var snapshot noderec.LocalNodeInfoParams
 	if err := json.Unmarshal(params, &snapshot); err != nil {
 		slog.Warn("bad owned node-info snapshot", "err", err)

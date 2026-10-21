@@ -890,6 +890,7 @@ function sameModelsByEngine(
 class ModularBridgeState {
     private nodes = new Map<string, ModularNode>()
     private brokerNodeIds = new Set<string>()
+    private withdrawnPeerIds = new Set<string>()
     private errors: ServiceError[] = []
     private workloads = new Map<string, Workload>()
     private logs: LogEntry[] = []
@@ -2394,6 +2395,12 @@ class ModularBridgeState {
         const existing = this.nodes.get(nodeId)
         if (!existing) return
 
+        if (existing.identityVerification === 'pinned') {
+            this.withdrawnPeerIds.add(nodeId)
+            this.removeNodeEntry(nodeId)
+            return
+        }
+
         const remainingSources = removeSource(existing.sources, 'broker')
         if (remainingSources.length === 0) {
             this.removeNodeEntry(nodeId)
@@ -2427,6 +2434,13 @@ class ModularBridgeState {
     }
 
     private upsertNode(node: ModularNode, source?: BrokerNodeSource): void {
+        if (source === 'broker') {
+            this.withdrawnPeerIds.delete(node.id)
+        } else if (this.withdrawnPeerIds.has(node.id)) {
+            // Only a new broker record may restore a withdrawn peer. Proxy
+            // presence can arrive late from a different subprocess stream.
+            return
+        }
         // Self is identified authoritatively by the cluster-manager's node UUID
         // (`cluster:get-node-id`), which equals the discovery/proxy hostUuid key,
         // so there is no hostname guessing here — `setSelfId` is the sole source.

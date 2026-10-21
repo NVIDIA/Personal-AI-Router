@@ -202,8 +202,8 @@ describe('node identity contract', () => {
         )
     })
     // Let discovery and a proxy both report one host, then withdraw discovery.
-    // The proxy may keep the row visible, but cannot retain broker verification.
-    it('clears withdrawn broker provenance while proxy presence survives', () => {
+    // Cached proxy presence cannot retain a withdrawn verified peer row.
+    it('removes a withdrawn verified peer despite cached proxy presence', () => {
         const hostUuid = 'identity-withdrawn-host'
         const hostName = 'workstation'
         const address = '192.0.2.21'
@@ -239,9 +239,35 @@ describe('node identity contract', () => {
         })
 
         const node = state.getAvailableNodes().find(node => node.id === hostUuid)
-        expect(node).toBeDefined()
-        expect(node).not.toHaveProperty('discoveryRecordId')
-        expect(node).not.toHaveProperty('identityVerification')
+        expect(node).toBeUndefined()
+
+        // A proxy can still have an older discovery notification queued when
+        // the broker withdraws the row. It cannot restore that former peer.
+        state.handleNotification({
+            source: 'ollama-proxy',
+            method: 'node/discovered',
+            params: { id: hostUuid, host: hostName, port: 11434, addresses: [address] }
+        })
+        expect(state.getAvailableNodes().find(node => node.id === hostUuid)).toBeUndefined()
+
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: [
+                {
+                    hostUuid,
+                    name: hostName,
+                    ipAddress: address,
+                    port: 14318,
+                    discoveryRecordId: 'new-proof',
+                    identityVerification: 'pinned'
+                }
+            ]
+        })
+        expect(state.getAvailableNodes().find(node => node.id === hostUuid)).toMatchObject({
+            discoveryRecordId: 'new-proof',
+            identityVerification: 'pinned'
+        })
     })
 
     // A proxy's host UUID and an unverified discovery record identify separate

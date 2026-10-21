@@ -475,6 +475,7 @@ func TestProbeNode_DiscardsInvalidAuthenticatedHardware(t *testing.T) {
 			f.manager.probeNode(f.entry)
 			initial := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, f.frames, methodIs("node/updated")))
 			require.Equal(t, noderec.IdentityPinned, initial.IdentityVerification)
+			require.NotEmpty(t, initial.DiscoveryRecordID)
 			require.True(t, initial.NodeInfoUp)
 			require.NotEmpty(t, initial.GPUs)
 			require.NotNil(t, initial.CPU)
@@ -496,6 +497,7 @@ func TestProbeNode_DiscardsInvalidAuthenticatedHardware(t *testing.T) {
 			}
 			updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, f.frames, methodIs("node/updated")))
 			assert.Equal(t, noderec.IdentityUnverified, updated.IdentityVerification)
+			assert.Empty(t, updated.DiscoveryRecordID)
 			assert.Empty(t, updated.HostUUID)
 			assert.False(t, updated.NodeInfoUp)
 			assert.Empty(t, updated.GPUs)
@@ -528,13 +530,15 @@ func TestProbeNode_DiscardsInvalidAuthenticatedHardware(t *testing.T) {
 const manualPeerUUID = "peer"
 
 type manualPeerFixture struct {
-	manager *Manager
-	peerDir string
-	frames  *captureRW
-	entry   ManualEntry
-	info    NodeInfoResponse
-	server  *httptest.Server
-	respond func(http.ResponseWriter)
+	manager        *Manager
+	selfDir        string
+	peerDir        string
+	frames         *captureRW
+	entry          ManualEntry
+	info           NodeInfoResponse
+	server         *httptest.Server
+	beforeResponse func()
+	respond        func(http.ResponseWriter)
 }
 
 // Create isolated cluster identities pinned in both directions and a local
@@ -568,6 +572,7 @@ func newManualPeerFixture(t *testing.T) *manualPeerFixture {
 	t.Cleanup(manager.peerClients.CloseIdle)
 	f := &manualPeerFixture{
 		manager: manager,
+		selfDir: clientDir,
 		peerDir: serverDir,
 		frames:  frames,
 		info:    sampleInfo(),
@@ -580,6 +585,9 @@ func newManualPeerFixture(t *testing.T) *manualPeerFixture {
 		if _, ok := peerMesh.VerifyClientPin(r); !ok {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
+		}
+		if f.beforeResponse != nil {
+			f.beforeResponse()
 		}
 		if f.respond != nil {
 			f.respond(w)
@@ -601,6 +609,129 @@ func newManualPeerFixture(t *testing.T) *manualPeerFixture {
 	}
 	manager.nodes[nodeID(f.entry)] = &trackedNode{entry: f.entry}
 	return f
+}
+
+func TestProbeNode_DiscardsResultsAfterIdentityOrEntryChanges(t *testing.T) {
+	test := func(name string, change func(*testing.T, *manualPeerFixture)) {
+		t.Run(name, func(t *testing.T) {
+			f := newManualPeerFixture(t)
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			f.beforeResponse = func() { close(entered); <-release }
+			go func() { f.manager.probeNode(f.entry); close(done) }()
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				unblock()
+				t.Fatal("authenticated request did not reach the server")
+			}
+			change(t, f)
+			unblock()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("probe did not finish")
+			}
+
+			status := f.manager.listNodes()
+			require.Len(t, status, 1)
+			assert.NotEqual(t, noderec.IdentityPinned, status[0].IdentityVerification)
+			assert.False(t, status[0].TelemetryValid)
+			assert.Empty(t, status[0].HostUUID)
+		})
+	}
+	test("local certificate replaced during read", func(t *testing.T, f *manualPeerFixture) {
+		clustertrusttest.WriteKeypair(t, f.selfDir, "self")
+	})
+	test("local node readmitted during read", func(t *testing.T, f *manualPeerFixture) {
+		clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+	})
+	test("peer pin removed during read", func(t *testing.T, f *manualPeerFixture) {
+		clustertrusttest.RemovePeerPin(t, f.selfDir, manualPeerUUID)
+	})
+	test("peer pin replaced during read", func(t *testing.T, f *manualPeerFixture) {
+		clustertrusttest.WritePeerPin(t, f.selfDir, manualPeerUUID)
+	})
+	test("entry replaced under the same ID during read", func(t *testing.T, f *manualPeerFixture) {
+		f.manager.mu.Lock()
+		defer f.manager.mu.Unlock()
+		// Removing and re-adding the same alias creates a new tracked entry.
+		f.manager.nodes[nodeID(f.entry)] = &trackedNode{entry: f.entry}
+	})
+}
+
+func TestProbeNode_DiscardsInFlightHardwareAfterPeerReadmission(t *testing.T) {
+	// A new admission must reject an earlier response even when its certificate
+	// is unchanged. Inspect the emitted update before cached reads reconcile trust.
+	f := newManualPeerFixture(t)
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	f.beforeResponse = func() { close(entered); <-release }
+	go func() { f.manager.probeNode(f.entry); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		unblock()
+		t.Fatal("authenticated request did not reach the server")
+	}
+	pinPath := filepath.Join(f.selfDir, "trusted", manualPeerUUID+".json")
+	data, err := os.ReadFile(pinPath)
+	require.NoError(t, err)
+	var pin map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &pin))
+	pin["admissionEpoch"] = json.RawMessage(`2`)
+	pin["pinnedAt"] = json.RawMessage(`1000`)
+	data, err = json.Marshal(pin)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(pinPath, data, 0o600))
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("probe did not finish")
+	}
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, f.frames, methodIs("node/updated")))
+	assert.Equal(t, noderec.IdentityUnverified, updated.IdentityVerification)
+	assert.Empty(t, updated.DiscoveryRecordID)
+	assert.Empty(t, updated.HostUUID)
+	assert.False(t, updated.NodeInfoUp)
+	assert.Empty(t, updated.GPUs)
+	assert.Nil(t, updated.CPU)
+	assert.Nil(t, updated.Memory)
+	assert.False(t, updated.TelemetryValid)
+	assert.Zero(t, updated.MSSince)
+}
+
+func TestListNodes_DiscardsHardwareAfterPinRemoval(t *testing.T) {
+	f := newManualPeerFixture(t)
+	f.manager.probeNode(f.entry)
+
+	clustertrusttest.RemovePeerPin(t, f.selfDir, manualPeerUUID)
+	status := f.manager.listNodes()
+
+	require.Len(t, status, 1)
+	assert.Equal(t, noderec.IdentityUnverified, status[0].IdentityVerification)
+	assert.False(t, status[0].NodeInfoUp)
+	assert.Empty(t, status[0].GPUs)
+	assert.False(t, status[0].TelemetryValid)
+}
+
+func TestListNodes_PreservesTimeElapsedSinceHardwareProbe(t *testing.T) {
+	f := newManualPeerFixture(t)
+	f.manager.probeNode(f.entry)
+	first := f.manager.listNodes()
+	require.Len(t, first, 1)
+	time.Sleep(25 * time.Millisecond)
+
+	second := f.manager.listNodes()
+
+	require.Len(t, second, 1)
+	assert.GreaterOrEqual(t, second[0].MSSince, first[0].MSSince+25)
 }
 
 // Probe a mutually pinned peer and check that its hardware and host identity

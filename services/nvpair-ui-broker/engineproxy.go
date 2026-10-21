@@ -96,6 +96,8 @@ type engineProxyRuntime struct {
 	// supervisor swaps it on restart from the monitor goroutine while request
 	// handlers read it from the read loop.
 	proxy *proxyProcess
+	// manualBridge owns this facade's ordered manual-target sender.
+	manualBridge manualProxyBridge
 
 	// subscribed reports whether a client asked for this engine's relay
 	// stream. Guarded by Broker.proxyMu.

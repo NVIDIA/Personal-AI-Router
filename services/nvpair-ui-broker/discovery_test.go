@@ -5,14 +5,97 @@ package main
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/noderec"
 )
+
+func TestScannerTelemetry_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
+	store := newDiscoveryStore()
+	store.Upsert(EnrichedNode{HostUUID: "self", IdentityVerification: noderec.IdentityLocal}, sourceScanner)
+	var stateMu sync.Mutex
+	var received noderec.NodeTelemetry
+	scanner := &scannerProcess{
+		store: store, stateMu: &stateMu,
+		onTelemetry: func(sample noderec.NodeTelemetry) { received = sample },
+	}
+	wait := holdDiscoveryNotification(t, &stateMu, func() {
+		scanner.handleNotify(noderec.NotifyNodeTelemetry, json.RawMessage(`{"hostUuid":"self","telemetryValid":true,"msSince":137}`))
+	})
+
+	assert.True(t, received.TelemetryValid)
+	assert.GreaterOrEqual(t, received.MSSince, int64(137)+wait.Milliseconds())
+}
+
+func TestScannerNodeInfo_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
+	store := newDiscoveryStore()
+	store.Upsert(EnrichedNode{HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal}, sourceScanner)
+	var stateMu sync.Mutex
+	scanner := &scannerProcess{store: store, stateMu: &stateMu}
+	wait := holdDiscoveryNotification(t, &stateMu, func() {
+		scanner.handleNotify(noderec.NotifyNodeInfo, json.RawMessage(`{"hostUuid":"self","discoveryRecordId":"local:self","identityVerification":"local","info":{"hostUuid":"self","telemetryValid":true,"msSince":137}}`))
+	})
+
+	value, present := store.nodeInfo("self", time.Now())
+	require.True(t, present)
+	assert.GreaterOrEqual(t, value.Info.MSSince, int64(137)+wait.Milliseconds())
+}
+
+func TestDiscoveryStore_RecordReplacementDiscardsHardwareSnapshot(t *testing.T) {
+	store := newDiscoveryStore()
+	node := EnrichedNode{HostUUID: "peer", DiscoveryRecordID: "old-proof", IdentityVerification: noderec.IdentityPinned, Trusted: true}
+	store.Upsert(node, sourceScanner)
+	principal := "peer"
+	require.True(t, store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "peer", ClusterUUID: principal, DiscoveryRecordID: "old-proof",
+		IdentityVerification: noderec.IdentityPinned,
+		Info:                 noderec.NodeInfo{HostUUID: "peer", ClusterUUID: &principal},
+	}, time.Now()))
+
+	node.DiscoveryRecordID = "new-proof"
+	store.Upsert(node, sourceScanner)
+
+	_, cached := store.nodeInfo("peer", time.Now())
+	assert.False(t, cached)
+}
+
+func TestScannerProcess_RejectsQueuedEventsAfterPinReplacement(t *testing.T) {
+	dir := t.TempDir()
+	clustertrusttest.Join(t, dir, "cluster", "self", "peer")
+	mesh := clustertrust.Open(dir)
+	store := newDiscoveryStore()
+	scanner := &scannerProcess{store: store, mesh: mesh}
+	node := noderec.DirectoryNode{HostUUID: "peer", DiscoveryRecordID: mesh.PeerRecordID("peer"), IdentityVerification: noderec.IdentityPinned, Trusted: true}
+	send := func(method string, node noderec.DirectoryNode) {
+		t.Helper()
+		params, err := json.Marshal(noderec.NodeEvent{Node: node})
+		require.NoError(t, err)
+		scanner.handleNotify(method, params)
+	}
+	send(noderec.NotifyNodeDiscovered, node)
+	require.True(t, store.verifiedSource("peer", sourceScanner))
+	store.Remove("peer", sourceScanner)
+	clustertrusttest.WritePeerPin(t, dir, "peer")
+
+	send(noderec.NotifyNodeUpdated, node)
+	assert.Empty(t, store.Snapshot())
+	mesh.Refresh()
+	replacement := node
+	replacement.DiscoveryRecordID = mesh.PeerRecordID("peer")
+	send(noderec.NotifyNodeDiscovered, replacement)
+	send(noderec.NotifyNodeRemoved, node)
+
+	snapshot := store.Snapshot()
+	require.Len(t, snapshot, 1)
+	assert.Equal(t, replacement.DiscoveryRecordID, snapshot[0].DiscoveryRecordID)
+}
 
 // Store a verified peer alongside an unverified advertisement copying its UUID
 // and name. Removing the advertisement must leave the peer's record, endpoint,
@@ -508,7 +591,7 @@ func TestScannerProcess_RoutesAndRemovesTelemetry(t *testing.T) {
 	sp.handleNotify(noderec.NotifyNodeTelemetry, params)
 	require.Equal(t, want.HostUUID, got.HostUUID, "routed telemetry (%v, %v)", got, want)
 	require.True(t, got.TelemetryValid, "routed telemetry (%v, %v)", got, want)
-	require.Equal(t, want.MSSince, got.MSSince, "routed telemetry (%v, %v)", got, want)
+	require.GreaterOrEqual(t, got.MSSince, want.MSSince, "routed telemetry age includes broker processing")
 	require.Equal(t, uint32(84), got.GPUUtilizationPct, "routed utilization")
 
 	sp.handleNotify(noderec.NotifyNodeRemoved, nodeRemovedFrame(t, "peer", hostUUID))

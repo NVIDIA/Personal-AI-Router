@@ -64,6 +64,10 @@ type proxyProcess struct {
 	relayDir *relay.Directory
 	subMu    sync.Mutex
 	subIDs   map[string]int
+	// pendingNodes retains only the latest complete snapshot per engine while
+	// one sender writes to stdin. Both fields are protected by subMu.
+	pendingNodes map[string][]noderec.DirectoryNode
+	sendingNodes bool
 }
 
 // proxyReadyParams mirrors the proxy's "ready" notification payload: a facade
@@ -161,6 +165,7 @@ func startProxy(name, binaryPath, logLevel string, relayDir *relay.Directory, on
 			}
 			delete(pp.subIDs, engine)
 		}
+		pp.pendingNodes = nil
 		pp.subMu.Unlock()
 		close(pp.done)
 	}()
@@ -226,10 +231,20 @@ func (p *proxyProcess) handleSubscribe(engine string, params json.RawMessage) {
 	if p.relayDir == nil {
 		return
 	}
+	var id int // read and assigned under subMu, including in the callback
 	send := func(nodes []noderec.DirectoryNode) {
-		method := engines.AddressMethod(engine, noderec.NotifyNodes)
-		if err := p.peer.Notify(method, noderec.GetNodesResult{Nodes: nodes}); err != nil {
-			slog.Debug("failed to push node snapshot to proxy", "engine", engine, "err", err)
+		p.subMu.Lock()
+		defer p.subMu.Unlock()
+		if p.subIDs[engine] != id {
+			return // a delivery from a replaced subscription must not overwrite it
+		}
+		if p.pendingNodes == nil {
+			p.pendingNodes = make(map[string][]noderec.DirectoryNode)
+		}
+		p.pendingNodes[engine] = nodes
+		if !p.sendingNodes {
+			p.sendingNodes = true
+			go p.sendNodeSnapshots()
 		}
 	}
 	p.subMu.Lock()
@@ -239,7 +254,10 @@ func (p *proxyProcess) handleSubscribe(engine string, params json.RawMessage) {
 	if prior := p.subIDs[engine]; prior != 0 {
 		p.relayDir.Unsubscribe(prior)
 	}
-	id, sub, err := subscribeRelay(p.relayDir, params, send)
+	delete(p.pendingNodes, engine)
+	var sub *relay.Subscriber
+	var err error
+	id, sub, err = subscribeRelay(p.relayDir, params, send)
 	p.subIDs[engine] = id
 	p.subMu.Unlock()
 	if err != nil {
@@ -247,6 +265,32 @@ func (p *proxyProcess) handleSubscribe(engine string, params json.RawMessage) {
 		return
 	}
 	p.relayDir.Deliver(sub)
+}
+
+// The relay serializes initial and live deliveries before they are queued. A
+// blocked pipe retains one pending snapshot per engine, including empty sets,
+// while the writer runs outside discovery, relay, and subscription locks.
+func (p *proxyProcess) sendNodeSnapshots() {
+	for {
+		p.subMu.Lock()
+		engine := ""
+		var nodes []noderec.DirectoryNode
+		for candidate, snapshot := range p.pendingNodes {
+			engine, nodes = candidate, snapshot
+			delete(p.pendingNodes, candidate)
+			break
+		}
+		if engine == "" {
+			p.sendingNodes = false
+			p.subMu.Unlock()
+			return
+		}
+		p.subMu.Unlock()
+		method := engines.AddressMethod(engine, noderec.NotifyNodes)
+		if err := p.peer.Notify(method, noderec.GetNodesResult{Nodes: nodes}); err != nil {
+			slog.Debug("failed to push node snapshot to proxy", "engine", engine, "err", err)
+		}
+	}
 }
 
 // Call issues an id-bearing control-plane request to the proxy and blocks until

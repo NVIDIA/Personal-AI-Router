@@ -53,7 +53,8 @@ Emitted when a manually added node has been probed and its initial status determ
     "telemetryValid":true,
     "msSince":120,
     "hostUuid":"stable-node-uuid",
-    "identityVerification":"pinned"
+    "identityVerification":"pinned",
+    "discoveryRecordId":"opaque-proof-bound-record-id"
   }
 }
 ```
@@ -66,6 +67,12 @@ Emitted when a periodic probe detects a change, and for every authenticated
 hardware sample even when values are unchanged. `telemetryValid` and
 `msSince` preserve node-info's distinction between an idle 0% sample and missing
 telemetry so the broker can feed manual nodes into the same scheduler cache.
+Cached status replies and initial discovery notifications add elapsed time to
+the original sample age. Pinned statuses carry an opaque `discoveryRecordId`
+bound to the local identity/admission and peer pin/admission. Pin changes,
+departure, or identity replacement withdraw that proof and all hardware fields;
+configured engine endpoints remain independently available. In-flight probes
+cannot update an entry removed and re-added under the same ID.
 
 ### `node/removed`
 
