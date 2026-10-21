@@ -163,24 +163,47 @@ func TestAskTogether_PrefersRankOverArrivalOrder(t *testing.T) {
 	require.Equal(t, "10.0.0.5", host, "askTogether (%v, %v)", host, ok)
 }
 
-// TestAskTogetherPaysOneTimeoutForTheWholeList: an address that neither answers nor
-// refuses costs a whole fetch timeout, and asking in sequence paid that per address
-// — up to modelsFetchTimeout each — before reaching one that works.
-func TestAskTogether_PaysOneTimeoutForTheWholeList(t *testing.T) {
-	const stall = 150 * time.Millisecond
-	net := newAnswering("10.0.0.9")
-	for _, host := range []string{"192.168.240.1", "169.254.7.7", "172.17.0.1"} {
-		net.slow[host] = stall
-	}
+// Every address must be asked before any response is released. Sequential
+// probing would wait forever on the first address instead of reaching the rest.
+func TestAskTogether_ProbesAddressesConcurrently(t *testing.T) {
 	hosts := []string{"192.168.240.1", "169.254.7.7", "172.17.0.1", "10.0.0.9"}
+	entered := make(chan string, len(hosts))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	type probeResult struct {
+		host string
+		ok   bool
+	}
+	finished := make(chan probeResult, 1)
+	go func() {
+		host, _, ok := askTogether(hosts, func(host string) (string, bool) {
+			entered <- host
+			<-release
+			return "inventory", host == "10.0.0.9"
+		})
+		finished <- probeResult{host: host, ok: ok}
+	}()
 
-	start := time.Now()
-	host, _, ok := askTogether(hosts, net.ask)
-	elapsed := time.Since(start)
+	var asked []string
+	for range hosts {
+		select {
+		case host := <-entered:
+			asked = append(asked, host)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "addresses were not probed concurrently")
+		}
+	}
+	assert.ElementsMatch(t, hosts, asked)
+	releaseOnce.Do(func() { close(release) })
 
-	require.True(t, ok, "askTogether (%v, %v)", host, ok)
-	require.Equal(t, "10.0.0.9", host, "askTogether (%v, %v)", host, ok)
-	assert.LessOrEqual(t, elapsed, 2*stall, "asking four addresses took (%v, %v)", elapsed, stall)
+	select {
+	case result := <-finished:
+		assert.True(t, result.ok)
+		assert.Equal(t, "10.0.0.9", result.host)
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "address probing did not finish after responses were released")
+	}
 }
 
 // TestAskTogetherSkipsBlankHosts guards the published-list edge: a record can carry

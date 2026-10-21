@@ -88,19 +88,19 @@ type manualNode struct {
 	ID                   string                       `json:"id"`
 	Name                 string                       `json:"name"`
 	Address              string                       `json:"address"`
-	// HostUUID is the machine's own identity, read from its node-info. It is
-	// what joins a hand-typed hostname to the same machine discovered by IP.
+	// HostUUID comes from authenticated node-info and can join a verified
+	// manual entry to the same host discovered by IP.
 	HostUUID   string `json:"hostUuid"`
 	OllamaUp   bool   `json:"ollama_up"`
 	LMStudioUp bool   `json:"lmstudio_up"`
 	NodeInfoUp bool   `json:"node_info_up"`
-	// NodeInfoPort is the port the probe reached node-info on, and TLSEnabled
-	// whether that was over TLS.
+	// NodeInfoPort is the attempted node-info port. TLSEnabled echoes the
+	// configured TLS port hint; service hardware probes always use mTLS.
 	NodeInfoPort int  `json:"node_info_port"`
 	TLSEnabled   bool `json:"tls_enabled"`
-	// The worker's own hardware reading from that probe. For a TLS node it is
-	// the only one to be had: the worker holds the backend's trust to reach
-	// it, and this client holds none.
+	// Authenticated hardware readings are available from the manual worker.
+	// The TUI holds no cluster certificate and uses these for manual TLS
+	// configurations rather than polling their TLS endpoints itself.
 	GPUs           []noderec.GPUInfo   `json:"gpus"`
 	CPU            *noderec.CPUInfo    `json:"cpu"`
 	Memory         *noderec.MemoryInfo `json:"memory"`

@@ -86,11 +86,7 @@ func TestToDirectoryNode_ProjectsClaimsWithoutGrantingTrust(t *testing.T) {
 	assert.Equal(t, 11434, n.Services[noderec.ServiceOllama].Port)
 }
 
-// TestToDirectoryNodeIgnoresSRVPort asserts the locked-decision contract: the
-// SRV port on a browsed _nvpair-node record is a fixed, NON-authoritative
-// constant that consumers MUST ignore — every service port comes only from the
-// TXT map. Here the record's SRV port is a bogus value while TXT says ni=14318,
-// and the directory entry must report the TXT port, never the SRV one.
+// Candidate service ports come from TXT claims, independent of the SRV port.
 func TestToDirectoryNode_IgnoresSRVPort(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostC",
@@ -108,9 +104,8 @@ func TestToDirectoryNode_IgnoresSRVPort(t *testing.T) {
 	}
 }
 
-// TestToDirectoryNodeSkipsWithoutUUID: a record with no uuid= can't be keyed by
-// a stable identity, so it's skipped (ok=false) rather than keyed by the
-// hostname — node identity is the UUID everywhere, no name fallback.
+// Candidate authentication needs a host UUID claim, even though the claim
+// does not determine the independent discovery record ID or grant trust.
 func TestToDirectoryNode_SkipsWithoutUUID(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostB",
@@ -121,14 +116,8 @@ func TestToDirectoryNode_SkipsWithoutUUID(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestToDirectoryNodeIPFallback: with a uuid= but no ip=, every advertised address
-// becomes a candidate and the canonical one is the ranker's head. The private
-// blocks tie, so this is an arbitrary but stable choice — deliberately so. Which
-// private block a node's real network uses is not knowable from the address, and
-// the previous preference for 192.168 over 10.x is what made a multi-homed host
-// publish a two-host direct-connect link instead of its LAN. Both addresses are
-// kept, and a consumer that must connect resolves it by connecting.
-func TestToDirectoryNode_UsesRecordIPWhenAddressesAreAbsent(t *testing.T) {
+// Without TXT addresses, retain every resolved candidate in its published order.
+func TestToDirectoryNode_UsesResolvedAddressesWithoutIPClaims(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostB",
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
@@ -141,10 +130,7 @@ func TestToDirectoryNode_UsesRecordIPWhenAddressesAreAbsent(t *testing.T) {
 	assert.False(t, n.Clustered())
 }
 
-// TestToDirectoryNodePreservesPublishedOrder: a node's own ips= order survives
-// projection, and its ip= stays canonical even though the advertised address list
-// leads with something else. This is the multi-homed fix at the collapse point —
-// the node ranked these with evidence no observer has.
+// The TXT address order supplies candidate preference over resolved address order.
 func TestToDirectoryNode_PreservesPublishedOrder(t *testing.T) {
 	raw := RawNode{
 		ID:        "spark",
@@ -160,8 +146,7 @@ func TestToDirectoryNode_PreservesPublishedOrder(t *testing.T) {
 	assert.Equal(t, []string{"10.172.54.70", "192.168.240.2"}, n.IPs)
 }
 
-// TestToDirectoryNodeUnionsUnpublishedAddresses: an address the browse resolved
-// but the node did not rank is kept as a fallback, appended rather than promoted.
+// Resolved addresses absent from TXT remain available as fallback candidates.
 func TestToDirectoryNode_UnionsUnpublishedAddresses(t *testing.T) {
 	raw := RawNode{
 		ID:        "hostC",

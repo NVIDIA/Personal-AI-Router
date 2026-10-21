@@ -99,8 +99,8 @@ func (m nodeMembership) relationship() string {
 //   - cluster   — membership state for peers we have paired with
 //   - manual    — user-added entries discovery cannot see, plus their probes
 //
-// One machine can appear in all three. Merging on a stable key is what stops it
-// rendering as three separate rows.
+// Verified host identities join matching feeds. Unverified discoveries retain
+// separate record keys, and unverified manual configurations retain manual keys.
 type nodeRow struct {
 	identityVerification noderec.IdentityVerification
 	key                  string
@@ -146,8 +146,8 @@ type nodeFeeds struct {
 // Discovery is the base layer because it carries the richest record. The
 // cluster roster then contributes membership and, critically, keeps a member
 // listed even when discovery has dropped it — that node is offline, not gone.
-// Manual entries are matched by address so a hand-added host that discovery
-// later finds does not appear twice.
+// Manual entries join matching authenticated host identities. Names and shared
+// addresses never join unverified discoveries to those records.
 func mergeNodes(in nodeFeeds) []nodeRow {
 	byKey := make(map[string]*nodeRow, len(in.discovered)+len(in.members)+len(in.manual))
 	order := make([]string, 0, len(byKey))

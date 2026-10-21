@@ -29,6 +29,8 @@ Concretely, the daemon:
   engine-manager over loopback; local hardware comes from private worker IPC.
   Local registry publications use retained models and wake the model sweep,
   so an HTTP read cannot hold the lock needed by owned hardware notifications.
+  Queued and in-flight model results are discarded if the peer's authenticated
+  address list changes, including a secondary address used for failover.
 - **Samples scheduling telemetry** from healthy nodes every two seconds with
   stable per-node jitter. Consecutive remote failures back off to 4, 8, 16, then
   30 seconds and reset on success. Local inventory and samples arrive every two
@@ -59,9 +61,6 @@ Concretely, the daemon:
   telemetry failures use the existing capped backoff. Requests retain deadlines,
   response-size limits, address failover, and one connection per node-info
   origin. Requests never follow redirects to another endpoint or transport.
-
-Queued and in-flight model results are discarded if the peer's authenticated
-address list changes, including a secondary address used for failover.
 
 ## Communication
 
@@ -116,7 +115,7 @@ Emitted as the directory changes. Each carries the affected `DirectoryNode` (ide
 
 Records also carry `discoveryRecordId` and `identityVerification`. The local registry
 record is `local`; browsed records are `unverified`, including when their claimed
-principal has a pin. A successful read creates a distinct `peer:<uuid>` record
+principal has a pin. A successful read creates a distinct opaque peer record
 with `pinned` verification and `trusted: true`. Failed discoveries cannot alter
 that record. Discovery record IDs identify candidates independently of UUID and
 principal claims; address order does not affect the ID.
@@ -126,6 +125,8 @@ principal claims; address order does not affect the ID.
 - `discovery:node-removed` — a node aged out (identity + last-known fields)
 - `discovery:node-telemetry` — compact maximum-GPU utilization, validity, and
   sample age for broker-internal scheduling
+- `discovery:node-info` — a full authenticated hardware snapshot with its
+  discovery record ID and identity verification, forwarded through the broker
 
 A one-shot `ready` notification is sent on startup carrying the daemon version. The broker replays its service registrations on every scanner spawn, so a restarted daemon is repopulated without needing to compare an epoch.
 

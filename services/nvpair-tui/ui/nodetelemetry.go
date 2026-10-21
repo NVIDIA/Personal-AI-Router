@@ -19,11 +19,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The node-info HTTP contract. Hardware telemetry is the one thing the broker's
-// JSON-RPC surface does not carry: it keeps GPU, CPU, and memory readings
-// internally but does not put them on the discovery wire, so a client that wants
-// them has to ask each node directly. The desktop app does the same thing, and
-// these values match its cadence so the two behave alike.
+// Public node-info HTTP reads supply hardware displays independently of the
+// service measurements used by the broker and scheduler. These frontend reads
+// continue for paired and unpaired nodes, with the desktop's polling cadence.
 const (
 	nodeInfoPath         = "/v1/node-info"
 	nodeInfoDefaultPort  = 14318

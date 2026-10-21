@@ -80,47 +80,18 @@ func TestSubscribedToNode_AcceptsLocalRecordsWithoutPeerTrust(t *testing.T) {
 	assert.Equal(t, enginePort, projected.Port)
 }
 
-// TestNodeCandidates covers the deterministic, loopback-first ordering and
-// de-duplication of a node's advertised addresses. Local-address rewriting is
-// not exercised (it depends on the host's interfaces); these addresses are
-// chosen to be non-local.
-func TestNodeCandidates_UsesPublishedAddressOrder(t *testing.T) {
-	tests := []struct {
-		name string
-		node Node
-		want []string
-	}{
-		{
-			name: "sorted deterministically",
-			node: Node{Addresses: []string{"192.0.2.20", "192.0.2.10"}, Port: 11434},
-			want: []string{"192.0.2.10:11434", "192.0.2.20:11434"},
-		},
-		{
-			name: "loopback floated to front",
-			node: Node{Addresses: []string{"192.0.2.10", "127.0.0.1"}, Port: 11434},
-			want: []string{"127.0.0.1:11434", "192.0.2.10:11434"},
-		},
-		{
-			name: "deduplicated",
-			node: Node{Addresses: []string{"192.0.2.10", "192.0.2.10"}, Port: 11434},
-			want: []string{"192.0.2.10:11434"},
-		},
-		{
-			name: "fallback to host",
-			node: Node{Host: "gpu-host.lan", Port: 11434},
-			want: []string{"gpu-host.lan:11434"},
-		},
-		{
-			name: "ipv6 bracketed",
-			node: Node{Addresses: []string{"2001:db8::1"}, Port: 11434},
-			want: []string{"[2001:db8::1]:11434"},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, nodeCandidates(tc.node), "nodeCandidates")
+// Documentation addresses avoid host-dependent local-interface rewriting.
+func TestNodeCandidates_RanksAndDeduplicatesAddresses(t *testing.T) {
+	test := func(name string, node Node, want []string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, nodeCandidates(node))
 		})
 	}
+	test("sorted deterministically", Node{Addresses: []string{"192.0.2.20", "192.0.2.10"}, Port: 11434}, []string{"192.0.2.10:11434", "192.0.2.20:11434"})
+	test("loopback first", Node{Addresses: []string{"192.0.2.10", "127.0.0.1"}, Port: 11434}, []string{"127.0.0.1:11434", "192.0.2.10:11434"})
+	test("deduplicated", Node{Addresses: []string{"192.0.2.10", "192.0.2.10"}, Port: 11434}, []string{"192.0.2.10:11434"})
+	test("fallback to host", Node{Host: "gpu-host.lan", Port: 11434}, []string{"gpu-host.lan:11434"})
+	test("ipv6 bracketed", Node{Addresses: []string{"2001:db8::1"}, Port: 11434}, []string{"[2001:db8::1]:11434"})
 }
 
 func TestUUIDFromTXT_ExtractsNodeIdentity(t *testing.T) {
@@ -128,53 +99,19 @@ func TestUUIDFromTXT_ExtractsNodeIdentity(t *testing.T) {
 	assert.Equal(t, "", uuidFromTXT([]string{"models=a;b"}))
 }
 
-// TestNodeURL covers the URL-construction part of nodeURL — specifically
-// that IPv6 literals are bracket-wrapped and IPv4/hostnames remain
-// byte-identical to the pre-JoinHostPort implementation. The
-// local-address shortcut is not exercised here because it depends on
-// the host's network interfaces (see init() in proxy.go) and would be
-// flaky across environments.
+// Documentation addresses avoid host-dependent local-interface rewriting while
+// checking the host, port, and IPv6 brackets used to construct each URL.
 func TestNodeURL_FormatsIPv4IPv6AndServicePort(t *testing.T) {
-	// Pick addresses that are unlikely to appear on any local interface.
-	tests := []struct {
-		name     string
-		node     Node
-		wantHost string
-		wantURL  string
-	}{
-		{
-			name:     "ipv4",
-			node:     Node{Addresses: []string{"192.0.2.10"}, Port: 11434},
-			wantHost: "192.0.2.10:11434",
-			wantURL:  "http://192.0.2.10:11434",
-		},
-		{
-			name:     "ipv6",
-			node:     Node{Addresses: []string{"2001:db8::1"}, Port: 11434},
-			wantHost: "[2001:db8::1]:11434",
-			wantURL:  "http://[2001:db8::1]:11434",
-		},
-		{
-			name:     "hostname",
-			node:     Node{Addresses: []string{"gpu-host.lan"}, Port: 11434},
-			wantHost: "gpu-host.lan:11434",
-			wantURL:  "http://gpu-host.lan:11434",
-		},
-		{
-			// Empty Addresses slice — nodeURL should fall back to Host.
-			name:     "fallback to Host",
-			node:     Node{Host: "gpu-host.lan", Port: 11434},
-			wantHost: "gpu-host.lan:11434",
-			wantURL:  "http://gpu-host.lan:11434",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			u := nodeURL(tc.node)
-			require.NotNil(t, u, "nodeURL returned nil")
-			assert.Equal(t, tc.wantHost, u.Host, "Host")
-			assert.Equal(t, tc.wantURL, u.String())
+	test := func(name string, node Node, wantHost, wantURL string) {
+		t.Run(name, func(t *testing.T) {
+			u := nodeURL(node)
+			require.NotNil(t, u)
+			assert.Equal(t, wantHost, u.Host)
+			assert.Equal(t, wantURL, u.String())
 		})
 	}
+	test("ipv4", Node{Addresses: []string{"192.0.2.10"}, Port: 11434}, "192.0.2.10:11434", "http://192.0.2.10:11434")
+	test("ipv6", Node{Addresses: []string{"2001:db8::1"}, Port: 11434}, "[2001:db8::1]:11434", "http://[2001:db8::1]:11434")
+	test("hostname", Node{Addresses: []string{"gpu-host.lan"}, Port: 11434}, "gpu-host.lan:11434", "http://gpu-host.lan:11434")
+	test("fallback to host", Node{Host: "gpu-host.lan", Port: 11434}, "gpu-host.lan:11434", "http://gpu-host.lan:11434")
 }

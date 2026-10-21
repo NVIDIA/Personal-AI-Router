@@ -33,11 +33,8 @@ func newMembershipTestDaemon(clusterDir string) *daemon {
 	}
 }
 
-// TestModelFetchTransportFollowsMembership pins the transport the daemon uses to
-// read a model inventory. A peer's inventory is cluster data, so it is fetched
-// only over mTLS pinned to that peer's principal; THIS node's own engine-manager
-// is read over loopback in plaintext, which is what keeps a standalone machine's
-// own model list working while it belongs to no cluster.
+// Remote model inventories require pinned mTLS. The owned engine-manager keeps
+// its loopback HTTP path before and after joining a cluster.
 func TestModelFetchTransport_FollowsMembership(t *testing.T) {
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	d := newMembershipTestDaemon(clusterDir)
@@ -68,9 +65,7 @@ func TestModelFetchTransport_FollowsMembership(t *testing.T) {
 	assert.Equal(t, "http", scheme)
 }
 
-// TestClusterUUIDGatedOnLiveMembership pins the invite-deadlock fix at the
-// scanner: cluster-uuid= is advertised only while actually a member, not because
-// a keypair from a past membership is still on disk.
+// A retained keypair alone must not advertise active cluster membership.
 func TestClusterUUID_ReflectsLiveMembership(t *testing.T) {
 	// A left/removed node: keypair present, but no active admission and no pins.
 	// It must NOT advertise a cluster-uuid= (so peers see it as invitable).
@@ -90,13 +85,7 @@ func TestClusterUUID_ReflectsLiveMembership(t *testing.T) {
 	require.Equal(t, "principal-B", d2.reg.record().ClusterUUID, "clustered node advertised cluster-uuid")
 }
 
-// TestClusterUUIDAppearsOnJoinWithoutRestart is the advertisement half of the
-// half-clustered regression guard. A scanner that started before this node had
-// any cluster identity must begin advertising cluster-uuid= once the join lands
-// on disk. Peers key their pins on that TXT value, so a scanner that could only
-// learn it at startup left this node looking unclustered to the whole fleet:
-// skipped by every peer's workload broadcast and dropped as a routing target,
-// while still sitting in the roster.
+// A running scanner must advertise admission changes without a process restart.
 func TestClusterUUID_AppearsOnJoinWithoutRestart(t *testing.T) {
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	d := newMembershipTestDaemon(clusterDir)
@@ -112,9 +101,7 @@ func TestClusterUUID_AppearsOnJoinWithoutRestart(t *testing.T) {
 	require.Equal(t, "principal-C", d.reg.record().ClusterUUID, "post-join cluster-uuid")
 }
 
-// TestReconcileIdentityFollowsMembership covers the identity half of the same
-// pass: it re-advertises only when live membership disagrees with what the
-// registry is publishing, so the common case costs a string compare.
+// Membership reconciliation updates the local registry after joining a cluster.
 func TestReconcileIdentity_FollowsMembership(t *testing.T) {
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	d := newMembershipTestDaemon(clusterDir)
@@ -128,15 +115,8 @@ func TestReconcileIdentity_FollowsMembership(t *testing.T) {
 	require.Equal(t, "principal-self", d.reg.record().ClusterUUID, "post-join cluster-uuid")
 }
 
-// TestPeerLeavingItsClusterClearsInviteGate pins the directory half of the
-// reported failure: a machine kept showing peers as belonging to another
-// cluster, with invites disabled, after every one of them had left.
-//
-// A client suppresses an invite a clustered peer would reject, and it decides
-// that from this annotation, which is only ever derived from the peer's own
-// record. So an entry that keeps a cluster-uuid= the peer no longer advertises
-// blocks a legitimate invite for as long as the entry survives — the annotation
-// has to follow the record down as readily as it followed it up.
+// An unverified announcement's membership claim is display data. Clearing it
+// must make the row available for pairing again.
 func TestPeerLeavingItsCluster_ClearsInviteGate(t *testing.T) {
 	d := newMembershipTestDaemon(filepath.Join(t.TempDir(), "cluster"))
 	const peerUUID = "peer-uuid"

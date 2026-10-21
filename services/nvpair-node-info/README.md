@@ -16,8 +16,9 @@ Two surfaces:
 
 It does **not** advertise itself over mDNS. Discovery is centralized in the
 `nvpair-node-scanner` daemon: the broker registers this service's `ni` port on
-the node's one `_nvpair-node` record. Remote scanners currently read its public
-HTTP inventory; the owned local scanner receives private IPC snapshots.
+the node's one `_nvpair-node` record. Remote services read inventory over pinned
+mTLS; the owned local scanner receives private IPC snapshots. Desktop and TUI
+continue to read public HTTP hardware data for display only.
 
 ### Private inventory IPC
 
@@ -118,7 +119,7 @@ Field notes:
 - `telemetryValid` and `msSince` describe the node-wide GPU utilization snapshot. `telemetryValid` is `true` after the collector has produced a usable GPU sample; `msSince` is that sample's age in milliseconds at response time. A failed collection retains the last usable sample and lets its age increase. Before the first usable sample, and on platforms without dynamic GPU telemetry, the response reports `telemetryValid:false` and `msSince:0`; consumers must ignore the age while validity is false.
 - `clusterUuid` is the cluster principal this node currently holds. It has three distinct states on the wire: **absent** means unknown, **present and empty** means this node belongs to no cluster, and a value is that principal. A consumer must not read absent as unclustered — that is how a node too old to report the field answers, and also how this node answers before its parent has told it anything, so acting on it would clear a correct annotation elsewhere in the fleet.
 - With `--cluster-dir`, including under the broker, `clusterUuid` comes from live trust-store membership. Without a cluster directory, a parent may push it over stdin using `nodeinfo:set-cluster-identity`; the field stays absent until that first push. These are separate deployment modes.
-- `clusterUuid` exists so a peer can learn this node's membership without its mDNS record. Membership otherwise travels only as the `cluster-uuid=` TXT key, which a consumer reads once per record *change*; a consumer that misses that change keeps the previous value indefinitely, and one still holding a departed node's principal will suppress the invite that would bring it back.
+- `clusterUuid` is an identity claim. Public HTTP cannot establish membership or change a verified node's identity; service consumers require the protected response and a matching exact certificate pin.
 - All dynamic fields and the `cpu` / `memory` objects use `omitempty`: a value the service couldn't read is dropped from the JSON entirely rather than reported as a misleading literal zero. A genuinely idle CPU renders the same as "unknown" — that ambiguity is intentional and benign.
 - `vram_bytes` is reported through DXGI on Windows, `nvidia-smi` on Linux, and IORegistry on macOS. On a unified-memory NVIDIA GPU such as DGX Spark, Linux uses total physical system memory for `vram_bytes` and the independently sampled system-memory usage for `vram_used_bytes`. On Apple Silicon, `vram_bytes` is total physical unified memory and `vram_used_bytes` is the GPU driver's mapped allocation (`Alloc system memory`), not whole-system RAM usage or the momentarily active subset.
 

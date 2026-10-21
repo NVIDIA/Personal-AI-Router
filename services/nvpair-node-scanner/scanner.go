@@ -37,11 +37,8 @@ type ReadyParams struct {
 	Version string `json:"version"`
 }
 
-// Scanner is the stdio/JSON-RPC front end for the promoted discovery daemon.
-// Post-cutover there is no legacy _nvpair-node-info browse or node/* stream: the
-// daemon advertises one _nvpair-node record, browses _nvpair-node, maintains the
-// directory, and serves the discovery:* RPC. This wrapper owns the process
-// lifecycle and routes stdio frames into the daemon.
+// Scanner owns the discovery daemon's process lifecycle and routes stdio
+// JSON-RPC frames into its discovery:* handlers.
 type Scanner struct {
 	codec  *Codec
 	daemon *daemon

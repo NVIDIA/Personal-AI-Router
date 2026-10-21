@@ -327,8 +327,8 @@ type Broker struct {
 	engineRelaySubID int
 
 	// manualMu guards manualNodeKeys, mapping each manual node's id to the
-	// discovery-store key it currently occupies — its real hostUuid once
-	// node-info reports one, else its manual id until then. Tracked
+	// discovery-store key it currently occupies — its authenticated hostUuid,
+	// or its independent manual configuration key. Tracked
 	// per manual id so the broker can (a) re-key the store entry when a manual
 	// node's node-info first reveals its stable UUID, and (b) evict the right
 	// key on removal or a manual-nodes crash — since the store key is no longer
@@ -337,8 +337,7 @@ type Broker struct {
 	// manual claim is dropped only once the last alias for a key is gone, and
 	// when an alias that a key was currently projecting from leaves, a surviving
 	// alias is reprojected from manualNodeStatuses (its last-seen payload) so the
-	// removed alias's address/models don't linger (the survivor's own periodic
-	// probe emits no update while its status is unchanged).
+	// removed alias's address/models don't linger until the next accepted probe.
 	manualMu           sync.Mutex
 	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
@@ -1500,11 +1499,8 @@ func (b *Broker) applyClusterIdentityChange() {
 	}
 }
 
-// forwardEngineNotification / forwardManualNodesNotification /
-// forwardSettingsNotification are the per-worker notification hooks. For
-// now they only demux errors:report / errors:clear into the nvpair-errors
-// pipeline; the rest of each worker's notification stream is logged and
-// dropped until its control-plane relay is wired in.
+// forwardEngineNotification handles engine-manager's settings and discovery
+// relay requests, routes service errors, and forwards client-facing events.
 func (b *Broker) forwardEngineNotification(method string, params json.RawMessage) {
 	if method == "engine:settings-request" {
 		b.handleSettingsRelay(params)
@@ -1654,14 +1650,9 @@ func (b *Broker) handleManualNodesNotification(method string, params json.RawMes
 	}
 }
 
-// trackManualNode records the discovery-store key a manual node currently
-// occupies and reports the previous key when it changed (a manual node's
-// node-info first reported its real hostUuid, moving it off the manual id). On a
-// rekey it drops the manual claim under the old key (the scanner's claim, if
-// any, survives); the caller rebridges the proxy overlay off the old key.
 // upsertManualNode ingests a manual node status: it records the alias's payload,
 // keys the discovery store by the node's operational identity (its hostUuid once
-// node-info reports one, else the manual id), and bridges the proxy candidate
+// authenticated over pinned mTLS, else the manual id), and bridges the proxy candidate
 // under that same key so scheduler priority and scheduledOn resolve to it. If
 // the alias's key changed (node-info revealed its real UUID) the
 // old key is reprojected from a surviving alias or released.
@@ -1706,9 +1697,8 @@ func (b *Broker) upsertManualNodeAt(s manualNodeStatus, receivedAt time.Time) {
 // removeManualNode forgets a manual alias, then reprojects or releases the key
 // it occupied. When another alias for the same machine still owns the key, the
 // node stays and is reprojected from that survivor's last-seen payload — so the
-// removed alias's address/models don't linger (the survivor's steady-state probe
-// emits no update to restore itself); only the final alias's removal drops the
-// store/proxy claim.
+// removed alias's address/models don't linger until the next accepted probe.
+// Only the final alias's removal drops the store/proxy claim.
 func (b *Broker) removeManualNode(id string) {
 	b.manualMu.Lock()
 	key, ok := b.manualNodeKeys[id]
@@ -2855,10 +2845,8 @@ func (b *Broker) forwardClusterManagerNotification(method string, params json.Ra
 		}
 		b.applyClusterIdentityChange()
 	}
-	// A pairing or removal changed the pin set. The cluster-scoped workers read
-	// their gates live and need nothing, but the node-scanner caches a per-peer
-	// trusted annotation it can only otherwise refresh when that peer's mDNS
-	// record moves — which a peer already advertising when we joined never does.
+	// A pairing or removal changed the pin set. Withdraw stale proofs and
+	// measurements, then ask scanner to authenticate against current pins.
 	if method == "cluster:trust-changed" {
 		b.applyClusterTrustChange()
 	}

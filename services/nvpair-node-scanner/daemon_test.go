@@ -982,6 +982,141 @@ func TestDiscovery_DiscardsModelResponseAfterSavedCertificateReplacement(t *test
 	assert.Equal(t, response.LoadedByEngine, after.LoadedByEngine)
 }
 
+func TestRefreshNodeModels_AcceptsPinnedPeersWithMultipleAddresses(t *testing.T) {
+	const peerUUID = "peer-uuid"
+	f := newDiscoveryPeerFixture(t, peerUUID)
+	port := portFromURL(t, f.server.URL)
+	f.info.Peer.Services[noderec.ServiceEngineManager] = port
+	f.info.Peer.Addresses = []string{"127.0.0.1", "127.0.0.2"}
+	type modelResponse struct {
+		Models []string `json:"models"`
+	}
+	response := modelResponse{Models: []string{"reported-model"}}
+	f.respond = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/v1/models" {
+			return false
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(response))
+		return true
+	}
+	f.discover(t)
+
+	assert.True(t, f.daemon.refreshNodeModels(peerUUID, "127.0.0.1", port, peerUUID))
+
+	node, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+	assert.Equal(t, response.Models, node.Models)
+}
+
+func TestDiscovery_DiscardsModelsAfterSecondaryAddressChanges(t *testing.T) {
+	const peerUUID = "peer-uuid"
+	const primaryAddress = "127.0.0.2"
+
+	test := func(name, secondaryAddress string, wantAccepted bool) {
+		t.Run(name, func(t *testing.T) {
+			f := newDiscoveryPeerFixture(t, peerUUID)
+			port := portFromURL(t, f.server.URL)
+			f.info.Peer.Services[noderec.ServiceEngineManager] = port
+			// Only the secondary address reaches this peer's server.
+			f.info.Peer.Addresses = []string{primaryAddress, "127.0.0.1"}
+			type modelResponse struct {
+				Models []string `json:"models"`
+			}
+			response := modelResponse{Models: []string{"reported-model"}}
+			f.respond = func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path != "/v1/models" {
+					return false
+				}
+				assert.NoError(t, json.NewEncoder(w).Encode(response))
+				return true
+			}
+			f.discover(t)
+			original, present := f.daemon.dir.get(peerUUID)
+			require.True(t, present)
+			client, ok := f.daemon.modelsClients.Client(peerUUID)
+			require.True(t, ok)
+			closed, release := make(chan struct{}), make(chan struct{})
+			client.Transport = heldModelResponseTransport{RoundTripper: client.Transport, closed: closed, release: release}
+			changed := make(chan bool, 1)
+			done := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); <-done })
+			go func() {
+				defer close(done)
+				changed <- f.daemon.refreshNodeModelsCandidates(peerUUID, original.IP, original.CandidateIPs(), port, peerUUID)
+			}()
+			select {
+			case <-closed:
+			case <-time.After(8 * time.Second):
+				require.FailNow(t, "model response did not reach the point before directory update")
+			}
+
+			// Refresh authoritative inventory while the old model result waits to
+			// be applied. The primary address, port, and pin remain unchanged.
+			f.info.Peer.Addresses = []string{primaryAddress, secondaryAddress}
+			require.True(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), peerUUID, original.CandidateIPs(), original.Services[noderec.ServiceNodeInfo].Port))
+			before, present := f.daemon.dir.get(peerUUID)
+			require.True(t, present)
+			require.Equal(t, []string{primaryAddress, secondaryAddress}, before.CandidateIPs())
+			var output bytes.Buffer
+			f.daemon.codec = NewCodec(&output)
+
+			releaseOnce.Do(func() { close(release) })
+			<-done
+
+			assert.Equal(t, wantAccepted, <-changed)
+			after, present := f.daemon.dir.get(peerUUID)
+			require.True(t, present)
+			if wantAccepted {
+				assert.Equal(t, response.Models, after.Models)
+				return
+			}
+			assert.Equal(t, before, after)
+			assert.Empty(t, output.Bytes())
+		})
+	}
+
+	test("unchanged addresses accept the model response", "127.0.0.1", true)
+	test("removed secondary address discards the model response", "127.0.0.3", false)
+}
+
+func TestDiscovery_DiscardsQueuedModelsForChangedAddresses(t *testing.T) {
+	const peerUUID = "peer-uuid"
+	const primaryAddress = "127.0.0.2"
+	f := newDiscoveryPeerFixture(t, peerUUID)
+	port := portFromURL(t, f.server.URL)
+	f.info.Peer.Services[noderec.ServiceEngineManager] = port
+	f.info.Peer.Addresses = []string{primaryAddress, "127.0.0.1"}
+	type modelResponse struct {
+		Models []string `json:"models"`
+	}
+	f.respond = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/v1/models" {
+			return false
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(modelResponse{Models: []string{"obsolete-model"}}))
+		return true
+	}
+	f.discover(t)
+	original, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+
+	// The model sweep queued the old addresses before receiving new inventory.
+	f.info.Peer.Addresses = []string{primaryAddress, "127.0.0.3"}
+	require.True(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), peerUUID, original.CandidateIPs(), original.Services[noderec.ServiceNodeInfo].Port))
+	before, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+	var output bytes.Buffer
+	f.daemon.codec = NewCodec(&output)
+
+	assert.False(t, f.daemon.refreshNodeModelsCandidates(peerUUID, original.IP, original.CandidateIPs(), port, peerUUID))
+
+	after, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+	assert.Equal(t, before, after)
+	assert.Empty(t, output.Bytes())
+}
+
 func TestDiscovery_PeerActivityDoesNotKeepSpoofedDiscoveryReachable(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
@@ -998,6 +1133,25 @@ func TestDiscovery_PeerActivityDoesNotKeepSpoofedDiscoveryReachable(t *testing.T
 	assert.True(t, f.daemon.reachable(f.raw), "recent inference activity must keep the verified peer reachable")
 	clustertrusttest.RemovePeerPin(t, f.selfDir, "peer-uuid")
 	assert.False(t, f.daemon.reachable(f.raw), "activity must not retain a peer after its certificate is removed")
+}
+
+func TestPeerReachable_RejectsCachedLivenessAfterReadmission(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	f.daemon.noteActivity("peer-uuid", 0)
+	require.True(t, f.daemon.peerReachable("peer-uuid"))
+	require.True(t, f.daemon.reachable(f.raw))
+
+	// Readmission changes the proof binding even when both certificates remain.
+	// Availability checks must reject old evidence before a reload notification.
+	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+
+	assert.False(t, f.daemon.peerReachable("peer-uuid"))
+	assert.False(t, f.daemon.reachable(f.raw))
+
+	f.daemon.reloadTrust()
+	f.daemon.refreshCandidatesOnce(context.Background())
+	assert.True(t, f.daemon.reachable(f.raw))
 }
 
 func TestDiscovery_RefreshesOnlyAuthenticatedInventory(t *testing.T) {
@@ -1483,158 +1637,4 @@ func TestDiscovery_FailedAnnouncementUpdateStillAllowsRemovalOfUnavailablePeer(t
 	f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: updated})
 	_, present := f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
-}
-
-func TestRefreshNodeModels_AcceptsPinnedPeersWithMultipleAddresses(t *testing.T) {
-	const peerUUID = "peer-uuid"
-	f := newDiscoveryPeerFixture(t, peerUUID)
-	port := portFromURL(t, f.server.URL)
-	f.info.Peer.Services[noderec.ServiceEngineManager] = port
-	f.info.Peer.Addresses = []string{"127.0.0.1", "127.0.0.2"}
-	type modelResponse struct {
-		Models []string `json:"models"`
-	}
-	response := modelResponse{Models: []string{"reported-model"}}
-	f.respond = func(w http.ResponseWriter, r *http.Request) bool {
-		if r.URL.Path != "/v1/models" {
-			return false
-		}
-		assert.NoError(t, json.NewEncoder(w).Encode(response))
-		return true
-	}
-	f.discover(t)
-
-	assert.True(t, f.daemon.refreshNodeModels(peerUUID, "127.0.0.1", port, peerUUID))
-
-	node, present := f.daemon.dir.get(peerUUID)
-	require.True(t, present)
-	assert.Equal(t, response.Models, node.Models)
-}
-
-func TestDiscovery_DiscardsModelsAfterSecondaryAddressChanges(t *testing.T) {
-	const peerUUID = "peer-uuid"
-	const primaryAddress = "127.0.0.2"
-
-	test := func(name, secondaryAddress string, wantAccepted bool) {
-		t.Run(name, func(t *testing.T) {
-			f := newDiscoveryPeerFixture(t, peerUUID)
-			port := portFromURL(t, f.server.URL)
-			f.info.Peer.Services[noderec.ServiceEngineManager] = port
-			// Only the secondary address reaches this peer's server.
-			f.info.Peer.Addresses = []string{primaryAddress, "127.0.0.1"}
-			type modelResponse struct {
-				Models []string `json:"models"`
-			}
-			response := modelResponse{Models: []string{"reported-model"}}
-			f.respond = func(w http.ResponseWriter, r *http.Request) bool {
-				if r.URL.Path != "/v1/models" {
-					return false
-				}
-				assert.NoError(t, json.NewEncoder(w).Encode(response))
-				return true
-			}
-			f.discover(t)
-			original, present := f.daemon.dir.get(peerUUID)
-			require.True(t, present)
-			client, ok := f.daemon.modelsClients.Client(peerUUID)
-			require.True(t, ok)
-			closed, release := make(chan struct{}), make(chan struct{})
-			client.Transport = heldModelResponseTransport{RoundTripper: client.Transport, closed: closed, release: release}
-			changed := make(chan bool, 1)
-			done := make(chan struct{})
-			var releaseOnce sync.Once
-			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); <-done })
-			go func() {
-				defer close(done)
-				changed <- f.daemon.refreshNodeModelsCandidates(peerUUID, original.IP, original.CandidateIPs(), port, peerUUID)
-			}()
-			select {
-			case <-closed:
-			case <-time.After(8 * time.Second):
-				require.FailNow(t, "model response did not reach the point before directory update")
-			}
-
-			// Refresh authoritative inventory while the old model result waits to
-			// be applied. The primary address, port, and pin remain unchanged.
-			f.info.Peer.Addresses = []string{primaryAddress, secondaryAddress}
-			require.True(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), peerUUID, original.CandidateIPs(), original.Services[noderec.ServiceNodeInfo].Port))
-			before, present := f.daemon.dir.get(peerUUID)
-			require.True(t, present)
-			require.Equal(t, []string{primaryAddress, secondaryAddress}, before.CandidateIPs())
-			var output bytes.Buffer
-			f.daemon.codec = NewCodec(&output)
-
-			releaseOnce.Do(func() { close(release) })
-			<-done
-
-			assert.Equal(t, wantAccepted, <-changed)
-			after, present := f.daemon.dir.get(peerUUID)
-			require.True(t, present)
-			if wantAccepted {
-				assert.Equal(t, response.Models, after.Models)
-				return
-			}
-			assert.Equal(t, before, after)
-			assert.Empty(t, output.Bytes())
-		})
-	}
-
-	test("unchanged addresses accept the model response", "127.0.0.1", true)
-	test("removed secondary address discards the model response", "127.0.0.3", false)
-}
-
-func TestDiscovery_DiscardsQueuedModelsForChangedAddresses(t *testing.T) {
-	const peerUUID = "peer-uuid"
-	const primaryAddress = "127.0.0.2"
-	f := newDiscoveryPeerFixture(t, peerUUID)
-	port := portFromURL(t, f.server.URL)
-	f.info.Peer.Services[noderec.ServiceEngineManager] = port
-	f.info.Peer.Addresses = []string{primaryAddress, "127.0.0.1"}
-	type modelResponse struct {
-		Models []string `json:"models"`
-	}
-	f.respond = func(w http.ResponseWriter, r *http.Request) bool {
-		if r.URL.Path != "/v1/models" {
-			return false
-		}
-		assert.NoError(t, json.NewEncoder(w).Encode(modelResponse{Models: []string{"obsolete-model"}}))
-		return true
-	}
-	f.discover(t)
-	original, present := f.daemon.dir.get(peerUUID)
-	require.True(t, present)
-
-	// The model sweep queued the old addresses before receiving new inventory.
-	f.info.Peer.Addresses = []string{primaryAddress, "127.0.0.3"}
-	require.True(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), peerUUID, original.CandidateIPs(), original.Services[noderec.ServiceNodeInfo].Port))
-	before, present := f.daemon.dir.get(peerUUID)
-	require.True(t, present)
-	var output bytes.Buffer
-	f.daemon.codec = NewCodec(&output)
-
-	assert.False(t, f.daemon.refreshNodeModelsCandidates(peerUUID, original.IP, original.CandidateIPs(), port, peerUUID))
-
-	after, present := f.daemon.dir.get(peerUUID)
-	require.True(t, present)
-	assert.Equal(t, before, after)
-	assert.Empty(t, output.Bytes())
-}
-
-func TestPeerReachable_RejectsCachedLivenessAfterReadmission(t *testing.T) {
-	f := newDiscoveryPeerFixture(t, "peer-uuid")
-	f.discover(t)
-	f.daemon.noteActivity("peer-uuid", 0)
-	require.True(t, f.daemon.peerReachable("peer-uuid"))
-	require.True(t, f.daemon.reachable(f.raw))
-
-	// Readmission changes the proof binding even when both certificates remain.
-	// Availability checks must reject old evidence before a reload notification.
-	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
-
-	assert.False(t, f.daemon.peerReachable("peer-uuid"))
-	assert.False(t, f.daemon.reachable(f.raw))
-
-	f.daemon.reloadTrust()
-	f.daemon.refreshCandidatesOnce(context.Background())
-	assert.True(t, f.daemon.reachable(f.raw))
 }
