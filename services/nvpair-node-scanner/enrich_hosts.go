@@ -30,9 +30,9 @@ func (inv modelInventory) applyTo(node *noderec.DirectoryNode) {
 	node.DownloadedByEngine = inv.downloadedByEngine
 }
 
-// hostKey identifies one node's endpoint for one service. Node-info and the engine
-// manager are different ports and can be reachable at different addresses, so what
-// answered for one says nothing about the other.
+// hostKey identifies address memory for one record and service. Node-info uses
+// discovery record IDs to keep candidates separate from verified peers; model
+// reads use the canonical host UUID. Each service remembers its own working IP.
 type hostKey struct {
 	hostUUID string
 	service  noderec.ServiceKey

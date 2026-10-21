@@ -11,11 +11,8 @@ import (
 	"nvpair-shared/noderec"
 )
 
-// TestSubscribedOverlayMerge covers the relay-sourced routing overlay: the broker
-// pushes the full filtered set, SetSubscribed replaces the overlay wholesale, and
-// subscribed nodes merge into Nodes() alongside the separate manual overlay. A
-// later snapshot omitting a node drops it while manual nodes survive. The browser
-// isn't running, so Nodes() reflects only the overlays.
+// Replacing the relay snapshot removes departed peers while preserving the
+// independently configured manual overlay.
 func TestSubscribedOverlay_MergesDiscoveryAndManualNodes(t *testing.T) {
 	d := NewDiscovery()
 
@@ -40,9 +37,8 @@ func TestSubscribedOverlay_MergesDiscoveryAndManualNodes(t *testing.T) {
 	require.True(t, d.IsManual("m1"), "manual node m1 should survive a subscribed-set replace")
 }
 
-// TestSubscribedDiff covers the diff SetSubscribed returns so the proxy can emit
-// node/discovered|updated|removed for the relay-fed set (the signal the UI uses to
-// show which peers run this engine).
+// The returned changes drive node/discovered, node/updated, and node/removed
+// notifications so clients learn which peers currently run this engine.
 func TestSubscribedDiff_ReportsAddedChangedAndRemovedNodes(t *testing.T) {
 	d := NewDiscovery()
 
@@ -85,14 +81,8 @@ func TestSubscribedDiff_ReportsAddedChangedAndRemovedNodes(t *testing.T) {
 	require.Equal(t, "s1", rem[0].ID, "omitted node: want removed=[s1], got disc (%v, %v, %v)", disc, upd, rem)
 }
 
-// TestSubscribedToNode covers the DirectoryNode -> routable Node projection:
-// this engine's port is read from its own service key, and a node lacking that
-// key, or an IP, is rejected.
-//
-// The two negative fixtures matter for different reasons and the old suites
-// carried one each — Ollama rejected a non-engine service, LM Studio rejected
-// the other engine. Both run for both engines here, because the second is what
-// regresses if the projection ever loses its service-key filter.
+// The proxy projects only its engine's service endpoint and model inventory.
+// Other engine services and non-engine services cannot supply that endpoint.
 func TestSubscribedToNode_ProjectsDiscoveryFields(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		const hostUUID = "uuid-a"
@@ -178,10 +168,8 @@ func TestSubscribedToNode_ProjectsDiscoveryFields(t *testing.T) {
 	})
 }
 
-// TestSubscribedToNodeKeysByHostUUID: the routable Node keys on the stable
-// hostUuid, not the hostname — so routing, scheduledOn, node selection, and the
-// scheduler's priority list all survive a PC rename and never conflate two
-// same-named machines. Host stays the hostname for display.
+// The stable host UUID keeps routing and scheduling independent of PC renames
+// and same-named machines. Host preserves the hostname for display.
 func TestSubscribedToNode_KeysByHostUUID(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		const uuid = "11111111-1111-1111-1111-111111111111"

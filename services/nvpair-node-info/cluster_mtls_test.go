@@ -32,7 +32,7 @@ import (
 func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err, "genkey")
+	require.NoError(t, err)
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	require.NoError(t, err)
 	uri, err := url.Parse("urn:nvpair:node:" + uuid)
@@ -65,8 +65,12 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
 	td := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(td, 0o700))
+	type peerPin struct {
+		NodeUUID string `json:"nodeUuid"`
+		CertPEM  string `json:"certPem"`
+	}
 	for uuid, pcert := range pins {
-		body, err := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
+		body, err := json.Marshal(peerPin{NodeUUID: uuid, CertPEM: string(pcert)})
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600))
 	}

@@ -21,9 +21,7 @@ import (
 	"nvpair-shared/clustertrusttest"
 )
 
-// TestModelsClient_ReusesPeerConnections is the regression for the 15s
-// enrichment handshake storm: modelsClient used to build a fresh Transport
-// per peer fetch. Several /v1/models GETs must ride ONE connection.
+// Repeated model inventory reads reuse one authenticated peer connection.
 func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 	selfDir := t.TempDir()
 	peerDir := t.TempDir()
