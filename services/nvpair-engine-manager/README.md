@@ -51,12 +51,25 @@ launch arguments and restarting the engine.
 The default launch serves `Qwen/Qwen2.5-0.5B-Instruct` through
 `--model <hugging-face-id>`; edit that argument to serve another model. Only
 `--host` and `--port` are managed controls, and there is no CORS control.
-The default launch also passes `--gpu-memory-utilization 0.5`: vLLM reserves 92%
-of GPU memory by default, even for a tiny model, which would starve every other
-engine on the machine. Raise it in the launch arguments for a larger model.
-It also passes `--max-model-len 32768`: many current models advertise a context of
-256K tokens or more, and vLLM refuses to start unless the KV cache for that full
-length fits in the memory it was given. Raise it only if the GPU has room.
+The context window and GPU share are chosen automatically at every start
+(`auto_launch`, kind `hf_context`), not pinned in the saved launch. The manager
+reads the model's `config.json` from the Hugging Face cache and the free GPU
+memory, then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
+model with a larger window is capped there, and a smaller one is shrunk to what
+fits), a YaRN `--hf-overrides` when the model's own window is below 64K (for
+example Qwen3-8B, which stops at 40,960), and a `--gpu-memory-utilization` just
+large enough for the weights, that KV cache and overhead, instead of vLLM's
+92% default. A model with its own rope scaling is never overridden. Anything
+the user saves in the launch arguments wins, and a tensor- or pipeline-parallel
+launch is left untouched. A model that is not yet downloaded gets only a capped
+memory share. The added arguments appear in the engine-manager log
+(`engine launch adjusted for the model and GPU`) and not in the saved settings,
+so switching models re-sizes for the new one.
+It also enables tool calling, which agents such as Hermes need on every request
+(vLLM answers HTTP 400 to `tool_choice: "auto"` otherwise): for the Qwen families
+it adds `--enable-auto-tool-choice --tool-call-parser hermes`. Other families are
+left at vLLM's default until their parser has been tried; name one in the launch
+arguments to enable it.
 The environment sets `VLLM_USE_FLASHINFER_SAMPLER=0`. vLLM's FlashInfer sampler
 compiles GPU kernels on first start, and that build cannot handle the spaces in
 PAIR's app-data folder (`Nvidia Corporation/Personal AI Router`), so the

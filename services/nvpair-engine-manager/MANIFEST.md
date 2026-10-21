@@ -342,6 +342,20 @@ its `list_models` offers many models it could be switched to. With `"loaded"`,
 `list_models` is not queried for `engine:models`, and a `loaded_models` action is
 required.
 
+A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536}`)
+lets the manager add start-time arguments that depend on the model and the
+machine. For `hf_context` it reads the served model's `config.json` from the
+Hugging Face cache and the free GPU memory, then appends `--max-model-len`
+(the target, the model's own limit when it cannot be extended, or what fits),
+`--hf-overrides` with YaRN rope scaling when the target exceeds the model's
+native window, and `--gpu-memory-utilization` sized to weights plus KV cache.
+Arguments the user saved always win and nothing added is written back to saved
+settings, so a model switch is re-sized for the new model. It also adds
+`--enable-auto-tool-choice` and the matching `--tool-call-parser` for model
+families known to work (Qwen: `hermes`). Tensor- or
+pipeline-parallel launches are left alone. It requires a process-mode runtime
+with `editable_launch`.
+
 An optional **`restart_after`** restarts the engine once the action succeeds.
 Declare it on an action that changes state the engine only reads at startup:
 LM Studio's `delete_model` removes the files, but its server answers

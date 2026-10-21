@@ -96,11 +96,16 @@ conflicting repeated lists are rejected. Other vendor options remain opaque.
 llama.cpp must remain in router mode; model-selection arguments such as `-m`
 or `-hf` switch it to an incompatible single-model server and fail readiness.
 vLLM always serves one model: its launch arguments name that model with
-`--model <Hugging Face id>`, and changing it restarts the engine. By default it
-uses at most half of the GPU's memory (`--gpu-memory-utilization 0.5`) so other
-engines can run alongside it; raise that value for a larger model. It also caps
-the context at 32K tokens (`--max-model-len 32768`), because models with a very
-long default context would otherwise not fit in that memory and fail to start.
+`--model <Hugging Face id>`, and changing it restarts the engine. At every start
+PAIR sizes the rest for that model: a 64K context (`--max-model-len`, shrunk if
+the free GPU memory cannot hold it), YaRN rope scaling when the model's own window
+is smaller (for example Qwen3-8B's 40,960 tokens), and a GPU memory share just large
+enough for the weights and that context, so other engines can run alongside it.
+Arguments you add to the launch text, such as your own `--max-model-len` or
+`--gpu-memory-utilization`, take precedence, and a launch with
+`--tensor-parallel-size` or `--pipeline-parallel-size` is left as written. For
+Qwen models PAIR also turns on tool calling (`--enable-auto-tool-choice` with the
+`hermes` parser), which agent clients require.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation

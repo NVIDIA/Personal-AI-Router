@@ -60,10 +60,16 @@ func TestBundledVLLMManifest(t *testing.T) {
 		if rt.Env["VLLM_USE_FLASHINFER_SAMPLER"] != "0" {
 			t.Errorf("%s: the FlashInfer sampler must be disabled", key)
 		}
-		// vLLM reserves 92% of GPU memory by default, which starves every other
-		// engine on the machine even for a tiny model.
-		if !slices.Contains(rt.Args, "--gpu-memory-utilization") {
-			t.Errorf("%s: the default launch must cap GPU memory use", key)
+		// vLLM reserves 92% of GPU memory by default and refuses a context above
+		// the model's own limit. Both are decided per model at start, so the
+		// manifest must not pin them in the saved launch.
+		if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext || rt.AutoLaunch.ContextTokens != 65536 {
+			t.Errorf("%s: vllm must size its context and GPU share automatically for a 64K window, got %+v", key, rt.AutoLaunch)
+		}
+		for _, pinned := range []string{"--gpu-memory-utilization", "--max-model-len"} {
+			if slices.Contains(rt.Args, pinned) {
+				t.Errorf("%s: %s must not be pinned in the default launch", key, pinned)
+			}
 		}
 		if rt.Port != 8001 {
 			t.Errorf("%s: engine port = %d, want 8001 (the facade owns 8000)", key, rt.Port)

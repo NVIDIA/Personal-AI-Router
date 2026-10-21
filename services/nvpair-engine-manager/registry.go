@@ -156,6 +156,10 @@ type Runtime struct {
 	// a non-nil empty slice keeps only fixed and managed arguments. Use
 	// omitzero to omit nil while preserving explicit empty arrays in JSON.
 	LaunchArgs []string `json:"launch_args,omitzero"`
+	// AutoLaunch lets the manager add startup arguments that depend on the model
+	// being served and the machine, at every start. Arguments the user saved
+	// always win, and nothing added here is written back to saved settings.
+	AutoLaunch *AutoLaunch `json:"auto_launch,omitempty"`
 	// Mode selects the lifecycle model: "process" means PAIR owns the launched
 	// foreground process; "command" means PAIR invokes commands that manage a
 	// separate daemon. Empty defaults to "process".
@@ -193,6 +197,19 @@ type Runtime struct {
 	// Health is the periodic availability probe for a running engine.
 	Health *Probe `json:"health,omitempty"`
 }
+
+// AutoLaunch configures start-time launch arguments. The only kind is
+// "hf_context": read the model's config.json from the Hugging Face cache and
+// set the context length, any rope scaling it needs, and the GPU memory share.
+type AutoLaunch struct {
+	Kind string `json:"kind"`
+	// ContextTokens is the context window to aim for. Models that natively
+	// support less are extended where that is safe; models that support more are
+	// capped here so the KV cache stays affordable.
+	ContextTokens int `json:"context_tokens"`
+}
+
+const autoLaunchHFContext = "hf_context"
 
 type EditableLaunch struct {
 	FixedArgs  []string        `json:"fixed_args"`
@@ -783,6 +800,14 @@ const (
 )
 
 func (p *Platform) validate(key string) error {
+	if auto := p.Runtime.AutoLaunch; auto != nil {
+		if auto.Kind != autoLaunchHFContext || auto.ContextTokens < 1024 {
+			return fmt.Errorf("platform %q: auto_launch needs kind %q and context_tokens of at least 1024", key, autoLaunchHFContext)
+		}
+		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
+			return fmt.Errorf("platform %q: auto_launch requires a process-mode runtime with editable_launch", key)
+		}
+	}
 	if policy := p.Runtime.EditableLaunch; policy != nil {
 		if policy.StartIndex < 0 || (p.Runtime.modeOrDefault() == "command" && policy.StartIndex >= len(p.Runtime.Start)) {
 			return fmt.Errorf("platform %q: invalid editable launch definition", key)
