@@ -79,26 +79,19 @@ type NodeInfoResponse struct {
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
 	// HostUUID is this node's stable per-host identity (the same value the
-	// node-scanner advertises as uuid= and the cluster uses as nodeUuid). It lets
-	// a consumer that reaches this node only over HTTP — notably a user-added
-	// manual node, which never sees this host's mDNS record — key it by its
-	// permanent identity instead of the address it was typed under.
+	// node-scanner advertises as uuid= and the cluster uses as nodeUuid).
+	// Services authenticate it against the serving peer's pinned certificate;
+	// a public HTTP response cannot establish or replace a node's identity.
 	HostUUID string `json:"hostUuid,omitempty"`
 	// ClusterUUID is the cluster principal this node currently holds, empty when
 	// it belongs to no cluster, and absent when this node does not (yet) know. It
-	// is the mDNS-independent way for a peer to learn this node's membership:
-	// membership otherwise travels only as the cluster-uuid= TXT key on this
-	// host's mDNS record, so a peer that stops receiving that record keeps its
-	// last observed value forever — and a peer still carrying a departed node's
-	// principal suppresses the invite that would bring it back.
+	// accompanies authenticated inventory. Membership changes come from cluster
+	// state and verified discovery; public HTTP responses cannot change them.
 	//
 	// A pointer with omitempty, so all three states are distinct on the wire:
 	// absent means unknown, present-and-empty means unclustered, present means
-	// that principal. A consumer must not read absent as unclustered — that is
-	// how a node too old to report the field answers, and also how this node
-	// answers before its parent has told it anything. Claiming "no cluster" on no
-	// evidence would have a peer clear a correct annotation and offer an invite
-	// its target will reject.
+	// that principal. Absence supplies no membership information, including
+	// before a launch without --cluster-dir receives its first broker update.
 	ClusterUUID *string `json:"clusterUuid,omitempty"`
 }
 

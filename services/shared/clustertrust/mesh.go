@@ -19,10 +19,9 @@ import (
 
 // ClusterUUIDTXTKey is the mDNS TXT key carrying a node's cluster principal —
 // the UUID of the mTLS leaf nvpair-cluster-manager issued it — so a peer can map
-// an advertised service to the pin it holds for that node. It is deliberately
-// distinct from node-info's existing uuid= key (the stable per-host node id):
-// the cluster principal is a per-cluster cert UUID, not the host UUID, and the
-// two are not equal. A service advertises this key only while clustered.
+// an advertised service to the pin it holds for that node. Authenticated
+// inventory requires the host UUID, this principal, and the serving certificate
+// UUID to match. A service advertises this key only while clustered.
 const ClusterUUIDTXTKey = "cluster-uuid"
 
 // ErrNotClustered is returned by the TLS config resolvers while this node is not

@@ -212,9 +212,8 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 		done:  make(chan struct{}),
 	}
 
-	// Read stdout rather than discarding it: node-info reports the local
-	// addresses peers have reached it on, and an unattended read end would also
-	// risk wedging the child on a full pipe buffer.
+	// Read owned hardware snapshots and reached-address reports from stdout.
+	// An unread pipe would eventually block the child's notifications.
 	go drainNodeInfoStdout(stdout, onNotify)
 	go func() {
 		_ = cmd.Wait()
@@ -230,8 +229,8 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 // as is anything that isn't JSON.
 //
 // This must never stop reading while the child lives: node-info writes its
-// observed-address reports here, and an unread stdout pipe fills up and blocks
-// the child mid-write, which silently ends address reporting for the rest of the
+// inventory and address reports here, and an unread stdout pipe blocks
+// the child mid-write, which silently ends both notification streams for the
 // session. bufio.Scanner cannot be used for that reason — it fails permanently on
 // a frame past its limit — so an oversized frame is dropped on its own and the
 // next one is read normally.
@@ -286,7 +285,7 @@ func handleNodeInfoFrame(line []byte, onNotify func(method string, params json.R
 
 // logNodeInfoDrainEnd separates the expected end of the stream — the child
 // exited or Stop closed the pipe — from a read failure, which ends
-// observed-address delivery and is worth a warning.
+// owned inventory and address delivery and is worth a warning.
 func logNodeInfoDrainEnd(err error) {
 	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
 		slog.Debug("node-info stdout closed", "err", err)

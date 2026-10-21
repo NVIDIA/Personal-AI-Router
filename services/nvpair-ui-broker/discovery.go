@@ -134,8 +134,8 @@ const (
 	sourceManual
 )
 
-// storedNode is the broker's in-memory record per discovered node, keyed by
-// hostUuid. It keeps each contributing source's last full EnrichedNode payload
+// storedNode keeps a verified host by UUID or an unverified discovery by its
+// separate record ID. It keeps each source's last full EnrichedNode payload
 // (including GPU / CPU / memory the wire doesn't expose) so a record can be
 // re-projected from the surviving source when the other is removed. lastSeen is
 // bumped on every discovered/updated event, giving clients a freshness signal.
@@ -250,8 +250,8 @@ func (sn storedNode) hasSource(source nodeSource) bool {
 
 // discoveryStore is the broker's live view of network-discovered nodes.
 // It's the single source of truth that "discovery:get-nodes" reads from.
-// All mutations come from the scanner-event reader goroutine; reads come
-// from RPC handlers, so the lock is sized for a low-contention r/w mix.
+// Scanner, manual-worker, trust, and restart updates are serialized by the
+// broker's discoveryMu; RPC readers use the store's own read lock.
 //
 // onChange, when non-nil, is invoked after every Upsert and Remove
 // AFTER the write lock has been released. It's the broker's hook for
@@ -259,9 +259,8 @@ func (sn storedNode) hasSource(source nodeSource) bool {
 // off the lock means a caller is free to snapshot inside it without
 // deadlocking. The store does not guarantee that two rapid mutations
 // produce two separate callback invocations in strict happens-before
-// order with the lock — but since the only writer in practice is the
-// single-threaded scanner-event reader, that ordering already holds at
-// the call site.
+// order with the lock. The broker orders mutations and callbacks at the call
+// sites with discoveryMu.
 type discoveryStore struct {
 	mu       sync.RWMutex
 	nodes    map[string]storedNode
@@ -314,8 +313,8 @@ func (s *discoveryStore) SetOnChange(fn func()) {
 }
 
 // Upsert records one source's view of a node (node/discovered or node/updated).
-// The record is keyed by hostUuid and merges the source's payload with any
-// other source already claiming that key. The client snapshot is always the
+// Verified sources share a host UUID key; unverified discoveries keep their
+// separate record keys. The client snapshot is always the
 // latest full picture, not a diff stream.
 func (s *discoveryStore) Upsert(n EnrichedNode, source nodeSource) {
 	key := n.storeKey()
@@ -466,7 +465,7 @@ func (sn storedNode) toAvailable() AvailableNode {
 // (id-correlation + read pump), so the broker can Call the scanner and push
 // notifications down to it — the foundation for relaying discovery:register /
 // subscribe to the promoted daemon and reading its acks — while
-// the scanner's node/* notifications are routed into the discovery store.
+// the scanner's discovery:node-* notifications enter the discovery store.
 type scannerProcess struct {
 	stateMu  *sync.Mutex
 	mesh     *clustertrust.Mesh
@@ -626,10 +625,9 @@ func (s *scannerProcess) reloadIdentity() {
 	}
 }
 
-// reloadTrust tells the daemon this node's cluster pin set changed, so it
-// re-derives the trusted annotation on every node in its directory. The daemon
-// otherwise only answers that question when a peer's mDNS record moves, and a
-// peer that was already advertising when this node joined never moves again.
+// reloadTrust promptly invalidates stale peer proofs and schedules candidate
+// authentication after a pin change. Scanner also reconciles live trust on its
+// periodic refresh loops, independently of mDNS changes.
 func (s *scannerProcess) reloadTrust() {
 	ctx, cancel := context.WithTimeout(context.Background(), pushRegisterTimeout)
 	defer cancel()

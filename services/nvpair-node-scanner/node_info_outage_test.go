@@ -28,10 +28,7 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	return buf
 }
 
-// TestNodeInfoOutageIsStatedOnceAtEachEnd pins the reporting to the transitions.
-// The sweep repeats for as long as the node is advertised, so reporting every
-// attempt is what made this unreadable — and reporting none of them is what hid
-// it entirely.
+// Repeated polling reports outage and recovery transitions once each.
 func TestNodeInfoOutage_IsStatedOnceAtEachEnd(t *testing.T) {
 	logs := captureLogs(t)
 	d := &daemon{}
@@ -49,8 +46,7 @@ func TestNodeInfoOutage_IsStatedOnceAtEachEnd(t *testing.T) {
 	require.Equal(t, 1, strings.Count(logs.String(), "node-info is answering again"), "recovery reported")
 }
 
-// TestNodeInfoSilenceWhenNothingChanges keeps the steady state quiet: a peer that
-// has always answered has nothing to say about itself.
+// A peer that remains available must not produce repetitive log messages.
 func TestNodeInfoOutage_EmitsNothingWhileAvailabilityIsUnchanged(t *testing.T) {
 	logs := captureLogs(t)
 	d := &daemon{}

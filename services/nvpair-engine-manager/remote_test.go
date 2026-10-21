@@ -12,7 +12,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-func TestRunRemoteRequiresNode(t *testing.T) {
+func TestRunRemote_RejectsMissingNode(t *testing.T) {
 	var out bytes.Buffer
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
 	id := json.RawMessage("1")
@@ -21,7 +21,7 @@ func TestRunRemoteRequiresNode(t *testing.T) {
 	mustContain(t, out.String(), "node is required")
 }
 
-func TestRunRemoteUnknownPeer(t *testing.T) {
+func TestRunRemote_RejectsUnknownPeer(t *testing.T) {
 	var out bytes.Buffer
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
 	id := json.RawMessage("1")
@@ -30,7 +30,7 @@ func TestRunRemoteUnknownPeer(t *testing.T) {
 	mustContain(t, out.String(), "not a discovered ec peer")
 }
 
-func TestRunRemoteNotClustered(t *testing.T) {
+func TestRunRemote_RejectsRequestsOutsideCluster(t *testing.T) {
 	var out bytes.Buffer
 	// Peer is discovered, but this node has no mesh (not clustered), so the
 	// pinned dial can't be built.

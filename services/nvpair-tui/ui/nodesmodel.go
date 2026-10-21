@@ -99,8 +99,8 @@ func (m nodeMembership) relationship() string {
 //   - cluster   — membership state for peers we have paired with
 //   - manual    — user-added entries discovery cannot see, plus their probes
 //
-// One machine can appear in all three. Merging on a stable key is what stops it
-// rendering as three separate rows.
+// Verified host identities join matching feeds. Unverified discoveries retain
+// separate record keys, and unverified manual configurations retain manual keys.
 type nodeRow struct {
 	identityVerification noderec.IdentityVerification
 	key                  string

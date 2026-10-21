@@ -88,7 +88,11 @@ Emitted so the supervising broker can forward them into the `nvpair-errors` pipe
 
 Add a node by address. The manager immediately probes it and emits a `node/discovered` event.
 
-A hostname is preferred over an IP literal: probe clients disable keep-alives specifically so every probe re-resolves the name, which lets a node that gets a new address recover on its own. An IP-literal entry is dead once the device is renumbered. Supply the address on its own — a `host:port` string is not parsed, because ports are appended to it, so such an entry reads permanently down.
+A hostname is preferred over an IP literal: all probes open fresh connections
+so they re-resolve the name after an address change, including authenticated
+hardware probes. An IP-literal entry cannot
+follow a renumbered device. Supply the address on its own — a `host:port` string
+is not parsed, because ports are appended to it.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"my-server"}}
@@ -99,7 +103,7 @@ A hostname is preferred over an IP literal: probe clients disable keep-alives sp
 | `address` | Yes | IP address or hostname of the node, with no port |
 | `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`) |
 | `tls_port` | No | Override the node-info port (default `14318`). Hardware reads always require pinned mTLS. Echoed back as `tls_enabled` |
-| `mtls` | No | Stored and echoed back as `mtls_required`. The probe transport itself is chosen by `tls_port` and live cluster membership, so this field records intent rather than driving it |
+| `mtls` | No | Configuration hint echoed as `mtls_required` when `tls_port` is set. Hardware probes always use mTLS with current cluster pins |
 
 Response: the initial node status object.
 
@@ -146,7 +150,8 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 A node can have any combination of these, or none if the target is unreachable.
 Hardware reads require exact current cluster pins and matching `hostUuid` and
 `clusterUuid` in the response. They use pooled mTLS clients after identifying
-the peer, refuse redirects, and never fall back to public HTTP or operator CAs.
+the peer, close each connection after the response, refuse redirects, and never
+fall back to public HTTP or operator CAs.
 Unverified configurations report `identityVerification: "unverified"` and supply
 no service measurements. Explicitly configured engine routes remain available.
 Desktop and TUI may independently read public HTTP for hardware display.

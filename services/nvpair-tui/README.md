@@ -117,8 +117,9 @@ enriches from each peer's engine manager — no extra request. This machine's co
 from `engine:models` and stay live through `engine:models-changed`.
 
 The detail screen also polls the node's own `/v1/node-info` endpoint over HTTP
-for GPU, CPU, and memory. That is the one reading the broker's JSON-RPC surface
-does not carry, and only the open node is polled.
+for GPU, CPU, and memory. Only the open node is polled, and public readings are
+used for display. Verified manual TLS configurations use the manual worker's
+authenticated hardware reading instead.
 
 ## Keys
 

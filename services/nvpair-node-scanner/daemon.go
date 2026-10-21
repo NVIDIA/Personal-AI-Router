@@ -30,16 +30,9 @@ import (
 	"nvpair-shared/reach"
 )
 
-// daemon is the promoted node-scanner: it advertises this
-// node as ONE _nvpair-node record built from a registry of relayed service
-// registrations, browses _nvpair-node to build a directory of every LAN node, and
-// serves the discovery:* RPC (register/unregister/update-txt/get-nodes/
-// reload-identity) while emitting discovery:node-* events.
-//
-// Post-cutover this is the sole discovery path: the legacy _nvpair-node-info
-// browse and node/* stream are gone, and every consumer registers/subscribes
-// through the broker relay, which the broker builds from this daemon's
-// discovery:node-* stream and fans out to consumers as discovery:nodes snapshots.
+// daemon owns local registration, candidate discovery, and authenticated peer
+// inventory. It publishes discovery:node-* events for the broker relay, which
+// delivers directory snapshots to service consumers.
 type daemon struct {
 	codec     *Codec
 	mesh      *clustertrust.Mesh
@@ -51,11 +44,8 @@ type daemon struct {
 	// registry-driven self directory entry (publishSelf), which is anchored to
 	// our own identity rather than to hearing our own multicast.
 	instance string
-	// modelsHTTP fetches the local /v1/models. It gets a longer timeout than node-info
-	// (node-info): engine-manager's models sweep is bounded by its own, larger
-	// deadline, so a peer with several engines can legitimately take longer than
-	// a node-info probe. A shorter client would give up mid-sweep and silently
-	// drop that peer's models.
+	// modelsHTTP reads the owned engine-manager over loopback. Model sweeps have
+	// a longer timeout than node-info because they may inspect several engines.
 	modelsHTTP *http.Client
 	// modelsClients is the long-lived per-peer mTLS pool for LAN /v1/models
 	// fetches. A throwaway Transport every 15s paid a full handshake each time.
@@ -766,16 +756,9 @@ func (d *daemon) reloadTrust() {
 	d.wakeAuthentication()
 }
 
-// reconcileIdentity re-advertises this node when live membership no longer
-// matches the cluster principal the registry is publishing — the join or leave
-// that reloadIdentity exists to pick up. Peers key their pins on our
-// cluster-uuid= TXT, so a node that became a member must start advertising it
-// without a restart; nothing else tells the fleet.
-//
-// The comparison is against the registry's current value rather than a change
-// signal, so it is safe to call on any event: it is an in-memory string compare,
-// and reloadIdentity's file read and interface enumeration only happen when the
-// answer actually differs.
+// reconcileIdentity republishes local identity when current membership differs
+// from the registry. Announcements expose membership for pairing displays;
+// service trust still requires an authenticated peer inventory response.
 func (d *daemon) reconcileIdentity() {
 	want := ""
 	if d.mesh.Clustered() {
@@ -850,30 +833,10 @@ func (d *daemon) emitNodeInfo(node noderec.DirectoryNode, info noderec.NodeInfo)
 	}
 }
 
-// reloadIdentity re-resolves this node's advertised identity (hostUuid,
-// clusterUuid, ip) and re-advertises if any of it changed. It has three triggers:
-//
-//   - Membership change: the mesh watch calls this when this node joins or leaves
-//     a cluster, so cluster-uuid= appears in (or disappears from) this node's mDNS
-//     record within one refresh interval. This is what lets peers key their pins
-//     on us: without the TXT key a peer treats us as unclustered, skips us in its
-//     workload broadcast, and drops us as a routing target — while we remain in
-//     its roster. It must not depend on a process restart.
-//   - Fresh-host startup order: the scanner spawns before cluster-manager, so it
-//     mints its own node-id.json and advertises that uuid= before cluster-manager
-//     writes identity.json. Once cluster-manager is up (the broker triggers a
-//     reload), the re-resolve picks up identity.json so uuid= converges on the
-//     cluster principal.
-//   - Network change: watchAddress calls this on a netmon event so the advertised
-//     addresses track the host's live network instead of freezing at the startup
-//     value — matching how the responder keeps its A records live.
-//
-// Address evidence that arrives later without a network change is handled by
-// refreshAdvertisedAddressesOnce, which re-ranks without re-reading identity.
-//
-// Safe to call concurrently: selfMu serializes it against publishSelf, and
-// setIdentity/UpdateTXT are each mutex-guarded and idempotent for unchanged
-// fields.
+// reloadIdentity resolves this host's current identity, membership, and addresses
+// after cluster or network changes. It removes a superseded local UUID and
+// republishes the registry without relying on a process restart.
+// selfMu serializes it with registry publications and owned hardware snapshots.
 func (d *daemon) reloadIdentity() {
 	d.selfMu.Lock()
 	defer d.selfMu.Unlock()
@@ -950,9 +913,8 @@ func (d *daemon) observedAddresses() map[string]bool {
 	return maps.Clone(d.observed)
 }
 
-// peerAddresses returns every address known for other nodes, for the on-link
-// inference in localAddresses. Self is excluded: our own record loops back
-// through mDNS, and seeing our own address proves nothing about the link.
+// peerAddresses returns authenticated remote addresses for the on-link evidence
+// used by localAddresses. Local and unverified discovery records contribute none.
 func (d *daemon) peerAddresses() []string {
 	self := ""
 	if d.reg != nil {
@@ -1500,13 +1462,10 @@ func (d *daemon) expireRetainedPeer(target noderec.DirectoryNode) {
 	d.emit(noderec.NotifyNodeRemoved, peer)
 }
 
-// refreshModelsOnce snapshots every directory node advertising engine-manager
-// (em) with a usable IP and refreshes each concurrently, bounded by
-// modelsRefreshConcurrency so an unexpectedly large network can't spawn an
-// unbounded burst of fetches. Running the sweep to completion (wg.Wait) before
-// the loop reads the next tick makes overlapping sweeps impossible, and each
-// per-node goroutine uses modelsHTTP's own timeout, so one slow peer never
-// consumes another's budget.
+// refreshModelsOnce refreshes local and authenticated peer model inventories.
+// Each sweep waits for its bounded workers, preventing overlapping sweeps.
+// Requests have independent timeouts, so one slow peer does not consume another's
+// request budget.
 func (d *daemon) refreshModelsOnce() {
 	sem := make(chan struct{}, modelsRefreshConcurrency)
 	var wg sync.WaitGroup
@@ -1527,22 +1486,11 @@ func (d *daemon) refreshModelsOnce() {
 	wg.Wait()
 }
 
-// refreshNodeModels fetches one peer's /v1/models and, on success, applies it to
-// the directory under the removed/re-addressed guard (directory.applyModels).
-// A failed fetch retains the last successful inventory: no cache write, no
-// directory change, no event. On a change it refreshes the enrichment caches
-// (so a later browse-driven fallback can't revert the directory to a stale
-// value) and emits exactly one discovery:node-updated carrying the full node.
-// Returns whether it emitted an update (used by tests).
-//
-// The fetch dials our OWN engine-manager over loopback, never the advertised
-// LAN ip=: this loop — not the registry-driven publishSelf — is what converges
-// model-only changes (a pull/delete, a late engine start) that don't move the
-// registry, so on the Windows self-LAN firewall block this daemon guards
-// against, a LAN dial would make self's model list freeze at its
-// startup value. The stored ip is still passed to applyModels as the
-// stale-address guard, so an in-flight result can't overwrite a re-addressed
-// node. Peers are still dialed at their advertised address.
+// refreshNodeModels snapshots the complete address list before fetching model
+// inventory. The shared result path validates current endpoints and remote proof
+// before changing the directory, caches, or notifications. Failed reads preserve
+// the last accepted inventory. Local reads use the owned engine-manager's
+// loopback HTTP endpoint; remote reads require the verified peer's pinned mTLS.
 func (d *daemon) refreshNodeModels(hostUUID, ip string, emPort int, clusterUUID string) bool {
 	node, present := d.dir.get(hostUUID)
 	if !present {

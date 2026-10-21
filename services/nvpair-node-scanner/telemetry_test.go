@@ -179,17 +179,17 @@ func TestTelemetryIntervalForNode_IsStableAndBounded(t *testing.T) {
 }
 
 func TestTelemetryRetryDelay_BoundsBackoff(t *testing.T) {
-	test := func(name string, failures int, want time.Duration) {
+	test := func(name string, failures int, expected time.Duration) {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, want, telemetryRetryDelay(failures))
+			assert.Equal(t, expected, telemetryRetryDelay(failures))
 		})
 	}
-	test("initial delay", 0, 2*time.Second)
-	test("one failure", 1, 4*time.Second)
-	test("two failures", 2, 8*time.Second)
-	test("three failures", 3, 16*time.Second)
-	test("maximum delay", 4, 30*time.Second)
-	test("delay stays capped", 100, 30*time.Second)
+	test("no failures", 0, 2*time.Second)
+	test("first failure", 1, 4*time.Second)
+	test("second failure", 2, 8*time.Second)
+	test("third failure", 3, 16*time.Second)
+	test("fourth failure reaches maximum", 4, 30*time.Second)
+	test("later failures retain maximum", 100, 30*time.Second)
 }
 
 func TestTelemetryRetryGate_BacksOffAndResets(t *testing.T) {
@@ -231,8 +231,8 @@ func TestTelemetryRetryGateChangedTarget_WaitsForActiveAttempt(t *testing.T) {
 			require.True(t, ok, "old endpoint failure backed off the changed endpoint")
 		})
 	}
-	test("hosts", telemetryTargetKey([]string{"10.0.0.1"}, 14318))
-	test("port", telemetryTargetKey([]string{"192.0.2.1"}, 14319))
+	test("address changes", telemetryTargetKey([]string{"10.0.0.1"}, 14318))
+	test("port changes", telemetryTargetKey([]string{"192.0.2.1"}, 14319))
 }
 
 func TestTelemetryRetryGateRemoveRediscover_PreservesActiveClaim(t *testing.T) {
