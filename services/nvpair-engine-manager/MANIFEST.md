@@ -359,8 +359,10 @@ its process is stopped and its GPU memory freed, while the gateway, and the
 engine's ON state, stay. Only requests that change something count as activity
 (not GET, HEAD or OPTIONS, which is what health checks, monitors and the model
 list use), and a request still running keeps the engine loaded. While unloaded
-the gateway answers `/health` with 200, refuses inference with 503, and
-`engine:status` reports `idle: true`. The fixed offset lets a stale engine
+the gateway answers `/health` with 200 and `engine:status` reports `idle: true`.
+A request that needs the model (POST under `/v1/` and a few other inference paths)
+loads it again and is answered after the load; other requests get 503. Requests
+that arrive together share one load. The fixed offset lets a stale engine
 left by a crashed run be found and reclaimed. It requires a process-mode runtime
 whose `editable_launch` has a flag control for `{server.port}`, and only
 `vllm.json` declares one.

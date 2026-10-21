@@ -103,8 +103,18 @@ answers 200, and `engine:models` still advertises the model it is set to serve
 with nothing loaded. Health checks, monitors and the model list do not count as
 activity, and a request still running keeps the engine loaded. Eject
 (`unload_model`) does the same on demand. `load_model` of the model it is set to
-serve loads it again; a request while unloaded is answered 503 until it loads on
-demand arrives. A failed load leaves the engine idle, not stopped.
+serve loads it again.
+
+A request that needs the model (a POST under `/v1/`, or to `/tokenize`,
+`/detokenize`, `/pooling`, `/score`, `/rerank` or `/classify`) and arrives while it
+is unloaded loads it and is then answered, as Ollama and llama.cpp do: the gateway
+holds the connection, starts the engine behind itself, and forwards the request
+once it is ready, so the first request waits for the load (about 25 s for an 8B
+model). Requests that arrive together share one start, a client that gives up
+does not abandon the load, and the proxy's 120 s limit is the ceiling for a very
+large model. A load that fails answers 503 saying so, and leaves the engine idle,
+not stopped, so the next request tries again. Reads such as `/health` and
+`/v1/models` never load the model.
 
 `unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops its process, which frees all of its GPU memory, while the gateway and the engine stay ON (an engine with no gateway is stopped) and the saved model choice is kept; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 

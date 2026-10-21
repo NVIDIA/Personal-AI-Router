@@ -11,10 +11,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -471,8 +474,147 @@ func TestIdleEngineIsUnloadedAfterTheTimeout(t *testing.T) {
 	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != http.StatusOK {
 		t.Fatalf("an idle engine must still pass health checks: %d", got)
 	}
-	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusServiceUnavailable {
-		t.Fatalf("inference while unloaded answered %d, want 503", got)
+	// Only a request that needs the model loads it. A read, or a post to something
+	// that is not inference, is refused and leaves it unloaded.
+	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/api/tags", public)); got != http.StatusServiceUnavailable {
+		t.Fatalf("a read while unloaded answered %d, want 503", got)
+	}
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/admin/reset", public)); got != http.StatusServiceUnavailable {
+		t.Fatalf("a non-inference post answered %d, want 503", got)
+	}
+	if up(backend) {
+		t.Fatal("something that is not inference loaded the model")
+	}
+}
+
+// The request that arrives while the model is unloaded loads it and is answered,
+// as Ollama and llama.cpp do.
+func TestARequestLoadsAnUnloadedEngineAndIsAnswered(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	for cycle := 0; cycle < 2; cycle++ {
+		eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
+		if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK {
+			t.Fatalf("cycle %d: the request that woke the engine answered %d", cycle, got)
+		}
+		if !up(backend) {
+			t.Fatalf("cycle %d: the engine is not loaded", cycle)
+		}
+		if st, _ := e.Status("fronted"); !st.Running || st.Idle || !st.Healthy {
+			t.Fatalf("cycle %d: status = %+v", cycle, st)
+		}
+	}
+}
+
+func startCount(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(data), "\n")
+}
+
+func TestRequestsThatArriveTogetherShareOneLoad(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "starts.log")
+	t.Setenv("FAKE_START_LOG", log)
+	t.Setenv("FAKE_START_DELAY", "700ms")
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
+	before := startCount(t, log)
+
+	var wg sync.WaitGroup
+	results := make([]int, 8)
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = post(fmt.Sprintf("http://127.0.0.1:%d/v1/completions", public))
+		}()
+	}
+	wg.Wait()
+	for i, code := range results {
+		if code != http.StatusOK {
+			t.Fatalf("request %d answered %d", i, code)
+		}
+	}
+	if got := startCount(t, log) - before; got != 1 {
+		t.Fatalf("the engine was started %d times for 8 simultaneous requests, want 1", got)
+	}
+}
+
+func TestAClientLeavingDoesNotAbandonTheLoad(t *testing.T) {
+	t.Setenv("FAKE_START_DELAY", "1500ms")
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the idle unload", 15*time.Second, func() bool { return !up(backend) })
+
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	if resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public), "application/json", strings.NewReader("{}")); err == nil {
+		resp.Body.Close()
+		t.Fatal("expected the impatient client to give up")
+	}
+	eventually(t, "the load to finish without the client", 15*time.Second, func() bool { return up(backend) })
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK {
+		t.Fatalf("the next request answered %d", got)
+	}
+}
+
+func TestARequestDuringALoadFromEjectWaitsForIt(t *testing.T) {
+	t.Setenv("FAKE_START_DELAY", "1s")
+	e, public, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	loaded := make(chan error, 1)
+	go func() {
+		_, err := e.Action(context.Background(), "fronted", "load_model", []byte(`{"model":"org/m"}`))
+		loaded <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // the load is under way
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK {
+		t.Fatalf("a request during the load answered %d", got)
+	}
+	if err := <-loaded; err != nil || !up(backend) {
+		t.Fatalf("load: %v", err)
+	}
+}
+
+func TestAFailedLoadIsReportedToTheRequestAndRetriedByTheNext(t *testing.T) {
+	e, public, backend := frontExecutor(t, 1)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
+	squatter, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", backend))
+	if err != nil {
+		t.Skipf("backend port taken: %v", err)
+	}
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public), "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "could not be loaded") {
+		t.Fatalf("got %d %s, want 503 saying the model could not be loaded", resp.StatusCode, body)
+	}
+	if st, _ := e.Status("fronted"); !st.Running || !st.Idle {
+		t.Fatalf("status = %+v, want ON and still idle", st)
+	}
+	squatter.Close()
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK {
+		t.Fatalf("the next request answered %d, want it to load", got)
 	}
 }
 

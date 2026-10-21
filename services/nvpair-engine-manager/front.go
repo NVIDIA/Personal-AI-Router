@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -80,6 +81,75 @@ type frontGateway struct {
 	// epoch identifies the engine process the gateway currently belongs to, so
 	// the exit of an earlier process, stopped on purpose, does not close it.
 	epoch int
+	// wakeFn loads the engine again, and wakeSt is the load in progress, if any.
+	// Requests that arrive meanwhile wait on it.
+	wakeFn func(context.Context) error
+	wakeSt *wakeState
+}
+
+// wakeState is one load of an unloaded engine. Every request that needs the
+// engine waits on done, so any number of them share a single start.
+type wakeState struct {
+	done chan struct{}
+	err  error
+}
+
+// wakePaths are the non-/v1 paths that run inference.
+var wakePaths = map[string]bool{"/tokenize": true, "/detokenize": true, "/pooling": true, "/score": true, "/rerank": true, "/classify": true}
+
+// wakeable reports whether a request needs the model and so should load it.
+// Health checks, metrics and reads must not: they are made on a timer, and would
+// keep the model loaded or load it for nothing.
+func wakeable(r *http.Request) bool {
+	return r.Method == http.MethodPost && (strings.HasPrefix(r.URL.Path, "/v1/") || wakePaths[r.URL.Path])
+}
+
+// requestWake returns the load in progress, starting one if the engine is
+// unloaded. It returns nil when the engine is neither, so the caller can carry
+// on. The gateway forwards again from the moment a load begins, so that the
+// start's own readiness probes, made on the public port, reach the engine and not
+// the idle answer.
+func (g *frontGateway) requestWake() *wakeState {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.wakeSt != nil {
+		return g.wakeSt
+	}
+	if !g.idle || g.wakeFn == nil {
+		return nil
+	}
+	ws := &wakeState{done: make(chan struct{})}
+	g.wakeSt = ws
+	g.idle, g.up = false, false
+	go func() { g.finishWake(ws, g.wakeFn(context.Background())) }()
+	return ws
+}
+
+// finishWake ends a load. A failed one puts the gateway back to idle, so the next
+// request tries again.
+func (g *frontGateway) finishWake(ws *wakeState, err error) {
+	g.mu.Lock()
+	ws.err = err
+	if err != nil {
+		g.idle, g.up = true, false
+	}
+	if g.wakeSt == ws {
+		g.wakeSt = nil
+	}
+	g.mu.Unlock()
+	close(ws.done)
+}
+
+// loadFailed answers a request whose model could not be loaded.
+func loadFailed(w http.ResponseWriter, err error) {
+	reason := strings.Join(strings.Fields(err.Error()), " ")
+	if len(reason) > 400 {
+		reason = reason[:400] + "..."
+	}
+	body, _ := json.Marshal(map[string]string{"error": "the model could not be loaded: " + reason})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write(body)
 }
 
 // isActivity reports whether a request is inference work. Reads such as health
@@ -95,24 +165,46 @@ func isActivity(r *http.Request) bool {
 
 func (g *frontGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	activity := isActivity(r)
-	g.mu.Lock()
-	if g.idle {
-		g.mu.Unlock()
-		if r.URL.Path == "/health" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+	for {
+		g.mu.Lock()
+		if (g.idle || g.wakeSt != nil) && wakeable(r) {
+			g.mu.Unlock()
+			ws := g.requestWake()
+			if ws == nil {
+				continue // it loaded between the check and now
+			}
+			select {
+			case <-ws.done:
+				if ws.err != nil {
+					loadFailed(w, ws.err)
+					return
+				}
+				continue
+			case <-r.Context().Done():
+				return // the client left; the load carries on for the next one
+			case <-g.closed:
+				return
+			}
+		}
+		if g.idle {
+			g.mu.Unlock()
+			if r.URL.Path == "/health" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"status":"idle"}`))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"idle"}`))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"the model is unloaded because the engine was idle"}`))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":"the model is unloaded because the engine was idle"}`))
-		return
+		if activity {
+			g.inflight++
+			g.lastActive = time.Now()
+		}
+		g.mu.Unlock()
+		break
 	}
-	if activity {
-		g.inflight++
-		g.lastActive = time.Now()
-	}
-	g.mu.Unlock()
 	if activity {
 		defer func() {
 			g.mu.Lock()
@@ -268,6 +360,7 @@ func (e *Executor) startFront(st *engineState, engine string, rt Runtime, host s
 	if err != nil {
 		return nil, false, err
 	}
+	g.wakeFn = func(ctx context.Context) error { return e.wakeEngine(ctx, engine) }
 	st.mu.Lock()
 	previous := st.front
 	st.front = g
@@ -336,9 +429,37 @@ func (e *Executor) unloadFront(st *engineState, engine string, g *frontGateway, 
 	return true
 }
 
-// wakeIdle starts the engine again behind its gateway after an idle unload. A
-// failed start leaves it idle, not stopped, so the next request can try again.
+// wakeIdle loads an engine that was unloaded for being idle, and returns once it
+// is serving. It shares the load with any request already waiting for it.
 func (e *Executor) wakeIdle(ctx context.Context, engine string) error {
+	st, err := e.state(engine)
+	if err != nil {
+		return err
+	}
+	st.mu.Lock()
+	g := st.front
+	st.mu.Unlock()
+	if g == nil || !g.alive() {
+		return nil
+	}
+	ws := g.requestWake()
+	if ws == nil {
+		return nil
+	}
+	select {
+	case <-ws.done:
+		return ws.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// wakeEngine is the load itself: it starts the engine's process behind the
+// gateway that is already in place. A failed start leaves the engine idle, not
+// stopped, so the next request can try again. The load is bounded by the engine's
+// readiness limit, and not by the request that asked for it, so a client leaving
+// does not abandon it.
+func (e *Executor) wakeEngine(ctx context.Context, engine string) error {
 	st, err := e.state(engine)
 	if err != nil {
 		return err
@@ -346,8 +467,7 @@ func (e *Executor) wakeIdle(ctx context.Context, engine string) error {
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	st.mu.Lock()
-	idle, g := st.idle, st.front
-	if !idle || g == nil {
+	if !st.idle || st.front == nil {
 		st.mu.Unlock()
 		return nil
 	}
@@ -355,24 +475,22 @@ func (e *Executor) wakeIdle(ctx context.Context, engine string) error {
 	// for the duration of the start.
 	st.running, st.healthy, st.idle = false, false, false
 	st.mu.Unlock()
-	// The gateway forwards again from here, so that the start's readiness probes,
-	// made on the public port, reach the engine and not the idle answer.
-	g.mu.Lock()
-	g.idle, g.up = false, false
-	g.mu.Unlock()
-	err = e.doStart(ctx, st, engine, startOpts{})
-	if err != nil {
+	limit := 10 * time.Minute
+	if ready := st.plat.Runtime.Ready; ready != nil && ready.TimeoutS > 0 {
+		limit = time.Duration(ready.TimeoutS+60) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	if err := e.doStart(ctx, st, engine, startOpts{}); err != nil {
 		st.mu.Lock()
 		if st.front != nil && st.front.alive() {
 			st.running, st.healthy, st.idle = true, true, true
-			st.front.mu.Lock()
-			st.front.up, st.front.idle = false, true
-			st.front.mu.Unlock()
 		}
 		st.mu.Unlock()
 		e.emitState(engine)
+		return err
 	}
-	return err
+	return nil
 }
 
 // reclaimFrontBackend frees the backend port when it holds an engine that PAIR
