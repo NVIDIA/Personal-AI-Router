@@ -290,6 +290,11 @@ type Action struct {
 	// HFPull downloads a Hugging Face repository into the hub cache with the
 	// engine's own `hf` tool, reporting byte progress. Only pull_model uses it.
 	HFPull *ActionHFPull `json:"hf_pull,omitempty"`
+	// StopEngine makes the action stop the engine. It is how an engine that serves
+	// one model per process ejects that model: the process cannot drop its model
+	// and keep running, but stopping it frees all of its GPU memory. Only
+	// unload_model may set it.
+	StopEngine bool `json:"stop_engine,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -1001,8 +1006,14 @@ func (a *Action) validate(name string) error {
 	if hasHFPull {
 		kinds++
 	}
+	if a.StopEngine {
+		kinds++
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, or hf_pull is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine is required", name)
+	}
+	if a.StopEngine && name != "unload_model" {
+		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)
 	}
 	if hasHFPull {
 		tool := a.HFPull.Tool

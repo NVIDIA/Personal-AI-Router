@@ -147,7 +147,9 @@ func mustStatus(t *testing.T, e *Executor) EngineStatus {
 	return st
 }
 
-func TestLaunchModelOnAStoppedEngineOnlyChangesTheSavedLaunch(t *testing.T) {
+// Load on a stopped engine (after Eject, say) serves the model: it saves the
+// choice and starts the engine, whether or not the model changed.
+func TestLaunchModelOnAStoppedEngineStartsIt(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	if err := e.Stop("fake"); err != nil {
 		t.Fatal(err)
@@ -156,14 +158,78 @@ func TestLaunchModelOnAStoppedEngineOnlyChangesTheSavedLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load on a stopped engine: %v", err)
 	}
-	if !strings.Contains(string(raw), `"restarted":false`) {
+	if !strings.Contains(string(raw), `"restarted":true`) {
 		t.Fatalf("reply = %s", raw)
 	}
-	if mustStatus(t, e).Running {
-		t.Fatal("switching the model started a stopped engine")
+	if !mustStatus(t, e).Running {
+		t.Fatal("loading a model into a stopped engine must start it")
 	}
 	if text := launchTextOf(t, e); !strings.Contains(text, "--model org/later") {
 		t.Fatalf("launch text = %q", text)
+	}
+
+	// The same model again, on an engine stopped once more, still starts it.
+	if err := e.Stop("fake"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadModel(t, e, "org/later"); err != nil || !mustStatus(t, e).Running {
+		t.Fatalf("an unchanged model on a stopped engine must start it: %v", err)
+	}
+}
+
+func TestLaunchModelOnAStoppedEngineRestoresTheChoiceWhenItWillNotStart(t *testing.T) {
+	e := switchModelExecutor(t, "--fail-launch")
+	before := launchTextOf(t, e)
+	if err := e.Stop("fake"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadModel(t, e, "org/broken"); err == nil || !strings.Contains(err.Error(), "previous model was restored") {
+		t.Fatalf("err = %v, want the failed start reported with the restore", err)
+	}
+	if mustStatus(t, e).Running {
+		t.Fatal("the engine must stay stopped when the model does not start")
+	}
+	if got := launchTextOf(t, e); got != before {
+		t.Fatalf("launch text = %q, want the previous %q", got, before)
+	}
+}
+
+func ejectEngine(t *testing.T, e *Executor, model string) (json.RawMessage, error) {
+	t.Helper()
+	m, _ := e.reg.Get("fake")
+	m.Actions["unload_model"] = Action{StopEngine: true}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return e.Action(context.Background(), "fake", "unload_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+}
+
+func TestEjectStopsTheEngineAndFreesItsMemory(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	if _, err := loadModel(t, e, "org/served"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ejectEngine(t, e, "org/other"); err == nil || !strings.Contains(err.Error(), "not the model") {
+		t.Fatalf("ejecting a model that is not served must be refused: %v", err)
+	}
+	if !mustStatus(t, e).Running {
+		t.Fatal("a refused eject stopped the engine")
+	}
+
+	raw, err := ejectEngine(t, e, "org/served")
+	if err != nil || !strings.Contains(string(raw), `"stopped":true`) {
+		t.Fatalf("eject: %s %v", raw, err)
+	}
+	if mustStatus(t, e).Running {
+		t.Fatal("eject must stop the engine")
+	}
+	if text := launchTextOf(t, e); !strings.Contains(text, "--model org/served") {
+		t.Fatalf("eject must keep the model choice so Load can serve it again: %q", text)
+	}
+
+	raw, err = ejectEngine(t, e, "org/served")
+	if err != nil || !strings.Contains(string(raw), `"stopped":false`) {
+		t.Fatalf("ejecting from a stopped engine is a no-op: %s %v", raw, err)
 	}
 }
 

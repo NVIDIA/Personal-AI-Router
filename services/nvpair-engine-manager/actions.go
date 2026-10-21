@@ -36,6 +36,9 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 		// plus a readiness-probed start that the action timeout does not budget for.
 		return e.switchLaunchModel(ctx, engine, act.LaunchModel, params)
 	}
+	if act.StopEngine {
+		return e.ejectByStopping(ctx, engine, params)
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err

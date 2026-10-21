@@ -59,8 +59,30 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 			Restarted bool   `json:"restarted"`
 		}{model, restarted})
 	}
-	if !changed {
+	if !changed && current.Running {
 		return result(false)
+	}
+	if !current.Running {
+		// Load on a stopped engine, such as after Eject, means serve the model: save
+		// the choice and start. A start that fails puts the previous choice back.
+		if changed {
+			if _, err := e.ConfigureLaunch(ctx, settings.Configure{
+				Engine:   engine,
+				Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: text},
+			}, func() error { return nil }); err != nil {
+				return nil, err
+			}
+		}
+		if err := e.Start(ctx, engine); err != nil {
+			if changed {
+				_, _ = e.ConfigureLaunch(ctx, settings.Configure{
+					Engine:   engine,
+					Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: current.LaunchText},
+				}, func() error { return nil })
+			}
+			return nil, fmt.Errorf("starting %s failed; the previous model was restored: %w", model, err)
+		}
+		return result(true)
 	}
 
 	apply := func(launchText string, resume bool) error {
@@ -130,4 +152,38 @@ func withLaunchFlag(text, flag, value string) (result string, changed bool, err 
 	}
 	result, err = formatLaunchText(out)
 	return result, !slices.Equal(tokens, out), err
+}
+
+// ejectByStopping ejects the served model by stopping the engine, which is the
+// only way an engine with one model per process gives its GPU memory back. A
+// stopped engine has nothing loaded, so that is a successful no-op. A model
+// other than the served one is refused, since stopping would eject the wrong one.
+func (e *Executor) ejectByStopping(ctx context.Context, engine string, params json.RawMessage) (json.RawMessage, error) {
+	var request struct {
+		Model string `json:"model"`
+	}
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, errors.New(`unload params must be {"model": "<model id>"}`)
+		}
+	}
+	state, err := e.LaunchSettings(engine)
+	if err != nil {
+		return nil, err
+	}
+	stopped := func(did bool) (json.RawMessage, error) {
+		return json.Marshal(map[string]any{"model": request.Model, "stopped": did})
+	}
+	if !state.Running {
+		return stopped(false)
+	}
+	if model := strings.TrimSpace(request.Model); model != "" {
+		if served, err := e.servedModel(engine); err == nil && served != model {
+			return nil, fmt.Errorf("%s is not the model %s is serving (%s)", model, engine, served)
+		}
+	}
+	if err := e.Stop(engine); err != nil {
+		return nil, err
+	}
+	return stopped(true)
 }

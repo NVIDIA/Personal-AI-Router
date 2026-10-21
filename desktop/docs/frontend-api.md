@@ -100,8 +100,9 @@ They do not imply a WebSocket connection. Browser clients are not supported.
   became unreachable, so its cached snapshot is stale.
 
 `EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and `vllm`.
-vLLM serves one model per process, so it offers no eject. Its model
-list is the Hugging Face cache, `deleteModel` removes a cached model (not the one
+vLLM serves one model per process, so `unloadModel` (Eject) stops the engine,
+which frees its GPU memory, and `loadModel` on a stopped engine starts it. Its model
+list is the Hugging Face cache, which stays available while the engine is stopped, `deleteModel` removes a cached model (not the one
 it is set to serve), `pullModel` downloads a Hugging Face repo into
 that cache (no running engine needed), and `loadModel` on a cached model switches
 the served model by restarting vLLM on it.

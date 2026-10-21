@@ -7,6 +7,7 @@ import {
     EngineDefaultLinks,
     EngineDisplayNames,
     EngineManagerNames,
+    EnginesListingModelsWhenStopped,
     EngineTypes
 } from '@/shared/constants/engines'
 import { engineManagerName, engineTypeFromManagerName, isEngineType } from '@/shared/utils/engines'
@@ -44,10 +45,13 @@ describe('engine identity', () => {
         expect(engineTypeFromManagerName('vllm')).toBe('vllm')
         expect(isEngineType('vllm')).toBe(true)
         expect(EngineDisplayNames.vllm).toBe('vLLM')
-        // vLLM has no unload, but downloads from and deletes in the Hugging Face
-        // cache, except the model it is serving.
+        // vLLM cannot unload a model while running, so Eject stops the engine; it
+        // downloads from and deletes in the Hugging Face cache, except the model it
+        // is serving, and its model list is on disk, so it works while stopped.
         expect(EngineCapabilities.vllm).toMatchObject({
-            hasEject: false,
+            hasEject: true,
+            modelOpsWhenStopped: true,
+            hasModelSearchOnlyWhenRunning: false,
             hasDeleteModel: true,
             deleteBlockedWhileLoaded: true,
             hasPullModel: true,
@@ -56,6 +60,14 @@ describe('engine identity', () => {
             hasEnginePort: true,
             engineHub: { label: 'vLLM' }
         })
+    })
+
+    it('keeps the capability and the supervisor agreeing on which model lists survive a stop', () => {
+        for (const engineType of EngineTypes) {
+            expect(EngineCapabilities[engineType].modelOpsWhenStopped).toBe(
+                EnginesListingModelsWhenStopped.includes(engineType)
+            )
+        }
     })
 
     it('offers Add model to every engine, vLLM included', () => {

@@ -270,3 +270,72 @@ func TestDeleteHFModelRefusesTheBundledDefaultModel(t *testing.T) {
 		t.Fatalf("another model should be deletable: %v", err)
 	}
 }
+
+// Recent Hugging Face tooling stores big files once in hub/blobs/<xx>/<hash> and
+// links to them from each repo's own blobs directory. Deleting a repo has to
+// free those files unless another repo still links to them.
+func TestRemoveUnreferencedHFBlobs(t *testing.T) {
+	hub := t.TempDir()
+	write := func(path string, size int) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, make([]byte, size), 0o444); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := func(hash string) string { return filepath.Join(hub, "blobs", hash[:2], hash) }
+	link := func(repo, name, target string) {
+		t.Helper()
+		dir := filepath.Join(hub, "models--"+repo, "blobs")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		rel, _ := filepath.Rel(dir, target)
+		if err := os.Symlink(rel, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, h := range []string{"aa11", "bb22"} {
+		write(store(h), 1000)
+		write(store(h)+".refs", 1)
+		write(store(h)+".lock", 0)
+	}
+	outside := filepath.Join(t.TempDir(), "precious")
+	write(outside, 5)
+	link("org--one", "w1", store("aa11")) // only "one" uses aa11
+	link("org--one", "w2", store("bb22")) // shared with "two"
+	link("org--two", "w2", store("bb22"))
+	link("org--one", "evil", outside) // not in the store, never touched
+
+	repoOne := filepath.Join(hub, "models--org--one")
+	targets := sharedHFBlobs(hub, repoOne)
+	if len(targets) != 2 {
+		t.Fatalf("shared targets = %v, want the two inside the store", targets)
+	}
+	if err := os.RemoveAll(repoOne); err != nil {
+		t.Fatal(err)
+	}
+	if freed := removeUnreferencedHFBlobs(hub, targets); freed != 1000 {
+		t.Fatalf("freed = %d, want only the file nobody else uses (1000)", freed)
+	}
+	for path, want := range map[string]bool{
+		store("aa11"): false, store("aa11") + ".refs": false, store("aa11") + ".lock": false,
+		store("bb22"): true, outside: true,
+	} {
+		if _, err := os.Stat(path); (err == nil) != want {
+			t.Errorf("%s exists = %v, want %v", path, err == nil, want)
+		}
+	}
+
+	repoTwo := filepath.Join(hub, "models--org--two")
+	targets = sharedHFBlobs(hub, repoTwo)
+	_ = os.RemoveAll(repoTwo)
+	if freed := removeUnreferencedHFBlobs(hub, targets); freed != 1000 {
+		t.Fatalf("freed = %d once the last user is gone, want 1000", freed)
+	}
+	if _, err := os.Stat(store("bb22")); err == nil {
+		t.Error("the shared file must go with its last user")
+	}
+}

@@ -517,9 +517,8 @@ describe('model list during a vLLM model switch', () => {
             ?.models.map(model => model.name)
     }
 
-    it('keeps the cached-model list while the engine restarts, and clears it when it is turned off', () => {
+    function startVllmNode() {
         const state = getModularBridgeState()
-        const supervisor = getModularSupervisor()
         state.setSelfId(nodeId)
         state.handleNotification({
             source: 'broker',
@@ -543,6 +542,13 @@ describe('model list during a vLLM model switch', () => {
             port: 8001
         })
         state.setLocalEngineModels('vllm', ['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+        return state
+    }
+
+    it('keeps the cached-model list while the engine restarts for a switch', () => {
+        const state = startVllmNode()
+        const supervisor = getModularSupervisor()
+        const call = vi.spyOn(supervisor, 'callProcess')
         expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
 
         // A switch restarts the engine, which reports stopped on its way down. The
@@ -550,10 +556,32 @@ describe('model list during a vLLM model switch', () => {
         state.beginLocalModelSwitch('vllm')
         supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
         expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
-
-        // Without a switch, stopping the engine clears the list as it does for every engine.
         state.clearLocalModelSwitch('vllm')
+        call.mockRestore()
+    })
+
+    // vLLM's list is the Hugging Face cache on disk, so a stopped (or ejected)
+    // engine still has it: the list is read, not cleared, unlike every other engine.
+    it('reads the cached-model list from disk while the engine is stopped', async () => {
+        const state = startVllmNode()
+        const supervisor = getModularSupervisor()
+        const hasProcess = vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
+        const call = vi
+            .spyOn(supervisor, 'callProcess')
+            .mockResolvedValue({ data: [{ id: 'Qwen/Qwen3-8B' }, { id: 'org/new' }] })
+
         supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
-        expect(vllmModels()).toEqual([])
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+        await Promise.resolve()
+        await Promise.resolve()
+
+        expect(call).toHaveBeenCalledWith('broker', 'engine:action', {
+            engine: 'vllm',
+            action: 'list_models'
+        })
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'org/new'])
+        expect(state.getEngineInitialState().statuses.length).toBeGreaterThan(0)
+        call.mockRestore()
+        hasProcess.mockRestore()
     })
 })

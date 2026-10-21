@@ -89,7 +89,9 @@ switches the served model: it writes `--model <id>` into the saved launch
 arguments and restarts vLLM on it, restoring the previous model if the new one
 does not start (for example it does not fit in GPU memory).
 
-`delete_model` removes a model's folder from the hub cache (an `hf_cache` action with `delete`); the model vLLM is set to serve, running or not, is refused so a switch has to come first.
+`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
+
+`delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model vLLM is set to serve, running or not, is refused so a switch has to come first.
 
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not

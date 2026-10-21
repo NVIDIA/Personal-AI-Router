@@ -12,6 +12,13 @@ export const EngineTypes = ['ollama', 'lm-studio', 'llama-cpp', 'vllm'] as const
 export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llama-cpp', 'vllm']
 
 /**
+ * Engines whose model list is read from disk, so it is available while the engine
+ * is stopped. For every other engine the list comes from the running engine and is
+ * cleared when it stops. The `modelOpsWhenStopped` capability must agree.
+ */
+export const EnginesListingModelsWhenStopped: readonly EngineType[] = ['vllm']
+
+/**
  * How `nvpair-engine-manager` spells each engine on the wire. This is the
  * single translation table — use `engineManagerName()` and
  * `engineTypeFromManagerName()` rather than re-deriving it from a literal.

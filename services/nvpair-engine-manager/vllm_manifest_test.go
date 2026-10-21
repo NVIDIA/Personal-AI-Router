@@ -93,8 +93,9 @@ func TestBundledVLLMManifest(t *testing.T) {
 	if load := manifest.Actions["load_model"]; load.LaunchModel == nil || load.LaunchModel.Flag != "--model" {
 		t.Errorf("load_model must switch the model through --model, got %+v", load)
 	}
-	if _, ok := manifest.Actions["unload_model"]; ok {
-		t.Errorf("vllm serves one model per process and must not declare unload_model")
+	// vLLM cannot drop its model and keep running, so Eject stops the engine.
+	if unload := manifest.Actions["unload_model"]; !unload.StopEngine {
+		t.Errorf("unload_model must stop the engine, got %+v", unload)
 	}
 	// Deleting is a removal from the shared cache that needs no running engine.
 	if del := manifest.Actions["delete_model"]; del.HFCache == nil || !del.HFCache.Delete || del.HFCache.Dir != "{models_dir}/hub" {

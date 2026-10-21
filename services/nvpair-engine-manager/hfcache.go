@@ -248,12 +248,82 @@ func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) 
 	if _, err := os.Stat(repo); err != nil {
 		return nil, fmt.Errorf("delete: %s is not in the model cache", id)
 	}
+	// Recent Hugging Face tooling keeps large files in one store shared by every
+	// repo, hub/blobs/<xx>/<hash>, and leaves symlinks in each repo's own blobs
+	// directory. Removing the repo alone would leave the weights behind, using the
+	// disk the delete was meant to free.
+	shared := sharedHFBlobs(hubDir, repo)
 	freed := hfBlobBytes(repo)
 	if err := os.RemoveAll(repo); err != nil {
 		return nil, fmt.Errorf("delete %s: %w", id, err)
 	}
 	_ = os.RemoveAll(filepath.Join(hubDir, ".locks", name))
+	freed += removeUnreferencedHFBlobs(hubDir, shared)
 	return json.Marshal(map[string]any{"deleted": id, "freed": freed})
+}
+
+// hfBlobTarget resolves one symlink in a repo's blobs directory to the file it
+// names, and reports whether that file is inside the shared store under
+// hubDir/blobs. Anything else, including a link that points elsewhere, is left alone.
+func hfBlobTarget(hubDir, link string) (string, bool) {
+	dest, err := os.Readlink(link)
+	if err != nil {
+		return "", false
+	}
+	if !filepath.IsAbs(dest) {
+		dest = filepath.Join(filepath.Dir(link), dest)
+	}
+	dest = filepath.Clean(dest)
+	rel, err := filepath.Rel(filepath.Join(hubDir, "blobs"), dest)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return dest, true
+}
+
+// sharedHFBlobs lists the shared-store files a repo's blobs directory links to.
+func sharedHFBlobs(hubDir, repo string) []string {
+	entries, err := os.ReadDir(filepath.Join(repo, "blobs"))
+	if err != nil {
+		return nil
+	}
+	var targets []string
+	for _, entry := range entries {
+		if target, ok := hfBlobTarget(hubDir, filepath.Join(repo, "blobs", entry.Name())); ok {
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
+// removeUnreferencedHFBlobs deletes the given shared-store files that no
+// remaining repo links to, with their .refs and .lock sidecars, and returns the
+// bytes freed. A file another model still uses stays.
+func removeUnreferencedHFBlobs(hubDir string, candidates []string) int64 {
+	if len(candidates) == 0 {
+		return 0
+	}
+	inUse := map[string]bool{}
+	repos, _ := filepath.Glob(filepath.Join(hubDir, "models--*", "blobs", "*"))
+	for _, link := range repos {
+		if target, ok := hfBlobTarget(hubDir, link); ok {
+			inUse[target] = true
+		}
+	}
+	var freed int64
+	for _, target := range candidates {
+		if inUse[target] {
+			continue
+		}
+		if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() {
+			freed += info.Size()
+		}
+		for _, path := range []string{target, target + ".refs", target + ".lock"} {
+			_ = os.Remove(path)
+		}
+		_ = os.Remove(filepath.Dir(target)) // only succeeds when empty
+	}
+	return freed
 }
 
 // servedModel returns the model the engine is set to serve, from its effective

@@ -347,6 +347,10 @@ An **`hf_pull`** action (`{"tool": "hf", "dir": "{models_dir}/hub"}`, only as
 in the directory that holds the engine binary, and reports byte progress taken
 from the cache directory. It needs no running engine.
 
+A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
+serves a single model per process and so cannot unload it while running. A
+`launch_model` action on a stopped engine saves the choice and starts it.
+
 A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536}`)
 lets the manager add start-time arguments that depend on the model and the
 machine. For `hf_context` it reads the served model's `config.json` from the

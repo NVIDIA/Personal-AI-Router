@@ -49,7 +49,11 @@ function ModelRowInner({
         items.push({
             id: 'load',
             children: 'Load',
-            disabled: busy || isLoaded || !model.downloaded || !isRunning
+            disabled:
+                busy ||
+                isLoaded ||
+                !model.downloaded ||
+                (!isRunning && !capabilities.modelOpsWhenStopped)
         })
         if (capabilities.hasEject) {
             items.push({
@@ -75,6 +79,7 @@ function ModelRowInner({
         capabilities.hasEject,
         capabilities.hasDeleteModel,
         capabilities.deleteBlockedWhileLoaded,
+        capabilities.modelOpsWhenStopped,
         isLoaded,
         isRunning,
         model.downloaded,
