@@ -189,8 +189,13 @@ The bundled `vllm` manifest is Linux only. It installs a pinned `vllm` wheel
 into a private virtualenv through a checksum-pinned `uv` bootstrap, or adopts a
 `vllm` already installed at a detected path, then runs `vllm serve` on `8001`
 behind the proxy facade on `8000`. vLLM serves one model per process and has no
-load or unload API, so Eject (`unload_model`, a `stop_engine` action) stops the
-engine to free the GPU and Load on a stopped engine starts it; its model list
+load or unload API, so the engine manager puts a gateway on its port (`front`):
+Start and the restore after a restart bring it up idle with nothing loaded, the
+first request or a Load loads the model, it unloads after an idle limit (ten
+minutes by default, `get_idle_timeout` and `set_idle_timeout`, shown as the
+model row's expiry control), and Eject (`unload_model`, a `stop_engine` action)
+unloads it on demand while the engine stays on; the card shows an idle engine
+as "Idle · loads on next request" (`idle` on the engine status). Its model list
 (`list_models` on disk) is kept while stopped. It downloads and deletes
 through the shared Hugging Face cache (`pull_model` is an `hf_pull` action,
 `delete_model` an `hf_cache` delete that refuses the model it is set to serve),

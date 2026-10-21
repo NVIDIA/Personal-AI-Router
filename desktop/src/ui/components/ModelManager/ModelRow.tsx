@@ -108,6 +108,8 @@ function ModelRowInner({
                     progress={progress}
                     busyLabel={busyLabel}
                     hasExpiry={capabilities.hasExpiry}
+                    expiryOptions={capabilities.expiryOptions}
+                    expiryText={capabilities.expiryText}
                     expiryDd={expiryDd}
                     onExpiryChange={onExpiryChange}
                 />

@@ -12,7 +12,7 @@ import {
     type JsonRpcNotification,
     type JsonValue
 } from './json-rpc-subprocess'
-import { EnginesListingModelsWhenStopped } from '@/shared/constants/engines'
+import { EnginesListingModelsWhenStopped, EnginesWithIdleTimeout } from '@/shared/constants/engines'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
@@ -2014,6 +2014,9 @@ class ModularSupervisor {
         // broker call in that window.
         if (!this.hasProcess('broker')) return
         this.stoppedModelEngines.delete(engineType)
+        if (EnginesWithIdleTimeout.includes(engineType)) {
+            void this.refreshIdleTimeout(engine, engineType)
+        }
         const generation = this.beginModelRefresh(engineType)
         this.callProcess('broker', 'engine:action', {
             engine,
@@ -2030,6 +2033,50 @@ class ModularSupervisor {
                     message: `list_models for ${engine} failed: ${getErrorString(err)}`
                 })
             })
+    }
+
+    /**
+     * Read how long an engine whose expiry is an idle limit may sit idle before it
+     * unloads its model, and show it on the engine's models.
+     */
+    private async refreshIdleTimeout(engine: string, engineType: EngineType): Promise<void> {
+        try {
+            const result = await this.callProcess('broker', 'engine:action', {
+                engine,
+                action: 'get_idle_timeout'
+            })
+            const seconds = objectValue(result)?.seconds
+            if (typeof seconds === 'number') {
+                getModularBridgeState().setEngineIdleSeconds(engineType, seconds)
+            }
+        } catch (err) {
+            log.verbose({
+                sublevel: 'engine-manager',
+                message: `get_idle_timeout for ${engine} failed: ${getErrorString(err)}`
+            })
+        }
+    }
+
+    /** Change how long an engine may sit idle before it unloads its model; 0 is never. */
+    async setIdleTimeout(engine: string, engineType: EngineType, seconds: number): Promise<void> {
+        try {
+            const result = await this.callProcess('broker', 'engine:action', {
+                engine,
+                action: 'set_idle_timeout',
+                params: { seconds }
+            })
+            const applied = objectValue(result)?.seconds
+            getModularBridgeState().setEngineIdleSeconds(
+                engineType,
+                typeof applied === 'number' ? applied : seconds
+            )
+        } catch (err) {
+            this.reportError(
+                `Failed to set the ${engine} idle timeout: ${getErrorString(err)}`,
+                'error',
+                `engine-idle:${engine}`
+            )
+        }
     }
 
     /**

@@ -43,6 +43,37 @@ export function isModelExpiry(v: string | undefined): v is ModelExpiry {
     return v !== undefined && MODEL_EXPIRY_SET.has(v)
 }
 
+const IDLE_SECONDS: Partial<Record<ModelExpiry, number>> = {
+    '1m': 60,
+    '5m': 300,
+    '10m': 600,
+    '30m': 1800,
+    '1h': 3600
+}
+
+/** The idle limit in seconds an expiry value stands for; 0 is never. Undefined for a value that is not an idle limit. */
+export function expiryToIdleSeconds(expiry: ModelExpiry): number | undefined {
+    return expiry === '-1' ? 0 : IDLE_SECONDS[expiry]
+}
+
+/**
+ * The offered expiry value closest to an idle limit in seconds, for display. A
+ * limit the settings never offer, such as one set by editing a file, shows as the
+ * nearest one. 0 is never.
+ */
+export function idleSecondsToExpiry(seconds: number): ModelExpiry {
+    if (seconds <= 0) return '-1'
+    let best: ModelExpiry = '10m'
+    let distance = Infinity
+    for (const [expiry, value] of Object.entries(IDLE_SECONDS)) {
+        if (isModelExpiry(expiry) && Math.abs(value - seconds) < distance) {
+            best = expiry
+            distance = Math.abs(value - seconds)
+        }
+    }
+    return best
+}
+
 /** Shallow placeholder when the service has not yet reported this node/engine pair. */
 export function emptyEngineStatus(nodeId: string, engineType: EngineType): EngineStatusData {
     return {

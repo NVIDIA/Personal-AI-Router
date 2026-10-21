@@ -89,6 +89,8 @@ export interface BackendInfo {
     source: EngineSource
     /** Whether the inference process (e.g. ollama serve) is running */
     processStatus: EngineProcessStatus
+    /** On with no model loaded; the model loads on the next request. */
+    idle?: boolean
     /** Server port the inference process listens on (null if process is stopped) */
     port: number | null
     /** PAIR proxy port -- always running when the backend is installed */

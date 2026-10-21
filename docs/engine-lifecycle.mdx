@@ -102,8 +102,16 @@ When you install an engine, consider the following:
   new model does not start, the previous one is restored. **Add model** browses
   and searches Hugging Face (open safetensors chat models) and downloads the one
   you pick into the same cache, with a progress bar, even while vLLM is stopped;
-  it then appears in the list. **Delete** removes a cached model from disk, except the one vLLM is set to serve (switch first). **Eject** stops vLLM, which frees all of its GPU memory (vLLM cannot drop its model and keep running); the model list stays visible and **Load** starts it again on the model you pick. Other
-  nodes and the proxy see only the model vLLM is serving, so a request for a
+  it then appears in the list. **Delete** removes a cached model from disk, except the one vLLM is set to serve (switch first). **Start** brings vLLM up idle, with nothing loaded, as Ollama and llama.cpp
+  start a server: it takes about a second and the card reads "Idle · loads on next
+  request". The model loads when the first request arrives (the request waits for
+  it, about 25 seconds for an 8B model) or when you press **Load**, and the same
+  happens after PAIR restarts. After ten minutes without a request vLLM unloads
+  the model and frees the GPU, but stays on, and the next request loads it again;
+  the "Unloads after … idle" control on the model row changes the time, or keeps
+  it loaded. **Eject** does the same unload on demand, and **Stop** turns the
+  engine off. Other nodes and the proxy are told about the model vLLM is set to
+  serve, even while it is unloaded, so requests reach it; a request for a
   different cached model is refused until you switch to it.
 
 PAIR-managed llama.cpp models sleep after five minutes without inference work.

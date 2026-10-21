@@ -37,6 +37,11 @@ export interface EngineStatusData {
     nodeId: string
     processStatus: EngineProcessStatus
     /**
+     * True for an engine that is on but has no model loaded, and loads it on the
+     * next request (vLLM, after it starts or has sat idle). Omitted otherwise.
+     */
+    idle?: boolean
+    /**
      * Configured bind port for the engine HTTP server when installed (same value when stopped vs running).
      * Null when not installed, or for an engine with no server port.
      */

@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
         hasProcess: vi.fn(() => true),
         sendProcess: vi.fn(),
         callProcess: vi.fn(),
-        reportError: vi.fn()
+        reportError: vi.fn(),
+        setIdleTimeout: vi.fn()
     }
 }))
 
@@ -202,5 +203,30 @@ describe('local model load command', () => {
             },
             expect.any(Function)
         )
+    })
+
+    describe('idle limit', () => {
+        const choose = (engineType: 'vllm' | 'ollama', expiry: string) =>
+            handleServiceBridgeInvoke('engine:command', {
+                command: 'setModelExpiry',
+                engineType,
+                nodeId: 'local-node',
+                model: 'Qwen/Qwen3-8B',
+                expiry
+            })
+
+        it('sends the chosen limit for vLLM as seconds', async () => {
+            await choose('vllm', '30m')
+            expect(mocks.supervisor.setIdleTimeout).toHaveBeenCalledWith('vllm', 'vllm', 1800)
+            await choose('vllm', '-1')
+            expect(mocks.supervisor.setIdleTimeout).toHaveBeenLastCalledWith('vllm', 'vllm', 0)
+        })
+
+        it('refuses a value that is not an idle limit, and an engine without one', async () => {
+            await choose('vllm', '10s')
+            await choose('ollama', '10m')
+            expect(mocks.supervisor.setIdleTimeout).not.toHaveBeenCalled()
+            expect(mocks.supervisor.reportError).toHaveBeenCalledTimes(2)
+        })
     })
 })

@@ -8,7 +8,9 @@ import {
     EngineDisplayNames,
     EngineManagerNames,
     EnginesListingModelsWhenStopped,
-    EngineTypes
+    EnginesWithIdleTimeout,
+    EngineTypes,
+    IdleTimeoutExpiries
 } from '@/shared/constants/engines'
 import { engineManagerName, engineTypeFromManagerName, isEngineType } from '@/shared/utils/engines'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
@@ -68,6 +70,17 @@ describe('engine identity', () => {
                 EnginesListingModelsWhenStopped.includes(engineType)
             )
         }
+    })
+
+    it('keeps the expiry capability and the idle-limit list agreeing', () => {
+        for (const engineType of EngineTypes) {
+            expect(EngineCapabilities[engineType].hasExpiry).toBe(
+                EnginesWithIdleTimeout.includes(engineType)
+            )
+        }
+        expect(EngineCapabilities.vllm.expiryOptions).toEqual(IdleTimeoutExpiries)
+        expect(EngineCapabilities.vllm.expiryText?.('-1')).toBe('Stays loaded')
+        expect(EngineCapabilities.vllm.expiryText?.('10m')).toBe('Unloads after 10m idle')
     })
 
     it('offers Add model to every engine, vLLM included', () => {

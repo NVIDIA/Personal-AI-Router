@@ -19,6 +19,16 @@ export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llama-c
 export const EnginesListingModelsWhenStopped: readonly EngineType[] = ['vllm']
 
 /**
+ * Engines whose expiry setting is how long the engine may sit idle before it
+ * unloads its model, kept by the engine manager and not sent with each load. The
+ * `hasExpiry` capability must agree.
+ */
+export const EnginesWithIdleTimeout: readonly EngineType[] = ['vllm']
+
+/** The idle limits offered, as expiry values. Idle limits are never shorter than a minute: reloading takes longer than that to pay off. */
+export const IdleTimeoutExpiries: readonly ModelExpiry[] = ['1m', '5m', '10m', '30m', '1h', '-1']
+
+/**
  * How `nvpair-engine-manager` spells each engine on the wire. This is the
  * single translation table — use `engineManagerName()` and
  * `engineTypeFromManagerName()` rather than re-deriving it from a literal.
@@ -55,14 +65,17 @@ export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUr
 
 export const ModelItemStatuses = ['idle', 'loading', 'loaded', 'ejecting', 'pulling'] as const
 
-export const ModelExpiries = ['0', '1s', '10s', '1m', '10m', '-1'] as const
+export const ModelExpiries = ['0', '1s', '10s', '1m', '5m', '10m', '30m', '1h', '-1'] as const
 
 export const ModelExpiryLabels: Record<ModelExpiry, string> = {
     '0': 'Immediately',
     '1s': '1 second',
     '10s': '10 seconds',
     '1m': '1 minute',
+    '5m': '5 minutes',
     '10m': '10 minutes',
+    '30m': '30 minutes',
+    '1h': '1 hour',
     '-1': 'Never'
 } as const
 

@@ -101,6 +101,12 @@ export function BackendHeader({
                     <Text kind="body/semibold/md">{backend.displayName}</Text>
                 </Flex>
 
+                {backend.processStatus === 'running' && backend.idle && (
+                    <Text kind="body/regular/sm" className="text-subtle-color">
+                        Idle · loads on next request
+                    </Text>
+                )}
+
                 <Flex align="center">
                     {isLocalNode &&
                         backend.proxyPort &&

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { EngineType } from '@/shared/types/engines'
+import { IdleTimeoutExpiries } from '@/shared/constants/engines'
+import { EXPIRY_SHORT_LABELS } from '@/ui/constants/model-row'
 import type { EngineCaps } from '@/ui/types/engine-manifest'
 
 export const EngineCapabilities: Record<EngineType, EngineCaps> = {
@@ -67,7 +69,13 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         }
     },
     vllm: {
-        hasExpiry: false,
+        // The expiry is how long vLLM may sit idle before it unloads its model and
+        // frees the GPU. The engine manager keeps it; the next request loads the
+        // model again.
+        hasExpiry: true,
+        expiryOptions: IdleTimeoutExpiries,
+        expiryText: expiry =>
+            expiry === '-1' ? 'Stays loaded' : `Unloads after ${EXPIRY_SHORT_LABELS[expiry]} idle`,
         // vLLM serves one model per process and cannot drop it while running, so
         // Eject stops the engine, which frees all of its GPU memory. Load starts
         // it again on the chosen model.

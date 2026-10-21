@@ -12,7 +12,8 @@ import {
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
-import { engineManagerName } from '@/shared/utils/engines'
+import { engineManagerName, expiryToIdleSeconds, isModelExpiry } from '@/shared/utils/engines'
+import { EnginesWithIdleTimeout } from '@/shared/constants/engines'
 import { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import { getModularSupervisor } from './modular-supervisor'
 import {
@@ -322,6 +323,23 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 }
             }
             break
+        case 'setModelExpiry': {
+            // For an engine whose expiry is an idle limit, the choice is how long it
+            // may sit idle before it unloads its model, and the engine manager keeps it.
+            const seconds = isModelExpiry(payload.expiry)
+                ? expiryToIdleSeconds(payload.expiry)
+                : undefined
+            if (EnginesWithIdleTimeout.includes(payload.engineType) && seconds !== undefined) {
+                void supervisor.setIdleTimeout(engine, payload.engineType, seconds)
+            } else {
+                supervisor.reportError(
+                    `${payload.command} is not supported for this engine.`,
+                    'warning',
+                    `engine-cmd:${payload.command}`
+                )
+            }
+            break
+        }
         case 'unloadModel':
             if (payload.model) {
                 const unloadParams: JsonObject =

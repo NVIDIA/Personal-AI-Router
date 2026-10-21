@@ -7,6 +7,7 @@
  * Replaces BackendManifest, BackendCapabilities, BackendDisplayNames, BackendDefaultLinks.
  */
 import type { SupportedPlatform } from '@/shared/types/platform'
+import type { ModelExpiry } from '@/shared/types/engines'
 
 export interface EngineHubConfig {
     /** Display label shown in the hub source selector (e.g. 'Ollama'). */
@@ -59,6 +60,13 @@ export interface EngineCaps {
      * model files go, so the backend refuses it and the UI does not offer it.
      */
     deleteBlockedWhileLoaded?: boolean
+    /**
+     * The expiry values the engine offers, when not all of them. An engine whose
+     * expiry is an idle limit offers only limits that make sense for it.
+     */
+    expiryOptions?: readonly ModelExpiry[]
+    /** How the engine's expiry reads next to a model, when "Expires …" does not. */
+    expiryText?: (expiry: ModelExpiry) => string
     /**
      * If the engine has its own public model catalog (e.g. ollama.com), provide the
      * hub config here. Presence doubles as the truthy flag for the hub source selector.
