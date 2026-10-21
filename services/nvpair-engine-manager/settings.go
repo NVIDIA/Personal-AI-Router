@@ -441,7 +441,7 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 		resume = false
 	}
 	if (changed && old.Running) || resume {
-		if err := e.doStart(ctx, st, p.Engine, startOpts{RequireOwned: true}); err != nil {
+		if err := e.doStart(ctx, st, p.Engine, startOpts{RequireOwned: true, Eager: true}); err != nil {
 			e.emitState(p.Engine)
 			return e.launchStateLocked(p.Engine, st), err
 		}

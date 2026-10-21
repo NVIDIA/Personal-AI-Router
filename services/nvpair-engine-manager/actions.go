@@ -39,6 +39,9 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if act.StopEngine {
 		return e.ejectByStopping(ctx, engine, params)
 	}
+	if act.FrontIdle != "" {
+		return e.frontIdleAction(engine, act.FrontIdle, params)
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err

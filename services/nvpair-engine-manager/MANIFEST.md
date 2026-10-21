@@ -367,6 +367,12 @@ left by a crashed run be found and reclaimed. It requires a process-mode runtime
 whose `editable_launch` has a flag control for `{server.port}`, and only
 `vllm.json` declares one.
 
+A **`front_idle`** action (`"get"` or `"set"`) reads or changes the idle limit of
+an engine with a front, in seconds with 0 for never; a change applies at once and
+is saved in the override file. With a front, Start and a restore bring the
+engine up idle, with nothing loaded, and applying launch settings or loading a
+model loads it at once.
+
 A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
 serves a single model per process and so cannot unload it while running. A
 `launch_model` action on a stopped engine saves the choice and starts it.

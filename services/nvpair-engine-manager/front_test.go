@@ -334,7 +334,7 @@ func statusCode(url string) int {
 
 func TestFrontedEngineIsReachedThroughItsPublicPort(t *testing.T) {
 	e, public, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/api/tags", public)); got != http.StatusOK {
@@ -358,7 +358,7 @@ func TestFrontedEngineIsReachedThroughItsPublicPort(t *testing.T) {
 	}
 
 	// A restart takes the public port straight back.
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
 	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/api/tags", public)); got != http.StatusOK {
@@ -368,7 +368,7 @@ func TestFrontedEngineIsReachedThroughItsPublicPort(t *testing.T) {
 
 func TestFrontedEngineGatewayGoesWithACrashedEngine(t *testing.T) {
 	e, public, _ := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	_ = statusCode(fmt.Sprintf("http://127.0.0.1:%d/exit", public)) // the engine dies
@@ -392,7 +392,7 @@ func TestFrontedEngineRefusesABackendPortSomethingElseHolds(t *testing.T) {
 	}
 	defer squatter.Close()
 
-	err = e.Start(context.Background(), "fronted")
+	err = e.StartWith(context.Background(), "fronted", startOpts{Eager: true})
 	if err == nil || !strings.Contains(err.Error(), "in use by another program") {
 		t.Fatalf("err = %v, want the occupied internal port reported", err)
 	}
@@ -459,7 +459,7 @@ func TestGatewayIdleAccounting(t *testing.T) {
 
 func TestIdleEngineIsUnloadedAfterTheTimeout(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !up(public) {
@@ -491,7 +491,7 @@ func TestIdleEngineIsUnloadedAfterTheTimeout(t *testing.T) {
 // as Ollama and llama.cpp do.
 func TestARequestLoadsAnUnloadedEngineAndIsAnswered(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	for cycle := 0; cycle < 2; cycle++ {
@@ -522,7 +522,7 @@ func TestRequestsThatArriveTogetherShareOneLoad(t *testing.T) {
 	t.Setenv("FAKE_START_LOG", log)
 	t.Setenv("FAKE_START_DELAY", "700ms")
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
@@ -551,7 +551,7 @@ func TestRequestsThatArriveTogetherShareOneLoad(t *testing.T) {
 func TestAClientLeavingDoesNotAbandonTheLoad(t *testing.T) {
 	t.Setenv("FAKE_START_DELAY", "1500ms")
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the idle unload", 15*time.Second, func() bool { return !up(backend) })
@@ -570,7 +570,7 @@ func TestAClientLeavingDoesNotAbandonTheLoad(t *testing.T) {
 func TestARequestDuringALoadFromEjectWaitsForIt(t *testing.T) {
 	t.Setenv("FAKE_START_DELAY", "1s")
 	e, public, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`)); err != nil {
@@ -592,7 +592,7 @@ func TestARequestDuringALoadFromEjectWaitsForIt(t *testing.T) {
 
 func TestAFailedLoadIsReportedToTheRequestAndRetriedByTheNext(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
@@ -620,7 +620,7 @@ func TestAFailedLoadIsReportedToTheRequestAndRetriedByTheNext(t *testing.T) {
 
 func TestInferenceKeepsAnEngineLoadedButMonitoringDoesNot(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	// Requests every 300 ms against a 1 s limit: never idle.
@@ -652,7 +652,7 @@ func TestInferenceKeepsAnEngineLoadedButMonitoringDoesNot(t *testing.T) {
 
 func TestARequestInFlightKeepsTheEngineLoaded(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan int, 1)
@@ -668,7 +668,7 @@ func TestARequestInFlightKeepsTheEngineLoaded(t *testing.T) {
 
 func TestZeroTimeoutNeverUnloads(t *testing.T) {
 	e, _, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(1500 * time.Millisecond)
@@ -679,7 +679,7 @@ func TestZeroTimeoutNeverUnloads(t *testing.T) {
 
 func TestStoppingAnIdleEngineStopsEverything(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
@@ -692,14 +692,14 @@ func TestStoppingAnIdleEngineStopsEverything(t *testing.T) {
 	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != 0 {
 		t.Fatalf("the gateway outlived the stop (%d)", got)
 	}
-	if err := e.Start(context.Background(), "fronted"); err != nil || !up(public) {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil || !up(public) {
 		t.Fatalf("starting after a stop from idle: %v", err)
 	}
 }
 
 func TestWakeLoadsTheEngineBackBehindTheSameGateway(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	for cycle := 0; cycle < 2; cycle++ {
@@ -723,7 +723,7 @@ func TestWakeLoadsTheEngineBackBehindTheSameGateway(t *testing.T) {
 
 func TestFailedWakeLeavesTheEngineIdle(t *testing.T) {
 	e, public, backend := frontExecutor(t, 1)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the idle unload", 10*time.Second, func() bool { return !up(backend) })
@@ -749,7 +749,7 @@ func TestFailedWakeLeavesTheEngineIdle(t *testing.T) {
 
 func TestEjectUnloadsButKeepsTheEngineOn(t *testing.T) {
 	e, public, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{"model":"org/m"}`))
@@ -780,7 +780,7 @@ func TestEjectUnloadsButKeepsTheEngineOn(t *testing.T) {
 
 func TestIdleEngineStillAdvertisesItsModel(t *testing.T) {
 	e, _, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	res := e.ModelsResult(context.Background())
@@ -808,7 +808,7 @@ func TestIdleEngineStillAdvertisesItsModel(t *testing.T) {
 func TestTheModelStaysAdvertisedThroughAnUnloadAndALoad(t *testing.T) {
 	t.Setenv("FAKE_START_DELAY", "800ms")
 	e, public, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -852,7 +852,7 @@ func TestTheModelStaysAdvertisedThroughAnUnloadAndALoad(t *testing.T) {
 func TestTheModelListIsAnsweredWhileUnloadedAndWhileLoading(t *testing.T) {
 	t.Setenv("FAKE_START_DELAY", "1s")
 	e, public, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`)); err != nil {
@@ -888,7 +888,7 @@ func TestTheModelListIsAnsweredWhileUnloadedAndWhileLoading(t *testing.T) {
 func TestNoHealthWarningWhileUnloadedOrLoading(t *testing.T) {
 	t.Setenv("FAKE_START_DELAY", "2500ms") // several health ticks long
 	e, public, backend := frontExecutor(t, 0)
-	if err := e.Start(context.Background(), "fronted"); err != nil {
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -930,5 +930,152 @@ func TestNoHealthWarningWhileUnloadedOrLoading(t *testing.T) {
 	}
 	if st, _ := e.Status("fronted"); !st.Healthy {
 		t.Fatalf("status = %+v, want healthy once loaded", st)
+	}
+}
+
+// Start on an engine with a front brings it up with nothing loaded, as Ollama and
+// llama.cpp start a server: the engine is ON and answers health checks, and the
+// model loads when a request or a Load asks for it.
+func TestStartIsLazy(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "starts.log")
+	t.Setenv("FAKE_START_LOG", log)
+	e, public, backend := frontExecutor(t, 0)
+	start := time.Now()
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("a lazy start took %s", time.Since(start))
+	}
+	if startCount(t, log) != 0 || up(backend) {
+		t.Fatal("a lazy start spawned the engine")
+	}
+	st, _ := e.Status("fronted")
+	if !st.Running || !st.Healthy || !st.Idle || st.Port != public {
+		t.Fatalf("status = %+v, want ON, healthy and idle on the public port", st)
+	}
+	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != http.StatusOK {
+		t.Fatalf("health = %d", got)
+	}
+	if res := e.ModelsResult(context.Background()); len(res.ByEngine["fronted"]) != 1 || res.ByEngine["fronted"][0] != "org/m" {
+		t.Fatalf("an idle engine advertises the model it serves: %+v", res)
+	}
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK || !up(backend) {
+		t.Fatalf("the first request must load the engine: %d", got)
+	}
+	if got := startCount(t, log); got != 1 {
+		t.Fatalf("starts = %d, want 1", got)
+	}
+}
+
+func TestStopAfterALazyStartStopsAndStaysOff(t *testing.T) {
+	e, public, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Stop("fronted"); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusCode(fmt.Sprintf("http://127.0.0.1:%d/health", public)); got != 0 {
+		t.Fatalf("the gateway outlived Stop (%d)", got)
+	}
+	if st, _ := e.Status("fronted"); st.Running || st.Idle {
+		t.Fatalf("status = %+v", st)
+	}
+	if enabled, known, _ := e.desired.get("fronted"); !known || enabled {
+		t.Fatalf("Stop must save OFF (enabled=%v known=%v)", enabled, known)
+	}
+	if up(backend) {
+		t.Fatal("the engine is running")
+	}
+}
+
+// After a restart of PAIR the engine comes back ON but idle, like the others,
+// which start a server with nothing loaded.
+func TestRestoreBringsAnEngineBackIdle(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "starts.log")
+	t.Setenv("FAKE_START_LOG", log)
+	e, public, backend := frontExecutor(t, 0)
+	if err := e.setDesiredEnabled("fronted", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RestoreEnabled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := e.Status("fronted")
+	if !st.Running || !st.Idle || up(backend) || startCount(t, log) != 0 {
+		t.Fatalf("status = %+v: a restore must not load the model", st)
+	}
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK {
+		t.Fatalf("the first request after a restore answered %d", got)
+	}
+}
+
+func TestLoadOnALazilyStartedEngineLoadsIt(t *testing.T) {
+	e, _, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Action(context.Background(), "fronted", "load_model", []byte(`{"model":"org/m"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !up(backend) {
+		t.Fatal("Load did not load the model")
+	}
+	if st, _ := e.Status("fronted"); st.Idle {
+		t.Fatalf("status = %+v, want loaded", st)
+	}
+}
+
+// A launch that cannot work is reported at Start, even though nothing is loaded.
+func TestLazyStartStillChecksTheLaunch(t *testing.T) {
+	e, public, _ := frontExecutor(t, 0)
+	squatter, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", public))
+	if err != nil {
+		t.Skipf("port taken: %v", err)
+	}
+	defer squatter.Close()
+	if err := e.Start(context.Background(), "fronted"); err == nil {
+		t.Fatal("a start onto an occupied port succeeded")
+	}
+}
+
+func TestIdleTimeoutCanBeReadAndChangedAtRunTime(t *testing.T) {
+	e, _, backend := frontExecutor(t, 0)
+	m, _ := e.reg.Get("fronted")
+	m.Actions["get_idle_timeout"] = Action{FrontIdle: "get"}
+	m.Actions["set_idle_timeout"] = Action{FrontIdle: "set"}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(action, params string) (string, error) {
+		raw, err := e.Action(context.Background(), "fronted", action, []byte(params))
+		return string(raw), err
+	}
+	if raw, err := call("get_idle_timeout", `{}`); err != nil || raw != `{"seconds":0}` {
+		t.Fatalf("get = %s %v, want the manifest's never", raw, err)
+	}
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Setting it unloads an engine that has already been idle that long, and
+	// applies without a restart.
+	if raw, err := call("set_idle_timeout", `{"seconds":1}`); err != nil || raw != `{"seconds":1}` {
+		t.Fatalf("set = %s %v", raw, err)
+	}
+	eventually(t, "the unload under the new limit", 10*time.Second, func() bool { return !up(backend) })
+
+	for _, bad := range []string{`{}`, `{"seconds":-1}`, `{"seconds":86401}`, `{"seconds":"soon"}`, `null`} {
+		if _, err := call("set_idle_timeout", bad); err == nil {
+			t.Errorf("%s was accepted", bad)
+		}
+	}
+	// It was saved where the override file keeps the rest of the user's choices.
+	data, err := os.ReadFile(filepath.Join(e.overrideDir, "fronted.json"))
+	if err != nil || !strings.Contains(string(data), `"idle_timeout_s": 1`) {
+		t.Fatalf("override = %s %v", data, err)
+	}
+	if raw, _ := call("set_idle_timeout", `{"seconds":0}`); raw != `{"seconds":0}` {
+		t.Fatalf("never = %s", raw)
 	}
 }

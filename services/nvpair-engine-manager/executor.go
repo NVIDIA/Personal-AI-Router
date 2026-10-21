@@ -86,6 +86,10 @@ type engineState struct {
 	// is kept so the engine goes on advertising it, without reading the launch
 	// settings while a lifecycle operation holds them.
 	idleModel string
+	// idleSecs is the idle limit chosen at run time, when idleSet; otherwise the
+	// manifest's applies. Atomic because the idle watcher reads it on every tick.
+	idleSet  atomic.Bool
+	idleSecs atomic.Int64
 }
 
 // Executor owns engine lifecycle for every engine known on this host.

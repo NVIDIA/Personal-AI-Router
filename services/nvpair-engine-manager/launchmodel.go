@@ -81,7 +81,7 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 				return nil, err
 			}
 		}
-		if err := e.Start(ctx, engine); err != nil {
+		if err := e.StartWith(ctx, engine, startOpts{Eager: true}); err != nil {
 			if changed {
 				_, _ = e.ConfigureLaunch(ctx, settings.Configure{
 					Engine:   engine,

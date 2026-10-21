@@ -67,6 +67,11 @@ type startOpts struct {
 	// Wake starts an engine that is marked running but has no process, one that
 	// was unloaded for being idle, instead of treating it as already started.
 	Wake bool
+	// Eager makes an engine that loads its model lazily load it now. A start
+	// brings such an engine up idle, like Ollama and llama.cpp start a server with
+	// nothing loaded; a caller that has to prove the launch works, or is asking for
+	// the model, sets this.
+	Eager bool
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -189,6 +194,10 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.port = port
 	st.stopping = false
 	st.mu.Unlock()
+
+	if rt.Front != nil && !opts.Wake && !opts.Eager {
+		return e.enterLazy(st, engine, rt, vars, port)
+	}
 
 	// An engine with a front is reached through a PAIR gateway on its public port
 	// while the process itself listens elsewhere. The gateway is up before the

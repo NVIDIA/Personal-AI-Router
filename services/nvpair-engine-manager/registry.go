@@ -298,6 +298,9 @@ type Action struct {
 	// and keep running, but stopping it frees all of its GPU memory. Only
 	// unload_model may set it.
 	StopEngine bool `json:"stop_engine,omitempty"`
+	// FrontIdle reads ("get") or sets ("set") how long an engine behind a gateway
+	// may sit idle before it is unloaded.
+	FrontIdle string `json:"front_idle,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -1032,8 +1035,14 @@ func (a *Action) validate(name string) error {
 	if a.StopEngine {
 		kinds++
 	}
+	if a.FrontIdle != "" {
+		kinds++
+		if a.FrontIdle != "get" && a.FrontIdle != "set" {
+			return fmt.Errorf("action %q: front_idle must be \"get\" or \"set\"", name)
+		}
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, stop_engine, or front_idle is required", name)
 	}
 	if a.StopEngine && name != "unload_model" {
 		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)

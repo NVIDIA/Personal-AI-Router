@@ -66,6 +66,14 @@
       "description": "Serve a different model (params: {\"model\": \"<Hugging Face id>\"}). vLLM serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored.",
       "launch_model": { "flag": "--model" }
     },
+    "get_idle_timeout": {
+      "description": "Read how many seconds vLLM may sit idle before its model is unloaded (0 means never).",
+      "front_idle": "get"
+    },
+    "set_idle_timeout": {
+      "description": "Set how many seconds vLLM may sit idle before its model is unloaded (params: {\"seconds\": 0 to 86400}, 0 means never). Applies at once and is kept across restarts.",
+      "front_idle": "set"
+    },
     "unload_model": {
       "description": "Eject the model vLLM is serving (params: {\"model\": \"<id>\"}). vLLM cannot drop its model and keep running, so this stops the engine, which frees all of its GPU memory. Load starts it again.",
       "stop_engine": true

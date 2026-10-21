@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -384,8 +388,12 @@ func (e *Executor) startFront(st *engineState, engine string, rt Runtime, host s
 	return g, false, nil
 }
 
-// frontIdleTimeout is the engine's current idle limit; zero means never.
+// frontIdleTimeout is the engine's current idle limit; zero means never. A limit
+// chosen at run time wins over the manifest's.
 func frontIdleTimeout(st *engineState) time.Duration {
+	if st.idleSet.Load() {
+		return time.Duration(st.idleSecs.Load()) * time.Second
+	}
 	if front := st.plat.Runtime.Front; front != nil && front.IdleTimeoutS > 0 {
 		return time.Duration(front.IdleTimeoutS) * time.Second
 	}
@@ -653,4 +661,120 @@ func (e *Executor) idleModelOf(engine string) string {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.idleModel
+}
+
+// enterLazy brings an engine with a front up idle: the gateway is listening and
+// answering, the engine is ON, and nothing is loaded until a request or a Load
+// asks for the model. Only the cheap checks a start can make without loading
+// run: the launch must resolve and pass its validation, and the ports must be
+// free.
+func (e *Executor) enterLazy(st *engineState, engine string, rt Runtime, vars map[string]string, port int) error {
+	st.mu.Lock()
+	binPath := st.binPath
+	st.mu.Unlock()
+	launch, err := resolveProcessLaunch(rt, binPath, vars)
+	if err != nil {
+		return err
+	}
+	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+		return err
+	}
+	model, _ := e.servedModelLocked(engine, st)
+	g, _, err := e.startFront(st, engine, rt, vars["host"], port)
+	if err != nil {
+		return err
+	}
+	g.mu.Lock()
+	g.idle, g.up, g.model = true, false, model
+	g.mu.Unlock()
+	st.mu.Lock()
+	st.running, st.healthy, st.adopted = true, true, false
+	st.idle, st.idleModel = true, model
+	st.proc = nil
+	st.gen++
+	st.mu.Unlock()
+	e.reporter.clear(startFailedID(engine))
+	e.reporter.clear(exitedID(engine))
+	e.reporter.clear(unhealthyID(engine))
+	e.emitState(engine)
+	return nil
+}
+
+// frontIdleAction reads or changes how long the engine may sit idle before it is
+// unloaded. A change applies at once, is saved so it survives a restart, and 0
+// means never.
+func (e *Executor) frontIdleAction(engine, mode string, params json.RawMessage) (json.RawMessage, error) {
+	st, err := e.state(engine)
+	if err != nil {
+		return nil, err
+	}
+	if st.plat.Runtime.Front == nil {
+		return nil, fmt.Errorf("engine %q has no idle timeout", engine)
+	}
+	if mode == "set" {
+		var request struct {
+			Seconds *int `json:"seconds"`
+		}
+		if err := json.Unmarshal(params, &request); err != nil || request.Seconds == nil {
+			return nil, errors.New(`params must be {"seconds": <0 to 86400>}`)
+		}
+		if *request.Seconds < 0 || *request.Seconds > 86400 {
+			return nil, fmt.Errorf("seconds must be between 0 and 86400, got %d", *request.Seconds)
+		}
+		if err := e.persistFrontIdle(engine, *request.Seconds); err != nil {
+			return nil, err
+		}
+		st.idleSecs.Store(int64(*request.Seconds))
+		st.idleSet.Store(true)
+	}
+	return json.Marshal(map[string]any{"seconds": int(frontIdleTimeout(st) / time.Second)})
+}
+
+// persistFrontIdle saves the idle limit in the engine's override file, next to
+// the port and launch the user has set there.
+func (e *Executor) persistFrontIdle(engine string, seconds int) error {
+	if e.overrideDir == "" {
+		return errors.New("no config directory is available to save the idle timeout")
+	}
+	if err := os.MkdirAll(e.overrideDir, 0o700); err != nil {
+		return fmt.Errorf("create override dir: %w", err)
+	}
+	path := filepath.Join(e.overrideDir, engine+".json")
+	m := map[string]any{"engine": engine}
+	if existing, err := os.ReadFile(path); err == nil {
+		decoder := json.NewDecoder(bytes.NewReader(existing))
+		decoder.UseNumber() // unrelated manifest numbers must not lose precision
+		m = nil
+		if err := decoder.Decode(&m); err != nil || m == nil {
+			return errors.New("override must be a JSON object")
+		}
+		if name, ok := m["engine"].(string); !ok || name != engine {
+			return fmt.Errorf("override engine does not match %q", engine)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read override: %w", err)
+	}
+	platforms, err := overrideObject(m, "platforms")
+	if err != nil {
+		return err
+	}
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	platform, err := overrideObject(platforms, host)
+	if err != nil {
+		return err
+	}
+	hostRuntime, err := overrideObject(platform, "runtime")
+	if err != nil {
+		return err
+	}
+	front, err := overrideObject(hostRuntime, "front")
+	if err != nil {
+		return err
+	}
+	front["idle_timeout_s"] = seconds
+	hostRuntime["front"] = front
+	setOverrideObject(platform, "runtime", hostRuntime)
+	setOverrideObject(platforms, host, platform)
+	setOverrideObject(m, "platforms", platforms)
+	return writeJSONAtomic(path, m)
 }

@@ -96,12 +96,23 @@ clients see no difference; the cost measured on Qwen2.5-0.5B was about 2 ms per
 request. If the engine is not up, the gateway answers 503. A vLLM left running
 on the internal port by a crashed run is stopped and replaced on the next start.
 
+Start brings vLLM up idle, with nothing loaded, like Ollama and llama.cpp start a
+server: it takes about a second, the engine is ON and answers health checks, and
+the model loads on the first request or a Load. The same is true after PAIR
+restarts, when an engine that was ON is restored. A launch that cannot work, such
+as a port already in use, is still refused at Start. Applying launch settings and
+switching the model load it straight away, so a bad setting is found then and
+rolled back.
+
 After 10 minutes with no inference request (`front.idle_timeout_s`, 0 to never)
 the manager stops the `vllm serve` process, which frees the GPU, but keeps the
 gateway and the engine ON: `engine:status` reports `idle: true`, `/health` still
 answers 200, and `engine:models` still advertises the model it is set to serve
 with nothing loaded. Health checks, monitors and the model list do not count as
-activity, and a request still running keeps the engine loaded. Eject
+activity, and a request still running keeps the engine loaded. The limit is read
+and changed with the `get_idle_timeout` and `set_idle_timeout` actions (seconds,
+0 never); a change applies at once and is saved in the engine's override file.
+Eject
 (`unload_model`) does the same on demand. `load_model` of the model it is set to
 serve loads it again.
 

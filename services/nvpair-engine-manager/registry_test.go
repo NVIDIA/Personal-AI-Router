@@ -317,7 +317,7 @@ func TestValidate_RejectsInvalidManifests(t *testing.T) {
 		}, "json_match.value is required"},
 		{"action without http or cmd", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {Description: "neither"}}
-		}, "exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine"},
+		}, "exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, stop_engine, or front_idle"},
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
