@@ -347,6 +347,17 @@ An **`hf_pull`** action (`{"tool": "hf", "dir": "{models_dir}/hub"}`, only as
 in the directory that holds the engine binary, and reports byte progress taken
 from the cache directory. It needs no running engine.
 
+A runtime **`front`** (`{"backend_port_offset": 10000}`) puts a PAIR-owned
+HTTP gateway on the engine's public port and runs the engine itself on a loopback
+port at that offset (8001 becomes 18001). Clients, the proxy and probes keep using
+the public port; the gateway forwards every request unchanged, streams responses
+as they arrive, stops the engine's work when the client leaves, and answers 503
+until the engine is ready. The launch a user sees and edits keeps the public
+port: only the spawned process is repointed. The fixed offset lets a stale engine
+left by a crashed run be found and reclaimed. It requires a process-mode runtime
+whose `editable_launch` has a flag control for `{server.port}`, and only
+`vllm.json` declares one.
+
 A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
 serves a single model per process and so cannot unload it while running. A
 `launch_model` action on a stopped engine saves the choice and starts it.

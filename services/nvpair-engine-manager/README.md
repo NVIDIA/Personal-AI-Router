@@ -89,6 +89,13 @@ switches the served model: it writes `--model <id>` into the saved launch
 arguments and restarts vLLM on it, restoring the previous model if the new one
 does not start (for example it does not fit in GPU memory).
 
+vLLM is reached through a PAIR gateway (`front`): the public port (8001) is the
+gateway, and the `vllm serve` process listens on a loopback port 10000 higher
+(18001). Every request is forwarded unchanged and responses stream through, so
+clients see no difference; the cost measured on Qwen2.5-0.5B was about 2 ms per
+request. If the engine is not up, the gateway answers 503. A vLLM left running
+on the internal port by a crashed run is stopped and replaced on the next start.
+
 `unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 
 `delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model vLLM is set to serve, running or not, is refused so a switch has to come first.

@@ -171,6 +171,13 @@ func main() {
 	if addr == "" {
 		addr = strings.TrimPrefix(os.Getenv("OLLAMA_HOST"), "http://")
 	}
+	// --listen host:port overrides the address for tests of an engine that is told
+	// where to listen by a flag, as vLLM is.
+	for i := 1; i+1 < len(os.Args); i++ {
+		if os.Args[i] == "--listen" {
+			addr = os.Args[i+1]
+		}
+	}
 	if addr == "" {
 		addr = "127.0.0.1:0"
 	}

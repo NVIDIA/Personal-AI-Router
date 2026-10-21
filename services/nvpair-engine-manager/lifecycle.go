@@ -187,7 +187,20 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.stopping = false
 	st.mu.Unlock()
 
+	// An engine with a front is reached through a PAIR gateway on its public port
+	// while the process itself listens elsewhere. The gateway is up before the
+	// process so that readiness probes on the public port see it; it answers 503
+	// until the engine is ready.
+	var gateway *frontGateway
+	if rt.Front != nil {
+		g, err := e.startFront(st, engine, rt, vars["host"], port)
+		if err != nil {
+			return err
+		}
+		gateway = g
+	}
 	if err := e.bringUp(ctx, st, engine, rt, port, vars); err != nil {
+		gateway.close()
 		return err
 	}
 
@@ -208,6 +221,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.mu.Unlock()
 	if proc != nil {
 		e.watch(st, engine, proc)
+		if gateway != nil {
+			gateway.closeWhen(proc.done)
+		}
 	}
 
 	if rt.Health != nil {
@@ -241,6 +257,9 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		return err
 	}
 	launch = applyAutoLaunch(engine, rt, launch, vars["models_dir"])
+	if launch, err = applyFrontBackend(rt, launch, port); err != nil {
+		return err
+	}
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()
@@ -607,7 +626,12 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 	st.stopping = true
 	st.adopted = false
 	st.proc = nil
+	front := st.front
+	st.front = nil
 	st.mu.Unlock()
+	// Closed here, not left to the process-exit watcher, so that a restart can
+	// take the public port back at once.
+	front.close()
 	// A deliberately-stopped engine has no live unhealthy/crash condition.
 	e.reporter.clear(unhealthyID(engine))
 	e.reporter.clear(exitedID(engine))

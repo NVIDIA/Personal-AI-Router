@@ -73,6 +73,9 @@ type engineState struct {
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
 	startCancel context.CancelFunc
+	// front is the gateway in front of an engine that declares one (Runtime.Front);
+	// nil for every other engine.
+	front *frontGateway
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
