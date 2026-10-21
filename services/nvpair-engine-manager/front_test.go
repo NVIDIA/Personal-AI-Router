@@ -881,3 +881,54 @@ func TestTheModelListIsAnsweredWhileUnloadedAndWhileLoading(t *testing.T) {
 	}
 	eventually(t, "the load", 10*time.Second, func() bool { return up(backend) })
 }
+
+// The engine is not serving while it is unloaded or loading, and that is not a
+// failure: the health check must not raise a warning for it. A warning is raised
+// and then cleared when the load finishes, so it has to be caught while it stands.
+func TestNoHealthWarningWhileUnloadedOrLoading(t *testing.T) {
+	t.Setenv("FAKE_START_DELAY", "2500ms") // several health ticks long
+	e, public, backend := frontExecutor(t, 0)
+	if err := e.Start(context.Background(), "fronted"); err != nil {
+		t.Fatal(err)
+	}
+
+	var raised atomic.Value
+	stop := make(chan struct{})
+	var watcher sync.WaitGroup
+	watcher.Add(1)
+	go func() {
+		defer watcher.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			for _, problem := range e.Errors() {
+				if problem.ID == unhealthyID("fronted") || problem.ID == exitedID("fronted") {
+					raised.Store(problem.Message)
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2200 * time.Millisecond) // unloaded across health ticks
+	if got := post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", public)); got != http.StatusOK {
+		t.Fatalf("the request that loads the engine answered %d", got)
+	}
+	close(stop)
+	watcher.Wait()
+	if !up(backend) {
+		t.Fatal("not loaded")
+	}
+	if msg := raised.Load(); msg != nil {
+		t.Fatalf("a warning was raised for an engine that was only unloaded or loading: %v", msg)
+	}
+	if st, _ := e.Status("fronted"); !st.Healthy {
+		t.Fatalf("status = %+v, want healthy once loaded", st)
+	}
+}

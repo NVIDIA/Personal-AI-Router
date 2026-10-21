@@ -863,6 +863,14 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			// An engine unloaded for being idle, or loading again, is not serving
+			// and is not failing: there is nothing to probe.
+			st.mu.Lock()
+			skip := st.idle
+			st.mu.Unlock()
+			if skip {
+				continue
+			}
 			ok := e.probe(ctx, h, port)
 			st.mu.Lock()
 			// Bail if stopped or if a newer start superseded this loop —
@@ -870,6 +878,11 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 			if !st.running || st.gen != gen {
 				st.mu.Unlock()
 				return
+			}
+			if st.idle {
+				// It was unloaded while the probe ran, so the result is no answer.
+				st.mu.Unlock()
+				continue
 			}
 			was := st.healthy
 			st.healthy = ok
