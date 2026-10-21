@@ -60,6 +60,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // The router removes cached models in-process via DELETE /models.
         hasDeleteModel: true,
         hasPullModel: true,
+        hubSearch: true,
         engineHub: {
             label: 'llama.cpp',
             url: 'https://huggingface.co/models?library=gguf'
@@ -82,8 +83,14 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // The engine manager declares no delete_model for vLLM; weights live in
         // the shared Hugging Face cache.
         hasDeleteModel: false,
-        // No pull_model either. The model list is what the Hugging Face cache
-        // already holds, and Load switches the served model by restarting vLLM.
-        hasPullModel: false
+        // The engine manager downloads a Hugging Face repo into the shared cache
+        // with the engine's own `hf` tool (pull_model). The model list is what
+        // that cache holds, and Load switches the served model by restarting vLLM.
+        hasPullModel: true,
+        hubSearch: true,
+        engineHub: {
+            label: 'vLLM',
+            url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
+        }
     }
 }

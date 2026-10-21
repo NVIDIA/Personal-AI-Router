@@ -99,9 +99,10 @@ When you install an engine, consider the following:
   shows the complete text models already in your Hugging Face cache
   (`~/.cache/huggingface`), and **Load** on one of them switches vLLM to it by
   restarting the engine, which takes as long as the model needs to load; if the
-  new model does not start, the previous one is restored. There is no Eject,
-  Delete or Add model: to use a model that is not cached, name it in the launch
-  arguments (`--model <Hugging Face id>`), and vLLM downloads it on start. Other
+  new model does not start, the previous one is restored. **Add model** browses
+  and searches Hugging Face (open safetensors chat models) and downloads the one
+  you pick into the same cache, with a progress bar, even while vLLM is stopped;
+  it then appears in the list. There is no Eject or Delete. Other
   nodes and the proxy see only the model vLLM is serving, so a request for a
   different cached model is refused until you switch to it.
 

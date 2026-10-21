@@ -44,19 +44,21 @@ describe('engine identity', () => {
         expect(engineTypeFromManagerName('vllm')).toBe('vllm')
         expect(isEngineType('vllm')).toBe(true)
         expect(EngineDisplayNames.vllm).toBe('vLLM')
-        // vLLM has no load, unload or delete API and no public catalog.
+        // vLLM has no unload or delete, but downloads from Hugging Face.
         expect(EngineCapabilities.vllm).toMatchObject({
             hasEject: false,
             hasDeleteModel: false,
+            hasPullModel: true,
+            hubSearch: true,
             hasInstall: ['linux'],
-            hasEnginePort: true
+            hasEnginePort: true,
+            engineHub: { label: 'vLLM' }
         })
-        expect(EngineCapabilities.vllm.engineHub).toBeUndefined()
     })
 
-    it('offers Add model only to engines that can download on request', () => {
+    it('offers Add model to every engine, vLLM included', () => {
         for (const engineType of EngineTypes) {
-            expect(EngineCapabilities[engineType].hasPullModel).toBe(engineType !== 'vllm')
+            expect(EngineCapabilities[engineType].hasPullModel).toBe(true)
         }
     })
 

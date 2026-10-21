@@ -16,26 +16,26 @@ history.
 
 ## Status summary
 
-| Domain                     | Status                          | Current state                                                                                                                                   |
-| -------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                      |
-| Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                 |
-| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                 |
-| Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                     |
-| Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
-| LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
-| llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                            |
-| vLLM backend               | Integrated (Linux)              | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), endpoints and routing; no eject, delete, pull or catalog; no demo traffic |
-| Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
-| Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
-| Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
-| Engine version metadata    | Backend-limited                 | The backend status surface does not provide a complete version/install-owner/update contract                                                    |
-| Errors                     | Complete                        | Broker-relayed registry with peer synchronization                                                                                               |
-| Workloads                  | Complete after subscription     | Local and peer workload events feed one Electron catalog                                                                                        |
-| Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                           |
-| Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none |
-| Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                            |
-| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp         |
+| Domain                     | Status                          | Current state                                                                                                                                                                                             |
+| -------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                                                                                |
+| Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                                                                           |
+| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                                                                           |
+| Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                                                                              |
+| Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                                                                                    |
+| LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                                                                                  |
+| llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                                                                                     |
+| vLLM backend               | Integrated (Linux)              | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), Hugging Face catalog search and download, endpoints and routing; no eject or delete; no demo traffic |
+| Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                                                                           |
+| Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                                                                                         |
+| Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                                                                                     |
+| Engine version metadata    | Backend-limited                 | The backend status surface does not provide a complete version/install-owner/update contract                                                                                                              |
+| Errors                     | Complete                        | Broker-relayed registry with peer synchronization                                                                                                                                                         |
+| Workloads                  | Complete after subscription     | Local and peer workload events feed one Electron catalog                                                                                                                                                  |
+| Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                                                                                     |
+| Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none                                                           |
+| Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                                                                                    |
+| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp                                                                   |
 
 ## Supervision
 
@@ -510,15 +510,15 @@ its effect is observable.
 The following responsibilities remain in Personal AI Router because the backend does not
 provide an equivalent client-facing contract:
 
-| Responsibility                                              | Location                                         |
-| ----------------------------------------------------------- | ------------------------------------------------ |
-| Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                            |
-| Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
-| Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
-| Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |
-| Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
-| Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
-| Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |
+| Responsibility                                              | Location                                    |
+| ----------------------------------------------------------- | ------------------------------------------- |
+| Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                       |
+| Bridge the local node into engine proxies                   | `modular-supervisor.ts`                     |
+| Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state    |
+| Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`           |
+| Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts` |
+| Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                        |
+| Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`    |
 
 These are current integration boundaries. Do not add compatibility shims or
 duplicate backend services around them.

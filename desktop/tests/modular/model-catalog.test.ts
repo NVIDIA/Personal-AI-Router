@@ -127,8 +127,8 @@ describe('model catalog relay', () => {
     // cost a multi-megabyte reply for nothing.
     it('warms only the live-fetched catalogs', () => {
         warmEngineHubs()
-        expect(mocks.supervisor.callProcess).toHaveBeenCalledTimes(2)
-        for (const engine of ['lmstudio', 'llamacpp']) {
+        expect(mocks.supervisor.callProcess).toHaveBeenCalledTimes(3)
+        for (const engine of ['lmstudio', 'llamacpp', 'vllm']) {
             expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
                 'broker',
                 'engine:catalog',

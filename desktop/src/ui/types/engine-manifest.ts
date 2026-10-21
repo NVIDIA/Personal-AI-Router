@@ -38,11 +38,15 @@ export interface EngineCaps {
     hasDeleteModel: boolean
     /**
      * When true, the engine can download a model on request (a `pull_model`
-     * action), so the model list offers "Add model". An engine that serves one
-     * model per process has no such call: it lists what is already on disk and
-     * switches between those models with Load.
+     * action), so the model list offers "Add model".
      */
     hasPullModel: boolean
+    /**
+     * When true, the model hub can search the whole upstream catalog for a typed
+     * query (the backend's `engine:catalog` reports `searchable`), instead of only
+     * filtering the browse list.
+     */
+    hubSearch?: boolean
     /**
      * When true, the engine restarts as part of deleting a model, so Delete asks
      * for confirmation first. The engine manager owns the restart; this flag only
