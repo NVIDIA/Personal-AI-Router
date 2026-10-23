@@ -7,42 +7,44 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestPullProgressFromLine(t *testing.T) {
+func TestPullProgressFromLine_ExtractsProgressAndStatus(t *testing.T) {
 	ev := pullProgressFromLine("ollama", []byte(`{"status":"pulling manifest","total":200,"completed":50}`))
-	if ev.Op != "pull" || ev.Engine != "ollama" {
-		t.Fatalf("unexpected event meta: %+v", ev)
-	}
-	if ev.Percent != 25 {
-		t.Fatalf("expected 25%%, got %d", ev.Percent)
-	}
-	if ev.Stage != "pulling manifest" {
-		t.Fatalf("expected stage from status, got %q", ev.Stage)
-	}
+	require.Equal(t, "pull", ev.Op, "unexpected event meta (%v)", ev)
+	require.Equal(t, "ollama", ev.Engine, "unexpected event meta (%v)", ev)
+	require.Equal(t, 25, ev.Percent, "expected 25")
+	require.Equal(t, "pulling manifest", ev.Stage, "expected stage from status")
 
 	// No total -> 0% (avoids divide-by-zero), still carries the status.
 	ev = pullProgressFromLine("ollama", []byte(`{"status":"verifying"}`))
-	if ev.Percent != 0 || ev.Stage != "verifying" {
-		t.Fatalf("unexpected zero-total event: %+v", ev)
-	}
+	require.Equal(t, 0, ev.Percent, "unexpected zero-total event (%v)", ev)
+	require.Equal(t, "verifying", ev.Stage, "unexpected zero-total event (%v)", ev)
 }
 
-func TestHandlePullRejectsMissingTarget(t *testing.T) {
+func TestHandlePull_RejectsMissingTarget(t *testing.T) {
 	s := &controlServer{exec: &Executor{progress: newProgressHub()}}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(`{"opId":"x","engine":"ollama"}`))
 	s.handlePull(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 when neither model nor params set, got %d", rec.Code)
-	}
+	require.Equal(t, 400, rec.Code, "expected 400 when neither model nor params set")
 }
 
-func TestModelFromParams(t *testing.T) {
+func TestModelFromParams_ExtractsRequestedModel(t *testing.T) {
 	cases := []struct {
 		params, want string
 	}{
@@ -53,10 +55,284 @@ func TestModelFromParams(t *testing.T) {
 		{``, ""},                                 // empty params
 	}
 	for _, c := range cases {
-		if got := modelFromParams([]byte(c.params)); got != c.want {
-			t.Fatalf("modelFromParams(%q) = %q, want %q", c.params, got, c.want)
-		}
+		require.Equal(t, c.want, modelFromParams([]byte(c.params)), "modelFromParams")
 	}
+}
+
+func TestLlamaCPPModelsEventPercent_AggregatesFiles(t *testing.T) {
+	var event llamaCPPModelsEvent
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"model":"owner/repo:Q4_K_M",
+		"event":"download_progress",
+		"data":{"progress":{
+			"model.gguf":{"done":75,"total":100},
+			"mmproj.gguf":{"done":25,"total":100}
+		}}
+	}`), &event), "decode event")
+	require.Equal(t, 50, event.percent(), "aggregate percent")
+}
+
+func newHTTPPullTestExecutor(t *testing.T, server *httptest.Server, action Action) *Executor {
+	t.Helper()
+	_, portText, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err, "split test server address")
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err, "parse test server port")
+	manifest := testEngineManifest(fakeEngineBin)
+	manifest.Actions[pullModelAction] = action
+	registry := NewRegistry()
+	registry.engines[manifest.Engine] = manifest
+	executor := NewExecutor(registry, NewReporter(nil), nil, t.TempDir())
+	state, err := executor.state(manifest.Engine)
+	require.NoError(t, err, "resolve engine state")
+	state.running = true
+	state.port = port
+	return executor
+}
+
+func TestPullModelLlamaCPP_SubscribesToProgressBeforeStartingDownload(t *testing.T) {
+	const model = "owner/repo:Q4_K_M"
+	subscribed := make(chan struct{})
+	started := make(chan struct{})
+	var postBeforeSubscribe atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models/sse", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		close(subscribed)
+		_, _ = fmt.Fprint(w, ": ready\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-started:
+		case <-r.Context().Done():
+			return
+		}
+		write := func(event map[string]any) {
+			data, err := json.Marshal(event)
+			if !assert.NoError(t, err, "encode SSE event") {
+				return
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			w.(http.Flusher).Flush()
+		}
+		write(map[string]any{"model": "other/model", "event": "download_finished", "data": map[string]any{}})
+		write(map[string]any{
+			"model": model,
+			"event": "download_progress",
+			"data": map[string]any{"progress": map[string]any{
+				"model.gguf":  map[string]int64{"done": 75, "total": 100},
+				"mmproj.gguf": map[string]int64{"done": 25, "total": 100},
+			}},
+		})
+		write(map[string]any{"model": model, "event": "download_finished", "data": map[string]any{}})
+	})
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-subscribed:
+		default:
+			postBeforeSubscribe.Store(true)
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Model != model {
+			http.Error(w, "invalid model", http.StatusBadRequest)
+			return
+		}
+		close(started)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"success":true}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP:             &ActionHTTP{Method: http.MethodPost, Path: "/models"},
+		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+	})
+	progress, cancel := ex.progress.subscribe("fake")
+	defer cancel()
+
+	result, err := ex.PullModelStream(context.Background(), "fake", model, json.RawMessage(`{"model":"`+model+`"}`))
+	require.NoError(t, err, "pull model")
+	var response struct {
+		Success bool `json:"success"`
+	}
+	require.NoError(t, json.Unmarshal(result, &response), "decode pull result")
+	require.True(t, response.Success, "pull result must succeed")
+	require.False(t, postBeforeSubscribe.Load(), "download POST arrived before the SSE subscription was open")
+	var events []ProgressEvent
+	for len(progress) > 0 {
+		events = append(events, <-progress)
+	}
+	require.Len(t, events, 2, "must report downloading and success")
+	require.Equal(t, "downloading", events[0].Stage)
+	require.Equal(t, 50, events[0].Percent)
+	require.Equal(t, "success", events[1].Stage)
+	require.Equal(t, 100, events[1].Percent)
+}
+
+func TestPullModelOllamaAdvancingProgress_RefreshesTimeout(t *testing.T) {
+	const (
+		idleTimeout     = 400 * time.Millisecond
+		progressDelay   = 90 * time.Millisecond
+		progressUpdates = 6
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, _ *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !assert.True(t, ok, "test response does not support flushing") {
+			return
+		}
+		for completed := 1; completed <= progressUpdates; completed++ {
+			if _, err := fmt.Fprintf(
+				w,
+				"{\"status\":\"pulling\",\"digest\":\"sha256:model\",\"total\":%d,\"completed\":%d}\n",
+				progressUpdates,
+				completed,
+			); err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(progressDelay)
+		}
+		_, _ = fmt.Fprintln(w, `{"status":"success"}`)
+		flusher.Flush()
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"},
+	})
+	ex.pullProgressTimeout = idleTimeout
+
+	started := time.Now()
+	result, err := ex.PullModelStream(
+		context.Background(),
+		"fake",
+		"demo:1b",
+		json.RawMessage(`{"name":"demo:1b"}`),
+	)
+	require.NoError(t, err, "pull model")
+	require.Greater(t, time.Since(started), idleTimeout, "pull must last longer than one idle interval")
+	require.Contains(t, string(result), `"status":"success"`, "pull must report terminal success")
+}
+
+func TestPullModelLlamaCPPAdvancingProgress_RefreshesTimeout(t *testing.T) {
+	const (
+		model           = "owner/repo:Q4_K_M"
+		idleTimeout     = 400 * time.Millisecond
+		progressDelay   = 90 * time.Millisecond
+		progressUpdates = 6
+	)
+	started := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models/sse", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !assert.True(t, ok, "test response does not support flushing") {
+			return
+		}
+		_, _ = fmt.Fprint(w, ": ready\n\n")
+		flusher.Flush()
+		select {
+		case <-started:
+		case <-r.Context().Done():
+			return
+		}
+		for completed := 1; completed <= progressUpdates; completed++ {
+			if _, err := fmt.Fprintf(
+				w,
+				"data: {\"model\":%q,\"event\":\"download_progress\",\"data\":{\"progress\":{\"model.gguf\":{\"done\":%d,\"total\":%d}}}}\n\n",
+				model,
+				completed,
+				progressUpdates,
+			); err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(progressDelay)
+		}
+		_, _ = fmt.Fprintf(w, "data: {\"model\":%q,\"event\":\"download_finished\",\"data\":{}}\n\n", model)
+		flusher.Flush()
+	})
+	mux.HandleFunc("/models", func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"success":true}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP:             &ActionHTTP{Method: http.MethodPost, Path: "/models"},
+		ProgressProtocol: pullProgressProtocolLlamaCPPModelsSSE,
+	})
+	ex.pullProgressTimeout = idleTimeout
+
+	startedAt := time.Now()
+	result, err := ex.PullModelStream(
+		context.Background(),
+		"fake",
+		model,
+		json.RawMessage(`{"model":"`+model+`"}`),
+	)
+	require.NoError(t, err, "pull model")
+	require.Greater(t, time.Since(startedAt), idleTimeout, "pull must last longer than one idle interval")
+	require.Contains(t, string(result), `"success":true`, "pull must report an accepted download")
+}
+
+func TestPullModelDuplicateProgress_DoesNotRefreshTimeout(t *testing.T) {
+	const idleTimeout = 150 * time.Millisecond
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !assert.True(t, ok, "test response does not support flushing") {
+			return
+		}
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			_, err := fmt.Fprintln(w, `{"status":"pulling","digest":"sha256:model","total":100,"completed":1}`)
+			if err != nil {
+				return
+			}
+			flusher.Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ex := newHTTPPullTestExecutor(t, server, Action{
+		HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"},
+	})
+	ex.pullProgressTimeout = idleTimeout
+
+	_, err := ex.PullModelStream(
+		context.Background(),
+		"fake",
+		"demo:1b",
+		json.RawMessage(`{"name":"demo:1b"}`),
+	)
+	require.ErrorContains(t, err, "model download made no progress for 150ms", "pull model succeeded despite duplicate-only progress")
+}
+
+func TestPullProgressWatchdog_PreservesParentCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	ctx, watchdog := newPullProgressWatchdog(parent, time.Hour)
+	defer watchdog.stop()
+
+	cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		require.FailNow(t, "watchdog context did not observe parent cancellation")
+	}
+	require.ErrorIs(t, context.Cause(ctx), context.Canceled)
 }
 
 // TestActionPullModelStreamsProgress verifies that engine:action with action
@@ -64,7 +340,7 @@ func TestModelFromParams(t *testing.T) {
 // emits live engine:pull-progress notifications (with computed percentages) and
 // still returns the pull's terminal result — matching what remote pulls already
 // surface via engine:remote-progress.
-func TestActionPullModelStreamsProgress(t *testing.T) {
+func TestActionPullModel_StreamsProgress(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 
@@ -84,9 +360,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
 
 	var out bytes.Buffer
 	mgr := NewManager(NewCodec(&out), ex, nil)
@@ -94,27 +368,19 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 	mgr.runAction(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
 		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo:1b"}}`)})
 
-	if !strings.Contains(out.String(), "success") {
-		t.Fatalf("expected the pull's terminal result in the response, got %s", out.String())
-	}
+	require.Contains(t, out.String(), "success", "expected the pull's terminal result in the response")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(pulls) == 0 {
-		t.Fatal("engine:action{action:pull_model} emitted no engine:pull-progress notifications")
-	}
+	require.NotEmpty(t, pulls, "engine:action{action:pull_model} emitted no engine:pull-progress notifications")
 	sawPercent := false
 	for _, p := range pulls {
-		if p["op"] != "pull" {
-			t.Fatalf("expected op=pull on every frame, got %+v", p)
-		}
+		require.Equal(t, "pull", p["op"], "expected op=pull on every frame (%v)", p)
 		if pct, ok := p["percent"].(int); ok && pct > 0 {
 			sawPercent = true
 		}
 	}
-	if !sawPercent {
-		t.Fatalf("expected at least one frame with a computed percent > 0, got %+v", pulls)
-	}
+	require.True(t, sawPercent, "expected at least one frame with a computed percent > 0 (%v)", pulls)
 }
 
 // TestActionPullModelCmdMarkerAndResult covers the CLI (LM Studio `lms get`)
@@ -122,7 +388,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 // expose structured line progress, so it emits a single "pulling" marker and
 // returns the command's terminal result — the counterpart to the HTTP streaming
 // path in TestActionPullModelStreamsProgress.
-func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
+func TestActionPullModel_ReturnsCommandResultAndProgressMarker(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{Cmd: []string{fakeEngineBin, "echo", "pulled:{model}"}}
 
@@ -147,28 +413,22 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 	mgr.runAction(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
 		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"model":"demo:1b"}}`)})
 
-	if !strings.Contains(out.String(), "pulled:demo:1b") {
-		t.Fatalf("expected the cmd pull's terminal result in the response, got %s", out.String())
-	}
+	require.Contains(t, out.String(), "pulled:demo:1b", "expected the cmd pull's terminal result in the response")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(pulls) != 1 {
-		t.Fatalf("expected exactly one pulling marker for a CLI pull, got %d: %+v", len(pulls), pulls)
-	}
-	if pulls[0]["op"] != "pull" || pulls[0]["stage"] != "pulling" || pulls[0]["message"] != "demo:1b" {
-		t.Fatalf("unexpected CLI pull marker: %+v", pulls[0])
-	}
-	if _, hasPercent := pulls[0]["percent"]; hasPercent {
-		t.Fatalf("CLI pull marker must omit indeterminate percent, got %+v", pulls[0])
-	}
+	require.Len(t, pulls, 1, "expected exactly one pulling marker for a CLI pull")
+	require.Equal(t, "pull", pulls[0]["op"], "unexpected CLI pull marker")
+	require.Equal(t, "pulling", pulls[0]["stage"], "unexpected CLI pull marker")
+	require.Equal(t, "demo:1b", pulls[0]["message"], "unexpected CLI pull marker")
+	require.NotContains(t, pulls[0], "percent", "CLI pull marker must omit indeterminate percent")
 }
 
 // TestActionPullModelFailureEmitsTerminalError proves a failed LOCAL pull emits
 // a terminal engine:pull-progress error frame (in addition to the JSON-RPC
 // error), so a UI that already stopped waiting on the synchronous call still
 // converges off "pulling" instead of appearing stuck.
-func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
+func TestActionPullModelFailure_EmitsTerminalError(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 
@@ -195,37 +455,63 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 	mgr.runAction(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
 		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo:1b"}}`)})
 
-	if !strings.Contains(out.String(), "Fake Engine experienced an error while downloading a model") {
-		t.Fatalf("expected a formatted JSON-RPC error for the failed pull, got %s", out.String())
-	}
+	require.Contains(t, out.String(), "Fake Engine experienced an error while downloading a model", "expected a formatted JSON-RPC error for the failed pull")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(pulls) != 1 {
-		t.Fatalf("expected exactly one terminal error frame, got %d: %+v", len(pulls), pulls)
-	}
-	if pulls[0]["op"] != "pull" || pulls[0]["stage"] != "error" {
-		t.Fatalf("expected a terminal error frame, got %+v", pulls[0])
-	}
-	if pct, _ := pulls[0]["percent"].(int); pct != -1 {
-		t.Fatalf("expected percent -1 on the error frame, got %+v", pulls[0])
-	}
+	require.Len(t, pulls, 1, "expected exactly one terminal error frame")
+	require.Equal(t, "pull", pulls[0]["op"], "expected a terminal error frame")
+	require.Equal(t, "error", pulls[0]["stage"], "expected a terminal error frame")
+	pct, _ := pulls[0]["percent"].(int)
+	require.Equal(t, -1, pct, "expected percent -1 on the error frame")
 	msg, _ := pulls[0]["message"].(string)
-	if !strings.Contains(msg, "Fake Engine experienced an error while downloading a model") {
-		t.Fatalf("expected formatted error on the progress frame, got %+v", pulls[0])
-	}
-	if !strings.Contains(msg, `engine "fake" is not running`) {
-		t.Fatalf("expected engine detail in progress message, got %q", msg)
-	}
+	require.Contains(t, msg, "Fake Engine experienced an error while downloading a model", "expected formatted error on the progress frame")
+	require.Contains(t, msg, `engine "fake" is not running`, "expected engine detail in progress message")
 
 	snap := reporter.snapshot()
-	if len(snap) != 1 {
-		t.Fatalf("expected one errors:report entry, got %+v", snap)
-	}
-	if snap[0].Operation != "pull" || snap[0].ModelName != "demo:1b" || snap[0].Action != "retry" {
-		t.Fatalf("unexpected errors:report entry: %+v", snap[0])
-	}
-	if !strings.Contains(reportBuf.String(), `"errors:report"`) {
-		t.Fatalf("expected errors:report on the wire, got %s", reportBuf.String())
-	}
+	require.Len(t, snap, 1, "expected one errors:report entry")
+	require.Equal(t, "pull", snap[0].Operation, "unexpected errors:report entry")
+	require.Equal(t, "demo:1b", snap[0].ModelName, "unexpected errors:report entry")
+	require.Equal(t, "retry", snap[0].Action, "unexpected errors:report entry")
+	require.Contains(t, reportBuf.String(), `"errors:report"`, "expected errors:report on the wire")
+}
+
+// Ollama can report a failed pull in an NDJSON error record after sending HTTP
+// 200. That record must fail the operation even when reading the stream succeeds.
+func TestPullModelStream_RejectsOllamaNDJSONError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methodOK := assert.Equal(t, http.MethodPost, r.Method)
+		pathOK := assert.Equal(t, "/api/pull", r.URL.Path)
+		if !methodOK || !pathOK {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		_, err := io.WriteString(w, `{"status":"pulling manifest"}
+{"error":"model not found"}
+`)
+		assert.NoError(t, err, "write pull response")
+	}))
+	t.Cleanup(srv.Close)
+
+	_, portText, err := net.SplitHostPort(srv.Listener.Addr().String())
+	require.NoError(t, err, "parse test server address")
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err, "parse test server port")
+
+	m := testEngineManifest(fakeEngineBin)
+	m.Engine = "ollama"
+	m.Actions[pullModelAction] = Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}}
+	ex := newTestExecutor(t, m)
+	ex.client = srv.Client()
+	st, err := ex.state(m.Engine)
+	require.NoError(t, err, "initialize engine state")
+	st.running = true
+	st.port = port
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	_, err = ex.PullModelStream(ctx, m.Engine, "missing:latest", nil)
+	require.ErrorContains(t, err, "model not found")
 }

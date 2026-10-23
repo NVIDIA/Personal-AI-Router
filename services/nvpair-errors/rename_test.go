@@ -5,8 +5,11 @@ package main
 
 import (
 	"io"
-	"slices"
+
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
@@ -23,7 +26,7 @@ func (nopReadWriter) Write(p []byte) (int, error) { return len(p), nil }
 // localNodeID), so the self-check and EvictNode survive a peer's PC rename and
 // never conflate two same-named peers. Host stays the hostname for dialing /
 // display.
-func TestDirectoryToPeerKeysByHostUUID(t *testing.T) {
+func TestDirectoryToPeer_KeysByHostUUID(t *testing.T) {
 	n := noderec.DirectoryNode{
 		HostUUID: "uuid-x",
 		Name:     "host-x",
@@ -32,31 +35,19 @@ func TestDirectoryToPeerKeysByHostUUID(t *testing.T) {
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}},
 	}
 	p, ok := directoryToPeer(n)
-	if !ok {
-		t.Fatal("node advertising er with an IP should project")
-	}
-	if p.ID != "uuid-x" {
-		t.Fatalf("peer ID = %q, want hostUuid", p.ID)
-	}
-	if p.Host != "host-x" {
-		t.Fatalf("peer Host = %q, want hostname", p.Host)
-	}
-	if want := []string{"10.0.0.4", "192.168.1.4"}; !slices.Equal(p.Addresses, want) {
-		t.Fatalf("peer addresses = %v, want %v", p.Addresses, want)
-	}
+	require.True(t, ok, "node advertising er with an IP should project")
+	assert.Equal(t, "uuid-x", p.ID, "peer ID")
+	assert.Equal(t, "host-x", p.Host, "peer Host")
+	assert.Equal(t, []string{"10.0.0.4", "192.168.1.4"}, p.Addresses, "peer addresses")
 }
 
 // TestSetLocalNodeID: the broker's --node-id override replaces the hostname
 // default so local errors are attributed to this node's stable UUID.
-func TestSetLocalNodeID(t *testing.T) {
+func TestSetLocalNodeID_RekeysLocalErrors(t *testing.T) {
 	m := NewManager(NewCodec(nopReadWriter{}))
 	m.SetLocalNodeID("uuid-self")
-	if m.LocalNodeID() != "uuid-self" {
-		t.Fatalf("LocalNodeID = %q, want uuid-self", m.LocalNodeID())
-	}
+	assert.Equal(t, "uuid-self", m.LocalNodeID())
 	// An empty override must not blank a known id.
 	m.SetLocalNodeID("")
-	if m.LocalNodeID() != "uuid-self" {
-		t.Fatalf("empty override cleared the id: %q", m.LocalNodeID())
-	}
+	assert.Equal(t, "uuid-self", m.LocalNodeID(), "empty override cleared the id")
 }

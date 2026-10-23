@@ -9,6 +9,9 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // captureRW splits the manager's outbound stream into two channels at
@@ -81,12 +84,10 @@ func readResponseFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.responses:
 		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			t.Fatalf("decode response frame %q: %v", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode response frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for response frame")
+		require.FailNow(t, "timed out waiting for response frame")
 		return Message{}
 	}
 }
@@ -96,12 +97,10 @@ func readNotificationFrame(t *testing.T, rw *captureRW) Message {
 	select {
 	case data := <-rw.notifications:
 		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			t.Fatalf("decode notification frame %q: %v", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &msg), "decode notification frame %q", data)
 		return msg
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for notification frame")
+		require.FailNow(t, "timed out waiting for notification frame")
 		return Message{}
 	}
 }
@@ -109,9 +108,7 @@ func readNotificationFrame(t *testing.T, rw *captureRW) Message {
 func expectNotification(t *testing.T, rw *captureRW, method string) Message {
 	t.Helper()
 	msg := readNotificationFrame(t, rw)
-	if msg.Method != method {
-		t.Fatalf("notification method = %q, want %q", msg.Method, method)
-	}
+	require.Equal(t, method, msg.Method, "notification method")
 	return msg
 }
 
@@ -122,7 +119,7 @@ func assertNoNotification(t *testing.T, rw *captureRW) {
 	t.Helper()
 	select {
 	case data := <-rw.notifications:
-		t.Fatalf("unexpected notification: %s", data)
+		require.FailNow(t, fmt.Sprintf("unexpected notification (%v)", data))
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -131,20 +128,16 @@ func assertNoResponse(t *testing.T, rw *captureRW) {
 	t.Helper()
 	select {
 	case data := <-rw.responses:
-		t.Fatalf("unexpected response: %s", data)
+		require.FailNow(t, fmt.Sprintf("unexpected response (%v)", data))
 	case <-time.After(50 * time.Millisecond):
 	}
 }
 
 func decodeResult[T any](t *testing.T, msg Message) T {
 	t.Helper()
-	if msg.Error != nil {
-		t.Fatalf("unexpected RPC error: %+v", msg.Error)
-	}
+	require.Nil(t, msg.Error, "unexpected RPC error")
 	var result T
-	if err := json.Unmarshal(msg.Result, &result); err != nil {
-		t.Fatalf("decode result %q: %v", msg.Result, err)
-	}
+	require.NoError(t, json.Unmarshal(msg.Result, &result), "decode result")
 	return result
 }
 
@@ -165,9 +158,7 @@ func callAndDecode[T any](t *testing.T, m *Manager, rw *captureRW, id int, metho
 	t.Helper()
 	m.handleMessage(requestMessage(id, method, params))
 	resp := readResponseFrame(t, rw)
-	if !responseWithID(id)(resp) {
-		t.Fatalf("response id mismatch: got %+v want id=%d", resp, id)
-	}
+	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
 	return decodeResult[T](t, resp)
 }
 
@@ -175,15 +166,9 @@ func callExpectError(t *testing.T, m *Manager, rw *captureRW, id int, method str
 	t.Helper()
 	m.handleMessage(requestMessage(id, method, params))
 	resp := readResponseFrame(t, rw)
-	if !responseWithID(id)(resp) {
-		t.Fatalf("response id mismatch: got %+v want id=%d", resp, id)
-	}
-	if resp.Error == nil {
-		t.Fatalf("expected error %d, got result: %s", wantCode, string(resp.Result))
-	}
-	if resp.Error.Code != wantCode {
-		t.Fatalf("error code = %d, want %d (message=%q)", resp.Error.Code, wantCode, resp.Error.Message)
-	}
+	require.True(t, responseWithID(id)(resp), "response id mismatch: (%v, %v)", resp, id)
+	require.NotNil(t, resp.Error, "expected error (%v)", wantCode)
+	require.Equal(t, wantCode, resp.Error.Code, "error code")
 	return resp.Error
 }
 
@@ -199,46 +184,40 @@ func sampleError(id string, ts int64, msg string) ServiceError {
 // TestGetInitialEmpty: the freshly-constructed manager reports an empty
 // list, not nil. A nil result would JSON-encode as `null` and the
 // frontend would have to special-case it; explicit `[]` is the contract.
-func TestGetInitialEmpty(t *testing.T) {
+func TestGetInitial_ReturnsEmptyErrorListInitially(t *testing.T) {
 	m, rw := newTestManager(t)
-	got := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	if len(got) != 0 {
-		t.Fatalf("get-initial on empty manager = %+v, want empty", got)
-	}
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil), "get-initial on empty manager")
 }
 
 // TestReportRequestUpsertsAndEmitsUpdate: an errors:report REQUEST gets
 // a null response AND triggers an errors:update push carrying the new
 // state. Response is sent first; the test relies on the captureRW split
 // so reading the response side first does not race the update push.
-func TestReportRequestUpsertsAndEmitsUpdate(t *testing.T) {
+func TestReportRequest_UpsertsAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := sampleError("ollama-proxy:upstream-unreachable:node-a", 1000, "node-a unreachable")
 
 	m.handleMessage(requestMessage(1, "errors:report", e))
 
 	resp := readResponseFrame(t, rw)
-	if resp.Error != nil {
-		t.Fatalf("errors:report returned error: %+v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "errors:report returned error")
 
 	update := expectNotification(t, rw, "errors:update")
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
-	if len(got) != 1 || got[0].ID != e.ID || got[0].Message != e.Message {
-		t.Fatalf("errors:update payload = %+v, want single entry matching reported error", got)
-	}
+	require.Len(t, got, 1, "errors:update payload")
+	assert.Equal(t, e.ID, got[0].ID, "errors:update payload (%v)", got)
+	assert.Equal(t, e.Message, got[0].Message, "errors:update payload (%v)", got)
 
 	// And get-initial returns the same shape.
 	list := callAndDecode[[]ServiceError](t, m, rw, 2, "errors:get-initial", nil)
-	if len(list) != 1 || list[0].ID != e.ID {
-		t.Fatalf("get-initial after report = %+v, want single entry", list)
-	}
+	require.Len(t, list, 1, "get-initial after report")
+	assert.Equal(t, e.ID, list[0].ID, "get-initial after report (%v)", list)
 }
 
 // TestReportNotificationUpsertsAndEmitsUpdate: the notification form
 // (no id) shares all the upsert + push plumbing with the request form,
 // but sends NO response frame.
-func TestReportNotificationUpsertsAndEmitsUpdate(t *testing.T) {
+func TestReportNotification_UpsertsAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := sampleError("manual-nodes:probe-failed:peer-1", 5000, "peer-1 probe failed")
 
@@ -248,9 +227,8 @@ func TestReportNotificationUpsertsAndEmitsUpdate(t *testing.T) {
 	assertNoResponse(t, rw)
 
 	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	if len(list) != 1 || list[0].ID != e.ID {
-		t.Fatalf("get-initial after notify-form report = %+v, want single entry", list)
-	}
+	require.Len(t, list, 1, "get-initial after notify-form report")
+	assert.Equal(t, e.ID, list[0].ID, "get-initial after notify-form report (%v)", list)
 }
 
 // TestUpsertHighestTimestampWins: a later-arriving report with an OLDER
@@ -258,7 +236,7 @@ func TestReportNotificationUpsertsAndEmitsUpdate(t *testing.T) {
 // cross-node propagation lands. A no-op upsert must NOT emit
 // errors:update (otherwise the UI would re-render on every dropped
 // stale frame).
-func TestUpsertHighestTimestampWins(t *testing.T) {
+func TestUpsert_PrefersHighestTimestamp(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-local:not-running"
 
@@ -275,9 +253,8 @@ func TestUpsertHighestTimestampWins(t *testing.T) {
 	expectNotification(t, rw, "errors:update")
 
 	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	if len(list) != 1 || list[0].Message != "v2" {
-		t.Fatalf("after stale-then-newer, list = %+v, want v2 only", list)
-	}
+	require.Len(t, list, 1, "after stale-then-newer, list")
+	assert.Equal(t, "v2", list[0].Message, "after stale-then-newer, list (%v)", list)
 }
 
 // TestUpsertEqualTimestampReplaces: equal timestamps must NOT be a
@@ -285,7 +262,7 @@ func TestUpsertHighestTimestampWins(t *testing.T) {
 // stored message and metadata. The rationale lives in the upsert
 // docstring; this test pins the behavior so a future "exact dedupe"
 // refactor doesn't quietly regress it.
-func TestUpsertEqualTimestampReplaces(t *testing.T) {
+func TestUpsert_ReplacesEntryAtEqualTimestamp(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-local:install-failed"
 
@@ -295,15 +272,14 @@ func TestUpsertEqualTimestampReplaces(t *testing.T) {
 	m.handleMessage(notificationMessage("errors:report", sampleError(id, 1000, "second")))
 	update := expectNotification(t, rw, "errors:update")
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
-	if len(got) != 1 || got[0].Message != "second" {
-		t.Fatalf("equal-ts upsert = %+v, want message=second", got)
-	}
+	require.Len(t, got, 1, "equal-ts upsert")
+	assert.Equal(t, "second", got[0].Message, "equal-ts upsert (%v)", got)
 }
 
 // TestClearRemovesEntryAndEmitsUpdate: an errors:clear removes the
 // entry by id and fires an errors:update reflecting the new (empty)
 // state.
-func TestClearRemovesEntryAndEmitsUpdate(t *testing.T) {
+func TestClear_RemovesEntryAndEmitsUpdate(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "supervisor:subprocess-crashed:nvpair-node-info"
 
@@ -312,27 +288,19 @@ func TestClearRemovesEntryAndEmitsUpdate(t *testing.T) {
 
 	m.handleMessage(requestMessage(1, "errors:clear", ClearParams{ID: id, ClearedBy: "node-self"}))
 	resp := readResponseFrame(t, rw)
-	if resp.Error != nil {
-		t.Fatalf("errors:clear returned error: %+v", resp.Error)
-	}
+	require.Nil(t, resp.Error, "errors:clear returned error")
 
 	update := expectNotification(t, rw, "errors:update")
-	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
-	if len(got) != 0 {
-		t.Fatalf("after clear, update payload = %+v, want empty list", got)
-	}
+	require.Empty(t, decodeResult[[]ServiceError](t, Message{Result: update.Params}), "after clear, update payload")
 
-	list := callAndDecode[[]ServiceError](t, m, rw, 2, "errors:get-initial", nil)
-	if len(list) != 0 {
-		t.Fatalf("after clear, get-initial = %+v, want empty", list)
-	}
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 2, "errors:get-initial", nil), "after clear, get-initial")
 }
 
 // TestClearAbsentIdIsNoOp: clearing an id that was never reported (or
 // was already cleared) must not push errors:update. The response is
 // still a successful null — the UI fires defensive clears on success
 // and treating "id not present" as an error would generate UI noise.
-func TestClearAbsentIdIsNoOp(t *testing.T) {
+func TestClearAbsentId_IsNoOp(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	_ = callAndDecode[any](t, m, rw, 1, "errors:clear", ClearParams{ID: "nothing:here"})
@@ -344,7 +312,7 @@ func TestClearAbsentIdIsNoOp(t *testing.T) {
 // re-emit" semantics from the plan: the producer is the source of
 // truth, the user's clear is just "don't show me this until the
 // producer says it's still broken."
-func TestAckUntilReemit(t *testing.T) {
+func TestAcknowledge_SuppressesErrorUntilNextReport(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "ollama-proxy:upstream-unreachable:peer-x"
 
@@ -358,15 +326,14 @@ func TestAckUntilReemit(t *testing.T) {
 	m.handleMessage(notificationMessage("errors:report", sampleError(id, 2000, "still broken")))
 	update := expectNotification(t, rw, "errors:update")
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
-	if len(got) != 1 || got[0].Message != "still broken" {
-		t.Fatalf("after clear+reemit, update payload = %+v, want resurrected entry", got)
-	}
+	require.Len(t, got, 1, "after clear+reemit, update payload")
+	assert.Equal(t, "still broken", got[0].Message, "after clear+reemit, update payload (%v)", got)
 }
 
 // TestReportMissingFieldsRejected: id and message are required;
 // missing either returns -32602. Notifications log a warning but emit
 // no errors:update.
-func TestReportMissingFieldsRejected(t *testing.T) {
+func TestReport_RejectsMissingRequiredFields(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	// Request form, missing id.
@@ -383,16 +350,13 @@ func TestReportMissingFieldsRejected(t *testing.T) {
 	assertNoResponse(t, rw)
 
 	// And the store is still empty.
-	list := callAndDecode[[]ServiceError](t, m, rw, 3, "errors:get-initial", nil)
-	if len(list) != 0 {
-		t.Fatalf("after invalid reports, list = %+v, want empty", list)
-	}
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 3, "errors:get-initial", nil), "after invalid reports, list")
 }
 
 // TestClearMissingIdRejected: clear without an id is -32602 in request
 // form, warn-and-drop in notification form. Notifications must NOT
 // emit errors:update on invalid input.
-func TestClearMissingIdRejected(t *testing.T) {
+func TestClear_RejectsMissingID(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	callExpectError(t, m, rw, 1, "errors:clear", ClearParams{}, -32602)
@@ -406,7 +370,7 @@ func TestClearMissingIdRejected(t *testing.T) {
 // CURRENT FULL list, sorted by id. Two reports → one entry per id, in
 // id order. The full-list contract means consumers can render-on-event
 // without re-fetching, and the sort means cheap diff-by-position.
-func TestUpdatePayloadIsFullSortedList(t *testing.T) {
+func TestUpdatePayload_IsFullSortedList(t *testing.T) {
 	m, rw := newTestManager(t)
 
 	// Emit in non-sorted order.
@@ -416,17 +380,14 @@ func TestUpdatePayloadIsFullSortedList(t *testing.T) {
 	update := expectNotification(t, rw, "errors:update")
 
 	got := decodeResult[[]ServiceError](t, Message{Result: update.Params})
-	if len(got) != 2 {
-		t.Fatalf("update payload len = %d, want 2 (full list)", len(got))
-	}
-	if got[0].ID != "a:earlier" || got[1].ID != "z:later" {
-		t.Fatalf("update payload not sorted by id: %+v", got)
-	}
+	require.Len(t, got, 2, "update payload len")
+	assert.Equal(t, "a:earlier", got[0].ID, "update payload not sorted by id (%v)", got)
+	assert.Equal(t, "z:later", got[1].ID, "update payload not sorted by id (%v)", got)
 }
 
 // TestUnknownMethodReturns32601 mirrors node-settings: anything we
 // haven't implemented is -32601 method-not-found, not a silent drop.
-func TestUnknownMethodReturns32601(t *testing.T) {
+func TestUnknownMethod_ReturnsMethodNotFoundCode(t *testing.T) {
 	m, rw := newTestManager(t)
 	callExpectError(t, m, rw, 1, "errors:does-not-exist", nil, -32601)
 }
@@ -435,7 +396,7 @@ func TestUnknownMethodReturns32601(t *testing.T) {
 // cross-node clear propagation; nvpair-errors must accept the field today
 // (forward-compat unmarshal) and ignore it semantically (clear is just
 // delete-by-id).
-func TestClearedByPassedThroughIgnored(t *testing.T) {
+func TestClear_IgnoresCallerSuppliedClearedBy(t *testing.T) {
 	m, rw := newTestManager(t)
 	id := "manual-nodes:probe-failed:peer-q"
 
@@ -445,17 +406,14 @@ func TestClearedByPassedThroughIgnored(t *testing.T) {
 	m.handleMessage(notificationMessage("errors:clear", ClearParams{ID: id, ClearedBy: "node-other"}))
 	expectNotification(t, rw, "errors:update")
 
-	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	if len(list) != 0 {
-		t.Fatalf("after foreign-clearedBy clear, list = %+v, want empty", list)
-	}
+	require.Empty(t, callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil), "after foreign-clearedBy clear, list")
 }
 
 // TestNodeIdPreserved: the producer-supplied nodeId is stored verbatim
 // and round-trips through get-initial. This is the forward-compat
 // contract that makes cross-node propagation additive — peer-stored
 // errors keep their origin nodeId.
-func TestNodeIdPreserved(t *testing.T) {
+func TestReport_PreservesNodeIdentity(t *testing.T) {
 	m, rw := newTestManager(t)
 	e := ServiceError{
 		ID:        "peer:something",
@@ -467,7 +425,6 @@ func TestNodeIdPreserved(t *testing.T) {
 	expectNotification(t, rw, "errors:update")
 
 	list := callAndDecode[[]ServiceError](t, m, rw, 1, "errors:get-initial", nil)
-	if len(list) != 1 || list[0].NodeID != "peer-node-id-123" {
-		t.Fatalf("nodeId not preserved: list = %+v", list)
-	}
+	require.Len(t, list, 1, "nodeId not preserved: list")
+	assert.Equal(t, "peer-node-id-123", list[0].NodeID, "nodeId not preserved: list (%v)", list)
 }

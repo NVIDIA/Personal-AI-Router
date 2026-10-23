@@ -7,6 +7,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeHandle is a test double for supervisedHandle: Done() exposes a
@@ -33,7 +36,7 @@ func (h *fakeHandle) crash() { close(h.done) }
 // predecessor, so onSpawned has to fire for the first spawn and every respawn.
 // Missing the respawn is the interesting failure: the worker comes back and
 // silently serves without the ranking the broker believes it has.
-func TestOnSpawnedFiresForFirstSpawnAndEveryRespawn(t *testing.T) {
+func TestOnSpawned_FiresForFirstSpawnAndEveryRespawn(t *testing.T) {
 	handles := make(chan *fakeHandle, 4)
 	spawned := make(chan struct{}, 4)
 
@@ -46,9 +49,7 @@ func TestOnSpawnedFiresForFirstSpawnAndEveryRespawn(t *testing.T) {
 	sup.policy.baseDelay = time.Millisecond
 	sup.policy.maxDelay = time.Millisecond
 
-	if err := sup.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, sup.Start(), "Start")
 	t.Cleanup(sup.Stop)
 
 	first := <-handles
@@ -62,7 +63,7 @@ func TestOnSpawnedFiresForFirstSpawnAndEveryRespawn(t *testing.T) {
 // onSpawned must not run on the monitor goroutine: that goroutine is the only
 // thing that reaches h.Stop() when stopCh closes, so a callback blocking there
 // makes Stop wait it out inside the shared teardown budget.
-func TestOnSpawnedDoesNotBlockStop(t *testing.T) {
+func TestOnSpawned_DoesNotBlockStop(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	entered := make(chan struct{})
@@ -75,9 +76,7 @@ func TestOnSpawnedDoesNotBlockStop(t *testing.T) {
 		once.Do(func() { close(entered) })
 		<-release
 	}
-	if err := sup.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, sup.Start(), "Start")
 	waitSupervisorSignal(t, entered, "onSpawned never ran")
 
 	stopped := make(chan struct{})
@@ -88,7 +87,7 @@ func TestOnSpawnedDoesNotBlockStop(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Stop blocked behind a long-running onSpawned callback")
+		require.FailNow(t, "Stop blocked behind a long-running onSpawned callback")
 	}
 }
 
@@ -97,11 +96,11 @@ func waitSupervisorSignal(t *testing.T, ch <-chan struct{}, failure string) {
 	select {
 	case <-ch:
 	case <-time.After(2 * time.Second):
-		t.Fatal(failure)
+		require.FailNow(t, failure)
 	}
 }
 
-func TestRestartPolicyBackoff(t *testing.T) {
+func TestRestartPolicy_BoundsDelayAndRetryBudget(t *testing.T) {
 	p := restartPolicy{baseDelay: time.Second, maxDelay: 16 * time.Second}
 	cases := []struct {
 		attempt int
@@ -116,9 +115,7 @@ func TestRestartPolicyBackoff(t *testing.T) {
 		{100, 16 * time.Second},
 	}
 	for _, c := range cases {
-		if got := p.backoff(c.attempt); got != c.want {
-			t.Errorf("backoff(%d) = %s, want %s", c.attempt, got, c.want)
-		}
+		assert.Equal(t, c.want, p.backoff(c.attempt), "backoff(%d)", c.attempt)
 	}
 }
 
@@ -133,7 +130,7 @@ func fastPolicy(maxAttempts int, healthyReset time.Duration) restartPolicy {
 	}
 }
 
-func TestSupervisorSurfacesAndRestartsThenRecovers(t *testing.T) {
+func TestSupervisor_SurfacesAndRestartsThenRecovers(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -147,17 +144,13 @@ func TestSupervisorSurfacesAndRestartsThenRecovers(t *testing.T) {
 	sup := newSupervisor("test", fastPolicy(5, 50*time.Millisecond), spawn)
 	sup.onCrash = func(attempt int) { crashes <- attempt }
 	sup.onRecovered = func() { recovered <- struct{}{} }
-	if err := sup.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, sup.Start(), "Start")
 	defer sup.Stop()
 
 	h0 := mustSpawn(t, spawned)
 	h0.crash()
 
-	if got := recvInt(t, crashes); got != 1 {
-		t.Fatalf("first onCrash attempt = %d, want 1", got)
-	}
+	require.Equal(t, 1, recvInt(t, crashes), "first onCrash attempt")
 
 	// A fresh handle must be spawned (the restart).
 	h1 := mustSpawn(t, spawned)
@@ -167,14 +160,14 @@ func TestSupervisorSurfacesAndRestartsThenRecovers(t *testing.T) {
 	select {
 	case <-recovered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for onRecovered after a stable restart")
+		require.FailNow(t, "timed out waiting for onRecovered after a stable restart")
 	}
 
 	// Keep h1 referenced so it isn't flagged unused.
 	_ = h1
 }
 
-func TestSupervisorGivesUpAfterBudget(t *testing.T) {
+func TestSupervisor_GivesUpAfterBudget(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -186,9 +179,7 @@ func TestSupervisorGivesUpAfterBudget(t *testing.T) {
 	// Budget of 2 restarts; long healthyReset so attempts never reset.
 	sup := newSupervisor("test", fastPolicy(2, time.Hour), spawn)
 	sup.onCrash = func(attempt int) { crashes <- attempt }
-	if err := sup.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, sup.Start(), "Start")
 	defer sup.Stop()
 
 	// Initial + 2 restarts = 3 handles; the 3rd crash exhausts the budget
@@ -196,20 +187,18 @@ func TestSupervisorGivesUpAfterBudget(t *testing.T) {
 	for want := 1; want <= 3; want++ {
 		h := mustSpawn(t, spawned)
 		h.crash()
-		if got := recvInt(t, crashes); got != want {
-			t.Fatalf("onCrash attempt = %d, want %d", got, want)
-		}
+		require.Equal(t, want, recvInt(t, crashes), "onCrash attempt")
 	}
 
 	select {
 	case <-spawned:
-		t.Fatal("supervisor spawned a 4th worker after exhausting its restart budget")
+		require.FailNow(t, "supervisor spawned a 4th worker after exhausting its restart budget")
 	case <-time.After(200 * time.Millisecond):
 		// No further spawn — correct.
 	}
 }
 
-func TestSupervisorNoRestartPolicy(t *testing.T) {
+func TestSupervisor_DoesNotRestartWorkerWhenPolicyDisablesRestarts(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -220,26 +209,22 @@ func TestSupervisorNoRestartPolicy(t *testing.T) {
 
 	sup := newSupervisor("test", noRestartPolicy(), spawn)
 	sup.onCrash = func(attempt int) { crashes <- attempt }
-	if err := sup.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, sup.Start(), "Start")
 	defer sup.Stop()
 
 	h0 := mustSpawn(t, spawned)
 	h0.crash()
 
-	if got := recvInt(t, crashes); got != 1 {
-		t.Fatalf("onCrash attempt = %d, want 1", got)
-	}
+	require.Equal(t, 1, recvInt(t, crashes), "onCrash attempt")
 	select {
 	case <-spawned:
-		t.Fatal("noRestartPolicy spawned a replacement worker")
+		require.FailNow(t, "noRestartPolicy spawned a replacement worker")
 	case <-time.After(200 * time.Millisecond):
 		// No restart — correct.
 	}
 }
 
-func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
+func TestSupervisorStop_TearsDownCurrentHandle(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -247,9 +232,7 @@ func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
 		return h, nil
 	}
 	sup := newSupervisor("test", fastPolicy(5, time.Hour), spawn)
-	if err := sup.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, sup.Start(), "Start")
 	h0 := mustSpawn(t, spawned)
 
 	done := make(chan struct{})
@@ -258,12 +241,12 @@ func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
 	select {
 	case <-h0.stoppedC:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Stop did not tear down the running handle")
+		require.FailNow(t, "Stop did not tear down the running handle")
 	}
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Stop did not return")
+		require.FailNow(t, "Stop did not return")
 	}
 }
 
@@ -276,7 +259,7 @@ func TestSupervisorStopTearsDownCurrentHandle(t *testing.T) {
 // that became facade-scoped. What remains worth asserting is the invariant
 // that replaced it: nothing short of an actual exit replaces a running worker,
 // so a facade-level failure cannot cost every engine its listener.
-func TestSupervisorLeavesAHealthyWorkerAlone(t *testing.T) {
+func TestSupervisor_LeavesAHealthyWorkerAlone(t *testing.T) {
 	spawned := make(chan *fakeHandle, 8)
 	spawn := func() (supervisedHandle, error) {
 		h := newFakeHandle()
@@ -287,20 +270,18 @@ func TestSupervisorLeavesAHealthyWorkerAlone(t *testing.T) {
 
 	sup := newSupervisor("test", fastPolicy(5, time.Hour), spawn)
 	sup.onCrash = func(attempt int) { crashes <- attempt }
-	if err := sup.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, sup.Start(), "Start")
 	defer sup.Stop()
 
 	h0 := mustSpawn(t, spawned)
 
 	select {
 	case <-h0.stoppedC:
-		t.Fatal("a healthy worker was stopped without exiting")
+		require.FailNow(t, "a healthy worker was stopped without exiting")
 	case h := <-spawned:
-		t.Fatalf("a second worker was spawned alongside a healthy one: %v", h)
+		require.FailNowf(t, "a second worker was spawned alongside a healthy one", "%v", h)
 	case a := <-crashes:
-		t.Fatalf("a healthy worker surfaced a crash (attempt %d)", a)
+		require.FailNowf(t, "a healthy worker surfaced a crash", "attempt %d", a)
 	case <-time.After(300 * time.Millisecond):
 	}
 
@@ -310,7 +291,7 @@ func TestSupervisorLeavesAHealthyWorkerAlone(t *testing.T) {
 	select {
 	case <-crashes:
 	case <-time.After(2 * time.Second):
-		t.Fatal("an actual exit did not surface a crash")
+		require.FailNow(t, "an actual exit did not surface a crash")
 	}
 }
 
@@ -320,7 +301,7 @@ func mustSpawn(t *testing.T, spawned <-chan *fakeHandle) *fakeHandle {
 	case h := <-spawned:
 		return h
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for a (re)spawn")
+		require.FailNow(t, "timed out waiting for a (re)spawn")
 	}
 	return nil
 }
@@ -331,7 +312,7 @@ func recvInt(t *testing.T, ch <-chan int) int {
 	case v := <-ch:
 		return v
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting on channel")
+		require.FailNow(t, "timed out waiting on channel")
 	}
 	return 0
 }

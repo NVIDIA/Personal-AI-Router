@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // selfRemovalProof builds the JSON body a peer returns alongside a 403 to prove
@@ -46,7 +48,7 @@ func selfRemovalProof(peer, victim *Manager, cluster string) []byte {
 // The test drives the real mTLS reconcile against a peer that blocks before
 // returning 403, so the state change lands deterministically inside the wait
 // window rather than relying on timing.
-func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
+func TestSelfRemoval_IgnoresRejectionFromPreviousMembership(t *testing.T) {
 	cases := []struct {
 		name string
 		// mutate runs while the peer reconcile is blocked, i.e. after the verdict's
@@ -105,9 +107,7 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 				_, _ = w.Write(proofBody)
 			})
 			ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
-			if err != nil {
-				t.Fatalf("listen: %v", err)
-			}
+			require.NoError(t, err, "listen")
 			defer ln.Close()
 			srv := &http.Server{Handler: mux}
 			go func() { _ = srv.Serve(ln) }()
@@ -132,7 +132,7 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			select {
 			case <-entered:
 			case <-time.After(10 * time.Second):
-				t.Fatal("peer reconcile never reached the handler")
+				require.FailNow(t, "peer reconcile never reached the handler")
 			}
 			if tc.mutate != nil {
 				tc.mutate(mA)
@@ -142,12 +142,11 @@ func TestSelfRemoveGuardStaleVerdict(t *testing.T) {
 			select {
 			case <-done:
 			case <-time.After(10 * time.Second):
-				t.Fatal("reconcile pass did not finish")
+				require.FailNow(t, "reconcile pass did not finish")
 			}
 
-			if got, _ := mA.clusterIdentity(); got != tc.wantCluster {
-				t.Fatalf("after reconcile pass clusterId = %q, want %q", got, tc.wantCluster)
-			}
+			got, _ := mA.clusterIdentity()
+			require.Equal(t, tc.wantCluster, got, "after reconcile pass clusterId")
 		})
 	}
 }
@@ -183,9 +182,7 @@ func startPeerStub(t *testing.T, m *Manager, id string, status int, proof bool) 
 		_, _ = w.Write(proofBody) // nil body ⇒ a bare 403 with no removal proof
 	})
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", peer.buildServerTLSConfig())
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	t.Cleanup(func() { _ = ln.Close() })
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
@@ -215,7 +212,7 @@ func startPeerStub(t *testing.T, m *Manager, id string, status int, proof bool) 
 // plus authenticated proof, not merely "the pass did nothing," is what drives
 // teardown. (A unanimous 403 with *no* proof is covered separately — it must
 // NOT self-remove.)
-func TestSelfRemoveRequiresUnanimousRejection(t *testing.T) {
+func TestSelfRemove_RequiresUnanimousRejection(t *testing.T) {
 	cases := []struct {
 		name        string
 		peerStatus  []int
@@ -243,9 +240,8 @@ func TestSelfRemoveRequiresUnanimousRejection(t *testing.T) {
 
 			mA.reconcilePeersAndMaybeSelfRemove()
 
-			if got, _ := mA.clusterIdentity(); got != tc.wantCluster {
-				t.Fatalf("after reconcile clusterId = %q, want %q", got, tc.wantCluster)
-			}
+			got, _ := mA.clusterIdentity()
+			require.Equal(t, tc.wantCluster, got, "after reconcile clusterId")
 		})
 	}
 }
@@ -260,7 +256,7 @@ func TestSelfRemoveRequiresUnanimousRejection(t *testing.T) {
 // The stubs answer 403 either bare (proof=false: the peer left or lost its pin)
 // or with a signed tombstone naming us (proof=true: the peer removed us),
 // covering both the 2-node and multi-node shapes.
-func TestSelfRemoveRequiresRemovalProof(t *testing.T) {
+func TestSelfRemove_RequiresRemovalProof(t *testing.T) {
 	type peerSpec struct {
 		status int
 		proof  bool
@@ -303,9 +299,8 @@ func TestSelfRemoveRequiresRemovalProof(t *testing.T) {
 
 			mA.reconcilePeersAndMaybeSelfRemove()
 
-			if got, _ := mA.clusterIdentity(); got != tc.wantCluster {
-				t.Fatalf("after reconcile clusterId = %q, want %q", got, tc.wantCluster)
-			}
+			got, _ := mA.clusterIdentity()
+			require.Equal(t, tc.wantCluster, got, "after reconcile clusterId")
 		})
 	}
 }

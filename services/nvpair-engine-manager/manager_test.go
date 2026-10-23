@@ -9,15 +9,17 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"strings"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestManagerErrorResponses drives handleMessage / runOp / runAction over
 // an in-memory codec and asserts the JSON-RPC error responses for the
 // failure paths the e2e harness can't easily reach.
-func TestManagerErrorResponses(t *testing.T) {
+func TestManager_ReturnsProtocolErrorsForInvalidRequests(t *testing.T) {
 	newM := func() (*Manager, *bytes.Buffer) {
 		var out bytes.Buffer
 		ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
@@ -47,7 +49,7 @@ func TestManagerErrorResponses(t *testing.T) {
 	mustContain(t, out.String(), "engine and action are required")
 }
 
-func TestRunOpRejectsBadPort(t *testing.T) {
+func TestRunOp_RejectsBadPort(t *testing.T) {
 	var out bytes.Buffer
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
 	m := NewManager(NewCodec(&out), ex, nil)
@@ -57,7 +59,7 @@ func TestRunOpRejectsBadPort(t *testing.T) {
 	mustContain(t, out.String(), "port must be between")
 }
 
-func TestRunOpRejectsBadBind(t *testing.T) {
+func TestRunOp_RejectsBadBind(t *testing.T) {
 	var out bytes.Buffer
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
 	m := NewManager(NewCodec(&out), ex, nil)
@@ -67,7 +69,7 @@ func TestRunOpRejectsBadBind(t *testing.T) {
 	mustContain(t, out.String(), "bind must be a valid IP")
 }
 
-func TestRunOpInstallAutostart(t *testing.T) {
+func TestRunOp_StartsEngineAfterInstallation(t *testing.T) {
 	var out bytes.Buffer
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -76,12 +78,10 @@ func TestRunOpInstallAutostart(t *testing.T) {
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:install",
 		Params: json.RawMessage(`{"engine":"fake","start":true}`)})
 	st, _ := ex.Status("fake")
-	if !st.Running {
-		t.Fatalf("expected running after install+autostart, got %+v", st)
-	}
+	require.True(t, st.Running, "expected running after install+autostart (%v)", st)
 }
 
-func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
+func TestStatusQueries_DoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
 	tests := []struct {
 		name   string
 		method string
@@ -95,9 +95,7 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 			st, err := ex.state("fake")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			managerConn, clientConn := net.Pipe()
 			defer managerConn.Close()
 			defer clientConn.Close()
@@ -129,17 +127,15 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 				// Expected: the potentially blocking status work was dispatched.
 			case <-time.After(time.Second):
 				st.opMu.Unlock()
-				t.Fatalf("%s blocked message dispatch while an engine operation held opMu", tc.method)
+				require.FailNowf(t, "message dispatch blocked while an engine operation held opMu", "method %s", tc.method)
 			}
 
 			st.opMu.Unlock()
 			select {
 			case line := <-response:
-				if !strings.Contains(line, `"id":1`) {
-					t.Fatalf("%s returned an unexpected response: %s", tc.method, line)
-				}
+				require.Contains(t, line, `"id":1`)
 			case <-time.After(2 * time.Second):
-				t.Fatalf("%s did not respond after the engine operation completed", tc.method)
+				require.FailNowf(t, "no response after the engine operation completed", "method %s", tc.method)
 			}
 		})
 	}
@@ -147,7 +143,5 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 
 func mustContain(t *testing.T, s, sub string) {
 	t.Helper()
-	if !strings.Contains(s, sub) {
-		t.Fatalf("expected %q to contain %q", s, sub)
-	}
+	require.Contains(t, s, sub)
 }

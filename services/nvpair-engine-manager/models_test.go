@@ -9,11 +9,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"reflect"
+
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestExtractStrings(t *testing.T) {
+func TestExtractStrings_ReadsConfiguredResultPath(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
@@ -69,6 +72,12 @@ func TestExtractStrings(t *testing.T) {
 			want: []string{"a"},
 		},
 		{
+			name: "nested string-in match excludes missing and malformed paths",
+			raw:  `{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"not-loaded"}},{"id":"c","status":{}},{"id":"d","status":"loaded"}]}`,
+			spec: &ActionResult{Array: "data", Field: "id", Match: &ResultMatch{Field: "status.value", In: []string{"loaded"}}},
+			want: []string{"a"},
+		},
+		{
 			name: "match with no accepted values yields nothing",
 			raw:  `{"data":[{"id":"a","state":"loaded"}]}`,
 			spec: &ActionResult{Array: "data", Field: "id", Match: &ResultMatch{Field: "state", In: []string{"other"}}},
@@ -89,19 +98,17 @@ func TestExtractStrings(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractStrings(json.RawMessage(tc.raw), tc.spec)
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("extractStrings = %v, want %v", got, tc.want)
-			}
+			assert.Equal(t, tc.want, extractStrings(json.RawMessage(tc.raw), tc.spec))
 		})
 	}
 }
 
-func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
+func TestExtractStringsResult_DistinguishesEmptyFromUnknown(t *testing.T) {
 	spec := &ActionResult{Array: "models", Field: "key"}
-	if got, ok := extractStringsResult(json.RawMessage(`{"models":[]}`), spec); !ok || got == nil || len(got) != 0 {
-		t.Fatalf("explicit empty inventory = (%v, %v), want non-nil empty, true", got, ok)
-	}
+	got, ok := extractStringsResult(json.RawMessage(`{"models":[]}`), spec)
+	require.True(t, ok, "explicit empty inventory (%v, %v)", got, ok)
+	require.NotNil(t, got, "explicit empty inventory must serialize as []")
+	assert.Empty(t, got, "explicit empty inventory")
 	for _, raw := range []string{
 		`{}`,
 		`{"models":null}`,
@@ -110,16 +117,16 @@ func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
 		`{"models":[null]}`,
 		`not-json`,
 	} {
-		if got, ok := extractStringsResult(json.RawMessage(raw), spec); ok || got != nil {
-			t.Errorf("invalid inventory %q = (%v, %v), want nil, false", raw, got, ok)
-		}
+		got, ok := extractStringsResult(json.RawMessage(raw), spec)
+		assert.False(t, ok, "invalid inventory (%v, %v, %v)", raw, got, ok)
+		assert.Nil(t, got, "invalid inventory (%v)", raw)
 	}
 }
 
 // TestModels drives Models() against the running fake engine: a running engine
 // with a Result-bearing list_models action contributes its models; a stopped
 // engine contributes nothing.
-func TestModels(t *testing.T) {
+func TestModels_ReturnsInventoryOnlyForRunningEngines(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
@@ -130,31 +137,20 @@ func TestModels(t *testing.T) {
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 
 	// Stopped: nothing queryable.
-	if got := ex.Models(ctx); len(got) != 0 {
-		t.Fatalf("Models() on stopped engine = %v, want empty", got)
-	}
+	require.Empty(t, ex.Models(ctx), "Models() on stopped engine")
 
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	got := ex.Models(ctx)
-	want := []string{"llama3.2:1b"} // fake engine's seeded model
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Models() on running engine = %v, want %v", got, want)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
+	// The fake engine's seeded model.
+	require.Equal(t, []string{"llama3.2:1b"}, ex.Models(ctx), "Models() on running engine")
 
-	if err := ex.Stop("fake"); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if got := ex.Models(ctx); len(got) != 0 {
-		t.Fatalf("Models() after stop = %v, want empty", got)
-	}
+	require.NoError(t, ex.Stop("fake"), "stop")
+	require.Empty(t, ex.Models(ctx), "Models() after stop")
 }
 
 // TestModelsResult drives ModelsResult() against the running fake engine: the
 // flat union and the per-engine attribution are both derived from one sweep,
 // and a stopped engine yields neither.
-func TestModelsResult(t *testing.T) {
+func TestModelsResult_GroupsRunningEngineInventory(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
@@ -167,38 +163,22 @@ func TestModelsResult(t *testing.T) {
 
 	// Stopped: empty union, no attribution map.
 	res := ex.ModelsResult(ctx)
-	if len(res.Models) != 0 {
-		t.Fatalf("ModelsResult().Models on stopped engine = %v, want empty", res.Models)
-	}
-	if len(res.ByEngine) != 0 {
-		t.Fatalf("ModelsResult().ByEngine on stopped engine = %v, want empty", res.ByEngine)
-	}
+	require.Empty(t, res.Models, "ModelsResult().Models on stopped engine")
+	require.Empty(t, res.ByEngine, "ModelsResult().ByEngine on stopped engine")
 
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	res = ex.ModelsResult(ctx)
-	wantModels := []string{"llama3.2:1b"} // fake engine's seeded model
-	if !reflect.DeepEqual(res.Models, wantModels) {
-		t.Fatalf("ModelsResult().Models = %v, want %v", res.Models, wantModels)
-	}
-	wantByEngine := map[string][]string{"fake": {"llama3.2:1b"}}
-	if !reflect.DeepEqual(res.ByEngine, wantByEngine) {
-		t.Fatalf("ModelsResult().ByEngine = %v, want %v", res.ByEngine, wantByEngine)
-	}
+	// The fake engine's seeded model.
+	require.Equal(t, []string{"llama3.2:1b"}, res.Models, "ModelsResult().Models")
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.ByEngine, "ModelsResult().ByEngine")
 
 	// Deleting the last model is a successful empty inventory, not an unknown
 	// response: preserve the engine key so consumers can clear stale state.
-	if _, err := ex.Action(ctx, "fake", "delete_model", json.RawMessage(`{"name":"llama3.2:1b"}`)); err != nil {
-		t.Fatalf("delete last model: %v", err)
-	}
+	_, err := ex.Action(ctx, "fake", "delete_model", json.RawMessage(`{"name":"llama3.2:1b"}`))
+	require.NoError(t, err, "delete last model")
 	res = ex.ModelsResult(ctx)
-	if len(res.Models) != 0 {
-		t.Fatalf("ModelsResult().Models after last delete = %v, want empty", res.Models)
-	}
-	if want := map[string][]string{"fake": {}}; !reflect.DeepEqual(res.ByEngine, want) {
-		t.Fatalf("ModelsResult().ByEngine after last delete = %v, want %v", res.ByEngine, want)
-	}
+	require.Empty(t, res.Models, "ModelsResult().Models after last delete")
+	require.Equal(t, map[string][]string{"fake": {}}, res.ByEngine, "ModelsResult().ByEngine after last delete")
 }
 
 // loadedActionManifest is testEngineManifest with both list_models (/api/tags)
@@ -222,15 +202,11 @@ func loadedActionManifest() *Manifest {
 func setLoaded(t *testing.T, ex *Executor, names []string) {
 	t.Helper()
 	st, err := ex.Status("fake")
-	if err != nil {
-		t.Fatalf("status: %v", err)
-	}
+	require.NoError(t, err, "status")
 	body, _ := json.Marshal(map[string][]string{"names": names})
 	url := fmt.Sprintf("http://127.0.0.1:%d/testctl/loaded", st.Port)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("set loaded: %v", err)
-	}
+	require.NoError(t, err, "set loaded")
 	_ = resp.Body.Close()
 }
 
@@ -238,34 +214,26 @@ func setLoaded(t *testing.T, ex *Executor, names []string) {
 // declares loaded_models reports its resident subset in LoadedByEngine, and an
 // eviction leaves the engine key present with an empty list ("running, nothing
 // loaded") while the installed list is unchanged.
-func TestModelsResultLoaded(t *testing.T) {
+func TestModelsResult_TracksLoadedModelsWithoutChangingInventory(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
 	res := ex.ModelsResult(ctx)
-	if want := map[string][]string{"fake": {"llama3.2:1b"}}; !reflect.DeepEqual(res.LoadedByEngine, want) {
-		t.Fatalf("LoadedByEngine = %v, want %v", res.LoadedByEngine, want)
-	}
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.LoadedByEngine, "LoadedByEngine")
 
 	// Evict everything: the key stays with an empty list.
 	setLoaded(t, ex, nil)
 	res = ex.ModelsResult(ctx)
-	if want := map[string][]string{"fake": {}}; !reflect.DeepEqual(res.LoadedByEngine, want) {
-		t.Fatalf("LoadedByEngine after evict = %v, want %v", res.LoadedByEngine, want)
-	}
-	if want := []string{"llama3.2:1b"}; !reflect.DeepEqual(res.Models, want) {
-		t.Fatalf("Models after evict = %v, want %v (residency must not change the installed list)", res.Models, want)
-	}
+	require.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "LoadedByEngine after evict")
+	require.Equal(t, []string{"llama3.2:1b"}, res.Models, "Models after evict")
 }
 
 // TestModelsResultNoLoadedActionOmitsKey confirms an engine with no loaded_models
 // action contributes no LoadedByEngine key (the map stays nil), so the field is
 // omitted on the wire for engines that don't support loaded reporting.
-func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
+func TestModelsResultNoLoadedAction_OmitsKey(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
@@ -275,12 +243,8 @@ func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
 	ex := newTestExecutor(t, m)
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if res := ex.ModelsResult(ctx); res.LoadedByEngine != nil {
-		t.Fatalf("LoadedByEngine = %v, want nil (no loaded_models action)", res.LoadedByEngine)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
+	require.Nil(t, ex.ModelsResult(ctx).LoadedByEngine)
 }
 
 // TestSweepLoadedSeedsThenEmitsOnChange covers the watcher's core diff without
@@ -288,56 +252,42 @@ func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
 // watchLoaded, suppresses its emit), a subsequent identical sweep reports no
 // change, and a sweep after an eviction reports the engine as changed and
 // carries the fresh full model result as the push payload.
-func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
+func TestSweepLoaded_SeedsThenEmitsOnChange(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"), "start")
 
 	// Seed sweep: baseline is {fake:[llama3.2:1b]}.
 	_, prev, _ := ex.sweepLoaded(ctx, nil)
-	if want := map[string][]string{"fake": {"llama3.2:1b"}}; !reflect.DeepEqual(prev, want) {
-		t.Fatalf("seed baseline = %v, want %v", prev, want)
-	}
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, prev, "seed baseline")
 
 	// No residency change -> no engine reported changed.
 	changed, prev, _ := ex.sweepLoaded(ctx, prev)
-	if len(changed) != 0 {
-		t.Fatalf("unchanged sweep reported %v, want none", changed)
-	}
+	require.Empty(t, changed, "unchanged sweep reported")
 
 	// Evict everything -> fake changes; payload carries the empty loaded set.
 	setLoaded(t, ex, nil)
 	changed, _, res := ex.sweepLoaded(ctx, prev)
-	if !reflect.DeepEqual(changed, []string{"fake"}) {
-		t.Fatalf("changed = %v, want [fake]", changed)
-	}
-	if want := map[string][]string{"fake": {}}; !reflect.DeepEqual(res.LoadedByEngine, want) {
-		t.Fatalf("pushed LoadedByEngine = %v, want %v", res.LoadedByEngine, want)
-	}
+	require.Equal(t, []string{"fake"}, changed, "changed")
+	require.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "pushed LoadedByEngine")
 }
 
 // TestSweepLoadedRetainsLastGoodOnTransientMiss covers the anti-churn guard: an
 // engine that drops out of a sweep (a transient loaded_models miss, indistinct
 // from a stop) is NOT reported as changed and keeps its last-good baseline, so a
 // single blip can't emit a spurious drop-then-re-add pair.
-func TestSweepLoadedRetainsLastGoodOnTransientMiss(t *testing.T) {
+func TestSweepLoaded_RetainsLastGoodOnTransientMiss(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	prev := map[string][]string{"fake": {"llama3.2:1b"}}
 	// The engine isn't started, so ModelsResult reports it neither running nor
 	// queryable: LoadedByEngine has no "fake" key this sweep.
 	changed, next, _ := ex.sweepLoaded(context.Background(), prev)
-	if len(changed) != 0 {
-		t.Fatalf("a disappeared engine reported %v changed, want none", changed)
-	}
-	if want := map[string][]string{"fake": {"llama3.2:1b"}}; !reflect.DeepEqual(next, want) {
-		t.Fatalf("baseline after miss = %v, want last-good %v", next, want)
-	}
+	require.Empty(t, changed, "a disappeared engine reported")
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, next, "baseline after miss")
 }
 
-func TestChangedEngines(t *testing.T) {
+func TestChangedEngines_IdentifiesInventoryDifferences(t *testing.T) {
 	tests := []struct {
 		name      string
 		prev, cur map[string][]string
@@ -353,14 +303,12 @@ func TestChangedEngines(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := changedEngines(tc.prev, tc.cur); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("changedEngines = %v, want %v", got, tc.want)
-			}
+			require.Equal(t, tc.want, changedEngines(tc.prev, tc.cur), "changedEngines")
 		})
 	}
 }
 
-func TestSameStringSet(t *testing.T) {
+func TestSameStringSet_IgnoresOrdering(t *testing.T) {
 	tests := []struct {
 		name string
 		a, b []string
@@ -376,9 +324,7 @@ func TestSameStringSet(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sameStringSet(tc.a, tc.b); got != tc.want {
-				t.Fatalf("sameStringSet(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
-			}
+			require.Equal(t, tc.want, sameStringSet(tc.a, tc.b), "sameStringSet")
 		})
 	}
 }

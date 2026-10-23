@@ -43,9 +43,19 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 # 4. Remove per-user data only on `purge`, never on a plain `remove`. Per-user
-# data here means settings, logs, cluster identity and certificates, and engines
-# Personal AI Router installed; downloaded model weights live outside these roots
-# (e.g. ~/.ollama) and are never touched. This is the standard Debian choice:
+# data here means settings, logs, cluster identity and certificates, and the
+# engines NVIDIA PAIR installed under those roots (Ollama and llama.cpp);
+# downloaded model weights live outside them (~/.ollama, ~/.llamacpp,
+# ~/.lmstudio/models) and are never touched.
+#
+# An engine a vendor installer placed in the user's home, as LM Studio does with
+# ~/.lmstudio, survives a purge here. The Windows and macOS uninstallers remove
+# those by running `nvpair-engine-manager --uninstall-managed`, which cannot work
+# from postrm: dpkg deletes the package's files during `remove`, so the binary is
+# already gone by the time `purge` runs. Uninstall such an engine from PAIR
+# before removing the package, or use the vendor's own uninstaller.
+#
+# This is the standard Debian choice:
 # `apt remove` uninstalls the app but keeps data; `apt purge` (or
 # `apt remove --purge` / `dpkg -P`) also wipes it. dpkg/apt --
 # and electron-updater's DebUpdater installing a new .deb -- call postrm with

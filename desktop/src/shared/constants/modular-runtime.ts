@@ -59,7 +59,7 @@ export const MODULAR_NODE_INFO_SELF_HOST = '127.0.0.1'
 // Maximum wait for the broker's app:ready notification. A live process that
 // never reports ready is treated as a stalled startup so the UI can direct the
 // user to Service settings instead of loading indefinitely.
-export const MODULAR_STARTUP_READY_TIMEOUT_MS = 15_000
+export const MODULAR_STARTUP_READY_TIMEOUT_MS = 90_000
 
 // Awaited engine lifecycle calls can include the bundled Ollama manifest's
 // 10-minute readiness probe and the broker's combined settings operation. The
@@ -78,6 +78,15 @@ export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 14 * 60_000
 // derived from this so the budgets cannot drift apart; see
 // docs/services-parity.md.
 export const MODULAR_MODEL_ACTION_TIMEOUT_MS = 120_000
+
+// Upper bound for `engine:catalog`. The engine manager allows its own LM Studio
+// fetch 20s, and only replies once that resolves, so the RPC envelope has to sit
+// outside that budget or a slow catalogue rejects here while the backend is
+// still working — and the modal renders its empty state, which reads as "this
+// engine has no models" rather than "the catalogue could not be read". Hugging
+// Face has been observed holding the request open far longer than its nominal
+// timeout, so the margin is generous.
+export const MODULAR_CATALOG_CALL_TIMEOUT_MS = 30_000
 
 // Poll interval for `cluster:invite-status` while a pairing handshake is open.
 // Also drives the pending-invite reconciliation sweep, the backstop for a missed

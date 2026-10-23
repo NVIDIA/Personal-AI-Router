@@ -9,37 +9,28 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestSetMemberAddr covers the address-update helper: a host-only update keeps
 // the stored listening port, identical updates are no-ops, an explicit port is
 // honored, and unknown/empty inputs change nothing.
-func TestSetMemberAddr(t *testing.T) {
+func TestSetMemberAddr_ReportsHostAndPortChanges(t *testing.T) {
 	m := newTestManager(t)
 	uuid := "11111111-1111-1111-1111-111111111111"
 	m.upsertMember(&ClusterNode{NodeUUID: uuid, ID: "n", IPAddress: "10.0.0.1", Port: 14321, State: stateMember})
 
-	if !m.setMemberAddr(uuid, "192.168.1.50", 0) {
-		t.Fatal("expected a change for a new host")
-	}
-	if n, _ := m.memberByNodeID(uuid); n.IPAddress != "192.168.1.50" || n.Port != 14321 {
-		t.Fatalf("host-only update wrong: got %s:%d want 192.168.1.50:14321", n.IPAddress, n.Port)
-	}
-	if m.setMemberAddr(uuid, "192.168.1.50", 0) {
-		t.Fatal("identical addr should not report a change")
-	}
-	if !m.setMemberAddr(uuid, "192.168.1.50", 14999) {
-		t.Fatal("expected a change for a new port")
-	}
-	if n, _ := m.memberByNodeID(uuid); n.Port != 14999 {
-		t.Fatalf("explicit port not applied: got %d want 14999", n.Port)
-	}
-	if m.setMemberAddr("does-not-exist", "1.2.3.4", 0) {
-		t.Fatal("unknown uuid should not report a change")
-	}
-	if m.setMemberAddr(uuid, "", 0) {
-		t.Fatal("empty host should not report a change")
-	}
+	require.True(t, m.setMemberAddr(uuid, "192.168.1.50", 0), "expected a change for a new host")
+	n, _ := m.memberByNodeID(uuid)
+	require.Equal(t, "192.168.1.50", n.IPAddress, "host-only update wrong:")
+	require.Equal(t, 14321, n.Port, "host-only update wrong:")
+	require.False(t, m.setMemberAddr(uuid, "192.168.1.50", 0), "identical addr should not report a change")
+	require.True(t, m.setMemberAddr(uuid, "192.168.1.50", 14999), "expected a change for a new port")
+	n, _ = m.memberByNodeID(uuid)
+	require.Equal(t, 14999, n.Port, "explicit port not applied:")
+	require.False(t, m.setMemberAddr("does-not-exist", "1.2.3.4", 0), "unknown uuid should not report a change")
+	require.False(t, m.setMemberAddr(uuid, "", 0), "empty host should not report a change")
 }
 
 // TestHandleRosterLearnsSourceAddr drives the real mTLS roster endpoint over
@@ -47,7 +38,7 @@ func TestSetMemberAddr(t *testing.T) {
 // moved since pairing), and after one reconcile it must have learned the
 // client's real source IP from the authenticated connection while preserving
 // the client's known listening port.
-func TestHandleRosterLearnsSourceAddr(t *testing.T) {
+func TestHandleRoster_LearnsSourceAddr(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -67,43 +58,34 @@ func TestHandleRosterLearnsSourceAddr(t *testing.T) {
 	mB.reconcileWith([]string{net.JoinHostPort("127.0.0.1", strconv.Itoa(15021))}, mA.identity.NodeUUID)
 
 	n, ok := mA.memberByNodeID(mB.identity.NodeUUID)
-	if !ok {
-		t.Fatal("mA lost mB membership")
-	}
-	if n.IPAddress != "127.0.0.1" {
-		t.Fatalf("mA did not learn mB's source IP: got %q want 127.0.0.1", n.IPAddress)
-	}
-	if n.Port != 15022 {
-		t.Fatalf("mA must keep mB's listening port, not the ephemeral source port: got %d want 15022", n.Port)
-	}
+	require.True(t, ok, "mA lost mB membership")
+	require.Equal(t, "127.0.0.1", n.IPAddress, "mA did not learn mB's source IP:")
+	require.Equal(t, 15022, n.Port, "mA must keep mB's listening port, not the ephemeral source port:")
 }
 
 // TestRefreshMemberAddrsFromMDNS verifies the discovery backstop: a member
 // whose stored address is stale is refreshed from the mDNS browse map, the
 // pass is a safe no-op without a browser, and the self entry is never rewritten.
-func TestRefreshMemberAddrsFromMDNS(t *testing.T) {
+func TestRefreshMemberAddrsFromMDNS_UpdatesMembersFromDiscovery(t *testing.T) {
 	m := newTestManager(t)
 	peer := "22222222-2222-2222-2222-222222222222"
 	m.upsertMember(&ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "10.9.9.9", Port: 14321, State: stateMember})
 
 	// No browser configured yet: must not panic and must change nothing.
 	m.refreshMemberAddrsFromMDNS()
-	if n, _ := m.memberByNodeID(peer); n.IPAddress != "10.9.9.9" {
-		t.Fatalf("addr changed without a browser: got %q", n.IPAddress)
-	}
+	n, _ := m.memberByNodeID(peer)
+	require.Equal(t, "10.9.9.9", n.IPAddress, "addr changed without a browser:")
 
 	m.browser = newBrowser()
 	m.browser.seed(peer, "192.168.1.77", 14321)
 	m.refreshMemberAddrsFromMDNS()
-	if n, _ := m.memberByNodeID(peer); n.IPAddress != "192.168.1.77" {
-		t.Fatalf("mDNS refresh did not update stored addr: got %q want 192.168.1.77", n.IPAddress)
-	}
+	n, _ = m.memberByNodeID(peer)
+	require.Equal(t, "192.168.1.77", n.IPAddress, "mDNS refresh did not update stored addr:")
 
 	// The self entry must never be redirected by (untrusted) mDNS.
 	m.addSelfMember()
 	m.browser.seed(m.identity.NodeUUID, "5.5.5.5", 14321)
 	m.refreshMemberAddrsFromMDNS()
-	if self, _ := m.memberByNodeID(m.identity.NodeUUID); self.IPAddress != "127.0.0.1" {
-		t.Fatalf("self address must not be rewritten from mDNS: got %q", self.IPAddress)
-	}
+	self, _ := m.memberByNodeID(m.identity.NodeUUID)
+	require.Equal(t, "127.0.0.1", self.IPAddress, "self address must not be rewritten from mDNS:")
 }

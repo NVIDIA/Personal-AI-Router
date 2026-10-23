@@ -9,15 +9,16 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/appdir"
 	"nvpair-shared/errors"
 )
 
-func TestInheritedOllamaHostAlias(t *testing.T) {
+func TestInheritedOllamaHostAlias_ValidatesLoopbackEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		raw    string
@@ -49,32 +50,27 @@ func TestInheritedOllamaHostAlias(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := inheritedOllamaHostAlias(tc.raw)
-			if ok != tc.wantOK || got != tc.want {
-				t.Fatalf("inheritedOllamaHostAlias(%q) = (%+v, %v), want (%+v, %v)", tc.raw, got, ok, tc.want, tc.wantOK)
-			}
+			require.Equal(t, tc.wantOK, ok, "inheritedOllamaHostAlias")
+			require.Equal(t, tc.want, got, "inheritedOllamaHostAlias")
 		})
 	}
 }
 
-func TestPrepareOllamaHostAliasReservesBackendPort(t *testing.T) {
+func TestPrepareOllamaHostAlias_ReservesBackendPort(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:11435")
 	b := brokerWithEngineStatus(t, "lmstudio", 1234)
 	b.prepareOllamaHostAlias(true, managedOllamaFacadePort)
 	alias := b.currentOllamaHostAlias()
-	if alias != (ollamaHostAlias{Address: "127.0.0.1:11435", Port: 11435}) {
-		t.Fatalf("prepared alias = %+v", alias)
-	}
+	require.Equal(t, ollamaHostAlias{Address: "127.0.0.1:11435", Port: 11435}, alias, "prepared alias")
 	available := func(port int) bool {
 		return port != alias.Port && (port == managedOllamaFacadePort || port == 11435 || port == 11436)
 	}
 	plan := planManagedOllamaPorts(true, ollamaPortStatus{Port: managedOllamaFacadePort}, available)
-	if plan.BackendPort != 11436 {
-		t.Fatalf("backend port = %d, want 11436 because 11435 is reserved for OLLAMA_HOST", plan.BackendPort)
-	}
+	require.Equal(t, 11436, plan.BackendPort, "backend port")
 }
 
-func TestPrepareOllamaHostAliasRejectsAnyConfiguredEnginePort(t *testing.T) {
+func TestPrepareOllamaHostAlias_RejectsAnyConfiguredEnginePort(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:15555")
 	b := brokerWithEngineInventory(t, map[string]int{
@@ -83,12 +79,10 @@ func TestPrepareOllamaHostAliasRejectsAnyConfiguredEnginePort(t *testing.T) {
 		"custom":   15555,
 	})
 	b.prepareOllamaHostAlias(true, managedOllamaFacadePort)
-	if alias := b.currentOllamaHostAlias(); alias != (ollamaHostAlias{}) {
-		t.Fatalf("alias claimed configured custom-engine port: %+v", alias)
-	}
+	require.Equal(t, ollamaHostAlias{}, b.currentOllamaHostAlias(), "alias claimed configured custom-engine port")
 }
 
-func TestReservedOllamaHostAliasPort(t *testing.T) {
+func TestReservedOllamaHostAliasPort_TracksActiveReservation(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		port             int
@@ -126,11 +120,10 @@ func TestReservedOllamaHostAliasPort(t *testing.T) {
 				siblings[tc.lmstudioProxy] = fmt.Sprintf("the LM Studio proxy is configured on port %d", tc.lmstudioProxy)
 			}
 			reason := reservedOllamaHostAliasPort(tc.port, enginePorts, siblings)
-			if tc.wantReasonSubstr == "" && reason != "" {
-				t.Fatalf("reason = %q, want none", reason)
-			}
-			if tc.wantReasonSubstr != "" && !strings.Contains(reason, tc.wantReasonSubstr) {
-				t.Fatalf("reason = %q, want substring %q", reason, tc.wantReasonSubstr)
+			if tc.wantReasonSubstr == "" {
+				require.Empty(t, reason)
+			} else {
+				require.Contains(t, reason, tc.wantReasonSubstr)
 			}
 		})
 	}
@@ -138,40 +131,25 @@ func TestReservedOllamaHostAliasPort(t *testing.T) {
 
 // The alias reads each sibling proxy's persisted port from its own file, so a
 // third engine is covered by adding a table entry rather than another reader.
-func TestConfiguredEngineProxyPort(t *testing.T) {
+func TestConfiguredEngineProxyPort_UsesSelectedEngineFacadePort(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 
 	for _, p := range engineProxyProfiles {
-		if got := configuredEngineProxyPort(p); got != p.FacadePort {
-			t.Fatalf("%s: missing persisted port = %d, want its facade %d", p.Name, got, p.FacadePort)
-		}
+		require.Equal(t, p.FacadePort, configuredEngineProxyPort(p), "%s: missing persisted port must use its facade", p.Name)
 	}
 
 	// Persisting one engine's port must not move another's.
 	stored := lmstudioProxyProfile.FacadePort + 6
 	path, err := appdir.Path(lmstudioProxyProfile.PortFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, fmt.Appendf(nil, `{"port":%d}`, stored), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got := configuredEngineProxyPort(lmstudioProxyProfile); got != stored {
-		t.Fatalf("persisted port = %d, want %d", got, stored)
-	}
-	if got := configuredEngineProxyPort(ollamaProxyProfile); got != ollamaProxyProfile.FacadePort {
-		t.Fatalf("ollama port = %d, want its own facade %d; it read LM Studio's file",
-			got, ollamaProxyProfile.FacadePort)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `{"port":%d}`, stored), 0o600))
+	require.Equal(t, stored, configuredEngineProxyPort(lmstudioProxyProfile), "persisted port")
+	require.Equal(t, ollamaProxyProfile.FacadePort, configuredEngineProxyPort(ollamaProxyProfile), "Ollama must not read LM Studio's port file")
 
 	// And the reserved set the alias checks picks that persisted port up.
 	b := &Broker{}
-	if reason := b.siblingEngineProxyPorts(ollamaProxyProfile)[stored]; reason == "" {
-		t.Fatalf("persisted sibling port %d is not reserved against the alias", stored)
-	}
+	require.NotEqual(t, "", b.siblingEngineProxyPorts(ollamaProxyProfile)[stored], "persisted sibling port (%v)", stored)
 }
 
 // A proxy that bind-fails picks a fallback port, and that search must not land
@@ -182,7 +160,7 @@ func TestConfiguredEngineProxyPort(t *testing.T) {
 //
 // Both directions are checked because the two engines have separate fallback
 // functions and fixing one is not evidence about the other.
-func TestProxyFallbackSkipsASiblingEnginesConfiguredPort(t *testing.T) {
+func TestProxyFallback_SkipsASiblingEnginesConfiguredPort(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		self     engineProxyProfile
@@ -209,29 +187,20 @@ func TestProxyFallbackSkipsASiblingEnginesConfiguredPort(t *testing.T) {
 			// fallback that ignores siblings would hand it out.
 			stored := tc.self.EnginePortBase + 1
 			path, err := appdir.Path(tc.sibling.PortFile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, fmt.Appendf(nil, `{"port":%d}`, stored), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+			require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `{"port":%d}`, stored), 0o600))
 
 			b := &Broker{}
 			got := tc.fallback(b, tc.self.EnginePortBase)
-			if got == stored {
-				t.Fatalf("fallback chose %d, the port %s is configured on", got, tc.sibling.DisplayName)
-			}
-			if got == tc.sibling.FacadePort || got == tc.sibling.EnginePortBase {
-				t.Fatalf("fallback chose %d, one of %s's default ports", got, tc.sibling.DisplayName)
-			}
+			require.NotEqual(t, stored, got, "fallback must skip %s's configured port", tc.sibling.DisplayName)
+			require.NotEqual(t, tc.sibling.FacadePort, got, "fallback must skip %s's default ports", tc.sibling.DisplayName)
+			require.NotEqual(t, tc.sibling.EnginePortBase, got, "fallback must skip %s's default ports", tc.sibling.DisplayName)
 		})
 	}
 }
 
-func TestPrepareOllamaHostAliasHonorsOptOutAndBackendOwnership(t *testing.T) {
+func TestPrepareOllamaHostAlias_HonorsOptOutAndBackendOwnership(t *testing.T) {
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:11433")
 	for _, tc := range []struct {
 		name        string
@@ -244,14 +213,12 @@ func TestPrepareOllamaHostAliasHonorsOptOutAndBackendOwnership(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := &Broker{}
 			b.prepareOllamaHostAlias(tc.enabled, tc.backendPort)
-			if alias := b.currentOllamaHostAlias(); alias != (ollamaHostAlias{}) {
-				t.Fatalf("unsafe alias prepared: %+v", alias)
-			}
+			require.Equal(t, ollamaHostAlias{}, b.currentOllamaHostAlias(), "unsafe alias prepared")
 		})
 	}
 }
 
-func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
+func TestAliasWarning_ReplaysAfterErrorsProcessRecovery(t *testing.T) {
 	b := &Broker{nodeID: "local-node"}
 	b.forwardErrorsReport(errors.ServiceError{
 		ID:       ollamaHostAliasBlockedID,
@@ -273,11 +240,11 @@ func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
 	b.replayOllamaHostAliasError()
 	select {
 	case msg := <-received:
-		if msg == nil || msg.Method != methodErrorsReport || !strings.Contains(string(msg.Params), ollamaHostAliasBlockedID) {
-			t.Fatalf("replayed warning = %+v", msg)
-		}
+		require.NotNil(t, msg, "replayed warning")
+		require.Equal(t, methodErrorsReport, msg.Method, "replayed warning (%v)", msg)
+		require.Contains(t, string(msg.Params), ollamaHostAliasBlockedID, "replayed warning (%v)", msg)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for recovered errors process warning replay")
+		require.FailNow(t, "timed out waiting for recovered errors process warning replay")
 	}
 }
 
@@ -285,7 +252,7 @@ func TestAliasWarningReplaysAfterErrorsProcessRecovery(t *testing.T) {
 // free port. The alias is bound by the proxy only after both facades are
 // prepared, so a plain TCP probe still reports it free — it must be treated as
 // taken or the advancing backend would land on it and orphan the alias.
-func TestManagedBackendMovesSkipTheOllamaHostAlias(t *testing.T) {
+func TestManagedBackendMoves_SkipReservedOllamaHostAlias(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		facadePort   int
@@ -321,33 +288,25 @@ func TestManagedBackendMovesSkipTheOllamaHostAlias(t *testing.T) {
 				return port == tc.facadePort || port == aliasPort || port == want
 			})
 			got := tc.plan(ollamaPortStatus{Port: tc.backendStart}, available)
-			if got.BackendPort != want {
-				t.Fatalf("backend = %d, want %d (the alias must be skipped)", got.BackendPort, want)
-			}
+			require.Equal(t, want, got.BackendPort, "the alias must be skipped")
 		})
 	}
 
 	// Without an alias the wrapper must be transparent.
 	plain := (&Broker{}).availableOffOllamaHostAlias(func(port int) bool { return port == managedOllamaBackendStart })
-	if !plain(managedOllamaBackendStart) {
-		t.Fatal("no alias configured, but the port probe was still filtered")
-	}
+	require.True(t, plain(managedOllamaBackendStart), "no alias configured, but the port probe was still filtered")
 }
 
-func TestOllamaProxyFallbackSkipsTheOllamaHostAlias(t *testing.T) {
+func TestOllamaProxyFallback_SkipsTheOllamaHostAlias(t *testing.T) {
 	b := &Broker{}
 	b.setOllamaHostAlias(ollamaHostAlias{Port: managedOllamaBackendStart})
-	if got := b.setOllamaProxyFallback(); got == managedOllamaBackendStart {
-		t.Fatalf("proxy fallback = %d, want a port other than the alias", got)
-	}
+	require.NotEqual(t, managedOllamaBackendStart, b.setOllamaProxyFallback(), "proxy fallback must skip the alias")
 	lm := &Broker{}
 	lm.setOllamaHostAlias(ollamaHostAlias{Port: managedLMStudioBackendStart})
-	if got := lm.setLMStudioProxyFallback(); got == managedLMStudioBackendStart {
-		t.Fatalf("LM Studio proxy fallback = %d, want a port other than the alias", got)
-	}
+	require.NotEqual(t, managedLMStudioBackendStart, lm.setLMStudioProxyFallback(), "LM Studio proxy fallback must skip the alias")
 }
 
-func TestDisableAliasClearsEngineReservation(t *testing.T) {
+func TestDisableAlias_ClearsEngineReservation(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
@@ -378,20 +337,16 @@ func TestDisableAliasClearsEngineReservation(t *testing.T) {
 	}()
 
 	b.disableOllamaHostAliasReservation()
-	if alias := b.currentOllamaHostAlias(); alias != (ollamaHostAlias{}) {
-		t.Fatalf("alias reservation not cleared: %+v", alias)
-	}
+	require.Equal(t, ollamaHostAlias{}, b.currentOllamaHostAlias(), "alias reservation not cleared")
 	select {
 	case port := <-reserved:
-		if port != 0 {
-			t.Fatalf("engine-manager reservation = %d, want 0", port)
-		}
+		require.Equal(t, 0, port, "engine-manager reservation")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for engine-manager reservation clear")
+		require.FailNow(t, "timed out waiting for engine-manager reservation clear")
 	}
 }
 
-func TestManagedAliasReservationSyncUsesReplacementEngineManager(t *testing.T) {
+func TestManagedAliasReservationSync_UsesReplacementEngineManager(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:15555")
 
@@ -453,35 +408,29 @@ func TestManagedAliasReservationSyncUsesReplacementEngineManager(t *testing.T) {
 	// let it commit the alias. The deferred final sync must resolve this new
 	// generation at execution time rather than use the entry-time handle.
 	settingsRequest, err := settingsCodec.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	b.setEngineMgr(replacement)
-	if err := settingsCodec.Respond(settingsRequest.ID, map[string]bool{"value": true}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, settingsCodec.Respond(settingsRequest.ID, map[string]bool{"value": true}))
 
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for managed alias preparation")
+		require.FailNow(t, "timed out waiting for managed alias preparation")
 	}
 	select {
 	case port := <-replacementReservation:
-		if port != 15555 {
-			t.Fatalf("replacement engine-manager reservation = %d, want 15555", port)
-		}
+		require.Equal(t, 15555, port, "replacement engine-manager reservation")
 	default:
-		t.Fatal("replacement engine-manager did not receive the committed alias reservation")
+		require.FailNow(t, "replacement engine-manager did not receive the committed alias reservation")
 	}
 	select {
 	case port := <-oldReservation:
-		t.Fatalf("stale engine-manager received final reservation %d", port)
+		require.FailNow(t, fmt.Sprintf("stale engine-manager received final reservation %d", port))
 	default:
 	}
 }
 
-func TestAliasReservationSyncsSerializeStateOrder(t *testing.T) {
+func TestAliasReservationSyncs_PreserveStateOrder(t *testing.T) {
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{}
 	b.setEngineMgr(engine)
@@ -493,15 +442,13 @@ func TestAliasReservationSyncsSerializeStateOrder(t *testing.T) {
 		close(firstDone)
 	}()
 	first, err := engineCodec.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var firstRequest struct {
 		Port int `json:"port"`
 	}
-	if first.Method != "internal:set-reserved-port" || json.Unmarshal(first.Params, &firstRequest) != nil || firstRequest.Port != 15555 {
-		t.Fatalf("first reservation request = %s %s", first.Method, first.Params)
-	}
+	require.Equal(t, "internal:set-reserved-port", first.Method, "first reservation request")
+	require.NoError(t, json.Unmarshal(first.Params, &firstRequest), "first reservation request")
+	require.Equal(t, 15555, firstRequest.Port, "first reservation request")
 
 	// Clear the alias while the older request is still waiting for its reply.
 	// The newer sync must not reach the worker until the older call completes;
@@ -523,42 +470,36 @@ func TestAliasReservationSyncsSerializeStateOrder(t *testing.T) {
 	}()
 	select {
 	case result := <-secondRead:
-		t.Fatalf("new reservation overtook the in-flight update: msg=%+v err=%v", result.msg, result.err)
+		require.FailNow(t, fmt.Sprintf("new reservation overtook the in-flight update: msg=%+v err=%v", result.msg, result.err))
 	case <-time.After(100 * time.Millisecond):
 	}
-	if err := engineCodec.Respond(first.ID, map[string]int{"port": 15555}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, engineCodec.Respond(first.ID, map[string]int{"port": 15555}))
 
 	var second *Message
 	select {
 	case result := <-secondRead:
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
+		require.NoError(t, result.err)
 		second = result.msg
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for current reservation update")
+		require.FailNow(t, "timed out waiting for current reservation update")
 	}
 	var secondRequest struct {
 		Port int `json:"port"`
 	}
-	if second.Method != "internal:set-reserved-port" || json.Unmarshal(second.Params, &secondRequest) != nil || secondRequest.Port != 0 {
-		t.Fatalf("second reservation request = %s %s", second.Method, second.Params)
-	}
-	if err := engineCodec.Respond(second.ID, map[string]int{"port": 0}); err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, "internal:set-reserved-port", second.Method, "second reservation request")
+	require.NoError(t, json.Unmarshal(second.Params, &secondRequest), "second reservation request")
+	require.Equal(t, 0, secondRequest.Port, "second reservation request")
+	require.NoError(t, engineCodec.Respond(second.ID, map[string]int{"port": 0}))
 	for name, done := range map[string]<-chan struct{}{"first": firstDone, "second": secondDone} {
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("%s reservation sync did not finish", name)
+			require.FailNow(t, fmt.Sprintf("%s reservation sync did not finish", name))
 		}
 	}
 }
 
-func TestAliasBindFailureReleasesReservationButKeepsWarning(t *testing.T) {
+func TestAliasBindFailure_ReleasesReservationButKeepsWarning(t *testing.T) {
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{nodeID: "local-node"}
 	b.setEngineMgr(engine)
@@ -588,37 +529,26 @@ func TestAliasBindFailureReleasesReservationButKeepsWarning(t *testing.T) {
 		Severity: "warning",
 		Action:   "none",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	b.forwardProxyNotification(methodErrorsReport, params)
 
-	if alias := b.currentOllamaHostAlias(); alias != (ollamaHostAlias{}) {
-		t.Fatalf("failed alias still reserved in broker: %+v", alias)
-	}
+	require.Equal(t, ollamaHostAlias{}, b.currentOllamaHostAlias(), "failed alias still reserved in broker")
 	select {
 	case port := <-reservation:
-		if port != 0 {
-			t.Fatalf("engine-manager reservation = %d, want 0", port)
-		}
+		require.Equal(t, 0, port, "engine-manager reservation")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for failed-alias reservation release")
+		require.FailNow(t, "timed out waiting for failed-alias reservation release")
 	}
 	b.ollamaHostAliasErrorMu.Lock()
 	warning := b.ollamaHostAliasError
 	b.ollamaHostAliasErrorMu.Unlock()
-	if warning == nil || warning.ID != ollamaHostAliasBlockedID {
-		t.Fatal("bind warning was cleared while releasing the reservation")
-	}
-	if b.rejectOllamaHostAliasPort(&Message{}, 15555, "Ollama") {
-		t.Fatal("released alias still rejects assignment to the existing owner's port")
-	}
-	if !b.availableOffOllamaHostAlias(func(port int) bool { return port == 15555 })(15555) {
-		t.Fatal("released alias still excludes the existing owner's port from planning")
-	}
+	require.NotNil(t, warning, "bind warning was cleared while releasing the reservation")
+	require.Equal(t, ollamaHostAliasBlockedID, warning.ID, "bind warning was cleared while releasing the reservation")
+	require.False(t, b.rejectOllamaHostAliasPort(&Message{}, 15555, "Ollama"), "released alias still rejects assignment to the existing owner's port")
+	require.True(t, b.availableOffOllamaHostAlias(func(port int) bool { return port == 15555 })(15555), "released alias still excludes the existing owner's port from planning")
 }
 
-func TestStaleAliasBindFailureDoesNotReleaseReplacementReservation(t *testing.T) {
+func TestStaleAliasBindFailure_DoesNotReleaseReplacementReservation(t *testing.T) {
 	b := &Broker{nodeID: "local-node"}
 	b.setOllamaHostAlias(ollamaHostAlias{Address: "127.0.0.1:15555", Port: 15555})
 	staleGeneration, _ := b.beginOllamaProxyGeneration()
@@ -631,21 +561,14 @@ func TestStaleAliasBindFailureDoesNotReleaseReplacementReservation(t *testing.T)
 		Severity: "warning",
 		Action:   "none",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	b.forwardProxyNotificationForGeneration(staleGeneration, methodErrorsReport, params)
 
-	if got := b.currentOllamaProxyGeneration(); got != currentGeneration {
-		t.Fatalf("current proxy generation = %d, want %d", got, currentGeneration)
-	}
-	if alias := b.currentOllamaHostAlias(); alias.Port != 16666 {
-		t.Fatalf("stale failure changed replacement alias: %+v", alias)
-	}
+	require.Equal(t, currentGeneration, b.currentOllamaProxyGeneration(), "current proxy generation")
+	alias := b.currentOllamaHostAlias()
+	require.Equal(t, 16666, alias.Port, "stale failure changed replacement alias (%v)", alias)
 	b.ollamaHostAliasErrorMu.Lock()
 	warning := b.ollamaHostAliasError
 	b.ollamaHostAliasErrorMu.Unlock()
-	if warning != nil {
-		t.Fatal("stale failure published a warning for the replacement generation")
-	}
+	require.Nil(t, warning, "stale failure published a warning for the replacement generation")
 }

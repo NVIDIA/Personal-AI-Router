@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 )
 
@@ -204,6 +205,16 @@ func (m *Manager) watchPeerSettings(ctx context.Context) {
 	}
 }
 
+func (m *Manager) notifyPeerSettings(nodeID string, snapshots []settings.Snapshot) {
+	for _, snapshot := range snapshots {
+		if _, ok := engines.ByName(snapshot.Engine); !ok {
+			continue
+		}
+		snapshot.NodeID = nodeID
+		m.exec.notify("engine:settings-changed", snapshot)
+	}
+}
+
 func (m *Manager) consumeSettingsStream(parent context.Context, peer ecPeer) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -234,12 +245,6 @@ func (m *Manager) consumeSettingsStream(parent context.Context, peer ecPeer) {
 		if json.Unmarshal(scanner.Bytes(), &snapshots) != nil {
 			return
 		}
-		for _, snapshot := range snapshots {
-			if snapshot.Engine != "ollama" && snapshot.Engine != "lmstudio" {
-				continue
-			}
-			snapshot.NodeID = peer.nodeID
-			m.exec.notify("engine:settings-changed", snapshot)
-		}
+		m.notifyPeerSettings(peer.nodeID, snapshots)
 	}
 }

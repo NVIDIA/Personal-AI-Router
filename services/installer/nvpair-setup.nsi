@@ -13,6 +13,7 @@
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 ;---------------------------------------
 ; General
@@ -131,6 +132,38 @@ FunctionEnd
   Sleep 500
 !macroend
 
+; Install the centrally serviced Microsoft runtime required by the managed
+; llama.cpp binaries. Microsoft's x64 package also contains the ARM64 runtime.
+!macro InstallVcRuntime
+  DetailPrint "Installing Microsoft Visual C++ Runtime..."
+  ClearErrors
+  ExecWait '"$PLUGINSDIR\VC_redist.x64.exe" /install /quiet /norestart' $R4
+  ${if} ${Errors}
+    ClearErrors
+    Delete "$PLUGINSDIR\VC_redist.x64.exe"
+    MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_DISPLAY_NAME} could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+
+  Delete "$PLUGINSDIR\VC_redist.x64.exe"
+  ${if} $R4 == 0
+    DetailPrint "Microsoft Visual C++ Runtime installed."
+  ${elseIf} $R4 == 1638
+    DetailPrint "Microsoft Visual C++ Runtime is already installed."
+  ${elseIf} $R4 == 1641
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart initiated."
+    SetRebootFlag true
+  ${elseIf} $R4 == 3010
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart required."
+    SetRebootFlag true
+  ${else}
+    MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_DISPLAY_NAME} could not install the Microsoft Visual C++ Runtime (exit code $R4).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+!macroend
+
 ;---------------------------------------
 ; Installer Section
 ;---------------------------------------
@@ -139,6 +172,10 @@ Section "Install"
   ; to touch — otherwise File / the prior uninstaller's Delete will fail
   ; with a sharing violation and leave a half-installed mess.
   !insertmacro CloseRunningInstance
+
+  SetOutPath "$PLUGINSDIR"
+  File /oname=VC_redist.x64.exe "..\..\.build\vc-redist\VC_redist.x64.exe"
+  !insertmacro InstallVcRuntime
 
   ; If .onInit found a previous install, remove it now — at this point the
   ; user has clicked Install, so the destructive step is safe.

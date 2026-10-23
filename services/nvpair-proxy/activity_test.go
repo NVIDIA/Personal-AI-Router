@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Response bytes arriving from a node's engine are the only liveness evidence
@@ -32,7 +34,7 @@ func waitFor(t *testing.T, rec *recRW, frame string) bool {
 
 // TestStreamedBytesReportNodeActivity is the point of the feature: the node that
 // served the response is named to the broker so discovery can keep it.
-func TestStreamedBytesReportNodeActivity(t *testing.T) {
+func TestStreamedBytes_ReportNodeActivity(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -49,19 +51,15 @@ func TestStreamedBytesReportNodeActivity(t *testing.T) {
 			http.MethodPost, tc.inferencePath,
 			strings.NewReader(fmt.Sprintf(`{"model":%q}`, tc.requestedModel))))
 
-		if !waitFor(t, rec, `"method":"node/activity"`) {
-			t.Fatal("no node/activity was reported after the upstream streamed a response")
-		}
-		if !waitFor(t, rec, `"hostUuid":"serving-node"`) {
-			t.Fatal("node/activity did not name the node that served the request")
-		}
+		require.True(t, waitFor(t, rec, `"method":"node/activity"`), "no node/activity was reported after the upstream streamed a response")
+		require.True(t, waitFor(t, rec, `"hostUuid":"serving-node"`), "node/activity did not name the node that served the request")
 	})
 }
 
 // A node that accepted the connection but never wrote a byte has proved nothing
 // about being able to do work, so it must not be vouched for. This is the case
 // that matters: an accept can succeed on a machine whose user space is wedged.
-func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
+func TestNodeActivity_IsNotReportedWithoutUpstreamBytes(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		release := make(chan struct{})
 		var releaseOnce sync.Once
@@ -97,15 +95,13 @@ func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
 		select {
 		case <-received:
 		case <-time.After(5 * time.Second):
-			t.Fatal("upstream never received the forwarded request")
+			require.FailNow(t, "upstream never received the forwarded request")
 		}
 
 		// Give the proxy the same window the positive test uses, so a report
 		// would have landed by now if one were going to.
 		time.Sleep(200 * time.Millisecond)
-		if rec.has(`"method":"node/activity"`) {
-			t.Fatal("activity was reported for a node that had not sent a single response byte")
-		}
+		require.NotContains(t, rec.String(), `"method":"node/activity"`, "activity was reported for a node that had not sent a single response byte")
 
 		doRelease()
 		<-done
@@ -115,7 +111,7 @@ func TestNoActivityReportedWithoutUpstreamBytes(t *testing.T) {
 // A streaming generation writes hundreds of chunks. Reporting each one would put
 // thousands of frames a minute on the broker pipe for no gain, since the scanner
 // treats one report as good for a minute.
-func TestRepeatedChunksAreCoalescedIntoOneReport(t *testing.T) {
+func TestRepeatedChunks_AreCoalescedIntoOneReport(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		chunks := 40
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,11 +135,7 @@ func TestRepeatedChunksAreCoalescedIntoOneReport(t *testing.T) {
 			http.MethodPost, tc.inferencePath,
 			strings.NewReader(fmt.Sprintf(`{"model":%q,"stream":true}`, tc.requestedModel))))
 
-		if !waitFor(t, rec, `"method":"node/activity"`) {
-			t.Fatal("a streamed response reported no activity at all")
-		}
-		if got := rec.count(`"method":"node/activity"`); got != 1 {
-			t.Fatalf("%d activity reports for %d chunks; want 1 within the throttle interval", got, chunks)
-		}
+		require.True(t, waitFor(t, rec, `"method":"node/activity"`), "a streamed response reported no activity at all")
+		require.Equal(t, 1, rec.count(`"method":"node/activity"`), "want one activity report for %d chunks within the throttle interval", chunks)
 	})
 }

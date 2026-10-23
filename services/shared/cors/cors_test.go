@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func preflight() *http.Request {
@@ -31,7 +34,7 @@ func policy() http.Header {
 	h.Add("Vary", "Accept-Encoding")
 	return h
 }
-func TestCombine(t *testing.T) {
+func TestCombineCORS_RequiresCompatibleTargetPolicies(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		change         func(http.Header)
@@ -55,57 +58,44 @@ func TestCombine(t *testing.T) {
 			second := policy()
 			tc.change(second)
 			h, ok := Combine(preflight(), []http.Header{policy(), second})
-			if ok != tc.allowed {
-				t.Fatalf("allowed=%v want %v", ok, tc.allowed)
-			}
+			assert.Equal(t, tc.allowed, ok, "allowed")
 			if !ok {
 				return
 			}
-			if (h.Get("Access-Control-Allow-Credentials") == "true") != tc.creds {
-				t.Fatal("credentials widened")
-			}
-			if h.Get("Access-Control-Allow-Origin") != "http://app.test" || h.Get("Access-Control-Allow-Methods") != "PUT" {
-				t.Fatalf("bad combined headers: %v", h)
-			}
+			assert.Equal(t, tc.creds, h.Get("Access-Control-Allow-Credentials") == "true", "credentials widened")
+			assert.Equal(t, "http://app.test", h.Get("Access-Control-Allow-Origin"), "bad combined headers")
+			assert.Equal(t, "PUT", h.Get("Access-Control-Allow-Methods"), "bad combined headers")
 			// Bounded, not disabled: zero made every browser request pay for a
 			// preflight fan-out to every candidate engine.
 			maxAge, err := strconv.Atoi(h.Get("Access-Control-Max-Age"))
-			if err != nil || maxAge <= 0 || maxAge > 600 {
-				t.Fatalf("preflight max-age is not a short positive window: %q", h.Get("Access-Control-Max-Age"))
-			}
-			if !strings.Contains(strings.Join(h.Values("Vary"), ","), "Accept-Encoding") {
-				t.Fatal("lost Vary")
-			}
+			require.NoError(t, err, "preflight max-age is not a short positive window")
+			assert.Positive(t, maxAge, "preflight max-age is not a short positive window")
+			assert.LessOrEqual(t, maxAge, 600, "preflight max-age is not a short positive window")
+			assert.Contains(t, strings.Join(h.Values("Vary"), ","), "Accept-Encoding", "lost Vary")
 		})
 	}
 }
 
-func TestCombineSafelistedAndOrdinaryRequests(t *testing.T) {
+func TestCombineCORS_HandlesSafelistedAndOrdinaryRequests(t *testing.T) {
 	r := preflight()
 	r.Header.Set("Access-Control-Request-Method", "GET")
 	r.Header.Del("Access-Control-Request-Headers")
 	h := policy()
 	h.Del("Access-Control-Allow-Methods")
 	h.Del("Access-Control-Allow-Headers")
-	if _, ok := Combine(r, []http.Header{h}); !ok {
-		t.Fatal("safelisted method needs no explicit grant")
-	}
+	_, ok := Combine(r, []http.Header{h})
+	require.True(t, ok, "safelisted method needs no explicit grant")
 	r.Method = "GET"
-	if _, ok := Combine(r, []http.Header{h}); !ok {
-		t.Fatal("ordinary response")
-	}
-	if _, ok := Combine(r, nil); ok {
-		t.Fatal("empty set allowed")
-	}
+	_, ok = Combine(r, []http.Header{h})
+	require.True(t, ok, "ordinary response")
+	_, ok = Combine(r, nil)
+	require.False(t, ok, "empty set allowed")
 	r.Header.Del("Origin")
-	if _, ok := Combine(r, []http.Header{h}); ok {
-		t.Fatal("invented origin")
-	}
-	if IsPreflight(r) {
-		t.Fatal("GET is not preflight")
-	}
+	_, ok = Combine(r, []http.Header{h})
+	require.False(t, ok, "invented origin")
+	assert.False(t, IsPreflight(r), "GET is not preflight")
 }
-func TestEndToEndHeaders(t *testing.T) {
+func TestEndToEndHeaders_StripsHopHeadersAndPreservesRequestHeaders(t *testing.T) {
 	h := http.Header{
 		"Origin":        {"http://app.test"},
 		"Authorization": {"Bearer test"},
@@ -115,31 +105,27 @@ func TestEndToEndHeaders(t *testing.T) {
 		"Keep-Alive":    {"yes"},
 	}
 	got := EndToEndHeaders(h)
-	if got.Get("X-Hop") != "" || got.Get("Keep-Alive") != "" || got.Get("Connection") != "" {
-		t.Fatal("forwarded hop headers")
-	}
-	if got.Get("Origin") != h.Get("Origin") || got.Get("Authorization") != h.Get("Authorization") || got.Get("Cookie") != h.Get("Cookie") {
-		t.Fatal("lost end-to-end headers")
-	}
-	if h.Get("X-Hop") == "" {
-		t.Fatal("mutated caller")
-	}
+	assert.Equal(t, "", got.Get("X-Hop"), "forwarded hop headers")
+	assert.Equal(t, "", got.Get("Keep-Alive"), "forwarded hop headers")
+	assert.Equal(t, "", got.Get("Connection"), "forwarded hop headers")
+	assert.Equal(t, h.Get("Origin"), got.Get("Origin"), "lost end-to-end headers")
+	assert.Equal(t, h.Get("Authorization"), got.Get("Authorization"), "lost end-to-end headers")
+	assert.Equal(t, h.Get("Cookie"), got.Get("Cookie"), "lost end-to-end headers")
+	assert.NotEqual(t, "", h.Get("X-Hop"), "mutated caller")
 }
 func target(s *httptest.Server) Target {
 	u, _ := url.Parse(s.URL)
 	return Target{URL: u, Transport: s.Client().Transport}
 }
-func TestFanoutStripsCredentials(t *testing.T) {
+func TestFanout_StripsCredentials(t *testing.T) {
 	request := preflight()
 	request.Header.Set("Authorization", "Bearer private")
 	request.Header.Set("Cookie", "session=private")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
-			t.Error("fan-out shared caller credentials")
-		}
-		if r.Header.Get("Origin") != "http://app.test" || r.Header.Get("Access-Control-Request-Headers") != "Content-Type, Authorization" {
-			t.Error("fan-out lost CORS inputs")
-		}
+		assert.Empty(t, r.Header.Get("Authorization"), "fan-out shared caller credentials")
+		assert.Empty(t, r.Header.Get("Cookie"), "fan-out shared caller credentials")
+		assert.Equal(t, "http://app.test", r.Header.Get("Origin"), "fan-out lost CORS inputs")
+		assert.Equal(t, "Content-Type, Authorization", r.Header.Get("Access-Control-Request-Headers"), "fan-out lost CORS inputs")
 		for key, values := range policy() {
 			w.Header()[key] = values
 		}
@@ -148,22 +134,19 @@ func TestFanoutStripsCredentials(t *testing.T) {
 	defer server.Close()
 	rec := httptest.NewRecorder()
 	ServePreflight(rec, request, []Target{target(server), target(server)})
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status=%d", rec.Code)
-	}
-	if request.Header.Get("Authorization") != "Bearer private" || request.Header.Get("Cookie") != "session=private" {
-		t.Fatal("mutated original request")
-	}
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "Bearer private", request.Header.Get("Authorization"), "mutated original request")
+	assert.Equal(t, "session=private", request.Header.Get("Cookie"), "mutated original request")
 }
-func TestPreflightResponses(t *testing.T) {
+func TestPreflight_CombinesTargetResponses(t *testing.T) {
 	test := func(name string, status int, withPolicy bool, combinedStatus int) {
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
-				if r.Header.Get("Origin") != "http://app.test" || r.URL.RawQuery != "test=1" || r.Header.Get("Access-Control-Request-Method") != "PUT" {
-					t.Error("request changed")
-				}
+				assert.Equal(t, "http://app.test", r.Header.Get("Origin"), "request changed")
+				assert.Equal(t, "test=1", r.URL.RawQuery, "request changed")
+				assert.Equal(t, "PUT", r.Header.Get("Access-Control-Request-Method"), "request changed")
 				if withPolicy {
 					for k, v := range policy() {
 						w.Header()[k] = v
@@ -172,34 +155,24 @@ func TestPreflightResponses(t *testing.T) {
 				w.Header().Set("Location", "/redirect-target")
 				w.WriteHeader(status)
 				if status != http.StatusNoContent {
-					if _, err := io.WriteString(w, "engine response"); err != nil {
-						t.Error(err)
-					}
+					_, err := io.WriteString(w, "engine response")
+					assert.NoError(t, err)
 				}
 			}))
 			defer server.Close()
 			rec := httptest.NewRecorder()
 			ServePreflight(rec, preflight(), []Target{target(server)})
-			if rec.Code != status {
-				t.Fatalf("single status %d", rec.Code)
+			assert.Equal(t, status, rec.Code, "single status")
+			assert.Equal(t, withPolicy, rec.Header().Get("Access-Control-Allow-Origin") != "", "single policy changed")
+			if status != http.StatusNoContent {
+				assert.Equal(t, "engine response", rec.Body.String(), "single body changed")
 			}
-			if (rec.Header().Get("Access-Control-Allow-Origin") != "") != withPolicy {
-				t.Fatal("single policy changed")
-			}
-			if status != http.StatusNoContent && rec.Body.String() != "engine response" {
-				t.Fatal("single body changed")
-			}
-			if calls.Load() != 1 {
-				t.Fatal("followed redirect")
-			}
+			assert.Equal(t, int32(1), calls.Load(), "followed redirect")
 			rec = httptest.NewRecorder()
 			ServePreflight(rec, preflight(), []Target{target(server), target(server)})
-			want := combinedStatus
-			if rec.Code != want {
-				t.Fatalf("combined status=%d want=%d", rec.Code, want)
-			}
-			if want != http.StatusNoContent && rec.Header().Get("Access-Control-Allow-Origin") != "" {
-				t.Fatal("permission on failure")
+			assert.Equal(t, combinedStatus, rec.Code, "combined status")
+			if combinedStatus != http.StatusNoContent {
+				assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"), "permission on failure")
 			}
 		})
 	}
@@ -210,18 +183,17 @@ func TestPreflightResponses(t *testing.T) {
 	test("failure", http.StatusServiceUnavailable, false, http.StatusBadGateway)
 }
 
-func TestPreflightWithoutTargets(t *testing.T) {
+func TestPreflight_RejectsRequestWithoutTargets(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ServePreflight(rec, preflight(), nil)
-	if rec.Code != http.StatusBadGateway || rec.Header().Get("Access-Control-Allow-Origin") != "" {
-		t.Fatal("no engines granted preflight")
-	}
+	assert.Equal(t, http.StatusBadGateway, rec.Code, "no engines granted preflight")
+	assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "no engines granted preflight")
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-func TestBoundedFanoutAndCancellation(t *testing.T) {
+func TestCORSFanout_BoundsConcurrentRequestsAndHonorsCancellation(t *testing.T) {
 	var active, max atomic.Int32
 	started := make(chan struct{}, 20)
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -250,19 +222,16 @@ func TestBoundedFanoutAndCancellation(t *testing.T) {
 		select {
 		case <-started:
 		case <-time.After(time.Second):
-			t.Fatal("fanout did not start")
+			require.FailNow(t, "fanout did not start")
 		}
 	}
-	if max.Load() != 8 {
-		t.Fatalf("active maximum %d", max.Load())
-	}
+	assert.Equal(t, int32(8), max.Load(), "active maximum")
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("cancellation blocked")
+		require.FailNow(t, "cancellation blocked")
 	}
-	if max.Load() > 8 || rec.Code != http.StatusBadGateway {
-		t.Fatalf("max=%d status=%d", max.Load(), rec.Code)
-	}
+	assert.LessOrEqual(t, max.Load(), int32(8))
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
 }

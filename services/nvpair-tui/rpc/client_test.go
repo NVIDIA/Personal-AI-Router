@@ -7,8 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newPair wires a Client to an in-memory server side over a full-duplex
@@ -29,7 +33,7 @@ func newPair(t *testing.T) (*Client, *Codec, net.Conn) {
 	return client, NewCodec(c2, c2), c2
 }
 
-func TestCodecRoundTrip(t *testing.T) {
+func TestCodec_RoundTripsJSONRPCFrames(t *testing.T) {
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -41,18 +45,13 @@ func TestCodecRoundTrip(t *testing.T) {
 	}()
 
 	msg, err := b.Read()
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if !msg.IsNotification() || msg.Method != "hello" {
-		t.Fatalf("unexpected frame: %+v", msg)
-	}
-	if string(msg.Params) != `{"x":1}` {
-		t.Fatalf("params = %s", msg.Params)
-	}
+	require.NoError(t, err, "read")
+	assert.True(t, msg.IsNotification(), "unexpected frame (%v)", msg)
+	assert.Equal(t, "hello", msg.Method, "unexpected frame (%v)", msg)
+	assert.Equal(t, `{"x":1}`, string(msg.Params))
 }
 
-func TestClientCallMatchesResponse(t *testing.T) {
+func TestClientCall_MatchesResponse(t *testing.T) {
 	client, server, _ := newPair(t)
 
 	// Server: read the request and echo a result tagged with its id.
@@ -67,15 +66,11 @@ func TestClientCallMatchesResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	resp, err := client.Call(ctx, "ping", map[string]string{"a": "b"})
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if string(resp.Result) != `{"pong":true}` {
-		t.Fatalf("result = %s", resp.Result)
-	}
+	require.NoError(t, err, "call")
+	assert.Equal(t, `{"pong":true}`, string(resp.Result))
 }
 
-func TestClientCallSurfacesRPCError(t *testing.T) {
+func TestClientCall_SurfacesRPCError(t *testing.T) {
 	client, server, _ := newPair(t)
 	go func() {
 		req, err := server.Read()
@@ -88,15 +83,43 @@ func TestClientCallSurfacesRPCError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, err := client.Call(ctx, "explode", nil)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if rpcErr, ok := err.(*RPCError); !ok || rpcErr.Code != -32000 {
-		t.Fatalf("expected *RPCError -32000, got %v", err)
-	}
+	require.Error(t, err, "expected error")
+	rpcErr, ok := err.(*RPCError)
+	require.True(t, ok, "expected *RPCError -32000 (%v)", err)
+	assert.Equal(t, -32000, rpcErr.Code, "expected *RPCError -32000 (%v)", err)
 }
 
-func TestClientDeliversNotifications(t *testing.T) {
+// recordingWriter counts writes, to show a refused request never reached the
+// wire.
+type recordingWriter struct{ writes int }
+
+func (w *recordingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return len(p), nil
+}
+
+// TestClientCallRefusesBeforeWriting checks a request is not sent when its
+// caller has already given up or the connection is gone. Sent, the broker
+// would carry it out regardless — for a mutation, while the caller reported
+// that it had not happened.
+func TestClientCall_RefusesBeforeWriting(t *testing.T) {
+	w := &recordingWriter{}
+	client := NewClient(strings.NewReader(""), w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.Call(ctx, "engine:apply-settings", nil)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, w.writes, "a cancelled call wrote frames")
+
+	// Run returns at once on the empty stream, which closes the connection.
+	_ = client.Run(context.Background())
+	_, err = client.Call(context.Background(), "engine:apply-settings", nil)
+	assert.Error(t, err, "a call on a closed connection returned no error")
+	assert.Zero(t, w.writes, "a call on a closed connection wrote frames")
+}
+
+func TestClient_DeliversNotifications(t *testing.T) {
 	client, server, _ := newPair(t)
 	go func() {
 		_ = server.Write(&Message{JSONRPC: "2.0", Method: "errors:update", Params: json.RawMessage(`[]`)})
@@ -104,18 +127,14 @@ func TestClientDeliversNotifications(t *testing.T) {
 
 	select {
 	case msg, ok := <-client.Notifications():
-		if !ok {
-			t.Fatal("notifications channel closed")
-		}
-		if msg.Method != "errors:update" {
-			t.Fatalf("method = %s", msg.Method)
-		}
+		require.True(t, ok, "notifications channel closed")
+		assert.Equal(t, "errors:update", msg.Method)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for notification")
+		require.FailNow(t, "timed out waiting for notification")
 	}
 }
 
-func TestClientDisconnectClosesNotifications(t *testing.T) {
+func TestClientDisconnect_ClosesNotifications(t *testing.T) {
 	client, _, srv := newPair(t)
 	srv.Close() // broker drops the connection -> client read loop hits EOF
 
@@ -131,6 +150,6 @@ func TestClientDisconnectClosesNotifications(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("notifications channel was not closed after disconnect")
+		require.FailNow(t, "notifications channel was not closed after disconnect")
 	}
 }

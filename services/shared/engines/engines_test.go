@@ -4,8 +4,10 @@
 package engines
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
@@ -14,24 +16,14 @@ import (
 // preparation depends on: Ollama's preparation reserves any inherited
 // OLLAMA_HOST alias, and every later engine's port planning must route around
 // it. Reordering the table silently breaks that on roughly half of all runs.
-func TestOllamaIsPreparedFirst(t *testing.T) {
+func TestOllama_IsPreparedFirst(t *testing.T) {
 	got := Names()
-	if len(got) == 0 || got[0] != "ollama" {
-		t.Fatalf("Names()[0] = %q, want \"ollama\" — the alias-owning engine must be prepared first", got)
-	}
+	require.NotEmpty(t, got)
+	assert.Equal(t, "ollama", got[0])
 }
 
-func TestNames(t *testing.T) {
-	got := Names()
-	want := []string{"ollama", "lmstudio"}
-	if len(got) != len(want) {
-		t.Fatalf("Names() = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("Names() = %v, want %v", got, want)
-		}
-	}
+func TestEngineNames_ReturnsCanonicalOrder(t *testing.T) {
+	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp"}, Names())
 }
 
 // There are two proxy identities: ComponentName per facade, ProxyComponent per
@@ -39,44 +31,30 @@ func TestNames(t *testing.T) {
 // were already "ollama-proxy" — two near-identical values that coincided for LM
 // Studio, which made them easy to mistake for one field. This pins the shape of
 // both so a new engine cannot reintroduce that ambiguity.
-func TestProxyIdentities(t *testing.T) {
+func TestEngineProfiles_DeclareProxyIdentities(t *testing.T) {
 	for _, e := range All() {
-		want := e.Name + "-proxy"
-		if e.ComponentName() != want {
-			t.Errorf("%s ComponentName = %q, want %q", e.Name, e.ComponentName(), want)
-		}
+		assert.Equal(t, e.Name+"-proxy", e.ComponentName())
 		// The bare prefix Ollama used to relay under must not come back.
-		if e.ComponentName() == "proxy" {
-			t.Errorf("%s still uses the bare %q relay prefix", e.Name, "proxy")
-		}
+		assert.NotEqual(t, "proxy", e.ComponentName())
 		// A facade identity that equals the process identity would make the
 		// relay prefix and the process name indistinguishable.
-		if e.ComponentName() == ProxyComponent {
-			t.Errorf("%s facade identity collides with the process identity %q", e.Name, ProxyComponent)
-		}
+		assert.NotEqual(t, ProxyComponent, e.ComponentName())
 	}
 
 	// The process identity must match the binary name, so a log prefix, a
 	// support bundle, and a process listing agree. services/versions.json and
 	// the desktop binary inventory both spell it this way.
-	if ProxyComponent != "nvpair-proxy" {
-		t.Errorf("ProxyComponent = %q, want the binary name %q", ProxyComponent, "nvpair-proxy")
-	}
+	assert.Equal(t, "nvpair-proxy", ProxyComponent)
 }
 
 // TestFacadeAndEnginePortsDiffer guards the invariant that makes managed mode
 // coherent: the proxy claims the engine's stock port, so the engine has to move
 // somewhere else.
-func TestFacadeAndEnginePortsDiffer(t *testing.T) {
+func TestFacadeAndEnginePorts_Differ(t *testing.T) {
 	for _, e := range All() {
-		if e.FacadePort == e.EnginePortBase {
-			t.Errorf("%s: FacadePort and EnginePortBase are both %d; the engine has nowhere to move",
-				e.Name, e.FacadePort)
-		}
-		if e.FacadePort <= 0 || e.EnginePortBase <= 0 {
-			t.Errorf("%s: ports must be positive, got facade=%d base=%d",
-				e.Name, e.FacadePort, e.EnginePortBase)
-		}
+		assert.NotEqual(t, e.EnginePortBase, e.FacadePort)
+		assert.Positive(t, e.FacadePort)
+		assert.Positive(t, e.EnginePortBase)
 	}
 }
 
@@ -85,46 +63,31 @@ func TestFacadeAndEnginePortsDiffer(t *testing.T) {
 // rename the file under every existing install and orphan whatever port the
 // user had chosen. This test exists so a future tidy-up cannot quietly make
 // that trade.
-func TestPortFilesAreDeclaredNotDerived(t *testing.T) {
+func TestPortFiles_AreDeclaredNotDerived(t *testing.T) {
 	ollama, ok := ByName("ollama")
-	if !ok {
-		t.Fatal("no ollama engine")
-	}
-	if ollama.PortFile != "proxy-port.json" {
-		t.Errorf("ollama PortFile = %q, want the pre-unification proxy-port.json", ollama.PortFile)
-	}
-	if derived := ollama.ComponentName() + "-port.json"; ollama.PortFile == derived {
-		t.Errorf("ollama PortFile now matches the derived name %q; existing installs would be orphaned", derived)
-	}
+	require.True(t, ok, "no ollama engine")
+	assert.Equal(t, "proxy-port.json", ollama.PortFile, "ollama PortFile")
+	assert.NotEqual(t, ollama.ComponentName()+"-port.json", ollama.PortFile, "ollama PortFile now matches the derived name")
 	for _, e := range All() {
-		if e.PortFile == "" {
-			t.Errorf("%s has no PortFile; its proxy would persist nothing", e.Name)
-		}
+		assert.NotEqual(t, "", e.PortFile)
 	}
 }
 
-func TestIdentitiesAreUnique(t *testing.T) {
+func TestIdentities_AreUnique(t *testing.T) {
 	names := map[string]bool{}
 	components := map[string]bool{}
 	services := map[noderec.ServiceKey]bool{}
 	facades := map[int]bool{}
 
 	for _, e := range All() {
-		if e.Name == "" || e.DisplayName == "" || e.PortFile == "" || e.DiscoveryService == "" {
-			t.Errorf("%+v: every identity field must be set", e)
-		}
-		if names[e.Name] {
-			t.Errorf("duplicate Name %q", e.Name)
-		}
-		if components[e.ComponentName()] {
-			t.Errorf("duplicate ComponentName %q", e.ComponentName())
-		}
-		if services[e.DiscoveryService] {
-			t.Errorf("duplicate DiscoveryService %q", e.DiscoveryService)
-		}
-		if facades[e.FacadePort] {
-			t.Errorf("duplicate FacadePort %d", e.FacadePort)
-		}
+		assert.NotEqual(t, "", e.Name)
+		assert.NotEqual(t, "", e.DisplayName)
+		assert.NotEqual(t, "", e.PortFile)
+		assert.NotEmpty(t, e.DiscoveryService)
+		assert.NotContains(t, names, e.Name, "duplicate Name")
+		assert.NotContains(t, components, e.ComponentName(), "duplicate ComponentName")
+		assert.NotContains(t, services, e.DiscoveryService, "duplicate DiscoveryService")
+		assert.NotContains(t, facades, e.FacadePort, "duplicate FacadePort")
 		names[e.Name] = true
 		components[e.ComponentName()] = true
 		services[e.DiscoveryService] = true
@@ -134,40 +97,32 @@ func TestIdentitiesAreUnique(t *testing.T) {
 
 // TestAllReturnsACopy keeps a caller from reordering the shared table, which
 // would defeat TestOllamaIsPreparedFirst at a distance.
-func TestAllReturnsACopy(t *testing.T) {
+func TestAll_ReturnsACopy(t *testing.T) {
 	first := All()
-	if len(first) < 2 {
-		t.Fatalf("expected at least two engines, got %d", len(first))
-	}
+	require.GreaterOrEqual(t, len(first), 2, "expected at least two engines,")
 	first[0], first[1] = first[1], first[0]
 
-	if Names()[0] != "ollama" {
-		t.Fatal("mutating the result of All() reordered the shared table")
-	}
+	assert.Equal(t, "ollama", Names()[0], "mutating the result of All() reordered the shared table")
 }
 
-func TestLookups(t *testing.T) {
+func TestEngineLookup_ResolvesDeclaredNamesAndKeys(t *testing.T) {
 	for _, e := range All() {
 		byName, ok := ByName(e.Name)
-		if !ok || byName.ComponentName() != e.ComponentName() {
-			t.Errorf("ByName(%q) = %+v, %v", e.Name, byName, ok)
-		}
+		assert.True(t, ok, "ByName")
+		assert.Equal(t, e.ComponentName(), byName.ComponentName())
 	}
 
-	if _, ok := ByName("vllm"); ok {
-		t.Error("ByName should report ok=false for an unknown engine")
-	}
+	_, ok := ByName("vllm")
+	assert.False(t, ok, "ByName should report ok=false for an unknown engine")
 }
 
-func TestAddressedMethodRoundTrip(t *testing.T) {
+func TestAddressedMethod_RoundTripsEngineAndMethod(t *testing.T) {
 	for _, e := range All() {
 		for _, method := range []string{"ready", "nodes/list", "errors:report"} {
 			addressed := AddressMethod(e.Name, method)
 			engine, bare := SplitAddressedMethod(addressed)
-			if engine != e.Name || bare != method {
-				t.Errorf("round trip of %q gave (%q, %q), want (%q, %q)",
-					addressed, engine, bare, e.Name, method)
-			}
+			assert.Equal(t, e.Name, engine, "round trip of")
+			assert.Equal(t, method, bare, "round trip of")
 		}
 	}
 }
@@ -175,7 +130,7 @@ func TestAddressedMethodRoundTrip(t *testing.T) {
 // Plenty of unaddressed methods contain a colon, so only a known engine id may
 // count as an address. Treating "errors:report" as engine "errors" would strip
 // a real method down to "report" and route it nowhere.
-func TestUnaddressedMethodsAreNotMistakenForAddressed(t *testing.T) {
+func TestUnaddressedMethods_AreNotMistakenForAddressed(t *testing.T) {
 	for _, method := range []string{
 		"ready",
 		"errors:report",
@@ -189,22 +144,16 @@ func TestUnaddressedMethodsAreNotMistakenForAddressed(t *testing.T) {
 		"log/set-level",
 	} {
 		engine, bare := SplitAddressedMethod(method)
-		if engine != "" {
-			t.Errorf("SplitAddressedMethod(%q) found engine %q; nothing but an engine id is an address", method, engine)
-		}
-		if bare != method {
-			t.Errorf("SplitAddressedMethod(%q) rewrote the method to %q", method, bare)
-		}
+		assert.Equal(t, "", engine)
+		assert.Equal(t, method, bare)
 	}
 }
 
 // An engine id that is a prefix of another would make addresses ambiguous:
 // splitting on the first colon cannot tell "lm:x" from "lmstudio:x" if one id
 // is a prefix of the other and the separator is ever omitted.
-func TestNoEngineIDContainsTheAddressSeparator(t *testing.T) {
+func TestNoEngineID_ContainsTheAddressSeparator(t *testing.T) {
 	for _, e := range All() {
-		if strings.Contains(e.Name, ":") {
-			t.Errorf("engine id %q contains the address separator", e.Name)
-		}
+		assert.NotContains(t, e.Name, ":", "engine id")
 	}
 }

@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
@@ -83,20 +85,12 @@ func startBrokerWithDirsAndEnv(t *testing.T, configDir, clusterDir string, extra
 	cmd.Env = append(cmd.Env, extraEnv...)
 
 	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
 	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatalf("broker stderr pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stderr pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	t.Logf("broker started: pid=%d", cmd.Process.Pid)
 
 	ch := startMsgReader(stdoutPipe)
@@ -140,14 +134,12 @@ func waitForStderr(t *testing.T, lines <-chan string, re *regexp.Regexp, timeout
 	for {
 		select {
 		case line, ok := <-lines:
-			if !ok {
-				t.Fatalf("broker stderr closed before matching %q", re.String())
-			}
+			require.True(t, ok, "broker stderr closed before matching")
 			if re.MatchString(line) {
 				return line
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for stderr matching %q", timeout, re.String())
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for stderr matching %q", timeout, re.String()))
 		}
 	}
 }
@@ -161,16 +153,14 @@ func waitForErrorsUpdateContaining(t *testing.T, msgs <-chan jsonrpc.Message, id
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatalf("broker stream closed before errors:update containing %q", id)
-			}
+			require.True(t, ok, "broker stream closed before errors:update containing (%v)", id)
 			if msg.Method == methodErrorsUpdate {
 				if errorsListHasID(t, msg.Params, id) {
 					return
 				}
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for errors:update containing %q", timeout, id)
+			require.FailNow(t, fmt.Sprintf("timed out (%s) waiting for errors:update containing %q", timeout, id))
 		}
 	}
 }
@@ -178,9 +168,7 @@ func waitForErrorsUpdateContaining(t *testing.T, msgs <-chan jsonrpc.Message, id
 func errorsListHasID(t *testing.T, raw json.RawMessage, id string) bool {
 	t.Helper()
 	var list []errors.ServiceError
-	if err := json.Unmarshal(raw, &list); err != nil {
-		t.Fatalf("unmarshal errors:update: %v\nraw: %s", err, raw)
-	}
+	require.NoError(t, json.Unmarshal(raw, &list), "unmarshal errors:update, raw: %s", raw)
 	for _, e := range list {
 		if e.ID == id {
 			return true
@@ -215,7 +203,7 @@ func portBusy(port int) bool {
 // every facade, so there is one supervisor and one name to report. A crash-id
 // naming a single engine would claim that only that engine went down when in
 // fact all of them did.
-func TestBrokerCrashSurfacingAndRestart(t *testing.T) {
+func TestBroker_ReportsWorkerCrashAndRestartsWorker(t *testing.T) {
 	if portBusy(14319) {
 		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
 	}
@@ -248,50 +236,42 @@ func TestBrokerCrashSurfacingAndRestart(t *testing.T) {
 	// errors:get-initial must relay the same entry from nvpair-errors.
 	sendReq(t, stdin, 900, "errors:get-initial")
 	resp := waitForResponse(t, msgs, 5*time.Second)
-	if !errorsListHasID(t, resp.Result, crashID) {
-		t.Fatalf("errors:get-initial missing the crash entry: %s", resp.Result)
-	}
+	require.True(t, errorsListHasID(t, resp.Result, crashID), "errors:get-initial missing the crash entry")
 	t.Log("errors:get-initial carries the crash entry")
 
 	// The supervisor must restart the proxy: a second "proxy started" with
 	// a different pid (backoff is ~1s).
 	secondLine := waitForStderr(t, stderr, proxyPidRe, 15*time.Second)
 	pid2 := mustPid(t, secondLine)
-	if pid2 == pid1 {
-		t.Fatalf("proxy was not restarted: same pid %d", pid2)
-	}
+	require.NotEqual(t, pid1, pid2, "proxy was not restarted")
 	t.Logf("proxy auto-restarted: pid %d -> %d", pid1, pid2)
 }
 
 func mustPid(t *testing.T, line string) int {
 	t.Helper()
 	m := proxyPidRe.FindStringSubmatch(line)
-	if m == nil {
-		t.Fatalf("no proxy pid in line: %q", line)
-	}
+	require.GreaterOrEqual(t, len(m), 2, "no proxy pid in line (%v)", line)
 	pid, err := strconv.Atoi(m[1])
-	if err != nil {
-		t.Fatalf("bad pid %q: %v", m[1], err)
-	}
+	require.NoError(t, err, "bad pid")
 	return pid
 }
 
-// Both engines are fronted by ONE process. This is the property the whole
+// Every default engine is fronted by ONE process. This is the property the whole
 // unification exists for: the estimated-work reservations a proxy takes
-// between scheduler snapshots live in the process, so two processes each held
-// half the picture and could dispatch simultaneous bursts to the same node
-// each believing it idle.
+// between scheduler snapshots live in the process, so separate processes each
+// held an incomplete picture and could dispatch simultaneous bursts to the
+// same node while each believed it idle.
 //
 // Asserted on pids rather than on the code shape, because "one supervisor" is
-// an implementation detail and "one OS process serving both engines" is the
+// an implementation detail and "one OS process serving every engine" is the
 // thing that actually makes the reservation map whole.
-func TestBothEnginesAreServedByOneProxyProcess(t *testing.T) {
+func TestAllDefaultEngines_AreServedByOneProxyProcess(t *testing.T) {
 	if portBusy(11435) || portBusy(1234) {
 		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
 	}
 
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
-		// No --proxy-engines: both engines, which is the default.
+		// No --proxy-engines: exercise the complete default set.
 		"--proxy-path", proxyBin,
 	)
 	t.Cleanup(cleanup)
@@ -309,14 +289,16 @@ func TestBothEnginesAreServedByOneProxyProcess(t *testing.T) {
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
-	// Both facades must actually come up, or "one process" would be trivially
+	// Every facade must actually come up, or "one process" would be trivially
 	// true by one of them having failed.
 	ollamaPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
 	lmstudioPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
-	if ollamaPort == lmstudioPort {
-		t.Fatalf("both facades report port %d; they must bind separately", ollamaPort)
-	}
-	t.Logf("ollama facade on :%d, lmstudio facade on :%d", ollamaPort, lmstudioPort)
+	llamacppPort := waitEngineProxyReady(t, "llamacpp-proxy", stdin, msgs, 15*time.Second)
+	require.Len(t, map[int]bool{ollamaPort: true, lmstudioPort: true, llamacppPort: true}, 3,
+		"facade ports must be distinct: ollama=%d lmstudio=%d llamacpp=%d",
+		ollamaPort, lmstudioPort, llamacppPort)
+	t.Logf("facades ready: ollama=%d lmstudio=%d llamacpp=%d",
+		ollamaPort, lmstudioPort, llamacppPort)
 
 	// Collect every spawn announced up to this point plus a settling window, so
 	// a second process starting late still shows up.
@@ -330,10 +312,8 @@ func TestBothEnginesAreServedByOneProxyProcess(t *testing.T) {
 			collecting = false
 		}
 	}
-	if len(seen) != 1 {
-		t.Fatalf("saw %d proxy processes %v, want exactly 1 hosting both engines", len(seen), seen)
-	}
-	t.Logf("both engines served by pid %v", seen)
+	require.Len(t, seen, 1, "exactly one proxy process must host all default engines")
+	t.Logf("all default engines served by pid %v", seen)
 }
 
 // TestBrokerShutsDownOnSignal verifies the broker exits promptly when it
@@ -341,7 +321,7 @@ func TestBothEnginesAreServedByOneProxyProcess(t *testing.T) {
 // (no input arriving) — and that the supervisors do NOT resurrect the
 // workers during teardown. This guards the regression where Ctrl+C left
 // the broker hung and self-restarting its children.
-func TestBrokerShutsDownOnSignal(t *testing.T) {
+func TestBroker_ShutsDownOnSignal(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// os.Process.Signal(os.Interrupt) is unsupported on Windows — you
 		// can't deliver SIGINT to an arbitrary process there. The bug this
@@ -361,24 +341,16 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 	// purely by the signal, not by stdin EOF (closing stdin would shut the
 	// broker down even with the old blocking read loop, masking the bug).
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	defer stdin.Close()
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	msgs := startMsgReader(stdoutPipe)
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
 	// SIGINT to the broker only (children are in their own process groups).
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		t.Fatalf("signal broker: %v", err)
-	}
+	require.NoError(t, cmd.Process.Signal(os.Interrupt), "signal broker")
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -387,7 +359,7 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 		// Exited — the broker observed the signal and tore down cleanly.
 	case <-time.After(10 * time.Second):
 		cmd.Process.Kill()
-		t.Fatal("broker did not exit within 10s of SIGINT (read loop blocked on stdin?)")
+		require.FailNow(t, "broker did not exit within 10s of SIGINT (read loop blocked on stdin?)")
 	}
 }
 
@@ -395,7 +367,7 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 // asserts each one is spawned (its "started" log line) and the broker
 // reaches app:ready. The advertiser is excluded — it's poll-driven and
 // only starts once local ollama is detected.
-func TestBrokerSpawnsAllModules(t *testing.T) {
+func TestBroker_SpawnsAllModules(t *testing.T) {
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
 		"--errors-path", errorsBin,
 		"--node-info-path", nodeInfoBin,
@@ -434,7 +406,7 @@ func TestBrokerSpawnsAllModules(t *testing.T) {
 // TestBrokerEngineRelay verifies the broker relays an engine-manager
 // request: engine:get-installed round-trips to the supervised
 // engine-manager and returns its (read-only) installed-engines snapshot.
-func TestBrokerEngineRelay(t *testing.T) {
+func TestBroker_RelaysEngineRequests(t *testing.T) {
 	stdin, msgs, _, cleanup := startBrokerWith(t, "--engine-manager-path", engineMgrBin)
 	t.Cleanup(cleanup)
 
@@ -442,15 +414,11 @@ func TestBrokerEngineRelay(t *testing.T) {
 
 	sendReq(t, stdin, 700, "engine:get-installed")
 	resp := waitForResponse(t, msgs, 10*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("engine:get-installed errored: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "engine:get-installed errored: code")
 	var result struct {
 		Engines []json.RawMessage `json:"engines"`
 	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		t.Fatalf("unmarshal engine:get-installed result: %v\nraw: %s", err, resp.Result)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &result), "unmarshal engine:get-installed result")
 	// The host may have zero installed engines; the contract is just that
 	// the relay returns a well-formed { engines: [...] } payload.
 	t.Logf("engine:get-installed returned %d engine(s)", len(result.Engines))
@@ -463,16 +431,12 @@ func proxyStatus(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, id 
 	t.Helper()
 	sendReq(t, stdin, id, "ollama-proxy:get-status")
 	resp := waitForResponse(t, msgs, 5*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("ollama-proxy:get-status errored: %d %s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "ollama-proxy:get-status errored")
 	var s struct {
 		Ready bool `json:"ready"`
 		Port  int  `json:"port"`
 	}
-	if err := json.Unmarshal(resp.Result, &s); err != nil {
-		t.Fatalf("parse ollama-proxy:get-status: %v\nraw: %s", err, resp.Result)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &s), "parse ollama-proxy:get-status")
 	return s.Ready, s.Port
 }
 
@@ -482,7 +446,7 @@ func proxyStatus(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, id 
 // persisted port doesn't touch the developer's real config. With no engine
 // running, the requested port is free, so the broker relays it unchanged (no
 // bump) — exercising the interception + relay + rebind wiring end to end.
-func TestBrokerProxySetPortRebinds(t *testing.T) {
+func TestBrokerProxySetPort_Rebinds(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy default port 11435 already in use; skipping")
 	}
@@ -502,16 +466,10 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 	)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("broker stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "broker stdin pipe")
 	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("broker stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start broker: %v", err)
-	}
+	require.NoError(t, err, "broker stdout pipe")
+	require.NoError(t, cmd.Start(), "start broker")
 	t.Cleanup(func() {
 		stdin.Close()
 		done := make(chan error, 1)
@@ -535,30 +493,21 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 			break
 		}
 		id++
-		if time.Now().After(deadline) {
-			t.Fatal("proxy never reported ready")
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "proxy never reported ready")
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	target := freePort(t)
 	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":860,"method":"ollama-proxy:set-port","params":{"port":%d}}`, target) + "\n"
-	if _, err := stdin.Write([]byte(req)); err != nil {
-		t.Fatalf("write ollama-proxy:set-port: %v", err)
-	}
+	_, err = stdin.Write([]byte(req))
+	require.NoError(t, err, "write ollama-proxy:set-port")
 	resp := waitForResponse(t, msgs, 10*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("ollama-proxy:set-port errored: %d %s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, resp.Error, "ollama-proxy:set-port errored")
 	var sp struct {
 		Port int `json:"port"`
 	}
-	if err := json.Unmarshal(resp.Result, &sp); err != nil {
-		t.Fatalf("parse ollama-proxy:set-port result: %v\nraw: %s", err, resp.Result)
-	}
-	if sp.Port != target {
-		t.Fatalf("set-port result port = %d, want %d (no engine running, so no bump expected)", sp.Port, target)
-	}
+	require.NoError(t, json.Unmarshal(resp.Result, &sp), "parse ollama-proxy:set-port result")
+	require.Equal(t, target, sp.Port, "set-port should not bump when no engine is running")
 
 	// ollama-proxy:get-status must now reflect the rebound port.
 	id = 870
@@ -569,16 +518,14 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 			break
 		}
 		id++
-		if time.Now().After(deadline) {
-			t.Fatalf("ollama-proxy:get-status never reported the rebound port %d", target)
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "ollama-proxy:get-status never reported the rebound port (%v)", target)
 		time.Sleep(300 * time.Millisecond)
 	}
 }
 
 // TestBrokerManualNodeMergedIntoDiscovery adds a manual node through the
 // broker and asserts it surfaces in the shared discovery snapshot.
-func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
+func TestBroker_MergesManualNodesIntoDiscovery(t *testing.T) {
 	const nodeName = "xproc-manual-merge-1"
 
 	stdin, msgs, _, cleanup := startBrokerWith(t, "--manual-nodes-path", manualNodesBin)
@@ -590,9 +537,8 @@ func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
 	// loopback address so the probe resolves quickly whether or not a
 	// local service answers.
 	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":800,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
-	if _, err := stdin.Write([]byte(addReq)); err != nil {
-		t.Fatalf("write node/add: %v", err)
-	}
+	_, err := stdin.Write([]byte(addReq))
+	require.NoError(t, err, "write node/add")
 
 	// Poll discovery:get-nodes until the manual node's id appears (the
 	// node/discovered event fires after the first probe completes).
@@ -604,9 +550,7 @@ func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before the manual node appeared")
-			}
+			require.True(t, ok, "broker stream closed before the manual node appeared")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
 				if json.Unmarshal(msg.Result, &res) == nil && containsNode(res.Nodes, nodeName) {
@@ -618,7 +562,7 @@ func TestBrokerManualNodeMergedIntoDiscovery(t *testing.T) {
 			reqID++
 			sendReq(t, stdin, reqID, "discovery:get-nodes")
 		case <-deadline:
-			t.Fatalf("timed out waiting for manual node %q in discovery:get-nodes", nodeName)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for manual node %q in discovery:get-nodes", nodeName))
 		}
 	}
 }

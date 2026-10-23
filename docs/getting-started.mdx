@@ -33,8 +33,9 @@ inference; two or more on the same local network let you try pairing and routing
 
 Nothing else has to be in place first:
 
-- **Engines.** PAIR installs and starts Ollama or LM Studio for you in step 4. If
-  an engine is already installed, PAIR detects and uses it instead.
+- **Engines.** PAIR installs and starts Ollama, LM Studio, or llama.cpp for you
+  in step 4. Existing Ollama and LM Studio installations can also be detected
+  and used.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
   eligible node, so a single node holding the model is enough. Prepare the same
   model on additional nodes when you want any of them to be able to serve it.
@@ -63,8 +64,13 @@ Choose from:
   Then launch **NVIDIA PAIR** from the desktop application menu. If
   you have kept more than one PAIR package in that directory, install the one
   you want by its full filename instead.
-- **macOS disk image:** Open the `.dmg` and drag **PAIR** to
+- **macOS disk image:** Open the `.dmg` and drag **NVIDIA PAIR** to
   **Applications**, then launch it from there.
+
+  When updating from `PAIR.app` to `NVIDIA PAIR.app`, **Restart & install** may
+  finish installing the update without reopening the application. If PAIR does
+  not reopen, open **NVIDIA PAIR** from your Applications folder. This applies
+  only to the update that renames the app.
 
 The releases page also carries an archive of the background services and the
 terminal interface for each platform. It contains no desktop application, so it
@@ -94,8 +100,8 @@ builds and for running the services directly.
 ## 2. Complete First-Run Setup
 
 On first launch, PAIR opens a setup window that can install available inference
-engines on the local system. PAIR selects Ollama by default when it is available
-for your platform.
+engines on the local system. PAIR preselects Ollama, LM Studio, and llama.cpp when they are
+available for your platform.
 
 1. Review the available engines.
 2. Select the engines to install, or skip installation if they are already
@@ -107,14 +113,15 @@ for your platform.
 
 The first start takes a little longer than later ones, because PAIR is starting
 its background services for the first time. If **Overview** is still showing
-**Loading...** after a minute or two, something did not come up. Refer to
+**Starting service...** or **Fetching nodes** after a minute or two, something
+did not come up. Refer to
 [PAIR Does Not Become Ready](troubleshooting.mdx#pair-does-not-become-ready).
 
 You can revisit engine settings later by selecting a node in **Overview**.
 PAIR's first-run window also points to **Settings > Cluster**, where systems can
 be paired at any time.
 
-![PAIR's Overview showing one node card for this machine, with its engine running.](assets/onboarding/getting-started/02-overview-single-node.png)
+![PAIR's Overview showing one node card for this machine, with Ollama, LM Studio, and llama.cpp running.](assets/onboarding/getting-started/02-overview-single-node.png)
 
 ## 3. Form a Cluster by Pairing Systems
 
@@ -153,13 +160,21 @@ For each node that should serve a model:
 4. Download a model and wait for the operation to complete.
 5. Load the model when the engine requires an explicit load step.
 
-![A node card with Engine settings expanded, showing the engine's install state, its start switch, and its port.](assets/onboarding/getting-started/06-engine-settings.png)
+![A node card with Engine settings expanded, showing Ollama's start switch and its downloaded models above the Add model button.](assets/onboarding/getting-started/06-engine-settings.png)
 
 ![An engine's model list on the node card, with one model pulling and its progress shown.](assets/onboarding/getting-started/07-add-model.png)
 
 A node is eligible for a request only when it is online, a compatible engine is
 running, and the requested model is available there. To test routing across
 multiple nodes, prepare the same model on each of those nodes.
+
+llama.cpp downloads use exact `owner/repository:quantization` IDs. Its Add model
+list is populated from popular GGUF repositories published by `ggml-org`,
+`bartowski`, and `unsloth`. Typing filters those results locally; pressing
+Enter or the search button searches public Hugging Face repositories. PAIR
+offers one verified `Q4_K_M` option per result. Load, Eject, and Delete use that
+same exact model id; Delete removes the selected entry from llama.cpp's
+persistent cache.
 
 Refer to [Managing engines](engine-lifecycle.mdx) for details about:
 
@@ -192,6 +207,7 @@ engine would normally listen on:
 
 - `11434` for Ollama.
 - `1234` for LM Studio.
+- `8080` for llama.cpp.
 
 Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
@@ -220,15 +236,16 @@ The engine therefore has to understand the style you send.
 | --- | --- | --- |
 | Ollama | Works | Works |
 | LM Studio | Works | Not available |
+| llama.cpp | Works | Not available |
 
-**If you are unsure, send the OpenAI-style request.** It works with either engine,
-and most tools and SDKs use it. Use the Ollama style
+**If you are unsure, send the OpenAI-style request.** It works with every
+supported engine, and most tools and SDKs use it. Use the Ollama style
 only when something you already have is written against Ollama's `/api/...` API.
 
 The choice does not affect routing. Both styles are routed across your cluster the
 same way, and neither one changes which node serves the request.
 
-### OpenAI-Style Request (Works With Either Engine)
+### OpenAI-Style Request (Works With Every Engine)
 
 ```bash
 curl <PAIR_BASE_URL>/v1/chat/completions \
@@ -246,9 +263,9 @@ curl <PAIR_BASE_URL>/v1/chat/completions \
 
 ### Ollama-Style Request (Ollama Endpoint Only)
 
-Sending this to the LM Studio endpoint fails, because LM Studio does not
-implement Ollama's API. The `-N` flag tells `curl` not to buffer, so it displays
-the response stream as it is generated.
+Sending this to the LM Studio or llama.cpp endpoint fails, because those engines
+do not implement Ollama's API. The `-N` flag tells `curl` not to buffer, so it
+displays the response stream as it is generated.
 
 ```bash
 curl -N <PAIR_BASE_URL>/api/chat \
@@ -265,8 +282,9 @@ curl -N <PAIR_BASE_URL>/api/chat \
 ```
 
 Then confirm the request was routed: open **Overview**, use the **Jobs** filter in
-the left column, and read **Ran on** or **Running on** on the job card to identify
-the serving node.
+the left column, and read **Running on** or **Ran on** on the job card to identify
+the serving node. Once a job has been sent to a node, its card shows **Sent to**
+until the job starts, and keeps it if the job ends without starting.
 
 ![A job card under the Jobs filter naming the node that served the request.](assets/onboarding/getting-started/09-job-served-by-node.png)
 
@@ -291,11 +309,13 @@ free port.
 | --- | --- |
 | Ollama-compatible proxy | `11434` |
 | LM Studio / OpenAI-compatible proxy | `1234` |
+| llama.cpp / OpenAI-compatible proxy | `8080` |
 
 When PAIR takes one of those ports, the engine behind it moves:
 
 - Ollama moves to `11435` or higher.
 - LM Studio moves to `1235` or higher.
+- PAIR's managed llama.cpp router runs on `8081`.
 
 **Endpoints** is the authoritative source for the URL to use.
 
@@ -312,7 +332,7 @@ manually if you run a restrictive firewall.
 | Port | Purpose |
 | --- | --- |
 | `5353/udp` | Discovery of other nodes on the local network (mDNS) |
-| `14318` | Node hardware and model inventory |
+| `14318` | Node hardware and telemetry |
 | `14319` | Service-error synchronization |
 | `14320` | Workload propagation |
 | `14321` | Pairing and cluster membership |
@@ -324,21 +344,22 @@ manually if you run a restrictive firewall.
 Both the proxy port and the engine port are editable in PAIR:
 
 1. Open **Overview** and expand **Engine settings** on the node's card.
-2. Expand **Ports** under the engine you want to change.
-3. Edit **Proxy**, **Server**, or both, then select **Apply ports**.
+2. Expand **Settings** under the engine you want to change.
+3. Edit **Server port**, **Proxy port**, or both, then select **Apply**.
 
-![The Ports fields under Engine settings, showing the Proxy and Server ports and the Apply ports action.](assets/onboarding/getting-started/10-engine-ports.png)
+![Ollama's Settings section under Engine settings, showing the Server port, Proxy port, and Engine arguments fields with the Refresh and Apply buttons.](assets/onboarding/getting-started/10-engine-ports.png)
 
 PAIR applies the change as one operation, so you do not have to update the two
 fields in a particular order, even when you are swapping their values. The new
 ports are remembered and restored the next time PAIR starts.
 
-Ports are editable on the machine you are using. On a node's card viewed from
-another system the values are shown read-only, so change a node's ports from that
-node.
+You can also change a paired node's ports from another system in the cluster, as
+long as that node is online and running a version of PAIR that supports it. For
+engine arguments, validation, and when an engine restarts, refer to
+[Engine Settings](engine-settings.mdx).
 
-If something PAIR does not manage is already using a port you want, you have two
-options, and **Settings > Service** reports the conflict either way:
+If something PAIR does not manage is already using a port you want, PAIR shows a
+**Warning** dialog describing the conflict, and you have two options:
 
 - Move PAIR to a different port using the steps above. This is usually the easier
   choice, and nothing else on the machine has to change.
@@ -363,6 +384,7 @@ with its own command-line interface (CLI). Two things make that less obvious:
 | --- | --- |
 | Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\ollama\ollama.exe` |
 | Linux | `~/.config/Nvidia Corporation/Personal AI Router/engine-bin/ollama/bin/ollama` |
+| macOS | `~/Library/Application Support/Nvidia Corporation/Personal AI Router/engine-bin/ollama/Ollama.app/Contents/Resources/ollama` |
 
 On Linux it needs its bundled libraries on the library path:
 
@@ -385,14 +407,31 @@ official installer: `~/.lmstudio/bin/lms`, or
 ~/.lmstudio/bin/lms status
 ```
 
-**Set the port explicitly.** Set `OLLAMA_HOST` to the engine's own port.
-Otherwise, the CLI connects to `11434`, which is PAIR's proxy, and `ollama list`
-returns the cluster's view instead of the local machine's. Use the **Server**
-value under **Engine settings > Ports** to address the local engine directly.
-It defaults to `11435` for Ollama and `1235` for LM Studio.
+**Set the port explicitly for Ollama.** Set `OLLAMA_HOST` to the engine's own
+port. Otherwise, the CLI connects to `11434`, which is PAIR's proxy, and
+`ollama list` returns the cluster's view instead of the local machine's. Use the
+**Server port** value in the engine's **Settings** section to address the local
+engine directly. It defaults to `11435` for Ollama, `1235` for LM Studio, and
+`8081` for llama.cpp.
 
 Use the proxy port to check what your cluster can serve. Use the engine port to
 check what is installed on the local machine.
+
+**llama.cpp** is installed inside PAIR's own data directory, like Ollama:
+
+| Platform | Path |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\llamacpp\llama-server.exe` |
+| Linux | `~/.config/Nvidia Corporation/Personal AI Router/engine-bin/llamacpp/llama-server` |
+| macOS | `~/Library/Application Support/Nvidia Corporation/Personal AI Router/engine-bin/llamacpp/llama-server` |
+
+PAIR runs it as a router that serves every model in its cache, which is
+`~/.llamacpp` (`%USERPROFILE%\.llamacpp` on Windows). It has no separate client
+CLI, so query the router over HTTP on its engine port instead:
+
+```bash
+curl http://127.0.0.1:8081/models
+```
 
 PAIR does not put these binaries on `PATH` yet. Until then, use the full path or
 add an alias yourself.
@@ -407,8 +446,20 @@ What that base URL serves depends on the engine behind it:
 
 | Endpoint | Default base URL | Paths it serves |
 | --- | --- | --- |
-| Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — and the OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, plus the Anthropic Messages API `/v1/messages` |
-| LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`) and the Anthropic Messages API `/v1/messages` |
+| Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — plus the OpenAI-compatible and Anthropic APIs listed below|
+| LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible and Anthropic APIs listed below |
+| llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible API listed below, plus `/models` for model listings |
+
+All three endpoints expose these OpenAI-compatible paths:
+
+- `POST /v1/chat/completions` — [Conversations](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+- `POST /v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
+- `POST /v1/embeddings` — [Embeddings](https://developers.openai.com/api/reference/resources/embeddings/methods/create)
+- `POST /v1/responses` — [Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- `GET /v1/models` — [available models](https://developers.openai.com/api/reference/resources/models/methods/list)
+
+Ollama and LM Studio support the following Anthropic APIs:
+- `POST /v1/messages` - [Messages](https://platform.claude.com/docs/en/api/messages/create)
 
 The distinction matters when you fill in an application's settings. A client
 written against the OpenAI API usually wants the `/v1` included, as in
@@ -457,12 +508,15 @@ thing that fails tells you where the problem is.
 
 ### 1. Check Service Health
 
-Open **Settings → Service**. It reports the service connection, the nodes it
-knows about, and engine state without involving inference at all. If this is
-unhealthy, nothing below will work. Refer to
+Open **Settings → Service** and confirm that **Status** reads **Running**. That
+checks the background services without involving inference at all. If it reads
+anything else, nothing below will work. Refer to
 [PAIR does not become ready](troubleshooting.mdx#pair-does-not-become-ready).
 
-![Settings > Service reporting a healthy service connection, the known nodes, and engine state.](assets/onboarding/getting-started/11-service-health.png)
+![Settings > Service with Status reading Running, beside the Test, Stop, and Restart controls and the log options.](assets/onboarding/getting-started/11-service-health.png)
+
+Then open **Overview** and confirm that the nodes you expect are listed and their
+engines are running.
 
 ### 2. Confirm Endpoint Response
 
@@ -487,7 +541,8 @@ A reply alone does not prove routing. To identify the serving node:
 
 1. Open **Overview**.
 2. Use the **Jobs** filter in the left column.
-3. Read **Ran on** or **Running on** on the job card.
+3. Read **Running on** or **Ran on** on the job card. Once a job has been sent
+   to a node, its card shows **Sent to** until the job starts.
 
 ### 5. Verify Cluster Routing
 
@@ -528,7 +583,7 @@ want to observe.
 | Connection refused | Nothing is listening on that port. Check the port and service status. |
 | `502` with `no active node` | The proxy is running, but no routable engine node is available. |
 | `502` with `no available node advertises the requested model` | Current inventory has no routable owner for that model. Wait for inventory to update, or prepare the model on a node running that engine. |
-| `404` on an inference call | Every advertised owner tried by the proxy rejected the model, so its inventory is stale. |
+| `404` on an inference call | The serving engine could not find the model or requested API. Its model inventory may be stale, or its version may not support the endpoint. |
 | A reply, but **Jobs** is empty | Something else owns the proxy port. Refer to [Requests work but PAIR shows no jobs](troubleshooting.mdx#requests-work-but-pair-shows-no-jobs). |
 | `400` or `422` | The request is malformed. PAIR does not retry it because it would fail on every node. |
 
@@ -556,8 +611,13 @@ downloading again.
 Updating keeps your settings, logs, cluster identity, and cluster membership, so
 a node stays paired across an update. Model weights are untouched as well,
 because they belong to the engine rather than to PAIR. Updating PAIR does not
-update Ollama or LM Studio — engines are updated separately from **Engine
+update its inference engines — engines are updated separately from **Engine
 settings**, described in [Managing engines](engine-lifecycle.mdx).
+
+If you are updating from a version before 1.0.0, a few setups have a small extra
+step, such as tidying up the old app on macOS. The
+[Upgrade Guide](upgrade-guide.mdx) walks through them, and
+[Release Notes](release-notes.mdx) lists what changed.
 
 You update each machine from that machine. PAIR never updates a peer for you,
 and it cannot be driven remotely, so a cluster is updated one node at a time.
@@ -585,6 +645,8 @@ endpoint, routing, and service-startup issues.
 
 Refer to these resources for related information:
 
+- [Release notes](release-notes.mdx)
+- [Upgrade guide](upgrade-guide.mdx)
 - [Troubleshooting](troubleshooting.mdx)
 - [Project overview](overview.mdx)
 - [Architecture, data flow, and trust boundaries](architecture.mdx)

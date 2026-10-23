@@ -7,53 +7,43 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The broker's table must cover exactly the shared engine set, in the same
 // order. Preparation order is load-bearing: Ollama goes first because its
 // preparation reserves any inherited OLLAMA_HOST alias that later engines have
 // to route around.
-func TestEngineProxyTableMatchesSharedEngines(t *testing.T) {
-	if len(engineProxyProfiles) == 0 {
-		t.Fatal("no engine proxy profiles")
-	}
-	if got := engineProxyProfiles[0].Name; got != "ollama" {
-		t.Fatalf("first profile = %q, want ollama prepared first", got)
-	}
+func TestEngineProxyTable_MatchesSharedEngines(t *testing.T) {
+	require.NotEmpty(t, engineProxyProfiles, "no engine proxy profiles")
+	require.Equal(t, "ollama", engineProxyProfiles[0].Name, "first profile")
 	for _, p := range engineProxyProfiles {
-		if p.FacadePort == p.EnginePortBase {
-			t.Errorf("%s: facade and backend base are both %d; the proxy and engine would collide",
-				p.Name, p.FacadePort)
-		}
-		if p.ComponentName() == "" || p.DisplayName == "" {
-			t.Errorf("%s: incomplete identity %+v", p.Name, p.Engine)
-		}
+		assert.NotEqual(t, p.EnginePortBase, p.FacadePort)
+		assert.NotEmpty(t, p.ComponentName())
+		assert.NotEmpty(t, p.DisplayName)
 		// An empty probe path would silently become a GET of the root, which
 		// is Ollama's convention and wrong for anything OpenAI-compatible —
 		// the engine would read as down whenever it is actually up.
-		if p.HealthProbePath == "" {
-			t.Errorf("%s: no health probe path", p.Name)
-		}
+		assert.NotEmpty(t, p.HealthProbePath)
 	}
 }
 
 // The probe path is the one advertiser value that is per-engine, and getting it
 // wrong makes a healthy engine look permanently down rather than failing loudly.
-func TestEngineHealthProbePaths(t *testing.T) {
+func TestEngineHealthProbe_UsesEngineSpecificEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		engine string
 		want   string
 	}{
 		{"ollama", "/"},
 		{"lmstudio", "/v1/models"},
+		{"llamacpp", "/health"},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
-		if !ok {
-			t.Fatalf("no profile for %s", tc.engine)
-		}
-		if p.HealthProbePath != tc.want {
-			t.Errorf("%s health probe = %q, want %q", tc.engine, p.HealthProbePath, tc.want)
-		}
+		require.True(t, ok, "no profile for")
+		assert.Equal(t, tc.want, p.HealthProbePath)
 	}
 }
 
@@ -61,7 +51,7 @@ func TestEngineHealthProbePaths(t *testing.T) {
 // engine table already carries, because they feed int32 atomics throughout the
 // package. They are deleted when those files collapse; until then this is what
 // stops them drifting from the table.
-func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
+func TestBrokerConstants_MatchCanonicalEngineTable(t *testing.T) {
 	for _, tc := range []struct {
 		engine       string
 		facade       int
@@ -73,43 +63,30 @@ func TestBrokerConstantsMatchTheEngineTable(t *testing.T) {
 	} {
 		t.Run(tc.engine, func(t *testing.T) {
 			p, ok := engineProxyProfileFor(tc.engine)
-			if !ok {
-				t.Fatalf("no profile for %s", tc.engine)
-			}
-			if tc.facade != p.FacadePort {
-				t.Errorf("facade constant = %d, table says %d", tc.facade, p.FacadePort)
-			}
-			if tc.backendStart != p.EnginePortBase {
-				t.Errorf("backend-start constant = %d, table says %d", tc.backendStart, p.EnginePortBase)
-			}
-			if want := p.ComponentName() + ":port-ownership-blocked"; tc.blockedID != want {
-				t.Errorf("blocked error id = %q, want %q", tc.blockedID, want)
-			}
+			require.True(t, ok, "no profile for")
+			assert.Equal(t, tc.facade, p.FacadePort, "facade constant")
+			assert.Equal(t, tc.backendStart, p.EnginePortBase, "backend-start constant")
+			assert.Equal(t, p.ComponentName()+":port-ownership-blocked", tc.blockedID, "blocked error id")
 		})
 	}
-	if want := ollamaProxyProfile.ComponentName() + ":port-bumped"; proxyPortBumpedID != want {
-		t.Errorf("bumped error id = %q, want %q", proxyPortBumpedID, want)
-	}
+	assert.Equal(t, ollamaProxyProfile.ComponentName()+":port-bumped", proxyPortBumpedID, "bumped error id")
 }
 
-// Ownership is the one judgment call in adding an engine, so the two values in
-// the table today are pinned explicitly. Getting these backwards does not fail
+// Every engine's relocation authority is pinned explicitly. Getting these
+// backwards does not fail
 // to compile — it silently changes which engine the broker believes it may stop.
-func TestEngineOwnershipAssignments(t *testing.T) {
+func TestEngineOwnership_AssignsManagedAndExternalListeners(t *testing.T) {
 	for _, tc := range []struct {
 		engine string
 		want   engineOwnership
 	}{
 		{"ollama", adoptedEngine},
 		{"lmstudio", managedEngine},
+		{"llamacpp", managedEngine},
 	} {
 		p, ok := engineProxyProfileFor(tc.engine)
-		if !ok {
-			t.Fatalf("no profile for %s", tc.engine)
-		}
-		if p.Ownership != tc.want {
-			t.Errorf("%s ownership = %v, want %v", tc.engine, p.Ownership, tc.want)
-		}
+		require.True(t, ok, "no profile for")
+		assert.Equal(t, tc.want, p.Ownership)
 	}
 }
 
@@ -124,7 +101,7 @@ func TestEngineOwnershipAssignments(t *testing.T) {
 //
 // This is the regression guard for collapsing the two planners into one. A
 // change that makes both engines agree here has broken one of them.
-func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
+func TestOwnership_DecidesTheOccupiedFacadeOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		engine    string
 		wantMove  bool
@@ -135,9 +112,7 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 	} {
 		t.Run(tc.engine, func(t *testing.T) {
 			p, ok := engineProxyProfileFor(tc.engine)
-			if !ok {
-				t.Fatalf("no profile for %s", tc.engine)
-			}
+			require.True(t, ok, "no profile for")
 			// Running on the facade, which is therefore taken; the backend base
 			// is free.
 			status := ollamaPortStatus{Running: true, Port: p.FacadePort}
@@ -146,28 +121,23 @@ func TestOwnershipDecidesTheOccupiedFacadeOutcome(t *testing.T) {
 			got := planManagedEnginePorts(p, true, status, available)
 
 			if tc.wantMove {
-				want := managedPortPlan{Enabled: true, BackendPort: p.EnginePortBase}
-				if got != want {
-					t.Fatalf("plan = %+v, want %+v (a managed engine must be moved, not refused)", got, want)
-				}
+				require.Equal(t, managedPortPlan{Enabled: true, BackendPort: p.EnginePortBase}, got, "a managed engine must be moved, not refused")
 				return
 			}
-			if got.Blocked != tc.wantBlock {
-				t.Fatalf("plan = %+v, want blocked with %q (an adopted engine must not be displaced)", got, tc.wantBlock)
-			}
+			require.Equal(t, tc.wantBlock, got.Blocked, "plan (%v)", got)
 		})
 	}
 }
 
 // --proxy-engines selects which engines the one binary is started for.
-func TestParseProxyEngines(t *testing.T) {
+func TestParseProxyEngines_ValidatesSelectedEngineNames(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		csv     string
 		want    []string
 		wantErr bool
 	}{
-		{name: "default is every engine", csv: "ollama,lmstudio", want: []string{"ollama", "lmstudio"}},
+		{name: "default set", csv: "ollama,lmstudio,llamacpp", want: []string{"ollama", "lmstudio", "llamacpp"}},
 		{name: "single engine", csv: "lmstudio", want: []string{"lmstudio"}},
 		{name: "whitespace and blanks are tolerated", csv: " ollama , , lmstudio ", want: []string{"ollama", "lmstudio"}},
 		{name: "duplicates collapse", csv: "ollama,ollama", want: []string{"ollama"}},
@@ -179,41 +149,24 @@ func TestParseProxyEngines(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := parseProxyEngines(tc.csv)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("parseProxyEngines(%q) = %v, want an error", tc.csv, got)
-				}
+				require.Error(t, err, "parseProxyEngines (%v)", got)
 				return
 			}
-			if err != nil {
-				t.Fatalf("parseProxyEngines(%q): %v", tc.csv, err)
-			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("parseProxyEngines(%q) = %v, want %v", tc.csv, got, tc.want)
-			}
-			for i := range tc.want {
-				if got[i] != tc.want[i] {
-					t.Fatalf("parseProxyEngines(%q) = %v, want %v", tc.csv, got, tc.want)
-				}
-			}
+			require.NoError(t, err, "parseProxyEngines")
+			require.Equal(t, append([]string{}, tc.want...), append([]string{}, got...), "parseProxyEngines")
 		})
 	}
 }
 
 // An engine left out of --proxy-engines is not started, and neither is any
 // engine when the binary could not be resolved.
-func TestProxyEnabledHonorsSelectionAndBinary(t *testing.T) {
+func TestProxyEnabled_HonorsSelectionAndBinary(t *testing.T) {
 	b := &Broker{proxyPath: "/path/to/nvpair-proxy", proxyEngines: []string{"ollama"}}
-	if !b.proxyEnabled(ollamaProxyProfile) {
-		t.Error("ollama was selected but is not enabled")
-	}
-	if b.proxyEnabled(lmstudioProxyProfile) {
-		t.Error("lmstudio was not selected but is enabled")
-	}
+	assert.True(t, b.proxyEnabled(ollamaProxyProfile), "ollama was selected but is not enabled")
+	assert.False(t, b.proxyEnabled(lmstudioProxyProfile), "lmstudio was not selected but is enabled")
 
 	b = &Broker{proxyEngines: []string{"ollama", "lmstudio"}}
-	if b.proxyEnabled(ollamaProxyProfile) {
-		t.Error("no proxy binary resolved, but the engine is enabled")
-	}
+	assert.False(t, b.proxyEnabled(ollamaProxyProfile), "no proxy binary resolved, but the engine is enabled")
 }
 
 // Preparing a facade is not read-only. For a managed engine the backend move
@@ -224,7 +177,7 @@ func TestProxyEnabledHonorsSelectionAndBinary(t *testing.T) {
 // Ollama cannot show the symptom, because its move is deferred until its proxy
 // proves it holds the facade. That asymmetry is exactly why the guard has to be
 // at the preparation call rather than relied on further down.
-func TestDeselectedEngineIsNotPrepared(t *testing.T) {
+func TestDeselectedEngine_IsNotPrepared(t *testing.T) {
 	settings, settingsCodec := newTestRPCWorkerPipe(t)
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 
@@ -271,11 +224,11 @@ func TestDeselectedEngineIsNotPrepared(t *testing.T) {
 	select {
 	case <-policyReads:
 	case <-time.After(2 * time.Second):
-		t.Fatal("the selected engine was never prepared; the fixture is not exercising preparation")
+		require.FailNow(t, "the selected engine was never prepared; the fixture is not exercising preparation")
 	}
 	select {
 	case <-policyReads:
-		t.Fatal("a deselected engine was prepared; its backend would be relocated with no proxy to claim the port")
+		require.FailNow(t, "a deselected engine was prepared; its backend would be relocated with no proxy to claim the port")
 	case <-time.After(300 * time.Millisecond):
 	}
 }
@@ -283,7 +236,7 @@ func TestDeselectedEngineIsNotPrepared(t *testing.T) {
 // A stranger on the facade blocks both engines. This is the companion to the
 // test above: the divergence is about who the occupant is, not about whether an
 // occupied facade matters.
-func TestAStrangerOnTheFacadeBlocksEveryEngine(t *testing.T) {
+func TestAStrangerOnTheFacade_BlocksEveryEngine(t *testing.T) {
 	for _, p := range engineProxyProfiles {
 		t.Run(p.Name, func(t *testing.T) {
 			// The engine is stopped somewhere else entirely, so whoever holds
@@ -293,9 +246,7 @@ func TestAStrangerOnTheFacadeBlocksEveryEngine(t *testing.T) {
 
 			got := planManagedEnginePorts(p, true, status, available)
 
-			if got.Blocked != "the compatibility port is already in use" {
-				t.Fatalf("plan = %+v, want blocked on the occupied facade", got)
-			}
+			require.Equal(t, "the compatibility port is already in use", got.Blocked, "plan (%v)", got)
 		})
 	}
 }

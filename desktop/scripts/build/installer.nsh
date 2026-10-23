@@ -41,8 +41,11 @@
 ; of that section, so an appended customUnInstallSection would never execute.
 ;
 ; Per-user data here means settings, logs, cluster identity and certificates,
-; and engines NVIDIA PAIR installed. Downloaded model weights live
-; outside these roots and are never touched.
+; and engines NVIDIA PAIR installed (those are removed by
+; pairUninstallManagedEngines above, which runs first). Downloaded model weights
+; live outside these roots and are never touched: every engine declares its
+; model store as models_dir, and a test in services/nvpair-engine-manager fails
+; if one of them resolves inside the app data root.
 ;
 ; UNINSTALLER SAFETY: only ever delete the three per-user AppData roots below.
 ; Never touch $INSTDIR (C:\Program Files\...). The uninstaller itself lives at
@@ -76,6 +79,31 @@
   RMDir "$0\NVIDIA Corporation"
   RMDir /r "$0\nvpair-updater"
   ClearErrors
+!macroend
+
+; Remove the engines NVIDIA PAIR installed, which the data-root removal below
+; cannot do on its own. Ollama and llama.cpp install under a data root and so
+; disappear with it, but LM Studio's vendor installer always lands in
+; %USERPROFILE%\.lmstudio and nothing here ever reached it — so removing "the
+; engines NVIDIA PAIR installed" removed one engine and left the other.
+;
+; engine-manager owns this because the manifests do: it knows each engine's
+; install location, and it skips each engine's model store, so the prompt's
+; promise that downloaded models are kept holds for engine files too. It also
+; only removes an install PAIR recorded as its own, so a copy of LM Studio the
+; user installed themselves is left alone.
+;
+; ORDER MATTERS: this must run before pairRemoveUserData (the records of which
+; installs were ours live in the data root) and before the template's
+; RMDir /r $INSTDIR (which deletes the binary doing the work). Engines are
+; already stopped by pairCloseRunningProcesses and pairKillProcessesInDataDirs.
+;
+; nsExec::ExecToLog never aborts the (un)installer, and the binary exits 0 even
+; when an individual engine cannot be removed, so every failure mode here lets
+; the uninstall continue.
+!macro pairUninstallManagedEngines
+  DetailPrint "Removing engines NVIDIA PAIR installed..."
+  nsExec::ExecToLog '"$INSTDIR\resources\cli-bin\nvpair-engine-manager.exe" --uninstall-managed'
 !macroend
 
 ; Best-effort: when the user opts to remove data, stop any process whose
@@ -278,8 +306,42 @@
   ${endif}
 !macroend
 
+; Install the centrally serviced Microsoft runtime required by the managed
+; llama.cpp binaries. The x64 package also carries the ARM64 runtime, so both
+; Windows installer architectures intentionally use this one prerequisite.
+!macro pairInstallVcRuntime
+  DetailPrint "Installing Microsoft Visual C++ Runtime..."
+  ClearErrors
+  ExecWait '"$INSTDIR\resources\installer-tools\VC_redist.x64.exe" /install /quiet /norestart' $8
+  ${if} ${Errors}
+    ClearErrors
+    Delete "$INSTDIR\resources\installer-tools\VC_redist.x64.exe"
+    MessageBox MB_OK|MB_ICONSTOP "NVIDIA PAIR could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+
+  Delete "$INSTDIR\resources\installer-tools\VC_redist.x64.exe"
+  ${if} $8 == 0
+    DetailPrint "Microsoft Visual C++ Runtime installed."
+  ${elseIf} $8 == 1638
+    DetailPrint "Microsoft Visual C++ Runtime is already installed."
+  ${elseIf} $8 == 1641
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart initiated."
+    SetRebootFlag true
+  ${elseIf} $8 == 3010
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart required."
+    SetRebootFlag true
+  ${else}
+    MessageBox MB_OK|MB_ICONSTOP "NVIDIA PAIR could not install the Microsoft Visual C++ Runtime (exit code $8).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+!macroend
+
 !macro customInstall
   !insertmacro pairAssertPayloadInstalled
+  !insertmacro pairInstallVcRuntime
   !insertmacro pairAddFirewallRules
 !macroend
 
@@ -313,13 +375,14 @@
     ${if} $PairInteractiveUninstall == "1"
       ; A plain MessageBox (no /SD) still displays in NSIS silent mode, so the
       ; one-click interactive uninstall shows this prompt. Default button = No.
-      MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also remove all NVIDIA PAIR data?$\n$\nThis permanently deletes your settings, logs, cluster identity and certificates, and any engines NVIDIA PAIR installed. Downloaded models are not removed. Click No to keep your data for a future reinstall." IDYES pairDataYes IDNO pairDataDone
+      MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also remove all NVIDIA PAIR data?$\n$\nThis permanently deletes your settings, logs, cluster identity and certificates, and any engines NVIDIA PAIR installed. Your downloaded models are not removed, and neither are engines you installed yourself. Click No to keep your data for a future reinstall." IDYES pairDataYes IDNO pairDataDone
       pairDataYes:
         StrCpy $8 "1"
       pairDataDone:
     ${endif}
     ${if} $8 == "1"
       !insertmacro pairKillProcessesInDataDirs
+      !insertmacro pairUninstallManagedEngines
       !insertmacro pairRemoveUserData
       !insertmacro pairWarnIfDataRemains
     ${endif}

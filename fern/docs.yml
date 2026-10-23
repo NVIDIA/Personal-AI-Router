@@ -28,6 +28,12 @@ navigation:
       - page: Getting Started
         path: ../docs/getting-started.mdx
         slug: getting-started
+      - page: Release Notes
+        path: ../docs/release-notes.mdx
+        slug: release-notes
+      - page: Upgrade Guide
+        path: ../docs/upgrade-guide.mdx
+        slug: upgrade-guide
       - page: Managing Engines
         path: ../docs/engine-lifecycle.mdx
         slug: engine-lifecycle

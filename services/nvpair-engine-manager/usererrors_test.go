@@ -5,11 +5,13 @@ package main
 
 import (
 	"errors"
-	"strings"
+
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestUnwrapPullCause(t *testing.T) {
+func TestUnwrapPullCause_ExtractsUnderlyingDownloadFailure(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
@@ -25,33 +27,23 @@ func TestUnwrapPullCause(t *testing.T) {
 		if c.in != "" {
 			err = errors.New(c.in)
 		}
-		if got := unwrapPullCause(err); got != c.want {
-			t.Fatalf("unwrapPullCause(%q) = %q, want %q", c.in, got, c.want)
-		}
+		require.Equal(t, c.want, unwrapPullCause(err), "unwrapPullCause")
 	}
 }
 
-func TestFormatEnginePullError(t *testing.T) {
+func TestFormatEnginePullError_ReportsActionableDownloadCause(t *testing.T) {
 	err := errors.New("action command failed: exit status 1: Error: Download failed: Timed-out. Please try to resume.")
 	got := formatEnginePullError("LM Studio", err)
 	want := "LM Studio experienced an error while downloading a model: Download failed: Timed-out. Please try to resume."
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
+	require.Equal(t, want, got)
 
 	got = formatEnginePullError("LM Studio", errors.New(""))
-	if got != "LM Studio experienced an error while downloading a model." {
-		t.Fatalf("empty detail: got %q", got)
-	}
+	require.Equal(t, "LM Studio experienced an error while downloading a model.", got, "empty detail:")
 }
 
-func TestFormatEnginePullErrorNotRunning(t *testing.T) {
+func TestFormatEnginePullError_IdentifiesStoppedEngine(t *testing.T) {
 	err := errors.New(`engine "fake" is not running`)
 	got := formatEnginePullError("Fake Engine", err)
-	if !strings.Contains(got, "Fake Engine experienced an error while downloading a model:") {
-		t.Fatalf("unexpected prefix: %q", got)
-	}
-	if !strings.Contains(got, `engine "fake" is not running`) {
-		t.Fatalf("expected engine detail in %q", got)
-	}
+	require.Contains(t, got, "Fake Engine experienced an error while downloading a model:", "unexpected prefix")
+	require.Contains(t, got, `engine "fake" is not running`, "expected engine detail in")
 }

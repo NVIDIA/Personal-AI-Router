@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -51,9 +54,7 @@ func nodeInfoServer(t *testing.T, hostUUID string) (host string, port int) {
 func openPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	t.Cleanup(func() { _ = ln.Close() })
 	_, port := splitHostPort(t, ln.Addr().String())
 	return port
@@ -65,26 +66,18 @@ func openPort(t *testing.T) int {
 func closedPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	_, port := splitHostPort(t, ln.Addr().String())
-	if err := ln.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	require.NoError(t, ln.Close(), "close")
 	return port
 }
 
 func splitHostPort(t *testing.T, addr string) (string, int) {
 	t.Helper()
 	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("split %q: %v", addr, err)
-	}
+	require.NoError(t, err, "split (%v, %v)", addr, err)
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("port %q: %v", portStr, err)
-	}
+	require.NoError(t, err, "port (%v, %v)", portStr, err)
 	return host, port
 }
 
@@ -101,34 +94,30 @@ func rawNode(txt ...string) RawNode {
 // cached address and ports are live — they belong to the machine's NEW
 // incarnation — so a TCP-only probe reports the stale record alive forever. The
 // probe must ask WHO answers, not just WHETHER anything answers.
-func TestReachableRejectsSupersededIdentity(t *testing.T) {
+func TestReachable_RejectsSupersededIdentity(t *testing.T) {
 	host, port := nodeInfoServer(t, "new-uuid-after-wipe")
 	d := probeDaemon()
 
 	n := rawNode("v=1", "uuid=old-uuid-before-wipe", "ip="+host, fmt.Sprintf("ni=%d", port))
-	if d.reachable(n) {
-		t.Fatal("a record whose address now answers with a DIFFERENT hostUuid must not be kept alive")
-	}
+	require.False(t, d.reachable(n), "a record whose address now answers with a DIFFERENT hostUuid must not be kept alive")
 }
 
 // TestReachableAcceptsMatchingIdentity guards the other direction: a peer that
 // merely dropped off multicast must survive the probe, or a transient mDNS gap
 // would evict healthy nodes.
-func TestReachableAcceptsMatchingIdentity(t *testing.T) {
+func TestReachable_AcceptsMatchingIdentity(t *testing.T) {
 	host, port := nodeInfoServer(t, "steady-uuid")
 	d := probeDaemon()
 
 	n := rawNode("v=1", "uuid=steady-uuid", "ip="+host, fmt.Sprintf("ni=%d", port))
-	if !d.reachable(n) {
-		t.Fatal("a record whose address confirms the same hostUuid must be kept alive")
-	}
+	require.True(t, d.reachable(n), "a record whose address confirms the same hostUuid must be kept alive")
 }
 
 // TestReachableFallsBackWithoutIdentity covers every way identity can be
 // unavailable. None of them may change today's behaviour: an open ni/em port
 // still means alive, so no node that used to survive a probe starts evicting.
 // Inference ports (ol/lm) are never used as the TCP fallback.
-func TestReachableFallsBackWithoutIdentity(t *testing.T) {
+func TestReachable_FallsBackWithoutIdentity(t *testing.T) {
 	tcpPort := openPort(t)
 	niHost, niPort := nodeInfoServer(t, "") // answers, but reports no identity
 
@@ -157,25 +146,19 @@ func TestReachableFallsBackWithoutIdentity(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if !probeDaemon().reachable(rawNode(tc.txt...)) {
-				t.Fatal("with identity unavailable the probe must fall back to the TCP sweep")
-			}
+			require.True(t, probeDaemon().reachable(rawNode(tc.txt...)), "with identity unavailable the probe must fall back to the TCP sweep")
 		})
 	}
 }
 
 // TestReachableEvictsWhenNothingAnswers keeps the base case honest: a node that
 // is genuinely gone still evicts.
-func TestReachableEvictsWhenNothingAnswers(t *testing.T) {
+func TestReachable_EvictsWhenNothingAnswers(t *testing.T) {
 	d := probeDaemon()
 	dead := rawNode("v=1", "uuid=gone", "ip=127.0.0.1",
 		fmt.Sprintf("ni=%d", closedPort(t)), fmt.Sprintf("ol=%d", closedPort(t)))
-	if d.reachable(dead) {
-		t.Fatal("a node answering on nothing must not be kept alive")
-	}
-	if d.reachable(rawNode("v=1", "uuid=identity-only", "ip=127.0.0.1")) {
-		t.Fatal("a node advertising no services has nothing to probe and must evict")
-	}
+	require.False(t, d.reachable(dead), "a node answering on nothing must not be kept alive")
+	require.False(t, d.reachable(rawNode("v=1", "uuid=identity-only", "ip=127.0.0.1")), "a node advertising no services has nothing to probe and must evict")
 }
 
 // countingTransport records how many HTTP requests the probe actually issues.
@@ -197,28 +180,20 @@ func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // node-info timeout on every departed node, serially, inside the browser's scan
 // cycle. The verdicts are identical either way, so nothing but a request count
 // can catch a regression here.
-func TestReachableSkipsIdentityWhenNothingAnswers(t *testing.T) {
+func TestReachable_SkipsIdentityWhenNothingAnswers(t *testing.T) {
 	counter := &countingTransport{}
 	d := &daemon{http: &http.Client{Transport: counter, Timeout: nodeInfoFetchTimeout}}
 
 	dead := rawNode("v=1", "uuid=gone", "ip=127.0.0.1",
 		fmt.Sprintf("ni=%d", closedPort(t)), fmt.Sprintf("ol=%d", closedPort(t)))
-	if d.reachable(dead) {
-		t.Fatal("a node answering on nothing must not be kept alive")
-	}
-	if counter.n != 0 {
-		t.Fatalf("a departed node cost %d node-info request(s); the TCP sweep must settle it alone", counter.n)
-	}
+	require.False(t, d.reachable(dead), "a node answering on nothing must not be kept alive")
+	require.Equal(t, 0, counter.n, "a departed node cost")
 
 	// When the address DOES answer, the identity read is exactly what decides it.
 	host, port := nodeInfoServer(t, "someone-else")
 	live := rawNode("v=1", "uuid=old-uuid", "ip="+host, fmt.Sprintf("ni=%d", port))
-	if d.reachable(live) {
-		t.Fatal("an answering address reporting a different hostUuid must evict")
-	}
-	if counter.n != 1 {
-		t.Fatalf("node-info requests = %d, want exactly 1 once the address answered", counter.n)
-	}
+	require.False(t, d.reachable(live), "an answering address reporting a different hostUuid must evict")
+	require.Equal(t, 1, counter.n, "node-info requests")
 }
 
 // testNow is captured once so every ghost() in a run shares one base: LastSeen
@@ -262,44 +237,36 @@ func candidateUUIDs(nodes []noderec.DirectoryNode) string {
 // machine reappears under a new uuid at the same address and hostname, the
 // record it replaced is put forward for confirmation — and left in place until
 // it is confirmed.
-func TestSupersedeCandidatesNominatesGhost(t *testing.T) {
+func TestSupersedeCandidates_NominatesGhost(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("old-uuid", "192.168.1.10", 3600))
 
 	candidates := d.supersedeCandidates(ghost("new-uuid", "192.168.1.10", 0), "self-uuid")
-	if len(candidates) != 1 || candidates[0].HostUUID != "old-uuid" {
-		t.Fatalf("candidates = %+v, want exactly the pre-wipe record", candidates)
-	}
-	if _, ok := d.get("old-uuid"); !ok {
-		t.Fatal("nominating a record must not delete it; only proof may")
-	}
+	require.Len(t, candidates, 1, "candidates")
+	require.Equal(t, "old-uuid", candidates[0].HostUUID, "candidates (%v)", candidates)
+	_, ok := d.get("old-uuid")
+	require.True(t, ok, "nominating a record must not delete it; only proof may")
 }
 
 // TestSupersedeCandidatesKeepFreshNeighbours is the false-positive guard: two
 // records observed at about the same time are the shape a misconfiguration
 // takes, not a wipe, and are not worth a probe.
-func TestSupersedeCandidatesKeepFreshNeighbours(t *testing.T) {
+func TestSupersedeCandidates_KeepFreshNeighbourRecords(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("peer-a", "192.168.1.10", supersedeMinAge-1))
 
-	candidates := d.supersedeCandidates(ghost("peer-b", "192.168.1.10", 0), "self-uuid")
-	if len(candidates) != 0 {
-		t.Fatalf("a gap under supersedeMinAge must not nominate: %+v", candidates)
-	}
+	require.Empty(t, d.supersedeCandidates(ghost("peer-b", "192.168.1.10", 0), "self-uuid"), "a gap under supersedeMinAge must not nominate")
 }
 
 // TestSupersedeCandidatesRequireSameHostname keeps the nomination narrow. Two
 // machines colliding on an address almost never also collide on a hostname, so a
 // name mismatch means we are not looking at one machine. The wiped-AND-renamed
 // case is left to the miss-threshold path, which reaches the same proof.
-func TestSupersedeCandidatesRequireSameHostname(t *testing.T) {
+func TestSupersedeCandidates_RequireMatchingHostname(t *testing.T) {
 	d := newDirectory()
 	d.upsert(named("old-uuid", "old-name", "192.168.1.10", 3600))
 
-	candidates := d.supersedeCandidates(named("new-uuid", "new-name", "192.168.1.10", 0), "self-uuid")
-	if len(candidates) != 0 {
-		t.Fatalf("a different hostname on the address must not be nominated: %+v", candidates)
-	}
+	require.Empty(t, d.supersedeCandidates(named("new-uuid", "new-name", "192.168.1.10", 0), "self-uuid"), "a different hostname on the address must not be nominated")
 }
 
 // TestSupersedeCandidatesIgnoreTheAddress covers the signal that was removed. A
@@ -308,22 +275,19 @@ func TestSupersedeCandidatesRequireSameHostname(t *testing.T) {
 // other direction, sharing an address is no longer a reason to nominate
 // anything, which is what stopped two hosts on a direct-connect link from
 // putting each other forward.
-func TestSupersedeCandidatesIgnoreTheAddress(t *testing.T) {
+func TestSupersedeCandidates_IgnoreAddressWhenComparingIdentity(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("peer-a", "192.168.1.10", 3600))
 
 	candidates := d.supersedeCandidates(ghost("peer-b", "192.168.1.11", 0), "self-uuid")
-	if len(candidates) != 1 || candidates[0].HostUUID != "peer-a" {
-		t.Fatalf("candidates = %+v, want the stale namesake that moved", candidates)
-	}
+	require.Len(t, candidates, 1, "candidates")
+	require.Equal(t, "peer-a", candidates[0].HostUUID, "candidates (%v)", candidates)
 
 	// The arriving record must still carry an address: that is where the
 	// confirming read is made, so without one there is nothing to ask.
 	d2 := newDirectory()
 	d2.upsert(ghost("peer-c", "192.168.1.10", 3600))
-	if candidates := d2.supersedeCandidates(ghost("peer-d", "", 0), "self-uuid"); len(candidates) != 0 {
-		t.Fatalf("an unaddressable arrival can prove nothing: %+v", candidates)
-	}
+	require.Empty(t, d2.supersedeCandidates(ghost("peer-d", "", 0), "self-uuid"), "an unaddressable arrival can prove nothing")
 }
 
 // TestSupersedeCandidatesNeverIncludeSelf protects the local card. Self is
@@ -331,42 +295,34 @@ func TestSupersedeCandidatesIgnoreTheAddress(t *testing.T) {
 // can legitimately look stale — it must not be displaceable by a peer claiming
 // its address. Evicting the local node is a failure mode this daemon has hit
 // before (see the self-guard in onBrowse).
-func TestSupersedeCandidatesNeverIncludeSelf(t *testing.T) {
+func TestSupersedeCandidates_NeverIncludeSelf(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("self-uuid", "192.168.1.10", 3600))
 
-	candidates := d.supersedeCandidates(ghost("peer-uuid", "192.168.1.10", 0), "self-uuid")
-	if len(candidates) != 0 {
-		t.Fatalf("self must never be nominated by a peer: %+v", candidates)
-	}
+	require.Empty(t, d.supersedeCandidates(ghost("peer-uuid", "192.168.1.10", 0), "self-uuid"), "self must never be nominated by a peer")
 
 	// Nor may the local record nominate peers on its way in.
 	d2 := newDirectory()
 	d2.upsert(ghost("peer-uuid", "192.168.1.10", 3600))
-	if candidates := d2.supersedeCandidates(ghost("self-uuid", "192.168.1.10", 0), "self-uuid"); len(candidates) != 0 {
-		t.Fatalf("self must not nominate peers: %+v", candidates)
-	}
+	require.Empty(t, d2.supersedeCandidates(ghost("self-uuid", "192.168.1.10", 0), "self-uuid"), "self must not nominate peers")
 }
 
 // TestSupersedeCandidatesAreDeterministic pins the order, since the caller turns
 // the confirmed subset into a stream of node-removed notifications.
-func TestSupersedeCandidatesAreDeterministic(t *testing.T) {
+func TestSupersedeCandidates_AreDeterministic(t *testing.T) {
 	d := newDirectory()
 	d.upsert(ghost("uuid-c", "192.168.1.10", 3600))
 	d.upsert(ghost("uuid-a", "192.168.1.10", 7200))
 	d.upsert(ghost("uuid-b", "192.168.1.10", 5400))
 
-	got := candidateUUIDs(d.supersedeCandidates(ghost("uuid-live", "192.168.1.10", 0), "self-uuid"))
-	if want := "uuid-a,uuid-b,uuid-c"; got != want {
-		t.Fatalf("candidate order = %v, want %v (sorted by hostUuid)", got, want)
-	}
+	require.Equal(t, "uuid-a,uuid-b,uuid-c", candidateUUIDs(d.supersedeCandidates(ghost("uuid-live", "192.168.1.10", 0), "self-uuid")), "candidate order")
 }
 
 // TestUpsertEvictingRejudgesRecordsThatMoved covers the gap the proof opens: it
 // is a network read, so the directory is unlocked while it runs and the entry
 // under judgement can change underneath it. A verdict formed against a state
 // that no longer exists must not be applied to the state that replaced it.
-func TestUpsertEvictingRejudgesRecordsThatMoved(t *testing.T) {
+func TestUpsertEvicting_RechecksRecordsWhoseAddressChanged(t *testing.T) {
 	d := newDirectory()
 	judged := named("old-uuid", "wiped-host", "192.168.1.10", 3600)
 	d.upsert(judged)
@@ -376,15 +332,11 @@ func TestUpsertEvictingRejudgesRecordsThatMoved(t *testing.T) {
 	d.upsert(moved)
 
 	arriving := named("new-uuid", "wiped-host", "192.168.1.10", 0)
-	if evicted := d.upsertEvicting(arriving, []noderec.DirectoryNode{judged}); len(evicted) != 0 {
-		t.Fatalf("a record that changed during the probe must be judged again, not evicted: %+v", evicted)
-	}
-	if _, ok := d.get("old-uuid"); !ok {
-		t.Fatal("the re-addressed record must survive")
-	}
-	if _, ok := d.get("new-uuid"); !ok {
-		t.Fatal("the arriving node must be stored either way")
-	}
+	require.Empty(t, d.upsertEvicting(arriving, []noderec.DirectoryNode{judged}), "a record that changed during the probe must be judged again, not evicted")
+	_, ok := d.get("old-uuid")
+	require.True(t, ok, "the re-addressed record must survive")
+	_, ok = d.get("new-uuid")
+	require.True(t, ok, "the arriving node must be stored either way")
 }
 
 // TestSupersedingUpsertRequiresIdentityProof is the security guard. Address and
@@ -393,7 +345,7 @@ func TestUpsertEvictingRejudgesRecordsThatMoved(t *testing.T) {
 // would let anything on the LAN delete a live node by claiming its address —
 // and the browser re-reports a node only when its record CHANGES, so the peer
 // might never come back. Nothing is deleted without an answer from the machine.
-func TestSupersedingUpsertRequiresIdentityProof(t *testing.T) {
+func TestSupersedingUpsert_RequiresIdentityProof(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
 	// Nothing is listening on the record's own ni port, so it cannot speak for
 	// itself and the claimant's answer is the only evidence in play.
@@ -402,32 +354,27 @@ func TestSupersedingUpsertRequiresIdentityProof(t *testing.T) {
 
 	// Nothing to ask: the claimant advertises no node-info port.
 	d.supersedingUpsert(claim)
-	if _, ok := d.dir.get("live-uuid"); !ok {
-		t.Fatal("an unprovable claim must never evict a peer: mDNS is not a removal primitive")
-	}
+	_, ok := d.dir.get("live-uuid")
+	require.True(t, ok, "an unprovable claim must never evict a peer: mDNS is not a removal primitive")
 
 	// Asked, but unanswerable — the same verdict.
 	d.supersedingUpsert(withNodeInfo(claim, closedPort(t)))
-	if _, ok := d.dir.get("live-uuid"); !ok {
-		t.Fatal("an address that cannot answer proves nothing; the peer must survive")
-	}
+	_, ok = d.dir.get("live-uuid")
+	require.True(t, ok, "an address that cannot answer proves nothing; the peer must survive")
 
 	// Answered, and the machine is still the node the record describes.
 	_, alivePort := nodeInfoServer(t, "live-uuid")
 	d.supersedingUpsert(withNodeInfo(claim, alivePort))
-	if _, ok := d.dir.get("live-uuid"); !ok {
-		t.Fatal("node-info confirming the record's own identity must keep it")
-	}
+	_, ok = d.dir.get("live-uuid")
+	require.True(t, ok, "node-info confirming the record's own identity must keep it")
 
 	// Only a definite mismatch collapses the pair.
 	_, wipedPort := nodeInfoServer(t, "claimant-uuid")
 	d.supersedingUpsert(withNodeInfo(claim, wipedPort))
-	if _, ok := d.dir.get("live-uuid"); ok {
-		t.Fatal("node-info naming a different host is proof; the superseded record must go")
-	}
-	if _, ok := d.dir.get("claimant-uuid"); !ok {
-		t.Fatal("the arriving node must be stored")
-	}
+	_, ok = d.dir.get("live-uuid")
+	require.False(t, ok, "node-info naming a different host is proof; the superseded record must go")
+	_, ok = d.dir.get("claimant-uuid")
+	require.True(t, ok, "the arriving node must be stored")
 }
 
 // TestSupersedingUpsertKeepsARecordThatAnswersForItself is the case that made
@@ -436,7 +383,7 @@ func TestSupersedingUpsertRequiresIdentityProof(t *testing.T) {
 // the pair is now told apart by asking the older record's own endpoint who it
 // is. A record that names itself is a live peer, not a leftover, whatever
 // address the arriving node claims.
-func TestSupersedingUpsertKeepsARecordThatAnswersForItself(t *testing.T) {
+func TestSupersedingUpsert_KeepsARecordThatAnswersForItself(t *testing.T) {
 	host, livePort := nodeInfoServer(t, "peer-a")
 	_, claimPort := nodeInfoServer(t, "peer-b")
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
@@ -444,34 +391,31 @@ func TestSupersedingUpsertKeepsARecordThatAnswersForItself(t *testing.T) {
 
 	d.supersedingUpsert(withNodeInfo(named("peer-b", "dgx-station", host, 0), claimPort))
 
-	if _, ok := d.dir.get("peer-a"); !ok {
-		t.Fatal("a record still answering with its own hostUuid is a live peer sharing an address, not a ghost")
-	}
-	if _, ok := d.dir.get("peer-b"); !ok {
-		t.Fatal("the arriving node must be stored")
-	}
+	_, ok := d.dir.get("peer-a")
+	require.True(t, ok, "a record still answering with its own hostUuid is a live peer sharing an address, not a ghost")
+	_, ok = d.dir.get("peer-b")
+	require.True(t, ok, "the arriving node must be stored")
 }
 
 // TestSupersedingUpsertKeepsAnUnaskableRecord covers the other half of that
 // defence: with no ni port to ask, a live namesake and a leftover look
 // identical, so the record stays and the miss-threshold path reaches it when it
 // stops advertising.
-func TestSupersedingUpsertKeepsAnUnaskableRecord(t *testing.T) {
+func TestSupersedingUpsert_KeepsAnUnaskableRecord(t *testing.T) {
 	host, claimPort := nodeInfoServer(t, "claimant-uuid")
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
 	d.dir.upsert(named("live-uuid", "wiped-host", host, 3600))
 
 	d.supersedingUpsert(withNodeInfo(named("claimant-uuid", "wiped-host", host, 0), claimPort))
 
-	if _, ok := d.dir.get("live-uuid"); !ok {
-		t.Fatal("a record that cannot be asked who it is must never be evicted here")
-	}
+	_, ok := d.dir.get("live-uuid")
+	require.True(t, ok, "a record that cannot be asked who it is must never be evicted here")
 }
 
 // TestOnBrowseEmitsSupersededRemoval covers the wiring: the daemon must tell the
 // broker the ghost is gone, and drop its cached enrichment so a later
 // rediscovery under that uuid re-probes instead of resurrecting stale metrics.
-func TestOnBrowseEmitsSupersededRemoval(t *testing.T) {
+func TestOnBrowse_EmitsSupersededRemoval(t *testing.T) {
 	host, port := nodeInfoServer(t, "new-uuid")
 	d := newSelfTestDaemon("self-uuid", "192.168.1.1")
 	d.dir.upsert(withNodeInfo(ghost("old-uuid", host, 3600), closedPort(t)))
@@ -486,16 +430,11 @@ func TestOnBrowseEmitsSupersededRemoval(t *testing.T) {
 		},
 	})
 
-	if _, ok := d.dir.get("old-uuid"); ok {
-		t.Fatal("onBrowse must collapse the record the arriving node is proven to replace")
-	}
-	if _, ok := d.dir.get("new-uuid"); !ok {
-		t.Fatal("the arriving node must be stored")
-	}
+	_, ok := d.dir.get("old-uuid")
+	require.False(t, ok, "onBrowse must collapse the record the arriving node is proven to replace")
+	_, ok = d.dir.get("new-uuid")
+	require.True(t, ok, "the arriving node must be stored")
 	d.infoMu.Lock()
-	_, cached := d.lastInfo["old-uuid"]
+	assert.NotContains(t, d.lastInfo, "old-uuid", "a superseded node's enrichment cache must be dropped")
 	d.infoMu.Unlock()
-	if cached {
-		t.Fatal("a superseded node's enrichment cache must be dropped")
-	}
 }

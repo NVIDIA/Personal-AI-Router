@@ -9,7 +9,8 @@
 // Its installer targets are reference material rather than a distribution path:
 // signing and notarization live outside this repository, so anything built here
 // is unsigned. Released builds come from NVIDIA's own signed pipeline.
-import { readFileSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import type { Configuration } from 'electron-builder'
 import electronPkg from 'electron/package.json'
 import pkg from './package.json'
@@ -27,10 +28,7 @@ import {
     modularBinaryFileName,
     modularShippedBinaryBaseNames
 } from './src/shared/constants/modular-binaries'
-import {
-    INFERENCE_DISPATCHER_RESOURCE_DIR,
-    inferenceDispatcherFileName
-} from './src/shared/constants/inference-dispatcher'
+import { inferenceDispatcherFileName } from './src/shared/constants/inference-dispatcher'
 import type { JsonValue } from './src/shared/types/json'
 import type { SupportedPlatform } from './src/shared/types/platform'
 import { macAfterAllArtifactBuild, macAfterPack } from './scripts/build/macos/hooks'
@@ -56,12 +54,18 @@ const osSegment =
               : null
 
 const output = osSegment ? `release/${pkg.version}/${osSegment}` : `release/${pkg.version}`
-// Only Windows uses the display name as the packaging product name (drives NSIS
-// branding; the install dir and executable are pinned to APP_EXECUTABLE_NAME via
-// win.executableName). macOS and Linux keep the technical name so the app bundle
-// (`PAIR.app`) and Linux install dir (`/opt/PAIR`) stay stable — existing
-// generated CLI launchers embed those absolute paths.
-const packagingProductName = osSegment === 'windows' ? APP_DISPLAY_NAME : APP_EXECUTABLE_NAME
+const vcRedistStagedPath = '../.build/vc-redist/VC_redist.x64.exe'
+const vcRedistProvenancePath = '../.build/vc-redist/manifest.json'
+// Windows and macOS use the display name as the packaging product name. On
+// Windows it drives the NSIS branding; the install dir and executable are pinned
+// to APP_EXECUTABLE_NAME via win.executableName. On macOS it sets CFBundleName,
+// and mac.executableName names the bundle, `NVIDIA PAIR.app`: those are what
+// Finder, the Dock, Launchpad, Spotlight, and the menu bar show, and
+// CFBundleDisplayName alone is ignored there. Linux keeps the technical name so
+// its install dir stays `/opt/PAIR`, which the packaged `/usr/bin/nvpair`
+// wrapper embeds.
+const packagingProductName =
+    osSegment === 'windows' || osSegment === 'mac' ? APP_DISPLAY_NAME : APP_EXECUTABLE_NAME
 
 function packagingPlatform(): SupportedPlatform {
     const platform =
@@ -87,6 +91,11 @@ function assertCliBinPackagingInputs(): void {
         ...modularShippedBinaryBaseNames().map(baseName =>
             modularBinaryFileName(baseName, platform)
         ),
+        // The Inference Demo's HTTP client. Not a services component, but it
+        // ships here so the terminal interface can find it beside its own
+        // executable — see INFERENCE_DISPATCHER_BASE_NAME. Named explicitly so
+        // the set stays exact and a genuine stray is still rejected.
+        inferenceDispatcherFileName(platform),
         'manifest.json'
     ])
     const entries = readdirSync('cli-bin', { withFileTypes: true })
@@ -144,58 +153,41 @@ function assertCliBinPackagingInputs(): void {
     }
 }
 
-/**
- * The same guarantee `assertCliBinPackagingInputs` gives cli-bin, for the
- * `inference-dispatcher` client in `tools/`. Its own manifest records the real
- * target, because the file name alone cannot distinguish a linux build from a
- * macOS one or x64 from arm64.
- */
-function assertToolsPackagingInputs(): void {
-    const platform = packagingPlatform()
-    const expected = new Set([inferenceDispatcherFileName(platform), 'manifest.json'])
-
-    const entries = readdirSync(INFERENCE_DISPATCHER_RESOURCE_DIR, { withFileTypes: true })
-    const unexpected = entries
-        .filter(entry => !entry.isFile() || !expected.has(entry.name))
-        .map(entry => entry.name)
-        .sort()
-    const missing = [...expected].filter(
-        fileName => !entries.some(entry => entry.name === fileName)
-    )
-
-    if (unexpected.length > 0 || missing.length > 0) {
+function assertVcRedistPackagingInput(): void {
+    if (!existsSync(vcRedistStagedPath) || !existsSync(vcRedistProvenancePath)) {
         throw new Error(
-            [
-                `Refusing to package an invalid ${INFERENCE_DISPATCHER_RESOURCE_DIR} directory.`,
-                unexpected.length > 0 ? `Unexpected: ${unexpected.join(', ')}` : '',
-                missing.length > 0 ? `Missing: ${missing.join(', ')}` : '',
-                'Run npm run build:tools for the target platform.'
-            ]
-                .filter(Boolean)
-                .join('\n')
+            'The staged Visual C++ Redistributable or its provenance is missing. ' +
+                'Run npm run stage:vc-redist.'
         )
     }
 
-    const manifest: JsonValue = JSON.parse(
-        readFileSync(`${INFERENCE_DISPATCHER_RESOURCE_DIR}/manifest.json`, 'utf8')
-    )
-    if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
-        throw new Error(`${INFERENCE_DISPATCHER_RESOURCE_DIR}/manifest.json is not a JSON object.`)
-    }
-    const manifestPlatform = manifest['platform']
-    const manifestArch = manifest['arch']
-    if (manifestPlatform !== platform) {
+    const provenance: JsonValue = JSON.parse(readFileSync(vcRedistProvenancePath, 'utf8'))
+    if (
+        typeof provenance !== 'object' ||
+        provenance === null ||
+        Array.isArray(provenance) ||
+        provenance['schemaVersion'] !== 1 ||
+        provenance['sourceUrl'] !== 'https://aka.ms/vc14/vc_redist.x64.exe' ||
+        typeof provenance['resolvedUrl'] !== 'string' ||
+        typeof provenance['minimumVersion'] !== 'string' ||
+        typeof provenance['version'] !== 'string' ||
+        typeof provenance['signerSubject'] !== 'string' ||
+        typeof provenance['signerThumbprint'] !== 'string' ||
+        !/^[0-9A-F]{40}$/.test(provenance['signerThumbprint']) ||
+        typeof provenance['sha256'] !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(provenance['sha256'])
+    ) {
         throw new Error(
-            `${INFERENCE_DISPATCHER_RESOURCE_DIR} was built for platform ` +
-                `"${String(manifestPlatform)}" but packaging targets "${platform}". ` +
-                'Run npm run build:tools for the target platform.'
+            'The staged Visual C++ Redistributable provenance is invalid. ' +
+                'Run npm run stage:vc-redist.'
         )
     }
-    if (selectedArchs.length !== 1 || selectedArchs[0] !== manifestArch) {
+
+    const digest = createHash('sha256').update(readFileSync(vcRedistStagedPath)).digest('hex')
+    if (digest !== provenance['sha256']) {
         throw new Error(
-            `${INFERENCE_DISPATCHER_RESOURCE_DIR} was built for arch "${String(manifestArch)}" ` +
-                `but packaging targets ${selectedArchs.join(', ')}. Package exactly one ` +
-                'architecture (pass --x64 or --arm64).'
+            'The staged Visual C++ Redistributable does not match its provenance. ' +
+                'Run npm run stage:vc-redist.'
         )
     }
 }
@@ -214,7 +206,6 @@ const selectedArchs: PkgArch[] =
           : ['x64', 'arm64']
 
 assertCliBinPackagingInputs()
-assertToolsPackagingInputs()
 
 // Pin the NSIS payload's 7z branch filter to BCJ.
 //
@@ -235,6 +226,7 @@ assertToolsPackagingInputs()
 // internal-build/electron-builder.config.ts imports this module, so the signed
 // pipeline and every local build inherit it.
 if (osSegment === 'windows') {
+    assertVcRedistPackagingInput()
     process.env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ'
 }
 
@@ -276,20 +268,16 @@ const config: Configuration = {
     /**
      * Ship the modular Go subprocesses outside the asar so the Electron main
      * process can spawn them from `process.resourcesPath/cli-bin`.
+     *
+     * `cli-bin` also carries the Inference Demo's `inference-dispatcher`, which
+     * is not a services binary. It shares the directory so `nvpair-tui` — which
+     * runs the same demo and resolves the dispatcher next to its own executable
+     * — finds it in a packaged app as well as in a services install.
      */
     extraResources: [
         {
             from: 'cli-bin',
             to: 'cli-bin'
-        },
-        {
-            // The `inference-dispatcher` HTTP client the Inference Demo spawns
-            // (built by scripts/build-inference-dispatcher.ts). It ships beside
-            // cli-bin rather than inside it because it is not a services binary:
-            // no JSON-RPC, absent from services/versions.json, never supervised
-            // by the broker.
-            from: INFERENCE_DISPATCHER_RESOURCE_DIR,
-            to: INFERENCE_DISPATCHER_RESOURCE_DIR
         },
         {
             // Repo-root wipe scripts (append-only inventory). Packaged builds call
@@ -333,13 +321,27 @@ const config: Configuration = {
         {
             from: '../THIRD_PARTY_NOTICES.md',
             to: 'THIRD_PARTY_NOTICES.md'
-        }
+        },
+        ...(osSegment === 'windows'
+            ? [
+                  {
+                      // Installed as a machine prerequisite, then deleted by
+                      // scripts/build/installer.nsh.
+                      from: vcRedistStagedPath,
+                      to: 'installer-tools/VC_redist.x64.exe'
+                  }
+              ]
+            : [])
     ],
     win: {
         executableName: APP_EXECUTABLE_NAME,
         // The public build is unsigned. NVIDIA Authenticode signing is layered
         // on by internal-build/electron-builder.config.ts.
         icon: './resources/icons/logo.ico',
+        // electron-builder signs every extra-resource .exe by default. Preserve
+        // Microsoft's verified signature on the prerequisite instead of
+        // replacing it with the application publisher's signature.
+        signExts: ['!VC_redist.x64.exe'],
         target: [
             {
                 target: 'nsis',
@@ -393,7 +395,9 @@ const config: Configuration = {
         afterRemove: 'scripts/build/linux/after-remove.sh'
     },
     mac: {
-        executableName: APP_EXECUTABLE_NAME,
+        // electron-builder names the bundle after the executable, so this is
+        // what makes it `NVIDIA PAIR.app`; see packagingProductName.
+        executableName: APP_DISPLAY_NAME,
         extendInfo: {
             CFBundleDisplayName: APP_DISPLAY_NAME
         },

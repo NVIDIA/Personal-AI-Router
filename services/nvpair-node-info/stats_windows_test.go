@@ -8,6 +8,8 @@ package main
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestLuidKey locks down the PDH instance-name format. If this ever drifts
@@ -19,7 +21,7 @@ import (
 // adapters) and a non-zero high case, which additionally verifies we use
 // bit-reinterpretation for the signed HighPart rather than numeric sign-
 // extension.
-func TestLuidKey(t *testing.T) {
+func TestLuidKey_FormatsAdapterIdentity(t *testing.T) {
 	cases := []struct {
 		name string
 		low  uint32
@@ -31,10 +33,7 @@ func TestLuidKey(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := luidKey(c.low, c.high)
-			if got != c.want {
-				t.Fatalf("luidKey(%#x, %#x) = %q, want %q", c.low, c.high, got, c.want)
-			}
+			require.Equal(t, c.want, luidKey(c.low, c.high), "luidKey")
 		})
 	}
 }
@@ -45,11 +44,9 @@ func TestLuidKey(t *testing.T) {
 // decodeCPU hands a pointer to one of these directly to
 // PdhGetFormattedCounterValue, so a layout drift would corrupt PDH's
 // write into the CPU percentage.
-func TestPDHFmtCounterValueSize(t *testing.T) {
+func TestPDHFmtCounterValue_MatchesNativeStructureSize(t *testing.T) {
 	const expected = 16
-	if got := unsafe.Sizeof(pdhFmtCounterValue{}); got != expected {
-		t.Fatalf("pdhFmtCounterValue size = %d, want %d", got, expected)
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(pdhFmtCounterValue{}), "pdhFmtCounterValue size")
 }
 
 // TestPDHFmtCounterValueItemSize pins the in-Go layout of
@@ -58,11 +55,9 @@ func TestPDHFmtCounterValueSize(t *testing.T) {
 // If this fires, someone has reordered the fields or we've accidentally
 // compiled for 32-bit Windows — either way PDH would be handed garbage
 // and every lookup would silently fail.
-func TestPDHFmtCounterValueItemSize(t *testing.T) {
+func TestPDHFmtCounterValueItem_MatchesNativeStructureSize(t *testing.T) {
 	const expected = 24
-	if got := unsafe.Sizeof(pdhFmtCounterValueItemW{}); got != expected {
-		t.Fatalf("pdhFmtCounterValueItemW size = %d, want %d", got, expected)
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(pdhFmtCounterValueItemW{}), "pdhFmtCounterValueItemW size")
 }
 
 // TestMemoryStatusExSize pins the in-Go layout of memoryStatusEx to
@@ -72,9 +67,7 @@ func TestPDHFmtCounterValueItemSize(t *testing.T) {
 // ERROR_INVALID_PARAMETER because dwLength no longer matches, or
 // (worse, if we set dwLength to the wrong size manually) corrupt the
 // stack when the OS writes past our struct.
-func TestMemoryStatusExSize(t *testing.T) {
+func TestMemoryStatusEx_MatchesNativeStructureSize(t *testing.T) {
 	const expected = 64
-	if got := unsafe.Sizeof(memoryStatusEx{}); got != expected {
-		t.Fatalf("memoryStatusEx size = %d, want %d", got, expected)
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(memoryStatusEx{}), "memoryStatusEx size")
 }

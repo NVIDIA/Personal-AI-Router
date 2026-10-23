@@ -12,7 +12,7 @@ import {
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 import { engineManagerName } from '@/shared/utils/engines'
-import { getEngineHubModels } from '@/electron/model-hub'
+import { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import { getModularSupervisor } from './modular-supervisor'
 import {
     parseEngineSettings,
@@ -28,7 +28,6 @@ import {
 
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
 import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
-import { removeManualNodeEntry, resolveManualNodeKey } from './manual-nodes-store'
 
 type BridgeHandler<C extends WsInvokeChannel> = (
     payload?: WsInvokeRequest<C>
@@ -260,8 +259,8 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // first-class load action, so we POST its `run_model` HTTP action
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
-            // LM Studio declares a real `load_model` CLI action (`lms load`).
-            // Both require the engine running (HTTP/CLI action), matching the
+            // LM Studio and llama.cpp declare real `load_model` manifest actions.
+            // All require the engine running (HTTP/CLI action), matching the
             // disabled rule in ModelRow.tsx.
             // See docs/services-parity.md#models.
             if (payload.model) {
@@ -401,8 +400,7 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     // Proxy node selection is owned by the backend nvpair-job-scheduler (it drives
     // node/set-priority via the broker); PAIR UI never pins node/select, and a user
     // clicking "Load" must not pin a route. Ollama loads via its `run_model` HTTP
-    // action, LM Studio via its `load_model` CLI action — both handled locally in
-    // routeEngineManagerCommand.
+    // action; LM Studio and llama.cpp use their manifest `load_model` actions.
 
     // Remote peers: `nvpair-engine-manager` exposes `engine:remote-*` client methods
     // (cluster mTLS `ec` surface) for install/start/stop/pull and model ops.
@@ -631,20 +629,10 @@ async function handleNodeRemoveMember(
     const selfId = state.getSelfId()
     const isSelfLeave = selfId !== null && payload.nodeId === selfId
 
-    // `payload.nodeId` is the node's UUID, but the manual-nodes store and the
-    // broker's `node/remove` relay key a manual entry by the name it was added
-    // with — never the UUID. Map the UUID back through the node's reachable
-    // addresses to the persisted entry so it is actually pruned (and does not
-    // reappear on the next replay). If it is not a manual node (no address match)
-    // fall back to the display hostname, then the raw id; both are harmless
-    // no-ops for a purely-discovered peer. The broker supervises
-    // nvpair-manual-nodes and relays `node/*` verbatim.
-    const manualKey =
-        resolveManualNodeKey(state.getNodeAddresses(payload.nodeId)) ||
-        state.getNodeHostname(payload.nodeId) ||
-        payload.nodeId
-    removeManualNodeEntry(manualKey)
-    supervisor.callProcess('broker', 'node/remove', { id: manualKey }).catch(() => {})
+    // The broker owns manual-node persistence and resolves a stable node UUID
+    // back to the manual alias expected by nvpair-manual-nodes. For a purely
+    // discovered peer this remains a harmless no-op.
+    supervisor.callProcess('broker', 'node/remove', { id: payload.nodeId }).catch(() => {})
 
     if (isSelfLeave) {
         // Self-departure is `cluster:leave`, not `nodes:remove` (the cluster-manager
@@ -713,7 +701,7 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
         ),
     'engine:command': payload => handleEngineCommand(payload),
     'engine:search-hub': payload =>
-        payload ? getEngineHubModels(payload.engineType) : { models: [] },
+        payload ? getEngineHubModels(payload.engineType, payload.query) : { models: [] },
 
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),

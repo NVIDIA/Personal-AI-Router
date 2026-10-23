@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/reach"
@@ -38,7 +40,7 @@ func waitForTarget(t *testing.T, p *Proxy, n Node, want string) {
 			if u != nil {
 				got = u.Host
 			}
-			t.Fatalf("targetURL settled on %s, want %s", got, want)
+			require.FailNowf(t, "targetURL did not settle on the expected target", "got %s, want %s", got, want)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -62,7 +64,7 @@ func countingChooser(p *Proxy, accept bool) *atomic.Int32 {
 	return &dials
 }
 
-func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
+func TestChooseReachable_FailsOverForPinnedPeer(t *testing.T) {
 	const peerUUID = "principal-peer"
 	const reachable = "192.0.2.11"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
@@ -91,16 +93,14 @@ func TestChooseReachableFailsOverForPinnedPeer(t *testing.T) {
 	}
 	// The first request is not made to wait for the confirmation, so it uses the
 	// node's own top-ranked address; the ones behind it use the one that answers.
-	if u := p.soleFacade().targetURL(n); u == nil || u.Host != net.JoinHostPort("192.0.2.10", "11434") {
-		t.Fatalf("first selection = %v, want the published ranking without waiting", u)
-	}
+	u := p.soleFacade().targetURL(n)
+	require.NotNil(t, u, "first selection")
+	require.Equal(t, net.JoinHostPort("192.0.2.10", "11434"), u.Host, "first selection (%v)", u)
 	waitForTarget(t, p, n, net.JoinHostPort(reachable, "11434"))
-	if dials.Load() != 2 {
-		t.Fatalf("pinned peer triggered %d TCP probes, want both candidates tried", dials.Load())
-	}
+	require.Equal(t, int32(2), dials.Load(), "pinned peer triggered")
 }
 
-func TestChooseReachableProbesPlainMultiHomed(t *testing.T) {
+func TestChooseReachable_ProbesPlainMultiHomed(t *testing.T) {
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	dials := countingChooser(p, true)
 	n := Node{
@@ -108,14 +108,10 @@ func TestChooseReachableProbesPlainMultiHomed(t *testing.T) {
 		Port:      11434,
 		Addresses: []string{"192.0.2.10", "192.0.2.11"},
 	}
-	if u := p.soleFacade().targetURL(n); u == nil {
-		t.Fatal("targetURL returned nil")
-	}
+	require.NotNil(t, p.soleFacade().targetURL(n), "targetURL returned nil")
 	deadline := time.Now().Add(2 * time.Second)
 	for dials.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("plain multi-homed target did not confirm reachability")
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "plain multi-homed target did not confirm reachability")
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -123,7 +119,7 @@ func TestChooseReachableProbesPlainMultiHomed(t *testing.T) {
 // TestTargetURLFailsOverToAReachableAddress is the reported defect at the routing
 // layer: a peer whose canonical address is a direct-connect link this host cannot
 // reach must still be routed to, at the address that answers.
-func TestTargetURLFailsOverToAReachableAddress(t *testing.T) {
+func TestTargetURL_FailsOverToAReachableAddress(t *testing.T) {
 	const reachable = "10.172.55.129"
 	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
 	p.soleFacade().targets = reach.NewChooser(reach.WithDial(
@@ -151,21 +147,17 @@ func TestTargetURLFailsOverToAReachableAddress(t *testing.T) {
 // TestNodeCandidatesKeepsPublishedOrder: the node ranked its addresses from
 // evidence no observer has, so routing must try them in that order rather than
 // re-sorting by address class.
-func TestNodeCandidatesKeepsPublishedOrder(t *testing.T) {
+func TestNodeCandidates_KeepsPublishedOrder(t *testing.T) {
 	n := Node{
 		ID:        "spark",
 		Port:      11434,
 		Addresses: []string{"192.168.240.1", "10.172.55.129"},
 		TXT:       []string{"ip=10.172.55.129", "ips=10.172.55.129,192.168.240.1"},
 	}
-	got := nodeCandidates(n)
-	want := []string{
+	require.Equal(t, []string{
 		net.JoinHostPort("10.172.55.129", "11434"),
 		net.JoinHostPort("192.168.240.1", "11434"),
-	}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("nodeCandidates = %v, want %v", got, want)
-	}
+	}, nodeCandidates(n), "nodeCandidates")
 }
 
 // fakeNetwork is a chooser dialer whose accepting address can be moved, so a test
@@ -231,9 +223,7 @@ func assertReprobed(t *testing.T, p *Proxy, n Node, fake *fakeNetwork, replaceme
 	fake.accept(replacement)
 
 	waitForTarget(t, p, n, net.JoinHostPort(replacement, strconv.Itoa(n.Port)))
-	if fake.dials.Load() == probesBefore {
-		t.Fatal("selection probed nothing: the failed address is still cached")
-	}
+	require.NotEqual(t, probesBefore, fake.dials.Load(), "selection probed nothing: the failed address is still cached")
 }
 
 // TestUpstreamTransportFailureReprobesTheNextSelection: a dial failure against a
@@ -241,15 +231,13 @@ func assertReprobed(t *testing.T, p *Proxy, n Node, fake *fakeNetwork, replaceme
 // request keeps being sent to the address that just failed, and the peer's other
 // published addresses are never tried — which is the whole reason routing confirms
 // reachability in the first place.
-func TestUpstreamTransportFailureReprobesTheNextSelection(t *testing.T) {
+func TestUpstreamTransportFailure_ReprobesTheNextSelection(t *testing.T) {
 	const replacement = "192.0.2.11"
 	p, n, fake := confirmedDeadPeer(t, replacement)
 
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama"}`)))
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 from the only, unreachable candidate", rec.Code)
-	}
+	require.Equal(t, http.StatusBadGateway, rec.Code, "status")
 
 	assertReprobed(t, p, n, fake, replacement)
 }
@@ -257,15 +245,13 @@ func TestUpstreamTransportFailureReprobesTheNextSelection(t *testing.T) {
 // TestModelListTransportFailureReprobesTheNextSelection: the aggregated model list
 // reaches every candidate directly, so it learns about a dead address before any
 // inference request does, and must retire it on the same evidence.
-func TestModelListTransportFailureReprobesTheNextSelection(t *testing.T) {
+func TestModelListTransportFailure_ReprobesTheNextSelection(t *testing.T) {
 	const replacement = "192.0.2.11"
 	p, n, fake := confirmedDeadPeer(t, replacement)
 
 	rec := httptest.NewRecorder()
 	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tags", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 when the only inventory source is unreachable", rec.Code)
-	}
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "status")
 
 	assertReprobed(t, p, n, fake, replacement)
 }

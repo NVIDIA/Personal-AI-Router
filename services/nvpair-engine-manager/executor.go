@@ -19,7 +19,12 @@ import (
 	"time"
 )
 
-var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
+var (
+	winEnvRe = regexp.MustCompile(`%([^%]+)%`)
+	// Match named variables only so shell parameters such as $1 and $@ reach
+	// manifest commands unchanged.
+	unixEnvRe = regexp.MustCompile(`\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)`)
+)
 
 const (
 	engineResponseHeaderTimeout     = 30 * time.Second
@@ -43,6 +48,10 @@ type engineState struct {
 	plat       *Platform
 	logs       *logBuffer
 	installDir string
+	// modelsDir is the resolved {models_dir}: the engine's model store, which no
+	// removal this service performs may delete. Empty when the manifest declares
+	// none, in which case uninstall has nothing to preserve.
+	modelsDir string
 
 	// opMu serializes lifecycle operations (install / start / stop /
 	// restart / uninstall) for this engine, so concurrent calls can't
@@ -93,9 +102,18 @@ type Executor struct {
 	// detectTimeout bounds the post-install/uninstall detect poll
 	// (installers finish their file work asynchronously). Overridable.
 	detectTimeout time.Duration
-	// actionTimeout bounds a single engine:action call (HTTP or CLI) so a
-	// hung engine can't park the goroutine or starve the caller forever.
+	// actionTimeout bounds ordinary engine actions and CLI-driven model pulls so
+	// a hung engine can't park the goroutine or starve the caller forever.
 	actionTimeout time.Duration
+	// pullProgressTimeout bounds how long a streaming HTTP model pull may go
+	// without advancing a layer/file byte count. Advancing progress refreshes
+	// the deadline, allowing large active downloads to exceed actionTimeout.
+	pullProgressTimeout time.Duration
+	// pullStartTimeout lets an asynchronous pull finish its start handshake even
+	// after caller cancellation, so an accepted download can still be stopped.
+	pullStartTimeout time.Duration
+	// pullCleanupTimeout bounds the inventory check and download stop together.
+	pullCleanupTimeout time.Duration
 	// loadedPollInterval is the cadence of the loaded-model watcher
 	// (loadedwatch.go), which polls each running engine's resident set and emits
 	// engine:models-changed on change. 0 disables it. Overridable via
@@ -115,19 +133,22 @@ type Executor struct {
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
-		reg:                reg,
-		reporter:           reporter,
-		emit:               emit,
-		client:             newEngineHTTPClient(engineResponseHeaderTimeout),
-		ollamaLoadClient:   newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
-		progress:           newProgressHub(),
-		baseDir:            baseDir,
-		desired:            newDesiredStateStore(baseDir),
-		detectTimeout:      30 * time.Second,
-		actionTimeout:      30 * time.Minute,
-		loadedPollInterval: defaultLoadedPollSeconds * time.Second,
-		loadedPoke:         make(chan struct{}, 1),
-		engines:            make(map[string]*engineState),
+		reg:                 reg,
+		reporter:            reporter,
+		emit:                emit,
+		client:              newEngineHTTPClient(engineResponseHeaderTimeout),
+		ollamaLoadClient:    newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
+		progress:            newProgressHub(),
+		baseDir:             baseDir,
+		desired:             newDesiredStateStore(baseDir),
+		detectTimeout:       30 * time.Second,
+		actionTimeout:       30 * time.Minute,
+		pullProgressTimeout: 30 * time.Minute,
+		pullStartTimeout:    30 * time.Second,
+		pullCleanupTimeout:  5 * time.Second,
+		loadedPollInterval:  defaultLoadedPollSeconds * time.Second,
+		loadedPoke:          make(chan struct{}, 1),
+		engines:             make(map[string]*engineState),
 	}
 }
 
@@ -151,7 +172,8 @@ func (e *Executor) reservedPortError(port int) error {
 // Ollama's cold-load action gets a separate 10m client. Both set NO total
 // http.Client.Timeout: a multi-GB engine download can legitimately run
 // for many minutes and every call site already bounds total time with a
-// context deadline (download 30m, action actionTimeout, probe 3s). What
+// context deadline or inactivity watchdog (install download 30m, streaming
+// pull pullProgressTimeout, action actionTimeout, probe 3s). What
 // it adds over the zero-value client is (a) a bounded response-header
 // wait so a peer that accepts the connection but never replies can't park
 // a goroutine even inside a long context, and (b) a redirect policy that
@@ -211,20 +233,48 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		port:       plat.Runtime.Port,
 		installDir: filepath.Join(e.baseDir, engine),
 	}
+	if plat.ModelsDir != "" {
+		st.modelsDir = expandPath(plat.ModelsDir)
+	}
 	e.engines[engine] = st
 	return st, nil
 }
 
-func progress(engine, stage string, pct int) map[string]any {
-	return map[string]any{"engine": engine, "stage": stage, "percent": pct}
+// pathVars are the directory placeholders every templated manifest string can
+// use. Both are absolute by the time they get here, so a manifest never has to
+// expand "~" itself — which it could not do, since only argv and a handful of
+// named fields pass through expandPath.
+func (st *engineState) pathVars() map[string]string {
+	vars := map[string]string{"install_dir": st.installDir}
+	// Omitted rather than empty when the manifest declares no store, so a
+	// template that references it fails to resolve instead of quietly becoming
+	// a path rooted at "/".
+	if st.modelsDir != "" {
+		vars["models_dir"] = st.modelsDir
+	}
+	return vars
 }
 
 // emitInstallProgress reports one install-progress step to both consumers: the
 // local engine:install-progress notification (this node's UI) and the progress
-// hub (so an ec streaming handler can relay it to a remote initiator).
+// hub (so an ec streaming handler can relay it to a remote initiator). A pct of
+// 0 marks a step with no measurable progress and is omitted from the wire.
 func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
-	e.notify("engine:install-progress", progress(engine, stage, pct))
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct})
+	e.emitInstallFrame(engine, stage, pct, "")
+}
+
+// emitInstallFrame is emitInstallProgress with an optional failure reason,
+// carried as "error" on the notification and Message on the hub event.
+func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string) {
+	params := map[string]any{"engine": engine, "stage": stage}
+	if wirePercentIncluded(pct) {
+		params["percent"] = pct
+	}
+	if errMsg != "" {
+		params["error"] = errMsg
+	}
+	e.notify("engine:install-progress", params)
+	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct, Message: errMsg})
 }
 
 // emitPullProgress reports one model-pull step to both consumers: the local
@@ -255,7 +305,13 @@ func expandPathForOS(s, goos string) string {
 			return os.Getenv(tok[1 : len(tok)-1])
 		})
 	} else {
-		s = os.ExpandEnv(s)
+		s = unixEnvRe.ReplaceAllStringFunc(s, func(tok string) string {
+			name := tok[1:]
+			if name[0] == '{' {
+				name = name[1 : len(name)-1]
+			}
+			return os.Getenv(name)
+		})
 	}
 	switch {
 	case s == "~":
