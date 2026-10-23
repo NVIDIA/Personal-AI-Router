@@ -23,7 +23,8 @@ func TestSettings_DerivesCORSGuardFromAuthenticatedCaller(t *testing.T) {
 	h := newSettingsHarness(t)
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	uri, _ := url.Parse("urn:nvpair:node:paired-caller")
+	uri, err := url.Parse("urn:nvpair:node:paired-caller")
+	require.NoError(t, err)
 	cert := &x509.Certificate{SerialNumber: big.NewInt(1), URIs: []*url.URL{uri}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
 	require.NoError(t, err)
@@ -37,15 +38,19 @@ func TestSettings_DerivesCORSGuardFromAuthenticatedCaller(t *testing.T) {
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(h.b.clusterDir, name), data, 0600))
 	}
-	for _, caller := range []string{"", "paired-caller"} {
-		request := h.request(t)
-		// Deliberately supply the opposite of what the authenticated caller needs.
-		request.PreserveCORS = caller == ""
-		_, err := h.b.previewEngineSettings(context.Background(), request, caller)
-		require.NoError(t, err)
-		require.Equal(t, caller != "", h.previewPreserveCORS.Load(), "preview trusted client-supplied guard")
-		_, err = h.b.applyEngineSettings(context.Background(), request, caller)
-		require.NoError(t, err)
-		require.Equal(t, caller != "", h.previewPreserveCORS.Load(), "apply trusted client-supplied guard")
+	test := func(name, caller string) {
+		t.Run(name, func(t *testing.T) {
+			request := h.request(t)
+			// Deliberately supply the opposite of what the authenticated caller needs.
+			request.PreserveCORS = caller == ""
+			_, err := h.b.previewEngineSettings(context.Background(), request, caller)
+			require.NoError(t, err)
+			require.Equal(t, caller != "", h.previewPreserveCORS.Load(), "preview trusted client-supplied guard")
+			_, err = h.b.applyEngineSettings(context.Background(), request, caller)
+			require.NoError(t, err)
+			require.Equal(t, caller != "", h.previewPreserveCORS.Load(), "apply trusted client-supplied guard")
+		})
 	}
+	test("local caller", "")
+	test("authenticated peer", "paired-caller")
 }

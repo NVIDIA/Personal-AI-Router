@@ -247,14 +247,10 @@ func TestLlamaCPPPullCancelledBeforeStart_DoesNotDownload(t *testing.T) {
 }
 
 func TestLlamaCPPPull_RejectsInvalidModelParamsBeforeStarting(t *testing.T) {
-	for _, tc := range []struct{ name, params string }{
-		{"different model", `{"model":"other/model"}`},
-		{"missing model", `{}`},
-		{"invalid JSON", `{"model":`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	test := func(name, params string) {
+		t.Run(name, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
-			_, err := f.ex.PullModelStream(context.Background(), "fake", llamaCPPPullTestModel, json.RawMessage(tc.params))
+			_, err := f.ex.PullModelStream(context.Background(), "fake", llamaCPPPullTestModel, json.RawMessage(params))
 			require.Error(t, err, "invalid model params were accepted")
 			select {
 			case <-f.started:
@@ -265,6 +261,9 @@ func TestLlamaCPPPull_RejectsInvalidModelParamsBeforeStarting(t *testing.T) {
 			require.Zero(t, f.unloads.Load(), "invalid params triggered cleanup")
 		})
 	}
+	test("different model", `{"model":"other/model"}`)
+	test("missing model", `{}`)
+	test("invalid JSON", `{"model":`)
 }
 
 func TestLlamaCPPPull_PreservesOtherDownloadWhenStartIsRejected(t *testing.T) {
@@ -287,6 +286,8 @@ func TestLlamaCPPPull_PreservesOtherDownloadWhenStartIsRejected(t *testing.T) {
 	test("negative acknowledgement", http.StatusOK, `{"success":false}`)
 }
 
+// Cancellation can race an unreadable start acknowledgement. Without proof that
+// this request started the download, cleanup could unload another caller's model.
 func TestLlamaCPPPullUnconfirmedStart_DoesNotUnload(t *testing.T) {
 	test := func(name string, respond func(*testing.T, http.ResponseWriter, *http.Request)) {
 		t.Run(name, func(t *testing.T) {
@@ -334,7 +335,7 @@ func TestLlamaCPPPullUnconfirmedStart_DoesNotUnload(t *testing.T) {
 }
 
 func TestLlamaCPPPull_SkipsCleanupAfterTerminalEvents(t *testing.T) {
-	for _, event := range []string{"download_finished", "download_failed"} {
+	test := func(event string) {
 		t.Run(event, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
 			f.stream = func(w http.ResponseWriter, r *http.Request) {
@@ -359,10 +360,12 @@ func TestLlamaCPPPull_SkipsCleanupAfterTerminalEvents(t *testing.T) {
 			require.Zero(t, f.inventories.Load(), "terminal event triggered cleanup")
 		})
 	}
+	test("download_finished")
+	test("download_failed")
 }
 
 func TestLlamaCPPPullCleanup_PreservesCompletedModels(t *testing.T) {
-	for _, status := range []string{"downloaded", "loaded", "unloaded", "missing"} {
+	test := func(status string) {
 		t.Run(status, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
 			close(f.endStream)
@@ -382,6 +385,10 @@ func TestLlamaCPPPullCleanup_PreservesCompletedModels(t *testing.T) {
 			require.Equal(t, int32(1), f.inventories.Load())
 		})
 	}
+	test("downloaded")
+	test("loaded")
+	test("unloaded")
+	test("missing")
 }
 
 func TestLlamaCPPPullCleanupFailure_PreservesCancellation(t *testing.T) {
@@ -414,7 +421,7 @@ func TestLlamaCPPPullCleanupFailure_PreservesCancellation(t *testing.T) {
 }
 
 func TestLlamaCPPPullCleanupTimeout_PreservesWatchdogCause(t *testing.T) {
-	for _, route := range []string{"inventory", "unload"} {
+	test := func(route string) {
 		t.Run(route, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
 			f.ex.pullProgressTimeout = 100 * time.Millisecond
@@ -432,11 +439,13 @@ func TestLlamaCPPPullCleanupTimeout_PreservesWatchdogCause(t *testing.T) {
 			require.True(t, f.downloading.Load(), "cleanup timeout was treated as a confirmed stop")
 		})
 	}
+	test("inventory")
+	test("unload")
 }
 
 func TestLlamaCPPPullInvalidInventory_DoesNotConfirmStop(t *testing.T) {
-	for _, body := range []string{"not JSON", `{}`, `{"data":null}`, `{"data":{}}`, fmt.Sprintf(`{"data":[{"id":%q}]}`, llamaCPPPullTestModel)} {
-		t.Run(body, func(t *testing.T) {
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
 			f := newLlamaCPPPullFixture(t)
 			close(f.endStream)
 			f.inventory = func(w http.ResponseWriter, _ *http.Request) {
@@ -448,4 +457,9 @@ func TestLlamaCPPPullInvalidInventory_DoesNotConfirmStop(t *testing.T) {
 			require.Zero(t, f.unloads.Load(), "invalid inventory must not confirm a stop")
 		})
 	}
+	test("invalid JSON", "not JSON")
+	test("missing data", `{}`)
+	test("null data", `{"data":null}`)
+	test("object data", `{"data":{}}`)
+	test("missing status", fmt.Sprintf(`{"data":[{"id":%q}]}`, llamaCPPPullTestModel))
 }

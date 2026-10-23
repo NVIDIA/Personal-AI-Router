@@ -95,7 +95,7 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 	require.NoError(t, cmd.Start(), "start broker")
 	t.Logf("broker started: pid=%d", cmd.Process.Pid)
 
-	ch := startMsgReader(stdoutPipe)
+	ch := startMsgReader(t, stdoutPipe)
 	return stdinPipe, ch, func() {
 		stdinPipe.Close()
 		done := make(chan error, 1)
@@ -199,9 +199,7 @@ func TestWorkloadRelay_SuppressesOutOfOrderStateUpdates(t *testing.T) {
 				continue
 			}
 			var p wlParams
-			if json.Unmarshal(msg.Params, &p) != nil {
-				continue
-			}
+			require.NoError(t, json.Unmarshal(msg.Params, &p))
 			require.False(t, p.WorkloadInfo.ID == "ooo-1" && p.WorkloadInfo.State == "running", "stale running after failed was re-emitted to the client — reordering not suppressed")
 		case <-deadline:
 			draining = false
@@ -316,15 +314,20 @@ func TestWorkloadRelay_FailsActiveWorkWhenNodeDisappears(t *testing.T) {
 func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 	// Fake Ollama upstream the proxy forwards to (200 on any request).
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, copyErr := io.Copy(io.Discard, r.Body)
+		assert.NoError(t, copyErr)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"done":true}`))
+		_, writeErr := w.Write([]byte(`{"done":true}`))
+		assert.NoError(t, writeErr)
 	}))
 	defer ollama.Close()
-	ou, _ := url.Parse(ollama.URL)
-	_, ollamaPortStr, _ := net.SplitHostPort(ou.Host)
-	ollamaPort, _ := strconv.Atoi(ollamaPortStr)
+	ou, err := url.Parse(ollama.URL)
+	require.NoError(t, err)
+	_, ollamaPortStr, err := net.SplitHostPort(ou.Host)
+	require.NoError(t, err)
+	ollamaPort, err := strconv.Atoi(ollamaPortStr)
+	require.NoError(t, err)
 
 	// Stub peer: a real cluster peer (cross-pinned with the node under test) that
 	// records the workload broadcasts the manager fans out to it. It has to be a
@@ -368,7 +371,8 @@ func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 			strings.NewReader(`{"model":"test-model","messages":[]}`),
 		)
 		if err == nil {
-			io.Copy(io.Discard, resp.Body)
+			_, copyErr := io.Copy(io.Discard, resp.Body)
+			require.NoError(t, copyErr)
 			resp.Body.Close()
 		}
 	}
@@ -414,7 +418,8 @@ func postPeerEvent(t *testing.T, client *http.Client, endpoint, body string, tim
 	for {
 		resp, err := client.Post(endpoint, "application/json", strings.NewReader(body))
 		if err == nil {
-			io.Copy(io.Discard, resp.Body)
+			_, copyErr := io.Copy(io.Discard, resp.Body)
+			require.NoError(t, copyErr)
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return
@@ -476,7 +481,8 @@ func waitEngineProxyReady(t *testing.T, namespace string, stdin io.Writer, msgs 
 				continue
 			}
 			var id int64
-			if json.Unmarshal(*msg.ID, &id) != nil || !pending[id] {
+			require.NoError(t, json.Unmarshal(*msg.ID, &id))
+			if !pending[id] {
 				continue
 			}
 			delete(pending, id)
@@ -484,7 +490,8 @@ func waitEngineProxyReady(t *testing.T, namespace string, stdin io.Writer, msgs 
 				Ready bool `json:"ready"`
 				Port  int  `json:"port"`
 			}
-			if json.Unmarshal(msg.Result, &st) == nil && st.Ready {
+			require.NoError(t, json.Unmarshal(msg.Result, &st))
+			if st.Ready {
 				return st.Port
 			}
 		case <-tick.C:

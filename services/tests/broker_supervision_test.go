@@ -93,7 +93,7 @@ func startBrokerWithDirsAndEnv(t *testing.T, configDir, clusterDir string, extra
 	require.NoError(t, cmd.Start(), "start broker")
 	t.Logf("broker started: pid=%d", cmd.Process.Pid)
 
-	ch := startMsgReader(stdoutPipe)
+	ch := startMsgReader(t, stdoutPipe)
 	lines := startLineReader(stderrPipe)
 
 	return stdinPipe, ch, lines, func() {
@@ -346,7 +346,7 @@ func TestBroker_ShutsDownOnSignal(t *testing.T) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	require.NoError(t, err, "broker stdout pipe")
 	require.NoError(t, cmd.Start(), "start broker")
-	msgs := startMsgReader(stdoutPipe)
+	msgs := startMsgReader(t, stdoutPipe)
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
 	// SIGINT to the broker only (children are in their own process groups).
@@ -481,7 +481,7 @@ func TestBrokerProxySetPort_Rebinds(t *testing.T) {
 			<-done
 		}
 	})
-	msgs := startMsgReader(stdoutPipe)
+	msgs := startMsgReader(t, stdoutPipe)
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
@@ -553,7 +553,8 @@ func TestBroker_MergesManualNodesIntoDiscovery(t *testing.T) {
 			require.True(t, ok, "broker stream closed before the manual node appeared")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
-				if json.Unmarshal(msg.Result, &res) == nil && containsNode(res.Nodes, nodeName) {
+				require.NoError(t, json.Unmarshal(msg.Result, &res))
+				if containsNode(res.Nodes, nodeName) {
 					t.Logf("manual node %q present in discovery snapshot", nodeName)
 					return
 				}

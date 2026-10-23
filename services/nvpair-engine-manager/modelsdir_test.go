@@ -96,46 +96,43 @@ func destructiveToken(arg string) string {
 // libraries have to be recognised, or the guard documents a protection it does
 // not provide.
 func TestDestructiveToken_RecognizesOriginalUnsafeUninstallCommands(t *testing.T) {
-	originals := map[string]string{
-		"posix": `pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf "$HOME/.lmstudio"; sleep 1; [ -d "$HOME/.lmstudio" ] && exit 1; exit 0`,
-		"windows": `$root = Join-Path $env:USERPROFILE '.lmstudio'; Start-Sleep -Seconds 3; ` +
-			`Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue`,
+	test := func(name, argument string, destructive bool) {
+		t.Run(name, func(t *testing.T) {
+			if destructive {
+				assert.NotEmpty(t, destructiveToken(argument), "the original LM Studio uninstall was not recognised as deleting files")
+			} else {
+				assert.Empty(t, destructiveToken(argument), "harmless argument must not be treated as deleting files")
+			}
+		})
 	}
-	for name, argument := range originals {
-		assert.NotEmpty(t, destructiveToken(argument), "%s: the original LM Studio uninstall was not recognised as deleting files", name)
-	}
-	for _, harmless := range []string{
-		"pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; exit 0",
-		"server",
-		"--strip-components=1",
-	} {
-		assert.Empty(t, destructiveToken(harmless), "argument %q deletes nothing", harmless)
-	}
+	test("posix uninstall", `pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf "$HOME/.lmstudio"; sleep 1; [ -d "$HOME/.lmstudio" ] && exit 1; exit 0`, true)
+	test("windows uninstall", `$root = Join-Path $env:USERPROFILE '.lmstudio'; Start-Sleep -Seconds 3; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue`, true)
+	test("stop processes", "pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; exit 0", false)
+	test("server command", "server", false)
+	test("extraction flag", "--strip-components=1", false)
 }
 
 // TestValidateRejectsRemovalsThatReachTheModelStore pins the load-time
 // rejections the manifest reference promises. Each of these was accepted before,
 // and each deletes part or all of a user's model library at uninstall time.
 func TestValidate_RejectsRemovalsThatReachTheModelStore(t *testing.T) {
-	for name, uninstall := range map[string]struct {
-		modelsDir string
-		remove    []string
-	}{
-		"no store to preserve":  {modelsDir: "", remove: []string{"~/.engine"}},
-		"the store itself":      {modelsDir: "~/.engine/models", remove: []string{"~/.engine/models"}},
-		"inside the store":      {modelsDir: "~/.engine/models", remove: []string{"~/.engine/models/publisher"}},
-		"the store, templated":  {modelsDir: "~/.engine/models", remove: []string{"{models_dir}"}},
-		"inside it, templated":  {modelsDir: "~/.engine/models", remove: []string{"{models_dir}/publisher"}},
-		"the store, mixed case": {modelsDir: "~/.engine/models", remove: []string{"~/.engine/Models"}},
-	} {
-		platform := Platform{
-			Detect:    []string{"{install_dir}/engine"},
-			ModelsDir: uninstall.modelsDir,
-			Uninstall: &Uninstall{Remove: uninstall.remove},
-			Runtime:   Runtime{Bin: "{install_dir}/engine"},
-		}
-		assert.Error(t, platform.validate(runtime.GOOS+"/"+runtime.GOARCH), "%s: accepted uninstall.remove %v with models_dir %q", name, uninstall.remove, uninstall.modelsDir)
+	test := func(name, modelsDir string, remove []string) {
+		t.Run(name, func(t *testing.T) {
+			platform := Platform{
+				Detect:    []string{"{install_dir}/engine"},
+				ModelsDir: modelsDir,
+				Uninstall: &Uninstall{Remove: remove},
+				Runtime:   Runtime{Bin: "{install_dir}/engine"},
+			}
+			assert.Error(t, platform.validate(runtime.GOOS+"/"+runtime.GOARCH), "uninstall.remove must preserve the model store")
+		})
 	}
+	test("no store to preserve", "", []string{"~/.engine"})
+	test("the store itself", "~/.engine/models", []string{"~/.engine/models"})
+	test("inside the store", "~/.engine/models", []string{"~/.engine/models/publisher"})
+	test("the store, templated", "~/.engine/models", []string{"{models_dir}"})
+	test("inside it, templated", "~/.engine/models", []string{"{models_dir}/publisher"})
+	test("the store, mixed case", "~/.engine/models", []string{"~/.engine/Models"})
 }
 
 func TestRemoveTreePreserving_KeepsNestedStore(t *testing.T) {
@@ -183,7 +180,7 @@ func TestRemoveTreePreserving_KeepsASymlinkedStore(t *testing.T) {
 
 	assert.FileExists(t, model, "deleted the directory the store links to")
 	_, err := os.Lstat(store)
-	assert.NoError(t, err, "removed the store's link")
+	require.NoError(t, err, "removed the store's link")
 	_, err = os.Stat(filepath.Dir(binary))
 	assert.ErrorIs(t, err, os.ErrNotExist, "the engine's own files survived")
 }
@@ -254,7 +251,7 @@ func TestRemoveTreePreserving_RefusesInsideTheStore(t *testing.T) {
 	require.NoError(t, os.MkdirAll(inside, 0o755))
 	assert.Error(t, removeTreePreserving(inside, store), "expected an error when the target is inside the model store")
 	_, err := os.Stat(inside)
-	assert.NoError(t, err, "a refused removal still deleted %q", inside)
+	require.NoError(t, err, "a refused removal still deleted %q", inside)
 }
 
 // TestRemoveTreePreservingUnlinksSymlinkedTarget checks a symlinked target is
@@ -276,7 +273,7 @@ func TestRemoveTreePreserving_UnlinksSymlinkedTarget(t *testing.T) {
 	_, err := os.Lstat(link)
 	assert.ErrorIs(t, err, os.ErrNotExist, "the link survived")
 	_, err = os.Stat(filepath.Join(victim, "keep-me"))
-	assert.NoError(t, err, "followed the link and deleted the real directory's contents")
+	require.NoError(t, err, "followed the link and deleted the real directory's contents")
 }
 
 // TestRemoveTreePreservingIsBestEffort pins that one undeletable entry does not
@@ -296,7 +293,7 @@ func TestRemoveTreePreserving_ReportsUndeletableEntriesAndRemovesOthers(t *testi
 	// Read-only parent: the child cannot be unlinked, so "locked" fails while
 	// "bin" — which sorts after it — must still go.
 	require.NoError(t, os.Chmod(locked, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(locked, 0o700), "restore directory permissions") })
 
 	err := removeTreePreserving(engineRoot, filepath.Join(engineRoot, "models"))
 	assert.Error(t, err, "expected the undeletable entry to be reported")
@@ -305,5 +302,5 @@ func TestRemoveTreePreserving_ReportsUndeletableEntriesAndRemovesOthers(t *testi
 }
 
 func TestRemoveTreePreserving_SucceedsWhenTargetIsMissing(t *testing.T) {
-	assert.NoError(t, removeTreePreserving(filepath.Join(t.TempDir(), "absent"), ""), "removing an absent path should be a no-op")
+	require.NoError(t, removeTreePreserving(filepath.Join(t.TempDir(), "absent"), ""), "removing an absent path should be a no-op")
 }

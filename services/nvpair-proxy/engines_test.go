@@ -35,14 +35,16 @@ func TestLlamaCPPProfile_DeclaresChatRouteAndReservedEnginePort(t *testing.T) {
 func TestLlamaCPPModelList_UsesNativeInventoryForBothPublicRoutes(t *testing.T) {
 	profile, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")
-	for _, path := range []string{"/models", "/v1/models"} {
-		t.Run(path, func(t *testing.T) {
+	test := func(name, path string) {
+		t.Run(name, func(t *testing.T) {
 			route, ok := profile.routeFor(http.MethodGet, path)
 			require.True(t, ok, "model list route is not classified")
 			require.Equal(t, roleModelListOpenAIGET, route.Role, "model list route")
 			require.Equal(t, "/models", route.upstreamPath(), "upstream model list path")
 		})
 	}
+	test("native model list", "/models")
+	test("OpenAI model list", "/v1/models")
 }
 
 // Routes is a classifier, not an allowlist. handlePlain forwards every
@@ -123,32 +125,28 @@ func TestModelNames_FollowEngineNormalizationRules(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	for _, tc := range []struct {
-		profile engineProfile
-		in      string
-		want    string
-	}{
-		{ollama, "llama3", "llama3:latest"},
-		{ollama, "llama3:latest", "llama3:latest"},
-		{ollama, "llama3:8b", "llama3:8b"},
-		{ollama, "registry.example/llama3", "registry.example/llama3:latest"},
-		{ollama, "llama3@sha256:abc", "llama3@sha256:abc"},
-		{ollama, "library/qwen3:latest", "qwen3:latest"},
-		{ollama, "registry.ollama.ai/library/qwen3:latest", "qwen3:latest"},
-		{ollama, "https://registry.ollama.ai/library/qwen3", "qwen3:latest"},
-		{ollama, "Qwen3", "qwen3:latest"},
-		{ollama, "registry.ollama.ai/qwen3", "registry.ollama.ai/qwen3:latest"},
-		{ollama, "hf.co/Org/Model:Q4_K_M", "hf.co/org/model:q4_k_m"},
-		{ollama, "localhost:5000/ns/m", "localhost:5000/ns/m:latest"},
-		{ollama, "", ""},
-
-		{lmstudio, "qwen3-8b", "qwen3-8b"},
-		{lmstudio, "qwen3-8b:latest", "qwen3-8b:latest"},
-		{lmstudio, "Qwen3-8B", "Qwen3-8B"},
-		{lmstudio, "", ""},
-	} {
-		assert.Equal(t, tc.want, tc.profile.normalizeModel(tc.in), "%s normalizeModel(%q)", tc.profile.Name, tc.in)
+	test := func(name string, profile engineProfile, in, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, profile.normalizeModel(in))
+		})
 	}
+	test("Ollama default tag", ollama, "llama3", "llama3:latest")
+	test("Ollama explicit default tag", ollama, "llama3:latest", "llama3:latest")
+	test("Ollama explicit tag", ollama, "llama3:8b", "llama3:8b")
+	test("Ollama registry prefix", ollama, "registry.example/llama3", "registry.example/llama3:latest")
+	test("Ollama digest", ollama, "llama3@sha256:abc", "llama3@sha256:abc")
+	test("Ollama library namespace", ollama, "library/qwen3:latest", "qwen3:latest")
+	test("Ollama default registry and library", ollama, "registry.ollama.ai/library/qwen3:latest", "qwen3:latest")
+	test("Ollama registry URL", ollama, "https://registry.ollama.ai/library/qwen3", "qwen3:latest")
+	test("Ollama case normalization", ollama, "Qwen3", "qwen3:latest")
+	test("Ollama explicit registry without namespace", ollama, "registry.ollama.ai/qwen3", "registry.ollama.ai/qwen3:latest")
+	test("Ollama custom registry case normalization", ollama, "hf.co/Org/Model:Q4_K_M", "hf.co/org/model:q4_k_m")
+	test("Ollama registry port", ollama, "localhost:5000/ns/m", "localhost:5000/ns/m:latest")
+	test("Ollama empty name", ollama, "", "")
+	test("LM Studio untagged name", lmstudio, "qwen3-8b", "qwen3-8b")
+	test("LM Studio exact tag", lmstudio, "qwen3-8b:latest", "qwen3-8b:latest")
+	test("LM Studio preserves case", lmstudio, "Qwen3-8B", "Qwen3-8B")
+	test("LM Studio empty name", lmstudio, "", "")
 }
 
 func TestNodeAdvertisesModel_UsesEngineSpecificModelNames(t *testing.T) {

@@ -57,9 +57,10 @@ func TestTelemetry_StartsWhenAnAddressArrivesLate(t *testing.T) {
 	require.Nil(t, d.telemetryCmd(), "polled a node with no address")
 	require.False(t, d.telemetryRunning, "claims a chain is running with nothing to poll")
 
-	params, _ := json.Marshal([]availableNode{{
+	params, err := json.Marshal([]availableNode{{
 		HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.9", Port: 14318,
 	}})
+	require.NoError(t, err)
 	cmd := d.handleNotification(&rpc.Message{
 		Method: "discovery:nodes-changed", Params: params,
 	})
@@ -99,13 +100,15 @@ func TestTelemetryChains_AreGenerationScoped(t *testing.T) {
 // telemetry at all.
 func TestPollTelemetry_WalksEveryAddress(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"telemetryValid":true}`))
+		_, err := w.Write([]byte(`{"telemetryValid":true}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
 	host, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
 	require.NoError(t, err, "split test server address")
-	p, _ := strconv.Atoi(port)
+	p, err := strconv.Atoi(port)
+	require.NoError(t, err)
 
 	// An unreachable address first — the reserved TEST-NET-1 block — then the
 	// one that answers.
@@ -139,13 +142,14 @@ func TestPollTelemetry_DecodesResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, nodeInfoPath, r.URL.Path, "polled endpoint")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		_, err := w.Write([]byte(`{
 			"GPUs":[{"name":"Test GPU","vram_bytes":8589934592,"vram_used_bytes":1073741824,"utilization_percent":42}],
 			"cpu":{"name":"Test CPU","cores":8,"utilization_percent":13},
 			"memory":{"total_bytes":34359738368,"used_bytes":8589934592},
 			"telemetryValid":true,
 			"msSince":120
 		}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
@@ -189,20 +193,26 @@ func TestPollTelemetry_SkipsUnknownAddress(t *testing.T) {
 // name of the machine that used to hold it.
 func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
+		_, err := w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 	host, port := splitTestServer(t, srv.URL)
 
 	assert.Error(t, pollTelemetryCmd("uuid-a", 1, []string{host}, port, "uuid-a")().(nodeTelemetryMsg).err, "another machine's readings were accepted for this one")
-	assert.NoError(t, pollTelemetryCmd("uuid-b", 1, []string{host}, port, "uuid-b")().(nodeTelemetryMsg).err, "the machine's own readings were refused")
+	require.NoError(t, pollTelemetryCmd("uuid-b", 1, []string{host}, port, "uuid-b")().(nodeTelemetryMsg).err, "the machine's own readings were refused")
 	// A row with nothing to check against takes whichever machine answers.
-	assert.NoError(t, pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg).err, "an unchecked poll was refused")
+	require.NoError(t, pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg).err, "an unchecked poll was refused")
 
 	assert.Equal(t, "uuid-a", telemetryIdentity(nodeRow{key: "uuid-a"}), "a discovered node is checked against its UUID")
-	for _, row := range []nodeRow{{key: "manual:1"}, {key: "name:lab"}, {key: "uuid-self", self: true}} {
-		assert.Empty(t, telemetryIdentity(row), "%q has nothing to check", row.key)
+	test := func(name string, row nodeRow) {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, telemetryIdentity(row), "row has nothing to check")
+		})
 	}
+	test("manual entry", nodeRow{key: "manual:1"})
+	test("name-only entry", nodeRow{key: "name:lab"})
+	test("self entry", nodeRow{key: "uuid-self", self: true})
 }
 
 // TestTelemetryTriesTheAddressThatAnswered is the regression guard for a poll
@@ -211,9 +221,14 @@ func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 func TestTelemetry_TriesTheAddressThatAnswered(t *testing.T) {
 	addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 	assert.Equal(t, []string{"10.0.0.3", "10.0.0.1", "10.0.0.2"}, preferAddress(addresses, "10.0.0.3"), "address that answered first")
-	for _, last := range []string{"", "10.0.0.1", "10.9.9.9"} {
-		assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, preferAddress(addresses, last), "after %q: node's own order", last)
+	test := func(name, last string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, preferAddress(addresses, last), "node's own order")
+		})
 	}
+	test("no address answered", "")
+	test("first address answered", "10.0.0.1")
+	test("unlisted address answered", "10.9.9.9")
 	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, addresses, "the node's own address list was reordered in place")
 
 	d := newNodeDetail(nil, nodeRow{key: "peer", addresses: addresses, presence: presenceOnline})
@@ -244,20 +259,20 @@ func TestTelemetrySummary_HandlesMissingMetrics(t *testing.T) {
 }
 
 func TestHumanBytes_FormatsByteCounts(t *testing.T) {
-	cases := map[uint64]string{
-		0:              "0 B",
-		512:            "512 B",
-		1024:           "1.0 KiB",
-		1 << 30:        "1.0 GiB",
-		8 * (1 << 30):  "8.0 GiB",
-		32 * (1 << 30): "32.0 GiB",
-		// At three digits the decimal stops earning its place.
-		128 * (1 << 30): "128 GiB",
-		4 * (1 << 40):   "4.0 TiB",
+	test := func(name string, in uint64, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, humanBytes(in))
+		})
 	}
-	for in, want := range cases {
-		assert.Equal(t, want, humanBytes(in), "humanBytes(%d)", in)
-	}
+	test("zero bytes", 0, "0 B")
+	test("bytes below one KiB", 512, "512 B")
+	test("one KiB", 1024, "1.0 KiB")
+	test("one GiB", 1<<30, "1.0 GiB")
+	test("eight GiB", 8*(1<<30), "8.0 GiB")
+	test("thirty-two GiB", 32*(1<<30), "32.0 GiB")
+	// At three digits the decimal stops earning its place.
+	test("three digits omit the decimal", 128*(1<<30), "128 GiB")
+	test("four TiB", 4*(1<<40), "4.0 TiB")
 }
 
 // TestDetailHardwareUnavailableWhenPollFails checks the panel is explicit rather

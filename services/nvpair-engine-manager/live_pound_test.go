@@ -90,9 +90,13 @@ func TestLivePound_RepairsOllamaListenerAndLifecycle(t *testing.T) {
 // listenAddrs returns every LocalAddress with a listener on port.
 func listenAddrs(t *testing.T, port int) []string {
 	t.Helper()
-	out, _ := exec.Command("powershell", "-NoProfile", "-Command",
-		"Get-NetTCPConnection -LocalPort "+strconv.Itoa(port)+" -State Listen -ErrorAction SilentlyContinue | "+
+	// Filter after enumeration so an absent listener is an empty result,
+	// while failures to query the connection table still fail the test.
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		"Get-NetTCPConnection -ErrorAction Stop | "+
+			"Where-Object { $_.LocalPort -eq "+strconv.Itoa(port)+" -and $_.State -eq 'Listen' } | "+
 			"Select-Object -ExpandProperty LocalAddress").Output()
+	require.NoError(t, err)
 	var addrs []string
 	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if s := strings.TrimSpace(l); s != "" {

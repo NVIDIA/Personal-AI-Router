@@ -45,18 +45,16 @@ func TestHandlePull_RejectsMissingTarget(t *testing.T) {
 }
 
 func TestModelFromParams_ExtractsRequestedModel(t *testing.T) {
-	cases := []struct {
-		params, want string
-	}{
-		{`{"name":"llama3.2"}`, "llama3.2"},      // Ollama body key
-		{`{"model":"owner/repo"}`, "owner/repo"}, // generic placeholder
-		{`{"name":"a","model":"b"}`, "a"},        // name wins
-		{`{}`, ""},                               // neither present
-		{``, ""},                                 // empty params
+	test := func(name, params, want string) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, modelFromParams([]byte(params)))
+		})
 	}
-	for _, c := range cases {
-		require.Equal(t, c.want, modelFromParams([]byte(c.params)), "modelFromParams")
-	}
+	test("Ollama body key", `{"name":"llama3.2"}`, "llama3.2")
+	test("generic placeholder", `{"model":"owner/repo"}`, "owner/repo")
+	test("name wins", `{"name":"a","model":"b"}`, "a")
+	test("neither present", `{}`, "")
+	test("empty params", ``, "")
 }
 
 func TestLlamaCPPModelsEventPercent_AggregatesFiles(t *testing.T) {
@@ -90,6 +88,8 @@ func newHTTPPullTestExecutor(t *testing.T, server *httptest.Server, action Actio
 	return executor
 }
 
+// A fast download can finish as soon as the start request arrives. Subscribe
+// first so its terminal event cannot be missed and leave the caller waiting.
 func TestPullModelLlamaCPP_SubscribesToProgressBeforeStartingDownload(t *testing.T) {
 	const model = "owner/repo:Q4_K_M"
 	subscribed := make(chan struct{})
@@ -171,6 +171,8 @@ func TestPullModelLlamaCPP_SubscribesToProgressBeforeStartingDownload(t *testing
 	require.Equal(t, 100, events[1].Percent)
 }
 
+// The complete download deliberately exceeds one idle interval. Advancing bytes
+// must extend the deadline so slow progress is not mistaken for a stalled download.
 func TestPullModelOllamaAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	const (
 		idleTimeout     = 400 * time.Millisecond
@@ -218,6 +220,8 @@ func TestPullModelOllamaAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	require.Contains(t, string(result), `"status":"success"`, "pull must report terminal success")
 }
 
+// The SSE stream keeps advancing beyond the initial idle deadline. Each progress
+// update must renew that budget instead of imposing a total download time limit.
 func TestPullModelLlamaCPPAdvancingProgress_RefreshesTimeout(t *testing.T) {
 	const (
 		model           = "owner/repo:Q4_K_M"

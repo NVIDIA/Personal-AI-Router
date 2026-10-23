@@ -241,6 +241,9 @@ func TestCORS_AppliesPolicyChangesToOrdinaryOptionsRequests(t *testing.T) {
 		require.Equal(t, 403, rec.Code, "cached obsolete permission")
 	})
 }
+
+// Model-list policy probes can contact several engines. They must not spread a
+// caller's credentials or follow a redirect to a different policy authority.
 func TestCORSModelList_StripsCredentialsAndDoesNotRedirect(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		var leaked atomic.Int32
@@ -284,15 +287,20 @@ func TestCORSModelList_StripsCredentialsAndDoesNotRedirect(t *testing.T) {
 		require.Equal(t, int32(0), leaked.Load(), "followed aggregate redirect")
 	})
 }
+
+// A paired request has already selected its destination node. Its ingress must
+// preserve the local engine's CORS policy and must not route it onward again.
 func TestCORSPairedIngress_PreservesPolicyAndIsTerminal(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		aDir, bDir := t.TempDir(), t.TempDir()
 		clustertrusttest.Join(t, aDir, "cluster", "a")
 		clustertrusttest.Join(t, bDir, "cluster", "b")
 		pin := func(dst, src, id string) {
+			t.Helper()
 			pem, err := os.ReadFile(filepath.Join(src, "node.crt"))
 			require.NoError(t, err)
-			body, _ := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(pem)})
+			body, err := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(pem)})
+			require.NoError(t, err)
 			require.NoError(t, os.MkdirAll(filepath.Join(dst, "trusted"), 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(dst, "trusted", id+".json"), body, 0600))
 		}
@@ -358,7 +366,8 @@ func TestCORS_EnforcesPolicyForBrowserRequests(t *testing.T) {
 		none := proxyForCORSTargets(t, tc)
 		unavailable := httptest.NewServer(http.HandlerFunc(none.handlePlain))
 		defer unavailable.Close()
-		data, _ := json.Marshal(map[string]string{"allowed": allowed.URL, "denied": denied.URL, "proxy": proxy.URL, "engine": engine.URL, "unavailable": unavailable.URL, "models": tc.modelListPath})
+		data, err := json.Marshal(map[string]string{"allowed": allowed.URL, "denied": denied.URL, "proxy": proxy.URL, "engine": engine.URL, "unavailable": unavailable.URL, "models": tc.modelListPath})
+		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(file, data, 0600))
 		deadline := time.After(60 * time.Second)
 		tick := time.NewTicker(100 * time.Millisecond)
@@ -432,7 +441,7 @@ func TestCORS_PreservesExternalEnginePolicy(t *testing.T) {
 				resp, err := client.Do(req)
 				require.NoError(t, err)
 				defer func() {
-					assert.NoError(t, resp.Body.Close())
+					require.NoError(t, resp.Body.Close())
 				}()
 				body, err := io.ReadAll(resp.Body)
 				require.NoError(t, err)
@@ -510,7 +519,7 @@ func TestCORSStreamingResponse_IsPreserved(t *testing.T) {
 		resp, err := client.Do(req)
 		require.NoError(t, err)
 		defer func() {
-			assert.NoError(t, resp.Body.Close())
+			require.NoError(t, resp.Body.Close())
 		}()
 		first := make([]byte, 5)
 		_, err = io.ReadFull(resp.Body, first)

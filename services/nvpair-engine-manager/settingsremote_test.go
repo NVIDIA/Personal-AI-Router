@@ -38,12 +38,15 @@ func settingsMesh(t *testing.T, id string) (string, []byte) {
 	dir := t.TempDir()
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	uri, _ := url.Parse("urn:nvpair:node:" + id)
+	uri, err := url.Parse("urn:nvpair:node:" + id)
+	require.NoError(t, err)
+	require.NotNil(t, uri)
 	cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: id}, URIs: []*url.URL{uri}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
 	require.NoError(t, err)
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyDER, _ := x509.MarshalPKCS8PrivateKey(key)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	require.NoError(t, err)
 	for name, data := range map[string][]byte{"node.crt": certPEM, "node.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0600))
 	}
@@ -53,7 +56,8 @@ func settingsPin(t *testing.T, dir, id string, cert []byte) {
 	t.Helper()
 	path := filepath.Join(dir, "trusted")
 	require.NoError(t, os.MkdirAll(path, 0700))
-	data, _ := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(cert)})
+	data, err := json.Marshal(map[string]string{"nodeUuid": id, "certPem": string(cert)})
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(path, id+".json"), data, 0600))
 }
 
@@ -83,6 +87,8 @@ func TestNotifyPeerSettings_ForwardsEverySupportedEngine(t *testing.T) {
 	}
 }
 
+// Two pinned peers observe the same mutation, then one loses its pin. Revocation
+// must close its existing stream as well as reject new unauthenticated requests.
 func TestPairedSettings_PushesChangesAndRevokesObservers(t *testing.T) {
 	a, certA := settingsMesh(t, "a")
 	b, certB := settingsMesh(t, "b")
@@ -110,8 +116,9 @@ func TestPairedSettings_PushesChangesAndRevokesObservers(t *testing.T) {
 			snapshot.Settings = p.Settings
 			exec.settingsHub.Publish([]settings.Snapshot{snapshot})
 		}
-		data, _ := json.Marshal(snapshot)
-		return data, nil
+		data, err := json.Marshal(snapshot)
+		assert.NoError(t, err)
+		return data, err
 	}
 	server := httptest.NewUnstartedServer((&controlServer{exec: exec, mesh: mesh}).mux())
 	server.TLS = mesh.ServerTLSConfig()
@@ -129,7 +136,9 @@ func TestPairedSettings_PushesChangesAndRevokesObservers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	open := func(cl *http.Client) (*http.Response, *bufio.Scanner) {
-		req, _ := http.NewRequestWithContext(ctx, "GET", server.URL+settingsPath+"events", nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", server.URL+settingsPath+"events", nil)
+		require.NoError(t, err)
+		require.NotNil(t, req)
 		res, err := cl.Do(req)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = res.Body.Close() })
@@ -152,10 +161,11 @@ func TestPairedSettings_PushesChangesAndRevokesObservers(t *testing.T) {
 	read(scanB, 1)
 	read(scanC, 1)
 	config := settings.Config{ServerPort: 12002, ProxyPort: 12003, LaunchText: "managed serve --parallel 2"}
-	body, _ := json.Marshal(settings.Request{NodeID: "forwarding-forbidden", Engine: "ollama", Settings: config})
+	body, err := json.Marshal(settings.Request{NodeID: "forwarding-forbidden", Engine: "ollama", Settings: config})
+	require.NoError(t, err)
 	response, err := clientB.Post(server.URL+settingsPath+"apply", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	_ = response.Body.Close()
+	require.NoError(t, response.Body.Close())
 	require.Equal(t, 200, response.StatusCode, "paired mutation rejected")
 	read(scanB, 2)
 	read(scanC, 2)
@@ -165,7 +175,7 @@ func TestPairedSettings_PushesChangesAndRevokesObservers(t *testing.T) {
 	require.Equal(t, "b", seen, "caller not authenticated")
 	response, err = client(stranger).Post(server.URL+settingsPath+"apply", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	_ = response.Body.Close()
+	require.NoError(t, response.Body.Close())
 	require.Equal(t, 403, response.StatusCode, "unpinned mutation accepted")
 	require.NoError(t, os.Remove(filepath.Join(a, "trusted", "c.json")))
 	mesh.Refresh()
@@ -203,10 +213,11 @@ func TestSettingsRemoteOnlyCORS_IsLocalOnly(t *testing.T) {
 	t.Cleanup(transport.CloseIdleConnections)
 	peer := &http.Client{Transport: transport}
 	post := func(request settings.Request) int {
-		body, _ := json.Marshal(request)
+		body, err := json.Marshal(request)
+		require.NoError(t, err)
 		response, err := peer.Post(server.URL+settingsPath+"apply", "application/json", bytes.NewReader(body))
 		require.NoError(t, err)
-		_ = response.Body.Close()
+		require.NoError(t, response.Body.Close())
 		return response.StatusCode
 	}
 	arguments := settingsRequest(t, exec)
@@ -234,20 +245,23 @@ func TestSettingsRemoteOnlyCORS_IsLocalOnly(t *testing.T) {
 	}
 }
 
+// Replies arrive in reverse request order to expose accidental FIFO matching.
+// Cancellation must also remove its waiter so a later reply cannot retain it.
 func TestSettingsRelay_CorrelatesResponsesAndCleansUpCancelledRequests(t *testing.T) {
 	sent := make(chan settings.Relay, 2)
 	canceled := make(chan string, 1)
 	relay := &settingsRelay{send: func(method string, value any) error {
-		data, _ := json.Marshal(value)
+		data, err := json.Marshal(value)
+		assert.NoError(t, err)
 		if method == "engine:settings-request" {
 			var p settings.Relay
-			_ = json.Unmarshal(data, &p)
+			assert.NoError(t, json.Unmarshal(data, &p))
 			sent <- p
 		} else {
 			var p struct {
 				ID string `json:"id"`
 			}
-			_ = json.Unmarshal(data, &p)
+			assert.NoError(t, json.Unmarshal(data, &p))
 			canceled <- p.ID
 		}
 		return nil
@@ -265,7 +279,8 @@ func TestSettingsRelay_CorrelatesResponsesAndCleansUpCancelledRequests(t *testin
 	}
 	first, second := <-sent, <-sent
 	for _, request := range []settings.Relay{second, first} {
-		data, _ := json.Marshal(settingsReply{ID: request.ID, Result: json.RawMessage(`"` + request.Request.Engine + `"`)})
+		data, err := json.Marshal(settingsReply{ID: request.ID, Result: json.RawMessage(`"` + request.Request.Engine + `"`)})
+		require.NoError(t, err)
 		relay.reply(data)
 	}
 	got := map[string]bool{<-results: true, <-results: true}

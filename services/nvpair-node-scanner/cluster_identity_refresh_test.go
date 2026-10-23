@@ -40,7 +40,8 @@ func (s *nodeInfoStub) set(status int, body string) {
 	s.mu.Unlock()
 }
 
-func (s *nodeInfoStub) handler() http.HandlerFunc {
+func (s *nodeInfoStub) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/node-info" {
 			http.NotFound(w, r)
@@ -54,7 +55,8 @@ func (s *nodeInfoStub) handler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
+		_, err := w.Write([]byte(body))
+		assert.NoError(t, err)
 	}
 }
 
@@ -62,7 +64,7 @@ func startNodeInfoStub(t *testing.T, body string) (*nodeInfoStub, int) {
 	t.Helper()
 	stub := &nodeInfoStub{}
 	stub.set(http.StatusOK, body)
-	srv := httptest.NewServer(stub.handler())
+	srv := httptest.NewServer(stub.handler(t))
 	t.Cleanup(srv.Close)
 	return stub, portFromURL(t, srv.URL)
 }

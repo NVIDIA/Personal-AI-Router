@@ -15,6 +15,8 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
+// Dropping to a lower pressure band requires more headroom than entering it.
+// This prevents small utilization fluctuations from repeatedly changing node order.
 func TestTelemetryPressure_UsesBandsAndDownwardHysteresis(t *testing.T) {
 	bands := []struct {
 		utilization float64
@@ -188,7 +190,7 @@ func TestTelemetryNotification_EmitsOnlyOnPressureChange(t *testing.T) {
 	send("b", 20) // EWMA changes within pressure band 0
 
 	for _, engine := range schedulerEngines {
-		got := recorder.priorities(engine)
+		got := recorder.priorities(t, engine)
 		require.Len(t, got, 2, " (%v)", engine)
 		assertStrs(t, got[1].Nodes, []string{"b", "a"})
 		assert.Equal(t, 0, pressureOf(got[1].Ranks, "b"), " (%v)", engine)

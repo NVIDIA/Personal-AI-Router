@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
@@ -54,10 +55,12 @@ func TestWorkloadIdentity_DistinguishesEnginesAcrossProcesses(t *testing.T) {
 	// Fake engines: 200 on any request so each inference completes promptly.
 	fakeEngine := func(body string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			io.Copy(io.Discard, r.Body)
+			_, copyErr := io.Copy(io.Discard, r.Body)
+			assert.NoError(t, copyErr)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(body))
+			_, writeErr := w.Write([]byte(body))
+			assert.NoError(t, writeErr)
 		}))
 	}
 	ollama := fakeEngine(`{"done":true}`)
@@ -107,7 +110,8 @@ func TestWorkloadIdentity_DistinguishesEnginesAcrossProcesses(t *testing.T) {
 			strings.NewReader(`{"model":"crossengine-model","messages":[]}`),
 		)
 		if err == nil {
-			io.Copy(io.Discard, resp.Body)
+			_, copyErr := io.Copy(io.Discard, resp.Body)
+			require.NoError(t, copyErr)
 			resp.Body.Close()
 		}
 	}
@@ -127,9 +131,7 @@ func TestWorkloadIdentity_DistinguishesEnginesAcrossProcesses(t *testing.T) {
 				continue
 			}
 			var p wlParams
-			if err := json.Unmarshal(msg.Params, &p); err != nil {
-				continue
-			}
+			require.NoError(t, json.Unmarshal(msg.Params, &p))
 			eng := p.WorkloadInfo.Engine
 			if (eng == "ollama" || eng == "lmstudio") && p.WorkloadInfo.ID != "" {
 				if _, seen := engineIDs[eng]; !seen {
@@ -172,10 +174,12 @@ func TestWorkloadManager_RehydratesActiveWorkloadOnRestart(t *testing.T) {
 	var releaseOnce sync.Once
 	stopEngine := func() { releaseOnce.Do(func() { close(release) }) }
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, copyErr := io.Copy(io.Discard, r.Body)
+		assert.NoError(t, copyErr)
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":""},"done":false}`+"\n")
+		_, writeErr := io.WriteString(w, `{"message":{"role":"assistant","content":""},"done":false}`+"\n")
+		assert.NoError(t, writeErr)
 		if fl, ok := w.(http.Flusher); ok {
 			fl.Flush()
 		}
@@ -183,6 +187,7 @@ func TestWorkloadManager_RehydratesActiveWorkloadOnRestart(t *testing.T) {
 		case <-release:
 		case <-r.Context().Done():
 		}
+		// The request may have been canceled while the engine was held.
 		_, _ = io.WriteString(w, `{"done":true}`+"\n")
 	}))
 	// Defer order matters: stopEngine() must run BEFORE ollama.Close(), because
@@ -243,7 +248,8 @@ func TestWorkloadManager_RehydratesActiveWorkloadOnRestart(t *testing.T) {
 			strings.NewReader(`{"model":"rehydrate-model","messages":[]}`),
 		)
 		if err == nil {
-			io.Copy(io.Discard, resp.Body)
+			// The held stream ends during teardown or client cancellation.
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
 	}()
@@ -287,10 +293,12 @@ func TestWorkloadManager_RehydratesRecentTerminalOnRestart(t *testing.T) {
 	// Fake Ollama that completes immediately, so the workload reaches a terminal
 	// (completed) state right away.
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, copyErr := io.Copy(io.Discard, r.Body)
+		assert.NoError(t, copyErr)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"done":true}`))
+		_, writeErr := w.Write([]byte(`{"done":true}`))
+		assert.NoError(t, writeErr)
 	}))
 	defer ollama.Close()
 	ollamaPort := portOfURL(t, ollama.URL)
@@ -335,7 +343,8 @@ func TestWorkloadManager_RehydratesRecentTerminalOnRestart(t *testing.T) {
 		strings.NewReader(`{"model":"rehydrate-term-model","messages":[]}`),
 	)
 	if err == nil {
-		io.Copy(io.Discard, resp.Body)
+		_, copyErr := io.Copy(io.Discard, resp.Body)
+		require.NoError(t, copyErr)
 		resp.Body.Close()
 	}
 
@@ -377,9 +386,7 @@ func waitStubPeerWorkload(t *testing.T, received <-chan jsonrpc.Message, model, 
 				continue
 			}
 			var p wlParams
-			if json.Unmarshal(msg.Params, &p) != nil {
-				continue
-			}
+			require.NoError(t, json.Unmarshal(msg.Params, &p))
 			if p.WorkloadInfo.Model == model && p.WorkloadInfo.State == state {
 				return
 			}

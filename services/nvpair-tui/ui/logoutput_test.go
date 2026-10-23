@@ -20,12 +20,14 @@ func TestOwnLog_ReachesTheLogsTab(t *testing.T) {
 	var stderr bytes.Buffer
 	out := &logOutput{fallback: &stderr}
 
-	_, _ = out.Write([]byte("before\n"))
+	_, err := out.Write([]byte("before\n"))
+	require.NoError(t, err)
 	assert.Equal(t, "before\n", stderr.String(), "a line before the program started should reach stderr")
 
 	lines := make(chan string, 4)
 	out.attach(lines)
-	_, _ = out.Write([]byte("one\ntwo\n"))
+	_, err = out.Write([]byte("one\ntwo\n"))
+	require.NoError(t, err)
 	for _, want := range []string{"one", "two"} {
 		select {
 		case got := <-lines:
@@ -36,7 +38,8 @@ func TestOwnLog_ReachesTheLogsTab(t *testing.T) {
 	}
 
 	out.detach()
-	_, _ = out.Write([]byte("after\n"))
+	_, err = out.Write([]byte("after\n"))
+	require.NoError(t, err)
 	assert.Equal(t, "before\nafter\n", stderr.String(), "a line after the program ended should reach stderr")
 }
 
@@ -50,7 +53,8 @@ func TestOwnLog_NeverBlocksOnAFullTab(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = out.Write([]byte("fits\nfull\nstill full\n"))
+		_, err := out.Write([]byte("fits\nfull\nstill full\n"))
+		assert.NoError(t, err)
 		close(done)
 	}()
 	select {
