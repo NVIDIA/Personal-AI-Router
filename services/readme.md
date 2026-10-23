@@ -30,8 +30,8 @@ never intercepted.
 
 The llama.cpp and vLLM facades are enabled by default alongside Ollama and LM Studio.
 The llama.cpp facade exposes OpenAI-compatible traffic on `http://localhost:8080`
-while the managed router runs on `8081`. The vLLM facade (the engine itself is
-Linux only) uses `http://localhost:8000` with its managed engine on `8001`. A safe fallback is reported when a facade port is
+while the managed router runs on `8081`. The vLLM facade (the engine itself runs on
+Linux and Apple Silicon macOS) uses `http://localhost:8000` with its managed engine on `8001`. A safe fallback is reported when a facade port is
 occupied. The desktop and TUI expose each engine's managed lifecycle and
 inventory, plus llama.cpp's downloads and load/unload actions; vLLM serves one
 model per process, so changing its model means restarting it. `--proxy-engines` can still restrict the

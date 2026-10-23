@@ -54,6 +54,20 @@
           "vllm-install", "{download}", "{install_dir}"
         ]
       }
+    },
+    "darwin/arm64": {
+      "detect": ["{install_dir}/venv/bin/vllm", "~/.venv-vllm-metal/bin/vllm"],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-aarch64-apple-darwin.tar.gz",
+          "sha256": "cfe454573412ff7380d15fc7dae5997ab53ffce72fce0a78e91ddbc84001acd2"
+        },
+        "run": [
+          "sh", "-c",
+          "set -eu; [ \"$(uname -m)\" = arm64 ] || { echo 'vLLM on macOS needs an Apple Silicon Mac (arm64)' >&2; exit 1; }; macos_major=$(sw_vers -productVersion | cut -d. -f1); [ \"${macos_major:-0}\" -ge 15 ] 2>/dev/null || { echo \"vLLM needs macOS 15 or newer (found: ${macos_major:-unknown}). Update macOS and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 10485760 ] || { echo 'vLLM needs at least 10 GB of free disk space' >&2; exit 1; }; mkdir -p \"$2/uv\" \"$2/wheels\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; core_whl=\"$2/wheels/vllm-0.32.0+cpu-cp38-abi3-macosx_11_0_arm64.whl\"; metal_whl=\"$2/wheels/vllm_metal-0.32.0-cp312-cp312-macosx_15_0_arm64.whl\"; curl -fsSL --retry 3 -o \"${core_whl:-}\" 'https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0%2Bcpu-cp38-abi3-macosx_11_0_arm64.whl'; echo \"c28cf0fede58f02c4886d2794217ec3c7e4bbd22dfeb16b4b32586a8f230bb75  ${core_whl:-}\" | shasum -a 256 -c -; curl -fsSL --retry 3 -o \"${metal_whl:-}\" 'https://github.com/vllm-project/vllm-metal/releases/download/v0.32.0/vllm_metal-0.32.0-cp312-cp312-macosx_15_0_arm64.whl'; echo \"458d34157eb02a6bfb0e293c70485df18f72b7eb1d1ce8f1eefea95ba47ab63c  ${metal_whl:-}\" | shasum -a 256 -c -; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"${core_whl:-}\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"${metal_whl:-}\"; rm -rf \"$2/wheels\"",
+          "vllm-install", "{download}", "{install_dir}"
+        ]
+      }
     }
   },
   "actions": {

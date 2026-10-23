@@ -35,10 +35,10 @@ describe('engine identity', () => {
         })
     })
 
-    it('offers vLLM only where it can be installed', () => {
+    it('offers vLLM on Linux and macOS, not Windows', () => {
         expect(getWelcomeEngineCandidates('Linux')).toContain('vllm')
         expect(getWelcomeEngineCandidates('Windows')).not.toContain('vllm')
-        expect(getWelcomeEngineCandidates('MacOS')).not.toContain('vllm')
+        expect(getWelcomeEngineCandidates('MacOS')).toContain('vllm')
     })
 
     it('maps vLLM to its engine-manager wire id and one-model-per-process capabilities', () => {
@@ -58,7 +58,7 @@ describe('engine identity', () => {
             deleteBlockedWhileLoaded: true,
             hasPullModel: true,
             hubSearch: true,
-            hasInstall: ['linux'],
+            hasInstall: ['linux', 'darwin'],
             hasEnginePort: true,
             engineHub: { label: 'vLLM' }
         })

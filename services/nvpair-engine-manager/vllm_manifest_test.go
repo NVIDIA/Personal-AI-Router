@@ -13,8 +13,8 @@ import (
 	"testing"
 )
 
-// vLLM is Linux-only, installs through a pinned uv bootstrap, serves exactly
-// one model per process and has no load, unload, pull or delete API. These
+// vLLM is Linux (NVIDIA) and Apple Silicon only, installs through a pinned uv
+// bootstrap, serves exactly one model per process and has no load, unload, pull or delete API. These
 // are the properties the rest of the stack (UI capabilities, the model wire,
 // the install gate) relies on, so a manifest edit that drops one fails here.
 func TestBundledVLLMManifest(t *testing.T) {
@@ -24,10 +24,13 @@ func TestBundledVLLMManifest(t *testing.T) {
 		t.Fatal("vllm manifest not loaded")
 	}
 
-	if got := len(manifest.Platforms); got != 2 {
-		t.Fatalf("vllm declares %d platforms, want linux/amd64 and linux/arm64 only", got)
+	if got := len(manifest.Platforms); got != 3 {
+		t.Fatalf("vllm declares %d platforms, want linux/amd64, linux/arm64 and darwin/arm64 only", got)
 	}
-	for _, key := range []string{"linux/amd64", "linux/arm64"} {
+	// The version each platform's install script must pin: Linux installs vLLM
+	// itself from PyPI, macOS installs the vLLM core and vLLM-Metal wheels.
+	pins := map[string]string{"linux/amd64": "vllm==", "linux/arm64": "vllm==", "darwin/arm64": "vllm-0.32.0"}
+	for _, key := range []string{"linux/amd64", "linux/arm64", "darwin/arm64"} {
 		platform, ok := manifest.Platforms[key]
 		if !ok {
 			t.Fatalf("vllm has no %s platform block", key)
@@ -43,8 +46,16 @@ func TestBundledVLLMManifest(t *testing.T) {
 		if len(platform.Install.Script) != 0 {
 			t.Errorf("%s: install must not use the unpinned script escape hatch", key)
 		}
-		if !strings.Contains(strings.Join(platform.Install.Run, " "), "vllm==") {
-			t.Errorf("%s: the vLLM version must be pinned", key)
+		script := strings.Join(platform.Install.Run, " ")
+		if !strings.Contains(script, pins[key]) {
+			t.Errorf("%s: the vLLM install must be pinned (want %q in the script)", key, pins[key])
+		}
+		if strings.HasPrefix(key, "darwin/") {
+			// The macOS wheels are downloaded by the script itself, so each one
+			// has to be checked against a digest before it is installed.
+			if got := strings.Count(script, "shasum -a 256 -c"); got != 2 {
+				t.Errorf("%s: %d wheel digest checks, want one for the vLLM core and one for vLLM-Metal", key, got)
+			}
 		}
 		rt := platform.Runtime
 		if rt.EditableLaunch == nil || !slices.Equal(rt.EditableLaunch.FixedArgs, []string{"serve"}) {
@@ -203,6 +214,31 @@ func TestVLLMInstallRefusesDriversWithoutCUDA13(t *testing.T) {
 				t.Fatal("the script started installing before it refused")
 			}
 		})
+	}
+}
+
+// The executor expands OS environment references in every install argument
+// after resolving placeholders, so a "$name" in a script would be replaced
+// before the shell ran it. Each platform's script must survive that untouched.
+func TestVLLMInstallScriptsSurviveArgumentExpansion(t *testing.T) {
+	reg := loadWithOverrides(t, t.TempDir())
+	manifest, ok := reg.Get("vllm")
+	if !ok {
+		t.Fatal("vllm manifest not loaded")
+	}
+	for key, platform := range manifest.Platforms {
+		argv, err := resolveArgs(platform.Install.Run, map[string]string{
+			"download":    "/tmp/uv.tar.gz",
+			"install_dir": "/tmp/vllm",
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		for i := range argv {
+			if expanded := expandPathForOS(argv[i], "linux"); expanded != argv[i] {
+				t.Errorf("%s: the executor rewrites install argument %d, which breaks the script:\n%s\n-> %s", key, i, argv[i], expanded)
+			}
+		}
 	}
 }
 

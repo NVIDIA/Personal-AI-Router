@@ -80,8 +80,9 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // Eject stops the engine, which frees all of its GPU memory. Load starts
         // it again on the chosen model.
         hasEject: true,
-        // Linux only: vLLM has no native Windows or macOS GPU path.
-        hasInstall: ['linux'],
+        // Linux (NVIDIA) and Apple Silicon macOS (vLLM-Metal). vLLM has no
+        // native Windows path.
+        hasInstall: ['linux', 'darwin'],
         hasEnginePort: true,
         hasInstallPath: false,
         hasProxyWebUI: false,

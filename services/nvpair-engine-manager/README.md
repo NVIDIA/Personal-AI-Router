@@ -41,8 +41,12 @@ claim GPU activation.
 
 ### vLLM
 
-The `vllm` manifest is Linux only (`linux/amd64` and `linux/arm64`; vLLM has no
-native Windows or macOS GPU path). It runs `vllm serve` on loopback port `8001`,
+The `vllm` manifest covers Linux (`linux/amd64` and `linux/arm64`, NVIDIA GPU
+with a CUDA 13 driver) and Apple Silicon macOS (`darwin/arm64`, macOS 15 or newer,
+through the vLLM-Metal plugin). There is no native Windows or Intel Mac path. The
+macOS install builds a managed Python 3.12 venv with a sha256-pinned `uv` and
+installs the pinned vLLM core and vLLM-Metal wheels, each checked against a
+digest, so no compiler is needed. It runs `vllm serve` on loopback port `8001`,
 and the proxy facade owns `8000`. vLLM serves **one model per process** and has
 no load, unload, pull or delete API, so the manifest declares only `list_models`
 and `loaded_models` (both `GET /v1/models`). Changing the model means editing the
