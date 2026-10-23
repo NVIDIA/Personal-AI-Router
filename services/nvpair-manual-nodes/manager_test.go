@@ -158,27 +158,32 @@ func TestProbeLMStudio_ReportsModels(t *testing.T) {
 	assert.Nil(t, downModels, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
 }
 
-// TestProbeOllamaAPIFallsBackToLLMMan: Ollama wins when both answer, llmman is
+// TestProbeOllamaAPI_FallsBackToLLMMan: Ollama wins when both answer, llmman is
 // reported with its port when only it answers, neither reports down on 11434.
-func TestProbeOllamaAPIFallsBackToLLMMan(t *testing.T) {
+func TestProbeOllamaAPI_FallsBackToLLMMan(t *testing.T) {
 	m, _, rt := newTestManager()
 	configureHealthyOllamaAPI(rt, "both.local", ollamaPort, []string{"llama3"})
 	configureHealthyOllamaAPI(rt, "both.local", llmmanPort, []string{"gemma4"})
 	configureHealthyOllamaAPI(rt, "llmman.local", llmmanPort, []string{"gemma4", "qwen3.8"})
 
-	up, port, models := m.probeOllamaAPI("both.local")
-	if !up || port != ollamaPort || len(models) != 1 || models[0] != "llama3" {
-		t.Fatalf("both: up=%v port=%d models=%#v, want ollama on %d", up, port, models, ollamaPort)
+	tests := []struct {
+		name       string
+		addr       string
+		wantUp     bool
+		wantPort   int
+		wantModels []string
+	}{
+		{"both answer", "both.local", true, ollamaPort, []string{"llama3"}},
+		{"only llmman", "llmman.local", true, llmmanPort, []string{"gemma4", "qwen3.8"}},
+		{"neither", "absent.local", false, ollamaPort, nil},
 	}
-
-	up, port, models = m.probeOllamaAPI("llmman.local")
-	if !up || port != llmmanPort || len(models) != 2 || models[0] != "gemma4" || models[1] != "qwen3.8" {
-		t.Fatalf("llmman: up=%v port=%d models=%#v, want llmman on %d", up, port, models, llmmanPort)
-	}
-
-	up, port, models = m.probeOllamaAPI("absent.local")
-	if up || port != ollamaPort || models != nil {
-		t.Fatalf("absent: up=%v port=%d models=%#v, want down on %d", up, port, models, ollamaPort)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			up, port, models := m.probeOllamaAPI(tc.addr)
+			assert.Equal(t, tc.wantUp, up, "up")
+			assert.Equal(t, tc.wantPort, port, "port")
+			assert.Equal(t, tc.wantModels, models, "models")
+		})
 	}
 }
 
