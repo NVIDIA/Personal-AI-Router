@@ -326,6 +326,134 @@ func TestRemoveMember_RequiresConfirmation(t *testing.T) {
 	assert.NotNil(t, v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}), "confirmation produced no removal command")
 }
 
+// removalCall is one request removalBroker received.
+type removalCall struct {
+	method string
+	params json.RawMessage
+}
+
+// removalBroker is a broker that records every call and answers it, failing
+// each call to the method named by fail.
+func removalBroker(t *testing.T, fail string) (*rpc.Client, <-chan removalCall) {
+	t.Helper()
+	c1, c2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		c1.Close()
+		c2.Close()
+	})
+	client := rpc.NewClient(c1, c1)
+	go client.Run(ctx)
+
+	calls := make(chan removalCall, 8)
+	broker := rpc.NewCodec(c2, c2)
+	go func() {
+		for {
+			req, err := broker.Read()
+			if err != nil {
+				return
+			}
+			calls <- removalCall{method: req.Method, params: req.Params}
+			reply := &rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{}`)}
+			if req.Method == fail {
+				reply = &rpc.Message{JSONRPC: "2.0", ID: req.ID,
+					Error: &rpc.RPCError{Code: -32000, Message: "refused"}}
+			}
+			_ = broker.Write(reply)
+		}
+	}()
+	return client, calls
+}
+
+// confirmRemoval arms and confirms removing the selected node, then feeds each
+// reply back into the view until it reports an outcome.
+func confirmRemoval(t *testing.T, v *nodesView) {
+	t.Helper()
+	if cmd := v.removeSelected(); cmd != nil {
+		t.Fatal("removal was dispatched without confirmation")
+	}
+	cmd := v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	for cmd != nil {
+		msg := cmd()
+		if _, done := msg.(nodeActionMsg); done {
+			v.Update(msg)
+			return
+		}
+		cmd = v.Update(msg)
+	}
+	t.Fatal("the removal ended without reporting an outcome")
+}
+
+// wantCall checks the next request the broker received carries field = value.
+func wantCall(t *testing.T, calls <-chan removalCall, method, field, value string) {
+	t.Helper()
+	select {
+	case c := <-calls:
+		if c.method != method {
+			t.Fatalf("broker received %s, want %s", c.method, method)
+		}
+		var params map[string]string
+		if err := json.Unmarshal(c.params, &params); err != nil {
+			t.Fatalf("decode %s params: %v", method, err)
+		}
+		if params[field] != value {
+			t.Errorf("%s %s = %q, want %q", method, field, params[field], value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("broker never received %s", method)
+	}
+}
+
+// peerAddedByAddress is a nodes view with one member that was first added by
+// address, selected.
+func peerAddedByAddress(client *rpc.Client) *nodesView {
+	v := newNodesView(client)
+	v.feeds.discovered = []availableNode{{
+		HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.2", Trusted: true,
+	}}
+	v.feeds.manual = []manualNode{{ID: "manual:10.0.0.2", Address: "10.0.0.2", HostUUID: "peer"}}
+	v.rebuild()
+	v.selectedKey = "peer"
+	return v
+}
+
+// TestRemoveMemberForgetsItsManualEntry checks un-pairing a peer that was added
+// by address forgets that address too. The broker keeps manual entries on disk
+// and re-adds them when it starts, so one left behind brought the peer back.
+func TestRemoveMemberForgetsItsManualEntry(t *testing.T) {
+	client, calls := removalBroker(t, "")
+	v := peerAddedByAddress(client)
+
+	confirmRemoval(t, v)
+
+	wantCall(t, calls, "nodes:remove", "nodeUuid", "peer")
+	wantCall(t, calls, "node/remove", "id", "manual:10.0.0.2")
+	if got := v.status.render(); !contains(got, "remove peer ok") {
+		t.Errorf("status = %q, want the removal reported", got)
+	}
+}
+
+// TestFailedRemoveMemberKeepsItsManualEntry checks a peer the cluster manager
+// would not un-pair keeps the address it was added by: it is still a member,
+// and that address is how it is reached.
+func TestFailedRemoveMemberKeepsItsManualEntry(t *testing.T) {
+	client, calls := removalBroker(t, "nodes:remove")
+	v := peerAddedByAddress(client)
+
+	confirmRemoval(t, v)
+
+	wantCall(t, calls, "nodes:remove", "nodeUuid", "peer")
+	select {
+	case c := <-calls:
+		t.Errorf("a failed un-pairing went on to call %s", c.method)
+	default:
+	}
+	if got := v.status.render(); !contains(got, "remove peer failed") {
+		t.Errorf("status = %q, want the failure reported", got)
+	}
+}
+
 // TestNodesViewExplainsAnEmptyTable is the guard for the worst first
 // impression this tab can give: no rows and no reason.
 //
