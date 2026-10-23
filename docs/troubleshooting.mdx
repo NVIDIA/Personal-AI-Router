@@ -79,18 +79,18 @@ If **Endpoints** cannot find a usable engine or model:
 4. Select **Add model**, download a model, and load it if the engine requires
    an explicit load step.
 
-PAIR may adopt an existing local Ollama or LM Studio installation instead of
+PAIR can adopt an existing local Ollama or LM Studio installation instead of
 installing a new copy. An engine must be running before you can use models.
 
 To test routing across multiple nodes, prepare the same model on each node that
 should serve requests.
 
-For a fuller walkthrough of install, start, stop, update, uninstall, and what
+For a fuller walkthrough of install, start, stop, uninstall, and what
 PAIR restores after relaunch, refer to [Managing Engines](engine-lifecycle.mdx).
 
 ## An Application Cannot Reach PAIR
 
-**First, is the application on the same machine as PAIR?** If it is somewhere else
+**First, check that the application is on the same machine as PAIR.** If it is somewhere else
 on the network, that is the problem, and it is deliberate. An endpoint accepts
 plaintext requests from loopback only. PAIR refuses a request from another
 machine with `403` and a message saying the endpoint is loopback-only. Install
@@ -154,7 +154,7 @@ Routing confirmation happens on **Overview**:
 1. Use the **Jobs** filter in the left column to show active, completed, or
    failed requests.
 2. Open a job card and read **Running on** or **Ran on** to see which node
-   served the request. Once a job has been sent to a node, its card shows
+   served the request. After a job has been sent to a node, its card shows
    **Sent to** until the job starts, and keeps it if the job ends without
    starting.
 
@@ -201,7 +201,7 @@ Refer to [Collecting and Sanitizing Logs](log-collection.mdx) for the options.
 When a problem involves more than one machine, copy each node's log onto one
 machine and run the sanitizer once over all of them. That is the only way the
 same node reads the same way in every file. Refer to
-[Collecting from More Than One Node](log-collection.mdx#collecting-from-more-than-one-node).
+[Collecting from More than One Node](log-collection.mdx#collecting-from-more-than-one-node).
 
 ## Getting More Help
 

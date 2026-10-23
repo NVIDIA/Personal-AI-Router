@@ -34,10 +34,10 @@ cryptography in TypeScript, the change belongs in a Go service instead.
 
 ### `desktop/`
 
-| Path | What it owns |
+| Path | What it Owns |
 | --- | --- |
 | `src/ui/` | The React renderer: components, stores, and the renderer-side API |
-| `src/ui/stores/` | One store per domain — nodes, engines, models, workloads, errors, and metrics |
+| `src/ui/stores/` | One store for each domain: nodes, engines, models, workloads, errors, and metrics |
 | `src/ui/api/pair-api.ts` | The renderer's view of the service surface |
 | `src/preload/` | The typed bridge exposing `window.pairApi` and `window.windowApi` |
 | `src/electron/` | Main process: broker supervision, service bridge, and interprocess communication (IPC) |
@@ -54,10 +54,10 @@ The files you touch most often:
 | `src/shared/types/ws-channels.ts` | Every logical service channel: `WsInvokeChannelMap` for requests, `WsPushChannelMap` for pushes |
 | `src/shared/types/ipc-channels.ts` | `IpcChannelMap`, the contract for Electron-native IPC |
 | `src/electron/service-bridge/empty-handlers.ts` | `handleServiceBridgeInvoke`, the single dispatch every service call goes through |
-| `src/electron/service-bridge/modular-state.ts` | `ModularBridgeState` — backend notifications become renderer push events here |
+| `src/electron/service-bridge/modular-state.ts` | `ModularBridgeState`, where backend notifications become renderer push events |
 | `src/electron/service-bridge/modular-supervisor.ts` | The broker process and its JSON-RPC link |
 | `src/shared/constants/modular-binaries.ts` | The canonical inventory of shipped binaries and who launches them |
-| `src/shared/constants/modular-runtime.ts` | Backend-coupled constants — the only place a port or path literal belongs |
+| `src/shared/constants/modular-runtime.ts` | Backend-coupled constants and the only place a port or path literal belongs |
 
 ### `services/`
 
