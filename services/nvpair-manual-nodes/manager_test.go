@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -88,7 +89,20 @@ func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 
 func configureHealthyNode(t *testing.T, rt *fakeRoundTripper, addr string, models []string, info NodeInfoResponse) {
 	t.Helper()
-	host := net.JoinHostPort(addr, "11434")
+	configureHealthyOllamaAPI(t, rt, addr, ollamaPort, models)
+
+	infoHost := net.JoinHostPort(addr, "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, err := json.Marshal(info)
+		assert.NoError(t, err, "marshal node info")
+		return httpJSON(http.StatusOK, string(data))
+	})
+}
+
+// configureHealthyOllamaAPI registers GET / and GET /api/tags on addr:port.
+func configureHealthyOllamaAPI(t *testing.T, rt *fakeRoundTripper, addr string, port int, models []string) {
+	t.Helper()
+	host := net.JoinHostPort(addr, strconv.Itoa(port))
 	rt.set(http.MethodGet, host, "/", func(*http.Request) (*http.Response, error) {
 		return httpJSON(http.StatusOK, `{}`)
 	})
@@ -105,13 +119,6 @@ func configureHealthyNode(t *testing.T, rt *fakeRoundTripper, addr string, model
 		}
 		data, err := json.Marshal(payload)
 		assert.NoError(t, err, "marshal model inventory")
-		return httpJSON(http.StatusOK, string(data))
-	})
-
-	infoHost := net.JoinHostPort(addr, "14318")
-	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
-		data, err := json.Marshal(info)
-		assert.NoError(t, err, "marshal node info")
 		return httpJSON(http.StatusOK, string(data))
 	})
 }
@@ -155,6 +162,35 @@ func TestProbeLMStudio_ReportsModels(t *testing.T) {
 	downUp, downModels := m.probeLMStudio("absent.local", lmStudioPort)
 	require.False(t, downUp, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
 	assert.Nil(t, downModels, "expected absent lmstudio down, got up (%v, %v)", downUp, downModels)
+}
+
+// TestProbeOllamaAPI_FallsBackToLLMMan: Ollama wins when both answer, llmman is
+// reported with its port when only it answers, neither reports down on 11434.
+func TestProbeOllamaAPI_FallsBackToLLMMan(t *testing.T) {
+	m, _, rt := newTestManager()
+	configureHealthyOllamaAPI(t, rt, "both.local", ollamaPort, []string{"llama3"})
+	configureHealthyOllamaAPI(t, rt, "both.local", llmmanPort, []string{"gemma4"})
+	configureHealthyOllamaAPI(t, rt, "llmman.local", llmmanPort, []string{"gemma4", "qwen3.8"})
+
+	tests := []struct {
+		name       string
+		addr       string
+		wantUp     bool
+		wantPort   int
+		wantModels []string
+	}{
+		{"both answer", "both.local", true, ollamaPort, []string{"llama3"}},
+		{"only llmman", "llmman.local", true, llmmanPort, []string{"gemma4", "qwen3.8"}},
+		{"neither", "absent.local", false, ollamaPort, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			up, port, models := m.probeOllamaAPI(tc.addr)
+			assert.Equal(t, tc.wantUp, up, "up")
+			assert.Equal(t, tc.wantPort, port, "port")
+			assert.Equal(t, tc.wantModels, models, "models")
+		})
+	}
 }
 
 func requestMessage(t *testing.T, id int, method string, params any) *Message {
