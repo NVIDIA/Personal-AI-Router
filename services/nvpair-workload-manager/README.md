@@ -89,6 +89,7 @@ Defined in [`workload.go`](workload.go):
 | `error` | Normalized failure text, nullable |
 | `requesterId` | Optional client attribution, nullable |
 | `seq` | Producer's event counter, from 1. Part of the dedup key, so a workload that returns to a placement it already had is not mistaken for a redelivery |
+| `stats` | Optional inference statistics the origin proxy measured from the response body, present only on the terminal transition: `promptTokens`, `completionTokens`, `tokensPerSecond`, `ttftMs` (time to first token) and `estimated` (counts came from stream chunks, not the engine). Each field is omitted when not measured |
 
 Optional and nullable fields use pointers so a peer's payload round-trips without
 inventing zero values.

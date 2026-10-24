@@ -30,4 +30,35 @@ export interface Workload {
     completedAt: number | null
     error: string | null
     requesterId: string | null
+    /**
+     * Inference statistics for a finished job. Present only on the terminal
+     * (`completed` / `failed`) transition, and only when the origin proxy could
+     * measure something; see {@link WorkloadStats}.
+     */
+    stats?: WorkloadStats
+}
+
+/**
+ * Inference statistics the origin proxy measures from the response body as it
+ * streams to the client (services/shared/inferstats). Every field is optional:
+ * absent means "not measured", never zero.
+ */
+export interface WorkloadStats {
+    /** Prompt size in tokens, as reported by the engine. */
+    promptTokens?: number
+    /**
+     * Tokens generated. Reported by the engine when its response carried a usage
+     * object; otherwise counted from stream chunks, in which case `estimated` is
+     * set.
+     */
+    completionTokens?: number
+    /** Decode throughput: `completionTokens` over generation time, one decimal. */
+    tokensPerSecond?: number
+    /** Time to first token in ms: request start to the first response body byte. */
+    ttftMs?: number
+    /**
+     * `completionTokens` (and so `tokensPerSecond`) were counted from stream
+     * chunks rather than reported by the engine, so treat them as approximate.
+     */
+    estimated?: boolean
 }
