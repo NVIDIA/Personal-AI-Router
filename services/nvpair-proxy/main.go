@@ -17,6 +17,7 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/engines"
+	"nvpair-shared/envflag"
 )
 
 func main() {
@@ -24,6 +25,8 @@ func main() {
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
+	resolveResponseTimeout := envflag.RegisterDuration(nil, "response-header-timeout", "NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT",
+		defaultResponseTimeout, "how long one attempt waits for an upstream to start answering (headers, then first content), e.g. 30m or 0 to wait indefinitely; a non-streaming completion sends nothing until it is fully generated")
 	flag.Parse()
 
 	if *showVersion {
@@ -40,6 +43,12 @@ func main() {
 	// profile to name here. Facade-scoped records carry an engine field so a
 	// line is still attributable once several facades share this sink.
 	applog.Init(engines.ProxyComponent, resolveLevel())
+
+	responseTimeout, err := resolveResponseTimeout()
+	if err != nil {
+		log.Fatalf("invalid response header timeout: %v", err)
+	}
+	setResponseTimeout(responseTimeout)
 
 	var transport io.ReadWriteCloser
 	if *ipcPath != "" {

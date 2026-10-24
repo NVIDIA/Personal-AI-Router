@@ -190,7 +190,7 @@ not inventory scope. Its inference routes remain `/v1/*`.
 | --- | --- | --- |
 | `maxDispatchAttempts` | 5 | how many dispatches may fail |
 | `jobDeadline` | 10 minutes from request creation | how long new attempts may keep being started, including while waiting for an owner to exist |
-| `firstBodyTimeout` | `proxyResponseTimeout` (120s) | one attempt's wait for first content, measured from the arrival of headers |
+| `firstBodyTimeout` | the response timeout (30m; `--response-header-timeout`) | one attempt's wait for first content, measured from the arrival of headers |
 
 The retry budget applies only to inference requests. Routes not classified in
 the engine's route table are still forwarded verbatim, and some perform
@@ -207,18 +207,28 @@ not burn its budget while the node comes back.
 
 **Elapsed time per attempt is the sum of three budgets, not one.** They run in
 sequence: the dial (`proxyDialTimeout`, 10s), then headers
-(`proxyResponseTimeout`, 120s, enforced by the transport), then first content
-(`firstBodyTimeout`, 120s, which starts only once headers arrive). One attempt
-can therefore occupy around 240s — the two 120s caps back to back, since a slow
-dial is a LAN rarity — and nothing caps their sum.
+(`responseHeaderTimeout`, enforced by the transport), then first content
+(`firstBodyTimeout`, which starts only once headers arrive). Both of the last
+two take the configured response timeout: 30 minutes by default, set with
+`--response-header-timeout` or `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT`, where `0`
+disables both. One attempt can therefore occupy twice that — the two caps back
+to back, since a slow dial is a LAN rarity — and nothing caps their sum.
 
 Both bounds are checked before every dispatch and **never truncate an attempt
 already in flight**. Killing one seconds from its first token and then failing
 the job for being out of time would spend the entire wait and discard the
 result. `jobDeadline` is therefore a "no new attempts after" line rather than a
 ceiling on elapsed time, and the worst case is the deadline plus one whole
-attempt: a last dispatch starting just under 600s and running its full 240s
-puts time to first content near fourteen minutes.
+attempt: a last dispatch starting just under 600s and running both caps in full
+puts time to first content near seventy minutes at the default.
+
+The default is long on purpose. A short cap restarts work that is merely slow
+(see §5.6), and a request that waits behind other jobs on a busy node is the
+common case, not the failure. The cost is that an engine which accepts a
+request and then hangs holds it until the cap expires before the proxy fails
+over. An unreachable node is still caught by the 10s dial timeout, and a client
+that disconnects cancels the attempt at once, so the cap is reached only by an
+engine that is up and silent.
 
 Which bound ends a job depends on how its attempts fail, and all three cases
 are real:
@@ -461,7 +471,7 @@ weakness is the opposite of too little retrying.
 
 Its headers arrive only when the response is complete, so from outside the
 engine "queued behind other work" and "generating right now" are
-indistinguishable. The 120s header cap therefore has to cover whole generation
+indistinguishable. The header cap (30 minutes by default) therefore has to cover whole generation
 — the first-content wait adds nothing here, since the body arrives with the
 headers — and when it expires the proxy retries without being able to tell
 whether it just abandoned a stalled request or a working one. A generation
