@@ -590,6 +590,23 @@ want to observe.
 When a status is not specific enough, the services' own reporting is behind
 **Open log file** on **Settings → Service**.
 
+## Start PAIR at Sign-In
+
+PAIR does not start by itself after a restart unless you ask it to. Open
+**Settings > Service** and use the **Startup** switches:
+
+- **Launch at login** registers PAIR with the operating system so it starts when
+  you sign in. It is off by default.
+- **Start minimized to tray** keeps PAIR in the tray or menu bar, with no window,
+  when the operating system starts it at sign-in. Starting PAIR yourself still
+  opens the window. It is on by default.
+
+Both switches work on Windows and macOS. On Linux they are disabled, because
+autostart is set up per desktop environment. **Launch at login** shows what the
+operating system will do: if you disable PAIR in Windows Task Manager or in the
+Windows startup apps settings, it reads off, and turning it on again enables the
+entry.
+
 ## Keeping PAIR Up to Date
 
 An installed PAIR looks for a newer release shortly after it starts, and every
