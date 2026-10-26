@@ -48,8 +48,8 @@ func TestDiscovery_EnrichesModelsThroughHTTP(t *testing.T) {
 	stdin, msgs, _, cleanup := startBrokerWithDirs(t, t.TempDir(), cluster.nodeDir)
 	t.Cleanup(cleanup)
 
-	pollForNode(t, stdin, msgs, instance, cluster.peerUUID, 30*time.Second, func(n availableNode) bool {
-		return modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 30*time.Second, func(n availableNode) bool {
+		return n.ID == instance && modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
 			loadedByEngineMatch(n.LoadedByEngine)
 	})
 }

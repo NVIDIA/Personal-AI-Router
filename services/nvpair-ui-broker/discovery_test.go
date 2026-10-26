@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,32 +37,48 @@ func TestScannerNodeInfo_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
 	store := newDiscoveryStore()
 	store.Upsert(EnrichedNode{HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal}, sourceScanner)
 	var stateMu sync.Mutex
-	scanner := &scannerProcess{store: store, stateMu: &stateMu}
+	var received []noderec.NodeInfoEvent
+	scanner := &scannerProcess{
+		store: store, stateMu: &stateMu,
+		onNodeInfo: func(value noderec.NodeInfoEvent) { received = append(received, value) },
+	}
 	wait := holdDiscoveryNotification(t, &stateMu, func() {
 		scanner.handleNotify(noderec.NotifyNodeInfo, json.RawMessage(`{"hostUuid":"self","discoveryRecordId":"local:self","identityVerification":"local","info":{"hostUuid":"self","telemetryValid":true,"msSince":137}}`))
 	})
 
-	value, present := store.nodeInfo("self", time.Now())
-	require.True(t, present)
-	assert.GreaterOrEqual(t, value.Info.MSSince, int64(137)+wait.Milliseconds())
+	require.Len(t, received, 1)
+	assert.GreaterOrEqual(t, received[0].Info.MSSince, int64(137)+wait.Milliseconds())
 }
 
-func TestDiscoveryStore_RecordReplacementDiscardsHardwareSnapshot(t *testing.T) {
+func TestScannerNodeInfo_RejectsSnapshotsForReplacedRecord(t *testing.T) {
 	store := newDiscoveryStore()
 	node := EnrichedNode{HostUUID: "peer", DiscoveryRecordID: "old-proof", IdentityVerification: noderec.IdentityPinned, Trusted: true}
 	store.Upsert(node, sourceScanner)
 	principal := "peer"
-	require.True(t, store.AcceptInfo(noderec.NodeInfoEvent{
+	value := noderec.NodeInfoEvent{
 		HostUUID: "peer", ClusterUUID: principal, DiscoveryRecordID: "old-proof",
 		IdentityVerification: noderec.IdentityPinned,
 		Info:                 noderec.NodeInfo{HostUUID: "peer", ClusterUUID: &principal},
-	}, time.Now()))
+	}
+	var received []noderec.NodeInfoEvent
+	scanner := &scannerProcess{store: store, onNodeInfo: func(value noderec.NodeInfoEvent) {
+		received = append(received, value)
+	}}
 
+	// Replacing a directory proof must prevent the previous worker's queued
+	// hardware snapshot from reaching clients under the new record.
 	node.DiscoveryRecordID = "new-proof"
 	store.Upsert(node, sourceScanner)
+	params, err := json.Marshal(value)
+	require.NoError(t, err)
+	scanner.handleNotify(noderec.NotifyNodeInfo, params)
+	assert.Empty(t, received)
 
-	_, cached := store.nodeInfo("peer", time.Now())
-	assert.False(t, cached)
+	value.DiscoveryRecordID = node.DiscoveryRecordID
+	params, err = json.Marshal(value)
+	require.NoError(t, err)
+	scanner.handleNotify(noderec.NotifyNodeInfo, params)
+	assert.Equal(t, []noderec.NodeInfoEvent{value}, received)
 }
 
 func TestScannerProcess_RejectsQueuedEventsAfterPinReplacement(t *testing.T) {
@@ -159,10 +174,9 @@ func TestScannerProcess_CandidateRemovalPreservesPeerTelemetryAndWorkloads(t *te
 	assert.Zero(t, lost)
 }
 
-// Accept hardware for the current verified record, then attempt replacement
-// under a different record ID. The cache must preserve and age the accepted
-// sample, invalidate it on removal, and reject a late sample after removal.
-func TestDiscoveryStore_CachesSnapshotsOnlyForTheirVerifiedRecord(t *testing.T) {
+// Only hardware matching the current verified record and authenticated principal
+// may reach clients. Missing or conflicting identity and late samples must not.
+func TestScannerNodeInfo_ForwardsSnapshotsOnlyForTheirVerifiedRecord(t *testing.T) {
 	const hostUUID = "host-a"
 	const peerRecordID = "peer:host-a"
 	store := newDiscoveryStore()
@@ -186,29 +200,46 @@ func TestDiscoveryStore_CachesSnapshotsOnlyForTheirVerifiedRecord(t *testing.T) 
 			GPUs:           []GPUInfo{{Name: "accepted GPU"}},
 		},
 	}
-	now := time.Unix(1_700_000_000, 0).UTC() // arbitrary fixed instant
-	// The snapshot names the same host, verified record, and pinned principal
-	// as the scanner's current directory entry, so it may populate the cache.
-	require.True(t, store.AcceptInfo(value, now))
-	forged := value
-	forged.DiscoveryRecordID = "candidate:rogue"
-	forged.Info.GPUs = []GPUInfo{{Name: "forged GPU"}}
-	// A matching host UUID and a claimed "pinned" flag cannot authorize a
-	// different discovery record to replace that host's accepted measurements.
-	assert.False(t, store.AcceptInfo(forged, now.Add(time.Second)))
-	accepted, ok := store.nodeInfo(hostUUID, now.Add(2*time.Second))
-	// Rejecting the forged update preserves the original verified snapshot.
-	require.True(t, ok)
-	assert.Equal(t, value.Info.GPUs, accepted.Info.GPUs)
-	// Its original 100 ms sample age includes the two seconds spent cached.
-	assert.Equal(t, int64(2100), accepted.Info.MSSince)
+	var received []noderec.NodeInfoEvent
+	scanner := &scannerProcess{store: store, onNodeInfo: func(value noderec.NodeInfoEvent) {
+		received = append(received, value)
+	}}
+	send := func(value noderec.NodeInfoEvent) {
+		t.Helper()
+		params, err := json.Marshal(value)
+		require.NoError(t, err)
+		scanner.handleNotify(noderec.NotifyNodeInfo, params)
+	}
+	send(value)
+	require.Len(t, received, 1)
+	assert.Equal(t, value.Info.GPUs, received[0].Info.GPUs)
+	assert.GreaterOrEqual(t, received[0].Info.MSSince, value.Info.MSSince)
 
-	// Removing the verified scanner record also invalidates its cached data.
-	store.Remove(hostUUID, sourceScanner)
-	_, cached := store.nodeInfo(hostUUID, now.Add(3*time.Second))
-	assert.False(t, cached)
+	reject := func(name string, change func(*noderec.NodeInfoEvent)) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			forged := value
+			change(&forged)
+			params, err := json.Marshal(forged)
+			require.NoError(t, err)
+			scanner.handleNotify(noderec.NotifyNodeInfo, params)
+			assert.Len(t, received, 1, "unauthorized hardware must not reach clients")
+		})
+	}
+	reject("different record", func(value *noderec.NodeInfoEvent) { value.DiscoveryRecordID = "candidate:rogue" })
+	reject("unverified identity", func(value *noderec.NodeInfoEvent) { value.IdentityVerification = noderec.IdentityUnverified })
+	reject("different hardware host", func(value *noderec.NodeInfoEvent) { value.Info.HostUUID = "other" })
+	reject("different principal", func(value *noderec.NodeInfoEvent) { value.ClusterUUID = "other" })
+	reject("missing hardware principal", func(value *noderec.NodeInfoEvent) { value.Info.ClusterUUID = nil })
+	reject("different hardware principal", func(value *noderec.NodeInfoEvent) {
+		other := "other"
+		value.Info.ClusterUUID = &other
+	})
+
 	// A late snapshot cannot recreate the missing verified directory record.
-	assert.False(t, store.AcceptInfo(value, now.Add(3*time.Second)))
+	store.Remove(hostUUID, sourceScanner)
+	send(value)
+	assert.Len(t, received, 1)
 }
 
 // TestDiscoveryStoreRekeysOnRename verifies that a discovered node changing

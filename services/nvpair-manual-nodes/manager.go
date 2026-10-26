@@ -46,44 +46,18 @@ const (
 	probeFailThreshold = 3
 )
 
-type GPUInfo struct {
-	Name               string `json:"name"`
-	VramBytes          uint64 `json:"vram_bytes,omitempty"`
-	VramUsedBytes      uint64 `json:"vram_used_bytes,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
-}
+type (
+	GPUInfo    = noderec.GPUInfo
+	CPUInfo    = noderec.CPUInfo
+	MemoryInfo = noderec.MemoryInfo
+)
 
-// CPUInfo and MemoryInfo mirror the top-level objects nvpair-node-info
-// now emits. Pointer-optional so manually-added nodes that aren't
-// actually running nvpair-node-info (Ollama-only routing targets) don't
-// falsely surface as having an unknown CPU + zero memory — the whole
-// object stays absent until we see one in a real response.
-type CPUInfo struct {
-	Name               string `json:"name,omitempty"`
-	Cores              uint32 `json:"cores,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
-}
-
-type MemoryInfo struct {
-	TotalBytes uint64 `json:"total_bytes,omitempty"`
-	UsedBytes  uint64 `json:"used_bytes,omitempty"`
-}
-
+// NodeInfoResponse adds the local proof and receipt time to the shared snapshot.
+// Those fields never travel over the hardware response's JSON boundary.
 type NodeInfoResponse struct {
+	noderec.NodeInfo
 	discoveryRecordID string
 	receivedAt        time.Time
-	GPUs              []GPUInfo   `json:"GPUs"`
-	CPU               *CPUInfo    `json:"cpu,omitempty"`
-	Memory            *MemoryInfo `json:"memory,omitempty"`
-	TelemetryValid    bool        `json:"telemetryValid"`
-	MSSince           int64       `json:"msSince"`
-	// HostUUID is the remote node's stable per-host identity, reported by
-	// node-info. We surface it so a manual node is tracked by the same permanent
-	// identity as the rest of the fleet — including deduping with the same
-	// machine if it's also discovered over mDNS. Empty when the remote
-	// predates this field or isn't a NVPAIR node-info server.
-	HostUUID    string  `json:"hostUuid,omitempty"`
-	ClusterUUID *string `json:"clusterUuid,omitempty"`
 }
 
 // ManualEntry identifies a user-configured endpoint by its bare hostname or IP
@@ -660,11 +634,7 @@ func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int, loca
 	if recordID == "" || recordID != m.mesh.PeerRecordID(result.HostUUID) {
 		return false, NodeInfoResponse{}
 	}
-	aged := (noderec.NodeInfo{
-		TelemetryValid: result.TelemetryValid,
-		MSSince:        result.MSSince,
-	}).Aged(time.Since(start))
-	result.MSSince = aged.MSSince
+	result.NodeInfo = result.NodeInfo.Aged(time.Since(start))
 	result.discoveryRecordID = recordID
 	result.receivedAt = time.Now()
 	slog.Debug("manual probe node-info up",

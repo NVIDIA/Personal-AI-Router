@@ -255,10 +255,11 @@ func TestManualProxyBridge_DoesNotBlockDiscovery(t *testing.T) {
 			b := newManualTestBroker()
 			b.nodeID = "self"
 			b.setProxy(proxy)
+			notify := b.manualNotificationHandler(b.manualGeneration)
 			codec := NewCodec(proxySide)
 			added := make(chan struct{})
 			go func() {
-				b.forwardManualNodesNotification("node/discovered", json.RawMessage(`{"id":"lab","address":"192.0.2.20","ollama_up":true,"ollama_port":11434}`))
+				notify("node/discovered", json.RawMessage(`{"id":"lab","address":"192.0.2.20","ollama_up":true,"ollama_port":11434}`))
 				close(added)
 			}()
 			select {
@@ -280,7 +281,7 @@ func TestManualProxyBridge_DoesNotBlockDiscovery(t *testing.T) {
 			}()
 			removed := make(chan struct{})
 			go func() {
-				b.forwardManualNodesNotification("node/removed", json.RawMessage(`{"id":"lab"}`))
+				notify("node/removed", json.RawMessage(`{"id":"lab"}`))
 				close(removed)
 			}()
 			finished := func(done <-chan struct{}, operation string) {

@@ -639,11 +639,7 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 		func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
 		b.updateLocalPeerMetadata,
 		func(value noderec.NodeInfoEvent) {
-			cached, ok := b.store.nodeInfo(value.HostUUID, time.Now())
-			if !ok {
-				return
-			}
-			if err := b.codec.Notify(noderec.NotifyNodeInfo, cached); err != nil {
+			if err := b.codec.Notify(noderec.NotifyNodeInfo, value); err != nil {
 				slog.Warn("forward node-info failed", "host_uuid", value.HostUUID, "err", err)
 			}
 		},
@@ -1599,15 +1595,8 @@ func (b *Broker) clearEngineRelaySub() {
 	b.engineRelayMu.Unlock()
 }
 
-func (b *Broker) forwardManualNodesNotification(method string, params json.RawMessage) {
-	receivedAt := time.Now()
-	b.discoveryMu.Lock()
-	defer b.discoveryMu.Unlock()
-	b.handleManualNodesNotification(method, params, receivedAt)
-}
-
-// handleManualNodesNotification runs with discoveryMu held, including when a
-// worker generation check has already been made by the spawn callback.
+// handleManualNodesNotification runs with discoveryMu held after the spawn
+// callback has checked the worker generation.
 func (b *Broker) handleManualNodesNotification(method string, params json.RawMessage, receivedAt time.Time) {
 	if b.dispatchErrorsNotif("manual-nodes", method, params) {
 		return
@@ -3643,8 +3632,8 @@ func (b *Broker) relayToSettings(msg *Message) {
 // nodes/list) to nvpair-manual-nodes and relays its response back. node/add
 // kicks off an initial probe, so the relay uses the no-timeout async
 // RelayRequest rather than the bounded Call. The resulting node/discovered
-// notification is merged into the discovery store by
-// forwardManualNodesNotification, so the snapshot stays in sync.
+// notification reaches manualNotificationHandler and is merged into the
+// discovery store, so the snapshot stays in sync.
 func (b *Broker) relayToManualNodes(msg *Message) {
 	mn := b.getManualNodes()
 	if mn == nil {

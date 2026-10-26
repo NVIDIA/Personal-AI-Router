@@ -111,18 +111,15 @@ func selfAddrs(ip string) []string {
 // and no network announcements or IPC notifications are sent.
 func newSelfTestDaemon(hostUUID, ip string) *daemon {
 	return &daemon{
-		mesh:               clustertrust.Open(""),
-		reg:                newRegistry(hostUUID, "", selfAddrs(ip)),
-		instance:           "myhost",
-		dir:                newDirectory(),
-		modelsHTTP:         &http.Client{Timeout: modelsFetchTimeout},
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
-		lastActivityAt:     make(map[string]time.Time),
-		authWake:           make(chan struct{}, 1),
-		modelsWake:         make(chan struct{}, 1),
+		mesh:           clustertrust.Open(""),
+		reg:            newRegistry(hostUUID, "", selfAddrs(ip)),
+		instance:       "myhost",
+		dir:            newDirectory(),
+		modelsHTTP:     &http.Client{Timeout: modelsFetchTimeout},
+		lastInfoAt:     make(map[string]time.Time),
+		lastActivityAt: make(map[string]time.Time),
+		authWake:       make(chan struct{}, 1),
+		modelsWake:     make(chan struct{}, 1),
 	}
 }
 
@@ -130,19 +127,18 @@ func newSelfTestDaemon(hostUUID, ip string) *daemon {
 // Reloading must use the UUID from that file and remove the old local record.
 func TestReloadIdentity_UsesClusterIdentityUUIDAndRemovesOldRecord(t *testing.T) {
 	base := t.TempDir()
-	d := &daemon{
-		mesh:               clustertrust.Open(""), // No cluster directory means no cluster membership.
-		reg:                newRegistry("scanner-minted-X", "", selfAddrs("127.0.0.1")),
-		dir:                newDirectory(),
-		baseDir:            base,
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
-		// Leave codec and responder nil to suppress notifications and announcements.
-	}
-	// The local record initially uses the UUID created by the scanner.
-	d.dir.upsert(noderec.DirectoryNode{HostUUID: "scanner-minted-X", Name: "host", IP: "127.0.0.1"})
+	d := newSelfTestDaemon("scanner-minted-X", "127.0.0.1")
+	d.baseDir = base
+	_, port := startModelsStub(t, http.StatusOK, map[string]any{
+		"models":         []string{"retained-model"},
+		"modelsByEngine": map[string][]string{"ollama": {"retained-model"}},
+		"loadedByEngine": map[string][]string{"ollama": {}},
+	})
+	d.reg.register(noderec.RegisterParams{Service: noderec.ServiceEngineManager, Port: port})
+	d.publishSelf()
+	target, present := d.dir.get("scanner-minted-X")
+	require.True(t, present)
+	require.True(t, d.refreshNodeModels(target))
 
 	// cluster-manager writes the UUID to <base>/cluster/identity.json.
 	idPath := filepath.Join(base, "cluster", "identity.json")
@@ -155,8 +151,11 @@ func TestReloadIdentity_UsesClusterIdentityUUIDAndRemovesOldRecord(t *testing.T)
 
 	assert.Equal(t, "cluster-principal-Y", d.reg.record().HostUUID)
 	// The directory must contain the new UUID and no longer contain the old one.
-	_, present := d.dir.get("cluster-principal-Y")
-	assert.True(t, present)
+	node, present := d.dir.get("cluster-principal-Y")
+	require.True(t, present)
+	assert.Equal(t, []string{"retained-model"}, node.Models)
+	assert.Equal(t, map[string][]string{"ollama": {"retained-model"}}, node.ModelsByEngine)
+	assert.Equal(t, map[string][]string{"ollama": {}}, node.LoadedByEngine)
 	_, present = d.dir.get("scanner-minted-X")
 	assert.False(t, present)
 }
@@ -328,7 +327,7 @@ func TestPublishSelf_LocalRecordHasLocalVerificationAndDiscoveryRecordID(t *test
 	assert.Equal(t, "local:self-uuid", node.DiscoveryRecordID)
 }
 
-// Replace the local identity and inspect the old record's removal event. Its
+// Remove the old local identity and inspect its removal event. Its
 // local provenance and discovery record ID must survive so consumers invalidate
 // the correct source instead of treating it as an unverified disappearance.
 func TestDropSelf_PreservesRecordIdentityInRemoval(t *testing.T) {
@@ -339,7 +338,7 @@ func TestDropSelf_PreservesRecordIdentityInRemoval(t *testing.T) {
 	d.codec = NewCodec(&output)
 
 	d.selfMu.Lock()
-	d.dropSelf(oldUUID, "new-self")
+	d.dropSelf(oldUUID)
 	d.selfMu.Unlock()
 
 	message, err := NewCodec(&output).Read()
@@ -939,6 +938,8 @@ func TestDiscovery_DiscardsModelResponseAfterSavedCertificateReplacement(t *test
 		return true
 	}
 	f.discover(t)
+	target, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
 	client, ok := f.daemon.modelsClients.Client("peer-uuid")
 	require.True(t, ok, "authenticated models client must be available")
 	closed, release := make(chan struct{}), make(chan struct{})
@@ -951,7 +952,7 @@ func TestDiscovery_DiscardsModelResponseAfterSavedCertificateReplacement(t *test
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); <-done })
 	go func() {
 		defer close(done)
-		changed <- f.daemon.refreshNodeModels("peer-uuid", "127.0.0.1", port, "peer-uuid")
+		changed <- f.daemon.refreshNodeModels(target)
 	}()
 	select {
 	case <-closed:
@@ -975,7 +976,7 @@ func TestDiscovery_DiscardsModelResponseAfterSavedCertificateReplacement(t *test
 	require.True(t, ok)
 	assert.Equal(t, before, after)
 	assert.Empty(t, output.Bytes())
-	require.True(t, f.daemon.refreshNodeModels("peer-uuid", "127.0.0.1", port, "peer-uuid"))
+	require.True(t, f.daemon.refreshNodeModels(before))
 	after, _ = f.daemon.dir.get("peer-uuid")
 	assert.Equal(t, response.Models, after.Models)
 	assert.Equal(t, response.ModelsByEngine, after.ModelsByEngine)
@@ -1001,7 +1002,9 @@ func TestRefreshNodeModels_AcceptsPinnedPeersWithMultipleAddresses(t *testing.T)
 	}
 	f.discover(t)
 
-	assert.True(t, f.daemon.refreshNodeModels(peerUUID, "127.0.0.1", port, peerUUID))
+	target, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+	assert.True(t, f.daemon.refreshNodeModels(target))
 
 	node, present := f.daemon.dir.get(peerUUID)
 	require.True(t, present)
@@ -1043,7 +1046,7 @@ func TestDiscovery_DiscardsModelsAfterSecondaryAddressChanges(t *testing.T) {
 			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); <-done })
 			go func() {
 				defer close(done)
-				changed <- f.daemon.refreshNodeModelsCandidates(peerUUID, original.IP, original.CandidateIPs(), port, peerUUID)
+				changed <- f.daemon.refreshNodeModels(original)
 			}()
 			select {
 			case <-closed:
@@ -1109,12 +1112,48 @@ func TestDiscovery_DiscardsQueuedModelsForChangedAddresses(t *testing.T) {
 	var output bytes.Buffer
 	f.daemon.codec = NewCodec(&output)
 
-	assert.False(t, f.daemon.refreshNodeModelsCandidates(peerUUID, original.IP, original.CandidateIPs(), port, peerUUID))
+	assert.False(t, f.daemon.refreshNodeModels(original))
 
 	after, present := f.daemon.dir.get(peerUUID)
 	require.True(t, present)
 	assert.Equal(t, before, after)
 	assert.Empty(t, output.Bytes())
+}
+
+func TestDiscovery_DiscardsQueuedModelsAfterReadmission(t *testing.T) {
+	const peerUUID = "peer-uuid"
+	f := newDiscoveryPeerFixture(t, peerUUID)
+	f.info.Peer.Services[noderec.ServiceEngineManager] = portFromURL(t, f.server.URL)
+	f.respond = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/v1/models" {
+			return false
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(modelInventoryResponse{Models: []string{"reported-model"}}))
+		return true
+	}
+	f.discover(t)
+	target, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+
+	// Queued work keeps its original proof even when readmission leaves the
+	// peer's certificate and endpoints unchanged.
+	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+	f.daemon.reloadTrust()
+	f.discover(t)
+	before, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+	require.NotEqual(t, target.DiscoveryRecordID, before.DiscoveryRecordID)
+	require.Equal(t, target.CandidateIPs(), before.CandidateIPs())
+	require.Equal(t, target.Services, before.Services)
+	var output bytes.Buffer
+	f.daemon.codec = NewCodec(&output)
+
+	assert.False(t, f.daemon.refreshNodeModels(target))
+	after, present := f.daemon.dir.get(peerUUID)
+	require.True(t, present)
+	assert.Equal(t, before, after)
+	assert.Empty(t, output.Bytes())
+	assert.True(t, f.daemon.refreshNodeModels(before))
 }
 
 func TestDiscovery_PeerActivityDoesNotKeepSpoofedDiscoveryReachable(t *testing.T) {
@@ -1152,6 +1191,33 @@ func TestPeerReachable_RejectsCachedLivenessAfterReadmission(t *testing.T) {
 	f.daemon.reloadTrust()
 	f.daemon.refreshCandidatesOnce(context.Background())
 	assert.True(t, f.daemon.reachable(f.raw))
+}
+
+func TestDiscovery_RequiresReauthenticationBeforeReadmittedPeerTelemetry(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	before, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+	acceptedAt := f.daemon.lastInfoAt["peer-uuid"]
+	var output bytes.Buffer
+	f.daemon.codec = NewCodec(&output)
+
+	// A fresh read under a new admission must not renew a directory record
+	// authenticated under the previous admission, even with the same certificate.
+	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+	assert.False(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), before.HostUUID, before.CandidateIPs(), before.Services[noderec.ServiceNodeInfo].Port))
+	after, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+	assert.Equal(t, before, after)
+	assert.Equal(t, acceptedAt, f.daemon.lastInfoAt["peer-uuid"])
+	assert.Empty(t, output.Bytes())
+
+	f.daemon.reloadTrust()
+	f.daemon.refreshCandidatesOnce(context.Background())
+	after, present = f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+	assert.NotEqual(t, before.DiscoveryRecordID, after.DiscoveryRecordID)
+	assert.True(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), after.HostUUID, after.CandidateIPs(), after.Services[noderec.ServiceNodeInfo].Port))
 }
 
 func TestDiscovery_RefreshesOnlyAuthenticatedInventory(t *testing.T) {
@@ -1444,7 +1510,6 @@ func TestDiscovery_RemovesExpiredDiscoveryAfterUUIDClaimChanges(t *testing.T) {
 			assert.False(t, present, "expired unverified discovery must be removed")
 			_, present = f.daemon.dir.get("peer-uuid")
 			assert.False(t, present, "expired unavailable peer must be removed")
-			assert.Empty(t, f.daemon.peerCertificates)
 			after, present := f.daemon.dir.get(selfUUID)
 			require.True(t, present)
 			assert.Equal(t, self, after, "discovery removal must preserve the local record")
@@ -1494,7 +1559,6 @@ func TestDiscovery_RetainedPeerExpiresAfterAvailabilityEvidenceEnds(t *testing.T
 	refresh()
 	_, present = f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
-	assert.Empty(t, f.daemon.peerCertificates)
 	assert.Empty(t, f.daemon.lastInfoAt)
 	var message Message
 	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message))

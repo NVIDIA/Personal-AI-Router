@@ -150,14 +150,13 @@ type peerMetadata struct {
 	// Readers must see a complete snapshot rather than partially replaced fields.
 	mu    sync.RWMutex
 	value noderec.PeerMetadataParams
-	known bool
 }
 
 // get returns the latest registry snapshot and whether the broker supplied one.
 func (m *peerMetadata) get() (noderec.PeerMetadataParams, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.value, m.known
+	return m.value, m.value.HostUUID != ""
 }
 
 // handlePeerMetadata replaces registry metadata from the broker, rejecting
@@ -172,7 +171,7 @@ func handlePeerMetadata(msg applog.StdinMessage, hostUUID string, metadata *peer
 	valid := err == nil && hostUUID != "" && params.HostUUID == hostUUID
 	if valid {
 		metadata.mu.Lock()
-		metadata.value, metadata.known = params, true
+		metadata.value = params
 		metadata.mu.Unlock()
 	}
 	if len(msg.ID) == 0 {

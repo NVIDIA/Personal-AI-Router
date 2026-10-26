@@ -60,7 +60,7 @@ Unverified discoveries retain independent `discoveryRecordId` keys throughout
 the store and relay. They cannot overwrite a verified host, clear its telemetry,
 fail its workloads, or enter the scheduler's node universe. Explicit manual
 engine targets keep their own operational keys until authenticated. The broker
-caches and forwards scanner `discovery:node-info` hardware snapshots only when
+forwards scanner `discovery:node-info` hardware snapshots only when
 their record identity matches the current verified scanner record.
 
 ### Supervision & recovery

@@ -40,7 +40,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
-	"nvpair-shared/noderec"
 )
 
 const workloadMgrService = "_nvpair-workload-manager._tcp"
@@ -397,42 +396,7 @@ func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 // mDNS candidate before a test submits work that must reach that peer.
 func waitForPinnedPeer(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, hostUUID string, timeout time.Duration) {
 	t.Helper()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	id := 1000
-	sendReq(t, stdin, id, "discovery:get-nodes")
-	for {
-		select {
-		case msg, ok := <-msgs:
-			require.True(t, ok, "broker stream closed before peer authentication")
-			if msg.Method != "" || msg.ID == nil {
-				continue
-			}
-			require.Nil(t, msg.Error, "discovery:get-nodes")
-			var result struct {
-				Nodes []struct {
-					HostUUID             string                       `json:"hostUuid"`
-					DiscoveryRecordID    string                       `json:"discoveryRecordId"`
-					IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
-					Trusted              bool                         `json:"trusted"`
-				} `json:"nodes"`
-			}
-			require.NoError(t, json.Unmarshal(msg.Result, &result), "discovery:get-nodes")
-			for _, node := range result.Nodes {
-				if node.HostUUID == hostUUID && node.IdentityVerification == noderec.IdentityPinned && node.Trusted {
-					require.NotEmpty(t, node.DiscoveryRecordID)
-					return
-				}
-			}
-		case <-ticker.C:
-			id++
-			sendReq(t, stdin, id, "discovery:get-nodes")
-		case <-timer.C:
-			require.FailNowf(t, "peer did not authenticate in discovery", "hostUuid=%s", hostUUID)
-		}
-	}
+	pollForNode(t, stdin, msgs, hostUUID, timeout, nil)
 }
 
 // postPeerEvent POSTs a peer workload frame to the manager's inter-node endpoint

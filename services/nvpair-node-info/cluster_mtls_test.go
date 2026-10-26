@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/noderec"
 )
 
@@ -63,16 +64,8 @@ func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) str
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
-	td := filepath.Join(dir, "trusted")
-	require.NoError(t, os.MkdirAll(td, 0o700))
-	type peerPin struct {
-		NodeUUID string `json:"nodeUuid"`
-		CertPEM  string `json:"certPem"`
-	}
 	for uuid, pcert := range pins {
-		body, err := json.Marshal(peerPin{NodeUUID: uuid, CertPEM: string(pcert)})
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600))
+		clustertrusttest.WritePeerPinFromCertificate(t, dir, uuid, pcert)
 	}
 	return dir
 }
@@ -97,7 +90,7 @@ func TestNodeInfoHandler_RequiresPinnedClients(t *testing.T) {
 
 	principal := "uuid-a"
 	wantInfo := buildResponse(nil, nil, 0, statsSnapshot{}, principal, &principal)
-	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318), known: true}
+	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", nodeInfoHandler(meshA, metadata, func() NodeInfoResponse { return wantInfo }))
 	srv := httptest.NewUnstartedServer(mux)
@@ -155,7 +148,7 @@ func TestNodeInfoHandler_PreservesHardwareForPinnedPeers(t *testing.T) {
 		TelemetryValid: true, MSSince: 137,
 		HostUUID: principal, ClusterUUID: &principal,
 	}
-	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318), known: true}
+	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318)}
 	server := httptest.NewUnstartedServer(nodeInfoHandler(serverMesh, metadata, func() NodeInfoResponse { return snapshot }))
 	server.TLS = serverMesh.ServerTLSConfig()
 	server.StartTLS()

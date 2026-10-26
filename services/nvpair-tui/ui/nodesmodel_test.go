@@ -321,21 +321,6 @@ func TestAReusedAddress_DoesNotMergeTwoMachines(t *testing.T) {
 	assert.Empty(t, findRow(t, rows, peerName).manualID)
 }
 
-// TestTLSNodeInfoIsNotPolledInPlainText checks the detail screen shows the
-// worker's reading for a TLS node rather than polling it itself. That endpoint
-// needs the backend's cluster trust, and a plain-HTTP poll to it only fails.
-func TestTLSNodeInfo_IsNotPolledInPlainText(t *testing.T) {
-	d := newNodeDetail(nil, nodeRow{
-		key: "manual:m2", name: "tls-box", address: "10.0.0.9", port: 14319,
-		presence: presenceOnline, nodeInfoTLS: true,
-		probedTelemetry: &nodeTelemetry{TelemetryValid: true,
-			GPUs: []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}}},
-	})
-	d.SetSize(100, 30)
-	assert.Nil(t, d.telemetryCmd(), "the detail screen must not poll a TLS node-info endpoint over plain HTTP")
-	assert.Contains(t, d.View(), "GPU 0", "the worker's hardware reading must be shown")
-}
-
 // Withdrawing a manual node's identity proof must remove its old hardware from
 // an open detail screen without starting an HTTP poll against its TLS endpoint.
 func TestOpenDetail_HidesManualHardwareAfterProofWithdrawal(t *testing.T) {
@@ -352,7 +337,9 @@ func TestOpenDetail_HidesManualHardwareAfterProofWithdrawal(t *testing.T) {
 	v.openDetail()
 	require.NotNil(t, v.detail)
 	require.Contains(t, v.View(), "GPU 0", "the authenticated hardware must be visible before proof withdrawal")
+	assert.Nil(t, v.detail.telemetryCmd(), "the detail screen must not poll a TLS node-info endpoint over plain HTTP")
 
+	// The engine still answers, but node-info can no longer prove its identity.
 	manual.IdentityVerification = noderec.IdentityUnverified
 	manual.HostUUID = ""
 	manual.NodeInfoUp = false

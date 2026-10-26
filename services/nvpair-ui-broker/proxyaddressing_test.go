@@ -318,56 +318,6 @@ func TestSubscriptions_AreTrackedPerEngine(t *testing.T) {
 	}
 }
 
-// A facade re-subscribing must drop only its own prior registration. Dropping
-// every one would silence the other engines, and dropping none would double-feed
-// this one.
-func TestResubscribe_ReplacesOnlyThatEnginesSubscription(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() {
-		_ = client.Close()
-		_ = server.Close()
-	})
-	go func() {
-		codec := NewCodec(server)
-		for {
-			if _, err := codec.Read(); err != nil {
-				return
-			}
-		}
-	}()
-
-	dir := relay.NewDirectory()
-	p := &proxyProcess{peer: NewPeer(NewCodec(client)), relayDir: dir}
-
-	all := engines.All()
-	if len(all) < 2 {
-		t.Skip("needs at least two engines to tell the subscriptions apart")
-	}
-	first, second := all[0], all[1]
-
-	params := func(e engines.Engine) json.RawMessage {
-		raw, err := json.Marshal(noderec.SubscribeParams{
-			Services: []noderec.ServiceKey{e.DiscoveryService},
-		})
-		require.NoError(t, err, "marshal subscribe")
-		return raw
-	}
-
-	p.handleSubscribe(first.Name, params(first))
-	p.handleSubscribe(second.Name, params(second))
-
-	p.subMu.Lock()
-	firstID, secondID := p.subIDs[first.Name], p.subIDs[second.Name]
-	p.subMu.Unlock()
-
-	p.handleSubscribe(first.Name, params(first))
-
-	p.subMu.Lock()
-	defer p.subMu.Unlock()
-	assert.NotEqual(t, firstID, p.subIDs[first.Name], "re-subscribe kept %s's original ID, so it is now double-fed", first.Name)
-	assert.Equal(t, secondID, p.subIDs[second.Name], "re-subscribing %s changed %s's ID", first.Name, second.Name)
-}
-
 // The read pump reports ready and wires subscriptions by matching bare method
 // names, so it has to see through the address. An unaddressed notification is
 // process-scoped and passes through untouched.
@@ -537,10 +487,20 @@ func TestProxyDiscovery_KeepsEachEnginesLatestSubscriptionSnapshot(t *testing.T)
 		require.FailNow(t, "subscription setup waited for the blocked writer")
 	}
 	node.Name = "latest"
+	var initialOllamaID, initialLMStudioID int
+	var currentOllamaID, currentLMStudioID int
 	updated := make(chan struct{})
 	go func() {
 		proxy.handleSubscribe("lmstudio", lmstudioParams)
+		// Capture the IDs after both facades have subscribed. Only Ollama's
+		// registration should change when it requests a different filter.
+		proxy.subMu.Lock()
+		initialOllamaID, initialLMStudioID = proxy.subIDs["ollama"], proxy.subIDs["lmstudio"]
+		proxy.subMu.Unlock()
 		proxy.handleSubscribe("ollama", nodeInfoParams)
+		proxy.subMu.Lock()
+		currentOllamaID, currentLMStudioID = proxy.subIDs["ollama"], proxy.subIDs["lmstudio"]
+		proxy.subMu.Unlock()
 		directory.Apply(noderec.NotifyNodeUpdated, node)
 		close(updated)
 	}()
@@ -549,6 +509,10 @@ func TestProxyDiscovery_KeepsEachEnginesLatestSubscriptionSnapshot(t *testing.T)
 	case <-time.After(time.Second):
 		require.FailNow(t, "updating subscriptions waited for the blocked writer")
 	}
+	// The channel close publishes the before/after IDs as well as completing
+	// both subscription changes while the first snapshot write is still held.
+	assert.NotEqual(t, initialOllamaID, currentOllamaID, "Ollama must replace its subscription")
+	assert.Equal(t, initialLMStudioID, currentLMStudioID, "Ollama's re-subscribe must leave LM Studio's subscription intact")
 
 	codec := NewCodec(proxySide)
 	initial, err := codec.Read()
