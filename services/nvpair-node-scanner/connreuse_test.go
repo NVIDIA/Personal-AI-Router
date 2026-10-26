@@ -86,9 +86,5 @@ func writePinFromCert(t *testing.T, clusterDir, peerUUID, certPath string) {
 	t.Helper()
 	certPEM, err := os.ReadFile(certPath)
 	require.NoError(t, err)
-	trusted := filepath.Join(clusterDir, "trusted")
-	require.NoError(t, os.MkdirAll(trusted, 0o700))
-	body, err := json.Marshal(map[string]string{"nodeUuid": peerUUID, "certPem": string(certPEM)})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(trusted, peerUUID+".json"), body, 0o600))
+	clustertrusttest.WritePeerPinFromCertificate(t, clusterDir, peerUUID, certPEM)
 }

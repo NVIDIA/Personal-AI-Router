@@ -301,6 +301,7 @@ func TestPeerMetadata_RejectsMalformedOrForeignIdentity(t *testing.T) {
 		})
 	}
 	test("malformed object", `"invalid"`)
+	test("missing host", `{"peer":{"name":"copied-name"}}`)
 	test("foreign host", `{"hostUuid":"someone-else","peer":{"name":"copied-name"}}`)
 }
 
@@ -453,13 +454,7 @@ func TestNodeInfo_RechecksTrustOnReusedConnections(t *testing.T) {
 	test("pin replacement with the same UUID", func(t *testing.T, dir string) {
 		t.Helper()
 		cert, _ := genLeaf(t, "uuid-b")
-		type trustedPeer struct {
-			NodeUUID string `json:"nodeUuid"`
-			CertPEM  string `json:"certPem"`
-		}
-		data, err := json.Marshal(trustedPeer{NodeUUID: "uuid-b", CertPEM: string(cert)})
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "trusted", "uuid-b.json"), data, 0o600))
+		clustertrusttest.WritePeerPinFromCertificate(t, dir, "uuid-b", cert)
 	})
 	test("local departure retaining the keypair", func(t *testing.T, dir string) {
 		t.Helper()
@@ -480,7 +475,7 @@ func TestNodeInfoHandler_RejectsInventoryIfTrustChangesDuringCollection(t *testi
 	require.True(t, ok, "client certificate fixture must be available")
 	require.NotEmpty(t, clientConfig.Certificates)
 	require.NotNil(t, clientConfig.Certificates[0].Leaf)
-	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318), known: true}
+	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318)}
 	// Call the handler synchronously with the authenticated client's TLS state
 	// so trust can be changed deterministically while it builds the response.
 	request := httptest.NewRequest(http.MethodGet, "https://localhost/v1/node-info", nil)

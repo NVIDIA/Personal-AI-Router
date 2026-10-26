@@ -175,11 +175,12 @@ func TestClusterTrustChange_DiscardsVerifiedRecordsAndMeasurements(t *testing.T)
 	broker.store.Upsert(directoryToEnriched(candidate), sourceScanner)
 	broker.relayDir.Apply(noderec.NotifyNodeDiscovered, candidate)
 	principal := "peer"
-	require.True(t, broker.store.AcceptInfo(noderec.NodeInfoEvent{
+	value := noderec.NodeInfoEvent{
 		HostUUID: "peer", ClusterUUID: "peer", DiscoveryRecordID: peer.DiscoveryRecordID,
 		IdentityVerification: noderec.IdentityPinned,
 		Info:                 noderec.NodeInfo{HostUUID: "peer", ClusterUUID: &principal},
-	}, time.Now()))
+	}
+	require.True(t, broker.store.AcceptInfo(value))
 
 	clustertrusttest.RemovePeerPin(t, broker.clusterDir, "peer")
 	broker.applyClusterTrustChange()
@@ -190,8 +191,7 @@ func TestClusterTrustChange_DiscardsVerifiedRecordsAndMeasurements(t *testing.T)
 	assert.Empty(t, broker.manualAliasForKey("peer"))
 	assert.Equal(t, "configured", broker.manualAliasForKey("manual:configured"))
 	assert.Equal(t, []noderec.DirectoryNode{candidate}, broker.relayDir.Snapshot(""))
-	_, cached := broker.store.nodeInfo("peer", time.Now())
-	assert.False(t, cached)
+	assert.False(t, broker.store.AcceptInfo(value))
 }
 
 func TestClusterTrustChange_PreservesProofsForUnchangedPins(t *testing.T) {
@@ -301,7 +301,7 @@ func TestManualNodes_FailsWorkloadsWhenTrustWithdrawalPrecedesNotification(t *te
 			// Different workers use independent streams. The manual update may
 			// erase the peer's last record before the trust notification arrives.
 			clustertrusttest.RemovePeerPin(t, broker.clusterDir, peerUUID)
-			broker.forwardManualNodesNotification("node/updated", params)
+			broker.manualNotificationHandler(broker.manualGeneration)("node/updated", params)
 			require.False(t, broker.store.verifiedSource(peerUUID, sourceManual))
 			broker.applyClusterTrustChange()
 
@@ -343,7 +343,7 @@ func TestManualNodes_PreservesWorkloadsAfterUnverifiedUpdateWithCurrentPin(t *te
 
 	// An unsuccessful hardware probe does not revoke the peer's authorization
 	// or establish that an inference request running on that peer has failed.
-	broker.forwardManualNodesNotification("node/updated", params)
+	broker.manualNotificationHandler(broker.manualGeneration)("node/updated", params)
 	broker.applyClusterTrustChange()
 
 	assert.False(t, broker.store.verifiedSource(peerUUID, sourceManual))
@@ -521,11 +521,12 @@ func TestManualNodes_RejectsQueuedProofAfterPinReplacement(t *testing.T) {
 		DiscoveryRecordID: mesh.PeerRecordID("peer"), IdentityVerification: noderec.IdentityPinned,
 		OllamaUp: true, OllamaPort: 11434, TelemetryValid: true,
 	}
+	notify := b.manualNotificationHandler(b.manualGeneration)
 	send := func() {
 		t.Helper()
 		params, err := json.Marshal(status)
 		require.NoError(t, err)
-		b.forwardManualNodesNotification("node/updated", params)
+		notify("node/updated", params)
 	}
 	send()
 	require.True(t, b.store.verifiedSource("peer", sourceManual))
@@ -586,7 +587,7 @@ func TestManualNodes_RecordReplacementDiscardsTelemetryBeforeDiscovery(t *testin
 				replayed = broker.replayTelemetryToScheduler(scheduler)
 			})
 
-			broker.forwardManualNodesNotification("node/updated", params)
+			broker.manualNotificationHandler(broker.manualGeneration)("node/updated", params)
 
 			require.Equal(t, len(wantReplay), replayed)
 			codec := NewCodec(&output)

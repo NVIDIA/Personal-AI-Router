@@ -188,54 +188,6 @@ func (w *blockedMetadataWriter) Write(data []byte) (int, error) {
 	return w.Conn.Write(data)
 }
 
-func TestPeerMetadata_UpdatesDoNotWaitForBlockedWrites(t *testing.T) {
-	b := &Broker{nodeID: "owned-host"}
-	node := noderec.DirectoryNode{
-		HostUUID: "owned-host", IdentityVerification: noderec.IdentityLocal,
-		Name: "initial-name",
-	}
-	b.updateLocalPeerMetadata(node)
-	// Withhold reads until the cache update returns, simulating a worker that
-	// has stopped consuming its stdin.
-	client, server := net.Pipe()
-	t.Cleanup(func() {
-		_ = client.Close()
-		_ = server.Close()
-	})
-	writer := &blockedMetadataWriter{Conn: client, started: make(chan struct{})}
-	b.setNodeInfo(&nodeInfoProcess{stdin: writer})
-	go b.pushPeerMetadata()
-	select {
-	case <-writer.started:
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "metadata write did not start")
-	}
-	node.Name = "updated-name"
-	updated := make(chan struct{})
-	go func() {
-		b.updateLocalPeerMetadata(node)
-		close(updated)
-	}()
-	select {
-	case <-updated:
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "a blocked node-info write stalled the scanner notification handler")
-	}
-	// Reading releases the blocked write; both snapshots must arrive in order.
-	require.NoError(t, server.SetReadDeadline(time.Now().Add(2*time.Second)))
-	codec := NewCodec(server)
-	checkName := func(want string) {
-		t.Helper()
-		msg, err := codec.Read()
-		require.NoError(t, err)
-		var params noderec.PeerMetadataParams
-		require.NoError(t, json.Unmarshal(msg.Params, &params))
-		assert.Equal(t, want, params.Peer.Name)
-	}
-	checkName("initial-name")
-	checkName("updated-name")
-}
-
 type heldMetadataWriter struct {
 	frames      chan []byte
 	started     chan struct{}
@@ -286,25 +238,43 @@ func TestPeerMetadata_CoalescesUpdatesWhileWorkerIsBlocked(t *testing.T) {
 		},
 	}
 	b.updateLocalPeerMetadata(node)
+	// The first frame is already encoded when this barrier closes. Keep its
+	// write blocked while the registry advances to the latest pending snapshot.
 	select {
 	case <-writer.started:
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "metadata write did not start")
 	}
-	for i := 1; i <= updates; i++ {
-		node.Name = fmt.Sprintf("updated-%d", i)
+	updated := make(chan struct{})
+	go func() {
+		for i := 1; i <= updates; i++ {
+			node.Name = fmt.Sprintf("updated-%d", i)
+			b.updateLocalPeerMetadata(node)
+		}
+		node.IP = "192.0.2.21"
+		node.ClusterUUID = ""
+		delete(node.Services, noderec.ServiceOllama)
 		b.updateLocalPeerMetadata(node)
+		close(updated)
+	}()
+	select {
+	case <-updated:
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "a blocked node-info write stalled registry updates")
 	}
-	node.IP = "192.0.2.21"
-	node.ClusterUUID = ""
-	delete(node.Services, noderec.ServiceOllama)
-	b.updateLocalPeerMetadata(node)
 
 	require.NoError(t, writer.Close())
 	waitForMetadataSender(t, b)
 
 	require.Len(t, writer.frames, 2, "only the in-flight and latest pending snapshots should be written")
-	<-writer.frames // The in-flight snapshot was already encoded before updates.
+	// The in-flight frame stays first; all intervening updates collapse into
+	// the complete final frame, including removed membership and services.
+	var initialFrame Message
+	require.NoError(t, json.Unmarshal(<-writer.frames, &initialFrame))
+	assert.Equal(t, noderec.MethodSetPeerMetadata, initialFrame.Method)
+	var initial noderec.PeerMetadataParams
+	require.NoError(t, json.Unmarshal(initialFrame.Params, &initial))
+	assert.Equal(t, "initial", initial.Peer.Name)
 	var frame Message
 	require.NoError(t, json.Unmarshal(<-writer.frames, &frame))
 	assert.Equal(t, noderec.MethodSetPeerMetadata, frame.Method)

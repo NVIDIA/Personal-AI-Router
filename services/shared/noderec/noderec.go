@@ -525,11 +525,9 @@ const (
 // plus its liveness facet.
 //
 // Probe is reserved and currently always ProbeUnknown: the daemon does not yet
-// report a per-service liveness facet to subscribers. The critical liveness
-// guarantee — the TCP-probe-before-evict anti-flap guard — IS
-// implemented on the daemon (it keeps a still-reachable node across a transient
-// mDNS miss); surfacing per-service reachable/unreachable/inaccessible here is a
-// deferred reporting feature (it would add a probe per service per browse).
+// report per-service liveness to subscribers. Scanner retains authenticated
+// peers across multicast misses using accepted inventory or recent inference
+// activity; per-service status reporting remains unimplemented.
 type ServiceStatus struct {
 	Port  int         `json:"port"`
 	Probe ProbeStatus `json:"probe,omitempty"`
