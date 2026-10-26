@@ -155,7 +155,9 @@ func TestBroker_BridgesManualNodeIntoProxy(t *testing.T) {
 	)
 	t.Cleanup(cleanup)
 
-	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	// Freshly built workers can take longer to launch on Windows. Give startup
+	// its own allowance before checking whether the manual route converges.
+	waitForMethod(t, msgs, "app:ready", 30*time.Second)
 
 	const nodeName = "xproc-manual-proxy-bridge"
 	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":900,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"

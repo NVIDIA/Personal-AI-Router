@@ -73,8 +73,8 @@ func TestModelsPeriodicRefresh_ConvergesWithoutMDNSChange(t *testing.T) {
 
 	// Require a successful empty inventory read, not just an unverified row
 	// whose model fields have never been populated.
-	pollForNode(t, stdin, msgs, instance, cluster.peerUUID, 30*time.Second, func(n availableNode) bool {
-		return len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 30*time.Second, func(n availableNode) bool {
+		return n.ID == instance && len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
 			byEngineEqual(n.LoadedByEngine, emptyByEngine)
 	})
 	t.Log("node discovered with an empty inventory; now serving models without an mDNS change")
@@ -95,8 +95,8 @@ func TestModelsPeriodicRefresh_ConvergesWithoutMDNSChange(t *testing.T) {
 			"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 		},
 	})
-	pollForNode(t, stdin, msgs, instance, cluster.peerUUID, 45*time.Second, func(n availableNode) bool {
-		return modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 45*time.Second, func(n availableNode) bool {
+		return n.ID == instance && modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
 			loadedByEngineMatch(n.LoadedByEngine)
 	})
 
@@ -116,17 +116,18 @@ func TestModelsPeriodicRefresh_ConvergesWithoutMDNSChange(t *testing.T) {
 			"llamacpp": {},
 		},
 	})
-	pollForNode(t, stdin, msgs, instance, cluster.peerUUID, 45*time.Second, func(n availableNode) bool {
-		return len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 45*time.Second, func(n availableNode) bool {
+		return n.ID == instance && len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
 			byEngineEqual(n.LoadedByEngine, emptyByEngine)
 	})
 }
 
-// pollForNode waits for the named, authenticated peer to satisfy pred. Matching
-// its pinned identity prevents an unverified discovery from satisfying readiness.
-func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, instance, hostUUID string, timeout time.Duration, pred func(availableNode) bool) {
+// pollForNode waits for an authenticated peer and, when supplied, an additional
+// case-specific condition. Unverified discoveries cannot satisfy readiness.
+func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, hostUUID string, timeout time.Duration, pred func(availableNode) bool) {
 	t.Helper()
-	deadline := time.After(timeout)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
 	ticker := time.NewTicker(1500 * time.Millisecond)
 	defer ticker.Stop()
 	id := 200
@@ -137,20 +138,12 @@ func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, ins
 			require.True(t, ok, "broker stream closed unexpectedly")
 			if msg.Method == "" && msg.ID != nil {
 				require.Nil(t, msg.Error, "discovery:get-nodes")
-				var res struct {
-					Nodes []struct {
-						availableNode
-						HostUUID             string                       `json:"hostUuid"`
-						DiscoveryRecordID    string                       `json:"discoveryRecordId"`
-						IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
-						Trusted              bool                         `json:"trusted"`
-					} `json:"nodes"`
-				}
+				var res availableNodesResult
 				require.NoError(t, json.Unmarshal(msg.Result, &res), "discovery:get-nodes")
 				for _, node := range res.Nodes {
-					if node.ID == instance && node.HostUUID == hostUUID &&
+					if node.HostUUID == hostUUID &&
 						node.IdentityVerification == noderec.IdentityPinned && node.Trusted &&
-						node.DiscoveryRecordID != "" && pred(node.availableNode) {
+						node.DiscoveryRecordID != "" && (pred == nil || pred(node)) {
 						return
 					}
 				}
@@ -159,8 +152,8 @@ func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, ins
 		case <-ticker.C:
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
-		case <-deadline:
-			require.FailNow(t, fmt.Sprintf("timed out waiting for node %q to match predicate", instance))
+		case <-deadline.C:
+			require.FailNow(t, fmt.Sprintf("timed out waiting for authenticated node %q to match predicate", hostUUID))
 		}
 	}
 }

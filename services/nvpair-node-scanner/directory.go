@@ -190,7 +190,7 @@ func equalOptional[T comparable](a, b *T) bool {
 // applyModels atomically reconciles one node's model inventory from a completed
 // /v1/models fetch, guarded against a node that was removed or re-addressed
 // while the fetch was in flight. Both the post-authentication model sweep and
-// periodic refresh use this write path through refreshNodeModelsCandidates.
+// periodic refresh use this write path through refreshNodeModels.
 //
 // It confirms the node still exists AND still advertises the same em endpoint
 // (ip + port) the fetch targeted, so an in-flight result can never resurrect a

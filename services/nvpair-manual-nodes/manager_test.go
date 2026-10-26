@@ -97,11 +97,7 @@ func TestProbeNode_PublicHardwareCannotSupplyServiceMeasurements(t *testing.T) {
 	const modelName = "model-a"
 	m, _, transport := newTestManager()
 	entry := ManualEntry{Address: address, Name: "manual"}
-	configureHealthyNode(t, transport, entry.Address, []string{modelName}, NodeInfoResponse{
-		HostUUID:       "victim",
-		TelemetryValid: true,
-		GPUs:           []GPUInfo{{UtilizationPercent: 1}},
-	})
+	configureHealthyOllama(t, transport, entry.Address, []string{modelName})
 	var hardwareReads int
 	transport.set(http.MethodGet, address+":14318", "/v1/node-info", func(*http.Request) (*http.Response, error) {
 		hardwareReads++
@@ -119,7 +115,7 @@ func TestProbeNode_PublicHardwareCannotSupplyServiceMeasurements(t *testing.T) {
 	assert.Equal(t, []string{modelName}, status.OllamaModels)
 }
 
-func configureHealthyNode(t *testing.T, rt *fakeRoundTripper, addr string, models []string, info NodeInfoResponse) {
+func configureHealthyOllama(t *testing.T, rt *fakeRoundTripper, addr string, models []string) {
 	t.Helper()
 	host := net.JoinHostPort(addr, "11434")
 	rt.set(http.MethodGet, host, "/", func(*http.Request) (*http.Response, error) {
@@ -138,13 +134,6 @@ func configureHealthyNode(t *testing.T, rt *fakeRoundTripper, addr string, model
 		}
 		data, err := json.Marshal(payload)
 		assert.NoError(t, err, "marshal model inventory")
-		return httpJSON(http.StatusOK, string(data))
-	})
-
-	infoHost := net.JoinHostPort(addr, "14318")
-	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
-		data, err := json.Marshal(info)
-		assert.NoError(t, err, "marshal node info")
 		return httpJSON(http.StatusOK, string(data))
 	})
 }
@@ -295,16 +284,18 @@ func methodIs(method string) func(Message) bool {
 
 func sampleInfo() NodeInfoResponse {
 	return NodeInfoResponse{
-		GPUs: []GPUInfo{{
-			Name:               "RTX 6000",
-			VramBytes:          48 << 30,
-			VramUsedBytes:      12 << 30,
-			UtilizationPercent: 42,
-		}},
-		CPU:            &CPUInfo{Name: "Threadripper", Cores: 64, UtilizationPercent: 7},
-		Memory:         &MemoryInfo{TotalBytes: 128 << 30, UsedBytes: 32 << 30},
-		TelemetryValid: true,
-		MSSince:        137,
+		NodeInfo: noderec.NodeInfo{
+			GPUs: []GPUInfo{{
+				Name:               "RTX 6000",
+				VramBytes:          48 << 30,
+				VramUsedBytes:      12 << 30,
+				UtilizationPercent: 42,
+			}},
+			CPU:            &CPUInfo{Name: "Threadripper", Cores: 64, UtilizationPercent: 7},
+			Memory:         &MemoryInfo{TotalBytes: 128 << 30, UsedBytes: 32 << 30},
+			TelemetryValid: true,
+			MSSince:        137,
+		},
 	}
 }
 
@@ -315,7 +306,7 @@ func TestNodeID_PrefersConfiguredNameOverAddressFallback(t *testing.T) {
 
 func TestNodeAdd_RespondsWithInitialStatusAndDiscoversProbeResult(t *testing.T) {
 	m, rw, rt := newTestManager()
-	configureHealthyNode(t, rt, "node.local", []string{"llama3", "mistral"}, sampleInfo())
+	configureHealthyOllama(t, rt, "node.local", []string{"llama3", "mistral"})
 
 	m.handleMessage(requestMessage(t, 1, "node/add", ManualEntry{Address: "node.local", Name: "lab"}))
 
@@ -364,7 +355,7 @@ func TestNodeAdd_RejectsInvalidParameters(t *testing.T) {
 
 func TestNodesList_ReturnsCurrentStatuses(t *testing.T) {
 	m, rw, rt := newTestManager()
-	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, sampleInfo())
+	configureHealthyOllama(t, rt, "node.local", []string{"llama3"})
 
 	m.handleMessage(requestMessage(t, 1, "node/add", ManualEntry{Address: "node.local"}))
 	_ = readCaptureUntil(t, rw, methodIs("node/discovered"))
@@ -416,9 +407,6 @@ func TestAddThenRemoveBeforeInitialProbe_DoesNotRediscover(t *testing.T) {
 	rt.set(http.MethodGet, net.JoinHostPort("node.local", "11434"), "/api/tags", func(*http.Request) (*http.Response, error) {
 		return httpJSON(http.StatusOK, `{"models":[]}`)
 	})
-	rt.set(http.MethodGet, net.JoinHostPort("node.local", "14318"), "/v1/node-info", func(*http.Request) (*http.Response, error) {
-		return httpJSON(http.StatusOK, `{"GPUs":[]}`)
-	})
 
 	status := m.addNode(ManualEntry{Address: "node.local", Name: "lab"})
 	assert.Equal(t, "lab", status.ID, "add status (%v)", status)
@@ -441,12 +429,12 @@ func TestProbeNode_EmitsUpdatedOnStateChange(t *testing.T) {
 	m, rw, rt := newTestManager()
 	m.nodes["lab"] = &trackedNode{entry: ManualEntry{Name: "lab", Address: "node.local"}, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
 
-	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, sampleInfo())
+	configureHealthyOllama(t, rt, "node.local", []string{"llama3"})
 	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
 	first := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	assert.Equal(t, []string{"llama3"}, first.OllamaModels, "first update models")
 
-	configureHealthyNode(t, rt, "node.local", []string{"mistral"}, sampleInfo())
+	configureHealthyOllama(t, rt, "node.local", []string{"mistral"})
 	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
 	second := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	assert.Equal(t, []string{"mistral"}, second.OllamaModels, "second update models")
@@ -456,7 +444,7 @@ func TestProbeNode_EmitsNothingWhenStateIsUnchanged(t *testing.T) {
 	m, rw, rt := newTestManager()
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
 	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
-	configureHealthyNode(t, rt, "node.local", []string{"llama3"}, sampleInfo())
+	configureHealthyOllama(t, rt, "node.local", []string{"llama3"})
 
 	m.probeNode(entry)
 	_ = readCaptureUntil(t, rw, methodIs("node/updated"))
@@ -555,14 +543,7 @@ func newManualPeerFixture(t *testing.T) *manualPeerFixture {
 		t.Helper()
 		certificate, err := os.ReadFile(filepath.Join(source, "node.crt"))
 		require.NoError(t, err)
-		type peerPin struct {
-			NodeUUID string `json:"nodeUuid"`
-			CertPEM  string `json:"certPem"`
-		}
-		data, err := json.Marshal(peerPin{NodeUUID: uuid, CertPEM: string(certificate)})
-		require.NoError(t, err)
-		require.NoError(t, os.MkdirAll(filepath.Join(destination, "trusted"), 0o700))
-		require.NoError(t, os.WriteFile(filepath.Join(destination, "trusted", uuid+".json"), data, 0o600))
+		clustertrusttest.WritePeerPinFromCertificate(t, destination, uuid, certificate)
 	}
 	pin(clientDir, serverDir, manualPeerUUID)
 	pin(serverDir, clientDir, selfUUID)
@@ -778,7 +759,7 @@ func TestProbeNode_DiscardsOldIdentityAfterHostnameReassignment(t *testing.T) {
 	}
 	f.entry.Address = "manual.example"
 	f.manager.nodes[nodeID(f.entry)].entry = f.entry
-	configureHealthyNode(t, engineTransport, f.entry.Address, []string{"original-model"}, NodeInfoResponse{})
+	configureHealthyOllama(t, engineTransport, f.entry.Address, []string{"original-model"})
 	f.manager.probeNode(f.entry)
 	warmed := f.manager.listNodes()
 	require.Len(t, warmed, 1)
@@ -794,7 +775,7 @@ func TestProbeNode_DiscardsOldIdentityAfterHostnameReassignment(t *testing.T) {
 	targetMu.Lock()
 	target = replacement.Listener.Addr().String()
 	targetMu.Unlock()
-	configureHealthyNode(t, engineTransport, f.entry.Address, []string{"replacement-model"}, NodeInfoResponse{})
+	configureHealthyOllama(t, engineTransport, f.entry.Address, []string{"replacement-model"})
 
 	f.manager.probeNode(f.entry)
 

@@ -143,19 +143,13 @@ type storedNode struct {
 	scanner  *EnrichedNode
 	manual   *EnrichedNode
 	lastSeen time.Time
-	info     *nodeInfoObservation
 }
 
-type nodeInfoObservation struct {
-	value      noderec.NodeInfoEvent
-	receivedAt time.Time
-}
-
-// AcceptInfo binds the complete snapshot to the scanner's current record. A
-// candidate with the same claimed UUID cannot populate this cache.
-func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent, now time.Time) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// AcceptInfo reports whether hardware belongs to the scanner's current verified
+// record. A candidate with the same claimed UUID cannot supply its measurements.
+func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	sn, ok := s.nodes[value.HostUUID]
 	if !ok || sn.scanner == nil {
 		return false
@@ -175,25 +169,11 @@ func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent, now time.Time) 
 		}
 		if value.Info.ClusterUUID == nil || *value.Info.ClusterUUID != value.ClusterUUID {
 			// The hardware body must name that principal too; a missing or
-			// conflicting identity cannot populate the verified cache.
+			// conflicting identity cannot supply verified measurements.
 			return false
 		}
 	}
-	sn.info = &nodeInfoObservation{value: value, receivedAt: now}
-	s.nodes[value.HostUUID] = sn
 	return true
-}
-
-func (s *discoveryStore) nodeInfo(hostUUID string, now time.Time) (noderec.NodeInfoEvent, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	sn, ok := s.nodes[hostUUID]
-	if !ok || sn.info == nil {
-		return noderec.NodeInfoEvent{}, false
-	}
-	value := sn.info.value
-	value.Info = value.Info.Aged(now.Sub(sn.info.receivedAt))
-	return value, true
 }
 
 func (s *discoveryStore) verifiedSource(hostUUID string, source nodeSource) bool {
@@ -325,9 +305,6 @@ func (s *discoveryStore) Upsert(n EnrichedNode, source nodeSource) {
 	cp := n
 	s.mu.Lock()
 	sn := s.nodes[key]
-	if source == sourceScanner && sn.scanner != nil && sn.scanner.DiscoveryRecordID != n.DiscoveryRecordID {
-		sn.info = nil
-	}
 	sn.setSource(source, &cp)
 	sn.lastSeen = time.Now()
 	s.nodes[key] = sn
@@ -358,9 +335,6 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 		return false
 	}
 	sn.setSource(source, nil)
-	if source == sourceScanner {
-		sn.info = nil
-	}
 	gone := !sn.claimed()
 	if gone {
 		delete(s.nodes, key)
@@ -815,11 +789,11 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 		if json.Unmarshal(params, &value) != nil || s.store == nil || !s.currentRecord(value.HostUUID, value.DiscoveryRecordID, value.IdentityVerification) {
 			return
 		}
-		value.Info = value.Info.Aged(time.Since(receivedAt))
-		if !s.store.AcceptInfo(value, time.Now()) {
+		if !s.store.AcceptInfo(value) {
 			return
 		}
 		if s.onNodeInfo != nil {
+			value.Info = value.Info.Aged(time.Since(receivedAt))
 			s.onNodeInfo(value)
 		}
 	case "ready":

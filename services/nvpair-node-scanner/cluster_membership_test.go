@@ -19,16 +19,13 @@ import (
 func newMembershipTestDaemon(clusterDir string) *daemon {
 	mesh := clustertrust.Open(clusterDir)
 	return &daemon{
-		mesh:               mesh,
-		modelsClients:      clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
-		clusterDir:         clusterDir,
-		baseDir:            filepath.Dir(clusterDir),
-		reg:                newRegistry("host-uuid", "", selfAddrs("127.0.0.1")),
-		dir:                newDirectory(),
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
+		mesh:          mesh,
+		modelsClients: clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
+		clusterDir:    clusterDir,
+		baseDir:       filepath.Dir(clusterDir),
+		reg:           newRegistry("host-uuid", "", selfAddrs("127.0.0.1")),
+		dir:           newDirectory(),
+		lastInfoAt:    make(map[string]time.Time),
 		// codec/responder nil: emit is nil-safe; reloadIdentity skips re-advertise.
 	}
 }
