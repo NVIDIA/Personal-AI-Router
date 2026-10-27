@@ -4,7 +4,6 @@
 package eapnoob
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,11 +43,11 @@ func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
 		Cryptosuites: []int{suite},
 		Dirs:         dir,
 		ServerInfo:   map[string]any{"ServerName": "test-server"},
-	}, nil)
+	})
 	peer := NewPeer(PeerConfig{
 		PreferDir: dir,
 		PeerInfo:  map[string]any{"PeerName": "test-peer"},
-	}, nil)
+	})
 
 	// Initial Exchange.
 	driveConversation(t, srv, peer)
@@ -76,57 +75,31 @@ func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
 	return srv, peer
 }
 
-func TestPairing_DerivesMatchingSecretsAcrossSuitesAndDirections(t *testing.T) {
-	for _, suite := range []int{1, 2} {
-		for _, dir := range []int{1, 2} {
-			suite, dir := suite, dir
-			t.Run("", func(t *testing.T) {
-				srv, peer := pair(t, suite, dir)
-
-				assert.Equal(t, suite, srv.Association().Cryptosuitep, "server negotiated cryptosuite %d, want %d", srv.Association().Cryptosuitep, suite)
-				assert.Equal(t, peer.Association().Kz, srv.Association().Kz, "Kz mismatch between server and peer")
-				assert.Equal(t, peer.Association().PeerId, srv.Association().PeerId, "PeerId mismatch: %q vs %q", srv.Association().PeerId, peer.Association().PeerId)
-
-				// The exported secret must agree for several lengths and differ
-				// across labels/contexts.
-				for _, n := range []int{1, 16, 32, 100, 1000} {
-					sSecret, err := srv.Export("app", nil, n)
-					require.NoError(t, err, "server Export(%d): %v", n, err)
-					pSecret, err := peer.Export("app", nil, n)
-					require.NoError(t, err, "peer Export(%d): %v", n, err)
-					require.Len(t, sSecret, n, "export length %d, want %d", len(sSecret), n)
-					assert.Equal(t, pSecret, sSecret, "exported secret mismatch at length %d", n)
-				}
-
-				a, err := srv.Export("label-a", nil, 32)
-				require.NoError(t, err, "export label-a")
-				b, err := srv.Export("label-b", nil, 32)
-				require.NoError(t, err, "export label-b")
-				assert.NotEqual(t, b, a, "different labels produced identical secrets")
-				c1, err := srv.Export("app", []byte("ctx1"), 32)
-				require.NoError(t, err, "export ctx1")
-				c2, err := srv.Export("app", []byte("ctx2"), 32)
-				require.NoError(t, err, "export ctx2")
-				assert.NotEqual(t, c2, c1, "different contexts produced identical secrets")
-			})
-		}
+func TestPairing_AuthenticatesIdentityAcrossSuitesAndDirections(t *testing.T) {
+	test := func(name string, suite, dir int) {
+		t.Run(name, func(t *testing.T) {
+			srv, peer := pair(t, suite, dir)
+			assert.Equal(t, suite, srv.csp)
+			assert.Equal(t, suite, peer.csp)
+			assert.Equal(t, peer.peerId, srv.peerId)
+			assert.JSONEq(t, `{"PeerName":"test-peer"}`, string(srv.PeerInfo()))
+			assert.JSONEq(t, `{"ServerName":"test-server"}`, string(peer.ServerInfo()))
+		})
 	}
-}
-
-func TestExport_RejectsUnregisteredPairing(t *testing.T) {
-	peer := NewPeer(PeerConfig{}, nil)
-	_, err := peer.Export("app", nil, 16)
-	assert.ErrorIs(t, err, ErrNotRegistered, "Export before registration")
+	test("suite 1 server-to-peer", 1, 2)
+	test("suite 2 server-to-peer", 2, 2)
+	test("suite 1 peer-to-server", 1, 1)
+	test("suite 2 peer-to-server", 2, 1)
 }
 
 func TestPairing_RejectsTamperedMAC(t *testing.T) {
-	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 1}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 1}, nil)
+	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 2})
+	peer := NewPeer(PeerConfig{PreferDir: 2})
 
 	driveConversation(t, srv, peer)
-	oob, err := peer.OOBOutput()
+	oob, err := srv.OOBOutput()
 	require.NoError(t, err, "OOBOutput:")
-	require.NoError(t, srv.OOBInput(oob), "OOBInput:")
+	require.NoError(t, peer.OOBInput(oob), "OOBInput:")
 
 	// Run the Completion handshake manually and corrupt MACp before the server
 	// verifies it.
@@ -134,7 +107,11 @@ func TestPairing_RejectsTamperedMAC(t *testing.T) {
 	require.NoError(t, err, "start completion discovery")
 	resp1, err := peer.Receive(req1) // Type=1 response
 	require.NoError(t, err, "peer discovery:")
-	req6, err := srv.Receive(resp1.Send) // Type=6 request (MACs)
+	req5, err := srv.Receive(resp1.Send) // Type=5 request (NoobId)
+	require.NoError(t, err, "server NoobId request:")
+	resp5, err := peer.Receive(req5.Send)
+	require.NoError(t, err, "peer NoobId response:")
+	req6, err := srv.Receive(resp5.Send) // Type=6 request (MACs)
 	require.NoError(t, err, "server completion request:")
 	resp6, err := peer.Receive(req6.Send) // Type=6 response (MACp)
 	require.NoError(t, err, "peer completion:")
@@ -153,8 +130,8 @@ func TestPairing_RejectsTamperedMAC(t *testing.T) {
 }
 
 func TestPairing_RejectsIncorrectOutOfBandFingerprint(t *testing.T) {
-	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 2})
+	peer := NewPeer(PeerConfig{PreferDir: 2})
 	driveConversation(t, srv, peer)
 
 	oob, err := srv.OOBOutput()
@@ -162,26 +139,6 @@ func TestPairing_RejectsIncorrectOutOfBandFingerprint(t *testing.T) {
 	oob.Hoob = "AAAAAAAAAAAAAAAAAAAAAA" // wrong 16-byte fingerprint
 	require.Error(t, peer.OOBInput(oob), "expected OOBInput to reject bad fingerprint")
 	assert.Equal(t, StateWaiting, peer.State(), "peer state %s after rejected OOB, want WaitingForOOB", peer.State())
-}
-
-func TestOneStepKDF_DerivesRepeatableKeys(t *testing.T) {
-	z := bytes.Repeat([]byte{0x01}, 32)
-	np := bytes.Repeat([]byte{0x02}, 32)
-	ns := bytes.Repeat([]byte{0x03}, 32)
-	noob := bytes.Repeat([]byte{0x04}, 16)
-
-	km1 := deriveCompletion(z, np, ns, noob)
-	km2 := deriveCompletion(z, np, ns, noob)
-
-	assert.Equal(t, km2.MSK, km1.MSK, "KDF not deterministic")
-	assert.Equal(t, km2.Kz, km1.Kz, "KDF not deterministic")
-	assert.Len(t, km1.MSK, 64, "MSK length")
-	assert.Len(t, km1.EMSK, 64, "EMSK length")
-	assert.Len(t, km1.AMSK, 64, "AMSK length")
-	assert.Len(t, km1.MethodID, 32, "MethodID length")
-	assert.Len(t, km1.Kms, 32, "Kms length")
-	assert.Len(t, km1.Kmp, 32, "Kmp length")
-	assert.Len(t, km1.Kz, 32, "Kz length")
 }
 
 func TestJWK_RoundTripsPublicKeys(t *testing.T) {

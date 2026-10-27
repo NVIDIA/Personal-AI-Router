@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package eapnoob implements the EAP-NOOB authentication and key-derivation
-// method defined in RFC 9140 ("Nimble Out-of-Band Authentication for EAP").
+// Package eapnoob implements PAIR's certificate-authenticated pairing using
+// the Initial, Waiting, and Completion exchanges from EAP-NOOB (RFC 9140).
 //
 // The implementation is transport-agnostic: it consumes and produces the
 // EAP-NOOB message bytes (JSON objects) but does not perform EAP/RADIUS framing
 // or networking. A caller drives a Server and a Peer by relaying each side's
-// outbound bytes to the other, and relays the single out-of-band message
-// (PeerId, Noob, Hoob) through whatever user-assisted channel it chooses.
+// outbound bytes to the other. PAIR supplies the out-of-band Noob from its
+// user-carried PIN; a full OOBMessage is also supported for high-entropy codes.
 //
-// Once the Completion Exchange succeeds, both sides reach the Registered state
-// and share the association key Kz, from which Export derives a shared secret
-// of any requested length.
+// Once Completion succeeds, both sides reach Registered and the exchanged
+// ServerInfo and PeerInfo are authenticated. The cluster manager owns the
+// resulting certificate pins and durable membership.
 package eapnoob
 
 import (
@@ -92,8 +92,7 @@ type methodState struct {
 	noobB64 json.RawMessage
 	noobID  []byte // raw 16-byte NoobId
 
-	keyM       keyMaterial
-	registered *Association
+	keyM keyMaterial
 }
 
 func (ms *methodState) deriveCompletionKeys() {

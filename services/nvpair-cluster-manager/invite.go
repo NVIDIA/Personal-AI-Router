@@ -313,7 +313,7 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 	if err != nil {
 		return sess, "", fmt.Errorf("generate pin: %w", err)
 	}
-	if _, err := server.OOBOutputWith(noob); err != nil {
+	if err := server.OOBOutputWith(noob); err != nil {
 		return sess, "", fmt.Errorf("inject pin noob: %w", err)
 	}
 	return sess, pin, nil

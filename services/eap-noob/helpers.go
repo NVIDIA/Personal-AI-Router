@@ -106,25 +106,6 @@ func oobOutput(ms *methodState, dir int) (OOBMessage, error) {
 	}, nil
 }
 
-// oobOutputWith builds the OOB message for the given direction using a
-// caller-supplied 16-byte secret nonce Noob instead of generating a fresh
-// random one. It is the low-entropy variant used when the Noob is carried out
-// of band by a human (e.g. a six-digit PIN encoded into the 16 bytes); the
-// returned Noob/Hoob need not be transmitted, since the peer recomputes them
-// locally from the same PIN and the transcript.
-func oobOutputWith(ms *methodState, dir int, noob []byte) (OOBMessage, error) {
-	if len(noob) != 16 {
-		return OOBMessage{}, fmt.Errorf("eapnoob: Noob must be 16 bytes")
-	}
-	ms.setNoob(noob)
-	hoob := ms.suite.computeHoob(dir, ms.in)
-	return OOBMessage{
-		PeerId: ms.peerId,
-		Noob:   b64Encode(noob),
-		Hoob:   b64Encode(hoob),
-	}, nil
-}
-
 // oobInputNoob records a caller-supplied 16-byte Noob without an OOBMessage
 // envelope. Unlike oobInput it does not verify a received Hoob (there is none
 // to verify for a human-carried Noob); transcript agreement is instead proven

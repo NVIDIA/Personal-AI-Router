@@ -140,13 +140,13 @@ func noobFromPIN(pin string) []byte {
 // newPairingServer builds the inviter-side EAP-NOOB Server, server-to-peer OOB
 // only (Dirs=2), carrying this node's PairingInfo as ServerInfo.
 func newPairingServer(info map[string]any) *eapnoob.Server {
-	return eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 2, ServerInfo: info}, nil)
+	return eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 2, ServerInfo: info})
 }
 
 // newPairingPeer builds the joiner-side EAP-NOOB Peer preferring server-to-peer
 // OOB (PreferDir=2), carrying this node's PairingInfo as PeerInfo.
 func newPairingPeer(info map[string]any) *eapnoob.Peer {
-	return eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 2, PeerInfo: info}, nil)
+	return eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 2, PeerInfo: info})
 }
 
 // pairingRole fixes which EAP-NOOB role a session plays for its whole lifetime.

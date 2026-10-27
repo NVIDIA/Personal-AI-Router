@@ -33,7 +33,6 @@ type ServerConfig struct {
 // Server drives the EAP server side of one EAP-NOOB association.
 type Server struct {
 	cfg   ServerConfig
-	store Store
 	state State
 
 	methodState
@@ -44,9 +43,8 @@ type Server struct {
 	dirp      int
 }
 
-// NewServer creates a server using the given configuration and association
-// store. If store is nil an in-memory store is used.
-func NewServer(cfg ServerConfig, store Store) *Server {
+// NewServer creates a server for one pairing using the given configuration.
+func NewServer(cfg ServerConfig) *Server {
 	if len(cfg.Versions) == 0 {
 		cfg.Versions = []int{1}
 	}
@@ -56,10 +54,7 @@ func NewServer(cfg ServerConfig, store Store) *Server {
 	if cfg.Dirs == 0 {
 		cfg.Dirs = 3
 	}
-	if store == nil {
-		store = NewMemoryStore()
-	}
-	return &Server{cfg: cfg, store: store, state: StateUnregistered}
+	return &Server{cfg: cfg, state: StateUnregistered}
 }
 
 // State returns the server's current association state.
@@ -69,16 +64,6 @@ func (s *Server) State() State { return s.state }
 // Exchange. It is folded into the Completion MACs, so it is authenticated once
 // the association reaches Registered.
 func (s *Server) PeerInfo() json.RawMessage { return s.in.PeerInfo }
-
-// Association returns the registered association once the Completion Exchange
-// has succeeded, or nil.
-func (s *Server) Association() *Association { return s.registered }
-
-// Export derives an arbitrary-length shared secret from the registered
-// association (see Association.Export).
-func (s *Server) Export(label string, context []byte, length int) ([]byte, error) {
-	return s.registered.Export(label, context, length)
-}
 
 // Start begins a new EAP conversation by producing the first EAP-NOOB request
 // (Type=1, PeerId/PeerState discovery).
@@ -377,16 +362,6 @@ func (s *Server) onCompletion(wm *wireMessage) (Outcome, error) {
 		return s.fail(ErrHMACVerificationFailed, "MACp verification failed")
 	}
 
-	assoc := &Association{
-		PeerId:       s.peerId,
-		NAI:          s.nai,
-		Cryptosuitep: s.csp,
-		Kz:           append([]byte(nil), s.keyM.Kz...),
-	}
-	if err := s.store.Save(assoc); err != nil {
-		return Outcome{}, err
-	}
-	s.registered = assoc
 	s.state = StateRegistered
 	return Outcome{Send: resultBytes(eapSuccess), State: s.state, Done: true, Success: true}, nil
 }
@@ -405,19 +380,17 @@ func (s *Server) OOBOutput() (OOBMessage, error) {
 	return oobOutput(&s.methodState, 2)
 }
 
-// OOBOutputWith produces the server-to-peer OOB material using a caller-supplied
-// 16-byte Noob (e.g. derived from a user-carried PIN) instead of a randomly
-// generated one. Preconditions match OOBOutput. The returned OOBMessage is
-// informational: the Noob is caller-controlled and the peer recomputes Hoob
-// locally, so nothing here needs to be transmitted in band.
-func (s *Server) OOBOutputWith(noob []byte) (OOBMessage, error) {
+// OOBOutputWith records a caller-supplied 16-byte Noob for server-to-peer OOB.
+// The server stays Waiting, without building an OOBMessage or computing Hoob.
+// Preconditions match OOBOutput; Completion authenticates the transcript.
+func (s *Server) OOBOutputWith(noob []byte) error {
 	if s.state != StateWaiting {
-		return OOBMessage{}, fmt.Errorf("eapnoob: OOBOutputWith requires Waiting state, have %s", s.state)
+		return fmt.Errorf("eapnoob: OOBOutputWith requires Waiting state, have %s", s.state)
 	}
 	if s.dirp != 2 && s.dirp != 3 {
-		return OOBMessage{}, fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
+		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
 	}
-	return oobOutputWith(&s.methodState, 2, noob)
+	return oobInputNoob(&s.methodState, noob)
 }
 
 // OOBInput accepts the out-of-band message for the peer-to-server direction and

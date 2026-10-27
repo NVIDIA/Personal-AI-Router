@@ -5,23 +5,25 @@ SPDX-License-Identifier: Apache-2.0
 
 # eapnoob
 
-A Go implementation of **EAP-NOOB** (RFC 9140, "Nimble Out-of-Band Authentication
-for EAP"), exposed as a transport-agnostic library. Two consumers, a `Server` and
-a `Peer`, perform an authenticated key exchange bootstrapped by a single
-user-assisted out-of-band (OOB) message, and afterwards derive a **shared secret
-of any length**.
+PAIR's pairing component implements the Initial, Waiting, and Completion
+Exchanges of **EAP-NOOB** (RFC 9140, "Nimble Out-of-Band Authentication for EAP").
+The cluster-manager drives a `Server` and a `Peer` to authenticate the node
+identity and certificate information exchanged during pairing.
 
 ## What it does
 
-EAP-NOOB performs an Ephemeral ECDH key exchange that is authenticated by a short
-OOB message (`PeerId`, `Noob`, `Hoob`) carried over a user-assisted channel
-(QR code, NFC, blinking LED, typed code, etc.). Once both sides confirm the
-exchange they reach the `Registered` state and share the association key `Kz`,
-from which `Export` derives arbitrary-length secrets.
+EAP-NOOB authenticates an ephemeral ECDH exchange using an out-of-band (OOB)
+secret, `Noob`. PAIR currently obtains that secret from a six-digit PIN carried
+by the user from the inviter to the joiner. The Completion MACs bind the secret
+to the exchanged `ServerInfo` and `PeerInfo`, including both nodes' certificates.
+After successful Completion, both roles reach `Registered` and the
+cluster-manager pins the authenticated certificates in its own trusted-node
+store.
 
-The library is **byte-in / byte-out**: it produces and consumes the EAP-NOOB JSON
-messages but does not implement EAP/RADIUS framing or networking. You wire up the
-in-band transport and relay the OOB message yourself.
+The component consumes and produces EAP-NOOB JSON messages. The cluster-manager
+owns the transport, PIN validation and encoding, durable trust, and membership.
+This module serves PAIR; it is not a general-purpose authentication or
+application-secret export library.
 
 ## Scope
 
@@ -31,32 +33,38 @@ Implemented:
   Exchange, Completion Exchange.
 - Cryptosuite 1 (Curve25519 / SHA-256, mandatory) and cryptosuite 2
   (NIST P-256 / SHA-256, recommended).
-- NIST SP 800-56C one-step KDF and the `MSK`/`EMSK`/`AMSK`/`Kms`/`Kmp`/`Kz`
-  outputs (RFC 9140, Table 5).
-- Persistent association store (`Store` interface + in-memory implementation).
-- Arbitrary-length secret export via HKDF-SHA256 over `Kz`.
+- NIST SP 800-56C one-step KDF, retaining the Completion MAC keys `Kms` and
+  `Kmp` at their RFC 9140 Table 5 offsets.
+- Caller-supplied `Noob` for PAIR's PIN flow, plus the full server-to-peer
+  `OOBMessage` path reserved for PAIR's planned high-entropy pairing codes.
 - Error notifications (Type=0) and the RFC error codes.
 
-Not implemented (reserved for a future phase): the Reconnect / rekeying exchange
-(message types 7-9, KeyingMode 1-3) and AAA roaming.
+Reconnect / rekeying exchanges (message types 7-9, KeyingMode 1-3) and AAA
+roaming are not implemented. Completed associations and application keys are
+not persisted by this module.
 
 ## Usage
 
 ```go
-srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 1}, nil)
-peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 1}, nil)
+srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 2, ServerInfo: serverInfo})
+peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 2, PeerInfo: peerInfo})
 
 // 1. Initial Exchange: relay each side's Outcome.Send to the other until done.
-//    (server.Start() produces the first message.)
+//    (srv.Start() produces the first message.)
 
-// 2. OOB Step: relay the OOB message over a user-assisted channel.
-oob, _ := peer.OOBOutput()
-_ = srv.OOBInput(oob)
+// 2. The cluster-manager validates and encodes the user-carried PIN as the
+//    same 16-byte noob on both sides. No OOBMessage is sent in the PIN flow.
+if err := srv.OOBOutputWith(noob); err != nil {
+    return err
+}
+if err := peer.OOBInputNoob(noob); err != nil {
+    return err
+}
 
 // 3. Completion Exchange: relay messages again until both reach Registered.
 
-// 4. Derive a shared secret of any length.
-secret, _ := srv.Export("my-application", nil, 48) // == peer.Export(...)
+// 4. After successful Completion, the cluster-manager reads srv.PeerInfo()
+//    and peer.ServerInfo() and pins the authenticated certificates.
 ```
 
 See [`example_test.go`](example_test.go) for a complete, runnable driver loop.
@@ -84,12 +92,24 @@ conversation for the Completion Exchange (call `srv.Start()` again to begin it).
 server-to-peer). The sending side calls `OOBOutput()` and the receiving side
 calls `OOBInput()`.
 
+PAIR uses direction 2. Its PIN flow calls `Server.OOBOutputWith(noob)` to
+register the inviter's secret while staying in `Waiting`, and
+`Peer.OOBInputNoob(noob)` to move the joiner to `OOBReceived`. Neither method
+constructs or verifies a Hoob fingerprint; transcript agreement is proved by
+the Completion MACs.
+
+`Server.OOBOutput()` and `Peer.OOBInput(OOBMessage)` retain random `Noob`
+generation and Hoob verification for the planned high-entropy OOB flow. That
+flow carries the full `OOBMessage{PeerId, Noob, Hoob}` through the user-assisted
+channel; it is not used by today's PIN pairing.
+
 ## Testing
 
 ```sh
 go test ./...
 ```
 
-The suite runs full pairings for both cryptosuites and both OOB directions,
-verifies that the server and peer derive identical exported secrets, and checks
-the KDF, JWK round-trip, OOB fingerprint rejection, and MAC verification paths.
+The suite exercises both cryptosuites, PAIR's caller-supplied `Noob` flow,
+Completion authentication, KDF outputs, JWK round-trips, and OOB fingerprint
+rejection. The cluster-manager tests cover PIN encoding and the durable trust
+boundary.

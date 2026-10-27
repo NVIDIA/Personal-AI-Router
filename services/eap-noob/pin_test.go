@@ -42,40 +42,35 @@ func driveAllowFail(srv *Server, peer *Peer) bool {
 // PIN flow takes): the server supplies the Noob via OOBOutputWith and the peer
 // records the same Noob via OOBInputNoob, with no OOBMessage/Hoob envelope.
 func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2, ServerInfo: map[string]any{"role": "server"}}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2, PeerInfo: map[string]any{"role": "peer"}}, nil)
+	srv := NewServer(ServerConfig{Dirs: 2, ServerInfo: map[string]any{"role": "server"}})
+	peer := NewPeer(PeerConfig{PreferDir: 2, PeerInfo: map[string]any{"role": "peer"}})
 
 	driveConversation(t, srv, peer)
 	require.Equal(t, StateWaiting, srv.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
 	require.Equal(t, StateWaiting, peer.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
 
 	noob := bytes.Repeat([]byte{0xAB}, 16)
-	_, err := srv.OOBOutputWith(noob)
-	require.NoError(t, err, "server OOBOutputWith:")
+	require.NoError(t, srv.OOBOutputWith(noob), "server OOBOutputWith:")
+	assert.Equal(t, StateWaiting, srv.State())
 	require.NoError(t, peer.OOBInputNoob(noob), "peer OOBInputNoob:")
 	require.Equal(t, StateOOBReceived, peer.State(), "peer state %s, want OOBReceived", peer.State())
 
 	driveConversation(t, srv, peer)
 	require.Equal(t, StateRegistered, srv.State(), "after Completion: server=%s peer=%s, want Registered", srv.State(), peer.State())
 	require.Equal(t, StateRegistered, peer.State(), "after Completion: server=%s peer=%s, want Registered", srv.State(), peer.State())
-	assert.Equal(t, peer.Association().Kz, srv.Association().Kz, "Kz mismatch between server and peer")
-	s, err := srv.Export("cluster-mtls", nil, 32)
-	require.NoError(t, err, "server Export:")
-	p, err := peer.Export("cluster-mtls", nil, 32)
-	require.NoError(t, err, "peer Export:")
-	assert.Equal(t, p, s, "exported secret mismatch")
+	assert.JSONEq(t, `{"role":"server"}`, string(peer.ServerInfo()))
+	assert.JSONEq(t, `{"role":"peer"}`, string(srv.PeerInfo()))
 }
 
 // TestMismatchedInjectedNoobFails is the wrong-PIN case: the two sides inject
 // different Noobs, so the Completion MACs cannot agree and pairing must fail.
 func TestPairing_RejectsMismatchedCallerProvidedNoob(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Dirs: 2})
+	peer := NewPeer(PeerConfig{PreferDir: 2})
 
 	driveConversation(t, srv, peer)
 
-	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16))
-	require.NoError(t, err, "server OOBOutputWith:")
+	require.NoError(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16)), "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
 
 	assert.True(t, driveAllowFail(srv, peer), "expected the Completion Exchange to fail with mismatched Noobs")
@@ -94,15 +89,14 @@ func TestPairing_RejectsMismatchedCallerProvidedNoob(t *testing.T) {
 // reports it this way, the cluster manager would silently degrade a wrong PIN to
 // a generic failure (empty reason) instead of reason:"incorrect-pin".
 func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Dirs: 2})
+	peer := NewPeer(PeerConfig{PreferDir: 2})
 
 	// Initial Exchange.
 	driveConversation(t, srv, peer)
 
 	// Server-to-peer OOB with MISMATCHED Noobs — the wrong-PIN condition.
-	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16))
-	require.NoError(t, err, "server OOBOutputWith:")
+	require.NoError(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16)), "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
 
 	// Drive the Completion Exchange exactly as the joiner does: the server
@@ -132,9 +126,8 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 
 // TestOOBOutputWithRejectsBadLength guards the 16-byte contract.
 func TestOOBOutputWith_RejectsBadLength(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Dirs: 2})
+	peer := NewPeer(PeerConfig{PreferDir: 2})
 	driveConversation(t, srv, peer)
-	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8))
-	require.Error(t, err, "expected OOBOutputWith to reject an 8-byte Noob")
+	require.Error(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8)), "expected OOBOutputWith to reject an 8-byte Noob")
 }

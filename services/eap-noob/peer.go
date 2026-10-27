@@ -32,9 +32,9 @@ type PeerConfig struct {
 
 // Peer drives the EAP peer side of one EAP-NOOB association.
 type Peer struct {
-	cfg   PeerConfig
-	store Store
-	state State
+	cfg                PeerConfig
+	state              State
+	completionVerified bool
 
 	methodState
 
@@ -43,9 +43,8 @@ type Peer struct {
 	dirp int
 }
 
-// NewPeer creates a peer using the given configuration and association store.
-// If store is nil an in-memory store is used.
-func NewPeer(cfg PeerConfig, store Store) *Peer {
+// NewPeer creates a peer for one pairing using the given configuration.
+func NewPeer(cfg PeerConfig) *Peer {
 	if cfg.NAI == "" {
 		cfg.NAI = defaultNAI
 	}
@@ -55,10 +54,7 @@ func NewPeer(cfg PeerConfig, store Store) *Peer {
 	if len(cfg.Cryptosuites) == 0 {
 		cfg.Cryptosuites = []int{1, 2}
 	}
-	if store == nil {
-		store = NewMemoryStore()
-	}
-	p := &Peer{cfg: cfg, store: store, state: StateUnregistered}
+	p := &Peer{cfg: cfg, state: StateUnregistered}
 	p.nai = cfg.NAI
 	return p
 }
@@ -71,16 +67,6 @@ func (p *Peer) State() State { return p.state }
 // authenticated once the association reaches Registered.
 func (p *Peer) ServerInfo() json.RawMessage { return p.in.ServerInfo }
 
-// Association returns the registered association once the Completion Exchange
-// has succeeded, or nil.
-func (p *Peer) Association() *Association { return p.registered }
-
-// Export derives an arbitrary-length shared secret from the registered
-// association (see Association.Export).
-func (p *Peer) Export(label string, context []byte, length int) ([]byte, error) {
-	return p.registered.Export(label, context, length)
-}
-
 // Receive processes one inbound message from the server and returns the next
 // action.
 func (p *Peer) Receive(in []byte) (Outcome, error) {
@@ -91,6 +77,7 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 	if wm.EAP != "" {
 		return p.onResult(wm)
 	}
+	p.completionVerified = false
 	if wm.ErrorCode != nil {
 		return Outcome{State: p.state, Done: true, Err: &ProtocolError{Code: *wm.ErrorCode, Info: wm.ErrorInfo}}, nil
 	}
@@ -117,20 +104,15 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 
 func (p *Peer) onResult(wm *wireMessage) (Outcome, error) {
 	if wm.EAP == eapSuccess {
-		assoc := &Association{
-			PeerId:       p.peerId,
-			NAI:          p.nai,
-			Cryptosuitep: p.csp,
-			Kz:           append([]byte(nil), p.keyM.Kz...),
+		if !p.completionVerified {
+			return p.fail(ErrStateMismatch, "success before verified Completion")
 		}
-		if err := p.store.Save(assoc); err != nil {
-			return Outcome{}, err
-		}
-		p.registered = assoc
+		p.completionVerified = false
 		p.state = StateRegistered
 		return Outcome{State: p.state, Done: true, Success: true}, nil
 	}
 	// EAP-Failure: the conversation ended without registration.
+	p.completionVerified = false
 	return Outcome{State: p.state, Done: true}, nil
 }
 
@@ -342,6 +324,7 @@ func (p *Peer) onCompletionRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	p.completionVerified = true
 	return Outcome{Send: b, State: p.state}, nil
 }
 
@@ -376,9 +359,8 @@ func (p *Peer) OOBInput(msg OOBMessage) error {
 
 // OOBInputNoob accepts a caller-supplied 16-byte Noob for the server-to-peer
 // direction (e.g. derived from a user-carried PIN) without an OOBMessage
-// envelope, recomputing the fingerprint locally rather than verifying a
-// received Hoob. On success the peer moves to the OOB Received state. Transcript
-// agreement is proven later by the Completion Exchange MACs.
+// envelope or Hoob computation. On success the peer moves to OOB Received.
+// Transcript agreement is proven later by the Completion Exchange MACs.
 func (p *Peer) OOBInputNoob(noob []byte) error {
 	if p.state != StateWaiting {
 		return fmt.Errorf("eapnoob: OOBInputNoob requires Waiting state, have %s", p.state)
@@ -394,6 +376,7 @@ func (p *Peer) OOBInputNoob(noob []byte) error {
 }
 
 func (p *Peer) fail(code int, info string) (Outcome, error) {
+	p.completionVerified = false
 	b, err := errorMessage(code, info)
 	if err != nil {
 		return Outcome{}, err
