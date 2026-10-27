@@ -27,8 +27,8 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if ok, _ := e.Detect(engine); ok {
 		e.reporter.clear(installFailedID(engine))
 		e.emitInstallProgress(engine, "already-installed", 100)
@@ -148,8 +148,8 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if ok, _ := e.Detect(engine); !ok {
 		// Already gone — by its own uninstaller, or by hand. Drop our ownership
 		// claim with it: left behind, it would authorise removing a copy the

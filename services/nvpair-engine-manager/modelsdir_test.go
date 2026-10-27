@@ -281,6 +281,9 @@ func TestRemoveTreePreserving_UnlinksSymlinkedTarget(t *testing.T) {
 // binary in place, so detection kept reporting the engine and the uninstall
 // failed having half-removed it.
 func TestRemoveTreePreserving_ReportsUndeletableEntriesAndRemovesOthers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce the Unix directory permissions used by this test")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the directory permissions this test relies on")
 	}

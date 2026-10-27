@@ -56,20 +56,24 @@ type engineState struct {
 	// none, in which case uninstall has nothing to preserve.
 	modelsDir string
 
-	// opMu serializes lifecycle operations (install / start / stop /
-	// restart / uninstall) for this engine, so concurrent calls can't
-	// double-spawn or interleave. Lock order is opMu → mu; the per-op
-	// st.mu is released around probes, and the background health loop
-	// never takes opMu.
+	// opMu serializes lifecycle operations and settings reads for this engine.
+	// Only operations that can change state use lockOperation to invalidate
+	// pending status checks. Passive status checks never take opMu.
+	// Lock order is opMu → mu; the background health loop only takes mu.
 	opMu sync.Mutex
 
-	mu        sync.Mutex
-	installed bool
-	running   bool
-	healthy   bool
-	stopping  bool
-	// starting is true while a start launches the engine and waits for it to
-	// become ready, after the checks that can refuse it.
+	mu sync.Mutex
+	// revision changes at both ends of an operation and whenever a passive
+	// observation changes state. A probe may commit only against the revision
+	// it captured, so a Start/Stop/SetPort cannot be undone by old I/O.
+	revision   uint64
+	opDone     chan struct{} // non-nil while an operation is active
+	statusRuns map[statusProbeKey]*statusProbeRun
+	installed  bool
+	running    bool
+	healthy    bool
+	stopping   bool
+	// starting is true while a start launches the engine and waits for readiness.
 	starting   bool
 	adopted    bool  // started externally; we can't stop it
 	gen        int64 // bumped each start; gates stale health loops
@@ -84,6 +88,25 @@ type engineState struct {
 	// above zero no start begins, and a model switch that a stop cancelled
 	// puts its previous launch back without starting it.
 	stopsWaiting int
+}
+
+// lockOperation marks the entire serialized operation, including its external
+// I/O, as a state transition before any lifecycle fields can change.
+func (st *engineState) lockOperation() {
+	st.opMu.Lock()
+	st.mu.Lock()
+	st.opDone = make(chan struct{})
+	st.revision++
+	st.mu.Unlock()
+}
+
+func (st *engineState) unlockOperation() {
+	st.mu.Lock()
+	st.revision++
+	close(st.opDone)
+	st.opDone = nil
+	st.mu.Unlock()
+	st.opMu.Unlock()
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
