@@ -38,8 +38,8 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 	if err != nil {
 		return EngineStatus{}, err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 
 	st.mu.Lock()
 	wasRunning := st.running

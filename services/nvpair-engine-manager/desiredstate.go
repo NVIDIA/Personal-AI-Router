@@ -139,8 +139,8 @@ func (e *Executor) restoreEnabled(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	enabled, known, err := e.desired.get(engine)
 	if err != nil || !known || !enabled {
 		return err

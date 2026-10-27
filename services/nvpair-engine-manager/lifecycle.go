@@ -95,8 +95,8 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
 		return err
 	}
@@ -390,6 +390,7 @@ func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
 			st.proc = nil
 			st.running = false
 			st.healthy = false
+			st.revision++
 			if st.healthStop != nil {
 				st.healthStop()
 				st.healthStop = nil
@@ -414,8 +415,8 @@ func (e *Executor) Stop(engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	stopErr := e.doStop(st, engine)
 	// A user-initiated Stop is explicit OFF intent. Persist it even when
 	// doStop declines a genuinely-foreign listener we can't terminate, so the
@@ -432,6 +433,10 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 	mode := rt.modeOrDefault()
 	st.mu.Lock()
 	if !st.running {
+		// A Stop during an in-flight passive adoption still records OFF. The
+		// old probe is invalidated by the operation revision, and later status
+		// checks must not adopt the listener behind the user's explicit Stop.
+		st.stopping = true
 		st.mu.Unlock()
 		return nil
 	}
@@ -598,7 +603,11 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 // live listener returning 503 is unhealthy, not stopped. A successful control
 // command is likewise not proof that its daemon actually exited.
 func (e *Executor) waitUnavailable(p *Probe, port int, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return e.waitUnavailableContext(context.Background(), p, port, timeout)
+}
+
+func (e *Executor) waitUnavailableContext(parent context.Context, p *Probe, port int, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	misses := 0
 	for {
@@ -738,8 +747,8 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if err := e.doStop(st, engine); err != nil {
 		return err
 	}
@@ -781,8 +790,8 @@ func (e *Executor) StopAll() {
 			if cancel != nil {
 				cancel()
 			}
-			st.opMu.Lock()
-			defer st.opMu.Unlock()
+			st.lockOperation()
+			defer st.unlockOperation()
 			if err := e.doStop(st, n); err != nil {
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
 			}
@@ -814,6 +823,9 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 			}
 			was := st.healthy
 			st.healthy = ok
+			if was != ok {
+				st.revision++
+			}
 			st.mu.Unlock()
 			switch {
 			case was && !ok:
