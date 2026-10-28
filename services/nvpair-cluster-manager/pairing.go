@@ -29,25 +29,10 @@ const legacyAdmissionEpoch uint64 = 1
 // pinPattern matches a well-formed six-digit PIN (§7.6).
 var pinPattern = regexp.MustCompile(`^[0-9]{6}$`)
 
-// PairingInfo is the object each side puts in EAP-NOOB ServerInfo (inviter) /
-// PeerInfo (joiner). It binds the node's cert and identity into the Hoob and the
-// Completion MACs (§7.2). Identical schema both directions.
-type PairingInfo struct {
-	V                   int    `json:"v"`
-	NodeUUID            string `json:"nodeUuid"`
-	NodeID              string `json:"nodeId"`
-	Name                string `json:"name"`
-	ClusterID           string `json:"clusterId"`
-	AdmissionEpoch      uint64 `json:"admissionEpoch,omitempty"`
-	ClusterFriendlyName string `json:"clusterFriendlyName"`
-	Addr                string `json:"addr,omitempty"`
-	Cert                string `json:"cert"`
-}
-
 // localPairingInfo builds this node's PairingInfo. addr is the inviter's
 // reachable host:port for the joiner-driven Completion Exchange; it is required
 // on the inviter's ServerInfo and optional on the joiner's PeerInfo.
-func (m *Manager) localPairingInfo(addr string, admissionEpoch ...uint64) *PairingInfo {
+func (m *Manager) localPairingInfo(addr string, admissionEpoch ...uint64) eapnoob.PairingInfo {
 	cid, friendly := m.clusterIdentity()
 	epoch := uint64(0)
 	if len(admissionEpoch) > 0 {
@@ -55,7 +40,7 @@ func (m *Manager) localPairingInfo(addr string, admissionEpoch ...uint64) *Pairi
 	} else if admissionCID, current := m.currentAdmission(); admissionCID == cid {
 		epoch = current
 	}
-	return &PairingInfo{
+	return eapnoob.PairingInfo{
 		V:                   pairingInfoVersion,
 		NodeUUID:            m.identity.NodeUUID,
 		NodeID:              m.identity.NodeID,
@@ -68,25 +53,11 @@ func (m *Manager) localPairingInfo(addr string, admissionEpoch ...uint64) *Pairi
 	}
 }
 
-// toMap renders the PairingInfo as the map[string]any the eap-noob config
-// expects for ServerInfo/PeerInfo.
-func (pi *PairingInfo) toMap() (map[string]any, error) {
-	b, err := json.Marshal(pi)
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
 // parsePairingInfo decodes a peer's PairingInfo from the authenticated EAP-NOOB
 // transcript and validates that the embedded cert's principal matches its
 // nodeUuid (§7.2: a PairingInfo whose cert CN/URI != nodeUuid is rejected).
-func parsePairingInfo(raw []byte) (*PairingInfo, *x509.Certificate, error) {
-	var pi PairingInfo
+func parsePairingInfo(raw []byte) (*eapnoob.PairingInfo, *x509.Certificate, error) {
+	var pi eapnoob.PairingInfo
 	if err := json.Unmarshal(raw, &pi); err != nil {
 		return nil, nil, fmt.Errorf("decode PairingInfo: %w", err)
 	}
@@ -137,18 +108,6 @@ func noobFromPIN(pin string) []byte {
 	return b
 }
 
-// newPairingServer builds the inviter-side EAP-NOOB Server, server-to-peer OOB
-// only (Dirs=2), carrying this node's PairingInfo as ServerInfo.
-func newPairingServer(info map[string]any) *eapnoob.Server {
-	return eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 2, ServerInfo: info})
-}
-
-// newPairingPeer builds the joiner-side EAP-NOOB Peer preferring server-to-peer
-// OOB (PreferDir=2), carrying this node's PairingInfo as PeerInfo.
-func newPairingPeer(info map[string]any) *eapnoob.Peer {
-	return eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 2, PeerInfo: info})
-}
-
 // pairingRole fixes which EAP-NOOB role a session plays for its whole lifetime.
 type pairingRole int
 
@@ -183,7 +142,7 @@ type pairingSession struct {
 	// peerPairing / peerCert hold the other side's authenticated PairingInfo,
 	// captured when the Initial Exchange completes (joiner) or at Registered
 	// (inviter), for pinning and cluster adoption.
-	peerPairing *PairingInfo
+	peerPairing *eapnoob.PairingInfo
 	peerCert    *x509.Certificate
 	// localAdmissionEpoch is this node's reserved admission incarnation carried
 	// in its authenticated PairingInfo. It is activated only if the joiner

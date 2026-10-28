@@ -257,11 +257,7 @@ var errPairingAbandoned = errors.New("pairing abandoned: invite is no longer pen
 // its liveness.
 func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uint64) (*pairingSession, string, error) {
 	myAddr := net.JoinHostPort(outboundIP(target), strconv.Itoa(m.port))
-	info, err := m.localPairingInfo(myAddr).toMap()
-	if err != nil {
-		return nil, "", fmt.Errorf("build pairing info: %w", err)
-	}
-	server := newPairingServer(info)
+	server := eapnoob.NewServer(m.localPairingInfo(myAddr))
 	// Scope the session to the cluster we are inviting into (cid0, captured by
 	// handleInviteNode) so a Completion that lands after we leave/are removed is
 	// discarded by commitPairing's epoch recheck.

@@ -4,6 +4,7 @@
 package eapnoob_test
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"eapnoob"
@@ -42,8 +43,8 @@ func run(srv *eapnoob.Server, peer *eapnoob.Peer) error {
 // The cluster manager validates and encodes the user-carried PIN before calling
 // these methods, then pins the authenticated identity after Completion.
 func Example() {
-	srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 2, ServerInfo: map[string]any{"name": "inviter"}})
-	peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 2, PeerInfo: map[string]any{"name": "joiner"}})
+	srv := eapnoob.NewServer(eapnoob.PairingInfo{Name: "inviter"})
+	peer := eapnoob.NewPeer(eapnoob.PairingInfo{Name: "joiner"})
 
 	// Initial Exchange.
 	if err := run(srv, peer); err != nil {
@@ -65,11 +66,19 @@ func Example() {
 		panic(err)
 	}
 
+	var inviter, joiner eapnoob.PairingInfo
+	if err := json.Unmarshal(peer.ServerInfo(), &inviter); err != nil {
+		panic(err)
+	}
+	if err := json.Unmarshal(srv.PeerInfo(), &joiner); err != nil {
+		panic(err)
+	}
+
 	fmt.Println("registered:", srv.State() == eapnoob.StateRegistered && peer.State() == eapnoob.StateRegistered)
-	fmt.Println("authenticated inviter:", string(peer.ServerInfo()))
-	fmt.Println("authenticated joiner:", string(srv.PeerInfo()))
+	fmt.Println("authenticated inviter:", inviter.Name)
+	fmt.Println("authenticated joiner:", joiner.Name)
 	// Output:
 	// registered: true
-	// authenticated inviter: {"name":"inviter"}
-	// authenticated joiner: {"name":"joiner"}
+	// authenticated inviter: inviter
+	// authenticated joiner: joiner
 }

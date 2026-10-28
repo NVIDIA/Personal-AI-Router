@@ -168,16 +168,11 @@ func (m *Manager) handlePairingInitial(w http.ResponseWriter, env *pairingEnvelo
 			http.Error(w, "reserve admission", http.StatusInternalServerError)
 			return
 		}
-		info, err := m.localPairingInfo(myAddr, admissionEpoch).toMap()
-		if err != nil {
-			http.Error(w, "build pairing info", http.StatusInternalServerError)
-			return
-		}
 		sess = &pairingSession{
 			inviteID:            env.InviteID,
 			role:                roleJoiner,
 			createdAt:           time.Now().UnixMilli(),
-			peer:                newPairingPeer(info),
+			peer:                eapnoob.NewPeer(m.localPairingInfo(myAddr, admissionEpoch)),
 			localAdmissionEpoch: admissionEpoch,
 		}
 		registered, atCapacity := m.registerJoinerSession(sess)
@@ -649,7 +644,7 @@ func (m *Manager) onInviterPaired(inviteID string, sess *pairingSession) error {
 // onInviterPaired so the commit and its abort path are unit-testable without a
 // full EAP-NOOB handshake (onInviterPaired's only extra job is parsing the
 // joiner PairingInfo off the completed eap-noob server).
-func (m *Manager) finalizePairing(inviteID string, sess *pairingSession, pi *PairingInfo, cert *x509.Certificate) error {
+func (m *Manager) finalizePairing(inviteID string, sess *pairingSession, pi *eapnoob.PairingInfo, cert *x509.Certificate) error {
 	now := time.Now().UnixMilli()
 	committed, pinErr := m.commitPairing(sess, pi, cert, now)
 	if pinErr != nil {
@@ -697,7 +692,7 @@ func (m *Manager) finalizePairing(inviteID string, sess *pairingSession, pi *Pai
 //
 // Either way it never resurrects a pin/member the removal was meant to drop.
 // Returns whether it committed and any pin error.
-func (m *Manager) commitPairing(sess *pairingSession, pi *PairingInfo, cert *x509.Certificate, now int64) (committed bool, err error) {
+func (m *Manager) commitPairing(sess *pairingSession, pi *eapnoob.PairingInfo, cert *x509.Certificate, now int64) (committed bool, err error) {
 	m.withClusterComposition(func() {
 		if m.teardownPending.Load() {
 			err = fmt.Errorf("cluster teardown is pending")
@@ -762,7 +757,7 @@ func testCommitDelay() {
 // pinPeer durably pins a peer's certificate in the trusted-node store, carrying
 // the endorsements that vouch for it (this node's own endorsement at pair time,
 // plus any gathered via gossip).
-func (m *Manager) pinPeer(pi *PairingInfo, cert *x509.Certificate, endorsements []Endorsement) error {
+func (m *Manager) pinPeer(pi *eapnoob.PairingInfo, cert *x509.Certificate, endorsements []Endorsement) error {
 	return m.trust.Pin(&TrustedPin{
 		NodeUUID:        pi.NodeUUID,
 		NodeID:          pi.NodeID,
@@ -777,7 +772,7 @@ func (m *Manager) pinPeer(pi *PairingInfo, cert *x509.Certificate, endorsements 
 }
 
 // recordMember upserts a ClusterNode for a peer described by its PairingInfo.
-func (m *Manager) recordMember(pi *PairingInfo, state MembershipState, joinedAt *int64) {
+func (m *Manager) recordMember(pi *eapnoob.PairingInfo, state MembershipState, joinedAt *int64) {
 	host, port := splitAddr(pi.Addr, m.port)
 	m.upsertMember(&ClusterNode{
 		ID:             pi.NodeID,

@@ -4,6 +4,7 @@
 package eapnoob
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,9 +18,15 @@ func driveConversation(t *testing.T, srv *Server, peer *Peer) {
 	t.Helper()
 	msg, err := srv.Start()
 	require.NoError(t, err, "server Start:")
+	driveMessages(t, srv, peer, msg)
+}
+
+func driveMessages(t *testing.T, srv *Server, peer *Peer, msg []byte) {
+	t.Helper()
 	peerTurn := true
 	for {
 		var out Outcome
+		var err error
 		if peerTurn {
 			out, err = peer.Receive(msg)
 		} else {
@@ -35,38 +42,44 @@ func driveConversation(t *testing.T, srv *Server, peer *Peer) {
 	}
 }
 
-// pair runs a full EAP-NOOB pairing (Initial + OOB + Completion) for the given
-// cryptosuite and OOB direction, returning the registered server and peer.
-func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
+// driveInitialWithSuite supplies a single-suite offer as a remote-protocol
+// fixture. Production always advertises both suites; tests can exercise each
+// negotiated suite without adding configuration to the application API.
+func driveInitialWithSuite(t *testing.T, srv *Server, peer *Peer, suite cryptosuiteID) {
 	t.Helper()
-	srv := NewServer(ServerConfig{
-		Cryptosuites: []int{suite},
-		Dirs:         dir,
-		ServerInfo:   map[string]any{"ServerName": "test-server"},
-	})
-	peer := NewPeer(PeerConfig{
-		PreferDir: dir,
-		PeerInfo:  map[string]any{"PeerName": "test-peer"},
-	})
+	request, err := srv.Start()
+	require.NoError(t, err)
+	discovery, err := peer.Receive(request)
+	require.NoError(t, err)
+	require.Nil(t, discovery.Err)
+	negotiation, err := srv.Receive(discovery.Send)
+	require.NoError(t, err)
+	require.Nil(t, negotiation.Err)
+	wire, err := decode(negotiation.Send)
+	require.NoError(t, err)
+	wire.Cryptosuites = rawIntSlice([]int{int(suite)})
+	request, parsed, err := encode(wire)
+	require.NoError(t, err)
+	srv.in.Cryptosuites = parsed.Cryptosuites
+	driveMessages(t, srv, peer, request)
+}
+
+// pair runs a full server-to-peer pairing for the given cryptosuite.
+func pair(t *testing.T, suite cryptosuiteID) (*Server, *Peer) {
+	t.Helper()
+	srv := NewServer(PairingInfo{Name: "test-server"})
+	peer := NewPeer(PairingInfo{Name: "test-peer"})
 
 	// Initial Exchange.
-	driveConversation(t, srv, peer)
+	driveInitialWithSuite(t, srv, peer, suite)
 	require.Equal(t, StateWaiting, srv.State(), "server after Initial")
 	require.Equal(t, StateWaiting, peer.State(), "peer after Initial")
 
-	// OOB Step in the negotiated direction.
-	switch dir {
-	case 1: // peer-to-server
-		msg, err := peer.OOBOutput()
-		require.NoError(t, err, "peer OOBOutput:")
-		require.NoError(t, srv.OOBInput(msg), "server OOBInput:")
-		require.Equal(t, StateOOBReceived, srv.State())
-	case 2: // server-to-peer
-		msg, err := srv.OOBOutput()
-		require.NoError(t, err, "server OOBOutput:")
-		require.NoError(t, peer.OOBInput(msg), "peer OOBInput:")
-		require.Equal(t, StateOOBReceived, peer.State())
-	}
+	msg, err := srv.OOBOutput()
+	require.NoError(t, err, "server OOBOutput:")
+	require.NoError(t, peer.OOBInput(msg), "peer OOBInput:")
+	require.Equal(t, StateWaiting, srv.State())
+	require.Equal(t, StateOOBReceived, peer.State())
 
 	// Completion Exchange.
 	driveConversation(t, srv, peer)
@@ -75,26 +88,27 @@ func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
 	return srv, peer
 }
 
-func TestPairing_AuthenticatesIdentityAcrossSuitesAndDirections(t *testing.T) {
-	test := func(name string, suite, dir int) {
+func TestPairing_AuthenticatesIdentityWithBothSuites(t *testing.T) {
+	test := func(name string, suite cryptosuiteID) {
 		t.Run(name, func(t *testing.T) {
-			srv, peer := pair(t, suite, dir)
-			assert.Equal(t, suite, srv.csp)
-			assert.Equal(t, suite, peer.csp)
+			srv, peer := pair(t, suite)
+			assert.Equal(t, suite, srv.suite.id)
+			assert.Equal(t, suite, peer.suite.id)
 			assert.Equal(t, peer.peerId, srv.peerId)
-			assert.JSONEq(t, `{"PeerName":"test-peer"}`, string(srv.PeerInfo()))
-			assert.JSONEq(t, `{"ServerName":"test-server"}`, string(peer.ServerInfo()))
+			var serverInfo, peerInfo PairingInfo
+			require.NoError(t, json.Unmarshal(peer.ServerInfo(), &serverInfo))
+			require.NoError(t, json.Unmarshal(srv.PeerInfo(), &peerInfo))
+			assert.Equal(t, PairingInfo{Name: "test-server"}, serverInfo)
+			assert.Equal(t, PairingInfo{Name: "test-peer"}, peerInfo)
 		})
 	}
-	test("suite 1 server-to-peer", 1, 2)
-	test("suite 2 server-to-peer", 2, 2)
-	test("suite 1 peer-to-server", 1, 1)
-	test("suite 2 peer-to-server", 2, 1)
+	test("suite 1", cryptosuiteX25519)
+	test("suite 2", cryptosuiteP256)
 }
 
 func TestPairing_RejectsTamperedMAC(t *testing.T) {
-	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 2})
-	peer := NewPeer(PeerConfig{PreferDir: 2})
+	srv := NewServer(PairingInfo{})
+	peer := NewPeer(PairingInfo{})
 
 	driveConversation(t, srv, peer)
 	oob, err := srv.OOBOutput()
@@ -130,8 +144,8 @@ func TestPairing_RejectsTamperedMAC(t *testing.T) {
 }
 
 func TestPairing_RejectsIncorrectOutOfBandFingerprint(t *testing.T) {
-	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 2})
-	peer := NewPeer(PeerConfig{PreferDir: 2})
+	srv := NewServer(PairingInfo{})
+	peer := NewPeer(PairingInfo{})
 	driveConversation(t, srv, peer)
 
 	oob, err := srv.OOBOutput()
@@ -142,7 +156,7 @@ func TestPairing_RejectsIncorrectOutOfBandFingerprint(t *testing.T) {
 }
 
 func TestJWK_RoundTripsPublicKeys(t *testing.T) {
-	test := func(name string, id int) {
+	test := func(name string, id cryptosuiteID) {
 		t.Run(name, func(t *testing.T) {
 			cs, err := suiteByID(id)
 			require.NoError(t, err)
@@ -153,6 +167,6 @@ func TestJWK_RoundTripsPublicKeys(t *testing.T) {
 			assert.Equal(t, priv.PublicKey().Bytes(), pub.Bytes(), "JWK round-trip mismatch")
 		})
 	}
-	test("suite 1", 1)
-	test("suite 2", 2)
+	test("suite 1", cryptosuiteX25519)
+	test("suite 2", cryptosuiteP256)
 }

@@ -29,7 +29,7 @@ application-secret export library.
 
 Implemented:
 
-- Common handshake, Initial Exchange, OOB Step (both directions), Waiting
+- Common handshake, Initial Exchange, server-to-peer OOB Step, Waiting
   Exchange, Completion Exchange.
 - Cryptosuite 1 (Curve25519 / SHA-256, mandatory) and cryptosuite 2
   (NIST P-256 / SHA-256, recommended).
@@ -43,17 +43,41 @@ Reconnect / rekeying exchanges (message types 7-9, KeyingMode 1-3) and AAA
 roaming are not implemented. Completed associations and application keys are
 not persisted by this module.
 
+## Cryptographic implementations
+
+ECDH, SHA-256, HMAC, and randomness use Go's standard library. Completion key
+derivation retains the small in-tree NIST SP 800-56C implementation, built on
+standard-library SHA-256, to avoid an additional runtime dependency. It preserves
+the RFC 9140 nonce order, length-prefixed Noob, 320-byte output, and `Kms`/`Kmp`
+offsets.
+
+The EAP-NOOB state machine and authenticated-transcript encoding remain in this
+component. The cluster-manager owns certificate pinning and durable trust.
+
 ## Usage
 
 ```go
-srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 2, ServerInfo: serverInfo})
-peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 2, PeerInfo: peerInfo})
+serverInfo := eapnoob.PairingInfo{
+    NodeID:              "inviter-node",
+    Name:                "Office workstation",
+    //...
+}
+peerInfo := eapnoob.PairingInfo{
+    NodeID:              "joiner-node",
+    Name:                "Laptop",
+    //...
+}
+srv := eapnoob.NewServer(serverInfo)
+peer := eapnoob.NewPeer(peerInfo)
 
 // 1. Initial Exchange: relay each side's Outcome.Send to the other until done.
 //    (srv.Start() produces the first message.)
 
 // 2. The cluster-manager validates and encodes the user-carried PIN as the
 //    same 16-byte noob on both sides. No OOBMessage is sent in the PIN flow.
+//    This fixture represents PIN 000123; production code generates a fresh PIN.
+noob := make([]byte, 16)
+noob[15] = 123
 if err := srv.OOBOutputWith(noob); err != nil {
     return err
 }
@@ -61,7 +85,8 @@ if err := peer.OOBInputNoob(noob); err != nil {
     return err
 }
 
-// 3. Completion Exchange: relay messages again until both reach Registered.
+// 3. Completion Exchange: call srv.Start() again and relay messages until
+//    both reach Registered.
 
 // 4. After successful Completion, the cluster-manager reads srv.PeerInfo()
 //    and peer.ServerInfo() and pins the authenticated certificates.
@@ -86,13 +111,22 @@ EAP-NOOB spans two EAP conversations with the OOB step in between: run one
 conversation for the Initial Exchange, perform the OOB relay, then run a second
 conversation for the Completion Exchange (call `srv.Start()` again to begin it).
 
-### OOB direction
+### Pairing policy
 
-`Dirs`/`PreferDir` select the OOB direction (`1` = peer-to-server, `2` =
-server-to-peer). The sending side calls `OOBOutput()` and the receiving side
-calls `OOBInput()`.
+`NewServer(serverInfo PairingInfo)` and `NewPeer(peerInfo PairingInfo)` accept
+only the identity information each role authenticates. Protocol policy
+is fixed to version 1, both supported cryptosuites, and server-to-peer OOB
+(direction 2). The server advertises suites in priority order `[2, 1]`; peers
+still negotiate a mutually supported suite.
 
-PAIR uses direction 2. Its PIN flow calls `Server.OOBOutputWith(noob)` to
+The peer starts with `noob@eap-noob.arpa` as its NAI. Receive-side handling of a
+server-supplied `NewNAI` and discovery NAI is preserved, including their use in
+the authenticated transcript. There are no public NAI assignment or probe
+interval options.
+
+### OOB flow
+
+The PIN flow calls `Server.OOBOutputWith(noob)` to
 register the inviter's secret while staying in `Waiting`, and
 `Peer.OOBInputNoob(noob)` to move the joiner to `OOBReceived`. Neither method
 constructs or verifies a Hoob fingerprint; transcript agreement is proved by
@@ -110,6 +144,6 @@ go test ./...
 ```
 
 The suite exercises both cryptosuites, PAIR's caller-supplied `Noob` flow,
-Completion authentication, KDF outputs, JWK round-trips, and OOB fingerprint
+Completion authentication, JWK round-trips, and OOB fingerprint
 rejection. The cluster-manager tests cover PIN encoding and the durable trust
 boundary.

@@ -21,6 +21,12 @@ const (
 // NAI (RFC 9140, Section 3.2.1).
 const defaultNAI = "noob@eap-noob.arpa"
 
+// PAIR supports protocol version 1 and server-to-peer OOB.
+const (
+	protocolVersion = 1
+	oobDirection    = 2
+)
+
 // eapResult is a non-protocol control message used by this transport-agnostic
 // library to convey the terminating EAP-Success / EAP-Failure indication that a
 // real EAP lower layer would deliver out of band of the EAP-NOOB payloads.

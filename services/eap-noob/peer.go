@@ -10,52 +10,20 @@ import (
 	"fmt"
 )
 
-// PeerConfig configures the EAP peer role.
-type PeerConfig struct {
-	// NAI is the peer's Network Access Identifier. Defaults to
-	// "noob@eap-noob.arpa".
-	NAI string
-	// Versions are the protocol versions the peer supports. Defaults to
-	// []int{1}.
-	Versions []int
-	// Cryptosuites are the cryptosuites the peer supports. Defaults to
-	// []int{1, 2} (suite 1 is mandatory).
-	Cryptosuites []int
-	// PreferDir selects the OOB direction the peer prefers when the server
-	// offers both (1=peer-to-server, 2=server-to-peer). Defaults to
-	// server-to-peer.
-	PreferDir int
-	// PeerInfo is an optional application-defined JSON object sent to the
-	// server in the Initial Exchange.
-	PeerInfo map[string]any
-}
-
 // Peer drives the EAP peer side of one EAP-NOOB association.
 type Peer struct {
-	cfg                PeerConfig
+	peerInfo           json.RawMessage
 	state              State
 	completionVerified bool
 
 	methodState
-
-	verp int
-	csp  int
-	dirp int
 }
 
-// NewPeer creates a peer for one pairing using the given configuration.
-func NewPeer(cfg PeerConfig) *Peer {
-	if cfg.NAI == "" {
-		cfg.NAI = defaultNAI
-	}
-	if len(cfg.Versions) == 0 {
-		cfg.Versions = []int{1}
-	}
-	if len(cfg.Cryptosuites) == 0 {
-		cfg.Cryptosuites = []int{1, 2}
-	}
-	p := &Peer{cfg: cfg, state: StateUnregistered}
-	p.nai = cfg.NAI
+// NewPeer creates a PAIR joiner. peerInfo carries the node's identity and
+// certificate; Completion authenticates it to the inviter.
+func NewPeer(peerInfo PairingInfo) *Peer {
+	p := &Peer{peerInfo: marshalInfo(peerInfo), state: StateUnregistered}
+	p.nai = defaultNAI
 	return p
 }
 
@@ -144,15 +112,14 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Vers")
 	}
-	verp, ok := bestVersion(serverVers, p.cfg.Versions)
-	if !ok {
+	if !containsInt(serverVers, protocolVersion) {
 		return p.fail(ErrUnsupportedVersion, "no common protocol version")
 	}
 	serverCS, err := rawToIntSlice(wm.Cryptosuites)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Cryptosuites")
 	}
-	csp, ok := firstSupported(serverCS, p.cfg.Cryptosuites)
+	csp, ok := firstSupported(serverCS)
 	if !ok {
 		return p.fail(ErrUnsupportedCryptosuite, "no common cryptosuite")
 	}
@@ -160,8 +127,7 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Dirs")
 	}
-	dirp, ok := chooseDir(serverDirs, p.cfg.PreferDir)
-	if !ok {
+	if serverDirs != oobDirection && serverDirs != 3 {
 		return p.fail(ErrNoMutuallySupportedOOB, "no mutually supported OOB direction")
 	}
 
@@ -170,20 +136,18 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 		return p.fail(ErrUnsupportedCryptosuite, err.Error())
 	}
 	p.suite = suite
-	p.verp, p.csp, p.dirp = verp, csp, dirp
 
 	// Determine the effective NAI: a server-assigned NewNAI overrides the
-	// peer's configured NAI (RFC 9140, Section 3.3.1).
+	// default NAI (RFC 9140, Section 3.3.1).
 	if len(wm.NewNAI) > 0 {
 		if nai, err := rawToString(wm.NewNAI); err == nil {
 			p.nai = nai
 		}
 	}
 
-	verpRaw := rawInt(verp)
-	cspRaw := rawInt(csp)
-	dirpRaw := rawInt(dirp)
-	peerInfo := marshalInfo(p.cfg.PeerInfo)
+	verpRaw := rawInt(protocolVersion)
+	cspRaw := rawInt(int(csp))
+	dirpRaw := rawInt(oobDirection)
 
 	p.in.Vers = wm.Vers
 	p.in.PeerId = wm.PeerId
@@ -193,7 +157,7 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	p.in.Verp = verpRaw
 	p.in.Cryptosuitep = cspRaw
 	p.in.Dirp = dirpRaw
-	p.in.PeerInfo = peerInfo
+	p.in.PeerInfo = p.peerInfo
 	p.in.NAI = rawString(p.nai)
 
 	m := &wireMessage{
@@ -202,7 +166,7 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 		PeerId:       rawString(peerId),
 		Cryptosuitep: cspRaw,
 		Dirp:         dirpRaw,
-		PeerInfo:     peerInfo,
+		PeerInfo:     p.peerInfo,
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -328,18 +292,6 @@ func (p *Peer) onCompletionRequest(wm *wireMessage) (Outcome, error) {
 	return Outcome{Send: b, State: p.state}, nil
 }
 
-// OOBOutput produces the out-of-band message for the peer-to-server direction
-// (RFC 9140, Section 3.2.3).
-func (p *Peer) OOBOutput() (OOBMessage, error) {
-	if p.state != StateWaiting {
-		return OOBMessage{}, fmt.Errorf("eapnoob: OOBOutput requires Waiting state, have %s", p.state)
-	}
-	if p.dirp != 1 && p.dirp != 3 {
-		return OOBMessage{}, fmt.Errorf("eapnoob: peer-to-server OOB not negotiated")
-	}
-	return oobOutput(&p.methodState, 1)
-}
-
 // OOBInput accepts the out-of-band message for the server-to-peer direction and
 // verifies its fingerprint (RFC 9140, Section 3.2.3). On success the peer moves
 // to the OOB Received state.
@@ -347,10 +299,7 @@ func (p *Peer) OOBInput(msg OOBMessage) error {
 	if p.state != StateWaiting {
 		return fmt.Errorf("eapnoob: OOBInput requires Waiting state, have %s", p.state)
 	}
-	if p.dirp != 2 && p.dirp != 3 {
-		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
-	}
-	if err := oobInput(&p.methodState, 2, msg); err != nil {
+	if err := oobInput(&p.methodState, msg); err != nil {
 		return err
 	}
 	p.state = StateOOBReceived
@@ -365,10 +314,7 @@ func (p *Peer) OOBInputNoob(noob []byte) error {
 	if p.state != StateWaiting {
 		return fmt.Errorf("eapnoob: OOBInputNoob requires Waiting state, have %s", p.state)
 	}
-	if p.dirp != 2 && p.dirp != 3 {
-		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
-	}
-	if err := oobInputNoob(&p.methodState, noob); err != nil {
+	if err := setOOBNoob(&p.methodState, noob); err != nil {
 		return err
 	}
 	p.state = StateOOBReceived
@@ -384,39 +330,12 @@ func (p *Peer) fail(code int, info string) (Outcome, error) {
 	return Outcome{Send: b, State: p.state, Done: true, Err: &ProtocolError{Code: code, Info: info}}, nil
 }
 
-// negotiation helpers ---------------------------------------------------------
-
-func bestVersion(serverVers, peerVers []int) (int, bool) {
-	best, ok := 0, false
-	for _, v := range serverVers {
-		if containsInt(peerVers, v) && v >= best {
-			best, ok = v, true
-		}
-	}
-	return best, ok
-}
-
-func firstSupported(serverCS, peerCS []int) (int, bool) {
-	for _, c := range serverCS {
-		if containsInt(peerCS, c) && isSupportedCryptosuite(c) {
-			return c, true
+func firstSupported(serverCS []int) (cryptosuiteID, bool) {
+	for _, offeredSuite := range serverCS {
+		id := cryptosuiteID(offeredSuite)
+		if isSupportedCryptosuite(id) {
+			return id, true
 		}
 	}
 	return 0, false
-}
-
-func chooseDir(serverDirs, prefer int) (int, bool) {
-	switch serverDirs {
-	case 1:
-		return 1, true
-	case 2:
-		return 2, true
-	case 3:
-		if prefer == 1 || prefer == 2 {
-			return prefer, true
-		}
-		return 2, true
-	default:
-		return 0, false
-	}
 }
