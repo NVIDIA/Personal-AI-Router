@@ -67,7 +67,14 @@ func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, err
 		}
 		return EngineStatus{}, err
 	}
-	st.opMu.Lock()
+	// A start, stop, install or model switch holds opMu for as long as it takes,
+	// and an engine like vLLM takes a minute or more to become ready. A status
+	// read must not wait that out: callers give it seconds, and the desktop
+	// treats it as a fast read. While an operation runs, what is already known
+	// about the engine is the answer, and the operation reports its own result.
+	if !st.opMu.TryLock() {
+		return e.snapshot(engine, st), nil
+	}
 	defer st.opMu.Unlock()
 	pathInstalled, _ := e.Detect(engine)
 	st.mu.Lock()
@@ -95,7 +102,12 @@ func (e *Executor) GetInstalled() []EngineStatus {
 			out = append(out, EngineStatus{Engine: name, DisplayName: dn})
 			continue
 		}
-		st.opMu.Lock()
+		// Same reasoning as StatusAtPort: one engine mid-start must not hold up
+		// the listing of every other engine.
+		if !st.opMu.TryLock() {
+			out = append(out, e.snapshot(name, st))
+			continue
+		}
 		pathInstalled, _ := e.Detect(name)
 		st.mu.Lock()
 		port := st.port

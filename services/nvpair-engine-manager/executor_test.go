@@ -1044,3 +1044,40 @@ func rmCmd(path string) []string {
 	}
 	return []string{"rm", "-f", path}
 }
+
+// A start that takes a minute (vLLM loading weights) holds the engine's
+// lifecycle lock for that minute. Status and the installed-engines listing are
+// what the UI polls and what a toggle awaits with a short timeout, so they must
+// answer from what is already known instead of queueing behind the operation.
+func TestStatusDoesNotWaitForARunningLifecycleOperation(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	st, err := ex.state("fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.opMu.Lock() // an operation is in flight
+	defer st.opMu.Unlock()
+
+	answered := make(chan EngineStatus, 2)
+	go func() {
+		status, _ := ex.Status("fake")
+		answered <- status
+	}()
+	go func() {
+		for _, status := range ex.GetInstalled() {
+			if status.Engine == "fake" {
+				answered <- status
+			}
+		}
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case status := <-answered:
+			if status.Engine != "fake" || status.DisplayName == "" {
+				t.Fatalf("status = %+v", status)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("status waited for a running lifecycle operation")
+		}
+	}
+}

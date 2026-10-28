@@ -186,8 +186,14 @@ allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
 reports the failed start. On Unix, stopping an owned process sends SIGTERM to
 its process group, waits the manifest's `stop.grace_s` (five seconds by
-default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
-startup cleanup uses the same policy. On Windows, the windowless engines we
+default), then escalates to SIGKILL, which also takes any helper processes the
+engine forked (vLLM's `EngineCore` holds the GPU) that outlived it; `signal:"kill"`
+skips the grace. Failed startup cleanup uses the same policy. While the whole
+service is shutting down the grace is capped at three seconds, whatever the
+manifest says: the parent allows engine-manager only a few seconds to stop its
+engines before it kills it, and engine-manager cannot escalate once killed, so a
+longer grace would leave the engine orphaned (an engine still loading its model
+does not answer a polite signal at all). On Windows, the windowless engines we
 spawn cannot receive a graceful (non-`/F`) close, so stopping uses immediate
 `taskkill /T /F`.
 
@@ -204,7 +210,9 @@ would only collide on the port. Consequences worth knowing:
 - **An adopted engine has no child process the service owns**, so `engine:stop`
   (and `engine:restart`'s stop phase, and shutdown's cleanup) resolves the PID
   bound to the engine's port and terminates it **only when that process is
-  running the very binary NVPAIR manages for the engine** — reclaiming an orphan
+  running the very binary NVPAIR manages for the engine** (for an engine
+  installed as a Python package, such as vLLM, that is the interpreter running the
+  engine's script, read from the process's command line on Linux) — reclaiming an orphan
   a prior run left on our own managed port (e.g. an `ollama serve` on `11435`
   whose handle was lost after a crash). This is precise to the port, so a
   genuine third-party listener on a *different* port (Ollama's own desktop app
@@ -352,4 +360,11 @@ termination, console hiding) are the only build-tagged Go
 
 Shuts down on stdin EOF (parent closed the pipe), `SIGINT`/`SIGTERM`, or a
 `shutdown` JSON-RPC request — stopping any running engines first so none
-are orphaned.
+are orphaned. A signal shuts down at once even while stdin is idle and an engine
+is still starting; the start is cancelled and its process group force-killed
+within the three-second shutdown grace (see Process-mode stops above).
+
+`engine:status` and `engine:get-installed` never wait for a lifecycle operation
+(a start, stop, install or model switch can hold an engine for minutes): while
+one runs they report what is already known and the operation reports its own
+result.
