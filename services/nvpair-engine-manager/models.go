@@ -115,11 +115,18 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			if st.Idle && loadedSpec != nil {
 				// Unloaded for being idle: nothing is resident, but the engine still
 				// answers for the model it is set to serve, by loading it on demand.
-				if model := e.idleModelOf(name); model != "" {
-					idleModel[i] = model
-					loaded[i], loadedOK[i] = []string{}, true
+				model := e.idleModelOf(name)
+				if model == "" {
+					return
 				}
-				return
+				idleModel[i] = model
+				loaded[i], loadedOK[i] = []string{}, true
+				if listSpec == nil {
+					return
+				}
+				// An engine that advertises its inventory goes on doing so while it
+				// is unloaded: it loads whichever of those models a request names.
+				loadedSpec = nil
 			}
 			if listSpec != nil {
 				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {

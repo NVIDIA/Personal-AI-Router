@@ -421,17 +421,9 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 			return e.launchStateLocked(p.Engine, st), err
 		}
 	}
-	if changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, preview.Env) {
-		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env); err != nil {
-			return e.launchStateLocked(p.Engine, st), err
-		}
+	if err := e.commitLaunchLocked(st, p.Engine, preview, changed); err != nil {
+		return e.launchStateLocked(p.Engine, st), err
 	}
-	st.mu.Lock()
-	st.plat.Runtime.Port = preview.Settings.ServerPort
-	st.plat.Runtime.LaunchArgs = preview.Args
-	st.plat.Runtime.LaunchEnv = preview.Env
-	st.port = preview.Settings.ServerPort
-	st.mu.Unlock()
 	if err := rebind(); err != nil {
 		e.emitState(p.Engine)
 		return e.launchStateLocked(p.Engine, st), err
@@ -448,6 +440,24 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	}
 	e.emitState(p.Engine)
 	return e.launchStateLocked(p.Engine, st), nil
+}
+
+// commitLaunchLocked saves a previewed launch and makes it the one the engine's
+// next start uses. The caller holds the lifecycle lock and has stopped the engine
+// if it was running on the old launch.
+func (e *Executor) commitLaunchLocked(st *engineState, engine string, preview settings.Preview, changed bool) error {
+	if changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, preview.Env) {
+		if err := e.persistRuntimeConfig(engine, preview.Settings.ServerPort, &preview.Args, &preview.Env); err != nil {
+			return err
+		}
+	}
+	st.mu.Lock()
+	st.plat.Runtime.Port = preview.Settings.ServerPort
+	st.plat.Runtime.LaunchArgs = preview.Args
+	st.plat.Runtime.LaunchEnv = preview.Env
+	st.port = preview.Settings.ServerPort
+	st.mu.Unlock()
+	return nil
 }
 
 type settingsApplyContextKey struct{}

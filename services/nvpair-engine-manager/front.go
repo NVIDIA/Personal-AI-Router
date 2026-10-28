@@ -19,10 +19,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 // Front puts a PAIR-owned HTTP gateway on an engine's public port and runs the
@@ -90,9 +93,33 @@ type frontGateway struct {
 	wakeFn func(context.Context) error
 	wakeSt *wakeState
 	// model is the model the engine serves, so that the model list can be
-	// answered while the engine is unloaded.
+	// answered while the engine is unloaded, and so that a request naming another
+	// model is known to need a switch.
 	model string
+	// switchFn changes the served model, and swSt is the switch in progress, if
+	// any. Every request that needs the model waits on it.
+	switchFn func(ctx context.Context, model string) error
+	swSt     *switchState
+	// modelsFn lists the models the engine can be switched to. The gateway adds
+	// them to its model list, since the engine itself only names the one it serves.
+	modelsFn func(ctx context.Context) []string
 }
+
+// switchState is one change of the served model. Every request that needs the
+// engine while it runs waits on done, so any number of them share a single
+// switch.
+type switchState struct {
+	model string
+	done  chan struct{}
+	err   error
+}
+
+// errModelNotDownloaded marks a request for a model the engine cannot serve
+// because it is not in the cache. Nothing is switched or unloaded for it.
+var errModelNotDownloaded = errors.New("the model is not downloaded on this node")
+
+// frontPeekLimit bounds how much of a request body is read to find its model.
+const frontPeekLimit = 32 << 20
 
 // wakeState is one load of an unloaded engine. Every request that needs the
 // engine waits on done, so any number of them share a single start.
@@ -147,16 +174,190 @@ func (g *frontGateway) finishWake(ws *wakeState, err error) {
 	close(ws.done)
 }
 
-// loadFailed answers a request whose model could not be loaded.
-func loadFailed(w http.ResponseWriter, err error) {
+// requestSwitch returns the switch in progress, starting one if the request names
+// a model other than the one served. It returns nil when no switch is needed, so
+// the caller can carry on. The switch drains the requests already running on the
+// current model before it unloads it, and a request that arrives meanwhile waits
+// for it, so no request is cut off and none is answered by the wrong model.
+func (g *frontGateway) requestSwitch(model string) *switchState {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.swSt != nil {
+		return g.swSt
+	}
+	if model == "" || g.model == "" || model == g.model || g.switchFn == nil {
+		return nil
+	}
+	ss := &switchState{model: model, done: make(chan struct{})}
+	g.swSt = ss
+	go func() { g.finishSwitch(ss, g.switchFn(context.Background(), model)) }()
+	return ss
+}
+
+// finishSwitch ends a switch. Whatever its outcome, the next request that needs
+// the engine decides what happens next: a failed switch leaves the engine
+// unloaded, it does not put the previous model back.
+func (g *frontGateway) finishSwitch(ss *switchState, err error) {
+	g.mu.Lock()
+	ss.err = err
+	if g.swSt == ss {
+		g.swSt = nil
+	}
+	g.mu.Unlock()
+	close(ss.done)
+}
+
+// listedModels is what the gateway adds to the engine's model list: the models
+// a request can switch to.
+func (g *frontGateway) listedModels(ctx context.Context) []string {
+	if g.modelsFn == nil {
+		return nil
+	}
+	return g.modelsFn(ctx)
+}
+
+// residentOnly reports whether a model list request asks for only the model the
+// engine has loaded (?resident=1), which is how the manager reads what is
+// resident, as against the list that clients and the proxy read.
+func residentOnly(r *http.Request) bool {
+	return r.URL.Query().Has("resident")
+}
+
+// withListedModels adds to an OpenAI-style model list body any of ids it does not
+// already name. A body that is not such a list is returned as it is.
+func withListedModels(body []byte, ids []string) []byte {
+	var list map[string]json.RawMessage
+	var data []json.RawMessage
+	if json.Unmarshal(body, &list) != nil || json.Unmarshal(list["data"], &data) != nil {
+		return body
+	}
+	named := map[string]bool{}
+	for _, entry := range data {
+		var model struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(entry, &model) == nil {
+			named[model.ID] = true
+		}
+	}
+	for _, id := range ids {
+		if named[id] {
+			continue
+		}
+		named[id] = true
+		entry, _ := json.Marshal(map[string]any{"id": id, "object": "model", "created": 0, "owned_by": "vllm"})
+		data = append(data, entry)
+	}
+	list["data"], _ = json.Marshal(data)
+	merged, err := json.Marshal(list)
+	if err != nil {
+		return body
+	}
+	return merged
+}
+
+// setModel records the model the engine serves.
+func (g *frontGateway) setModel(model string) {
+	g.mu.Lock()
+	g.model = model
+	g.mu.Unlock()
+}
+
+// drain returns once no inference request is running, which is when the model
+// can be unloaded without cutting one off. Requests that need the model are held
+// while a switch is in progress, so nothing new starts meanwhile.
+func (g *frontGateway) drain(ctx context.Context) error {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		g.mu.Lock()
+		running := g.inflight
+		g.mu.Unlock()
+		if running == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("requests on the current model did not finish: %w", ctx.Err())
+		case <-g.closed:
+			return errors.New("the engine was stopped")
+		case <-ticker.C:
+		}
+	}
+}
+
+// requestedModel returns the model a JSON inference request names, or "" when it
+// names none or is not JSON. It reads only as far as the model field and puts the
+// bytes back, so the engine receives the body unchanged.
+func requestedModel(r *http.Request) string {
+	if !wakeable(r) || r.Body == nil || !strings.Contains(r.Header.Get("Content-Type"), "json") {
+		return ""
+	}
+	var seen bytes.Buffer
+	model := peekModel(json.NewDecoder(io.TeeReader(io.LimitReader(r.Body, frontPeekLimit), &seen)))
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(&seen, r.Body), r.Body}
+	return model
+}
+
+// peekModel reads a JSON object up to its top-level "model" string.
+func peekModel(dec *json.Decoder) string {
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, isString := tok.(string)
+		if err != nil || !isString {
+			return ""
+		}
+		if key == "model" {
+			var model string
+			if dec.Decode(&model) != nil {
+				return ""
+			}
+			return model
+		}
+		var skipped json.RawMessage
+		if dec.Decode(&skipped) != nil {
+			return ""
+		}
+	}
+	return ""
+}
+
+// shortReason flattens an error to one line short enough for a response.
+func shortReason(err error) string {
 	reason := strings.Join(strings.Fields(err.Error()), " ")
 	if len(reason) > 400 {
 		reason = reason[:400] + "..."
 	}
-	body, _ := json.Marshal(map[string]string{"error": "the model could not be loaded: " + reason})
+	return reason
+}
+
+// unavailable answers a request the engine cannot serve right now.
+func unavailable(w http.ResponseWriter, status int, message string) {
+	body, _ := json.Marshal(map[string]string{"error": message})
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
+	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// loadFailed answers a request whose model could not be loaded.
+func loadFailed(w http.ResponseWriter, err error) {
+	unavailable(w, http.StatusServiceUnavailable, "the model could not be loaded: "+shortReason(err))
+}
+
+// switchFailed answers a request whose model the engine could not be switched to.
+// The engine is left unloaded, and the next request tries again.
+func switchFailed(w http.ResponseWriter, model string, err error) {
+	if errors.Is(err, errModelNotDownloaded) {
+		unavailable(w, http.StatusNotFound, fmt.Sprintf("the model %q is not downloaded on this node", model))
+		return
+	}
+	unavailable(w, http.StatusServiceUnavailable, fmt.Sprintf("could not switch to model %q: %s. The engine is unloaded and will try again on the next request.", model, shortReason(err)))
 }
 
 // isActivity reports whether a request is inference work. Reads such as health
@@ -172,7 +373,24 @@ func isActivity(r *http.Request) bool {
 
 func (g *frontGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	activity := isActivity(r)
+	requested := requestedModel(r)
 	for {
+		if wakeable(r) {
+			if ss := g.requestSwitch(requested); ss != nil {
+				select {
+				case <-ss.done:
+					if ss.err != nil && ss.model == requested {
+						switchFailed(w, requested, ss.err)
+						return
+					}
+					continue
+				case <-r.Context().Done():
+					return // the client left; the switch carries on for the next one
+				case <-g.closed:
+					return
+				}
+			}
+		}
 		g.mu.Lock()
 		if (g.idle || g.wakeSt != nil) && wakeable(r) {
 			g.mu.Unlock()
@@ -198,10 +416,13 @@ func (g *frontGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			g.mu.Unlock()
 			if r.Method == http.MethodGet && r.URL.Path == "/v1/models" && model != "" {
 				// The proxy builds its model list from this call, and an engine that is
-				// only unloaded still answers for its model.
+				// only unloaded still answers for its model and every one it can load.
 				body, _ := json.Marshal(map[string]any{"object": "list", "data": []map[string]any{
 					{"id": model, "object": "model", "created": 0, "owned_by": "vllm"},
 				}})
+				if !residentOnly(r) {
+					body = withListedModels(body, g.listedModels(r.Context()))
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write(body)
 				return
@@ -276,7 +497,7 @@ func (g *frontGateway) alive() bool {
 	}
 }
 
-func newFrontHandler(backendPort int) http.Handler {
+func newFrontHandler(backendPort int, listed func(context.Context) []string) http.Handler {
 	target := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(backendPort))}
 	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -291,6 +512,23 @@ func newFrontHandler(backendPort int) http.Handler {
 			DisableCompression:  true,
 			MaxIdleConnsPerHost: 16,
 			IdleConnTimeout:     frontConnIdleTimeout,
+		},
+		// The engine's model list names only the model it serves; the gateway adds
+		// the ones a request can switch to.
+		ModifyResponse: func(resp *http.Response) error {
+			if listed == nil || resp.StatusCode != http.StatusOK || resp.Request.Method != http.MethodGet || resp.Request.URL.Path != "/v1/models" || residentOnly(resp.Request) {
+				return nil
+			}
+			body, err := io.ReadAll(io.LimitReader(resp.Body, frontPeekLimit))
+			_ = resp.Body.Close()
+			if err != nil {
+				return err
+			}
+			body = withListedModels(body, listed(resp.Request.Context()))
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			return nil
 		},
 		ErrorLog: log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -309,7 +547,8 @@ func startFrontGateway(host string, public, backend int) (*frontGateway, error) 
 	if err != nil {
 		return nil, fmt.Errorf("listen on port %d: %w", public, err)
 	}
-	g := &frontGateway{ln: ln, proxy: newFrontHandler(backend), closed: make(chan struct{})}
+	g := &frontGateway{ln: ln, closed: make(chan struct{})}
+	g.proxy = newFrontHandler(backend, g.listedModels)
 	g.srv = &http.Server{
 		Handler:           g,
 		ReadHeaderTimeout: frontHeaderTimeout,
@@ -379,6 +618,11 @@ func (e *Executor) startFront(st *engineState, engine string, rt Runtime, host s
 		return nil, false, err
 	}
 	g.wakeFn = func(ctx context.Context) error { return e.wakeEngine(ctx, engine) }
+	g.switchFn = func(ctx context.Context, model string) error { return e.switchFrontModel(ctx, st, engine, g, model) }
+	g.modelsFn = func(ctx context.Context) []string {
+		models, _ := e.cachedModels(ctx, engine)
+		return models
+	}
 	st.mu.Lock()
 	previous := st.front
 	st.front = g
@@ -531,6 +775,96 @@ func (e *Executor) wakeEngine(ctx context.Context, engine string) error {
 	st.idle = false
 	st.idleModel = ""
 	st.mu.Unlock()
+	e.emitState(engine)
+	return nil
+}
+
+// switchFrontModel makes the engine serve another model, the way Ollama and
+// llama.cpp swap one in for a request: requests already running on the current
+// model finish, the model is unloaded, and the new one is loaded behind the same
+// gateway, which holds the requests that need it meanwhile. A model that is not
+// downloaded is refused before anything changes. A load that fails is not rolled
+// back: the engine is left unloaded, still on, and the next request loads again.
+func (e *Executor) switchFrontModel(ctx context.Context, st *engineState, engine string, g *frontGateway, model string) error {
+	if err := e.requireCachedModel(ctx, engine, model); err != nil {
+		return err
+	}
+	limit := 10 * time.Minute
+	if ready := st.plat.Runtime.Ready; ready != nil && ready.TimeoutS > 0 {
+		limit = time.Duration(ready.TimeoutS+60) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	if err := g.drain(ctx); err != nil {
+		return err
+	}
+	e.unloadFront(st, engine, g, 0, true)
+	if err := e.setIdleModel(st, engine, g, model); err != nil {
+		return err
+	}
+	slog.Info("switching the served model", "engine", engine, "model", model)
+	return e.wakeIdle(ctx, engine)
+}
+
+// cachedModels lists the models the engine has a complete download of.
+func (e *Executor) cachedModels(ctx context.Context, engine string) ([]string, error) {
+	st, err := e.state(engine)
+	if err != nil {
+		return nil, err
+	}
+	act, ok := st.manifest.Actions["list_models"]
+	if !ok || act.Result == nil {
+		return nil, fmt.Errorf("engine %q cannot list its models", engine)
+	}
+	raw, err := e.Action(ctx, engine, "list_models", nil)
+	if err != nil {
+		return nil, err
+	}
+	models, _ := extractStringsResult(raw, act.Result)
+	return models, nil
+}
+
+// requireCachedModel refuses a model the engine has no complete download of.
+func (e *Executor) requireCachedModel(ctx context.Context, engine, model string) error {
+	if !hfModelIDRe.MatchString(model) {
+		return fmt.Errorf("%w: %q is not a model id", errModelNotDownloaded, model)
+	}
+	models, err := e.cachedModels(ctx, engine)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(models, model) {
+		return fmt.Errorf("%w: %s", errModelNotDownloaded, model)
+	}
+	return nil
+}
+
+// setIdleModel saves model as the one the unloaded engine serves next, and
+// advertises it, without starting the engine.
+func (e *Executor) setIdleModel(st *engineState, engine string, g *frontGateway, model string) error {
+	st.opMu.Lock()
+	defer st.opMu.Unlock()
+	current := e.launchStateLocked(engine, st)
+	text, changed, err := withLaunchFlag(current.LaunchText, "--model", model)
+	if err != nil {
+		return err
+	}
+	if changed {
+		preview := e.previewLaunchLocked(st, settings.Request{
+			Engine:   engine,
+			Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: text},
+		})
+		if len(preview.Errors) > 0 || preview.Conflict != nil {
+			return fmt.Errorf("the launch arguments do not accept model %s", model)
+		}
+		if err := e.commitLaunchLocked(st, engine, preview, true); err != nil {
+			return err
+		}
+	}
+	st.mu.Lock()
+	st.idleModel = model
+	st.mu.Unlock()
+	g.setModel(model)
 	e.emitState(engine)
 	return nil
 }

@@ -194,9 +194,25 @@ func main() {
 		time.Sleep(delay)
 	}
 
+	served := ""
+	for i := 1; i+1 < len(os.Args); i++ {
+		if os.Args[i] == "--model" {
+			served = os.Args[i+1]
+		}
+	}
+	if failModel := os.Getenv("FAKE_FAIL_MODEL"); failModel != "" && failModel == served {
+		log.Fatalf("cannot load model %s", served)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	// Inference answers carry served_by, the model the process was launched with,
+	// so a test can tell which model served a request. /v1/slow takes a while.
+	mux.HandleFunc("/v1/slow", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(700 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]string{"served_by": served})
 	})
 	// Ollama-shape model API (stateful).
 	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
@@ -328,7 +344,7 @@ func main() {
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		b := decodeBody(r)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"model": bstr(b, "model"), "object": "chat.completion",
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": bstr(b, "model"), "served_by": served, "object": "chat.completion",
 			"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}}})
 	})
 	mux.HandleFunc("/api/error", func(w http.ResponseWriter, r *http.Request) {

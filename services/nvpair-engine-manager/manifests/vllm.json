@@ -3,7 +3,6 @@
   "engine": "vllm",
   "display_name": "vLLM",
   "manifest_version": 1,
-  "advertised_models": "loaded",
   "install": { "mode": "user" },
   "models_dir": "~/.cache/huggingface",
   "uninstall": { "remove": ["{install_dir}"] },
@@ -101,8 +100,8 @@
       "hf_pull": { "tool": "hf", "dir": "{models_dir}/hub" }
     },
     "loaded_models": {
-      "description": "List the model this vLLM server is serving (it serves exactly one). This is what peers and the proxy are told it can answer for.",
-      "http": { "method": "GET", "path": "/v1/models" },
+      "description": "List the model this vLLM server has loaded (it serves exactly one). The gateway's plain model list also names every downloaded model, so this asks for only the resident one.",
+      "http": { "method": "GET", "path": "/v1/models?resident=1" },
       "result": { "array": "data", "field": "id" }
     }
   }

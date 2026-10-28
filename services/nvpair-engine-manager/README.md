@@ -86,12 +86,13 @@ Readiness polls `/health` for up to eight minutes while weights load.
 The model list is the Hugging Face cache (`~/.cache/huggingface/hub`), not what
 vLLM happens to be serving: `list_models` is an `hf_cache` action listing the
 complete, text-model-shaped downloads (see `MANIFEST.md`), and it works while
-vLLM is stopped. Peers and the proxy, though, are only told about the model being
-served (`advertised_models: loaded`), because the proxy routes a request to any
-node advertising its model and vLLM cannot answer for the others. `load_model`
-switches the served model: it writes `--model <id>` into the saved launch
-arguments and restarts vLLM on it, restoring the previous model if the new one
-does not start (for example it does not fit in GPU memory).
+vLLM is stopped. Peers and the proxy are told about all of them, and a request
+for a model that is not loaded switches vLLM to it (see below), as Ollama and
+llama.cpp load a model on demand. `engine:models` still reports which one is
+resident in `loadedByEngine`. `load_model` switches the served model on demand
+too: it writes `--model <id>` into the saved launch arguments and restarts vLLM
+on it, restoring the previous model if the new one does not start (for example it
+does not fit in GPU memory).
 
 vLLM is reached through a PAIR gateway (`front`): the public port (8001) is the
 gateway, and the `vllm serve` process listens on a loopback port 10000 higher
@@ -119,6 +120,23 @@ and changed with the `get_idle_timeout` and `set_idle_timeout` actions (seconds,
 Eject
 (`unload_model`) does the same on demand. `load_model` of the model it is set to
 serve loads it again.
+
+A request that names a different downloaded model than the one vLLM serves
+(the JSON `model` field of a POST under `/v1/` or the other inference paths
+below) switches vLLM to it and is then answered by it. The gateway reads only as
+far as that field and forwards the body unchanged. Requests already running on
+the current model finish first, and nothing new is started on it meanwhile, so
+none is cut off. The gateway then unloads the model, saves `--model <id>` into the
+launch arguments (the settings show what is running), loads the new model behind
+the same gateway, and forwards the held request. Requests that arrive together
+share one switch, and a request for yet another model waits for it. A model that
+is not downloaded is answered 404 and nothing changes. A switch that fails is not
+rolled back: the request gets a 503 naming the model and the reason, and vLLM is
+left unloaded but ON, so the next request loads whichever model it names. A switch
+is a full restart, so the proxy's 120 s limit is the ceiling for a very large model.
+The gateway's `GET /v1/models`, which the proxy builds its own model list from,
+names every downloaded model, not just the loaded one: it adds them to the
+engine's answer while vLLM is up and answers with them while it is unloaded.
 
 A request that needs the model (a POST under `/v1/`, or to `/tokenize`,
 `/detokenize`, `/pooling`, `/score`, `/rerank` or `/classify`) and arrives while it

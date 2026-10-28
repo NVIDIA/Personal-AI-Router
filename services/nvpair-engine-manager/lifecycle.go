@@ -238,6 +238,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		e.watch(st, engine, proc)
 		if gateway != nil {
 			gateway.closeWhen(proc.done)
+			if model, err := e.servedModelLocked(engine, st); err == nil {
+				gateway.setModel(model)
+			}
 			gateway.markUp()
 		}
 	}

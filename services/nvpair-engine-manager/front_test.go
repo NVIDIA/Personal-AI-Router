@@ -276,6 +276,14 @@ func TestFrontGatewayCloseFreesThePortAndIsIdempotent(t *testing.T) {
 // says, so the gateway in front of it can be exercised end to end.
 func frontExecutor(t *testing.T, idleSeconds int) (e *Executor, public, backend int) {
 	t.Helper()
+	return frontExecutorAdvertising(t, idleSeconds, advertisedModelsLoaded)
+}
+
+// frontExecutorAdvertising is frontExecutor for an engine that advertises what
+// the manifest says. Its cache holds org/m, which it serves, and org/other and
+// org/bad, which it can be switched to.
+func frontExecutorAdvertising(t *testing.T, idleSeconds int, advertised string) (e *Executor, public, backend int) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses the fake engine's --listen flag")
 	}
@@ -303,10 +311,13 @@ func frontExecutor(t *testing.T, idleSeconds int) (e *Executor, public, backend 
 	}}
 	p.Runtime.Front = &Front{BackendPortOffset: 1, IdleTimeoutS: idleSeconds}
 	m.Platforms[key] = p
-	// The engine advertises only what it has loaded, as vLLM does; Eject and Load
-	// are the same actions vLLM declares.
-	m.AdvertisedModels = advertisedModelsLoaded
+	cache := t.TempDir()
+	for _, id := range []string{"org/m", "org/other", "org/bad"} {
+		writeHFRepo(t, cache, id, llmFiles(map[string]string{"model.safetensors": "weights"}))
+	}
+	m.AdvertisedModels = advertised
 	m.Actions = map[string]Action{
+		"list_models":   {HFCache: &ActionHFCache{Dir: cache}, Result: &ActionResult{Array: "data", Field: "id"}},
 		"loaded_models": {HTTP: &ActionHTTP{Method: "GET", Path: "/api/ps"}, Result: &ActionResult{Array: "models", Field: "name"}},
 		"unload_model":  {StopEngine: true},
 		"load_model":    {LaunchModel: &ActionLaunchModel{Flag: "--model"}},

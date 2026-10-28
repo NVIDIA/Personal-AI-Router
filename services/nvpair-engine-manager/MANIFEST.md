@@ -337,8 +337,10 @@ placeholder before the action runs:
 A manifest-level **`advertised_models`** (`"list"`, the default, or `"loaded"`)
 chooses what the node tells its peers and its own proxy it can serve. The proxy
 sends a request to any node advertising the model, so an engine that serves one
-model per process sets `"loaded"` and advertises only `loaded_models`, even when
-its `list_models` offers many models it could be switched to. With `"loaded"`,
+model per process and cannot switch on request sets `"loaded"` and advertises only
+`loaded_models`, even when its `list_models` offers many models it could be
+switched to. An engine behind a `front` switches models on request, so it
+advertises its whole `list_models`. With `"loaded"`,
 `list_models` is not queried for `engine:models`, and a `loaded_models` action is
 required.
 

@@ -92,12 +92,18 @@ func TestBundledVLLMManifest(t *testing.T) {
 			t.Errorf("vllm must declare %s", name)
 		}
 	}
-	// list_models is what is on disk; only the model being served is advertised.
+	// list_models is what is on disk, and all of it is advertised: a request for
+	// a model that is not loaded switches the engine to it.
 	if list := manifest.Actions["list_models"]; list.HFCache == nil || list.HFCache.Dir != "{models_dir}/hub" {
 		t.Errorf("list_models must list the Hugging Face cache, got %+v", list)
 	}
-	if manifest.AdvertisedModels != advertisedModelsLoaded {
-		t.Errorf("advertised_models = %q, want %q: peers and the proxy must only be offered the served model", manifest.AdvertisedModels, advertisedModelsLoaded)
+	if manifest.AdvertisedModels == advertisedModelsLoaded {
+		t.Errorf("advertised_models = %q: the gateway switches models on request, so peers and the proxy must be offered every cached model", manifest.AdvertisedModels)
+	}
+	// The gateway's plain /v1/models names every downloaded model, so reading what
+	// is resident has to ask for the resident one only, or every model shows as loaded.
+	if loaded := manifest.Actions["loaded_models"]; loaded.HTTP == nil || loaded.HTTP.Path != "/v1/models?resident=1" {
+		t.Errorf("loaded_models must read /v1/models?resident=1, got %+v", loaded.HTTP)
 	}
 	// Switching the model is a launch-argument change plus a restart, since the
 	// engine has no load call.
