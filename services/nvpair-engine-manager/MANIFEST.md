@@ -238,7 +238,7 @@ probes.
 ### Actions
 
 Each action is a config-declared operation exposed over `engine:action`.
-Exactly one of `http`, `cmd`, or `remove_path`:
+Exactly one of `http`, `cmd`, `remove_path`, or `hf_cache`:
 
 - **`http`** — call the engine's loopback control API. The caller's
   `params` are sent as the JSON request body by default. Set
@@ -254,6 +254,17 @@ Exactly one of `http`, `cmd`, or `remove_path`:
   action `params` as placeholders); the resolved target must stay under
   the declared root. Symlink escapes and missing targets are rejected.
   Does **not** require the engine to be running.
+- **`hf_cache`** — list the models in a Hugging Face hub cache directory.
+  `hf_cache.dir` is templated, normally `"{models_dir}/hub"`. The reply is
+  `{"data":[{"id","size"}]}`, so `result: {"array": "data", "field": "id"}`
+  turns it into a model list. A repository is listed when its snapshot is a
+  complete download holding a config, a tokenizer and weights: vision-only and
+  GGUF-only repositories, interrupted downloads (`.incomplete` blobs, shards
+  missing from the index or from a `-0000N-of-0000M` set, several unnumbered
+  weight files with no index) and links whose blob is gone are left out. This is
+  a check on file layout, not on whether the engine supports the architecture.
+  A missing directory is an empty cache. Does **not** require the engine to be
+  running.
 
 An optional **`result`** declares how `engine:models` extracts a normalized
 name list from the action's JSON response: `array` is the top-level array
@@ -398,7 +409,8 @@ path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
 is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),
 an action sets none or more than one of
-`http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
+`http`/`cmd`/`remove_path`/`hf_cache`, an `hf_cache` action omits
+`dir`, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
 both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or

@@ -257,6 +257,10 @@ type Action struct {
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
 	Cmd         []string          `json:"cmd,omitempty"`
 	RemovePath  *ActionRemovePath `json:"remove_path,omitempty"`
+	// HFCache lists the models in a Hugging Face hub cache directory. It reads
+	// the disk and needs no running engine, so an engine that serves one model
+	// per process can still show everything it could be switched to.
+	HFCache *ActionHFCache `json:"hf_cache,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -312,6 +316,13 @@ type ResultMatch struct {
 type ActionRemovePath struct {
 	Path string `json:"path"`
 	Root string `json:"root"`
+}
+
+// ActionHFCache names the Hugging Face hub cache directory to list. Dir is
+// templated, normally "{models_dir}/hub". The result is {"data":[{"id","size"}]},
+// which the ordinary result extractor reads with array "data" and field "id".
+type ActionHFCache struct {
+	Dir string `json:"dir"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -883,6 +894,7 @@ func (a *Action) validate(name string) error {
 	hasHTTP := a.HTTP != nil
 	hasCmd := len(a.Cmd) > 0
 	hasRemovePath := a.RemovePath != nil
+	hasHFCache := a.HFCache != nil
 	kinds := 0
 	if hasHTTP {
 		kinds++
@@ -893,8 +905,14 @@ func (a *Action) validate(name string) error {
 	if hasRemovePath {
 		kinds++
 	}
+	if hasHFCache {
+		kinds++
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, or remove_path is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, or hf_cache is required", name)
+	}
+	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
+		return fmt.Errorf("action %q: hf_cache.dir is required", name)
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {
@@ -1030,6 +1048,9 @@ func (m *Manifest) actionTemplatedStrings() []string {
 		if act.RemovePath != nil {
 			out = append(out, act.RemovePath.Root)
 			// Path may template caller params (e.g. {model}); validated at call time.
+		}
+		if act.HFCache != nil {
+			out = append(out, act.HFCache.Dir)
 		}
 	}
 	// Action http.path / cmd are resolved from runtime params (e.g.
