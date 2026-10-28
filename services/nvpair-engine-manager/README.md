@@ -124,13 +124,15 @@ serve loads it again.
 A request that names a different downloaded model than the one vLLM serves
 (the JSON `model` field of a POST under `/v1/` or the other inference paths
 below) switches vLLM to it and is then answered by it. The gateway reads only as
-far as that field and forwards the body unchanged. Requests already running on
+far as that field, at most the first 32 MiB of the body, and forwards the body
+unchanged. Requests already running on
 the current model finish first, and nothing new is started on it meanwhile, so
 none is cut off. The gateway then unloads the model, saves `--model <id>` into the
 launch arguments (the settings show what is running), loads the new model behind
 the same gateway, and forwards the held request. Requests that arrive together
-share one switch, and a request for yet another model waits for it. A model that
-is not downloaded is answered 404 and nothing changes. A switch that fails is not
+share one switch, and a request for yet another model waits for it. A name that
+is not a downloaded model, such as an alias given with `--served-model-name`, is
+left to vLLM to answer, and nothing changes. A switch that fails is not
 rolled back: the request gets a 503 naming the model and the reason, and vLLM is
 left unloaded but ON, so the next request loads whichever model it names. A switch
 is a full restart, so the proxy's 120 s limit is the ceiling for a very large model.

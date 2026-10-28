@@ -103,6 +103,10 @@ type frontGateway struct {
 	// modelsFn lists the models the engine can be switched to. The gateway adds
 	// them to its model list, since the engine itself only names the one it serves.
 	modelsFn func(ctx context.Context) []string
+	list     modelList
+	// readMu lets one read of the downloaded models serve every request waiting
+	// for it.
+	readMu sync.Mutex
 }
 
 // switchState is one change of the served model. Every request that needs the
@@ -118,8 +122,28 @@ type switchState struct {
 // because it is not in the cache. Nothing is switched or unloaded for it.
 var errModelNotDownloaded = errors.New("the model is not downloaded on this node")
 
-// frontPeekLimit bounds how much of a request body is read to find its model.
+// frontPeekLimit bounds how much of a request body is read to find its model. A
+// request whose model comes after more than this (a chat with large inline
+// images, say) is forwarded as it is, and the engine answers for its own model.
 const frontPeekLimit = 32 << 20
+
+// frontModelListLimit bounds the engine's own model list that the gateway extends.
+const frontModelListLimit = 4 << 20
+
+// frontListTTL is how long a read of the downloaded models is reused, and
+// frontMissTTL how long before a model missing from it makes the cache be read
+// again, so a model pulled a moment ago is found without every request that
+// names an unknown model (an alias, say) scanning the disk.
+const (
+	frontListTTL = 5 * time.Second
+	frontMissTTL = time.Second
+)
+
+// modelList is the downloaded models and when they were read.
+type modelList struct {
+	at     time.Time
+	models []string
+}
 
 // wakeState is one load of an unloaded engine. Every request that needs the
 // engine waits on done, so any number of them share a single start.
@@ -207,13 +231,89 @@ func (g *frontGateway) finishSwitch(ss *switchState, err error) {
 	close(ss.done)
 }
 
+// downloaded returns the models the engine can be switched to. The cache is read
+// again only when the last read is older than maxAge, and one read serves every
+// request that asks meanwhile. A read that fails keeps the last list that worked
+// and is not retried until maxAge has passed, so a failing disk is not scanned on
+// every request.
+func (g *frontGateway) downloaded(ctx context.Context, maxAge time.Duration) []string {
+	g.mu.Lock()
+	read, last := g.modelsFn, g.list
+	g.mu.Unlock()
+	if read == nil {
+		return nil
+	}
+	if !last.at.IsZero() && time.Since(last.at) < maxAge {
+		return last.models
+	}
+	g.readMu.Lock()
+	defer g.readMu.Unlock()
+	g.mu.Lock()
+	last = g.list
+	g.mu.Unlock()
+	if !last.at.IsZero() && time.Since(last.at) < maxAge {
+		return last.models // another request read it while this one waited
+	}
+	models := read(ctx)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if models != nil {
+		g.list.models = models
+	}
+	g.list.at = time.Now()
+	return g.list.models
+}
+
 // listedModels is what the gateway adds to the engine's model list: the models
 // a request can switch to.
 func (g *frontGateway) listedModels(ctx context.Context) []string {
-	if g.modelsFn == nil {
-		return nil
+	return g.downloaded(ctx, frontListTTL)
+}
+
+// canSwitchTo reports whether model is one the engine can be switched to: a
+// downloaded model other than the one it serves. A name that is neither, such as
+// an alias the engine was told to answer to, is left for the engine itself.
+func (g *frontGateway) canSwitchTo(ctx context.Context, model string) bool {
+	g.mu.Lock()
+	served := g.model
+	g.mu.Unlock()
+	if model == "" || model == served {
+		return false
 	}
-	return g.modelsFn(ctx)
+	return slices.Contains(g.downloaded(ctx, frontListTTL), model) || slices.Contains(g.downloaded(ctx, frontMissTTL), model)
+}
+
+// waitForWake returns once the load in progress, if any, has ended; with none in
+// progress it waits a moment, so a caller that polls does not spin.
+func (g *frontGateway) waitForWake(ctx context.Context) error {
+	g.mu.Lock()
+	ws := g.wakeSt
+	g.mu.Unlock()
+	if ws == nil {
+		select {
+		case <-time.After(50 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-g.closed:
+			return errors.New("the engine was stopped")
+		}
+	}
+	select {
+	case <-ws.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-g.closed:
+		return errors.New("the engine was stopped")
+	}
+}
+
+// isIdle reports whether the engine behind the gateway is unloaded.
+func (g *frontGateway) isIdle() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.idle
 }
 
 // residentOnly reports whether a model list request asks for only the model the
@@ -376,7 +476,11 @@ func (g *frontGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requested := requestedModel(r)
 	for {
 		if wakeable(r) {
-			if ss := g.requestSwitch(requested); ss != nil {
+			want := ""
+			if g.canSwitchTo(r.Context(), requested) {
+				want = requested
+			}
+			if ss := g.requestSwitch(want); ss != nil {
 				select {
 				case <-ss.done:
 					if ss.err != nil && ss.model == requested {
@@ -392,6 +496,13 @@ func (g *frontGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		g.mu.Lock()
+		if g.swSt != nil && wakeable(r) {
+			// A switch began since the check above. A request admitted now would
+			// run on a model that is about to be unloaded, or start loading the old
+			// one, so it goes back to wait for the switch.
+			g.mu.Unlock()
+			continue
+		}
 		if (g.idle || g.wakeSt != nil) && wakeable(r) {
 			g.mu.Unlock()
 			ws := g.requestWake()
@@ -519,7 +630,7 @@ func newFrontHandler(backendPort int, listed func(context.Context) []string) htt
 			if listed == nil || resp.StatusCode != http.StatusOK || resp.Request.Method != http.MethodGet || resp.Request.URL.Path != "/v1/models" || residentOnly(resp.Request) {
 				return nil
 			}
-			body, err := io.ReadAll(io.LimitReader(resp.Body, frontPeekLimit))
+			body, err := io.ReadAll(io.LimitReader(resp.Body, frontModelListLimit))
 			_ = resp.Body.Close()
 			if err != nil {
 				return err
@@ -617,12 +728,15 @@ func (e *Executor) startFront(st *engineState, engine string, rt Runtime, host s
 	if err != nil {
 		return nil, false, err
 	}
+	// The gateway is already listening, so the callbacks are set under its lock.
+	g.mu.Lock()
 	g.wakeFn = func(ctx context.Context) error { return e.wakeEngine(ctx, engine) }
 	g.switchFn = func(ctx context.Context, model string) error { return e.switchFrontModel(ctx, st, engine, g, model) }
 	g.modelsFn = func(ctx context.Context) []string {
 		models, _ := e.cachedModels(ctx, engine)
 		return models
 	}
+	g.mu.Unlock()
 	st.mu.Lock()
 	previous := st.front
 	st.front = g
@@ -798,7 +912,25 @@ func (e *Executor) switchFrontModel(ctx context.Context, st *engineState, engine
 	if err := g.drain(ctx); err != nil {
 		return err
 	}
-	e.unloadFront(st, engine, g, 0, true)
+	// Nothing is saved or loaded unless the current model is really gone: an
+	// engine that could not be unloaded would go on answering as the old model.
+	// A load that was only just starting when the unload ran is waited for, and
+	// then the unload is made again.
+	unloaded := false
+	for attempt := 0; attempt < 5 && !unloaded; attempt++ {
+		e.unloadFront(st, engine, g, 0, true)
+		if !g.alive() {
+			return errors.New("the engine was stopped")
+		}
+		if unloaded = g.isIdle(); !unloaded {
+			if err := g.waitForWake(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	if !unloaded {
+		return errors.New("the model being served could not be unloaded")
+	}
 	if err := e.setIdleModel(st, engine, g, model); err != nil {
 		return err
 	}

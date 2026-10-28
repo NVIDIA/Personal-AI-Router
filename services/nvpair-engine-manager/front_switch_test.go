@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -116,17 +117,15 @@ func TestFrontSwitch_SimultaneousRequestsForOneNewModelShareOneSwitch(t *testing
 	require.Equal(t, 1, startCount(t, log)-before, "one start for six simultaneous requests")
 }
 
-func TestFrontSwitch_ModelThatIsNotDownloadedIsRefusedAndNothingChanges(t *testing.T) {
+func TestFrontSwitch_ModelThatIsNotDownloadedIsLeftToTheEngine(t *testing.T) {
 	e, public, _ := startSwitchableEngine(t)
 
+	// An alias the engine was told to answer to, or a model nobody has: the
+	// gateway cannot switch to it, so the engine decides. The fake engine answers.
 	status, body := askFor(t, public, "/v1/chat/completions", "org/missing")
-	require.Equal(t, http.StatusNotFound, status)
-	require.Contains(t, body, "not downloaded")
-
-	status, body = askFor(t, public, "/v1/chat/completions", "org/m")
 	require.Equal(t, http.StatusOK, status)
 	require.Contains(t, body, `"served_by":"org/m"`, "the engine kept serving the model it had")
-	require.Equal(t, "org/m", servedModelOf(t, e))
+	require.Equal(t, "org/m", servedModelOf(t, e), "nothing was switched or saved")
 }
 
 func TestFrontSwitch_FailedLoadLeavesTheEngineUnloadedAndNextRequestLoads(t *testing.T) {
@@ -298,4 +297,81 @@ func TestWithListedModels_AddsOnlyTheModelsTheListLacks(t *testing.T) {
 	require.Equal(t, "org/b", list.Data[1].ID)
 
 	require.Equal(t, `not json`, string(withListedModels([]byte(`not json`), []string{"org/b"})), "anything else passes through")
+}
+
+func TestFrontGateway_ReadsTheDownloadedModelsAgainOnlyWhenTheyAreStale(t *testing.T) {
+	reads := 0
+	g := &frontGateway{model: "org/m", modelsFn: func(context.Context) []string {
+		reads++
+		return []string{"org/m", "org/other"}
+	}}
+
+	for range 5 {
+		require.True(t, g.canSwitchTo(context.Background(), "org/other"))
+	}
+	require.Equal(t, 1, reads, "repeated requests reuse one read of the cache")
+
+	require.False(t, g.canSwitchTo(context.Background(), "org/m"), "the served model needs no switch")
+	require.Equal(t, 1, reads)
+
+	require.False(t, g.canSwitchTo(context.Background(), "alias"))
+	require.False(t, g.canSwitchTo(context.Background(), "alias"))
+	require.LessOrEqual(t, reads, 2, "an unknown name does not scan the cache on every request")
+}
+
+func TestFrontGateway_FailedReadKeepsTheLastListAndIsNotRetriedAtOnce(t *testing.T) {
+	reads, fail := 0, false
+	g := &frontGateway{model: "org/m", modelsFn: func(context.Context) []string {
+		reads++
+		if fail {
+			return nil
+		}
+		return []string{"org/m", "org/other"}
+	}}
+	require.True(t, g.canSwitchTo(context.Background(), "org/other"))
+
+	fail = true
+	g.mu.Lock()
+	g.list.at = time.Now().Add(-time.Minute) // the list has gone stale
+	g.mu.Unlock()
+	for range 4 {
+		require.True(t, g.canSwitchTo(context.Background(), "org/other"), "a failed read does not forget the models")
+	}
+	require.Equal(t, 2, reads, "one failed read, then none until the next interval")
+}
+
+func TestFrontSwitch_ModelDeletedAfterTheListWasReadIsRefused(t *testing.T) {
+	e, public, _ := startSwitchableEngine(t)
+	require.Contains(t, listedIDs(t, public), "org/other") // the list is now cached
+
+	st, err := e.state("fronted")
+	require.NoError(t, err)
+	cache := st.manifest.Actions["list_models"].HFCache.Dir
+	require.NoError(t, os.RemoveAll(filepath.Join(cache, "models--org--other")))
+
+	status, body := askFor(t, public, "/v1/chat/completions", "org/other")
+	require.Equal(t, http.StatusNotFound, status, "the switch checks the cache itself, not the cached list")
+	require.Contains(t, body, "not downloaded")
+	require.Equal(t, "org/m", servedModelOf(t, e))
+}
+
+func TestFrontSwitch_DifferentModelsRequestedTogetherFromAnUnloadedEngineEachGetTheirOwn(t *testing.T) {
+	e, public, backend := startSwitchableEngine(t)
+	_, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{}`))
+	require.NoError(t, err)
+	require.False(t, up(backend))
+
+	var wg sync.WaitGroup
+	answers := make([]string, 2)
+	for i, model := range []string{"org/m", "org/other"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			status, body := askFor(t, public, "/v1/chat/completions", model)
+			answers[i] = fmt.Sprintf("%d %s", status, body)
+		}()
+	}
+	wg.Wait()
+	require.Contains(t, answers[0], `"served_by":"org/m"`)
+	require.Contains(t, answers[1], `"served_by":"org/other"`)
 }
