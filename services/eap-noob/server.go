@@ -300,6 +300,9 @@ func (s *Server) buildCompletionRequest() (Outcome, error) {
 }
 
 func (s *Server) onCompletion(wm *wireMessage) (Outcome, error) {
+	if s.state != StateWaiting || s.suite == nil || len(s.keyM.Kmp) == 0 {
+		return s.fail(ErrStateMismatch, "completion before authentication keys are ready")
+	}
 	if err := s.checkPeerId(wm); err != nil {
 		return s.fail(ErrUnexpectedPeerIdentier, err.Error())
 	}

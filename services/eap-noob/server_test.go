@@ -155,3 +155,38 @@ func TestServer_RejectsMalformedJSON(t *testing.T) {
 	assert.True(t, out.Done)
 	assert.False(t, out.Success)
 }
+
+// A completion message can arrive while the server is waiting for the PIN,
+// before its authentication keys exist. We should reject in that case
+func TestServer_RejectsCompletionBeforeKeysAreDerived(t *testing.T) {
+	test := func(name string, suite cryptosuiteID) {
+		t.Run(name, func(t *testing.T) {
+			server := NewServer(PairingInfo{})
+			peer := NewPeer(PairingInfo{})
+			driveInitialWithSuite(t, server, peer, suite)
+			require.Equal(t, StateWaiting, server.State())
+			require.Empty(t, server.keyM.Kmp)
+
+			// Before PIN verification, the transcript is public and an empty-key
+			// MAC is computable without knowing the PIN. It must not grant trust.
+			macp := server.suite.computeMAC(nil, 1, server.in)
+			message, _, err := encode(&wireMessage{
+				Type:   intp(typeCompletion),
+				PeerId: rawString(server.peerId),
+				MACp:   rawString(b64Encode(macp)),
+			})
+			require.NoError(t, err)
+
+			out, err := server.Receive(message)
+
+			require.NoError(t, err)
+			require.NotNil(t, out.Err)
+			assert.Equal(t, ErrStateMismatch, out.Err.Code)
+			assert.True(t, out.Done)
+			assert.False(t, out.Success)
+			assert.Equal(t, StateWaiting, server.State())
+		})
+	}
+	test("X25519", cryptosuiteX25519)
+	test("P-256", cryptosuiteP256)
+}
