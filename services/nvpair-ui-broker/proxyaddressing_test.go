@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/engines"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
@@ -33,7 +36,7 @@ import (
 // method resolves to no facade — which looks like an unavailable proxy rather
 // than a broker bug. The two prefixes are deliberately different strings, so
 // the relay is a translation and this asserts both halves of it.
-func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
+func TestRelay_AddressesForwardedMethodToRequestedFacade(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			client, server := net.Pipe()
@@ -48,11 +51,11 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 			go func() {
 				codec := NewCodec(server)
 				msg, err := codec.Read()
-				if err != nil {
+				if !assertRPCRead(t, err) {
 					return
 				}
 				seen <- msg.Method
-				_ = codec.Respond(msg.ID, map[string][]string{"nodes": {}})
+				assert.NoError(t, codec.Respond(msg.ID, map[string][]string{"nodes": {}}))
 			}()
 
 			b := &Broker{codec: NewCodec(rwDiscard{})}
@@ -66,12 +69,9 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 
 			select {
 			case got := <-seen:
-				want := profile.addressed("nodes/list")
-				if got != want {
-					t.Fatalf("relayed method = %q, want %q", got, want)
-				}
+				require.Equal(t, profile.addressed("nodes/list"), got, "relayed method")
 			case <-time.After(2 * time.Second):
-				t.Fatal("relay sent nothing downward")
+				require.FailNow(t, "relay sent nothing downward")
 			}
 		})
 	}
@@ -97,7 +97,7 @@ func (rwDiscard) Close() error                { return nil }
 // The call-site ordering itself is not reachable from a unit test — spawnProxy
 // launches a real binary — so this pins the property that makes the ordering
 // matter, and the sibling test below pins the other side of it.
-func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
+func TestBlockingAManagedFacade_KeepsTheAliasForTheRetry(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	b := &Broker{
 		nodeID:            "local-node",
@@ -110,9 +110,8 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 
 	b.blockManagedOllamaFacade("the Ollama proxy facade could not be brought up")
 
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Errorf("blocking released the alias a retry still needs: %+v", got)
-	}
+	got := b.currentOllamaHostAlias()
+	assert.Equal(t, alias.Port, got.Port, "blocking released the alias a retry still needs (%v)", got)
 }
 
 // An engine that failed inside a process that is staying gets terminal
@@ -120,21 +119,19 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 //
 // Without this the broker would hold a reservation for a facade that is never
 // coming back, and engine-manager could never be given that port.
-func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
+func TestSurvivingProcess_ReleasesTheAliasForAFailedFacade(t *testing.T) {
 	b := &Broker{
 		ollamaPortReady:   make(chan struct{}),
 		lmstudioPortReady: make(chan struct{}),
 	}
 	alias := ollamaHostAlias{Address: "127.0.0.1:11433", Port: 11433}
 	b.setOllamaHostAlias(alias)
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Fatalf("alias not established for the test: %+v", got)
-	}
+	got := b.currentOllamaHostAlias()
+	require.Equal(t, alias.Port, got.Port, "alias not established for the test (%v)", got)
 
 	b.blockAndFinishEngineProxy(ollamaProxyProfile)
-	if got := b.currentOllamaHostAlias(); got.Port != 0 {
-		t.Errorf("terminal treatment did not release the alias: %+v", got)
-	}
+	got = b.currentOllamaHostAlias()
+	assert.Equal(t, 0, got.Port, "terminal treatment did not release the alias (%v)", got)
 }
 
 // A facade that reported ready is kept when its enable call went unanswered,
@@ -143,46 +140,23 @@ func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
 // Both halves matter and neither runs on the ordinary error return, so without
 // this test a later edit can either strand a live listener the broker reports
 // as unavailable, or publish a dead port the broker will never retry.
-func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
+func TestFacadeEnable_TrustsReadinessOnlyWhenRequestWasUnanswered(t *testing.T) {
 	engine := ollamaProxyProfile.Name
 	ready := &proxyProcess{facadeState: readyFacade(engine, 11434)}
 	notReady := &proxyProcess{}
 
-	for _, tc := range []struct {
-		name string
-		pp   *proxyProcess
-		err  error
-		want bool
-	}{
-		{
-			// A timeout or closed pipe: the child does the bind, two notifies
-			// and the serve inside the call, so it may genuinely be serving.
-			name: "unanswered enable, facade reported ready",
-			pp:   ready, err: context.DeadlineExceeded, want: true,
-		},
-		{
-			name: "unanswered enable, facade never reported ready",
-			pp:   notReady, err: context.DeadlineExceeded, want: false,
-		},
-		{
-			// The child answered, so it decided against the facade and
-			// withdrew it: an earlier ready from the same attempt is stale.
-			name: "answered rejection, stale ready ignored",
-			pp:   ready, err: fmt.Errorf("%w: rejected", errRPCAnswered), want: false,
-		},
-		{
-			name: "answered bind failure, stale ready ignored",
-			pp:   ready,
-			err:  fmt.Errorf("%w: %w: taken", errRPCAnswered, errFacadeBindFailed),
-			want: false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := facadeCameUpAnyway(tc.pp, engine, tc.err); got != tc.want {
-				t.Fatalf("facadeCameUpAnyway = %v, want %v", got, tc.want)
-			}
+	test := func(name string, pp *proxyProcess, err error, want bool) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, facadeCameUpAnyway(pp, engine, err))
 		})
 	}
+	// The child does the bind, notifications and serve inside an unanswered call,
+	// so it may genuinely be serving despite a timeout or closed pipe.
+	test("unanswered enable, facade reported ready", ready, context.DeadlineExceeded, true)
+	test("unanswered enable, facade never reported ready", notReady, context.DeadlineExceeded, false)
+	// An answered rejection withdraws the facade, making an earlier ready stale.
+	test("answered rejection, stale ready ignored", ready, fmt.Errorf("%w: rejected", errRPCAnswered), false)
+	test("answered bind failure, stale ready ignored", ready, fmt.Errorf("%w: %w: taken", errRPCAnswered, errFacadeBindFailed), false)
 }
 
 // readyFacade is the handle state one engine's facade would leave behind after
@@ -197,7 +171,7 @@ func readyFacade(engine string, port int) map[string]proxyFacadeState {
 // different ports. A single port for the process would be whichever facade
 // readied last, so get-status would hand a client the other engine's port —
 // and its inference traffic with it.
-func TestReadinessIsTrackedPerEngine(t *testing.T) {
+func TestReadiness_IsTrackedPerEngine(t *testing.T) {
 	all := engines.All()
 	if len(all) < 2 {
 		t.Skip("needs at least two engines")
@@ -216,25 +190,19 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 
 	for engine, wantPort := range map[string]int{first.Name: 11434, second.Name: 1234} {
 		ready, port := p.Status(engine)
-		if !ready {
-			t.Errorf("%s facade is not ready", engine)
-		}
-		if port != wantPort {
-			t.Errorf("%s facade port = %d, want %d", engine, port, wantPort)
-		}
-		if p.ReadyParams(engine) == nil {
-			t.Errorf("%s facade has no replayable ready payload", engine)
-		}
+		assert.True(t, ready, "engine %s must be ready", engine)
+		assert.Equal(t, wantPort, port, "engine %s facade port", engine)
+		assert.NotNil(t, p.ReadyParams(engine), "engine %s ready params", engine)
 	}
 
 	// An engine that never announced itself is not ready, rather than
 	// inheriting a sibling's port.
-	if ready, port := p.Status("vllm"); ready || port != 0 {
-		t.Errorf("an unannounced engine reported ready=%v port=%d", ready, port)
-	}
+	ready, port := p.Status("vllm")
+	assert.False(t, ready, "an unannounced engine reported ready")
+	assert.Equal(t, 0, port, "an unannounced engine reported a port")
 }
 
-func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
+func TestBrokerFacadeMethods_FollowEngineProfile(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			client, server := net.Pipe()
@@ -265,54 +233,39 @@ func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
 				}()
 				frames := make([]*Message, 0, frameCount)
 				for range frameCount {
-					if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-						t.Fatalf("set read deadline: %v", err)
-					}
+					require.NoError(t, client.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 					frame, err := reader.Read()
-					if err != nil {
-						t.Fatalf("read %s frame: %v", method, err)
-					}
+					require.NoError(t, err, "read %s frame", method)
 					frames = append(frames, frame)
 				}
 				select {
 				case <-done:
 				case <-time.After(2 * time.Second):
-					t.Fatalf("%s handler did not finish after %d frame(s)", method, frameCount)
+					require.FailNowf(t, "handler did not finish", "%s after %d frame(s)", method, frameCount)
 				}
 				return frames
 			}
 
 			statusFrames := call("get-status", 1)
 			var status ProxyStatusResult
-			if err := json.Unmarshal(statusFrames[0].Result, &status); err != nil {
-				t.Fatalf("decode status: %v", err)
-			}
-			if !status.Ready || status.Port != profile.FacadePort {
-				t.Fatalf("status = %+v, want ready on %d", status, profile.FacadePort)
-			}
+			require.NoError(t, json.Unmarshal(statusFrames[0].Result, &status), "decode status")
+			assert.True(t, status.Ready)
+			assert.Equal(t, profile.FacadePort, status.Port)
 
 			subscribeFrames := call("subscribe", 2)
 			var subscribed SubscriptionResult
-			if err := json.Unmarshal(subscribeFrames[0].Result, &subscribed); err != nil || !subscribed.Subscribed {
-				t.Fatalf("subscribe response = %s, error %v", subscribeFrames[0].Result, err)
-			}
-			if subscribeFrames[1].Method != profile.ComponentName()+":ready" {
-				t.Fatalf("second subscribe frame = %q, want ready baseline after response", subscribeFrames[1].Method)
-			}
-			if string(subscribeFrames[1].Params) != string(payload) {
-				t.Fatalf("ready baseline = %s, want %s", subscribeFrames[1].Params, payload)
-			}
+			require.NoError(t, json.Unmarshal(subscribeFrames[0].Result, &subscribed), "subscribe response")
+			assert.True(t, subscribed.Subscribed)
+			assert.Equal(t, profile.ComponentName()+":ready", subscribeFrames[1].Method, "ready baseline after response")
+			assert.Equal(t, string(payload), string(subscribeFrames[1].Params), "ready baseline")
 
 			unsubscribeFrames := call("unsubscribe", 1)
-			if err := json.Unmarshal(unsubscribeFrames[0].Result, &subscribed); err != nil || subscribed.Subscribed {
-				t.Fatalf("unsubscribe response = %s, error %v", unsubscribeFrames[0].Result, err)
-			}
+			require.NoError(t, json.Unmarshal(unsubscribeFrames[0].Result, &subscribed), "unsubscribe response")
+			assert.False(t, subscribed.Subscribed)
 			b.proxyMu.Lock()
 			stillSubscribed := b.engineProxySubscribed(profile)
 			b.proxyMu.Unlock()
-			if stillSubscribed {
-				t.Fatal("facade remained subscribed after unsubscribe")
-			}
+			assert.False(t, stillSubscribed, "facade remained subscribed after unsubscribe")
 		})
 	}
 }
@@ -321,7 +274,7 @@ func TestBrokerOwnedFacadeMethodsFollowTheProfile(t *testing.T) {
 // has to track a subscription per engine. A single id per process let the second
 // facade's subscribe replace the first's, which unsubscribed a live facade and
 // left that engine with a routing set that never updated again.
-func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
+func TestSubscriptions_AreTrackedPerEngine(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -344,9 +297,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 		params, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{service},
 		})
-		if err != nil {
-			t.Fatalf("marshal subscribe for %s: %v", engine, err)
-		}
+		require.NoError(t, err, "marshal subscribe for %s", engine)
 		p.handleSubscribe(engine, params)
 	}
 
@@ -356,18 +307,11 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	if len(p.subIDs) != len(engines.All()) {
-		t.Fatalf("tracked %d subscriptions for %d engines: %v",
-			len(p.subIDs), len(engines.All()), p.subIDs)
-	}
+	require.Len(t, p.subIDs, len(engines.All()), "tracked")
 	seen := map[int]string{}
 	for engine, id := range p.subIDs {
-		if id == 0 {
-			t.Errorf("engine %q has subscription id 0", engine)
-		}
-		if other, dup := seen[id]; dup {
-			t.Errorf("engines %q and %q share subscription id %d", engine, other, id)
-		}
+		assert.NotEqual(t, 0, id, "engine (%v)", engine)
+		assert.NotContains(t, seen, id, "engine %s reused a subscription ID", engine)
 		seen[id] = engine
 	}
 }
@@ -375,7 +319,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 // A facade re-subscribing must drop only its own prior registration. Dropping
 // every one would silence the other engines, and dropping none would double-feed
 // this one.
-func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
+func TestResubscribe_ReplacesOnlyThatEnginesSubscription(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -403,9 +347,7 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 		raw, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{e.DiscoveryService},
 		})
-		if err != nil {
-			t.Fatalf("marshal subscribe: %v", err)
-		}
+		require.NoError(t, err, "marshal subscribe")
 		return raw
 	}
 
@@ -420,78 +362,29 @@ func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	if p.subIDs[first.Name] == firstID {
-		t.Errorf("re-subscribe kept %s's original id %d, so it is now double-fed",
-			first.Name, firstID)
-	}
-	if p.subIDs[second.Name] != secondID {
-		t.Errorf("re-subscribing %s changed %s's id from %d to %d",
-			first.Name, second.Name, secondID, p.subIDs[second.Name])
-	}
+	assert.NotEqual(t, firstID, p.subIDs[first.Name], "re-subscribe kept %s's original ID, so it is now double-fed", first.Name)
+	assert.Equal(t, secondID, p.subIDs[second.Name], "re-subscribing %s changed %s's ID", first.Name, second.Name)
 }
 
 // The read pump reports ready and wires subscriptions by matching bare method
 // names, so it has to see through the address. An unaddressed notification is
 // process-scoped and passes through untouched.
-func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		profile engineProxyProfile
-		method  string
-		want    string
-		ok      bool
-	}{
-		{
-			name:    "own address is stripped",
-			profile: ollamaProxyProfile,
-			method:  ollamaProxyProfile.addressed("ready"),
-			want:    "ready",
-			ok:      true,
-		},
-		{
-			// forwardProxyProcessNotification routes by engine before this
-			// reader sees anything, so reaching it with another engine's
-			// address means addressing broke. Forwarding it would file one
-			// engine's event under another.
-			name:    "another engine's address is dropped",
-			profile: ollamaProxyProfile,
-			method:  lmstudioProxyProfile.addressed("ready"),
-			ok:      false,
-		},
-		{
-			name:    "process-scoped method passes through",
-			profile: ollamaProxyProfile,
-			method:  "workload:started",
-			want:    "workload:started",
-			ok:      true,
-		},
-		{
-			// The errors relay matches bare names, so an addressed error has to
-			// come out as errors:report and not as ollama:errors:report.
-			name:    "addressed error becomes a bare errors method",
-			profile: ollamaProxyProfile,
-			method:  ollamaProxyProfile.addressed(methodErrorsReport),
-			want:    methodErrorsReport,
-			ok:      true,
-		},
-		{
-			name:    "unaddressed error is untouched",
-			profile: lmstudioProxyProfile,
-			method:  methodErrorsReport,
-			want:    methodErrorsReport,
-			ok:      true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := facadeMethodFor(tc.profile, tc.method)
-			if ok != tc.ok {
-				t.Fatalf("facadeMethodFor(%s, %q) ok = %v, want %v",
-					tc.profile.Name, tc.method, ok, tc.ok)
-			}
-			if ok && got != tc.want {
-				t.Fatalf("facadeMethodFor(%s, %q) = %q, want %q",
-					tc.profile.Name, tc.method, got, tc.want)
+func TestFacadeMethodFor_StripsOnlyItsOwnEngine(t *testing.T) {
+	test := func(name string, profile engineProxyProfile, method, want string, wantOK bool) {
+		t.Run(name, func(t *testing.T) {
+			got, ok := facadeMethodFor(profile, method)
+			require.Equal(t, wantOK, ok)
+			if ok {
+				require.Equal(t, want, got)
 			}
 		})
 	}
+	test("own address is stripped", ollamaProxyProfile, ollamaProxyProfile.addressed("ready"), "ready", true)
+	// Another engine's address means routing broke: forwarding would file one
+	// engine's event under another.
+	test("another engine's address is dropped", ollamaProxyProfile, lmstudioProxyProfile.addressed("ready"), "", false)
+	test("process-scoped method passes through", ollamaProxyProfile, "workload:started", "workload:started", true)
+	// The errors relay matches bare names, so an addressed error must come out bare.
+	test("addressed error becomes a bare errors method", ollamaProxyProfile, ollamaProxyProfile.addressed(methodErrorsReport), methodErrorsReport, true)
+	test("unaddressed error is untouched", lmstudioProxyProfile, methodErrorsReport, methodErrorsReport, true)
 }

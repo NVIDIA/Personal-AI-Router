@@ -14,6 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 	"nvpair-tui/rpc"
 )
@@ -22,7 +25,7 @@ import (
 // the tick, is what schedules the next poll, so a reply from a previous visit
 // to the same node would start a second chain alongside the current one and
 // double the poll rate on every close-and-reopen.
-func TestTelemetryReplyIsGenerationScoped(t *testing.T) {
+func TestTelemetryReply_IsGenerationScoped(t *testing.T) {
 	node := nodeRow{key: "n1", name: "n1", address: "10.0.0.4", port: 14318}
 	first := newNodeDetail(nil, node)
 	second := newNodeDetail(nil, node)
@@ -33,48 +36,37 @@ func TestTelemetryReplyIsGenerationScoped(t *testing.T) {
 		nodeKey: node.key, gen: first.telemetryGen,
 		telemetry: nodeTelemetry{TelemetryValid: true},
 	})
-	if cmd != nil {
-		t.Error("a superseded chain's reply scheduled another poll; the chain will double")
-	}
+	assert.Nil(t, cmd, "a superseded chain's reply scheduled another poll; the chain will double")
 
 	// Its own reply does continue the chain.
 	cmd, _ = second.update(nodeTelemetryMsg{
 		nodeKey: node.key, gen: second.telemetryGen,
 		telemetry: nodeTelemetry{TelemetryValid: true},
 	})
-	if cmd == nil {
-		t.Error("the screen's own reply did not schedule the next poll; telemetry stops")
-	}
+	assert.NotNil(t, cmd, "the screen's own reply did not schedule the next poll; telemetry stops")
 }
 
 // TestTelemetryStartsWhenAnAddressArrivesLate checks a node opened before
 // discovery resolved it still gets telemetry. Nothing schedules a tick when
 // there is nothing to poll, and the reply is what continues the chain, so
 // without an explicit restart the panel read "unavailable" for the whole visit.
-func TestTelemetryStartsWhenAnAddressArrivesLate(t *testing.T) {
+func TestTelemetry_StartsWhenAnAddressArrivesLate(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{key: "peer", name: "peer"}) // no address yet
 	d.SetSize(100, 30)
 
-	if cmd := d.telemetryCmd(); cmd != nil {
-		t.Fatal("polled a node with no address")
-	}
-	if d.telemetryRunning {
-		t.Fatal("claims a chain is running with nothing to poll")
-	}
+	require.Nil(t, d.telemetryCmd(), "polled a node with no address")
+	require.False(t, d.telemetryRunning, "claims a chain is running with nothing to poll")
 
-	params, _ := json.Marshal([]availableNode{{
+	params, err := json.Marshal([]availableNode{{
 		HostUUID: "peer", Name: "peer", IPAddress: "10.0.0.9", Port: 14318,
 	}})
+	require.NoError(t, err)
 	cmd := d.handleNotification(&rpc.Message{
 		Method: "discovery:nodes-changed", Params: params,
 	})
 
-	if cmd == nil {
-		t.Error("an address arriving did not start the telemetry chain")
-	}
-	if d.node.address != "10.0.0.9" {
-		t.Errorf("address = %q, want the one discovery reported", d.node.address)
-	}
+	assert.NotNil(t, cmd, "an address arriving did not start the telemetry chain")
+	assert.Equal(t, "10.0.0.9", d.node.address, "address discovery reported")
 }
 
 // TestTelemetryChainsAreGenerationScoped is the regression guard for polling
@@ -82,137 +74,104 @@ func TestTelemetryStartsWhenAnAddressArrivesLate(t *testing.T) {
 // re-opening a node's detail screen left the old chain's tick in flight; keyed
 // on the node alone it was accepted and extended, and every re-open added
 // another chain polling the same endpoint forever.
-func TestTelemetryChainsAreGenerationScoped(t *testing.T) {
+func TestTelemetryChains_AreGenerationScoped(t *testing.T) {
 	node := nodeRow{key: "n1", name: "n1", address: "10.0.0.4", port: 14318}
 
 	first := newNodeDetail(nil, node)
 	second := newNodeDetail(nil, node)
-	if first.telemetryGen == second.telemetryGen {
-		t.Fatal("two detail screens share a chain id, so neither can retire the other's ticks")
-	}
+	require.NotEqual(t, first.telemetryGen, second.telemetryGen, "two detail screens share a chain id, so neither can retire the other's ticks")
 
 	// The newer screen ignores the older chain's tick.
-	if cmd, _ := second.update(nodeTelemetryTickMsg{
+	cmd, _ := second.update(nodeTelemetryTickMsg{
 		nodeKey: node.key, gen: first.telemetryGen,
-	}); cmd != nil {
-		t.Error("a superseded chain's tick was extended; polling chains will accumulate")
-	}
+	})
+	assert.Nil(t, cmd, "a superseded chain's tick was extended; polling chains will accumulate")
 
 	// And still continues its own.
-	if cmd, _ := second.update(nodeTelemetryTickMsg{
+	cmd, _ = second.update(nodeTelemetryTickMsg{
 		nodeKey: node.key, gen: second.telemetryGen,
-	}); cmd == nil {
-		t.Error("the screen's own tick did not continue its chain")
-	}
+	})
+	assert.NotNil(t, cmd, "the screen's own tick did not continue its chain")
 }
 
 // TestPollTelemetryWalksEveryAddress checks the poll tries a node's other
 // published addresses. A multi-homed node's first address may be a link this
 // machine cannot reach, and giving up on it reported the node as having no
 // telemetry at all.
-func TestPollTelemetryWalksEveryAddress(t *testing.T) {
+func TestPollTelemetry_WalksEveryAddress(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"telemetryValid":true}`))
+		_, err := w.Write([]byte(`{"telemetryValid":true}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
 	host, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
-	if err != nil {
-		t.Fatalf("split test server address: %v", err)
-	}
-	p, _ := strconv.Atoi(port)
+	require.NoError(t, err, "split test server address")
+	p, err := strconv.Atoi(port)
+	require.NoError(t, err)
 
 	// An unreachable address first — the reserved TEST-NET-1 block — then the
 	// one that answers.
 	cmd := pollTelemetryCmd("n1", 1, []string{"192.0.2.1", host}, p, "")
 	msg, ok := cmd().(nodeTelemetryMsg)
-	if !ok {
-		t.Fatalf("got %T, want nodeTelemetryMsg", cmd())
-	}
-	if msg.err != nil {
-		t.Errorf("poll failed despite a reachable second address: %v", msg.err)
-	}
-	if !msg.telemetry.TelemetryValid {
-		t.Error("no telemetry decoded from the address that answered")
-	}
+	require.True(t, ok, "poll must produce nodeTelemetryMsg")
+	require.NoError(t, msg.err, "poll failed despite a reachable second address")
+	assert.True(t, msg.telemetry.TelemetryValid, "no telemetry decoded from the address that answered")
 }
 
 // TestNodeInfoURL pins the endpoint shape, including the fallback for an entry
 // whose node-info port is not known yet.
-func TestNodeInfoURL(t *testing.T) {
-	if got := nodeInfoURL("10.0.0.5", 14318); got != "http://10.0.0.5:14318/v1/node-info" {
-		t.Errorf("url = %q", got)
-	}
-	if got := nodeInfoURL("10.0.0.5", 0); !strings.Contains(got, strconv.Itoa(nodeInfoDefaultPort)) {
-		t.Errorf("url = %q, want the default port when none is known", got)
-	}
+func TestNodeInfoURL_UsesNodeAddressAndServicePort(t *testing.T) {
+	assert.Equal(t, "http://10.0.0.5:14318/v1/node-info", nodeInfoURL("10.0.0.5", 14318))
+	assert.Contains(t, nodeInfoURL("10.0.0.5", 0), strconv.Itoa(nodeInfoDefaultPort), "default port when none is known")
 	// An IPv6 literal has to be bracketed or the port parses as part of the host.
-	if got := nodeInfoURL("fe80::1", 14318); !strings.Contains(got, "[fe80::1]:14318") {
-		t.Errorf("url = %q, want a bracketed IPv6 host", got)
-	}
+	assert.Contains(t, nodeInfoURL("fe80::1", 14318), "[fe80::1]:14318", "bracketed IPv6 host")
 }
 
 // TestTelemetryHostUsesLoopbackForSelf checks this machine is polled over
 // loopback: its advertised address may be a link only peers can reach.
-func TestTelemetryHostsUseLoopbackForSelf(t *testing.T) {
-	if got := telemetryHosts(nodeRow{self: true, address: "10.0.0.5"}); len(got) != 1 || got[0] != nodeInfoSelfHost {
-		t.Errorf("self hosts = %v, want just %q", got, nodeInfoSelfHost)
-	}
-	if got := telemetryHosts(nodeRow{address: "10.0.0.5"}); len(got) != 1 || got[0] != "10.0.0.5" {
-		t.Errorf("remote hosts = %v", got)
-	}
+func TestTelemetryHosts_UseLoopbackForLocalNode(t *testing.T) {
+	assert.Equal(t, []string{nodeInfoSelfHost}, telemetryHosts(nodeRow{self: true, address: "10.0.0.5"}))
+	assert.Equal(t, []string{"10.0.0.5"}, telemetryHosts(nodeRow{address: "10.0.0.5"}))
 }
 
 // TestPollTelemetryDecodesResponse exercises the real HTTP path against a stub
 // serving the node-info contract, so the JSON tags stay pinned to the producer's
 // (notably the capitalised "GPUs" key).
-func TestPollTelemetryDecodesResponse(t *testing.T) {
+func TestPollTelemetry_DecodesResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != nodeInfoPath {
-			t.Errorf("polled %q, want %q", r.URL.Path, nodeInfoPath)
-		}
+		assert.Equal(t, nodeInfoPath, r.URL.Path, "polled endpoint")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		_, err := w.Write([]byte(`{
 			"GPUs":[{"name":"Test GPU","vram_bytes":8589934592,"vram_used_bytes":1073741824,"utilization_percent":42}],
 			"cpu":{"name":"Test CPU","cores":8,"utilization_percent":13},
 			"memory":{"total_bytes":34359738368,"used_bytes":8589934592},
 			"telemetryValid":true,
 			"msSince":120
 		}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
 	host, port := splitTestServer(t, srv.URL)
 	msg, ok := pollTelemetryCmd("key", 1, []string{host}, port, "")().(nodeTelemetryMsg)
-	if !ok {
-		t.Fatal("poll produced the wrong message type")
+	require.True(t, ok, "poll produced the wrong message type")
+	require.NoError(t, msg.err, "poll failed")
+	assert.Equal(t, "key", msg.nodeKey, "key the poll was asked for")
+	require.Len(t, msg.telemetry.GPUs, 1, "check the \"GPUs\" JSON key")
+	assert.Equal(t, uint32(42), msg.telemetry.GPUs[0].UtilizationPercent)
+	if assert.NotNil(t, msg.telemetry.CPU, "CPU block did not decode") {
+		assert.Equal(t, uint32(8), msg.telemetry.CPU.Cores, "CPU block did not decode")
 	}
-	if msg.err != nil {
-		t.Fatalf("poll failed: %v", msg.err)
+	if assert.NotNil(t, msg.telemetry.Memory, "memory block did not decode") {
+		assert.NotZero(t, msg.telemetry.Memory.TotalBytes, "memory block did not decode")
 	}
-	if msg.nodeKey != "key" {
-		t.Errorf("nodeKey = %q, want the key it was asked for", msg.nodeKey)
-	}
-	if len(msg.telemetry.GPUs) != 1 {
-		t.Fatalf("decoded %d GPUs, want 1 — check the \"GPUs\" JSON key", len(msg.telemetry.GPUs))
-	}
-	if got := msg.telemetry.GPUs[0].UtilizationPercent; got != 42 {
-		t.Errorf("GPU utilization = %d, want 42", got)
-	}
-	if msg.telemetry.CPU == nil || msg.telemetry.CPU.Cores != 8 {
-		t.Error("CPU block did not decode")
-	}
-	if msg.telemetry.Memory == nil || msg.telemetry.Memory.TotalBytes == 0 {
-		t.Error("memory block did not decode")
-	}
-	if !msg.telemetry.TelemetryValid {
-		t.Error("telemetryValid did not decode")
-	}
+	assert.True(t, msg.telemetry.TelemetryValid, "telemetryValid did not decode")
 }
 
 // TestPollTelemetryReportsFailure checks a non-200 is an error rather than being
 // decoded as an empty reading, which would render as a machine with no hardware.
-func TestPollTelemetryReportsFailure(t *testing.T) {
+func TestPollTelemetry_ReportsFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -220,170 +179,135 @@ func TestPollTelemetryReportsFailure(t *testing.T) {
 
 	host, port := splitTestServer(t, srv.URL)
 	msg := pollTelemetryCmd("key", 1, []string{host}, port, "")().(nodeTelemetryMsg)
-	if msg.err == nil {
-		t.Error("a 403 was treated as a successful reading")
-	}
+	assert.Error(t, msg.err, "a 403 was treated as a successful reading")
 }
 
 // TestPollTelemetrySkipsUnknownAddress checks a node with no address issues no
 // request at all.
-func TestPollTelemetrySkipsUnknownAddress(t *testing.T) {
-	if cmd := pollTelemetryCmd("key", 1, nil, 14318, ""); cmd != nil {
-		t.Error("polled a node with no known address")
-	}
+func TestPollTelemetry_SkipsUnknownAddress(t *testing.T) {
+	assert.Nil(t, pollTelemetryCmd("key", 1, nil, 14318, ""), "polled a node with no known address")
 }
 
 // TestTelemetryFromAnotherMachineIsRefused is the regression guard for an
 // address that has passed to another machine. Its readings were shown under the
 // name of the machine that used to hold it.
-func TestTelemetryFromAnotherMachineIsRefused(t *testing.T) {
+func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
+		_, err := w.Write([]byte(`{"telemetryValid":true,"hostUuid":"uuid-b"}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 	host, port := splitTestServer(t, srv.URL)
 
-	if msg := pollTelemetryCmd("uuid-a", 1, []string{host}, port, "uuid-a")().(nodeTelemetryMsg); msg.err == nil {
-		t.Error("another machine's readings were accepted for this one")
-	}
-	if msg := pollTelemetryCmd("uuid-b", 1, []string{host}, port, "uuid-b")().(nodeTelemetryMsg); msg.err != nil {
-		t.Errorf("the machine's own readings were refused: %v", msg.err)
-	}
+	assert.Error(t, pollTelemetryCmd("uuid-a", 1, []string{host}, port, "uuid-a")().(nodeTelemetryMsg).err, "another machine's readings were accepted for this one")
+	require.NoError(t, pollTelemetryCmd("uuid-b", 1, []string{host}, port, "uuid-b")().(nodeTelemetryMsg).err, "the machine's own readings were refused")
 	// A row with nothing to check against takes whichever machine answers.
-	if msg := pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg); msg.err != nil {
-		t.Errorf("an unchecked poll was refused: %v", msg.err)
-	}
+	require.NoError(t, pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg).err, "an unchecked poll was refused")
 
-	if got := telemetryIdentity(nodeRow{key: "uuid-a"}); got != "uuid-a" {
-		t.Errorf("a discovered node is checked against %q, want its UUID", got)
+	assert.Equal(t, "uuid-a", telemetryIdentity(nodeRow{key: "uuid-a"}), "a discovered node is checked against its UUID")
+	test := func(name string, row nodeRow) {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, telemetryIdentity(row), "row has nothing to check")
+		})
 	}
-	for _, row := range []nodeRow{{key: "manual:1"}, {key: "name:lab"}, {key: "uuid-self", self: true}} {
-		if got := telemetryIdentity(row); got != "" {
-			t.Errorf("%q is checked against %q, but has nothing to check", row.key, got)
-		}
-	}
+	test("manual entry", nodeRow{key: "manual:1"})
+	test("name-only entry", nodeRow{key: "name:lab"})
+	test("self entry", nodeRow{key: "uuid-self", self: true})
 }
 
 // TestTelemetryTriesTheAddressThatAnswered is the regression guard for a poll
 // that walked every unreachable address, each to its full timeout, before the
 // one that had answered last time.
-func TestTelemetryTriesTheAddressThatAnswered(t *testing.T) {
+func TestTelemetry_TriesTheAddressThatAnswered(t *testing.T) {
 	addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
-	if got := strings.Join(preferAddress(addresses, "10.0.0.3"), ","); got != "10.0.0.3,10.0.0.1,10.0.0.2" {
-		t.Errorf("order = %s, want the address that answered first", got)
+	assert.Equal(t, []string{"10.0.0.3", "10.0.0.1", "10.0.0.2"}, preferAddress(addresses, "10.0.0.3"), "address that answered first")
+	test := func(name, last string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, preferAddress(addresses, last), "node's own order")
+		})
 	}
-	for _, last := range []string{"", "10.0.0.1", "10.9.9.9"} {
-		if got := strings.Join(preferAddress(addresses, last), ","); got != "10.0.0.1,10.0.0.2,10.0.0.3" {
-			t.Errorf("after %q the order = %s, want the node's own", last, got)
-		}
-	}
-	if strings.Join(addresses, ",") != "10.0.0.1,10.0.0.2,10.0.0.3" {
-		t.Error("the node's own address list was reordered in place")
-	}
+	test("no address answered", "")
+	test("first address answered", "10.0.0.1")
+	test("unlisted address answered", "10.9.9.9")
+	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, addresses, "the node's own address list was reordered in place")
 
 	d := newNodeDetail(nil, nodeRow{key: "peer", addresses: addresses, presence: presenceOnline})
 	d.update(nodeTelemetryMsg{nodeKey: "peer", gen: d.telemetryGen, address: "10.0.0.3"})
-	if d.telemetryAddress != "10.0.0.3" {
-		t.Errorf("the address that answered was not kept: %q", d.telemetryAddress)
-	}
+	assert.Equal(t, "10.0.0.3", d.telemetryAddress, "address that answered is kept")
 	d.update(nodeTelemetryMsg{nodeKey: "peer", gen: d.telemetryGen, err: errors.New("unreachable")})
-	if d.telemetryAddress != "" {
-		t.Error("an address that stopped answering was still tried first")
-	}
+	assert.Empty(t, d.telemetryAddress, "an address that stopped answering was still tried first")
 }
 
 // TestTelemetrySummaryOmitsUtilizationWhenStale checks an unusable sample does
 // not print 0%, which would read as an idle GPU.
-func TestTelemetrySummaryOmitsUtilizationWhenStale(t *testing.T) {
+func TestTelemetrySummary_OmitsUtilizationWhenStale(t *testing.T) {
 	tel := nodeTelemetry{
 		GPUs:           []noderec.GPUInfo{{Name: "GPU", VramBytes: 1 << 30, UtilizationPercent: 0}},
 		TelemetryValid: false,
 	}
 	line := strings.Join(tel.summary(), "\n")
-	if strings.Contains(line, "0%") {
-		t.Errorf("stale sample rendered as 0%% utilization: %q", line)
-	}
-	if !strings.Contains(line, "--") {
-		t.Errorf("stale sample should read as unknown: %q", line)
-	}
+	assert.NotContains(t, line, "0%", "stale sample rendered as zero utilization")
+	assert.Contains(t, line, "--", "stale sample should read as unknown")
 
 	tel.TelemetryValid = true
 	tel.GPUs[0].UtilizationPercent = 55
-	if got := strings.Join(tel.summary(), "\n"); !strings.Contains(got, "55%") {
-		t.Errorf("valid sample did not render utilization: %q", got)
-	}
+	assert.Contains(t, strings.Join(tel.summary(), "\n"), "55%", "valid sample renders utilization")
 }
 
-func TestTelemetrySummaryEmpty(t *testing.T) {
-	if lines := (nodeTelemetry{}).summary(); len(lines) != 0 {
-		t.Errorf("empty telemetry produced %d lines", len(lines))
-	}
+func TestTelemetrySummary_HandlesMissingMetrics(t *testing.T) {
+	assert.Empty(t, (nodeTelemetry{}).summary())
 }
 
-func TestHumanBytes(t *testing.T) {
-	cases := map[uint64]string{
-		0:              "0 B",
-		512:            "512 B",
-		1024:           "1.0 KiB",
-		1 << 30:        "1.0 GiB",
-		8 * (1 << 30):  "8.0 GiB",
-		32 * (1 << 30): "32.0 GiB",
-		// At three digits the decimal stops earning its place.
-		128 * (1 << 30): "128 GiB",
-		4 * (1 << 40):   "4.0 TiB",
+func TestHumanBytes_FormatsByteCounts(t *testing.T) {
+	test := func(name string, in uint64, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, humanBytes(in))
+		})
 	}
-	for in, want := range cases {
-		if got := humanBytes(in); got != want {
-			t.Errorf("humanBytes(%d) = %q, want %q", in, got, want)
-		}
-	}
+	test("zero bytes", 0, "0 B")
+	test("bytes below one KiB", 512, "512 B")
+	test("one KiB", 1024, "1.0 KiB")
+	test("one GiB", 1<<30, "1.0 GiB")
+	test("eight GiB", 8*(1<<30), "8.0 GiB")
+	test("thirty-two GiB", 32*(1<<30), "32.0 GiB")
+	// At three digits the decimal stops earning its place.
+	test("three digits omit the decimal", 128*(1<<30), "128 GiB")
+	test("four TiB", 4*(1<<40), "4.0 TiB")
 }
 
 // TestDetailHardwareUnavailableWhenPollFails checks the panel is explicit rather
 // than silently blank when a node cannot be reached.
-func TestDetailHardwareUnavailableWhenPollFails(t *testing.T) {
+func TestDetailHardware_ReportsUnavailableAfterPollFailure(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{key: "k", name: "peer", presence: presenceOffline})
-	if got := d.hardwareBlock(); !strings.Contains(got, "not reachable") {
-		t.Errorf("hardware block = %q, want an explanation", got)
-	}
+	assert.Contains(t, d.hardwareBlock(), "not reachable", "hardware block explains the failure")
 
 	d.node.presence = presenceOnline
-	if got := d.hardwareBlock(); !strings.Contains(got, "unavailable") {
-		t.Errorf("hardware block = %q", got)
-	}
+	assert.Contains(t, d.hardwareBlock(), "unavailable")
 
 	d.telemetryOK = true
 	d.telemetry = nodeTelemetry{
 		GPUs:           []noderec.GPUInfo{{Name: "Test GPU", VramBytes: 1 << 30, UtilizationPercent: 7}},
 		TelemetryValid: true,
 	}
-	if got := d.hardwareBlock(); !strings.Contains(got, "Test GPU") {
-		t.Errorf("hardware block = %q, want the GPU name", got)
-	}
+	assert.Contains(t, d.hardwareBlock(), "Test GPU", "hardware block includes GPU name")
 }
 
 // TestDetailIgnoresTelemetryForOtherNodes checks a late reply for a node the
 // operator has navigated away from does not overwrite the current one.
-func TestDetailIgnoresTelemetryForOtherNodes(t *testing.T) {
+func TestDetail_IgnoresTelemetryForOtherNodes(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{key: "current", self: true})
 	d.update(nodeTelemetryMsg{
 		nodeKey: "stale", gen: d.telemetryGen,
 		telemetry: nodeTelemetry{TelemetryValid: true},
 	})
-	if d.telemetryOK {
-		t.Error("accepted a reading addressed to a different node")
-	}
+	assert.False(t, d.telemetryOK, "accepted a reading addressed to a different node")
 }
 
 func splitTestServer(t *testing.T, raw string) (string, int) {
 	t.Helper()
 	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse test server url: %v", err)
-	}
+	require.NoError(t, err, "parse test server url")
 	port, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
+	require.NoError(t, err, "parse test server port")
 	return u.Hostname(), port
 }

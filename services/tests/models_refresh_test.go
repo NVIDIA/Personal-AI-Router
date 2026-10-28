@@ -22,6 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/grandcat/zeroconf"
 
 	"nvpair-shared/jsonrpc"
@@ -41,7 +44,8 @@ func (s *swapModels) set(body map[string]any) {
 	s.mu.Unlock()
 }
 
-func (s *swapModels) handler() http.HandlerFunc {
+func (s *swapModels) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -50,33 +54,27 @@ func (s *swapModels) handler() http.HandlerFunc {
 		s.mu.Lock()
 		body := s.body
 		s.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(body)
+		assert.NoError(t, json.NewEncoder(w).Encode(body))
 	}
 }
 
-func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
+func TestModelsPeriodicRefresh_ConvergesWithoutMDNSChange(t *testing.T) {
 	// Start with an empty inventory (engine present but serving no models yet).
 	stub := &swapModels{}
 	stub.set(map[string]any{"models": []string{}})
-	srv := httptest.NewServer(stub.handler())
+	srv := httptest.NewServer(stub.handler(t))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse stub url: %v", err)
-	}
+	require.NoError(t, err, "parse stub url")
 	emPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("stub port: %v", err)
-	}
+	require.NoError(t, err, "stub port")
 
 	const instance = "xproc-models-refresh-1"
 	// Advertise em=<port> + ip=127.0.0.1 once and never touch the record again,
 	// so the only thing that changes during the test is the /v1/models body.
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
 	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	if err != nil {
-		t.Fatalf("register %s: %v", instance, err)
-	}
+	require.NoError(t, err, "register (%v)", instance)
 	t.Cleanup(zsrv.Shutdown)
 	t.Logf("advertising %s @ %s (em=%d), models initially empty", instance, nodeRecordService, emPort)
 
@@ -145,22 +143,21 @@ func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, ins
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed unexpectedly")
-			}
+			require.True(t, ok, "broker stream closed unexpectedly")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
-				if json.Unmarshal(msg.Result, &res) == nil {
-					if n, found := findNode(res.Nodes, instance); found && pred(n) {
-						return
-					}
+				require.NoError(t, json.Unmarshal(msg.Result, &res))
+
+				if n, found := findNode(res.Nodes, instance); found && pred(n) {
+					return
 				}
+
 			}
 		case <-ticker.C:
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
 		case <-deadline:
-			t.Fatalf("timed out waiting for node %q to match predicate", instance)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for node %q to match predicate", instance))
 		}
 	}
 }
