@@ -261,6 +261,9 @@ type Action struct {
 	// the disk and needs no running engine, so an engine that serves one model
 	// per process can still show everything it could be switched to.
 	HFCache *ActionHFCache `json:"hf_cache,omitempty"`
+	// LaunchModel makes the action switch the model an engine is serving, for an
+	// engine that has no load call because the model is a launch argument.
+	LaunchModel *ActionLaunchModel `json:"launch_model,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -323,6 +326,13 @@ type ActionRemovePath struct {
 // which the ordinary result extractor reads with array "data" and field "id".
 type ActionHFCache struct {
 	Dir string `json:"dir"`
+}
+
+// ActionLaunchModel names the launch flag that selects the engine's model, such
+// as "--model". The action takes {"model": "<id>"}, writes it into the saved
+// launch settings and restarts a running engine on it.
+type ActionLaunchModel struct {
+	Flag string `json:"flag"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -727,6 +737,19 @@ func (m *Manifest) Validate() error {
 		// process is spawned, the reply races the engine's own startup, and the
 		// caller can still be handed the pre-restart state. Fail at load rather
 		// than ship a guarantee the manifest cannot keep.
+		// launch_model rewrites the saved launch settings and restarts the engine,
+		// so every platform needs editable launch settings and a readiness probe
+		// for the same reason as restart_after.
+		if a.LaunchModel != nil {
+			for key, p := range m.Platforms {
+				if p.Runtime.EditableLaunch == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.editable_launch", name, key)
+				}
+				if p.Runtime.Ready == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.ready", name, key)
+				}
+			}
+		}
 		if a.RestartAfter {
 			for key, p := range m.Platforms {
 				if p.Runtime.Ready == nil {
@@ -895,6 +918,7 @@ func (a *Action) validate(name string) error {
 	hasCmd := len(a.Cmd) > 0
 	hasRemovePath := a.RemovePath != nil
 	hasHFCache := a.HFCache != nil
+	hasLaunchModel := a.LaunchModel != nil
 	kinds := 0
 	if hasHTTP {
 		kinds++
@@ -908,8 +932,17 @@ func (a *Action) validate(name string) error {
 	if hasHFCache {
 		kinds++
 	}
+	if hasLaunchModel {
+		kinds++
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, or hf_cache is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, or launch_model is required", name)
+	}
+	if hasLaunchModel {
+		flag := a.LaunchModel.Flag
+		if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+			return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+		}
 	}
 	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
 		return fmt.Errorf("action %q: hf_cache.dir is required", name)

@@ -238,7 +238,7 @@ probes.
 ### Actions
 
 Each action is a config-declared operation exposed over `engine:action`.
-Exactly one of `http`, `cmd`, `remove_path`, or `hf_cache`:
+Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
 
 - **`http`** — call the engine's loopback control API. The caller's
   `params` are sent as the JSON request body by default. Set
@@ -265,6 +265,16 @@ Exactly one of `http`, `cmd`, `remove_path`, or `hf_cache`:
   a check on file layout, not on whether the engine supports the architecture.
   A missing directory is an empty cache. Does **not** require the engine to be
   running.
+- **`launch_model`** — switch the model an engine serves, for an engine with no
+  load call because the model is a launch argument (vLLM). `launch_model.flag`
+  names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
+  Hugging Face id such as `org/name`; anything that could be read as a flag, a
+  path or a shell fragment is refused), writes it into the saved launch
+  settings exactly as the settings editor would, and restarts a running engine
+  on it. If the new model does not come up, the previous one is restored and the
+  error says so; a stopped engine only has its saved launch changed, and asking
+  for the model already in the launch arguments restarts nothing. Requires
+  `runtime.editable_launch` and `runtime.ready` on every platform.
 
 An optional **`result`** declares how `engine:models` extracts a normalized
 name list from the action's JSON response: `array` is the top-level array
@@ -409,8 +419,9 @@ path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
 is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),
 an action sets none or more than one of
-`http`/`cmd`/`remove_path`/`hf_cache`, an `hf_cache` action omits
-`dir`, a `remove_path` action omits `root` or
+`http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`, an `hf_cache` action omits
+`dir`, a `launch_model` flag is not a flag or a platform lacks
+`editable_launch` or `ready`, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
 both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or
