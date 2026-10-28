@@ -190,3 +190,21 @@ func TestServer_RejectsCompletionBeforeKeysAreDerived(t *testing.T) {
 	test("X25519", cryptosuiteX25519)
 	test("P-256", cryptosuiteP256)
 }
+
+// A node can answer discovery with a key-exchange response before negotiation
+// selects an algorithm and creates the server's private key. Rejecting that
+// response prevents a malformed pairing attempt from crashing the inviter.
+func TestServer_RejectsKeyExchangeBeforeNegotiation(t *testing.T) {
+	server := NewServer(PairingInfo{})
+	_, err := server.Start()
+	require.NoError(t, err)
+
+	out, err := server.Receive([]byte(`{"Type":3,"PKp":{},"Np":""}`))
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.True(t, out.Done)
+	assert.False(t, out.Success)
+	assert.Equal(t, StateUnregistered, server.State())
+}

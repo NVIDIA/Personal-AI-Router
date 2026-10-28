@@ -242,3 +242,21 @@ func TestPeer_RejectsMalformedJSON(t *testing.T) {
 	assert.True(t, out.Done)
 	assert.False(t, out.Success)
 }
+
+// A sender can skip negotiation after discovery. Reject its key-exchange
+// message before accessing the algorithm that negotiation would have selected.
+func TestPeer_RejectsKeyExchangeBeforeNegotiation(t *testing.T) {
+	peer := NewPeer(PairingInfo{})
+	discovery, err := peer.Receive([]byte(`{"Type":1}`))
+	require.NoError(t, err)
+	require.Nil(t, discovery.Err)
+
+	out, err := peer.Receive([]byte(`{"Type":3,"PKs":{},"Ns":""}`))
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.True(t, out.Done)
+	assert.False(t, out.Success)
+	assert.Equal(t, StateUnregistered, peer.State())
+}

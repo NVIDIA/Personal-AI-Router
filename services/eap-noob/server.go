@@ -207,6 +207,9 @@ func (s *Server) buildKeyExchangeRequest() (Outcome, error) {
 }
 
 func (s *Server) onKeyExchange(wm *wireMessage) (Outcome, error) {
+	if s.state != StateUnregistered || s.suite == nil || s.priv == nil {
+		return s.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
+	}
 	if err := s.checkPeerId(wm); err != nil {
 		return s.fail(ErrUnexpectedPeerIdentier, err.Error())
 	}

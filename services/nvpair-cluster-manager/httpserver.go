@@ -190,19 +190,25 @@ func (m *Manager) handlePairingInitial(w http.ResponseWriter, env *pairingEnvelo
 		return
 	}
 
-	sess.mu.Lock()
-	out, err := sess.peer.Receive(msg)
+	var completed *Invite
+	// Scope the lock so a panic releases it and notifications run after unlocking.
+	out, err := func() (eapnoob.Outcome, error) {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		out, err := sess.peer.Receive(msg)
+		if err != nil || out.Err != nil {
+			m.deleteSession(env.InviteID)
+			return out, err
+		}
+		if out.State == eapnoob.StateWaiting && !sess.invitedEmitted {
+			completed = m.prepareJoinerInitialComplete(env.InviteID, sess)
+		}
+		return out, nil
+	}()
 	if err != nil {
-		m.deleteSession(env.InviteID)
-		sess.mu.Unlock()
 		http.Error(w, "eap-noob: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	var completed *Invite
-	if out.State == eapnoob.StateWaiting && !sess.invitedEmitted {
-		completed = m.prepareJoinerInitialComplete(env.InviteID, sess)
-	}
-	sess.mu.Unlock()
 	if completed != nil {
 		m.onJoinerInitialComplete(completed, sess)
 	}

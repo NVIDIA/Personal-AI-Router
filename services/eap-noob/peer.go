@@ -176,6 +176,9 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 }
 
 func (p *Peer) onKeyExchangeRequest(wm *wireMessage) (Outcome, error) {
+	if p.state != StateUnregistered || p.suite == nil {
+		return p.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
+	}
 	jwk, err := rawToJWK(wm.PKs)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad PKs")
