@@ -193,7 +193,7 @@ func TestAddressedRequest_ReachesOnlyItsOwnFacade(t *testing.T) {
 	}
 
 	// An engine with no facade resolves to nothing rather than to a sibling.
-	assert.Nil(t, p.facadeFor("vllm"), "unknown engine resolved to the")
+	assert.Nil(t, p.facadeFor("nosuchengine"), "unknown engine resolved to the")
 	assert.Nil(t, p.facadeFor(""), "an unaddressed message resolved to the")
 }
 

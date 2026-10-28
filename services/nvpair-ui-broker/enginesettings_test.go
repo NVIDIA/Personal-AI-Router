@@ -48,7 +48,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 
 func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 4)
+	ports := make([]int, 5)
 	listeners := []net.Listener{}
 	for i := range ports {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -67,6 +67,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 		"ollama":   {ready: true, port: ports[1]},
 		"lmstudio": {ready: true, port: ports[2]},
 		"llamacpp": {ready: true, port: ports[3]},
+		"vllm":     {ready: true, port: ports[4]},
 	}}
 	for _, profile := range engineProxyProfiles {
 		h.b.setEngineProxyHandle(profile, proxy)

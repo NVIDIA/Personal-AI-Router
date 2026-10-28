@@ -214,14 +214,18 @@ func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {
 	test("hyphenated llama.cpp", "llama-cpp", "llamacpp")
 	test("dotted llama.cpp", "llama.cpp", "llamacpp")
 	test("other engine preserved", "vllm", "vllm")
+	test("unknown engine preserved", "nosuchengine", "nosuchengine")
 }
 
 // TestCatalogRejectsUnknownEngine checks an engine with no curated source errors
 // rather than returning an empty list that reads as "nothing available".
 func TestCatalog_RejectsUnknownEngine(t *testing.T) {
 	c := newCatalogService()
-	_, err := c.Catalog(context.Background(), "vllm", "linux", "amd64", "")
-	assert.Error(t, err, "unknown engine returned a catalog")
+	// vLLM is a known engine that deliberately has no curated catalog.
+	for _, engine := range []string{"vllm", "nosuchengine"} {
+		_, err := c.Catalog(context.Background(), engine, "linux", "amd64", "")
+		assert.Error(t, err, "%s returned a catalog", engine)
+	}
 }
 
 // TestNormalizeHFRowsMarksMLX checks Apple-only quantizations are labelled

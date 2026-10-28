@@ -133,6 +133,16 @@ var modelWires = map[string]modelWire{
 		"delete": modelOnly("delete_model"),
 		"pull":   modelOnly("pull_model"),
 	},
+	// vLLM serves one model per process and declares only list_models and
+	// loaded_models, so engine-manager refuses all four of these as undeclared
+	// actions. The spelling is still present so a caller gets that explicit
+	// refusal instead of this table's "no wire" error.
+	engines.NameVLLM: {
+		"load":   modelOnly("load_model"),
+		"unload": modelOnly("unload_model"),
+		"delete": modelOnly("delete_model"),
+		"pull":   modelOnly("pull_model"),
+	},
 }
 
 // downloadExamples show what a download name looks like for each engine. The
@@ -142,6 +152,7 @@ var downloadExamples = map[string]string{
 	engines.NameOllama:   "llama3.2",
 	engines.NameLMStudio: "lmstudio-community/Qwen3-8B-GGUF",
 	engines.NameLlamaCPP: "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+	engines.NameVLLM:     "Qwen/Qwen2.5-0.5B-Instruct",
 }
 
 // downloadPrompt is the placeholder for the download-by-name field, with an

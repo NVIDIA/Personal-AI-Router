@@ -1,0 +1,73 @@
+{
+  "$schema": "../manifest.schema.json",
+  "engine": "vllm",
+  "display_name": "vLLM",
+  "manifest_version": 1,
+  "advertised_models": "loaded",
+  "install": { "mode": "user" },
+  "models_dir": "~/.cache/huggingface",
+  "uninstall": { "remove": ["{install_dir}"] },
+  "runtime": {
+    "bin": "{install_dir}/venv/bin/vllm",
+    "editable_launch": {
+      "fixed_args": ["serve"],
+      "controls": [
+        { "flags": ["--host"], "value": "{server.host}" },
+        { "flags": ["--port"], "value": "{server.port}" }
+      ]
+    },
+    "args": ["serve", "--model", "Qwen/Qwen2.5-0.5B-Instruct", "--gpu-memory-utilization", "0.5", "--host", "{host}", "--port", "{port}"],
+    "env": { "HF_HOME": "{models_dir}", "VLLM_USE_FLASHINFER_SAMPLER": "0" },
+    "bind": "127.0.0.1",
+    "port": 8001,
+    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 480 },
+    "stop": { "signal": "term", "grace_s": 15 },
+    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5 }
+  },
+  "platforms": {
+    "linux/amd64": {
+      "detect": ["{install_dir}/venv/bin/vllm", "~/.local/bin/vllm"],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220"
+        },
+        "run": [
+          "sh", "-c",
+          "set -eu; command -v nvidia-smi >/dev/null 2>&1 || { echo 'vLLM needs an NVIDIA GPU and driver (nvidia-smi not found)' >&2; exit 1; }; cuda_major=$(nvidia-smi -q 2>/dev/null | awk -F' *: *' '/^CUDA (UMD )?Version/ {split($2, v, \".\"); print v[1]; exit}'); [ \"${cuda_major:-0}\" -ge 13 ] 2>/dev/null || { echo \"vLLM needs an NVIDIA driver that supports CUDA 13 or newer (found: ${cuda_major:-none}). Update your NVIDIA driver and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 15728640 ] || { echo 'vLLM needs at least 15 GB of free disk space' >&2; exit 1; }; mkdir -p \"$2/uv\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"vllm==0.32.0\"",
+          "vllm-install", "{download}", "{install_dir}"
+        ]
+      }
+    },
+    "linux/arm64": {
+      "detect": ["{install_dir}/venv/bin/vllm", "~/.local/bin/vllm"],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14"
+        },
+        "run": [
+          "sh", "-c",
+          "set -eu; command -v nvidia-smi >/dev/null 2>&1 || { echo 'vLLM needs an NVIDIA GPU and driver (nvidia-smi not found)' >&2; exit 1; }; cuda_major=$(nvidia-smi -q 2>/dev/null | awk -F' *: *' '/^CUDA (UMD )?Version/ {split($2, v, \".\"); print v[1]; exit}'); [ \"${cuda_major:-0}\" -ge 13 ] 2>/dev/null || { echo \"vLLM needs an NVIDIA driver that supports CUDA 13 or newer (found: ${cuda_major:-none}). Update your NVIDIA driver and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 15728640 ] || { echo 'vLLM needs at least 15 GB of free disk space' >&2; exit 1; }; mkdir -p \"$2/uv\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"vllm==0.32.0\"",
+          "vllm-install", "{download}", "{install_dir}"
+        ]
+      }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List the models in the Hugging Face cache that vLLM could serve (complete downloads with a config, tokenizer and weights). Needs no running engine.",
+      "hf_cache": { "dir": "{models_dir}/hub" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "load_model": {
+      "description": "Serve a different model (params: {\"model\": \"<Hugging Face id>\"}). vLLM serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored.",
+      "launch_model": { "flag": "--model" }
+    },
+    "loaded_models": {
+      "description": "List the model this vLLM server is serving (it serves exactly one). This is what peers and the proxy are told it can answer for.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    }
+  }
+}

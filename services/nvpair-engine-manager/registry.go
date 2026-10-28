@@ -63,6 +63,12 @@ type Manifest struct {
 	ManifestVersion int                 `json:"manifest_version"`
 	Platforms       map[string]Platform `json:"platforms"`
 	Actions         map[string]Action   `json:"actions,omitempty"`
+	// AdvertisedModels says which models this node tells its peers and its own
+	// proxy it can serve: "list" (the default) advertises list_models, "loaded"
+	// advertises loaded_models. An engine that serves one model per process
+	// can list many models it has on disk but only answer for the one it is
+	// running, and the proxy sends a request to any node advertising its model.
+	AdvertisedModels string `json:"advertised_models,omitempty"`
 }
 
 // Platform is the per-`<goos>/<goarch>` block. Variance lives here
@@ -758,8 +764,23 @@ func (m *Manifest) Validate() error {
 			}
 		}
 	}
+	switch m.AdvertisedModels {
+	case "", advertisedModelsList:
+	case advertisedModelsLoaded:
+		if _, ok := m.Actions["loaded_models"]; !ok {
+			return fmt.Errorf("advertised_models %q requires a loaded_models action", m.AdvertisedModels)
+		}
+	default:
+		return fmt.Errorf("advertised_models %q invalid (want %q or %q)", m.AdvertisedModels, advertisedModelsList, advertisedModelsLoaded)
+	}
 	return m.validatePlaceholders()
 }
+
+// advertisedModels values for Manifest.AdvertisedModels.
+const (
+	advertisedModelsList   = "list"
+	advertisedModelsLoaded = "loaded"
+)
 
 func (p *Platform) validate(key string) error {
 	if policy := p.Runtime.EditableLaunch; policy != nil {
