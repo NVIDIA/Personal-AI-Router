@@ -11,6 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// serverNegotiationSelection returns a fresh server and a valid peer selection.
+func serverNegotiationSelection(t *testing.T) (*Server, *wireMessage) {
+	t.Helper()
+	server := NewServer(PairingInfo{})
+	peer := NewPeer(PairingInfo{})
+	selection, err := peer.Receive(negotiationRequest(t, server, peer))
+	require.NoError(t, err)
+	require.Nil(t, selection.Err)
+	wire, err := decode(selection.Send)
+	require.NoError(t, err)
+	return server, wire
+}
+
 func TestServer_AdvertisesPAIRDefaults(t *testing.T) {
 	info := PairingInfo{
 		V:                   2,
@@ -25,15 +38,7 @@ func TestServer_AdvertisesPAIRDefaults(t *testing.T) {
 	}
 	server := NewServer(info)
 	peer := NewPeer(PairingInfo{})
-	request, err := server.Start()
-	require.NoError(t, err)
-	discovery, err := peer.Receive(request)
-	require.NoError(t, err)
-	require.Nil(t, discovery.Err)
-	negotiation, err := server.Receive(discovery.Send)
-	require.NoError(t, err)
-	require.Nil(t, negotiation.Err)
-	offer, err := decode(negotiation.Send)
+	offer, err := decode(negotiationRequest(t, server, peer))
 	require.NoError(t, err)
 	assert.Equal(t, json.RawMessage(`[1]`), offer.Vers)
 	assert.Equal(t, json.RawMessage(`[2,1]`), offer.Cryptosuites)
@@ -72,21 +77,7 @@ func TestServerDiscovery_BindsIncomingNAIToAuthenticatedTranscript(t *testing.T)
 func TestServerNegotiation_AcceptsSelectionsIncludingServerToPeer(t *testing.T) {
 	test := func(name, direction string) {
 		t.Run(name, func(t *testing.T) {
-			server := NewServer(PairingInfo{})
-			peer := NewPeer(PairingInfo{})
-			request, err := server.Start()
-			require.NoError(t, err)
-			discovery, err := peer.Receive(request)
-			require.NoError(t, err)
-			require.Nil(t, discovery.Err)
-			negotiation, err := server.Receive(discovery.Send)
-			require.NoError(t, err)
-			require.Nil(t, negotiation.Err)
-			selection, err := peer.Receive(negotiation.Send)
-			require.NoError(t, err)
-			require.Nil(t, selection.Err)
-			wire, err := decode(selection.Send)
-			require.NoError(t, err)
+			server, wire := serverNegotiationSelection(t)
 			wire.Dirp = json.RawMessage(direction)
 			message, _, err := encode(wire)
 			require.NoError(t, err)
@@ -108,21 +99,7 @@ func TestServerNegotiation_AcceptsSelectionsIncludingServerToPeer(t *testing.T) 
 func TestServerNegotiation_RejectsUnsupportedOrMismatchedSelections(t *testing.T) {
 	test := func(name string, change func(*wireMessage), wantCode int) {
 		t.Run(name, func(t *testing.T) {
-			server := NewServer(PairingInfo{})
-			peer := NewPeer(PairingInfo{})
-			request, err := server.Start()
-			require.NoError(t, err)
-			discovery, err := peer.Receive(request)
-			require.NoError(t, err)
-			require.Nil(t, discovery.Err)
-			negotiation, err := server.Receive(discovery.Send)
-			require.NoError(t, err)
-			require.Nil(t, negotiation.Err)
-			response, err := peer.Receive(negotiation.Send)
-			require.NoError(t, err)
-			require.Nil(t, response.Err)
-			wire, err := decode(response.Send)
-			require.NoError(t, err)
+			server, wire := serverNegotiationSelection(t)
 			change(wire)
 			changed, _, err := encode(wire)
 			require.NoError(t, err)

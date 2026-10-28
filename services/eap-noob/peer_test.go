@@ -16,15 +16,7 @@ func peerNegotiationOffer(t *testing.T) (*Peer, *wireMessage) {
 	t.Helper()
 	server := NewServer(PairingInfo{})
 	peer := NewPeer(PairingInfo{})
-	request, err := server.Start()
-	require.NoError(t, err)
-	discovery, err := peer.Receive(request)
-	require.NoError(t, err)
-	require.Nil(t, discovery.Err)
-	negotiation, err := server.Receive(discovery.Send)
-	require.NoError(t, err)
-	require.Nil(t, negotiation.Err)
-	offer, err := decode(negotiation.Send)
+	offer, err := decode(negotiationRequest(t, server, peer))
 	require.NoError(t, err)
 	return peer, offer
 }
@@ -154,7 +146,7 @@ func TestPeer_RejectsSuccessBeforeVerifiedCompletion(t *testing.T) {
 			srv := NewServer(PairingInfo{})
 			peer := NewPeer(PairingInfo{})
 			if state != StateUnregistered {
-				driveConversation(t, srv, peer)
+				require.Nil(t, driveConversation(t, srv, peer).Err)
 			}
 			if state == StateOOBReceived {
 				require.NoError(t, peer.OOBInputNoob(make([]byte, 16)))
@@ -200,70 +192,41 @@ func TestPeer_RejectsChangedAuthenticatedCertificateInformation(t *testing.T) {
 			server := NewServer(PairingInfo{Cert: "original-server-cert"})
 			peer := NewPeer(PairingInfo{Cert: "original-peer-cert"})
 
-			msg, err := server.Start()
+			offer, err := decode(negotiationRequest(t, server, peer))
 			require.NoError(t, err)
-			peerTurn := true
-			for rounds := 0; ; rounds++ {
-				require.Less(t, rounds, 16, "Initial Exchange did not terminate")
-				wire, err := decode(msg)
-				require.NoError(t, err)
-				if wire.Type != nil && *wire.Type == typeNegotiation {
-					if peerTurn && len(changedServerInfo) != 0 {
-						wire.ServerInfo = changedServerInfo
-						msg, _, err = encode(wire)
-						require.NoError(t, err)
-					}
-					if !peerTurn && len(changedPeerInfo) != 0 {
-						wire.PeerInfo = changedPeerInfo
-						msg, _, err = encode(wire)
-						require.NoError(t, err)
-					}
-				}
-				var out Outcome
-				if peerTurn {
-					out, err = peer.Receive(msg)
-				} else {
-					out, err = server.Receive(msg)
-				}
-				require.NoError(t, err)
-				require.Nil(t, out.Err)
-				if len(out.Send) == 0 {
-					break
-				}
-				msg = out.Send
-				peerTurn = !peerTurn
+			if len(changedServerInfo) != 0 {
+				offer.ServerInfo = changedServerInfo
 			}
+			request, _, err := encode(offer)
+			require.NoError(t, err)
+			selection, err := peer.Receive(request)
+			require.NoError(t, err)
+			require.Nil(t, selection.Err)
+			wire, err := decode(selection.Send)
+			require.NoError(t, err)
+			if len(changedPeerInfo) != 0 {
+				wire.PeerInfo = changedPeerInfo
+			}
+			response, _, err := encode(wire)
+			require.NoError(t, err)
+			keyExchange, err := server.Receive(response)
+			require.NoError(t, err)
+			require.Nil(t, keyExchange.Err)
+			require.Nil(t, driveMessages(t, server, peer, keyExchange.Send).Err)
 			require.Equal(t, StateWaiting, server.State())
 			require.Equal(t, StateWaiting, peer.State())
 
 			noob := bytes.Repeat([]byte{0xAB}, 16)
 			require.NoError(t, server.OOBOutputWith(noob))
 			require.NoError(t, peer.OOBInputNoob(noob))
-			msg, err = server.Start()
-			require.NoError(t, err)
-			peerTurn = true
-			for rounds := 0; ; rounds++ {
-				require.Less(t, rounds, 16, "Completion Exchange did not terminate")
-				var out Outcome
-				if peerTurn {
-					out, err = peer.Receive(msg)
-				} else {
-					out, err = server.Receive(msg)
-				}
-				require.NoError(t, err)
-				if out.Err != nil {
-					assert.True(t, peerTurn, "peer must reject the server's transcript MAC")
-					assert.Equal(t, ErrHMACVerificationFailed, out.Err.Code)
-					assert.False(t, out.Success)
-					assert.NotEqual(t, StateRegistered, peer.State())
-					assert.NotEqual(t, StateRegistered, server.State())
-					return
-				}
-				require.False(t, out.Done, "Completion succeeded despite changed certificate information")
-				require.NotEmpty(t, out.Send)
-				msg = out.Send
-				peerTurn = !peerTurn
-			}
+			out := driveConversation(t, server, peer)
+
+			require.NotNil(t, out.Err)
+			assert.Equal(t, StateOOBReceived, out.State, "peer must reject the server's transcript MAC")
+			assert.Equal(t, ErrHMACVerificationFailed, out.Err.Code)
+			assert.False(t, out.Success)
+			assert.NotEqual(t, StateRegistered, peer.State())
+			assert.NotEqual(t, StateRegistered, server.State())
 		})
 	}
 	test("changed server certificate", json.RawMessage(`{"cert":"changed-server-cert"}`), nil)

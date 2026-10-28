@@ -11,20 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// driveConversation relays messages between the server and peer for one EAP
-// conversation, starting from the server's first request, until a side has
-// nothing more to send.
-func driveConversation(t *testing.T, srv *Server, peer *Peer) {
+// driveConversation starts one message exchange and returns its final outcome.
+func driveConversation(t *testing.T, srv *Server, peer *Peer) Outcome {
 	t.Helper()
 	msg, err := srv.Start()
 	require.NoError(t, err, "server Start:")
-	driveMessages(t, srv, peer, msg)
+	return driveMessages(t, srv, peer, msg)
 }
 
-func driveMessages(t *testing.T, srv *Server, peer *Peer, msg []byte) {
+func driveMessages(t *testing.T, srv *Server, peer *Peer, msg []byte) Outcome {
 	t.Helper()
 	peerTurn := true
-	for {
+	for rounds := 0; ; rounds++ {
+		require.Less(t, rounds, 16, "message exchange did not terminate")
 		var out Outcome
 		var err error
 		if peerTurn {
@@ -33,19 +32,16 @@ func driveMessages(t *testing.T, srv *Server, peer *Peer, msg []byte) {
 			out, err = srv.Receive(msg)
 		}
 		require.NoError(t, err, "Receive:")
-		require.Nil(t, out.Err, "unexpected protocol error: %v", out.Err)
-		if len(out.Send) == 0 {
-			return
+		if out.Err != nil || len(out.Send) == 0 {
+			return out
 		}
 		msg = out.Send
 		peerTurn = !peerTurn
 	}
 }
 
-// driveInitialWithSuite supplies a single-suite offer as a remote-protocol
-// fixture. Production always advertises both suites; tests can exercise each
-// negotiated suite without adding configuration to the application API.
-func driveInitialWithSuite(t *testing.T, srv *Server, peer *Peer, suite cryptosuiteID) {
+// negotiationRequest runs discovery and returns the server's negotiation request.
+func negotiationRequest(t *testing.T, srv *Server, peer *Peer) []byte {
 	t.Helper()
 	request, err := srv.Start()
 	require.NoError(t, err)
@@ -55,13 +51,21 @@ func driveInitialWithSuite(t *testing.T, srv *Server, peer *Peer, suite cryptosu
 	negotiation, err := srv.Receive(discovery.Send)
 	require.NoError(t, err)
 	require.Nil(t, negotiation.Err)
-	wire, err := decode(negotiation.Send)
+	return negotiation.Send
+}
+
+// driveInitialWithSuite supplies a single-suite offer as a remote-protocol
+// fixture. Production always advertises both suites; tests can exercise each
+// negotiated suite without adding configuration to the application API.
+func driveInitialWithSuite(t *testing.T, srv *Server, peer *Peer, suite cryptosuiteID) {
+	t.Helper()
+	wire, err := decode(negotiationRequest(t, srv, peer))
 	require.NoError(t, err)
 	wire.Cryptosuites = rawIntSlice([]int{int(suite)})
 	request, parsed, err := encode(wire)
 	require.NoError(t, err)
 	srv.in.Cryptosuites = parsed.Cryptosuites
-	driveMessages(t, srv, peer, request)
+	require.Nil(t, driveMessages(t, srv, peer, request).Err)
 }
 
 // pair runs a full server-to-peer pairing for the given cryptosuite.
@@ -82,7 +86,7 @@ func pair(t *testing.T, suite cryptosuiteID) (*Server, *Peer) {
 	require.Equal(t, StateOOBReceived, peer.State())
 
 	// Completion Exchange.
-	driveConversation(t, srv, peer)
+	require.Nil(t, driveConversation(t, srv, peer).Err)
 	require.Equal(t, StateRegistered, srv.State(), "server after Completion")
 	require.Equal(t, StateRegistered, peer.State(), "peer after Completion")
 	return srv, peer
@@ -110,7 +114,7 @@ func TestPairing_RejectsTamperedMAC(t *testing.T) {
 	srv := NewServer(PairingInfo{})
 	peer := NewPeer(PairingInfo{})
 
-	driveConversation(t, srv, peer)
+	require.Nil(t, driveConversation(t, srv, peer).Err)
 	oob, err := srv.OOBOutput()
 	require.NoError(t, err, "OOBOutput:")
 	require.NoError(t, peer.OOBInput(oob), "OOBInput:")
@@ -146,7 +150,7 @@ func TestPairing_RejectsTamperedMAC(t *testing.T) {
 func TestPairing_RejectsIncorrectOutOfBandFingerprint(t *testing.T) {
 	srv := NewServer(PairingInfo{})
 	peer := NewPeer(PairingInfo{})
-	driveConversation(t, srv, peer)
+	require.Nil(t, driveConversation(t, srv, peer).Err)
 
 	oob, err := srv.OOBOutput()
 	require.NoError(t, err, "OOBOutput:")

@@ -5,54 +5,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # eapnoob
 
-PAIR's pairing component implements the Initial, Waiting, and Completion
-Exchanges of **EAP-NOOB** (RFC 9140, "Nimble Out-of-Band Authentication for EAP").
-The cluster-manager drives a `Server` and a `Peer` to authenticate the node
-identity and certificate information exchanged during pairing.
+Pairs two PAIR nodes using the EAP-NOOB protocol (RFC 9140). The inviter is the
+`Server`; the joiner is the `Peer`. The user carries a six-digit PIN from the
+inviter to the joiner.
 
-## What it does
+Each side supplies a [`PairingInfo`](info.go) value containing its identity and
+public certificate. Pairing verifies that both sides used the same PIN and saw
+the same identity information. After success (`Registered`), the cluster manager
+saves the verified certificates for future connections.
 
-EAP-NOOB authenticates an ephemeral ECDH exchange using an out-of-band (OOB)
-secret, `Noob`. PAIR currently obtains that secret from a six-digit PIN carried
-by the user from the inviter to the joiner. The Completion MACs bind the secret
-to the exchanged `ServerInfo` and `PeerInfo`, including both nodes' certificates.
-After successful Completion, both roles reach `Registered` and the
-cluster-manager pins the authenticated certificates in its own trusted-node
-store.
+This component processes JSON messages. The cluster manager handles networking,
+PIN validation and encoding, certificate storage, and cluster membership.
 
-The component consumes and produces EAP-NOOB JSON messages. The cluster-manager
-owns the transport, PIN validation and encoding, durable trust, and membership.
-This module serves PAIR; it is not a general-purpose authentication or
-application-secret export library.
+## Terms used in the code and specification
 
-## Scope
-
-Implemented:
-
-- Common handshake, Initial Exchange, server-to-peer OOB Step, Waiting
-  Exchange, Completion Exchange.
-- Cryptosuite 1 (Curve25519 / SHA-256, mandatory) and cryptosuite 2
-  (NIST P-256 / SHA-256, recommended).
-- NIST SP 800-56C one-step KDF, retaining the Completion MAC keys `Kms` and
-  `Kmp` at their RFC 9140 Table 5 offsets.
-- Caller-supplied `Noob` for PAIR's PIN flow, plus the full server-to-peer
-  `OOBMessage` path reserved for PAIR's planned high-entropy pairing codes.
-- Error notifications (Type=0) and the RFC error codes.
-
-Reconnect / rekeying exchanges (message types 7-9, KeyingMode 1-3) and AAA
-roaming are not implemented. Completed associations and application keys are
-not persisted by this module.
-
-## Cryptographic implementations
-
-ECDH, SHA-256, HMAC, and randomness use Go's standard library. Completion key
-derivation retains the small in-tree NIST SP 800-56C implementation, built on
-standard-library SHA-256, to avoid an additional runtime dependency. It preserves
-the RFC 9140 nonce order, length-prefixed Noob, 320-byte output, and `Kms`/`Kmp`
-offsets.
-
-The EAP-NOOB state machine and authenticated-transcript encoding remain in this
-component. The cluster-manager owns certificate pinning and durable trust.
+| Term | Meaning |
+| --- | --- |
+| Cryptosuite | A set of algorithms used together. Suite 1 uses Curve25519 and SHA-256; suite 2 uses P-256 and SHA-256. |
+| OOB (out of band) | A separate channel, such as the user copying the PIN between nodes. |
+| NOOB | The 16-byte pairing secret, derived from the PIN in the pairing flow. |
+| HOOB | A fingerprint of the pairing messages and NOOB, checked when transferring a full pairing code. The PIN flow does not use it. |
+| NAI (Network Access Identifier) | The peer's protocol identity string, separate from its PAIR node UUID. |
+| MAC (message authentication code) | A check made with a secret key to detect changed pairing data. |
+| KDF (key derivation function) | Produces temporary authentication keys from shared secret material. |
 
 ## Usage
 
@@ -70,12 +45,11 @@ peerInfo := eapnoob.PairingInfo{
 srv := eapnoob.NewServer(serverInfo)
 peer := eapnoob.NewPeer(peerInfo)
 
-// 1. Initial Exchange: relay each side's Outcome.Send to the other until done.
-//    (srv.Start() produces the first message.)
+// 1. Exchange identities and temporary public keys: call srv.Start() and relay
+//    each side's Outcome.Send to the other until both are waiting for the PIN.
 
-// 2. The cluster-manager validates and encodes the user-carried PIN as the
-//    same 16-byte noob on both sides. No OOBMessage is sent in the PIN flow.
-//    This fixture represents PIN 000123; production code generates a fresh PIN.
+// 2. Each side locally encodes the user-carried PIN as the same 16-byte NOOB.
+//    This example uses PIN 000123; production code generates a fresh PIN.
 noob := make([]byte, 16)
 noob[15] = 123
 if err := srv.OOBOutputWith(noob); err != nil {
@@ -85,65 +59,60 @@ if err := peer.OOBInputNoob(noob); err != nil {
     return err
 }
 
-// 3. Completion Exchange: call srv.Start() again and relay messages until
-//    both reach Registered.
+// 3. Verify the PIN and finish pairing: call srv.Start() again and relay
+//    messages until both reach Registered.
 
-// 4. After successful Completion, the cluster-manager reads srv.PeerInfo()
-//    and peer.ServerInfo() and pins the authenticated certificates.
+// 4. After successful pairing, read srv.PeerInfo() and peer.ServerInfo().
+//    The cluster manager saves their verified certificates for future connections.
 ```
 
-See [`example_test.go`](example_test.go) for a complete, runnable driver loop.
+See [`example_test.go`](example_test.go) for a complete, runnable message loop.
+The shortened identities above omit fields; PAIR supplies the full `PairingInfo`,
+including each node's public certificate.
 
-### Driving the message loop
+### Processing messages
 
-Each role processes one inbound message at a time:
+Pass each incoming message to `Receive` and relay any response to the other node:
 
 ```go
 out, err := peer.Receive(msg) // or srv.Receive(msg)
-// out.Send    -> bytes to deliver to the other party (nil if none)
-// out.State   -> current association state
-// out.Done    -> this EAP conversation ended
-// out.Success -> Completion succeeded; association is Registered
-// out.Err     -> an EAP-NOOB error notification was sent/received
+// err         -> a processing error
+// out.Send    -> response bytes to deliver (nil if none)
+// out.State   -> current pairing state
+// out.Done    -> this round of messages ended
+// out.Success -> pairing completed successfully
+// out.Err     -> a protocol error reported by either side
 ```
 
-EAP-NOOB spans two EAP conversations with the OOB step in between: run one
-conversation for the Initial Exchange, perform the OOB relay, then run a second
-conversation for the Completion Exchange (call `srv.Start()` again to begin it).
+`Done` alone does not mean pairing succeeded: the first round ends while waiting
+for the PIN. Keep both objects alive, then call `srv.Start()` again after the PIN
+has been supplied to finish pairing.
 
-### Pairing policy
+## Implementation scope
 
-`NewServer(serverInfo PairingInfo)` and `NewPeer(peerInfo PairingInfo)` accept
-only the identity information each role authenticates. Protocol policy
-is fixed to version 1, both supported cryptosuites, and server-to-peer OOB
-(direction 2). The server advertises suites in priority order `[2, 1]`; peers
-still negotiate a mutually supported suite.
+Protocol settings are fixed to version 1 and inviter-to-joiner PIN transfer.
+PAIR-to-PAIR pairing selects P-256 (suite 2). X25519 (suite 1) is retained because
+[RFC 9140 §5.1](https://www.rfc-editor.org/rfc/rfc9140.html#section-5.1) requires
+implementations to support it. It remains available when negotiating with other
+peers. Reconnection and key renewal are not implemented.
 
-The peer starts with `noob@eap-noob.arpa` as its NAI. Receive-side handling of a
-server-supplied `NewNAI` and discovery NAI is preserved, including their use in
-the authenticated transcript. There are no public NAI assignment or probe
-interval options.
+Go's standard library supplies the cryptographic operations. A small local
+[KDF implementation](kdf.go) derives the authentication keys without another
+runtime dependency.
 
-### OOB flow
-
-The PIN flow calls `Server.OOBOutputWith(noob)` to
-register the inviter's secret while staying in `Waiting`, and
-`Peer.OOBInputNoob(noob)` to move the joiner to `OOBReceived`. Neither method
-constructs or verifies a Hoob fingerprint; transcript agreement is proved by
-the Completion MACs.
-
-`Server.OOBOutput()` and `Peer.OOBInput(OOBMessage)` retain random `Noob`
-generation and Hoob verification for the planned high-entropy OOB flow. That
-flow carries the full `OOBMessage{PeerId, Noob, Hoob}` through the user-assisted
-channel; it is not used by today's PIN pairing.
+`Server.OOBOutput()` and `Peer.OOBInput(OOBMessage)` also support transferring a
+random NOOB with its HOOB for planned pairing codes. Today's PIN flow uses
+`Server.OOBOutputWith` and `Peer.OOBInputNoob` instead. See the
+[cluster-manager specification](../nvpair-cluster-manager/spec.md) for protocol
+details and PIN encoding.
 
 ## Testing
+
+Run from this directory:
 
 ```sh
 go test ./...
 ```
 
-The suite exercises both cryptosuites, PAIR's caller-supplied `Noob` flow,
-Completion authentication, JWK round-trips, and OOB fingerprint
-rejection. The cluster-manager tests cover PIN encoding and the durable trust
-boundary.
+Tests cover successful pairing with both cryptosuites, incorrect secrets, changed
+identity information, and invalid fingerprints.

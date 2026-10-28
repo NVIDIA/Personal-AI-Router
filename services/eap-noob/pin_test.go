@@ -11,32 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// driveAllowFail relays one EAP conversation, returning true if either side
-// produced a protocol error (e.g. a Completion MAC mismatch) rather than t-Fatal.
-func driveAllowFail(srv *Server, peer *Peer) bool {
-	msg, err := srv.Start()
-	if err != nil {
-		return true
-	}
-	peerTurn := true
-	for {
-		var out Outcome
-		if peerTurn {
-			out, err = peer.Receive(msg)
-		} else {
-			out, err = srv.Receive(msg)
-		}
-		if err != nil || out.Err != nil {
-			return true
-		}
-		if len(out.Send) == 0 {
-			return false
-		}
-		msg = out.Send
-		peerTurn = !peerTurn
-	}
-}
-
 // TestCallerInjectedNoobPairs drives a full pairing in the server-to-peer
 // direction using the caller-injected-Noob API (the path the cluster manager's
 // PIN flow takes): the server supplies the Noob via OOBOutputWith and the peer
@@ -56,7 +30,7 @@ func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
 			require.NoError(t, peer.OOBInputNoob(noob))
 			require.Equal(t, StateOOBReceived, peer.State())
 
-			driveConversation(t, srv, peer)
+			require.Nil(t, driveConversation(t, srv, peer).Err)
 			require.Equal(t, StateRegistered, srv.State())
 			require.Equal(t, StateRegistered, peer.State())
 			assert.Equal(t, srv.serverInfo, peer.ServerInfo())
@@ -73,12 +47,12 @@ func TestPairing_RejectsMismatchedCallerProvidedNoob(t *testing.T) {
 	srv := NewServer(PairingInfo{})
 	peer := NewPeer(PairingInfo{})
 
-	driveConversation(t, srv, peer)
+	require.Nil(t, driveConversation(t, srv, peer).Err)
 
 	require.NoError(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16)), "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
 
-	assert.True(t, driveAllowFail(srv, peer), "expected the Completion Exchange to fail with mismatched Noobs")
+	require.NotNil(t, driveConversation(t, srv, peer).Err, "expected the Completion Exchange to fail with mismatched NOOB values")
 	assert.NotEqual(t, StateRegistered, peer.State(), "a side reached Registered despite mismatched Noobs")
 	assert.NotEqual(t, StateRegistered, srv.State(), "a side reached Registered despite mismatched Noobs")
 }
@@ -98,7 +72,7 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	peer := NewPeer(PairingInfo{})
 
 	// Initial Exchange.
-	driveConversation(t, srv, peer)
+	require.Nil(t, driveConversation(t, srv, peer).Err)
 
 	// Server-to-peer OOB with MISMATCHED Noobs — the wrong-PIN condition.
 	require.NoError(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16)), "server OOBOutputWith:")
@@ -133,6 +107,6 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 func TestOOBOutputWith_RejectsBadLength(t *testing.T) {
 	srv := NewServer(PairingInfo{})
 	peer := NewPeer(PairingInfo{})
-	driveConversation(t, srv, peer)
+	require.Nil(t, driveConversation(t, srv, peer).Err)
 	require.Error(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8)), "expected OOBOutputWith to reject an 8-byte Noob")
 }
