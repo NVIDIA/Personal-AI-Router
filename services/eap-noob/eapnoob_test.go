@@ -62,9 +62,9 @@ func driveInitialWithSuite(t *testing.T, srv *Server, peer *Peer, suite cryptosu
 	wire, err := decode(negotiationRequest(t, srv, peer))
 	require.NoError(t, err)
 	wire.Cryptosuites = rawIntSlice([]int{int(suite)})
-	request, parsed, err := encode(wire)
+	request, err := json.Marshal(wire)
 	require.NoError(t, err)
-	srv.in.Cryptosuites = parsed.Cryptosuites
+	srv.in.Cryptosuites = wire.Cryptosuites
 	require.Nil(t, driveMessages(t, srv, peer, request).Err)
 }
 
@@ -139,7 +139,7 @@ func TestPairing_RejectsTamperedMAC(t *testing.T) {
 	wm, err := decode(resp6.Send)
 	require.NoError(t, err, "decode completion response:")
 	wm.MACp = rawString(b64Encode(make([]byte, 32)))
-	tampered, _, err := encode(wm)
+	tampered, err := json.Marshal(wm)
 	require.NoError(t, err, "re-encode:")
 	out, err := srv.Receive(tampered)
 	require.NoError(t, err, "server receive tampered:")

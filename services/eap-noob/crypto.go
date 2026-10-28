@@ -59,10 +59,6 @@ func suiteByID(id cryptosuiteID) (*cryptosuite, error) {
 	}
 }
 
-func isSupportedCryptosuite(id cryptosuiteID) bool {
-	return id == cryptosuiteX25519 || id == cryptosuiteP256
-}
-
 // generateKeypair creates an ephemeral ECDHE key pair and returns the private
 // key together with the JWK encoding of the public component.
 func (cs *cryptosuite) generateKeypair() (*ecdh.PrivateKey, JWK, error) {

@@ -67,7 +67,7 @@ func TestPeerNegotiation_SelectsSupportedParameters(t *testing.T) {
 			offer.Vers = versions
 			offer.Cryptosuites = suites
 			offer.Dirs = directions
-			message, _, err := encode(offer)
+			message, err := json.Marshal(offer)
 			require.NoError(t, err)
 
 			out, err := peer.Receive(message)
@@ -94,7 +94,7 @@ func TestPeerNegotiation_RejectsUnsupportedOffers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			peer, offer := peerNegotiationOffer(t)
 			change(offer)
-			message, _, err := encode(offer)
+			message, err := json.Marshal(offer)
 			require.NoError(t, err)
 
 			out, err := peer.Receive(message)
@@ -124,7 +124,7 @@ func TestPeerNegotiation_RejectsUnsupportedOffers(t *testing.T) {
 func TestPeerNegotiation_BindsAssignedNAIToAuthenticatedTranscript(t *testing.T) {
 	peer, offer := peerNegotiationOffer(t)
 	offer.NewNAI = json.RawMessage(`"assigned@pair.test"`)
-	message, _, err := encode(offer)
+	message, err := json.Marshal(offer)
 	require.NoError(t, err)
 
 	out, err := peer.Receive(message)
@@ -197,7 +197,7 @@ func TestPeer_RejectsChangedAuthenticatedCertificateInformation(t *testing.T) {
 			if len(changedServerInfo) != 0 {
 				offer.ServerInfo = changedServerInfo
 			}
-			request, _, err := encode(offer)
+			request, err := json.Marshal(offer)
 			require.NoError(t, err)
 			selection, err := peer.Receive(request)
 			require.NoError(t, err)
@@ -207,7 +207,7 @@ func TestPeer_RejectsChangedAuthenticatedCertificateInformation(t *testing.T) {
 			if len(changedPeerInfo) != 0 {
 				wire.PeerInfo = changedPeerInfo
 			}
-			response, _, err := encode(wire)
+			response, err := json.Marshal(wire)
 			require.NoError(t, err)
 			keyExchange, err := server.Receive(response)
 			require.NoError(t, err)

@@ -41,32 +41,8 @@ func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
 	test("suite 2", cryptosuiteP256)
 }
 
-// TestMismatchedInjectedNoobFails is the wrong-PIN case: the two sides inject
-// different Noobs, so the Completion MACs cannot agree and pairing must fail.
-func TestPairing_RejectsMismatchedCallerProvidedNoob(t *testing.T) {
-	srv := NewServer(PairingInfo{})
-	peer := NewPeer(PairingInfo{})
-
-	require.Nil(t, driveConversation(t, srv, peer).Err)
-
-	require.NoError(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16)), "server OOBOutputWith:")
-	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
-
-	require.NotNil(t, driveConversation(t, srv, peer).Err, "expected the Completion Exchange to fail with mismatched NOOB values")
-	assert.NotEqual(t, StateRegistered, peer.State(), "a side reached Registered despite mismatched Noobs")
-	assert.NotEqual(t, StateRegistered, srv.State(), "a side reached Registered despite mismatched Noobs")
-}
-
-// TestPeerWrongPinYieldsProtocolError pins the exact contract the cluster
-// manager's wrong-PIN classification depends on (nvpair-cluster-manager
-// runCompletionExchange): when the joiner (Peer) drives the Completion Exchange
-// against a server whose Noob differs (a wrong PIN), the Peer must surface the
-// failure as a terminal Outcome carrying a *ProtocolError in out.Err — NOT as
-// the returned error and NOT as a silent EAP-Failure (out.Err == nil) — with a
-// code the classifier recognizes (2003 unrecognized NoobId, checked first, or
-// 4001 MAC mismatch). If a future change moved detection so the Peer no longer
-// reports it this way, the cluster manager would silently degrade a wrong PIN to
-// a generic failure (empty reason) instead of reason:"incorrect-pin".
+// The cluster manager uses the peer's terminal protocol error to report a
+// wrong PIN as "incorrect-pin". Neither side may become registered.
 func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	srv := NewServer(PairingInfo{})
 	peer := NewPeer(PairingInfo{})
@@ -74,7 +50,7 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	// Initial Exchange.
 	require.Nil(t, driveConversation(t, srv, peer).Err)
 
-	// Server-to-peer OOB with MISMATCHED Noobs — the wrong-PIN condition.
+	// Supply different NOOB values to represent a wrong PIN.
 	require.NoError(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16)), "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
 
@@ -86,8 +62,7 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	for {
 		require.NotEmpty(t, msg, "server ended completion unexpectedly before the peer went terminal")
 		out, rerr := peer.Receive(msg)
-		// A wrong PIN must NOT come back as the returned error — the classifier
-		// only inspects out.Err.
+		// The classifier reads out.Err.
 		require.NoError(t, rerr, "a wrong PIN must surface in out.Err")
 		if out.Done {
 			peerOut = out
@@ -101,6 +76,7 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	require.NotNil(t, peerOut.Err, "peer completion produced no ProtocolError on a wrong PIN; the classifier would degrade the reason to empty")
 	assert.Contains(t, []int{ErrUnrecognizedOOBMsgID, ErrHMACVerificationFailed}, peerOut.Err.Code, "wrong PIN must produce an unrecognized NoobId or MAC mismatch")
 	assert.NotEqual(t, StateRegistered, peer.State(), "peer reached Registered despite a wrong PIN")
+	assert.NotEqual(t, StateRegistered, srv.State(), "server reached Registered despite a wrong PIN")
 }
 
 // TestOOBOutputWithRejectsBadLength guards the 16-byte contract.

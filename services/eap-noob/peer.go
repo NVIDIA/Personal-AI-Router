@@ -119,8 +119,8 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Cryptosuites")
 	}
-	csp, ok := firstSupported(serverCS)
-	if !ok {
+	suite := firstSupportedSuite(serverCS)
+	if suite == nil {
 		return p.fail(ErrUnsupportedCryptosuite, "no common cryptosuite")
 	}
 	serverDirs, err := rawToInt(wm.Dirs)
@@ -131,10 +131,6 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 		return p.fail(ErrNoMutuallySupportedOOB, "no mutually supported OOB direction")
 	}
 
-	suite, err := suiteByID(csp)
-	if err != nil {
-		return p.fail(ErrUnsupportedCryptosuite, err.Error())
-	}
 	p.suite = suite
 
 	// Determine the effective NAI: a server-assigned NewNAI overrides the
@@ -146,7 +142,7 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	}
 
 	verpRaw := rawInt(protocolVersion)
-	cspRaw := rawInt(int(csp))
+	cspRaw := rawInt(int(suite.id))
 	dirpRaw := rawInt(oobDirection)
 
 	p.in.Vers = wm.Vers
@@ -333,12 +329,11 @@ func (p *Peer) fail(code int, info string) (Outcome, error) {
 	return Outcome{Send: b, State: p.state, Done: true, Err: &ProtocolError{Code: code, Info: info}}, nil
 }
 
-func firstSupported(serverCS []int) (cryptosuiteID, bool) {
+func firstSupportedSuite(serverCS []int) *cryptosuite {
 	for _, offeredSuite := range serverCS {
-		id := cryptosuiteID(offeredSuite)
-		if isSupportedCryptosuite(id) {
-			return id, true
+		if suite, err := suiteByID(cryptosuiteID(offeredSuite)); err == nil {
+			return suite
 		}
 	}
-	return 0, false
+	return nil
 }

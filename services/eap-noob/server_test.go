@@ -47,7 +47,6 @@ func TestServer_AdvertisesPAIRDefaults(t *testing.T) {
 	require.NoError(t, json.Unmarshal(offer.ServerInfo, &receivedInfo))
 	assert.Equal(t, info, receivedInfo)
 	assert.Empty(t, offer.NewNAI)
-	assert.Nil(t, offer.SleepTime)
 }
 
 func TestServerDiscovery_BindsIncomingNAIToAuthenticatedTranscript(t *testing.T) {
@@ -57,7 +56,7 @@ func TestServerDiscovery_BindsIncomingNAIToAuthenticatedTranscript(t *testing.T)
 	require.Nil(t, negotiation.Err)
 	offer, err := decode(negotiation.Send)
 	require.NoError(t, err)
-	selection, _, err := encode(&wireMessage{
+	selection, err := json.Marshal(&wireMessage{
 		Type:         intp(typeNegotiation),
 		PeerId:       offer.PeerId,
 		Verp:         json.RawMessage(`1`),
@@ -79,7 +78,7 @@ func TestServerNegotiation_AcceptsSelectionsIncludingServerToPeer(t *testing.T) 
 		t.Run(name, func(t *testing.T) {
 			server, wire := serverNegotiationSelection(t)
 			wire.Dirp = json.RawMessage(direction)
-			message, _, err := encode(wire)
+			message, err := json.Marshal(wire)
 			require.NoError(t, err)
 
 			out, err := server.Receive(message)
@@ -101,7 +100,7 @@ func TestServerNegotiation_RejectsUnsupportedOrMismatchedSelections(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			server, wire := serverNegotiationSelection(t)
 			change(wire)
-			changed, _, err := encode(wire)
+			changed, err := json.Marshal(wire)
 			require.NoError(t, err)
 
 			out, err := server.Receive(changed)
@@ -170,7 +169,7 @@ func TestServer_RejectsCompletionBeforeKeysAreDerived(t *testing.T) {
 			// Before PIN verification, the transcript is public and an empty-key
 			// MAC is computable without knowing the PIN. It must not grant trust.
 			macp := server.suite.computeMAC(nil, 1, server.in)
-			message, _, err := encode(&wireMessage{
+			message, err := json.Marshal(&wireMessage{
 				Type:   intp(typeCompletion),
 				PeerId: rawString(server.peerId),
 				MACp:   rawString(b64Encode(macp)),

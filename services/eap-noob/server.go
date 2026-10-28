@@ -145,8 +145,8 @@ func (s *Server) onNegotiation(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return s.fail(ErrInvalidData, "bad Cryptosuitep")
 	}
-	csp := cryptosuiteID(selectedSuite)
-	if !isSupportedCryptosuite(csp) {
+	suite, err := suiteByID(cryptosuiteID(selectedSuite))
+	if err != nil {
 		return s.fail(ErrUnsupportedCryptosuite, "peer selected unsupported cryptosuite")
 	}
 	dirp, err := rawToInt(wm.Dirp)
@@ -157,10 +157,6 @@ func (s *Server) onNegotiation(wm *wireMessage) (Outcome, error) {
 		return s.fail(ErrNoMutuallySupportedOOB, "no mutually supported OOB direction")
 	}
 
-	suite, err := suiteByID(csp)
-	if err != nil {
-		return s.fail(ErrUnsupportedCryptosuite, err.Error())
-	}
 	s.suite = suite
 
 	s.in.Verp = wm.Verp
