@@ -46,11 +46,12 @@ with a CUDA 13 driver) and Apple Silicon macOS (`darwin/arm64`, macOS 15 or newe
 through the vLLM-Metal plugin). There is no native Windows or Intel Mac path. The
 macOS install builds a managed Python 3.12 venv with a sha256-pinned `uv` and
 installs the pinned vLLM core and vLLM-Metal wheels, each checked against a
-digest, so no compiler is needed. It runs `vllm serve` on loopback port `8001`,
-and the proxy facade owns `8000`. vLLM serves **one model per process** and has
-no load, unload, pull or delete API, so the manifest declares only `list_models`
-and `loaded_models` (both `GET /v1/models`). Changing the model means editing the
-launch arguments and restarting the engine.
+digest, so no compiler is needed. The engine's PAIR gateway listens on `8001`
+and runs `vllm serve` behind it on loopback `18001` (see below); the proxy facade
+owns `8000`. vLLM serves **one model per process** and has no load, unload, pull
+or delete API of its own, so the manifest provides them as manager actions:
+`load_model`, `unload_model`, `pull_model`, `delete_model` and the idle-limit
+actions, described below.
 
 The default launch serves `Qwen/Qwen2.5-0.5B-Instruct` through
 `--model <hugging-face-id>`; edit that argument to serve another model. Only
@@ -112,8 +113,8 @@ rolled back.
 After 5 minutes with no inference request (`front.idle_timeout_s`, 0 to never)
 the manager stops the `vllm serve` process, which frees the GPU, but keeps the
 gateway and the engine ON: `engine:status` reports `idle: true`, `/health` still
-answers 200, and `engine:models` still advertises the model it is set to serve
-with nothing loaded. Health checks, monitors and the model list do not count as
+answers 200, and `engine:models` still advertises every cached model with
+nothing loaded. Health checks, monitors and the model list do not count as
 activity, and a request still running keeps the engine loaded. The limit is read
 and changed with the `get_idle_timeout` and `set_idle_timeout` actions (seconds,
 0 never); a change applies at once and is saved in the engine's override file.
@@ -139,6 +140,8 @@ is a full restart, so the proxy's 120 s limit is the ceiling for a very large mo
 The gateway's `GET /v1/models`, which the proxy builds its own model list from,
 names every downloaded model, not just the loaded one: it adds them to the
 engine's answer while vLLM is up and answers with them while it is unloaded.
+`GET /v1/models?resident=1` returns only the model actually resident, which is
+what the `loaded_models` action uses.
 
 A request that needs the model (a POST under `/v1/`, or to `/tokenize`,
 `/detokenize`, `/pooling`, `/score`, `/rerank` or `/classify`) and arrives while it
@@ -148,8 +151,8 @@ once it is ready, so the first request waits for the load (about 25 s for an 8B
 model). Requests that arrive together share one start, a client that gives up
 does not abandon the load, and the proxy's 120 s limit is the ceiling for a very
 large model. While it is unloaded and while it loads, the engine stays marked
-running and idle, goes on advertising the model it is set to serve, and the
-gateway answers `GET /v1/models` with that model, so the proxy, which routes by
+running and idle, goes on advertising every cached model, and the gateway
+answers `GET /v1/models` with them, so the proxy, which routes by
 the advertised models and builds its own list from that call, keeps sending the
 request here instead of refusing it. A load that fails answers 503 saying so, and leaves the engine idle,
 not stopped, so the next request tries again. Reads such as `/health` and

@@ -123,7 +123,8 @@ withdrawn or answered with an error on its own, leaving the others serving.
 Ollama's standalone default is `:11435`; with managed port ownership enabled (the default), the broker starts settings and engine-manager first, claims `:11434` with that facade, and only then moves a stopped default-port Ollama backend to a free port. Custom backend ports are preserved. When the inherited `OLLAMA_HOST` names a distinct local plaintext port, the broker also gives the facade that normalized loopback-only alias so clients already using the variable enter the same routing path; `localhost` reserves both canonical loopback families atomically, while remote and HTTPS targets are ignored. The alias port is reserved against every configured engine, local or remote engine start override, every facade's control plane, and every managed engine's backend port plan, so a backend that has to move can never land on the alias. A running Ollama or unknown owner on either requested port is never stopped or moved: the primary uses a safe fallback when needed, and an occupied alias remains with its owner while the broker reports a warning.
 
 vLLM is a managed engine handled exactly like llama.cpp below, with its
-engine on `:8001` and its default-enabled facade on `:8000` or a safe fallback.
+engine's PAIR gateway on `:8001` (the `vllm serve` process runs behind it on
+loopback `:18001`) and its default-enabled facade on `:8000` or a safe fallback.
 
 llama.cpp is a managed engine: engine-manager owns its lifecycle and starts it
 on its configured loopback port, `:8081` by default. The broker places its

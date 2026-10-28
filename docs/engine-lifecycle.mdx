@@ -88,13 +88,17 @@ When you install an engine, consider the following:
   demand and is not part of the PAIR installer. Package choice is not
   driver-aware; llama.cpp retains CPU fallback when GPU acceleration is
   unavailable.
-- vLLM is available on Linux with an NVIDIA GPU. If a `vllm` is already
-  installed at a known location (`~/.local/bin/vllm`), PAIR uses it and
-  downloads nothing. Otherwise PAIR downloads a checksum-pinned `uv`, creates a
-  private Python environment and installs a pinned vLLM release into it; this
-  is several GiB because it includes PyTorch and the CUDA libraries, and PAIR
-  first checks for an NVIDIA driver that supports CUDA 13 or newer and about
-  15 GB of free disk, and stops with a clear message if either is missing.
+- vLLM is available on Linux with an NVIDIA GPU and on Apple Silicon Macs
+  running macOS 15 or newer (through vLLM-Metal). If a `vllm` is already
+  installed at a known location (`~/.local/bin/vllm` on Linux,
+  `~/.venv-vllm-metal/bin/vllm` on macOS), PAIR uses it and downloads nothing.
+  Otherwise PAIR downloads a checksum-pinned `uv`, creates a private Python
+  environment and installs a pinned vLLM release into it. On Linux this is
+  several GiB because it includes PyTorch and the CUDA libraries, and PAIR first
+  checks for an NVIDIA driver that supports CUDA 13 or newer and about 15 GB of
+  free disk. On macOS it installs checksum-pinned vLLM and vLLM-Metal wheels and
+  needs about 10 GB of free disk. Either way PAIR stops with a clear message if a
+  requirement is missing.
   Nothing is compiled. vLLM serves a single model per process. Its model list
   shows the complete text models already in your Hugging Face cache
   (`~/.cache/huggingface`), and **Load** on one of them switches vLLM to it by
@@ -110,9 +114,13 @@ When you install an engine, consider the following:
   the model and frees the GPU, but stays on, and the next request loads it again;
   the "Unloads after … idle" control on the model row changes the time, or keeps
   it loaded. **Eject** does the same unload on demand, and **Stop** turns the
-  engine off. Other nodes and the proxy are told about the model vLLM is set to
-  serve, even while it is unloaded, so requests reach it; a request for a
-  different cached model is refused until you switch to it.
+  engine off. Other nodes and the proxy are told about every model in the cache,
+  even while vLLM is unloaded, so requests reach it. A request for a different
+  cached model waits for the requests already running to finish, then switches
+  vLLM to that model and is answered once it has loaded. Unlike **Load**, a
+  switch made by a request does not restore the previous model if the new one
+  fails: the request gets an error saying why, and vLLM stays on with nothing
+  loaded until the next request.
 
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model

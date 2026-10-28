@@ -120,7 +120,7 @@ forwarded verbatim, which is how `/api/show`, `/api/pull`, `/api/ps`,
 `/api/version` and `OPTIONS` preflights keep working.
 
 The broker enables all four facades by default. Local llama.cpp-compatible
-clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM clients use `8000`, while the managed `vllm serve` stays on `8001`.
+clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM clients use `8000`, while vLLM's PAIR gateway stays on `8001` (the `vllm serve` process runs behind it on loopback `18001`).
 `--proxy-engines` can restrict a standalone broker or TUI to a subset.
 
 ### HTTP Reverse Proxy

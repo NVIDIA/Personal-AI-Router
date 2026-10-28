@@ -25,7 +25,7 @@ history.
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                                                                                                                   |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                                                                                                                 |
 | llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                                                                                                                    |
-| vLLM backend               | Integrated (Linux)              | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), Hugging Face catalog search and download, endpoints and routing; eject (stops the engine), delete of cached models; no demo traffic |
+| vLLM engine                | Integrated (Linux, macOS arm64) | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), Hugging Face catalog search and download, endpoints and routing; eject (stops the engine), delete of cached models; no demo traffic |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                                                                                                          |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                                                                                                                        |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                                                                                                                    |
@@ -185,10 +185,11 @@ rather than driver-aware or offline-repacked.
 
 ### vLLM support
 
-The bundled `vllm` manifest is Linux only. It installs a pinned `vllm` wheel
-into a private virtualenv through a checksum-pinned `uv` bootstrap, or adopts a
-`vllm` already installed at a detected path, then runs `vllm serve` on `8001`
-behind the proxy facade on `8000`. vLLM serves one model per process and has no
+The bundled `vllm` manifest covers Linux (NVIDIA GPU) and Apple Silicon macOS
+(vLLM-Metal). It installs a pinned vLLM release into a private virtualenv
+through a checksum-pinned `uv` bootstrap, or adopts a `vllm` already installed
+at a detected path. The engine's PAIR gateway listens on `8001`, with the
+`vllm serve` process on loopback `18001`, behind the proxy facade on `8000`. vLLM serves one model per process and has no
 load or unload API, so the engine manager puts a gateway on its port (`front`):
 Start and the restore after a restart bring it up idle with nothing loaded, the
 first request or a Load loads the model, it unloads after an idle limit (five
@@ -199,14 +200,13 @@ as "Idle · loads on next request" (`idle` on the engine status). Its model list
 (`list_models` on disk) is kept while stopped. It downloads and deletes
 through the shared Hugging Face cache (`pull_model` is an `hf_pull` action,
 `delete_model` an `hf_cache` delete that refuses the model it is set to serve),
-and has a Hugging Face catalog. Its model list is the Hugging Face cache
-(`list_models` is an `hf_cache` action, so it works while the engine is
-stopped), and Load switches the served model through `load_model` (a
+and has a Hugging Face catalog. Load switches the served model through `load_model` (a
 `launch_model` action): it saves `--model <id>` into the launch arguments and
 restarts the engine, restoring the previous model if the new one does not start.
-Only the served model is advertised to peers and the proxy
-(`advertised_models: loaded`), since a request for any other cached model would
-fail at the engine. A switch passes through a stopped engine for the length of the
+Every cached model is advertised to peers and the proxy. A request that names
+one that is not loaded switches vLLM to it through the gateway; if that switch
+fails, the request gets a 503 and vLLM is left unloaded, with nothing rolled
+back. A Load switch passes through a stopped engine for the length of the
 restart, so the desktop marks the engine as switching: its card shows starting
 rather than stopped, and its model list is kept, until the load request finishes
 (success, or failure with the previous model restored). Weights live in the shared
