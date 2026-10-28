@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit reports defects only: bugs, security problems, broken contracts,
+# and documentation that is wrong. Style belongs to linters and CI.
+#
+# Root AGENTS.md is read automatically as a code guideline for every file.
+
+language: en-US
+tone_instructions: >-
+  Prefer concise responses (high information density, low fluff). State the
+  defect, its consequence, and the fix.
+
+reviews:
+  # Only the most important comments are posted inline; the rest are grouped
+  # in the review summary.
+  profile: quiet
+  changed_files_summary: false
+  suggested_reviewers: false
+  estimate_code_review_effort: false
+  in_progress_fortune: false
+
+  # Generated, bot-written, or reproduced third-party text.
+  path_filters:
+    - "!CHANGELOG.md"
+    - "!**/THIRD_PARTY_NOTICES.md"
+    - "!desktop/docs/services-api.md"
+    - "!services/nvpair-engine-manager/catalog/ollama-models.json"
+
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        - Only comment on issues that would block merging. Ignore minor or stylistic concerns.
+        - Restrict feedback to errors, security risks, data loss, races, broken contracts, or functionality-breaking problems.
+        - Do not post comments on code style, formatting, naming, or non-critical improvements.
+        - Do not report what CI already enforces: formatting, ESLint, type errors, unused exports (knip), SPDX headers, or JSON-RPC method drift (service-contracts:check).
+        - Keep reviews short: flag only issues that make the PR unsafe to merge.
+        - Limit review comments to 3–5 items maximum, unless additional blockers exist.
+        - Group similar issues into a single comment instead of posting multiple notes.
+        - Skip repetition. If a pattern repeats, mention it once at a summary level only.
+        - Each comment must name the concrete failure: the input or sequence that triggers it and what goes wrong.
+        - Ignore minor optimization opportunities. Focus solely on correctness and safety.
+        - Avoid posting any refactoring issues.
+        - If there are no critical problems, respond with minimal approval (e.g., 'Looks good'). Do not add additional review.
+        - When in doubt, err on the side of fewer comments.
+
+    - path: "**/*.go"
+      instructions: |
+        Use the correctness guidance in the Uber Go Style Guide as the lens, not its formatting or naming guidance. Flag:
+        - Errors that are dropped, shadowed, or both logged and returned; wrapping that breaks an errors.Is or errors.As check a caller relies on.
+        - Goroutines with no clear exit: no context cancellation, no WaitGroup or done channel, or a send that blocks forever because nothing drains the channel.
+        - Data races: maps, slices, or struct fields shared across goroutines without synchronization; mutexes copied by value; slices or maps kept or returned across an API boundary without copying when the other side can mutate them.
+        - Resources not released on every path, including error paths: response bodies, files, listeners, timers, tickers, and child processes.
+        - Unchecked type assertions, writes to nil maps, and nil dereferences reachable from external input.
+        - panic, os.Exit, or log.Fatal outside main.
+        - Blocking network, exec, or I/O calls that ignore the caller's context, or a timeout that can never fire.
+        - Material performance regressions on hot paths: per-request allocation of large buffers, unbounded growth, or quadratic work over node or model lists.
+
+    - path: "services/**/*.go"
+      instructions: |
+        These are JSON-RPC workers supervised by nvpair-ui-broker. Also flag:
+        - Any write to stdout that is not a JSON-RPC frame. stdout carries the protocol; logs go to stderr through nvpair-shared/applog.
+        - Concurrent stdout writes that are not serialized, so frames can interleave.
+        - A payload that can outgrow jsonrpc.WorkerFrameBytes. An over-long line is a terminal read error that closes the peer while the child keeps running.
+        - A changed method, notification, or payload field without matching updates to its producer, the broker relay, every consumer (nvpair-tui and desktop/src/electron/service-bridge/), the tests, and the docs.
+        - Behavior that contradicts the module's spec.md without updating it. spec.md is normative over README.md.
+        - Code that works on only one OS. Windows, Linux, and macOS on x64 and arm64 are all supported; check signals, paths, file permissions, process groups, and exec.
+        - Logging of prompts, chat messages, request or response bodies, pairing PINs, certificates, or private keys.
+        - Weakened TLS verification or trust checks in cluster, pairing, or node-to-node code.
+
+    - path: "**/{*_test.go,*.test.*,tests/**}"
+      instructions: |
+        Go unit tests, the cross-process tests in services/tests, and Vitest suites in desktop/tests. Flag:
+        - A risky change (concurrency, contracts, routing, persistence, security) or bug fix with no test that fails without it. Do not ask for tests on trivial changes.
+        - Tests that cannot fail: assertions never reached, ignored errors, unawaited async results, or expectations that restate the implementation.
+        - Flakiness: fixed sleeps used for synchronization, hardcoded ports, dependence on test order, wall-clock time, or the host network.
+        - State leaking between tests: goroutines, child processes, temp directories, environment variables, fake timers, or mocks that are not restored.
+        - Skip conditions that would silently skip the test in CI. A skipped test is untested.
+        - Tests that change real system state (installed engines, firewall rules, user configuration) without being opt-in.
+        Do not comment on test naming, structure, or table-driven style.
+
+    - path: "**/*.{md,mdx}"
+      instructions: |
+        Review documentation for accuracy, not prose style. Flag:
+        - Commands, flags, file paths, ports, settings, JSON-RPC method names, or UI labels that do not match the code.
+        - Text in this PR that still describes behavior the same PR changes, or contradicts another doc or a module's spec.md.
+        - Broken relative links or anchors, and a new page under docs/ that fern/docs.yml does not list (Fern will not publish it).
+        - MDX that will not compile: unclosed JSX tags, unescaped `<` or `{` in prose, or invalid component props.
+        - Product or component version numbers, which live only in services/versions.json. docs/release-notes.mdx and docs/upgrade-guide.mdx are exempt.
+        - Copy that presents the pairing PIN as a strong authenticator, or that claims PAIR implements security the backend services own.
+        - Misspelled commands, identifiers, or product names, which break copy-paste and search.
+        Do not comment on grammar, tone, wording, heading case, line length, or Markdown formatting.
+
+    - path: "desktop/**/*.{ts,tsx}"
+      instructions: |
+        Electron main (src/electron), preload (src/preload), React renderer (src/ui), and build scripts. Flag:
+        - Type assertions (`as Type`; `as const` is fine), `any`, or `unknown` in signatures. ESLint does not catch these here, and they hide real type errors; name the type that should have been used.
+        - Promises that are neither awaited nor caught, and async event handlers whose rejection is lost.
+        - pairApi or window event subscriptions without cleanup, and stale closures over props or store state.
+        - Renderer code under src/ui importing from src/electron.
+        - An ipcMain handler not registered through safeHandle(), or one that can throw across IPC instead of returning IpcResult.
+        - Engine or model state taken from a command's response, or component-local loading flags for engine operations. State comes from push events; src/ui/stores/pending-actions.store.ts is the only optimistic state.
+        - XSS paths: dangerouslySetInnerHTML, unsanitized HTML or Markdown, or untrusted URLs opened without openExternalSafe.
+        - Logging of prompts, chat messages, response bodies, pairing PINs, certificates, or keys.
+        - Routing, scheduling, discovery, or cryptography implemented in TypeScript. Those belong in services/.
+
+  auto_review:
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+
+  # The PR template and release-intent-check own the description; docstring
+  # coverage is a style metric.
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+
+  # Style-only output, or default rule sets that are not this repo's.
+  tools:
+    languagetool:
+      enabled: false
+    markdownlint:
+      enabled: false
+    vale:
+      enabled: false
+    yamllint:
+      enabled: false
+    biome:
+      enabled: false
+    oxc:
+      enabled: false
