@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/jsonrpc"
 )
 
@@ -33,9 +36,7 @@ var foreignStopDeclinedRe = regexp.MustCompile(`engine stop during shutdown fail
 func startForeignEngine(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for foreign engine: %v", err)
-	}
+	require.NoError(t, err, "listen for foreign engine")
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"models":[]}`))
@@ -78,9 +79,7 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 		},
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		t.Fatalf("encode foreign engine manifest: %v", err)
-	}
+	require.NoError(t, err, "encode foreign engine manifest")
 	// The per-user manifest dir differs by platform, and the broker points every
 	// worker at one disposable root, so write both candidates rather than
 	// branching on GOOS: the Windows %LocalAppData% / Linux $XDG_CONFIG_HOME
@@ -89,16 +88,12 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 		filepath.Join(configDir, "Nvidia Corporation", "Personal AI Router", "engines"),
 		filepath.Join(configDir, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
 	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("create engine manifest dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "foreign.json"), data, 0o644); err != nil {
-			t.Fatalf("write foreign engine manifest: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(dir, 0o755), "create engine manifest dir")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "foreign.json"), data, 0o644), "write foreign engine manifest")
 	}
 }
 
-// TestQuitSweepsEnginesOnce is the end-to-end guard for quit latency, driving
+// TestBrokerQuit_SweepsEnginesOnce is the end-to-end guard for quit latency, driving
 // the real broker and engine-manager through the sequence the desktop and the
 // TUI use on quit: the broker's shutdown request, then close stdin.
 //
@@ -111,7 +106,7 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 // This counts sweeps rather than milliseconds so it cannot flake on a loaded
 // CI machine. An engine whose stop can only be declined stays marked running,
 // so every repeat sweep would re-pay its readiness probe on the quit path.
-func TestQuitSweepsEnginesOnce(t *testing.T) {
+func TestBrokerQuit_SweepsEnginesOnce(t *testing.T) {
 	configDir := t.TempDir()
 	port := startForeignEngine(t)
 	writeForeignEngineManifest(t, configDir, port)
@@ -126,19 +121,13 @@ func TestQuitSweepsEnginesOnce(t *testing.T) {
 	// adopts the foreign listener as running. Without it there is nothing for a
 	// sweep to decline and the test would pass while covering nothing.
 	sendReq(t, stdin, 98, "engine:get-installed")
-	if resp := waitForResponseID(t, msgs, 98, 15*time.Second); resp.Error != nil {
-		t.Fatalf("engine:get-installed errored: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
-	}
+	require.Nil(t, waitForResponseID(t, msgs, 98, 15*time.Second).Error, "engine:get-installed errored")
 
 	sendReq(t, stdin, 99, "shutdown")
 	sweeps := quitAndCountStderr(t, msgs, stderrLines, foreignStopDeclinedRe, stdin, 99, 30*time.Second)
 
-	if sweeps == 0 {
-		t.Fatal("engine-manager never declined a stop; the foreign engine was not adopted, so this exercised nothing")
-	}
-	if sweeps > 1 {
-		t.Fatalf("engine sweep ran %d times during one quit, want 1; each repeat re-pays the stop probe and is what made quitting slow", sweeps)
-	}
+	require.NotZero(t, sweeps, "engine-manager never declined a stop; the foreign engine was not adopted, so this exercised nothing")
+	assert.Equal(t, 1, sweeps, "each repeat sweep re-pays the stop probe and is what made quitting slow")
 }
 
 // quitAndCountStderr completes a client's quit sequence and counts stderr lines
@@ -161,18 +150,12 @@ func quitAndCountStderr(t *testing.T, msgs <-chan jsonrpc.Message, lines <-chan 
 			if replied || msg.Method != "" || !idEquals(t, msg.ID, replyID) {
 				continue
 			}
-			if msg.Error != nil {
-				t.Fatalf("shutdown errored: code=%d msg=%s", msg.Error.Code, msg.Error.Message)
-			}
+			require.Nil(t, msg.Error, "shutdown errored")
 			replied = true
-			if err := stdin.Close(); err != nil {
-				t.Fatalf("close broker stdin: %v", err)
-			}
+			require.NoError(t, stdin.Close(), "close broker stdin")
 		case line, ok := <-lines:
 			if !ok {
-				if !replied {
-					t.Fatalf("broker exited before replying to shutdown; counted %d sweep(s)", count)
-				}
+				require.True(t, replied, "broker exited before replying to shutdown; counted %d sweep(s)", count)
 				return count
 			}
 			if re.MatchString(line) {
@@ -180,7 +163,7 @@ func quitAndCountStderr(t *testing.T, msgs <-chan jsonrpc.Message, lines <-chan 
 				t.Logf("declined stop #%d: %s", count, line)
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for the broker to exit; replied=%t, counted %d sweep(s)", timeout, replied, count)
+			require.FailNowf(t, "broker did not exit", "timed out after %s; replied=%t, counted %d sweep(s)", timeout, replied, count)
 		}
 	}
 }
