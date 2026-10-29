@@ -9,40 +9,32 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestPersistManualNodeRoundTripsAndRemoves(t *testing.T) {
+func TestPersistManualNode_RoundTripsAndRemoves(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	b := &Broker{manualNodesConfigPath: path}
 
-	if err := b.persistManualNode(persistedManualNode{ID: "lab", Address: "node.local", Name: "lab", TLSPort: 14319, MTLS: true}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, b.persistManualNode(persistedManualNode{ID: "lab", Address: "node.local", Name: "lab", TLSPort: 14319, MTLS: true}))
 	entries, err := loadPersistedManualNodes(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].ID != "lab" || entries[0].TLSPort != 14319 || !entries[0].MTLS {
-		t.Fatalf("persisted entries = %+v", entries)
-	}
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "lab", entries[0].ID)
+	assert.Equal(t, 14319, entries[0].TLSPort)
+	assert.True(t, entries[0].MTLS)
 
-	if err := b.removePersistedManualNode("lab"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, b.removePersistedManualNode("lab"))
 	entries, err = loadPersistedManualNodes(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("entries after remove = %+v, want empty", entries)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, entries, "entries after remove")
 }
 
-func TestReplayPersistedManualNodesIntoWorker(t *testing.T) {
+func TestReplayPersistedManualNodes_ResendsSavedNodesToWorker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
-	if err := writePersistedManualNodes(path, []persistedManualNode{{ID: "lab", Address: "node.local", Name: "lab"}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writePersistedManualNodes(path, []persistedManualNode{{ID: "lab", Address: "node.local", Name: "lab"}}))
 
 	brokerSide, workerSide := net.Pipe()
 	defer brokerSide.Close()
@@ -69,25 +61,20 @@ func TestReplayPersistedManualNodesIntoWorker(t *testing.T) {
 
 	select {
 	case entry := <-got:
-		if entry.Address != "node.local" || entry.Name != "lab" {
-			t.Fatalf("replayed entry = %+v", entry)
-		}
+		assert.Equal(t, "node.local", entry.Address)
+		assert.Equal(t, "lab", entry.Name)
 	case <-time.After(2 * time.Second):
-		t.Fatal("persisted manual node was not replayed")
+		require.FailNow(t, "persisted manual node was not replayed")
 	}
 }
 
-func TestManualAliasForOperationalKey(t *testing.T) {
+func TestManualAliasForKey_PrefersMatchingAliasAndFallsBackDeterministically(t *testing.T) {
 	b := &Broker{manualNodeKeys: map[string]string{"second": "node-uuid", "first": "node-uuid"}}
-	if got := b.manualAliasForKey("node-uuid"); got != "first" {
-		t.Fatalf("alias = %q, want first", got)
-	}
-	if got := b.manualAliasForKey("second"); got != "second" {
-		t.Fatalf("direct alias = %q, want second", got)
-	}
+	assert.Equal(t, "first", b.manualAliasForKey("node-uuid"))
+	assert.Equal(t, "second", b.manualAliasForKey("second"))
 }
 
-func TestManualNodeRelayPersistsSuccessfulAdd(t *testing.T) {
+func TestManualNodeRelay_PersistsSuccessfulAdd(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
 	clientBroker, clientSide := net.Pipe()
 	workerBroker, workerSide := net.Pipe()
@@ -117,24 +104,19 @@ func TestManualNodeRelayPersistsSuccessfulAdd(t *testing.T) {
 		Params:  json.RawMessage(`{"address":"node.local"}`),
 	})
 	response, err := NewCodec(clientSide).Read()
-	if err != nil || response.Error != nil {
-		t.Fatalf("add response error = %v, frame = %+v", err, response)
-	}
+	require.NoError(t, err, "read add response")
+	require.Nil(t, response.Error, "add response")
 
 	entries, err := loadPersistedManualNodes(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].ID != "manual:node.local" || entries[0].Address != "node.local" {
-		t.Fatalf("persisted add = %+v", entries)
-	}
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "manual:node.local", entries[0].ID)
+	assert.Equal(t, "node.local", entries[0].Address)
 }
 
-func TestManualNodeRelayRemovesByOperationalKey(t *testing.T) {
+func TestManualNodeRelay_RemovesByOperationalKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
-	if err := writePersistedManualNodes(path, []persistedManualNode{{ID: "lab", Address: "node.local", Name: "lab"}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writePersistedManualNodes(path, []persistedManualNode{{ID: "lab", Address: "node.local", Name: "lab"}}))
 	clientBroker, clientSide := net.Pipe()
 	workerBroker, workerSide := net.Pipe()
 	defer clientBroker.Close()
@@ -173,17 +155,10 @@ func TestManualNodeRelayRemovesByOperationalKey(t *testing.T) {
 		Params:  json.RawMessage(`{"id":"node-uuid"}`),
 	})
 	response, err := NewCodec(clientSide).Read()
-	if err != nil || response.Error != nil {
-		t.Fatalf("remove response error = %v, frame = %+v", err, response)
-	}
-	if got := <-seenID; got != "lab" {
-		t.Fatalf("worker remove id = %q, want lab", got)
-	}
+	require.NoError(t, err, "read remove response")
+	require.Nil(t, response.Error, "remove response")
+	assert.Equal(t, "lab", <-seenID, "worker remove id")
 	entries, err := loadPersistedManualNodes(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("persisted entries after remove = %+v", entries)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, entries, "persisted entries after remove")
 }

@@ -1,13 +1,18 @@
+---
+title: Inference Dispatcher
+description: Send test inference requests to Ollama, LM Studio, and llama.cpp-compatible servers, including PAIR proxies, with the standalone inference dispatcher.
+---
+
 {/*
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 */}
 
-# Inference Dispatcher
+
 
 `scripts/inference-dispatcher` is a standalone HTTP client for exercising
 Ollama, LM Studio, and llama.cpp-compatible servers. It deliberately has no
-knowledge of Personal AI Router, its broker, Electron, JSON-RPC, discovery, or
+knowledge of NVIDIA PAIR, its broker, Electron, JSON-RPC, discovery, or
 proxy implementation.
 Pointing it at a compatible proxy is indistinguishable from pointing it at a
 native model server, which is what makes it useful: the request enters the
@@ -112,5 +117,5 @@ without putting inference content on disk. An upstream failure is recorded as
 its HTTP status plus the size and digest of the body, never the body text — a
 non-2xx body from an OpenAI-compatible endpoint can echo the request back.
 
-This is a hard rule for every Personal AI Router component, not a setting. There
+This is a hard rule for every NVIDIA PAIR component, not a setting. There
 is no flag that turns it off.

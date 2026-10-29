@@ -95,6 +95,15 @@ cross-process coverage. Some tests skip themselves rather than fail; refer to
 passing. Live engine and multi-node tests can modify real system state, so run
 them only when you intend to and only against systems and networks you control.
 
+## Test readability
+
+Follow [PAIR test style](.agents/skills/pair-test-style/SKILL.md) when writing,
+changing, or reviewing tests. Name Go tests `Test<Subject>_<ExpectedBehavior>`
+and consider three candidate names before selecting the clearest one. Use
+descriptive case names, keep inputs and expectations explicit, and avoid jargon
+in test comments where possible. Comments should explain intent or unusual setup.
+Apply this advice to tests in scope rather than starting unrelated rewrites.
+
 ## Checks
 
 On Linux and macOS the repository-root `Makefile` is the shortest path to a clean

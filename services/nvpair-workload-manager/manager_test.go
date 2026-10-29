@@ -17,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 )
 
@@ -38,24 +41,16 @@ type jParams struct {
 func assertFrame(t *testing.T, body []byte, want int) {
 	t.Helper()
 	var frame jParams
-	if err := json.Unmarshal(body, &frame); err != nil {
-		t.Fatalf("decode frame %d: %v", want, err)
-	}
-	if frame.Params.Seq != want {
-		t.Fatalf("frame %d arrived with sequence %d", want, frame.Params.Seq)
-	}
+	require.NoError(t, json.Unmarshal(body, &frame), "decode frame %d", want)
+	require.Equal(t, want, frame.Params.Seq, "frame sequence")
 }
 
 func newBroadcastManagerForPeer(t *testing.T, selfDir string, peer *httptest.Server) *Manager {
 	t.Helper()
 	host, portStr, err := net.SplitHostPort(peer.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split test peer address: %v", err)
-	}
+	require.NoError(t, err, "split test peer address")
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse test peer port: %v", err)
-	}
+	require.NoError(t, err, "parse test peer port")
 
 	m := NewManager(NewCodec(codecNop{}), 0, "uuid-self", selfDir)
 	m.peers.Replace([]PeerNode{{
@@ -103,7 +98,7 @@ func TestManager_BroadcastPreservesEnqueueOrder(t *testing.T) {
 		case body := <-received:
 			assertFrame(t, body, want)
 		case <-ctx.Done():
-			t.Fatalf("peer received %d of %d frames: %v", want, frameCount, ctx.Err())
+			require.FailNow(t, "peer did not receive every frame", "%d of %d frames: %v", want, frameCount, ctx.Err())
 		}
 	}
 }
@@ -140,9 +135,7 @@ func TestManager_SnapshotCannotResurrectRemovedWorkload(t *testing.T) {
 		State: StateRunning, OriginatedFrom: "node-a", CreatedAt: 1,
 	}
 	lifecycle, err := json.Marshal(lifecycleParams{WorkloadInfo: workload})
-	if err != nil {
-		t.Fatalf("marshal lifecycle: %v", err)
-	}
+	require.NoError(t, err, "marshal lifecycle")
 	m.trackActive(workloadKey{origin: "node-a", engine: "ollama", runID: "r1", id: "7"}, MethodStarted, lifecycle, StateRunning)
 
 	paused := make(chan struct{})
@@ -162,13 +155,11 @@ func TestManager_SnapshotCannotResurrectRemovedWorkload(t *testing.T) {
 	select {
 	case <-paused:
 	case <-time.After(2 * time.Second):
-		t.Fatal("snapshot did not pause after copying the workload")
+		require.FailNow(t, "snapshot did not pause after copying the workload")
 	}
 
 	removal, err := json.Marshal(removeParams{WorkloadID: "7", OriginatedFrom: "node-a"})
-	if err != nil {
-		t.Fatalf("marshal removal: %v", err)
-	}
+	require.NoError(t, err, "marshal removal")
 	removeDone := make(chan struct{})
 	go func() {
 		m.handleLocalRemove(&Message{Method: MethodRemove, Params: removal})
@@ -186,7 +177,7 @@ func TestManager_SnapshotCannotResurrectRemovedWorkload(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
-			t.Fatal("snapshot or removal did not finish")
+			require.FailNow(t, "snapshot or removal did not finish")
 		}
 	}
 
@@ -200,9 +191,7 @@ func TestManager_SnapshotCannotResurrectRemovedWorkload(t *testing.T) {
 	)
 	for len(m.broadcastCh) > 0 {
 		var frame Message
-		if err := json.Unmarshal(<-m.broadcastCh, &frame); err != nil {
-			t.Fatalf("decode queued frame: %v", err)
-		}
+		require.NoError(t, json.Unmarshal(<-m.broadcastCh, &frame), "decode queued frame")
 		response := httptest.NewRecorder()
 		switch frame.Method {
 		case MethodStarted:
@@ -210,16 +199,10 @@ func TestManager_SnapshotCannotResurrectRemovedWorkload(t *testing.T) {
 		case MethodRemove:
 			receiver.handleRemove(response, &frame)
 		default:
-			t.Fatalf("unexpected queued method %q", frame.Method)
+			require.FailNow(t, "unexpected queued method", "%q", frame.Method)
 		}
-		if response.Code != http.StatusOK {
-			t.Fatalf("peer handled %s with HTTP %d", frame.Method, response.Code)
-		}
+		require.Equal(t, http.StatusOK, response.Code, "peer handling %s", frame.Method)
 	}
-	if removes != 1 {
-		t.Fatalf("peer received %d removals, want 1", removes)
-	}
-	if present {
-		t.Fatal("stale snapshot upsert resurrected the workload after its removal")
-	}
+	assert.Equal(t, 1, removes, "peer must receive one removal")
+	assert.False(t, present, "stale snapshot must not resurrect the workload")
 }
