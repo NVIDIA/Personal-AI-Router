@@ -429,9 +429,7 @@ func TestRemoveMemberForgetsItsManualEntry(t *testing.T) {
 
 	wantCall(t, calls, "nodes:remove", "nodeUuid", "peer")
 	wantCall(t, calls, "node/remove", "id", "manual:10.0.0.2")
-	if got := v.status.render(); !contains(got, "remove peer ok") {
-		t.Errorf("status = %q, want the removal reported", got)
-	}
+	assert.Contains(t, v.status.render(), "remove peer ok", "the removal is reported")
 }
 
 // TestFailedRemoveMemberKeepsItsManualEntry checks a peer the cluster manager
@@ -449,9 +447,7 @@ func TestFailedRemoveMemberKeepsItsManualEntry(t *testing.T) {
 		t.Errorf("a failed un-pairing went on to call %s", c.method)
 	default:
 	}
-	if got := v.status.render(); !contains(got, "remove peer failed") {
-		t.Errorf("status = %q, want the failure reported", got)
-	}
+	assert.Contains(t, v.status.render(), "remove peer failed", "the failure is reported")
 }
 
 // TestNodesViewExplainsAnEmptyTable is the guard for the worst first
