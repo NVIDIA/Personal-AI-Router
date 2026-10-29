@@ -88,9 +88,8 @@ type nodesView struct {
 	// invite sent by address, which has no node identity to key on — see
 	// invitedAddress.
 	invitedKey string
-	// invitedAddress is the host an invite-by-address is pending against. That
-	// path has no UUID, so the joined peer is recognised by its address instead;
-	// without it the PIN it pinned was never retired.
+	// invitedAddress is the target address, retained so a discovered row can be
+	// recognised after pairing replaces its unverified key with a host UUID.
 	invitedAddress string
 	// outboundInviteID is the invite our pending PIN belongs to. Terminal
 	// notifications carry an inviteId and the manager supports concurrent
@@ -223,8 +222,7 @@ type nodeInviteMsg struct {
 	// inviteID identifies the session, so a later terminal notification can be
 	// matched to the PIN this result pinned.
 	inviteID string
-	// address is set when the invite went out by address rather than to a
-	// discovered node, which is how the joined peer is recognised later.
+	// address recognises the joined peer even if verification changes its row key.
 	address  string
 	pin      string
 	rejected bool
@@ -547,8 +545,8 @@ func (v *nodesView) handleInviteResult(msg nodeInviteMsg) tea.Cmd {
 		// other machine. It clears when the invite resolves.
 		//
 		// The id is recorded so a terminal notification can be matched to this
-		// session, and the address so an invite sent by address — which has no
-		// node identity — can still recognise the peer once it joins.
+		// session, and the target address recognises the peer once it joins,
+		// even if pairing changes the discovery row's key.
 		v.outboundInviteID = msg.inviteID
 		v.invitedAddress = msg.address
 		v.outboundName, v.outboundPIN = msg.name, msg.pin
@@ -1013,12 +1011,12 @@ func (v *nodesView) inviteSelected() tea.Cmd {
 	}
 
 	params := map[string]any{"address": row.address, "nodeId": row.key}
-	name := row.name
+	name, address := row.name, row.address
 	v.invitedKey = row.key
 	v.inviteSending, v.outboundName = true, name
 	v.status.busy("inviting %s...", name)
 	return inviteNodeCmd(v.client, params, func(res inviteNodeResult, err error) tea.Msg {
-		return inviteResultMsg(name, "", res, err)
+		return inviteResultMsg(name, address, res, err)
 	})
 }
 
@@ -1086,7 +1084,7 @@ func inviteNodeCmd(client *rpc.Client, params map[string]any, finish func(res in
 }
 
 // inviteResultMsg maps a cluster:invite-node outcome onto the view message.
-// address is empty for an invite aimed at a discovered node.
+// The target address remains usable when pairing changes a discovered row's key.
 func inviteResultMsg(name, address string, res inviteNodeResult, err error) tea.Msg {
 	if err != nil {
 		return nodeInviteMsg{name: name, address: address, err: err}
@@ -1486,10 +1484,9 @@ func (v *nodesView) retirePendingInvite() {
 		if n.membership != membershipMember {
 			continue
 		}
-		// Either identity works: a discovered node was invited by UUID, while an
-		// invite by address has none, so that peer is recognised by the address
-		// it was invited at. Without the address arm, a PIN pinned by the
-		// by-address path was never retired at all.
+		// A discovered row acquires its verified host UUID during pairing. The
+		// recorded target address recognises it after that key change, as well
+		// as a peer invited directly by address. This does not merge node rows.
 		if (v.invitedKey != "" && n.key == v.invitedKey) ||
 			(v.invitedAddress != "" && addressMatches(n, v.invitedAddress)) {
 			v.clearOutboundInvite()

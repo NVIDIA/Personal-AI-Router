@@ -23,7 +23,7 @@ import (
 	"nvpair-shared/noderec"
 )
 
-// Browser holds the relay-fed peer map, keyed by the directory hostUuid.
+// Browser resolves relay records by discovery record ID and host UUID.
 type Browser struct {
 	mu    sync.RWMutex
 	relay map[string]discovery.Node
@@ -33,17 +33,16 @@ func newBrowser() *Browser {
 	return &Browser{relay: make(map[string]discovery.Node)}
 }
 
-// setRelay replaces the resolver map from a discovery:nodes snapshot: every node
-// advertising cl with an IP becomes a resolvable entry keyed by hostUuid (the
-// rest are dropped). The broker sends the full filtered set on every change, so
-// this is a wholesale replace, not a per-node apply — a departed node is simply
-// absent from the next snapshot and stops resolving. The synthesized TXT carries
-// uuid=<hostUuid> so Resolve's UUID match works (hostUuid is the same principal
-// the node advertises as uuid=), plus the node's own address ranking so callers
-// can fail over past an address they cannot reach.
+// setRelay replaces the resolver map from a discovery:nodes snapshot. Records
+// with a cluster service and dialable addresses remain selectable by record ID
+// for pairing. Verified records take precedence when resolving a host UUID.
+// Departed records disappear with the next snapshot. Synthesized TXT preserves
+// address ranking for callers that need address failover.
 func (b *Browser) setRelay(nodes []noderec.DirectoryNode) {
 	m := make(map[string]discovery.Node, len(nodes))
+	verified := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
+		proved := n.IdentityVerification == noderec.IdentityLocal || n.IdentityVerification == noderec.IdentityPinned
 		svc, ok := n.Services[noderec.ServiceCluster]
 		if !ok {
 			continue
@@ -55,48 +54,48 @@ func (b *Browser) setRelay(nodes []noderec.DirectoryNode) {
 		if len(hosts) == 0 {
 			continue
 		}
-		m[n.HostUUID] = discovery.Node{
+		node := discovery.Node{
 			ID:        n.Name,
 			Addresses: hosts,
 			Port:      svc.Port,
-			TXT:       append([]string{"uuid=" + n.HostUUID}, n.AddressTXT()...),
+			TXT:       n.AddressTXT(),
 		}
+		// A selected discovery remains addressable for pairing, independently
+		// of the preferred endpoint for an already verified host.
+		if n.DiscoveryRecordID != "" {
+			m[n.DiscoveryRecordID] = node
+		}
+		if verified[n.HostUUID] && !proved {
+			continue
+		}
+		m[n.HostUUID] = node
+		verified[n.HostUUID] = proved
 	}
 	b.mu.Lock()
 	b.relay = m
 	b.mu.Unlock()
 }
 
-// Resolve returns a node's addresses in the order it ranked them, plus its
-// cluster-manager port, for a UUID or nodeId (hostname); a UUID match wins. The
-// list is what a caller dials down until one address answers — the publisher's
-// ranking is evidence from its vantage point, not a promise about this host's.
+// Resolve returns ranked addresses and the cluster-manager port. Exact record
+// ID and host UUID lookups take precedence over hostname matching. Callers try
+// the addresses in order because the publisher's ranking does not establish
+// which addresses this host can reach.
 func (b *Browser) Resolve(idOrUUID string) (hosts []string, port int, ok bool) {
 	b.mu.RLock()
-	nodes := make([]discovery.Node, 0, len(b.relay))
-	for _, n := range b.relay {
-		nodes = append(nodes, n)
+	defer b.mu.RUnlock()
+	// setRelay and seed index every UUID directly. Only hostname lookups need
+	// a scan, so adding another writer must preserve that indexing invariant.
+	if node, present := b.relay[idOrUUID]; present && node.Port > 0 {
+		if addresses := pickHosts(node); len(addresses) > 0 {
+			return addresses, node.Port, true
+		}
 	}
-	b.mu.RUnlock()
-
-	var byNode discovery.Node
-	haveNode := false
-	for _, n := range nodes {
-		if n.Port == 0 {
+	for _, n := range b.relay {
+		if n.ID != idOrUUID || n.Port == 0 {
 			continue
 		}
-		if discovery.UUIDFromTXT(n.TXT) == idOrUUID {
-			if h := pickHosts(n); len(h) > 0 {
-				return h, n.Port, true
-			}
-		}
-		if n.ID == idOrUUID && !haveNode {
-			byNode, haveNode = n, true
-		}
-	}
-	if haveNode {
-		if h := pickHosts(byNode); len(h) > 0 {
-			return h, byNode.Port, true
+		if addresses := pickHosts(n); len(addresses) > 0 {
+			return addresses, n.Port, true
 		}
 	}
 	return nil, 0, false
@@ -119,6 +118,5 @@ func (b *Browser) seed(uuid, host string, port int) {
 		ID:        uuid,
 		Addresses: []string{host},
 		Port:      port,
-		TXT:       []string{"uuid=" + uuid},
 	}
 }

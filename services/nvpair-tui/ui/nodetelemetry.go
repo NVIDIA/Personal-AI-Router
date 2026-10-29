@@ -19,11 +19,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The node-info HTTP contract. Hardware telemetry is the one thing the broker's
-// JSON-RPC surface does not carry: it keeps GPU, CPU, and memory readings
-// internally but does not put them on the discovery wire, so a client that wants
-// them has to ask each node directly. The desktop app does the same thing, and
-// these values match its cadence so the two behave alike.
+// Public node-info HTTP reads supply hardware displays independently of the
+// service measurements used by the broker and scheduler. These frontend reads
+// continue for paired and unpaired nodes, with the desktop's polling cadence.
 const (
 	nodeInfoPath         = "/v1/node-info"
 	nodeInfoDefaultPort  = 14318
@@ -115,10 +113,10 @@ func pollTelemetryCmd(key string, gen int, addresses []string, port int, expect 
 		var lastErr error
 		for _, address := range addresses {
 			t, err := fetchTelemetry(nodeInfoURL(address, port))
-			if err == nil && expect != "" && t.HostUUID != "" && t.HostUUID != expect {
+			if err == nil && expect != "" && t.HostUUID != expect {
 				// An address outlives the machine it was published for. Taken,
 				// this showed another machine's hardware under this one's name.
-				err = fmt.Errorf("%s answered as another machine", address)
+				err = fmt.Errorf("%s did not identify the expected machine", address)
 			}
 			if err == nil {
 				return nodeTelemetryMsg{nodeKey: key, gen: gen, address: address, telemetry: t}
@@ -145,10 +143,10 @@ func preferAddress(addresses []string, last string) []string {
 }
 
 // telemetryIdentity is the machine a node's readings must come from, or empty
-// when there is nothing to check an answer against: a row keyed by a stand-in
-// rather than a UUID, or this machine, which is reached over loopback.
+// when there is nothing to check an answer against: an unverified discovery or
+// a row keyed by a stand-in rather than a UUID. Local rows also require a match.
 func telemetryIdentity(node nodeRow) string {
-	if node.self || !hasHostIdentity(node.key) {
+	if node.identityVerification == noderec.IdentityUnverified || !hasHostIdentity(node.key) {
 		return ""
 	}
 	return node.key

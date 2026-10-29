@@ -19,6 +19,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/appdir"
+	"nvpair-shared/noderec"
 )
 
 // fakeOllama stands up a minimal Ollama-looking HTTP server on the fixed
@@ -89,25 +91,25 @@ func persistLMStudioProxyPort(t *testing.T, port int) string {
 	return root
 }
 
-// fakeNodeInfo stands up a minimal node-info server on the fixed port the
-// manual prober hits (14318): GET /v1/node-info returns 200 with the given
-// hostUuid, so a manual node pointed at it learns its stable UUID. Skips the
-// test if the port can't be bound.
-func fakeNodeInfo(t *testing.T, hostUUID string) func() {
+// fakePinnedNodeInfo serves the manual peer's UUID over mutually pinned TLS.
+func fakePinnedNodeInfo(t *testing.T, cluster *interNodeCluster) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:14318")
-	if err != nil {
-		t.Skipf("cannot bind fake node-info on 127.0.0.1:14318 (%v); skipping", err)
-	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := cluster.peer.VerifyClientPin(r); !ok {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, writeErr := io.WriteString(w, fmt.Sprintf(`{"GPUs":[],"hostUuid":%q}`, hostUUID))
-		assert.NoError(t, writeErr)
+		if err := json.NewEncoder(w).Encode(noderec.NodeInfo{HostUUID: cluster.peerUUID, ClusterUUID: &cluster.peerUUID}); err != nil {
+			t.Errorf("encode peer node-info: %v", err)
+		}
 	})
-	srv := &http.Server{Handler: mux}
-	go func() { _ = srv.Serve(ln) }()
-	return func() { _ = srv.Close() }
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = cluster.peer.ServerTLSConfig()
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().(*net.TCPAddr).Port
 }
 
 // proxyNode mirrors the proxy's nodes/list element (ollama-proxy Node).
@@ -153,7 +155,9 @@ func TestBroker_BridgesManualNodeIntoProxy(t *testing.T) {
 	)
 	t.Cleanup(cleanup)
 
-	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	// Freshly built workers can take longer to launch on Windows. Give startup
+	// its own allowance before checking whether the manual route converges.
+	waitForMethod(t, msgs, "app:ready", 30*time.Second)
 
 	const nodeName = "xproc-manual-proxy-bridge"
 	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":900,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
@@ -172,7 +176,7 @@ func TestBroker_BridgesManualNodeIntoProxy(t *testing.T) {
 		select {
 		case msg, ok := <-msgs:
 			require.True(t, ok, "broker stream closed before the manual node bridged into the proxy")
-			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, nodeName) {
+			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, "manual:"+nodeName) {
 				t.Logf("manual node %q bridged into proxy nodes/list", nodeName)
 				return
 			}
@@ -185,8 +189,8 @@ func TestBroker_BridgesManualNodeIntoProxy(t *testing.T) {
 	}
 }
 
-// TestBrokerBridgesManualNodeUnderLearnedUUID: once a
-// manual node's node-info reports its stable hostUuid, the proxy candidate must
+// Once authenticated node-info reports a manual node's stable hostUuid, the
+// proxy candidate must
 // be keyed by that UUID — the same operational key the discovery store and
 // scheduler use — so scheduler priority (node/set-priority) and scheduledOn
 // resolve to it. The candidate must therefore appear in ollama-proxy:nodes/list under
@@ -197,10 +201,10 @@ func TestBroker_BridgesManualNodeUnderLearnedUUID(t *testing.T) {
 	}
 	stopOllama := fakeOllama(t) // skips if 11434 unavailable
 	t.Cleanup(stopOllama)
-	stopNodeInfo := fakeNodeInfo(t, "learned-host-uuid") // skips if 14318 unavailable
-	t.Cleanup(stopNodeInfo)
+	cluster := newInterNodeCluster(t)
+	nodeInfoPort := fakePinnedNodeInfo(t, cluster)
 
-	stdin, msgs, _, cleanup := startBrokerWith(t,
+	stdin, msgs, _, cleanup := startBrokerWithDirs(t, t.TempDir(), cluster.nodeDir,
 		"--manual-nodes-path", manualNodesBin,
 		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 	)
@@ -209,7 +213,7 @@ func TestBroker_BridgesManualNodeUnderLearnedUUID(t *testing.T) {
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
 	const nodeName = "xproc-manual-learned-uuid"
-	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":940,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
+	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":940,"method":"node/add","params":{"address":"127.0.0.1","name":%q,"tls_port":%d}}`, nodeName, nodeInfoPort) + "\n"
 	_, err := stdin.Write([]byte(addReq))
 	require.NoError(t, err, "write node/add")
 
@@ -223,7 +227,7 @@ func TestBroker_BridgesManualNodeUnderLearnedUUID(t *testing.T) {
 		case msg, ok := <-msgs:
 			require.True(t, ok, "broker stream closed before the manual node bridged under its learned UUID")
 			if msg.Method == "" && msg.ID != nil {
-				if proxyNodesHas(t, msg.Result, "learned-host-uuid") {
+				if proxyNodesHas(t, msg.Result, cluster.peerUUID) {
 					t.Logf("manual node bridged into proxy under learned hostUuid")
 					return
 				}
@@ -270,7 +274,7 @@ func TestBroker_BridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 		select {
 		case msg, ok := <-msgs:
 			require.True(t, ok, "broker stream closed before the manual node bridged into lmstudio-proxy")
-			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, nodeName) {
+			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, "manual:"+nodeName) {
 				t.Logf("manual node %q bridged into lmstudio-proxy nodes/list", nodeName)
 				return
 			}

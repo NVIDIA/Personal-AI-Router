@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/engines"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
@@ -316,56 +318,6 @@ func TestSubscriptions_AreTrackedPerEngine(t *testing.T) {
 	}
 }
 
-// A facade re-subscribing must drop only its own prior registration. Dropping
-// every one would silence the other engines, and dropping none would double-feed
-// this one.
-func TestResubscribe_ReplacesOnlyThatEnginesSubscription(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() {
-		_ = client.Close()
-		_ = server.Close()
-	})
-	go func() {
-		codec := NewCodec(server)
-		for {
-			if _, err := codec.Read(); err != nil {
-				return
-			}
-		}
-	}()
-
-	dir := relay.NewDirectory()
-	p := &proxyProcess{peer: NewPeer(NewCodec(client)), relayDir: dir}
-
-	all := engines.All()
-	if len(all) < 2 {
-		t.Skip("needs at least two engines to tell the subscriptions apart")
-	}
-	first, second := all[0], all[1]
-
-	params := func(e engines.Engine) json.RawMessage {
-		raw, err := json.Marshal(noderec.SubscribeParams{
-			Services: []noderec.ServiceKey{e.DiscoveryService},
-		})
-		require.NoError(t, err, "marshal subscribe")
-		return raw
-	}
-
-	p.handleSubscribe(first.Name, params(first))
-	p.handleSubscribe(second.Name, params(second))
-
-	p.subMu.Lock()
-	firstID, secondID := p.subIDs[first.Name], p.subIDs[second.Name]
-	p.subMu.Unlock()
-
-	p.handleSubscribe(first.Name, params(first))
-
-	p.subMu.Lock()
-	defer p.subMu.Unlock()
-	assert.NotEqual(t, firstID, p.subIDs[first.Name], "re-subscribe kept %s's original ID, so it is now double-fed", first.Name)
-	assert.Equal(t, secondID, p.subIDs[second.Name], "re-subscribing %s changed %s's ID", first.Name, second.Name)
-}
-
 // The read pump reports ready and wires subscriptions by matching bare method
 // names, so it has to see through the address. An unaddressed notification is
 // process-scoped and passes through untouched.
@@ -387,4 +339,201 @@ func TestFacadeMethodFor_StripsOnlyItsOwnEngine(t *testing.T) {
 	// The errors relay matches bare names, so an addressed error must come out bare.
 	test("addressed error becomes a bare errors method", ollamaProxyProfile, ollamaProxyProfile.addressed(methodErrorsReport), methodErrorsReport, true)
 	test("unaddressed error is untouched", lmstudioProxyProfile, methodErrorsReport, methodErrorsReport, true)
+}
+
+// A proxy with a full stdin pipe must not hold discovery processing or prevent
+// pin withdrawal. After recovery it needs the latest empty routing snapshot,
+// rather than the intermediate records accumulated while it was not reading.
+func TestProxyDiscovery_CoalescesWhilePipeIsBlocked(t *testing.T) {
+	brokerSide, proxySide := net.Pipe()
+	t.Cleanup(func() {
+		assert.NoError(t, brokerSide.Close())
+		assert.NoError(t, proxySide.Close())
+	})
+	require.NoError(t, proxySide.SetDeadline(time.Now().Add(6*time.Second)))
+	writer := &observedProxyWriter{Conn: brokerSide, writing: make(chan struct{})}
+	b := newManualTestBroker()
+	b.nodeID, b.clusterDir = "self", t.TempDir()
+	clustertrusttest.Join(t, b.clusterDir, "cluster", "self", "peer")
+	mesh := clustertrust.Open(b.clusterDir)
+	b.relayDir = relay.NewDirectory()
+	scanner := &scannerProcess{store: b.store, relayDir: b.relayDir, stateMu: &b.discoveryMu, mesh: mesh}
+	node := noderec.DirectoryNode{
+		HostUUID: "peer", Name: "initial", DiscoveryRecordID: mesh.PeerRecordID("peer"),
+		IdentityVerification: noderec.IdentityPinned, Trusted: true,
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
+	}
+	initialEvent, err := json.Marshal(noderec.NodeEvent{Node: node})
+	require.NoError(t, err)
+	scanner.handleNotify(noderec.NotifyNodeDiscovered, initialEvent)
+	proxy := &proxyProcess{peer: NewPeer(NewCodec(writer)), relayDir: b.relayDir}
+	params, err := json.Marshal(noderec.SubscribeParams{Services: []noderec.ServiceKey{noderec.ServiceOllama}})
+	require.NoError(t, err)
+	subscribed := make(chan struct{})
+	go func() {
+		proxy.handleSubscribe("ollama", params)
+		close(subscribed)
+	}()
+	select {
+	case <-writer.writing:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the initial snapshot was not sent")
+	}
+	finished := func(done <-chan struct{}, operation string) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			assert.Fail(t, operation+" waited for the blocked proxy")
+		}
+	}
+	node.Name = "intermediate"
+	updatedEvent, err := json.Marshal(noderec.NodeEvent{Node: node})
+	require.NoError(t, err)
+	scanned := make(chan struct{})
+	go func() {
+		for range 20 {
+			scanner.handleNotify(noderec.NotifyNodeUpdated, updatedEvent)
+		}
+		close(scanned)
+	}()
+	finished(scanned, "scanner update")
+	owned := make(chan struct{})
+	go func() {
+		b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"self"}}`))
+		close(owned)
+	}()
+	clustertrusttest.RemovePeerPin(t, b.clusterDir, "peer")
+	withdrawn := make(chan struct{})
+	go func() {
+		b.reconcileDiscoveryTrust()
+		close(withdrawn)
+	}()
+	finished(owned, "local hardware update")
+	finished(withdrawn, "trust withdrawal")
+	finished(subscribed, "subscription setup")
+
+	codec := NewCodec(proxySide)
+	initial, err := codec.Read()
+	require.NoError(t, err)
+	require.Equal(t, "ollama:discovery:nodes", initial.Method)
+	var first noderec.GetNodesResult
+	require.NoError(t, json.Unmarshal(initial.Params, &first))
+	require.Len(t, first.Nodes, 1)
+	assert.Equal(t, "initial", first.Nodes[0].Name)
+	last, err := codec.Read()
+	require.NoError(t, err)
+	assert.Equal(t, "ollama:discovery:nodes", last.Method)
+	var final noderec.GetNodesResult
+	require.NoError(t, json.Unmarshal(last.Params, &final))
+	assert.NotNil(t, final.Nodes, "an empty authoritative snapshot is encoded as []")
+	assert.Empty(t, final.Nodes)
+	finished(scanned, "scanner after pipe recovery")
+	finished(owned, "local hardware after pipe recovery")
+	finished(withdrawn, "trust withdrawal after pipe recovery")
+	waitForProxySnapshotSender(t, proxy)
+}
+
+func waitForProxySnapshotSender(t *testing.T, proxy *proxyProcess) {
+	t.Helper()
+	// An idle sender also proves that no extra old snapshot remains blocked on
+	// the pipe after the expected complete snapshots have been consumed.
+	require.Eventually(t, func() bool {
+		proxy.subMu.Lock()
+		defer proxy.subMu.Unlock()
+		return !proxy.sendingNodes
+	}, time.Second, time.Millisecond)
+}
+
+// One facade changing its filter must not discard another facade's pending
+// update, or let its previous subscription overwrite the replacement's set.
+func TestProxyDiscovery_KeepsEachEnginesLatestSubscriptionSnapshot(t *testing.T) {
+	brokerSide, proxySide := net.Pipe()
+	t.Cleanup(func() {
+		assert.NoError(t, brokerSide.Close())
+		assert.NoError(t, proxySide.Close())
+	})
+	require.NoError(t, proxySide.SetDeadline(time.Now().Add(3*time.Second)))
+	writer := &observedProxyWriter{Conn: brokerSide, writing: make(chan struct{})}
+	directory := relay.NewDirectory()
+	node := noderec.DirectoryNode{
+		HostUUID: "peer", DiscoveryRecordID: "peer:peer", Name: "initial",
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceOllama: {Port: 11434}, noderec.ServiceLMStudio: {Port: 1234},
+		},
+	}
+	directory.Apply(noderec.NotifyNodeDiscovered, node)
+	proxy := &proxyProcess{peer: NewPeer(NewCodec(writer)), relayDir: directory}
+	params := func(service noderec.ServiceKey) json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(noderec.SubscribeParams{Services: []noderec.ServiceKey{service}})
+		require.NoError(t, err)
+		return raw
+	}
+	ollamaParams, lmstudioParams, nodeInfoParams := params(noderec.ServiceOllama), params(noderec.ServiceLMStudio), params(noderec.ServiceNodeInfo)
+	subscribed := make(chan struct{})
+	go func() {
+		proxy.handleSubscribe("ollama", ollamaParams)
+		close(subscribed)
+	}()
+	select {
+	case <-writer.writing:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the initial snapshot was not sent")
+	}
+	select {
+	case <-subscribed:
+	case <-time.After(time.Second):
+		require.FailNow(t, "subscription setup waited for the blocked writer")
+	}
+	node.Name = "latest"
+	var initialOllamaID, initialLMStudioID int
+	var currentOllamaID, currentLMStudioID int
+	updated := make(chan struct{})
+	go func() {
+		proxy.handleSubscribe("lmstudio", lmstudioParams)
+		// Capture the IDs after both facades have subscribed. Only Ollama's
+		// registration should change when it requests a different filter.
+		proxy.subMu.Lock()
+		initialOllamaID, initialLMStudioID = proxy.subIDs["ollama"], proxy.subIDs["lmstudio"]
+		proxy.subMu.Unlock()
+		proxy.handleSubscribe("ollama", nodeInfoParams)
+		proxy.subMu.Lock()
+		currentOllamaID, currentLMStudioID = proxy.subIDs["ollama"], proxy.subIDs["lmstudio"]
+		proxy.subMu.Unlock()
+		directory.Apply(noderec.NotifyNodeUpdated, node)
+		close(updated)
+	}()
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		require.FailNow(t, "updating subscriptions waited for the blocked writer")
+	}
+	// The channel close publishes the before/after IDs as well as completing
+	// both subscription changes while the first snapshot write is still held.
+	assert.NotEqual(t, initialOllamaID, currentOllamaID, "Ollama must replace its subscription")
+	assert.Equal(t, initialLMStudioID, currentLMStudioID, "Ollama's re-subscribe must leave LM Studio's subscription intact")
+
+	codec := NewCodec(proxySide)
+	initial, err := codec.Read()
+	require.NoError(t, err)
+	assert.Equal(t, "ollama:discovery:nodes", initial.Method)
+	var first noderec.GetNodesResult
+	require.NoError(t, json.Unmarshal(initial.Params, &first))
+	require.Len(t, first.Nodes, 1)
+	assert.Equal(t, "initial", first.Nodes[0].Name)
+	snapshots := make(map[string][]noderec.DirectoryNode)
+	for range 2 {
+		message, err := codec.Read()
+		require.NoError(t, err)
+		require.NotContains(t, snapshots, message.Method)
+		var result noderec.GetNodesResult
+		require.NoError(t, json.Unmarshal(message.Params, &result))
+		snapshots[message.Method] = result.Nodes
+	}
+	assert.Equal(t, map[string][]noderec.DirectoryNode{
+		"ollama:discovery:nodes":   {},
+		"lmstudio:discovery:nodes": {node},
+	}, snapshots)
+	waitForProxySnapshotSender(t, proxy)
 }

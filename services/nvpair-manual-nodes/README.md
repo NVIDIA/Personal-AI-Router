@@ -16,10 +16,7 @@ Uses bidirectional newline-delimited JSON-RPC 2.0. By default, communication is 
 | Flag | Default | Description |
 |---|---|---|
 | `--ipc <path>` | _(stdio)_ | IPC endpoint: Unix socket or Windows named pipe |
-| `--client-cert <path>` | _(none)_ | PEM client certificate to present when probing TLS-enabled manual nodes (requires `--client-key`) |
-| `--client-key <path>` | _(none)_ | PEM client private key matching `--client-cert` |
-| `--ca-bundle <path>` | _(none)_ | PEM bundle of CAs to trust when verifying server certificates (additive to the system trust store) |
-| `--cluster-dir <path>` | _(none)_ | Cluster config dir; when set, a TLS manual node's node-info is probed over cluster mTLS, presenting this node's leaf and accepting any currently-pinned server cert |
+| `--cluster-dir <path>` | _(none)_ | Current cluster identity and exact certificate pins, required for all service node-info reads |
 | `--log-level <level>` | `info` | `error` / `warn` / `info` / `debug`; falls back to `$NVPAIR_LOG_LEVEL`. Also changeable at runtime via the `log/set-level` method |
 | `--version` | | Print version and exit |
 
@@ -55,7 +52,9 @@ Emitted when a manually added node has been probed and its initial status determ
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
     "telemetryValid":true,
     "msSince":120,
-    "hostUuid":"stable-node-uuid"
+    "hostUuid":"stable-node-uuid",
+    "identityVerification":"pinned",
+    "discoveryRecordId":"opaque-proof-bound-record-id"
   }
 }
 ```
@@ -64,10 +63,16 @@ Each node is probed for both inference engines: Ollama on its default `:11434` (
 
 ### `node/updated`
 
-Emitted when a periodic probe detects a change (service going up/down, models,
-GPU values, telemetry validity, or sample age changed). `telemetryValid` and
+Emitted when a periodic probe detects a change, and for every authenticated
+hardware sample even when values are unchanged. `telemetryValid` and
 `msSince` preserve node-info's distinction between an idle 0% sample and missing
 telemetry so the broker can feed manual nodes into the same scheduler cache.
+Cached status replies and initial discovery notifications add elapsed time to
+the original sample age. Pinned statuses carry an opaque `discoveryRecordId`
+bound to the local identity/admission and peer pin/admission. Pin changes,
+departure, or identity replacement withdraw that proof and all hardware fields;
+configured engine endpoints remain independently available. In-flight probes
+cannot update an entry removed and re-added under the same ID.
 
 ### `node/removed`
 
@@ -83,7 +88,11 @@ Emitted so the supervising broker can forward them into the `nvpair-errors` pipe
 
 Add a node by address. The manager immediately probes it and emits a `node/discovered` event.
 
-A hostname is preferred over an IP literal: probe clients disable keep-alives specifically so every probe re-resolves the name, which lets a node that gets a new address recover on its own. An IP-literal entry is dead once the device is renumbered. Supply the address on its own — a `host:port` string is not parsed, because ports are appended to it, so such an entry reads permanently down.
+A hostname is preferred over an IP literal: all probes open fresh connections
+so they re-resolve the name after an address change, including authenticated
+hardware probes. An IP-literal entry cannot
+follow a renumbered device. Supply the address on its own — a `host:port` string
+is not parsed, because ports are appended to it.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"my-server"}}
@@ -93,8 +102,8 @@ A hostname is preferred over an IP literal: probe clients disable keep-alives sp
 |---|---|---|
 | `address` | Yes | IP address or hostname of the node, with no port |
 | `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`) |
-| `tls_port` | No | Probe node-info over HTTPS on this port instead of plain HTTP on `14318`. Echoed back as `tls_enabled` |
-| `mtls` | No | Stored and echoed back as `mtls_required`. The probe transport itself is chosen by `tls_port` and live cluster membership, so this field records intent rather than driving it |
+| `tls_port` | No | Override the node-info port (default `14318`). Hardware reads always require pinned mTLS. Echoed back as `tls_enabled` |
+| `mtls` | No | Configuration hint echoed as `mtls_required` when `tls_port` is set. Hardware probes always use mTLS with current cluster pins |
 
 Response: the initial node status object.
 
@@ -138,7 +147,14 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
 - **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
 
-A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
+A node can have any combination of these, or none if the target is unreachable.
+Hardware reads require exact current cluster pins and matching `hostUuid` and
+`clusterUuid` in the response. They use pooled mTLS clients after identifying
+the peer, close each connection after the response, refuse redirects, and never
+fall back to public HTTP or operator CAs.
+Unverified configurations report `identityVerification: "unverified"` and supply
+no service measurements. Explicitly configured engine routes remain available.
+Desktop and TUI may independently read public HTTP for hardware display.
 
 The three engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
 

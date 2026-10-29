@@ -204,7 +204,8 @@ func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 	// A row with nothing to check against takes whichever machine answers.
 	require.NoError(t, pollTelemetryCmd("manual:1", 1, []string{host}, port, "")().(nodeTelemetryMsg).err, "an unchecked poll was refused")
 
-	assert.Equal(t, "uuid-a", telemetryIdentity(nodeRow{key: "uuid-a"}), "a discovered node is checked against its UUID")
+	assert.Equal(t, "uuid-a", telemetryIdentity(nodeRow{key: "uuid-a", identityVerification: noderec.IdentityPinned}), "a verified node is checked against its UUID")
+	assert.Equal(t, "uuid-self", telemetryIdentity(nodeRow{key: "uuid-self", self: true, identityVerification: noderec.IdentityLocal}))
 	test := func(name string, row nodeRow) {
 		t.Run(name, func(t *testing.T) {
 			assert.Empty(t, telemetryIdentity(row), "row has nothing to check")
@@ -212,7 +213,29 @@ func TestTelemetryFromAnotherMachine_IsRefused(t *testing.T) {
 	}
 	test("manual entry", nodeRow{key: "manual:1"})
 	test("name-only entry", nodeRow{key: "name:lab"})
-	test("self entry", nodeRow{key: "uuid-self", self: true})
+}
+
+func TestTelemetry_RequiresIdentityForVerifiedRows(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string][]noderec.GPUInfo{"GPUs": {{Name: "Preview GPU"}}}))
+	}))
+	defer srv.Close()
+	host, port := splitTestServer(t, srv.URL)
+	test := func(name string, row nodeRow, wantError bool) {
+		t.Run(name, func(t *testing.T) {
+			msg := pollTelemetryCmd(row.key, 1, []string{host}, port, telemetryIdentity(row))().(nodeTelemetryMsg)
+			if wantError {
+				assert.Error(t, msg.err)
+				return
+			}
+			require.NoError(t, msg.err)
+			require.Len(t, msg.telemetry.GPUs, 1)
+			assert.Equal(t, "Preview GPU", msg.telemetry.GPUs[0].Name)
+		})
+	}
+	test("unverified preview permits missing identity", nodeRow{key: "candidate:preview", identityVerification: noderec.IdentityUnverified}, false)
+	test("pinned row rejects missing identity", nodeRow{key: "peer-uuid", identityVerification: noderec.IdentityPinned}, true)
+	test("local row rejects missing identity", nodeRow{key: "self-uuid", self: true, identityVerification: noderec.IdentityLocal}, true)
 }
 
 // TestTelemetryTriesTheAddressThatAnswered is the regression guard for a poll

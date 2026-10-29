@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"nvpair-shared/appdir"
@@ -26,20 +28,22 @@ import (
 // (bridgeManualNode); the rest project into the discovery store via
 // manualToEnriched.
 type manualNodeStatus struct {
-	ID             string      `json:"id"`
-	Address        string      `json:"address"`
-	OllamaUp       bool        `json:"ollama_up"`
-	OllamaPort     int         `json:"ollama_port"`
-	OllamaModels   []string    `json:"ollama_models,omitempty"`
-	LMStudioUp     bool        `json:"lmstudio_up"`
-	LMStudioPort   int         `json:"lmstudio_port"`
-	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
-	NodeInfoPort   int         `json:"node_info_port"`
-	GPUs           []GPUInfo   `json:"gpus"`
-	CPU            *CPUInfo    `json:"cpu"`
-	Memory         *MemoryInfo `json:"memory"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId,omitempty"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	Address              string                       `json:"address"`
+	OllamaUp             bool                         `json:"ollama_up"`
+	OllamaPort           int                          `json:"ollama_port"`
+	OllamaModels         []string                     `json:"ollama_models,omitempty"`
+	LMStudioUp           bool                         `json:"lmstudio_up"`
+	LMStudioPort         int                          `json:"lmstudio_port"`
+	LMStudioModels       []string                     `json:"lmstudio_models,omitempty"`
+	NodeInfoPort         int                          `json:"node_info_port"`
+	GPUs                 []GPUInfo                    `json:"gpus"`
+	CPU                  *CPUInfo                     `json:"cpu"`
+	Memory               *MemoryInfo                  `json:"memory"`
+	TelemetryValid       bool                         `json:"telemetryValid"`
+	MSSince              int64                        `json:"msSince"`
 	// HostUUID is the remote's stable per-host identity, learned from its
 	// node-info /v1/node-info. It lets a manual node key by the same permanent
 	// identity as mDNS-discovered nodes (and dedup with itself when the same
@@ -47,9 +51,26 @@ type manualNodeStatus struct {
 	HostUUID string `json:"hostUuid,omitempty"`
 }
 
+// withoutVerification keeps only the explicitly configured engine target. All
+// identity-bound inventory and samples are discarded when its proof expires.
+func (s manualNodeStatus) withoutVerification() manualNodeStatus {
+	s.IdentityVerification = noderec.IdentityUnverified
+	s.DiscoveryRecordID, s.HostUUID = "", ""
+	s.GPUs, s.CPU, s.Memory = nil, nil, nil
+	s.TelemetryValid, s.MSSince = false, 0
+	return s
+}
+
 type manualNodeStatusEntry struct {
 	status     manualNodeStatus
 	receivedAt time.Time
+}
+
+// manualNodeRemoveParams distinguishes a worker entry ID from a broker node key.
+// The caller must supply exactly one selector.
+type manualNodeRemoveParams struct {
+	ID     string `json:"id,omitempty"`
+	NodeID string `json:"nodeId,omitempty"`
 }
 
 type persistedManualNode struct {
@@ -185,22 +206,18 @@ func (b *Broker) replayPersistedManualNodes(worker *rpcWorker) {
 	}
 }
 
-func (b *Broker) manualAliasForKey(id string) string {
+// manualAliasForKey resolves only broker node keys. A matching entry ID cannot
+// take precedence over another entry's node key. No match returns an empty ID.
+func (b *Broker) manualAliasForKey(key string) string {
 	b.manualMu.Lock()
 	defer b.manualMu.Unlock()
-	if _, ok := b.manualNodeKeys[id]; ok {
-		return id
-	}
 	best := ""
-	for alias, key := range b.manualNodeKeys {
-		if key == id && (best == "" || alias < best) {
+	for alias, nodeKey := range b.manualNodeKeys {
+		if nodeKey == key && (best == "" || alias < best) {
 			best = alias
 		}
 	}
-	if best != "" {
-		return best
-	}
-	return id
+	return best
 }
 
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {
@@ -221,31 +238,38 @@ func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeT
 // manualToEnriched projects a manual node's status onto the EnrichedNode
 // the discovery store holds, so manual nodes share the single
 // discovery:get-nodes / discovery:nodes-changed snapshot with mDNS nodes.
-// Port is the node-info HTTP port the prober reached (mirroring the SRV
+// Port is the node-info HTTPS port the prober attempted (mirroring the SRV
 // port the scanner records for mDNS nodes); the user-entered address
 // becomes the node's host/address so the snapshot's ipAddress projection
 // can resolve it when the address is an IP literal.
 func manualToEnriched(s manualNodeStatus) EnrichedNode {
-	// Every node carries a non-empty operational key by the time it reaches the
-	// store: the remote's real hostUuid once node-info reports it, else the
-	// manual id (the user's name or "manual:<address>") until then. This is the
-	// manual-node ingestion boundary — downstream keys off HostUUID with no
-	// fallback. Once the real UUID is learned, a manually-added machine
-	// that's also discovered over mDNS collapses to the one hostUuid-keyed entry.
+	// Only a pinned response may join a canonical host. The explicit manual
+	// engine target otherwise uses a separate key shared with its proxy route.
+	// Treat the worker's ID as opaque: an unnamed "1.2.3.4" entry already has
+	// ID "manual:1.2.3.4", so our namespace produces "manual:manual:1.2.3.4".
+	// Stripping that inner prefix would collide with a named "1.2.3.4" entry,
+	// whose worker ID is "1.2.3.4" and whose broker key is "manual:1.2.3.4".
 	hostUUID := s.HostUUID
-	if hostUUID == "" {
-		hostUUID = s.ID
+	if hostUUID == "" || s.IdentityVerification != noderec.IdentityPinned {
+		hostUUID = "manual:" + s.ID
 	}
 	en := EnrichedNode{
-		ID:             s.ID,
-		HostUUID:       hostUUID,
-		Host:           s.Address,
-		Port:           s.NodeInfoPort,
-		GPUs:           s.GPUs,
-		CPU:            s.CPU,
-		Memory:         s.Memory,
-		Models:         mergeModels(s.OllamaModels, s.LMStudioModels),
-		ModelsByEngine: manualModelsByEngine(s),
+		DiscoveryRecordID:    "manual:" + s.ID,
+		IdentityVerification: s.IdentityVerification,
+		ID:                   s.ID,
+		HostUUID:             hostUUID,
+		Host:                 s.Address,
+		Port:                 s.NodeInfoPort,
+		Models:               mergeModels(s.OllamaModels, s.LMStudioModels),
+		ModelsByEngine:       manualModelsByEngine(s),
+	}
+	if s.IdentityVerification == noderec.IdentityPinned {
+		en.DiscoveryRecordID = s.DiscoveryRecordID
+		en.GPUs, en.CPU, en.Memory = s.GPUs, s.CPU, s.Memory
+		en.Trusted = true
+		en.Clustered = true
+	} else {
+		en.IdentityVerification = noderec.IdentityUnverified
 	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}
@@ -304,81 +328,202 @@ type proxyManualNode struct {
 	Models    []string `json:"models,omitempty"`
 }
 
+type manualProxyTarget struct {
+	node      *proxyManualNode // nil withdraws a previously attempted target
+	revision  uint64
+	attempted uint64
+}
+
+// manualProxyBridge retains current targets rather than an event queue. One
+// sender per engine reconciles them outside discoveryMu, so bridge I/O cannot
+// hold discovery processing or accumulate a goroutine for every update. Attempted
+// revisions include in-flight writes: a later withdrawal must remove a target
+// even if its add was applied without an answer. Each status update advances its
+// revision, allowing a failed request to be retried without a busy loop.
+type manualProxyBridge struct {
+	mu       sync.Mutex
+	targets  map[string]manualProxyTarget
+	revision uint64
+	proxy    *proxyProcess
+	sending  bool
+}
+
 // bridgeManualNode keeps every supervised proxy's manual-node set in step with
 // a manual node's per-engine reachability: a node whose Ollama is up is bridged
 // into ollama-proxy and one whose LM Studio is up into lmstudio-proxy
 // (idempotent — each proxy upserts on a repeat), while an engine that is not
-// (or no longer) reachable is removed from its proxy. Each leg is a no-op when
-// that proxy isn't supervised — the bridge only applies when the broker owns
-// both ends.
+// (or no longer) reachable is removed from its proxy. Desired targets are kept
+// while a proxy is unavailable and replayed after its replacement starts.
 //
 // Manual nodes are, by definition, the nodes that never appear in the discovery
 // relay's snapshots — they advertise no _nvpair-node record for the scanner
 // daemon to carry — so without this explicit add the proxies can't route
 // inference to them even though both workers are broker-owned.
 func (b *Broker) bridgeManualNode(s manualNodeStatus, key string) {
-	b.bridgeToProxy(b.getProxy(), "ollama", s, key, s.OllamaUp, s.OllamaPort, s.OllamaModels)
-	b.bridgeToProxy(b.getLMStudioProxy(), "lmstudio", s, key, s.LMStudioUp, s.LMStudioPort, s.LMStudioModels)
+	b.bridgeToProxy(ollamaProxyProfile, s, key, s.OllamaUp, s.OllamaPort, s.OllamaModels)
+	b.bridgeToProxy(lmstudioProxyProfile, s, key, s.LMStudioUp, s.LMStudioPort, s.LMStudioModels)
 }
 
-// bridgeToProxy adds the node to p when its engine is reachable, or removes it
+// bridgeToProxy requests the node's addition when its engine is reachable, or removal
 // otherwise. up/port/models are the engine-specific fields the caller pulled
 // off the node's status. The proxy candidate is keyed by `key` — the node's
 // operational identity (its hostUuid once node-info reports it, else the manual
 // id) — the same key the discovery store and scheduler use, so the scheduler's
 // priority list and scheduledOn resolve to this candidate.
-func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatus, key string, up bool, port int, models []string) {
-	if p == nil {
-		return
-	}
+func (b *Broker) bridgeToProxy(profile engineProxyProfile, s manualNodeStatus, key string, up bool, port int, models []string) {
 	if up && s.Address != "" && port > 0 {
 		node := proxyManualNode{
 			ID:        key,
 			Host:      s.Address,
 			Port:      port,
 			Addresses: []string{s.Address},
-			Models:    models,
+			Models:    slices.Clone(models),
 		}
-		b.callProxyManual(p, engine, "node/add-manual", node, key)
+		b.queueManualProxyTarget(profile, key, &node)
 		return
 	}
 	// Engine unreachable (down, or this node doesn't run it): make sure the
 	// proxy isn't left holding a stale manual entry it would try to route to.
-	b.callProxyManual(p, engine, "node/remove-manual", map[string]string{"id": key}, key)
+	b.queueManualProxyTarget(profile, key, nil)
 }
 
 // removeManualNodeFromProxies drops a manual node from every supervised proxy.
 // Idempotent: a no-op for a proxy where the node was never bridged or that
 // isn't supervised (the proxy's RemoveManual just reports removed=false).
 func (b *Broker) removeManualNodeFromProxies(id string) {
-	b.callProxyManual(b.getProxy(), "ollama", "node/remove-manual", map[string]string{"id": id}, id)
-	b.callProxyManual(b.getLMStudioProxy(), "lmstudio", "node/remove-manual", map[string]string{"id": id}, id)
+	b.queueManualProxyTarget(ollamaProxyProfile, id, nil)
+	b.queueManualProxyTarget(lmstudioProxyProfile, id, nil)
+}
+
+func (b *Broker) queueManualProxyTarget(profile engineProxyProfile, key string, node *proxyManualNode) {
+	bridge := &b.engineProxy(profile).manualBridge
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if bridge.targets == nil {
+		bridge.targets = make(map[string]manualProxyTarget)
+	}
+	target := bridge.targets[key]
+	if node == nil && target.attempted == 0 {
+		// An add canceled before any send cannot have left a route behind.
+		delete(bridge.targets, key)
+		return
+	}
+	bridge.revision++
+	target.node, target.revision = node, bridge.revision
+	bridge.targets[key] = target
+	if !bridge.sending {
+		bridge.sending = true
+		go b.sendManualProxyTargets(profile)
+	}
+}
+
+// nextTarget runs under mu. Remove retired keys before adding replacements,
+// including when an alias acquires or loses its authenticated host identity.
+func (bridge *manualProxyBridge) nextTarget() (string, manualProxyTarget) {
+	key := ""
+	for candidate, target := range bridge.targets {
+		if target.attempted != target.revision {
+			key = candidate
+			if target.node == nil {
+				break
+			}
+		}
+	}
+	target := bridge.targets[key]
+	if key != "" {
+		target.attempted = target.revision
+		bridge.targets[key] = target
+	}
+	return key, target
+}
+
+func (b *Broker) sendManualProxyTargets(profile engineProxyProfile) {
+	bridge := &b.engineProxy(profile).manualBridge
+	ctx := b.getServeCtx()
+	for {
+		bridge.mu.Lock()
+		proxy := b.engineProxyHandle(profile)
+		if bridge.proxy != proxy {
+			bridge.proxy = proxy
+			for key, target := range bridge.targets {
+				if target.node == nil {
+					delete(bridge.targets, key) // a new process starts with no old routes
+				} else {
+					target.attempted = 0
+					bridge.targets[key] = target
+				}
+			}
+		}
+		if proxy == nil || (ctx != nil && ctx.Err() != nil) {
+			bridge.sending = false
+			bridge.mu.Unlock()
+			return
+		}
+		key, target := bridge.nextTarget()
+		if key == "" {
+			bridge.sending = false
+			bridge.mu.Unlock()
+			return
+		}
+		bridge.mu.Unlock()
+		if target.node == nil {
+			if b.callProxyManual(proxy, profile.Name, "node/remove-manual", map[string]string{"id": key}, key) {
+				bridge.mu.Lock()
+				if bridge.targets[key].revision == target.revision {
+					delete(bridge.targets, key)
+				}
+				bridge.mu.Unlock()
+			}
+		} else {
+			b.callProxyManual(proxy, profile.Name, "node/add-manual", target.node, key)
+		}
+	}
+}
+
+// Facades are enabled after their handles are published. Force a replay after
+// startup so any add rejected during that interval is retried on the live facade.
+func (b *Broker) replayManualProxyTargets() {
+	for _, profile := range []engineProxyProfile{ollamaProxyProfile, lmstudioProxyProfile} {
+		bridge := &b.engineProxy(profile).manualBridge
+		bridge.mu.Lock()
+		for key, target := range bridge.targets {
+			bridge.revision++
+			target.revision = bridge.revision
+			bridge.targets[key] = target
+		}
+		if !bridge.sending {
+			bridge.sending = true
+			go b.sendManualProxyTargets(profile)
+		}
+		bridge.mu.Unlock()
+	}
 }
 
 // callProxyManual issues a best-effort node/add-manual|remove-manual to one
 // engine's facade. The bridge is advisory plumbing the broker owns, not part of
 // the manual-node request's own response, so a failure is logged and swallowed
 // rather than surfaced to the client. A nil proxy (not supervised) is a no-op.
-// Runs synchronously on the manual-nodes reader goroutine; a proxy answers
-// these control-plane calls locally in well under proxyCallTimeout, and
-// manual-node events are infrequent (one per 10s probe), so the brief inline
-// call keeps add/remove strictly ordered without a queue.
+// Manual discovery updates call this only from their per-engine sender, outside
+// discoveryMu; the synchronous exchange keeps each engine's writes ordered.
 //
 // Every method routed here is facade-scoped — a manual node belongs to one
 // engine's routing set — so the engine is addressed on the wire rather than
 // left implicit in which process was picked.
-func (b *Broker) callProxyManual(p *proxyProcess, engine, method string, params any, id string) {
+func (b *Broker) callProxyManual(p *proxyProcess, engine, method string, params any, id string) bool {
 	if p == nil {
-		return
+		return false
 	}
 	raw, err := json.Marshal(params)
 	if err != nil {
 		slog.Warn("manual->proxy bridge: marshal failed", "engine", engine, "method", method, "id", id, "err", err)
-		return
+		return false
 	}
 	if _, rpcErr, err := p.Call(context.Background(), engines.AddressMethod(engine, method), raw); err != nil {
 		slog.Warn("manual->proxy bridge failed", "engine", engine, "method", method, "id", id, "err", err)
+		return false
 	} else if rpcErr != nil {
 		slog.Warn("manual->proxy bridge rejected", "engine", engine, "method", method, "id", id, "code", rpcErr.Code, "msg", rpcErr.Message)
+		return false
 	}
+	return true
 }

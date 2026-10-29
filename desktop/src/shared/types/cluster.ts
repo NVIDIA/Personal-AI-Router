@@ -10,8 +10,18 @@
  * interactive PIN-pairing invite handshake.
  */
 
+export type NodeIdentityVerification = 'local' | 'pinned' | 'unverified'
+
 export interface AvailableNode {
-    /** Canonical node key = the backend's stable per-host UUID (matches `NodeItem.id`). */
+    /** Discovery record identity, independent of a claimed host UUID. */
+    discoveryRecordId?: string
+    /** How the service established this record's identity. */
+    identityVerification?: NodeIdentityVerification
+    /**
+     * UI row key, matching `NodeItem.id`: host UUID for local/pinned records,
+     * discovery record ID for unverified records. Proxy-only rows retain the
+     * operational node key reported by the proxy.
+     */
     id: string
     /** Display hostname. */
     name: string
@@ -52,9 +62,9 @@ export interface ClusterNode {
     id: string
     /**
      * Stable cryptographic identity; the trusted-node-store key and cert subject.
-     * This is the cross-domain correlation key — it equals a discovered node's
-     * hostUuid / `NodeItem.id` / `selfId`, so member↔node matching keys on this,
-     * never `id` (hostname).
+     * This matches a verified host's `NodeItem.id` and the local `selfId`.
+     * Unverified discoveries use separate record IDs even when they claim this
+     * UUID. Member-to-node matching uses this field, never `id` (hostname).
      */
     nodeUuid: string
     name: string

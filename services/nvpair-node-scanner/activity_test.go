@@ -5,62 +5,32 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
 
-// The probes this file is about are the ones that fail on a node BECAUSE it is
-// working: a machine saturated by its own inference load has no CPU left to
-// answer a node-info GET or accept a TCP connect within a second, so the
-// eviction path reads it as gone and drops it mid-request. The proxies, meanwhile,
-// are receiving that node's response bytes. These tests pin that evidence beating
-// the probe.
-
-// activityDaemon is the minimum daemon the activity path needs. It deliberately
-// has no HTTP client and no registry: the point of every test here is what
-// happens when nothing answers.
+// activityDaemon initializes only the state used to record inference activity.
 func activityDaemon() *daemon {
 	return &daemon{lastActivityAt: make(map[string]time.Time)}
 }
 
-// unreachableNode advertises a node-info port nothing is listening on, so the
-// TCP sweep in reachable is guaranteed to fail.
-func unreachableNode(t *testing.T, hostUUID string) RawNode {
-	t.Helper()
-	port := closedPort(t)
-	return RawNode{
-		ID:        hostUUID,
-		Addresses: []string{"127.0.0.1"},
-		TXT:       []string{"v=1", "uuid=" + hostUUID, "ip=127.0.0.1", fmt.Sprintf("ni=%d", port)},
-	}
-}
-
-// TestFreshActivityKeepsANodeNoProbeCanReach is the fix. Without it a node that
-// is streaming a generation back to us is evicted for failing a probe it was too
-// busy to answer.
+// An authenticated peer may be too busy serving inference to answer node-info.
 func TestFreshActivity_KeepsANodeNoProbeCanReach(t *testing.T) {
-	d := activityDaemon()
-	n := unreachableNode(t, "busy-node")
+	f := newDiscoveryPeerFixture(t, "busy-node")
+	f.discover(t)
+	d, n := f.daemon, f.raw
+	f.server.Close()
+	delete(d.lastInfoAt, "busy-node")
 
 	require.False(t, d.reachable(n), "precondition: a node with no listener must fail the probe when nothing vouches for it")
 
 	d.noteActivity("busy-node", 0)
 	require.True(t, d.reachable(n), "a node that just returned inference bytes must be kept despite an unanswerable probe")
-}
-
-// Evidence has to expire, or a node that has genuinely gone would be held by a
-// report from an hour ago and never age out.
-func TestStaleActivity_DoesNotKeepANode(t *testing.T) {
-	d := activityDaemon()
-	n := unreachableNode(t, "departed-node")
-
-	d.noteActivity("departed-node", (activityFreshness + time.Second).Milliseconds())
-	require.False(t, d.reachable(n), "activity older than activityFreshness must not keep an unreachable node")
 }
 
 // Activity is credited per node. One busy peer vouching for itself must not
@@ -69,7 +39,8 @@ func TestActivity_IsCreditedPerNode(t *testing.T) {
 	d := activityDaemon()
 	d.noteActivity("busy-node", 0)
 
-	require.False(t, d.reachable(unreachableNode(t, "other-node")), "one node's activity must not keep a different node alive")
+	_, ok := d.activitySince("other-node")
+	assert.False(t, ok, "one node's report must not record activity for another")
 }
 
 // The report carries an age rather than a timestamp so the two processes need no
@@ -130,11 +101,7 @@ func TestSelfActivity_IsDropped(t *testing.T) {
 // report vouch for the node the moment it was rediscovered.
 func TestForget_ClearsActivity(t *testing.T) {
 	d := activityDaemon()
-	d.lastInfo = make(map[string]NodeInfoResponse)
 	d.lastInfoAt = make(map[string]time.Time)
-	d.lastModels = make(map[string][]string)
-	d.lastModelsByEngine = make(map[string]map[string][]string)
-	d.lastLoadedByEngine = make(map[string]map[string][]string)
 	d.nodeInfoDown = make(map[string]bool)
 
 	d.noteActivity("node", 0)

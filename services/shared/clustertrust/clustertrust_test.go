@@ -112,6 +112,25 @@ func TestTrustPin_AuthorizesOnlyMatchingCertificate(t *testing.T) {
 	require.Len(t, sc.Certificates, 1, "server config: ClientAuth")
 }
 
+func TestTrustDER_ReturnsIndependentCertificateBytes(t *testing.T) {
+	clusterDir := t.TempDir()
+	certPEM, _, expected := genLeaf(t, "uuid-peer")
+	writePin(t, clusterDir, "uuid-peer", string(certPEM))
+	trust := newTrust(clusterDir)
+	trust.Reload()
+	der, ok := trust.DER("uuid-peer")
+	require.True(t, ok)
+	require.Equal(t, expected, der)
+
+	// A caller changing its returned bytes must not change the saved pin or
+	// the certificate another caller receives.
+	der[0] ^= 0xff
+	assert.True(t, trust.MatchDER("uuid-peer", expected))
+	next, ok := trust.DER("uuid-peer")
+	require.True(t, ok)
+	assert.Equal(t, expected, next)
+}
+
 func TestVerifyClientPin_AcceptsPinnedCertificateAndRejectsUnpinnedClient(t *testing.T) {
 	dir := t.TempDir()
 	peerCertPEM, _, _ := genLeaf(t, "uuid-peer")

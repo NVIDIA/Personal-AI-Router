@@ -40,8 +40,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
-
-	"github.com/grandcat/zeroconf"
 )
 
 const workloadMgrService = "_nvpair-workload-manager._tcp"
@@ -239,9 +237,10 @@ func TestWorkloadRelay_FailsActiveWorkWhenNodeDisappears(t *testing.T) {
 	// must match on that UUID, not the display name. Keying by name would leave
 	// a UUID-stamped workload running after the (name-distinct) node departs.
 	const peerNode = "nodeloss-peer"
-	const peerUUID = "nodeloss-peer-uuid"
 
 	fx := newInterNodeCluster(t)
+	peerUUID := fx.peerUUID
+	_, stopPeer := fx.startStubClusterPeer(t, peerNode)
 	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
 		"--scanner-path", scannerBin,
 		"--workload-manager-path", workloadMgrBin,
@@ -259,26 +258,10 @@ func TestWorkloadRelay_FailsActiveWorkWhenNodeDisappears(t *testing.T) {
 	require.True(t, sr.Subscribed, "workloads:subscribe ack")
 	t.Log("subscribed to workloads stream")
 
-	// Advertise the peer as an identity-only _nvpair-node record (no service
-	// ports), so once its advertisement is withdrawn the scanner's liveness
-	// probe has nothing to dial and evicts it cleanly. A distinct uuid keeps
-	// it from colliding with this host's own record.
-	peerTXT := []string{"v=1", "uuid=" + peerUUID, "ip=127.0.0.1"}
-	peerAdv, err := zeroconf.Register(peerNode, nodeRecordService, testDomain, 14999, peerTXT, nil)
-	require.NoError(t, err, "register peer node")
-	stopAdv := func() {
-		if peerAdv != nil {
-			peerAdv.Shutdown()
-			peerAdv = nil
-		}
-	}
-	t.Cleanup(stopAdv)
-	t.Logf("advertising peer %q as %s", peerNode, nodeRecordService)
-
-	// The peer must be in the broker's directory before its removal can
-	// trigger a sweep, so wait until discovery has folded it in.
-	pollNodeListed(t, stdin, msgs, peerNode, 1000, 30*time.Second, nil)
-	t.Logf("peer %q discovered", peerNode)
+	// Only an authenticated peer's removal may fail its workloads. An
+	// unverified advertisement cannot supply evidence that a known host left.
+	waitForPinnedPeer(t, stdin, msgs, peerUUID, 30*time.Second)
+	t.Logf("peer %q authenticated", peerNode)
 
 	// A peer-origin running workload (scheduled on that same peer) POSTed to
 	// the manager's inter-node endpoint. The broker relays it to us as a
@@ -298,8 +281,8 @@ func TestWorkloadRelay_FailsActiveWorkWhenNodeDisappears(t *testing.T) {
 	// The window is deliberately long enough to outlast a node saturated by its
 	// own inference load, so this deadline has to clear it with room for the
 	// probes and scan jitter.
-	stopAdv()
-	t.Log("peer advertisement withdrawn; awaiting node eviction + workload failure")
+	stopPeer()
+	t.Log("peer advertisement and listener stopped; awaiting node eviction + workload failure")
 
 	failed := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 2*time.Minute)
 	require.Equal(t, "failed", failed.WorkloadInfo.State, "post-eviction upsert state")
@@ -336,7 +319,7 @@ func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 	// _nvpair-node record and pushes it to the subscribed workload-manager's relay
 	// peer source, which is the path that replaced the per-service browse.
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "stub-wm-peer", "stub-wm-peer-uuid")
+	received, _ := fx.startStubClusterPeer(t, "stub-wm-peer")
 
 	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
 		"--scanner-path", scannerBin,
@@ -360,9 +343,12 @@ func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 	waitForResponse(t, msgs, 5*time.Second)
 	t.Log("fake ollama pinned as proxy target")
 
+	waitForPinnedPeer(t, stdin, msgs, fx.peerUUID, 30*time.Second)
+	t.Log("stub peer authenticated in discovery")
+
 	// Fire inference requests until the stub peer records a broadcast. The
-	// retry loop absorbs mDNS discovery latency (the manager refreshes its
-	// peer set every 5 s and only broadcasts to peers it already knows).
+	// retry loop covers workload-manager's five-second target refresh after
+	// authenticated discovery has supplied the peer.
 	client := &http.Client{Timeout: 3 * time.Second}
 	fire := func() {
 		resp, err := client.Post(
@@ -370,11 +356,12 @@ func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 			"application/json",
 			strings.NewReader(`{"model":"test-model","messages":[]}`),
 		)
-		if err == nil {
-			_, copyErr := io.Copy(io.Discard, resp.Body)
-			require.NoError(t, copyErr)
-			resp.Body.Close()
-		}
+		require.NoError(t, err, "submit inference through the ready proxy")
+		_, readErr := io.Copy(io.Discard, resp.Body)
+		closeErr := resp.Body.Close()
+		require.NoError(t, readErr, "read inference response")
+		require.NoError(t, closeErr, "close inference response")
+		require.Equal(t, http.StatusOK, resp.StatusCode, "inference response status")
 	}
 	fire()
 
@@ -403,6 +390,13 @@ func TestWorkloadManager_BroadcastsLocalEventsToPeers(t *testing.T) {
 			require.FailNow(t, "timed out: stub peer never received a workload broadcast")
 		}
 	}
+}
+
+// waitForPinnedPeer distinguishes an authenticated peer from its unverified
+// mDNS candidate before a test submits work that must reach that peer.
+func waitForPinnedPeer(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, hostUUID string, timeout time.Duration) {
+	t.Helper()
+	pollForNode(t, stdin, msgs, hostUUID, timeout, nil)
 }
 
 // postPeerEvent POSTs a peer workload frame to the manager's inter-node endpoint

@@ -5,7 +5,7 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,12 +14,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/discovery"
 	"nvpair-shared/mdns"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
@@ -28,16 +30,9 @@ import (
 	"nvpair-shared/reach"
 )
 
-// daemon is the promoted node-scanner: it advertises this
-// node as ONE _nvpair-node record built from a registry of relayed service
-// registrations, browses _nvpair-node to build a directory of every LAN node, and
-// serves the discovery:* RPC (register/unregister/update-txt/get-nodes/
-// reload-identity) while emitting discovery:node-* events.
-//
-// Post-cutover this is the sole discovery path: the legacy _nvpair-node-info
-// browse and node/* stream are gone, and every consumer registers/subscribes
-// through the broker relay, which the broker builds from this daemon's
-// discovery:node-* stream and fans out to consumers as discovery:nodes snapshots.
+// daemon owns local registration, candidate discovery, and authenticated peer
+// inventory. It publishes discovery:node-* events for the broker relay, which
+// delivers directory snapshots to service consumers.
 type daemon struct {
 	codec     *Codec
 	mesh      *clustertrust.Mesh
@@ -49,24 +44,26 @@ type daemon struct {
 	// registry-driven self directory entry (publishSelf), which is anchored to
 	// our own identity rather than to hearing our own multicast.
 	instance string
-	http     *http.Client
-	// modelsHTTP fetches a peer's /v1/models. It gets a longer timeout than http
-	// (node-info): engine-manager's models sweep is bounded by its own, larger
-	// deadline, so a peer with several engines can legitimately take longer than
-	// a node-info probe. A shorter client would give up mid-sweep and silently
-	// drop that peer's models.
+	// modelsHTTP reads the owned engine-manager over loopback. Model sweeps have
+	// a longer timeout than node-info because they may inspect several engines.
 	modelsHTTP *http.Client
 	// modelsClients is the long-lived per-peer mTLS pool for LAN /v1/models
 	// fetches. A throwaway Transport every 15s paid a full handshake each time.
 	modelsClients *clustertrust.PeerClientPool
-	// tlsHTTP, when non-nil (the operator passed --client-cert/--client-key/
-	// --ca-bundle), fetches node-info over HTTPS on the ni port instead of plain
-	// HTTP. Dormant by default (nil): node-info is plain per the transport policy,
-	// so this is opt-in scaffolding for a future TLS node-info rollout, gated only
-	// on the flags — never inferred from a node's cluster-uuid or a TXT hint.
-	tlsHTTP *http.Client
-	// nodeInfoOrigins queues same-origin requests before http.Client starts its
-	// timeout, while nodeInfoTransport enforces the matching connection bound.
+	// modelsWake coalesces newly verified peers into the next model sweep.
+	modelsWake chan struct{}
+	// nodeInfoClients uses exact cluster pins, independently of public display HTTP.
+	nodeInfoClients *clustertrust.PeerClientPool
+	// peerMu serializes candidate generations, proof invalidation, and accepted
+	// results. No network request runs while it is held.
+	peerMu      sync.Mutex
+	candidates  map[string]*discoveryCandidate
+	authWake    chan struct{}
+	authRetries telemetryRetryGate
+
+	// nodeInfoOrigins queues verified same-origin reads before http.Client starts
+	// its timeout. Candidate authentication skips busy origins and retries later.
+	// The peer client pool enforces the matching connection bound.
 	nodeInfoOrigins nodeInfoOriginGate
 
 	// baseDir is the config base nodeid.Resolve reads identity from. Derived
@@ -84,35 +81,24 @@ type daemon struct {
 	// can never invite it back.
 	clusterDir string
 
-	// selfMu serializes every mutation of this node's own directory entry
-	// (publishSelf / reloadIdentity / dropSelf) so a burst of service
-	// registrations and a concurrent network/identity change can't interleave
-	// into a torn self entry. The self key is written nowhere else — onBrowse
-	// ignores our own uuid — so this is the sole self-key writer lock.
+	// selfMu serializes registry publications, identity/address changes and owned
+	// hardware snapshots so they agree on this node's identity. Background model
+	// refreshes use dir.mu independently.
 	selfMu sync.Mutex
+	// localInfo is supplied only by the owned worker IPC path, under selfMu.
+	localInfo *noderec.NodeInfo
 
-	// lastInfo / lastModels cache each node's last successful enrichment (keyed by
-	// hostUuid) — GPU/CPU/memory from node-info and the model list from
-	// engine-manager — so a transient fetch failure reuses the prior values
-	// instead of blanking the node card. Same resilience the legacy scanner path
-	// had via its own lastInfo cache.
-	infoMu     sync.Mutex
-	lastInfo   map[string]NodeInfoResponse
+	// infoMu guards peer read timestamps and outage state.
+	infoMu sync.Mutex
+	// lastInfoAt records accepted node-info reads for authenticated peer liveness.
 	lastInfoAt map[string]time.Time
-	lastModels map[string][]string
-	// lastModelsByEngine caches the per-engine attribution (engine name ->
-	// models) alongside the flat lastModels union, so a transient /v1/models
-	// miss reuses both rather than blanking the per-engine card. Keyed by
-	// hostUuid like the other enrichment caches.
-	lastModelsByEngine map[string]map[string][]string
-	// lastLoadedByEngine caches the per-engine loaded (in-memory) set from the
-	// same /v1/models fetch, so a transient miss reuses it rather than blanking
-	// a remote node's loaded state. Keyed by hostUuid.
-	lastLoadedByEngine map[string]map[string][]string
+	// localModels preserves owned inventory when publication rebuilds the local
+	// record, including after its UUID changes. Guarded by peerMu. Remote models
+	// stay in the directory.
+	localModels modelInventory
 	// nodeInfoDown holds the nodes whose last node-info enrichment failed, so
 	// the outage is reported when it starts and when it ends rather than once
-	// per sweep. Guarded by infoMu with the caches it explains: the reason a
-	// card keeps showing an old inventory is exactly this entry.
+	// per sweep. Guarded by infoMu; the directory retains the last accepted inventory.
 	nodeInfoDown map[string]bool
 
 	// activityMu guards lastActivityAt, when each peer was last seen returning
@@ -133,8 +119,6 @@ type daemon struct {
 	enrichHosts hostMemory
 	// telemetryRetries owns one active telemetry attempt per node and suppresses
 	// repeated remote attempts after failures at the same node-info target.
-	// Local results always finish successfully so loopback stays on the healthy
-	// cadence.
 	telemetryRetries telemetryRetryGate
 
 	// observedMu guards observed, this host's own addresses that remote peers
@@ -146,8 +130,7 @@ type daemon struct {
 	observed   map[string]bool
 }
 
-// nodeInfoFetchTimeout bounds each node-info enrichment HTTP(S) GET, shared by
-// the plain and (opt-in) TLS clients.
+// nodeInfoFetchTimeout bounds authenticated node-info requests after origin queuing.
 const nodeInfoFetchTimeout = 3 * time.Second
 const nodeInfoResponseDrainLimit = 64 << 10
 
@@ -166,29 +149,14 @@ const nodeInfoResponseDrainLimit = 64 << 10
 // already written off is not worth waiting longer for here.
 const nodeInfoDialTimeout = reach.DefaultTimeout
 
-// nodeInfoTransport is the transport both node-info clients dial through: the
-// plain one built here and, when the operator opts enrichment onto HTTPS, the
-// TLS one built in tls.go. The TLS handshake gets the same budget as the
-// connect, for the same reason.
-func nodeInfoTransport(tlsConfig *tls.Config) *http.Transport {
-	return &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: nodeInfoDialTimeout}).DialContext,
-		TLSClientConfig:     tlsConfig,
-		TLSHandshakeTimeout: nodeInfoDialTimeout,
-		MaxConnsPerHost:     1,
-		MaxIdleConnsPerHost: 1,
-		IdleConnTimeout:     90 * time.Second,
-	}
-}
-
 // modelsFetchTimeout bounds a peer /v1/models GET. It exceeds engine-manager's
 // own models-sweep cap (modelsTimeout, 5s) so the fetch waits for a bounded
 // sweep to finish instead of timing out partway through it.
 const modelsFetchTimeout = 6 * time.Second
 
 // peerRefreshInterval is the cadence of the mDNS-independent convergence loop
-// (refreshPeersLoop). The event-driven enrichment still handles fast initial
-// discovery; this is the background sweep that catches changes that never move
+// (refreshPeersLoop). Newly authenticated peers wake model refresh immediately;
+// this is the background sweep that catches changes that never move
 // the mDNS record (a model pull/delete, a late engine start) and announcements
 // that did move it but were not received (a peer joining or leaving a cluster).
 // It comfortably exceeds modelsFetchTimeout so a worst-case sweep finishes well
@@ -324,10 +292,8 @@ func telemetryRetryDelay(consecutiveFailures int) time.Duration {
 	return delay
 }
 
-// newDaemon builds the daemon. tlsHTTP is nil unless the operator opted node-info
-// enrichment onto HTTPS via the --client-cert/--client-key/--ca-bundle flags; nil
-// keeps the default plain-HTTP fetch.
-func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string, tlsHTTP *http.Client) *daemon {
+// newDaemon builds the registry publisher and pinned peer discovery daemon.
+func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon {
 	// nodeid reads <base>/cluster/identity.json; --cluster-dir is that cluster
 	// subdir, so its parent is the base. Empty -> nodeid's shared default.
 	baseDir := ""
@@ -350,37 +316,28 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string, tlsHTTP
 
 	instance, _ := os.Hostname()
 	d := &daemon{
-		codec:              codec,
-		mesh:               mesh,
-		reg:                reg,
-		instance:           instance,
-		baseDir:            baseDir,
-		clusterDir:         clusterDir,
-		dir:                newDirectory(),
-		http:               &http.Client{Timeout: nodeInfoFetchTimeout, Transport: nodeInfoTransport(nil)},
-		modelsHTTP:         &http.Client{Timeout: modelsFetchTimeout},
-		modelsClients:      clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
-		tlsHTTP:            tlsHTTP,
-		lastInfo:           make(map[string]NodeInfoResponse),
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
-		nodeInfoDown:       make(map[string]bool),
-		lastActivityAt:     make(map[string]time.Time),
+		codec:           codec,
+		mesh:            mesh,
+		reg:             reg,
+		instance:        instance,
+		baseDir:         baseDir,
+		clusterDir:      clusterDir,
+		dir:             newDirectory(),
+		modelsHTTP:      &http.Client{Timeout: modelsFetchTimeout},
+		modelsClients:   clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
+		modelsWake:      make(chan struct{}, 1),
+		nodeInfoClients: newNodeInfoClients(mesh),
+		candidates:      make(map[string]*discoveryCandidate),
+		authWake:        make(chan struct{}, 1),
+		lastInfoAt:      make(map[string]time.Time),
+		nodeInfoDown:    make(map[string]bool),
+		lastActivityAt:  make(map[string]time.Time),
 	}
-	// Anti-flap: before evicting a node that's missed the mDNS threshold,
-	// confirm it still answers on node-info (or engine-manager as fallback).
-	// Inference ports (ol/lm) are never probed — they are the promoted proxies
-	// and SYN spam there contributed to accept-queue exhaustion on macOS.
-	//
-	// Key by uuid= (not the mDNS instance name): two hosts sharing a hostname but
-	// holding distinct UUIDs must not collapse into one directory entry (matching
-	// cluster-manager's browser). Self re-stamps are handled separately in
-	// reloadIdentity, which moves this node's own directory entry to the new uuid.
+	// Track connection candidates independently of identity claims. Promoted
+	// peers survive multicast gaps using authenticated reads or inference.
 	d.browser = NewDiscovery(noderec.ServiceType, noderec.Domain,
 		WithLivenessProbe(func(n RawNode) bool { return d.reachable(n) }),
-		WithKeyFunc(func(n RawNode) string { return UUIDFromTXT(n.TXT) }),
+		WithKeyFunc(nodeDiscoveryRecordID),
 	)
 	if resp, err := mdns.NewResponder(instance, noderec.ServiceType, noderec.Domain, noderec.SRVPort, reg.txt()); err != nil {
 		slog.Warn("mDNS advertising disabled for _nvpair-node", "err", err)
@@ -413,18 +370,19 @@ func (d *daemon) run(ctx context.Context) {
 
 	events := make(chan DiscoveryEvent, 32)
 	go d.browser.Run(ctx, events)
-	// Converge peer model inventories independently of mDNS change events: the
-	// browse-driven enrichment above only re-runs when the raw mDNS record
-	// changes, but models live off the record (engine-manager's em /v1/models),
-	// so a pull/delete, a late engine start, or a missed announcement would
-	// otherwise leave a directory entry permanently stale. Stops with ctx.
+	// Refresh peer inventory periodically and models after authentication, so
+	// model changes converge independently of mDNS. Stops with ctx.
 	go d.refreshPeersLoop(ctx)
+	go d.authenticateCandidatesLoop(ctx)
 	go d.refreshTelemetryLoop(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			if d.modelsClients != nil {
 				d.modelsClients.CloseIdle()
+			}
+			if d.nodeInfoClients != nil {
+				d.nodeInfoClients.CloseIdle()
 			}
 			return
 		case ev, ok := <-events:
@@ -436,170 +394,366 @@ func (d *daemon) run(ctx context.Context) {
 	}
 }
 
-// onBrowse folds one _nvpair-node browse event into the directory (annotating
-// trust from the cluster pin set) and emits the matching discovery:node-* event.
-func (d *daemon) onBrowse(ev DiscoveryEvent) {
-	// Never let a browse event touch our own entry. Self is registry-driven
-	// (publishSelf); folding self browse events in here is exactly what evicted
-	// the local node on Windows when its own multicast stopped looping back.
-	// Our record always carries uuid=, so this reliably matches.
-	if uuid := UUIDFromTXT(ev.Node.TXT); uuid != "" && uuid == d.reg.record().HostUUID {
-		return
-	}
+type discoveryCandidate struct {
+	node noderec.DirectoryNode
+	// Retain the last authenticated source link for expiry while a changed
+	// announcement awaits proof. It does not authenticate the pending claims.
+	peerUUID string
+	pending  bool
+}
 
-	trusted := false
-	if cu := clustertrust.ClusterUUIDFromTXT(ev.Node.TXT); cu != "" {
+type peerInfoSample struct {
+	info        NodeInfoResponse
+	certificate *x509.Certificate
+	recordID    string
+	receivedAt  time.Time
+}
+
+func newNodeInfoClients(mesh *clustertrust.Mesh) *clustertrust.PeerClientPool {
+	return clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
+		Timeout: nodeInfoFetchTimeout, DialTimeout: nodeInfoDialTimeout, MaxConnsPerHost: 1,
+	})
+}
+
+func (d *daemon) wakeAuthentication() {
+	select {
+	case d.authWake <- struct{}{}:
+	default:
+	}
+}
+
+// authenticateCandidatesLoop has its own permits and retry state. Pending
+// discoveries cannot occupy the verified telemetry workers or their host memory.
+func (d *daemon) authenticateCandidatesLoop(ctx context.Context) {
+	ticker := time.NewTicker(telemetryRefreshInterval)
+	defer ticker.Stop()
+	sem := make(chan struct{}, telemetryRefreshConcurrency)
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.authWake:
+		case <-ticker.C:
+		}
 		d.mesh.Refresh()
-		trusted = d.mesh.HasPin(cu)
+		d.reconcileTrust()
+		d.dispatchCandidates(ctx, sem, &workers)
 	}
-	node, ok := toDirectoryNode(ev.Node, trusted)
+}
+
+func (d *daemon) dispatchCandidates(ctx context.Context, sem chan struct{}, workers *sync.WaitGroup) {
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	for id, candidate := range d.candidates {
+		if !candidate.pending {
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			return
+		}
+		target := telemetryTargetKey(candidate.node.CandidateIPs(), candidate.node.Services[noderec.ServiceNodeInfo].Port) + candidate.node.ClusterUUID
+		token, due := d.authRetries.claim(id, target, time.Now())
+		if !due {
+			<-sem
+			continue
+		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer func() { <-sem }()
+			ok := d.authenticateCandidate(ctx, id, candidate)
+			d.authRetries.finish(id, token, ok, time.Now())
+		}()
+	}
+}
+
+func (d *daemon) authenticateCandidate(ctx context.Context, id string, candidate *discoveryCandidate) bool {
+	sample, ok := d.readPeerInfo(ctx, candidate.node)
 	if !ok {
-		// Record without a uuid= — toDirectoryNode already warned. Nothing to
-		// store, and a removed event for it is a no-op since it was never added.
+		return false
+	}
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	if d.candidates[id] != candidate || !d.currentPin(sample) {
+		return false
+	}
+	if sample.info.HostUUID == d.reg.record().HostUUID {
+		return false
+	}
+	candidate.peerUUID = sample.info.HostUUID
+	candidate.pending = false
+	d.publishPeerInfo(id, sample)
+	return true
+}
+
+// readPeerInfo authenticates the exact endpoint and response together. Claimed
+// host identity cannot switch a known host to another pinned principal.
+func (d *daemon) readPeerInfo(ctx context.Context, node noderec.DirectoryNode) (peerInfoSample, bool) {
+	principal := node.ClusterUUID
+	if known, ok := d.dir.get(node.HostUUID); ok && known.IdentityVerification == noderec.IdentityPinned {
+		principal = known.ClusterUUID
+	}
+	if principal == "" {
+		principal = node.HostUUID
+	}
+	d.mesh.Refresh()
+	if principal == "" || principal != node.HostUUID || !d.mesh.HasPin(principal) || d.nodeInfoClients == nil {
+		return peerInfoSample{}, false
+	}
+	port := node.Services[noderec.ServiceNodeInfo].Port
+	if port < 1 || port > 65535 {
+		return peerInfoSample{}, false
+	}
+	ask := func(host string) (peerInfoSample, bool) {
+		started := time.Now()
+		origin := "https://" + net.JoinHostPort(host, strconv.Itoa(port))
+		var release func()
+		var acquired bool
+		if node.IdentityVerification == noderec.IdentityPinned {
+			release, acquired = d.nodeInfoOrigins.acquire(ctx, origin)
+		} else {
+			release, acquired = d.nodeInfoOrigins.tryAcquire(origin)
+		}
+		if !acquired {
+			return peerInfoSample{}, false
+		}
+		defer release()
+		requestCtx, cancel := context.WithTimeout(ctx, nodeInfoFetchTimeout)
+		defer cancel()
+		recordID := d.mesh.PeerRecordID(principal)
+		client, ok := d.nodeInfoClients.Client(principal)
+		if !ok {
+			return peerInfoSample{}, false
+		}
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, origin+"/v1/node-info", nil)
+		if err != nil {
+			return peerInfoSample{}, false
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return peerInfoSample{}, false
+		}
+		defer func() {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nodeInfoResponseDrainLimit))
+			_ = resp.Body.Close()
+		}()
+		if resp.StatusCode != http.StatusOK || resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+			return peerInfoSample{}, false
+		}
+		var info NodeInfoResponse
+		body, err := io.ReadAll(io.LimitReader(resp.Body, nodeInfoResponseDrainLimit+1))
+		if err != nil || len(body) > nodeInfoResponseDrainLimit {
+			return peerInfoSample{}, false
+		}
+		if err := json.Unmarshal(body, &info); err != nil {
+			return peerInfoSample{}, false
+		}
+		if info.HostUUID != principal || info.ClusterUUID == nil || *info.ClusterUUID != principal || !validPeerMetadata(info.Peer) {
+			return peerInfoSample{}, false
+		}
+		sample := peerInfoSample{info: info.Aged(time.Since(started)), certificate: resp.TLS.PeerCertificates[0], recordID: recordID, receivedAt: time.Now()}
+		if !d.currentPin(sample) {
+			return peerInfoSample{}, false
+		}
+		return sample, true
+	}
+	// Candidate address memory must never replace a verified host's target.
+	key := node.DiscoveryRecordID
+	_, sample, ok := askRemembered(&d.enrichHosts, hostKey{hostUUID: key, service: noderec.ServiceNodeInfo}, node.CandidateIPs(), ask)
+	return sample, ok
+}
+
+func validPeerMetadata(peer *noderec.PeerMetadata) bool {
+	if peer == nil || peer.Name == "" || len(peer.Addresses) == 0 || len(peer.Addresses) > noderec.MaxAdvertisedIPs {
+		return false
+	}
+	for _, ip := range peer.Addresses {
+		if net.ParseIP(ip) == nil {
+			return false
+		}
+	}
+	if peer.Services[noderec.ServiceNodeInfo] == 0 {
+		return false
+	}
+	for _, port := range peer.Services {
+		if port < 1 || port > 65535 {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *daemon) currentPin(sample peerInfoSample) bool {
+	d.mesh.Refresh()
+	return sample.recordID != "" && sample.recordID == d.mesh.PeerRecordID(sample.info.HostUUID) && d.mesh.VerifyPeerCertificate(sample.info.HostUUID, sample.certificate)
+}
+
+// currentPeerRecord checks the proof binding stored by an authenticated read.
+// The record ID already includes the exact certificate and admission generation.
+// The caller must refresh mesh before checking it.
+func (d *daemon) currentPeerRecord(node noderec.DirectoryNode) bool {
+	return node.IdentityVerification == noderec.IdentityPinned && node.DiscoveryRecordID != "" && node.DiscoveryRecordID == d.mesh.PeerRecordID(node.ClusterUUID)
+}
+
+// currentPeerResult also rejects results for an endpoint replaced while a read
+// was queued or in flight. peerMu must be held through the subsequent write.
+func (d *daemon) currentPeerResult(target noderec.DirectoryNode, sample peerInfoSample) bool {
+	if !d.currentPin(sample) {
+		return false
+	}
+	node, ok := d.dir.get(target.HostUUID)
+	return ok && node.IdentityVerification == noderec.IdentityPinned && node.DiscoveryRecordID == sample.recordID && node.DiscoveryRecordID == target.DiscoveryRecordID && node.ClusterUUID == target.ClusterUUID && node.Services[noderec.ServiceNodeInfo].Port == target.Services[noderec.ServiceNodeInfo].Port && slices.Equal(node.CandidateIPs(), target.CandidateIPs())
+}
+
+func (d *daemon) recordPeerInfoSuccess(uuid string) {
+	d.infoMu.Lock()
+	defer d.infoMu.Unlock()
+	if d.lastInfoAt == nil {
+		d.lastInfoAt = make(map[string]time.Time)
+	}
+	d.lastInfoAt[uuid] = time.Now()
+}
+
+// publishPeerInfo stores authenticated inventory and emits directory changes.
+// The caller must hold peerMu to serialize proof, cache, and directory updates
+// with peer invalidation.
+func (d *daemon) publishPeerInfo(candidateID string, sample peerInfoSample) {
+	info := sample.info.Aged(time.Since(sample.receivedAt))
+	services := make(map[noderec.ServiceKey]noderec.ServiceStatus, len(info.Peer.Services))
+	for key, port := range info.Peer.Services {
+		services[key] = noderec.ServiceStatus{Port: port}
+	}
+	node := noderec.DirectoryNode{
+		DiscoveryRecordID: sample.recordID, IdentityVerification: noderec.IdentityPinned,
+		HostUUID: info.HostUUID, ClusterUUID: *info.ClusterUUID, Trusted: true,
+		Name: info.Peer.Name, IP: info.Peer.Addresses[0], IPs: info.Peer.Addresses, Services: services,
+		GPUs: info.GPUs, CPU: info.CPU, Memory: info.Memory,
+	}
+	d.recordPeerInfoSuccess(info.HostUUID)
+	removed, discovered, changed := d.dir.promote(candidateID, node)
+	if removed.DiscoveryRecordID != "" {
+		d.emit(noderec.NotifyNodeRemoved, removed)
+	}
+	if changed {
+		method := noderec.NotifyNodeUpdated
+		if discovered {
+			method = noderec.NotifyNodeDiscovered
+		}
+		current, _ := d.dir.get(info.HostUUID)
+		d.emit(method, current)
+	}
+	if discovered {
+		select {
+		case d.modelsWake <- struct{}{}:
+		default:
+		}
+	}
+	var utilization uint32
+	for _, gpu := range info.GPUs {
+		if gpu.UtilizationPercent > utilization {
+			utilization = gpu.UtilizationPercent
+		}
+	}
+	info = sample.info.Aged(time.Since(sample.receivedAt))
+	d.emitTelemetry(noderec.NodeTelemetry{HostUUID: info.HostUUID, GPUUtilizationPct: utilization, TelemetryValid: info.TelemetryValid, MSSince: info.MSSince})
+	d.emitNodeInfo(node, sample.info.Aged(time.Since(sample.receivedAt)))
+}
+
+// onBrowse stores each discovery independently. Network claims never mutate a
+// canonical host, including when a discovery changes or disappears.
+func (d *daemon) onBrowse(ev DiscoveryEvent) {
+	var node noderec.DirectoryNode
+	alive := false
+	if ev.Type == discovery.Removed {
+		// Find the stored discovery even if its latest announcement changed or
+		// dropped the UUID claim. Cleanup must not depend on validating that claim.
+		d.peerMu.Lock()
+		candidate := d.candidates[nodeDiscoveryRecordID(ev.Node)]
+		peerUUID := ""
+		if candidate != nil {
+			node = candidate.node
+			peerUUID = candidate.peerUUID
+		}
+		d.peerMu.Unlock()
+		if candidate == nil {
+			return
+		}
+		// Judge the canonical peer separately from the expiring observation.
+		// A failed update may still have an older authenticated source link.
+		alive = d.peerReachable(peerUUID)
+	} else {
+		if UUIDFromTXT(ev.Node.TXT) == d.reg.record().HostUUID {
+			return
+		}
+		var ok bool
+		node, ok = toDirectoryNode(ev.Node)
+		if !ok {
+			return
+		}
+	}
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	if ev.Type == discovery.Removed {
+		candidate := d.candidates[node.DiscoveryRecordID]
+		delete(d.candidates, node.DiscoveryRecordID)
+		d.authRetries.forget(node.DiscoveryRecordID)
+		if d.dir.remove(node.DiscoveryRecordID) {
+			d.emit(noderec.NotifyNodeRemoved, node)
+		}
+		if candidate != nil && candidate.peerUUID != "" && !alive {
+			// Another authenticated discovery still represents this peer.
+			for _, other := range d.candidates {
+				if other.peerUUID == candidate.peerUUID {
+					return
+				}
+			}
+			if peer, present := d.dir.get(candidate.peerUUID); present {
+				d.forget(peer.HostUUID)
+				d.dir.remove(peer.HostUUID)
+				d.emit(noderec.NotifyNodeRemoved, peer)
+			}
+		}
 		return
 	}
-
-	var method string
-	switch ev.Type {
-	case "removed":
-		d.dir.remove(node.HostUUID)
-		d.forget(node.HostUUID)
-		method = noderec.NotifyNodeRemoved
-	case "updated":
-		d.enrich(&node)
-		d.supersedingUpsert(node)
-		method = noderec.NotifyNodeUpdated
-	default: // discovered
-		d.enrich(&node)
-		d.supersedingUpsert(node)
+	if d.candidates == nil {
+		d.candidates = make(map[string]*discoveryCandidate)
+	}
+	peerUUID := ""
+	if previous := d.candidates[node.DiscoveryRecordID]; previous != nil {
+		peerUUID = previous.peerUUID
+	}
+	d.candidates[node.DiscoveryRecordID] = &discoveryCandidate{node: node, peerUUID: peerUUID, pending: true}
+	method := noderec.NotifyNodeUpdated
+	if d.dir.upsert(node) {
 		method = noderec.NotifyNodeDiscovered
 	}
 	d.emit(method, node)
+	d.wakeAuthentication()
 }
 
-// supersedingUpsert folds a browsed peer into the directory, evicting any record
-// it is PROVEN to have replaced and emitting the removals BEFORE the caller emits
-// the node's own event — so no consumer ever observes the machine under two
-// identities at once.
-//
-// The directory can only nominate (directory.supersedeCandidates). Its signals
-// are the arriving record's instance name — an unauthenticated mDNS field
-// anything on the LAN can claim — plus a LastSeen gap that a healthy peer's
-// frozen timestamp satisfies exactly as readily as a ghost's. Deleting on that
-// alone would make mDNS a removal primitive: a record claiming a live peer's
-// hostname would evict it, the browser re-reports a node only when its record
-// CHANGES so it might never come back, and the loss would carry through to the
-// broker's onNodeLost and to workload routing.
-//
-// So each candidate is confirmed the way the eviction path confirms a
-// threshold-missed node: ask the machines involved who they are, and delete only
-// on a definite mismatch. A candidate that cannot be confirmed stays, and is not
-// left uncovered — when it stops being advertised the ordinary miss-threshold
-// path (reachable) puts the same question to it.
-func (d *daemon) supersedingUpsert(node noderec.DirectoryNode) {
-	var proven []noderec.DirectoryNode
-	for _, old := range d.dir.supersedeCandidates(node, d.reg.record().HostUUID) {
-		if d.identityReplaced(old, node) {
-			proven = append(proven, old)
-		}
-	}
-	for _, old := range d.dir.upsertEvicting(node, proven) {
-		slog.Warn("dropping node record proven superseded by a newer identity on the same host",
-			"ip", old.IP, "droppedUuid", old.HostUUID, "droppedName", old.Name,
-			"keptUuid", node.HostUUID, "keptName", node.Name,
-			"ageSeconds", node.LastSeen-old.LastSeen)
-		d.forget(old.HostUUID)
-		d.emit(noderec.NotifyNodeRemoved, old)
-	}
-}
-
-// identityReplaced reports whether old is PROVEN to be a pre-wipe ghost of the
-// machine now arriving as replacement — the confirmation supersedingUpsert
-// requires before it deletes anything.
-//
-// It takes two answers, both from node-info, and both are required:
-//
-//   - old must not still be answering for itself. Every address old published is
-//     asked, at old's own ni port, and any of them naming old keeps it. This is
-//     what tells a wipe apart from two hosts that merely share a hostname, and it
-//     is why a record with no ni port to ask is never evicted here: a candidate
-//     that cannot answer cannot be distinguished from a live namesake, and the
-//     miss-threshold path will reach it on its own when it stops advertising.
-//   - the machine at replacement's address must name someone other than old.
-//     That is the arriving record's own port, which is where the machine is
-//     answering now.
-//
-// Anything short of both — no ni port, no answer within the probe budget, a
-// response without a hostUuid, or the 403 a clustered peer returns to a plaintext
-// caller — leaves the record in place.
-func (d *daemon) identityReplaced(old, replacement noderec.DirectoryNode) bool {
-	oldNI, ok := old.Services[noderec.ServiceNodeInfo]
-	if !ok || oldNI.Port == 0 {
-		return false
-	}
-	stillItself, _ := d.identityAlive(noderec.NodeRecord{
-		HostUUID: old.HostUUID,
-		IP:       old.IP,
-		Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: oldNI.Port},
-	}, old.CandidateIPs())
-	if stillItself {
-		return false
-	}
-	ni, ok := replacement.Services[noderec.ServiceNodeInfo]
-	if !ok || ni.Port == 0 {
-		return false
-	}
-	// Ask the arriving machine at every address it ranked, not just its canonical
-	// one. Any of them naming old keeps the record, so a wider question can only
-	// spare a live node; asking one address that this host happens not to reach
-	// yields no answer at all, and a record with only ips= has no canonical
-	// address to ask.
-	replacementIPs := replacement.CandidateIPs()
-	rec := noderec.NodeRecord{
-		HostUUID: old.HostUUID,
-		IP:       replacement.IP,
-		Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: ni.Port},
-	}
-	alive, conclusive := d.identityAlive(rec, replacementIPs)
-	return conclusive && !alive
-}
-
-// reloadTrust re-derives everything this daemon caches from the cluster pin set,
-// in response to nvpair-cluster-manager reporting that the set moved
-// (discovery:reload-trust).
-//
-// It exists because the browse path is not a sufficient trigger. A peer's trusted
-// annotation is computed when its mDNS record is folded in, and the Browser only
-// reports a node whose record actually changed — so a peer that was already
-// advertising its cluster principal when this node joined is annotated from
-// before our own pins existed and never revisited. That left it unroutable for
-// the life of the process while the roster and the pins on disk both said
-// otherwise.
-//
-// The announcement comes from the process that writes the pins, and only after
-// the write lands, so the directory read here is never older than the event that
-// prompted it. Recomputing unconditionally is deliberate: gating on any
-// "did it change?" helper is how the previous membership hook silently did
-// nothing.
+// reloadTrust invalidates stale proofs and schedules authentication after a pin change.
 func (d *daemon) reloadTrust() {
 	d.mesh.Refresh()
 	// A pin can flip membership on its own (a cluster dir predating admission.json
 	// is clustered on pins alone), which changes what we advertise, so settle
-	// identity before annotating peers against it.
+	// identity before reconciling peer proofs.
 	d.reconcileIdentity()
 	d.reconcileTrust()
+	d.peerMu.Lock()
+	for id := range d.candidates {
+		d.authRetries.forget(id)
+	}
+	d.peerMu.Unlock()
+	d.wakeAuthentication()
 }
 
-// reconcileIdentity re-advertises this node when live membership no longer
-// matches the cluster principal the registry is publishing — the join or leave
-// that reloadIdentity exists to pick up. Peers key their pins on our
-// cluster-uuid= TXT, so a node that became a member must start advertising it
-// without a restart; nothing else tells the fleet.
-//
-// The comparison is against the registry's current value rather than a change
-// signal, so it is safe to call on any event: it is an in-memory string compare,
-// and reloadIdentity's file read and interface enumeration only happen when the
-// answer actually differs.
+// reconcileIdentity republishes local identity when current membership differs
+// from the registry. Announcements expose membership for pairing displays;
+// service trust still requires an authenticated peer inventory response.
 func (d *daemon) reconcileIdentity() {
 	want := ""
 	if d.mesh.Clustered() {
@@ -611,31 +765,30 @@ func (d *daemon) reconcileIdentity() {
 	d.reloadIdentity()
 }
 
-// reconcileTrust re-evaluates every directory entry's trusted annotation against
-// the pin set the mesh currently holds, emitting one discovery:node-updated per
-// entry whose answer changed. Entries that agree are left untouched and silent,
-// so the steady state is a map lookup per node and no traffic — a peer paired or
-// removed since the last pass is the only thing that produces an event.
-//
-// Self is included: it sits in the directory like any other entry, and
-// Mesh.HasPin answers for our own principal through the same self-trust path
-// publishSelf uses, so both stay consistent.
-//
-// The caller refreshes the mesh; this reads whatever it currently holds. It is
-// idempotent, so a duplicated or coalesced announcement costs one map lookup per
-// known node and emits nothing.
+// reconcileTrust removes proofs whose exact pin is no longer current.
+// A new pin schedules authentication; it cannot make an announcement trusted.
 func (d *daemon) reconcileTrust() {
-	for _, n := range d.dir.snapshot("") {
-		// nil principal: this pass knows the pin set, not what each peer
-		// advertises, so it re-derives trust from whatever principal is stored
-		// when the write lands rather than from the snapshot it is iterating.
-		node, changed := d.dir.applyClusterIdentity(n.HostUUID, nil, d.mesh.HasPin)
-		if !changed {
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	for _, node := range d.dir.snapshot("") {
+		if node.IdentityVerification != noderec.IdentityPinned || d.currentPeerRecord(node) {
 			continue
 		}
-		slog.Info("node trust changed", "host_uuid", n.HostUUID,
-			"cluster_uuid", n.ClusterUUID, "trusted", node.Trusted)
-		d.emit(noderec.NotifyNodeUpdated, node)
+		for _, candidate := range d.candidates {
+			if candidate.peerUUID == node.HostUUID {
+				candidate.peerUUID = ""
+				candidate.pending = true
+			}
+		}
+		d.forget(node.HostUUID)
+		d.dir.remove(node.HostUUID)
+		d.emit(noderec.NotifyNodeRemoved, node)
+	}
+	if d.nodeInfoClients != nil {
+		d.nodeInfoClients.DropUnpinned()
+	}
+	if d.modelsClients != nil {
+		d.modelsClients.DropUnpinned()
 	}
 }
 
@@ -659,30 +812,22 @@ func (d *daemon) emitTelemetry(telemetry noderec.NodeTelemetry) {
 	}
 }
 
-// reloadIdentity re-resolves this node's advertised identity (hostUuid,
-// clusterUuid, ip) and re-advertises if any of it changed. It has three triggers:
-//
-//   - Membership change: the mesh watch calls this when this node joins or leaves
-//     a cluster, so cluster-uuid= appears in (or disappears from) this node's mDNS
-//     record within one refresh interval. This is what lets peers key their pins
-//     on us: without the TXT key a peer treats us as unclustered, skips us in its
-//     workload broadcast, and drops us as a routing target — while we remain in
-//     its roster. It must not depend on a process restart.
-//   - Fresh-host startup order: the scanner spawns before cluster-manager, so it
-//     mints its own node-id.json and advertises that uuid= before cluster-manager
-//     writes identity.json. Once cluster-manager is up (the broker triggers a
-//     reload), the re-resolve picks up identity.json so uuid= converges on the
-//     cluster principal.
-//   - Network change: watchAddress calls this on a netmon event so the advertised
-//     addresses track the host's live network instead of freezing at the startup
-//     value — matching how the responder keeps its A records live.
-//
-// Address evidence that arrives later without a network change is handled by
-// refreshAdvertisedAddressesOnce, which re-ranks without re-reading identity.
-//
-// Safe to call concurrently: selfMu serializes it against publishSelf, and
-// setIdentity/UpdateTXT are each mutex-guarded and idempotent for unchanged
-// fields.
+func (d *daemon) emitNodeInfo(node noderec.DirectoryNode, info noderec.NodeInfo) {
+	if d.codec == nil {
+		return
+	}
+	if err := d.codec.Notify(noderec.NotifyNodeInfo, noderec.NodeInfoEvent{
+		DiscoveryRecordID: node.DiscoveryRecordID, HostUUID: node.HostUUID,
+		ClusterUUID: node.ClusterUUID, IdentityVerification: node.IdentityVerification, Info: info,
+	}); err != nil {
+		slog.Warn("failed to emit node-info", "host_uuid", node.HostUUID, "err", err)
+	}
+}
+
+// reloadIdentity resolves this host's current identity, membership, and addresses
+// after cluster or network changes. It removes a superseded local UUID and
+// republishes the registry without relying on a process restart.
+// selfMu serializes it with registry publications and owned hardware snapshots.
 func (d *daemon) reloadIdentity() {
 	d.selfMu.Lock()
 	defer d.selfMu.Unlock()
@@ -705,11 +850,10 @@ func (d *daemon) reloadIdentity() {
 		d.responder.UpdateTXT(d.reg.txt())
 	}
 	// A changed hostUuid (fresh-host re-stamp onto the cluster principal) leaves
-	// our old entry under the stale uuid. Drop it (carrying its enrichment cache
-	// onto the new uuid) so no ghost is served, then republish self under the new
-	// identity below.
+	// our old entry under the stale uuid. Drop it so no ghost is served, then
+	// republish the owned inventory under the new identity below.
 	if oldHostUUID != "" && oldHostUUID != hostUUID {
-		d.dropSelf(oldHostUUID, hostUUID)
+		d.dropSelf(oldHostUUID)
 	}
 	d.publishSelfLocked()
 }
@@ -759,9 +903,8 @@ func (d *daemon) observedAddresses() map[string]bool {
 	return maps.Clone(d.observed)
 }
 
-// peerAddresses returns every address known for other nodes, for the on-link
-// inference in localAddresses. Self is excluded: our own record loops back
-// through mDNS, and seeing our own address proves nothing about the link.
+// peerAddresses returns authenticated remote addresses for the on-link evidence
+// used by localAddresses. Local and unverified discovery records contribute none.
 func (d *daemon) peerAddresses() []string {
 	self := ""
 	if d.reg != nil {
@@ -769,7 +912,7 @@ func (d *daemon) peerAddresses() []string {
 	}
 	var out []string
 	for _, n := range d.dir.snapshot("") {
-		if n.HostUUID == self {
+		if n.HostUUID == self || n.IdentityVerification != noderec.IdentityPinned {
 			continue
 		}
 		if n.IP != "" {
@@ -803,38 +946,16 @@ func (d *daemon) refreshAdvertisedAddressesOnce() {
 	d.publishSelfLocked()
 }
 
-// dropSelf removes this node's stale directory entry after a uuid re-stamp,
-// carrying its enrichment cache onto the new uuid so the republish below reuses
-// it (and can't blank the card), and emits removed(old) so consumers reconcile.
+// dropSelf removes this node's stale directory entry after a uuid re-stamp and
+// emits removed(old) so consumers reconcile. Owned model inventory is independent
+// of the directory UUID and remains available to the next publication.
 // The new entry is (re)published by the caller via publishSelfLocked. Must be
 // called with selfMu held.
-func (d *daemon) dropSelf(oldHostUUID, newHostUUID string) {
+func (d *daemon) dropSelf(oldHostUUID string) {
 	node, existed := d.dir.get(oldHostUUID)
 	d.dir.remove(oldHostUUID)
-	d.infoMu.Lock()
-	if info, ok := d.lastInfo[oldHostUUID]; ok {
-		d.lastInfo[newHostUUID] = info
-	}
-	if at, ok := d.lastInfoAt[oldHostUUID]; ok {
-		d.lastInfoAt[newHostUUID] = at
-	}
-	if models, ok := d.lastModels[oldHostUUID]; ok {
-		d.lastModels[newHostUUID] = models
-	}
-	if byEngine, ok := d.lastModelsByEngine[oldHostUUID]; ok {
-		d.lastModelsByEngine[newHostUUID] = byEngine
-	}
-	if loaded, ok := d.lastLoadedByEngine[oldHostUUID]; ok {
-		d.lastLoadedByEngine[newHostUUID] = loaded
-	}
-	delete(d.lastInfo, oldHostUUID)
-	delete(d.lastInfoAt, oldHostUUID)
-	delete(d.lastModels, oldHostUUID)
-	delete(d.lastModelsByEngine, oldHostUUID)
-	delete(d.lastLoadedByEngine, oldHostUUID)
-	d.infoMu.Unlock()
 	if existed {
-		d.emit(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: oldHostUUID, Name: node.Name})
+		d.emit(noderec.NotifyNodeRemoved, node)
 	}
 }
 
@@ -876,25 +997,77 @@ func (d *daemon) publishSelfLocked() {
 		svcs[k] = noderec.ServiceStatus{Port: port}
 	}
 	node := noderec.DirectoryNode{
-		HostUUID:    rec.HostUUID,
-		Name:        d.instance,
-		IP:          ip,
-		IPs:         ips,
-		ClusterUUID: rec.ClusterUUID,
-		Trusted:     trusted,
-		Services:    svcs,
-		LastSeen:    time.Now().Unix(),
+		DiscoveryRecordID:    "local:" + rec.HostUUID,
+		IdentityVerification: noderec.IdentityLocal,
+		HostUUID:             rec.HostUUID,
+		Name:                 d.instance,
+		IP:                   ip,
+		IPs:                  ips,
+		ClusterUUID:          rec.ClusterUUID,
+		Trusted:              trusted,
+		Services:             svcs,
+		LastSeen:             time.Now().Unix(),
 	}
-	// Enrich over loopback, never the advertised LAN ip=: a first-run Windows
-	// firewall block on inbound to our own LAN address must not blank the local
-	// node's metrics/models (the "no metrics" failure mode).
-	d.enrichAt(&node, loopbackHost)
+	if d.localInfo != nil && d.localInfo.HostUUID == rec.HostUUID {
+		node.GPUs, node.CPU, node.Memory = d.localInfo.GPUs, d.localInfo.CPU, d.localInfo.Memory
+	}
+	// Publication never waits for HTTP while holding selfMu. The model sweep
+	// refreshes the owned engine-manager independently and retains its last answer.
+	// Serialize the cache copy and publication with its model apply/cache write.
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	if node.HasService(noderec.ServiceEngineManager) {
+		node.Models = d.localModels.models
+		node.ModelsByEngine = d.localModels.byEngine
+		node.LoadedByEngine = d.localModels.loadedByEngine
+	}
 
 	method := noderec.NotifyNodeUpdated
 	if isNew := d.dir.upsert(node); isNew {
 		method = noderec.NotifyNodeDiscovered
 	}
 	d.emit(method, node)
+	select {
+	case d.modelsWake <- struct{}{}:
+	default:
+	}
+}
+
+// acceptLocalNodeInfo applies an owned IPC snapshot to its matching local
+// registry record. It updates changed inventory and emits maximum GPU usage
+// for scheduling, including time spent processing the sample in its age.
+func (d *daemon) acceptLocalNodeInfo(info noderec.NodeInfo) {
+	receivedAt := time.Now()
+	d.selfMu.Lock()
+	defer d.selfMu.Unlock()
+	self := d.reg.record().HostUUID
+	if self == "" || info.HostUUID != self {
+		return
+	}
+	info = info.Aged(0)
+	d.localInfo = &info
+	node, result := d.dir.applyLocalInfo(info)
+	switch result {
+	case localInfoMissing:
+		// Build identity and services from the registry, not the hardware snapshot.
+		d.publishSelfLocked()
+	case localInfoUpdated:
+		d.emit(noderec.NotifyNodeUpdated, node)
+	}
+	var utilization uint32
+	for _, gpu := range info.GPUs {
+		if gpu.UtilizationPercent > utilization {
+			utilization = gpu.UtilizationPercent
+		}
+	}
+	aged := info.Aged(time.Since(receivedAt))
+	d.emitTelemetry(noderec.NodeTelemetry{
+		HostUUID: self, GPUUtilizationPct: utilization,
+		TelemetryValid: aged.TelemetryValid, MSSince: aged.MSSince,
+	})
+	if current, ok := d.dir.get(self); ok {
+		d.emitNodeInfo(current, info.Aged(time.Since(receivedAt)))
+	}
 }
 
 // watchAddress re-derives the advertised ip= whenever the host's network changes
@@ -915,22 +1088,13 @@ func (d *daemon) watchAddress(ctx context.Context) {
 	}
 }
 
-// reachableTimeout bounds each liveness probe attempt (node-info GET or em TCP).
-const reachableTimeout = time.Second
-
-// probeIdentityTimeout bounds the liveness probe's node-info read. It is the
-// probe's own budget, deliberately not the enrichment client's
-// nodeInfoFetchTimeout: enrichment is decorating a card and can afford to wait,
-// whereas this runs per threshold-missed node inside the browser's scan cycle
-// (shared/discovery). It matches reachableTimeout because the peer
-// has already answered a TCP connect by the time we ask — a node that is up and
-// listening but cannot serve node-info within a second is one we treat as
-// unidentifiable and fall back on, not one worth stalling the scan for.
-const probeIdentityTimeout = time.Second
-
 // reachableInfoFreshness is how long a successful node-info enrichment keeps a
-// threshold-missed node without a new probe (~2× default discovery scan interval).
+// threshold-missed discovery (~2× default discovery scan interval).
 const reachableInfoFreshness = 10 * time.Second
+
+// retainedPeerGrace gives peers whose last discovery expired a minute without
+// authenticated inventory before removal. Recent inference also keeps them.
+const retainedPeerGrace = time.Minute
 
 // activityFreshness is how long a peer's reported inference traffic vouches for
 // it without a probe of its own.
@@ -947,295 +1111,51 @@ const reachableInfoFreshness = 10 * time.Second
 // is to cover a whole burst of load rather than to require continuous traffic.
 const activityFreshness = 60 * time.Second
 
-// loopbackHost is the address the daemon uses to reach THIS node's own services.
-// Loopback is never firewalled, so enriching/probing self over it (rather than
-// the advertised LAN ip=) makes the local node immune to a first-run Windows
-// firewall block on inbound to its own LAN address.
+// loopbackHost reaches the owned engine-manager for model inventory. Local
+// node-info inventory and telemetry arrive over private worker IPC.
 const loopbackHost = "127.0.0.1"
 
-// reachable reports whether a threshold-missed node is still THERE — an mDNS
-// miss is not proof a node is gone, so a missed record is probed before it is
-// evicted.
-//
-// Two kinds of evidence can vouch for a node without dialing it: a fresh
-// lastInfo enrichment, and fresh inference traffic reported by the local proxies
-// (lastActivityAt). Otherwise it answers in two stages, cheap then precise.
-//
-// First the TCP sweep: dial node-info (ni) then engine-manager (em) and stop at
-// the first that connects. Inference ports (ol/lm) are never dialed — they are
-// the promoted proxies and SYN spam there contributed to accept-queue
-// exhaustion. Nothing answering means the node is gone, and no further question
-// is worth asking — that is the ordinary departure, and it is settled without
-// any HTTP.
-//
-// Something answering is NOT the end of it, and this is the bug that made a
-// wiped node permanent. A connect only proves SOMETHING is listening at an
-// address, not that it is the node the record describes. A node whose appdata is
-// wiped mints a fresh hostUuid but keeps its LAN address and re-binds the same
-// fixed service ports, so the sweep reaches the machine's NEW incarnation and
-// reports the OLD record alive. The miss counter is reset on every pass and the
-// stale record never ages out — the fleet carries a permanent duplicate of one
-// machine. So when something does answer, we ask the machine who it is
-// (identityAlive) and let a definite answer overrule the connect.
-//
-// Running the sweep first is what keeps that identity check off the hot path: it
-// only runs when the node would otherwise have been KEPT, which is exactly when
-// the two cases need telling apart. Ordering the other way would spend a
-// node-info timeout on every departed node inside the browser's scan cycle. The
-// verdicts are identical either way — a conclusive identity answer
-// requires node-info to have responded, so its port is open, so the sweep would
-// have succeeded regardless.
-//
-// A node advertising neither ni nor em (identity-only, or ol/lm alone) has
-// nothing to probe and evicts normally.
+// reachable retains a promoted discovery using its canonical peer's authenticated
+// inventory or approved inference activity. An open port is not identity proof.
 func (d *daemon) reachable(n RawNode) bool {
-	rec := noderec.ParseTXT(n.TXT)
-	candidates := netpick.Candidates(n.TXT, n.Addresses)
-	if len(candidates) == 0 {
+	// An unverified observation cannot borrow an established host's liveness.
+	d.peerMu.Lock()
+	candidate := d.candidates[nodeDiscoveryRecordID(n)]
+	if candidate == nil || candidate.pending || candidate.peerUUID == "" {
+		d.peerMu.Unlock()
 		return false
 	}
-	if rec.HostUUID != "" && d.reg != nil && rec.HostUUID == d.reg.record().HostUUID {
-		candidates = []string{loopbackHost}
-	}
+	uuid := candidate.peerUUID
+	d.peerMu.Unlock()
+	return d.peerReachable(uuid)
+}
 
-	if rec.HostUUID != "" {
-		d.infoMu.Lock()
-		at, had := d.lastInfoAt[rec.HostUUID]
-		d.infoMu.Unlock()
-		if had && time.Since(at) < reachableInfoFreshness {
-			return true
-		}
-		if since, ok := d.activitySince(rec.HostUUID); ok && since < activityFreshness {
-			slog.Debug("liveness probe skipped: the node was recently serving inference",
-				"host_uuid", rec.HostUUID, "last_activity_ago", since)
-			return true
-		}
-	}
-
-	answered := false
-	answeredIP := ""
-	answeredPort := 0
-	for _, ip := range candidates {
-		for _, svc := range []noderec.ServiceKey{noderec.ServiceNodeInfo, noderec.ServiceEngineManager} {
-			port, ok := rec.Port(svc)
-			if !ok {
-				continue
-			}
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), reachableTimeout)
-			if err == nil {
-				_ = conn.Close()
-				answered = true
-				answeredIP = ip
-				answeredPort = port
-				break
-			}
-		}
-		if answered {
-			break
-		}
-	}
-	if !answered {
+func (d *daemon) peerReachable(uuid string) bool {
+	if uuid == "" {
 		return false
 	}
-	if alive, conclusive := d.identityAlive(rec, candidates); conclusive {
-		return alive
+	d.peerMu.Lock()
+	node, ok := d.dir.get(uuid)
+	d.mesh.Refresh()
+	valid := ok && d.currentPeerRecord(node)
+	d.peerMu.Unlock()
+	if !valid {
+		return false
 	}
-	// Kept on the sweep's word alone. Record which port answered next to the
-	// node-info port we then failed to read: the pair separates "node-info is
-	// down but engine-manager answered" from "node-info accepted the connection
-	// and did not respond in time", which are indistinguishable in a report that
-	// only says the node flickered.
-	if niPort, ok := rec.Port(noderec.ServiceNodeInfo); ok {
-		slog.Debug("liveness probe kept a node without settling its identity",
-			"dial_ip", answeredIP, "advertised_ip", rec.IP, "answered_port", answeredPort, "ni_port", niPort)
+	d.infoMu.Lock()
+	at := d.lastInfoAt[node.HostUUID]
+	d.infoMu.Unlock()
+	if !at.IsZero() && time.Since(at) < reachableInfoFreshness {
+		return true
 	}
-	return true
+	if since, ok := d.activitySince(node.HostUUID); ok && since < activityFreshness {
+		return true
+	}
+	return false
 }
 
-// identityAlive asks the machines at ips whether any of them is still the node rec
-// describes, by reading hostUuid from node-info. In the eviction path it is called
-// only after the TCP sweep has already found an address answering, so its job is
-// to overrule that verdict when the machine turns out to be someone else.
-//
-// It walks every address rather than only the record's first because one wrong
-// answer is not proof of a wipe: a direct-connect link uses the same subnet on
-// every pair of machines that has one, so a record's leading address can resolve
-// locally to a different host entirely. An address naming the record's own host
-// settles it in the record's favour, and a mismatch counts only once no address
-// has.
-//
-// conclusive reports whether the question could be answered at all. It is false
-// — meaning "keep the TCP sweep's verdict" — when the record advertises no ni
-// port, when it carries no uuid= to compare against, when no address answers
-// within probeIdentityTimeout, or when every answer omits hostUuid. Only a
-// node-info response that actually names a host is treated as proof, in either
-// direction.
-//
-// Two properties bound what this can get wrong, and both are worth knowing
-// before changing it:
-//
-//   - It only ever concludes for an UNCLUSTERED peer. A clustered node's
-//     node-info admits pinned mTLS callers only (nvpair-node-info's handler
-//     refuses everyone else with 403), so this plaintext probe simply fails
-//     against a member and falls back to the TCP sweep. That is the right
-//     coverage for this bug: a wiped node is unclustered by definition, so the
-//     case we need to catch is exactly the case we can see.
-//   - It assumes node-info's hostUuid and the scanner's advertised uuid= name
-//     the same identity. They are deliberately kept in agreement — the broker
-//     passes its resolved node id to node-info, and cluster-manager ADOPTS an
-//     existing node-id rather than minting a rival one (see its
-//     TestFirstMintAdoptsExistingNodeUUID). If that invariant is ever broken,
-//     this probe would read the skew as a wipe and evict a live peer.
-func (d *daemon) identityAlive(rec noderec.NodeRecord, ips []string) (alive, conclusive bool) {
-	if rec.HostUUID == "" || (d.http == nil && d.tlsHTTP == nil) {
-		return false, false
-	}
-	port, ok := rec.Port(noderec.ServiceNodeInfo)
-	if !ok {
-		return false, false
-	}
-	mismatchedAt, mismatchedUUID := "", ""
-	for _, ip := range ips {
-		if ip == "" {
-			continue
-		}
-		info, ok := d.probeIdentity(ip, port)
-		if !ok || info.HostUUID == "" {
-			continue
-		}
-		if info.HostUUID == rec.HostUUID {
-			return true, true
-		}
-		mismatchedAt, mismatchedUUID = ip, info.HostUUID
-	}
-	if mismatchedAt == "" {
-		return false, false
-	}
-	// Every address that answered named someone else, so the record describes a
-	// node that no longer exists: the machine was reset, or the address was
-	// reassigned. Warn — this is the signal that a node was wiped, and it is the
-	// only place the fleet can observe it.
-	slog.Warn("node record superseded: no address it published still answers for it",
-		"ip", mismatchedAt, "recordUuid", rec.HostUUID, "actualUuid", mismatchedUUID)
-	return false, true
-}
-
-// probeIdentity reads one address's node-info under the identity probe's own
-// budget, which is tighter than enrichment's: this runs inside the browser's scan
-// cycle, and each address gets the same allowance so a slow first candidate cannot
-// consume the rest of the list's time.
-func (d *daemon) probeIdentity(ip string, port int) (NodeInfoResponse, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), probeIdentityTimeout)
-	defer cancel()
-	return d.fetchNodeInfoWithin(ctx, ip, port)
-}
-
-// enrich decorates a node with the data that lives off the mDNS record: its
-// node-info inventory (GPU/CPU/memory), fetched over plain HTTP per the transport
-// policy, and its engine-manager model list, which is cluster data and so is
-// fetched from a peer only over cluster mTLS (see fetchModels). Both are
-// independent (a node may advertise one without the other). Peers are dialed at
-// each address they published until one answers for the expected identity; self
-// is dialed over loopback (see enrichAt).
-func (d *daemon) enrich(node *noderec.DirectoryNode) {
-	hosts := node.CandidateIPs()
-	d.enrichInfoCandidates(node, hosts)
-	d.enrichModelsCandidates(node, hosts)
-}
-
-// enrichAt is enrich against an explicit dial host. onBrowse enriches a peer at
-// its advertised ip=; publishSelf enriches this node over loopbackHost so a
-// first-run firewall block on our own LAN address can't blank the local card.
-// The enrichment cache stays keyed by hostUuid, so the resilience
-// (reuse-last-good on a transient miss) is identical for self and peers.
-func (d *daemon) enrichAt(node *noderec.DirectoryNode, host string) {
-	d.enrichInfoCandidates(node, []string{host})
-	d.enrichModelsCandidates(node, []string{host})
-}
-
-// enrichInfoAt decorates a node that advertises node-info (ni) with its
-// GPU/CPU/memory inventory, fetched at the ni port on host. By default this is
-// PLAIN HTTP — node-info is plain per the transport policy, and the daemon must
-// NEVER infer mTLS from the node-level cluster-uuid= (the subtlest correctness
-// requirement in the consolidation). The only way TLS is used is if the operator
-// opts in globally via the --client-cert/--client-key/--ca-bundle flags (see
-// fetchNodeInfo). A transient fetch failure reuses the node's last successful
-// metrics rather than blanking its card; a node never enriched stays un-enriched.
-func (d *daemon) enrichInfoAt(node *noderec.DirectoryNode, host string) {
-	d.enrichInfoCandidates(node, []string{host})
-}
-
-// enrichInfoCandidates is enrichInfoAt with address failover. A raw TCP accept
-// is not enough here: identically configured direct-connect links can reuse an
-// address on different machines, so the response's host UUID is checked before
-// the candidate is accepted. Older peers that omit hostUuid remain compatible.
-//
-// Which address is asked, and in what order, is askRemembered's business: the one
-// that answered last sweep by itself, and the rest together only if it stopped.
-func (d *daemon) enrichInfoCandidates(node *noderec.DirectoryNode, hosts []string) {
-	ni, ok := node.Services[noderec.ServiceNodeInfo]
-	if !ok || len(hosts) == 0 {
-		return
-	}
-	ask := func(host string) (NodeInfoResponse, bool) {
-		candidate, fetched := d.fetchNodeInfo(host, ni.Port)
-		if !fetched {
-			return NodeInfoResponse{}, false
-		}
-		if candidate.HostUUID != "" && node.HostUUID != "" && candidate.HostUUID != node.HostUUID {
-			slog.Debug("node-info candidate answered for a different host; trying next",
-				"expected_host_uuid", node.HostUUID, "reported_host_uuid", candidate.HostUUID, "ip", host)
-			return NodeInfoResponse{}, false
-		}
-		return candidate, true
-	}
-	key := hostKey{hostUUID: node.HostUUID, service: noderec.ServiceNodeInfo}
-	selectedHost, info, _ := askRemembered(&d.enrichHosts, key, hosts, ask)
-
-	endpointHost := selectedHost
-	if endpointHost == "" {
-		endpointHost = hosts[0]
-	}
-	d.noteNodeInfo(node.HostUUID, net.JoinHostPort(endpointHost, strconv.Itoa(ni.Port)), selectedHost != "")
-	if selectedHost != "" {
-		d.infoMu.Lock()
-		if d.lastInfo == nil {
-			d.lastInfo = make(map[string]NodeInfoResponse)
-		}
-		d.lastInfo[node.HostUUID] = info
-		if d.lastInfoAt == nil {
-			d.lastInfoAt = make(map[string]time.Time)
-		}
-		d.lastInfoAt[node.HostUUID] = time.Now()
-		d.infoMu.Unlock()
-	} else {
-		d.infoMu.Lock()
-		cached, had := d.lastInfo[node.HostUUID]
-		d.infoMu.Unlock()
-		if !had {
-			return
-		}
-		info = cached
-	}
-	node.GPUs = info.GPUs
-	node.CPU = info.CPU
-	node.Memory = info.Memory
-}
-
-// noteNodeInfo reports a peer's node-info endpoint going quiet, and coming back,
-// at a level someone reading the log will see.
-//
-// Only the transitions are reported. The enrichment sweep repeats every
-// peerRefreshInterval for as long as a node is advertised, so a peer whose
-// address accepts nothing produces an unbounded run of identical failures; one
-// line each time is why this was a debug line, and being a debug line is why an
-// address that never once answered looked, in the log, exactly like one that was
-// working. A node that is failing is stated once, with where it was asked, and
-// its recovery is stated once.
-//
-// Silence between those two lines does not mean the peer is fine — it means
-// nothing has changed and the node's card is still showing the last inventory
-// that was actually read.
+// noteNodeInfo logs outage and recovery transitions once each. Failed samples
+// leave the last accepted inventory in place while scheduling measurements age.
 func (d *daemon) noteNodeInfo(hostUUID, endpoint string, ok bool) {
 	d.infoMu.Lock()
 	was := d.nodeInfoDown[hostUUID]
@@ -1258,151 +1178,30 @@ func (d *daemon) noteNodeInfo(hostUUID, endpoint string, ok bool) {
 	}
 }
 
-// fetchNodeInfo does one GET of a node's /v1/node-info, returning the parsed
-// inventory and whether it succeeded. It uses plain HTTP by default; when the
-// operator configured a TLS client (--client-cert/--client-key/--ca-bundle) it
-// fetches over HTTPS on the same ni port. The choice is purely flag-gated — never
-// per-node — so the transport policy stays static.
-func (d *daemon) fetchNodeInfo(ip string, port int) (NodeInfoResponse, bool) {
-	return d.fetchNodeInfoWithin(context.Background(), ip, port)
-}
-
-// fetchNodeInfoWithin is fetchNodeInfo bounded by ctx as well as the client's own
-// timeout. The liveness probe uses it to hold node-info to a tighter budget than
-// enrichment without needing a second HTTP client (which would have to duplicate
-// the TLS choice above); every other caller passes a background context and gets
-// the client timeout unchanged.
-func (d *daemon) fetchNodeInfoWithin(ctx context.Context, ip string, port int) (NodeInfoResponse, bool) {
-	client, scheme := d.http, "http"
-	if d.tlsHTTP != nil {
-		client, scheme = d.tlsHTTP, "https"
-	}
-	if client == nil {
-		return NodeInfoResponse{}, false
-	}
-	origin := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port))
-	release, acquired := d.nodeInfoOrigins.acquire(ctx, origin)
-	if !acquired {
-		return NodeInfoResponse{}, false
-	}
-	defer release()
-
-	url := origin + "/v1/node-info"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		slog.Debug("node-info request build failed", "ip", ip, "url", url, "err", err)
-		return NodeInfoResponse{}, false
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Debug("node-info fetch failed", "ip", ip, "url", url, "err", err)
-		return NodeInfoResponse{}, false
-	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nodeInfoResponseDrainLimit))
-		_ = resp.Body.Close()
-	}()
-	if resp.StatusCode != http.StatusOK {
-		return NodeInfoResponse{}, false
-	}
-	var info NodeInfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return NodeInfoResponse{}, false
-	}
-	return info, true
-}
-
-// enrichModelsAt decorates a node that advertises engine-manager (em) with its
-// model list, fetched at the em port (/v1/models) on host. The list moved off the
-// size-limited mDNS TXT onto HTTP so it can grow unbounded and be owned by
-// engine-manager (which already owns engine state). A peer is fetched over cluster
-// mTLS pinned to the principal it advertises, and skipped when this node holds no
-// pin for it — which models a machine holds is cluster data. A transient failure
-// reuses the last successful list rather than blanking it; a node advertising no em
-// has no model list (nothing is carried in the record). Self is dialed over
-// loopback (see enrichAt), which stays plaintext, peers at their advertised address.
-func (d *daemon) enrichModelsAt(node *noderec.DirectoryNode, host string) {
-	d.enrichModelsCandidates(node, []string{host})
-}
-
-// enrichModelsCandidates is enrichModelsAt with address failover. For a peer,
-// fetchModels performs the pinned mTLS handshake, so a shared address belonging
-// to another machine is rejected and the next published address is tried.
-func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []string) {
-	em, ok := node.Services[noderec.ServiceEngineManager]
-	if !ok || len(hosts) == 0 {
-		return
-	}
-	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, em.Port, node.ClusterUUID)
-		if !fetched {
-			return modelInventory{}, false
-		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
-	}
-	key := hostKey{hostUUID: node.HostUUID, service: noderec.ServiceEngineManager}
-	if _, inventory, ok := askRemembered(&d.enrichHosts, key, hosts, ask); ok {
-		d.infoMu.Lock()
-		if d.lastModels == nil {
-			d.lastModels = make(map[string][]string)
-		}
-		if d.lastModelsByEngine == nil {
-			d.lastModelsByEngine = make(map[string]map[string][]string)
-		}
-		if d.lastLoadedByEngine == nil {
-			d.lastLoadedByEngine = make(map[string]map[string][]string)
-		}
-		d.lastModels[node.HostUUID] = inventory.models
-		d.lastModelsByEngine[node.HostUUID] = inventory.byEngine
-		d.lastLoadedByEngine[node.HostUUID] = inventory.loadedByEngine
-		d.infoMu.Unlock()
-		node.Models = inventory.models
-		node.ModelsByEngine = inventory.byEngine
-		node.LoadedByEngine = inventory.loadedByEngine
-		return
-	}
-	d.infoMu.Lock()
-	cached, had := d.lastModels[node.HostUUID]
-	cachedByEngine := d.lastModelsByEngine[node.HostUUID]
-	cachedLoaded := d.lastLoadedByEngine[node.HostUUID]
-	d.infoMu.Unlock()
-	if had {
-		node.Models = cached
-		node.ModelsByEngine = cachedByEngine
-		node.LoadedByEngine = cachedLoaded
-	}
-}
-
-// fetchModels does one GET of a node's /v1/models, returning the
-// flat model-name union, the per-engine attribution (engine name -> models),
-// the per-engine loaded (in-memory) set, and whether it succeeded. Shape:
+// fetchModels reads /v1/models and retains the server certificate so a remote
+// result can be rechecked before updating the directory or caches. Response shape:
 // {"models":["name",...],"modelsByEngine":{"ollama":[...]},"loadedByEngine":{"ollama":[...]}}.
 // modelsByEngine and loadedByEngine are additive (omitempty on the wire); a peer
 // that doesn't send them yields nil maps, and the flat union still enriches the
 // node. A present engine key with [] is a successful empty inventory.
-// A peer's model inventory is cluster data, so a peer is fetched over cluster
-// mTLS keyed on the cluster principal it advertises (clusterUUID, from its
-// cluster-uuid= TXT): this node must hold a pin for that principal, or there is
-// nothing to fetch and nothing is attempted. THIS node's own engine-manager is
-// dialed over loopback (both callers force that for self), which stays plain and
-// therefore keeps working when this node belongs to no cluster — a standalone
-// machine still has to show its own models.
-func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string, map[string][]string, map[string][]string, bool) {
+// Peers use pinned mTLS and their verified clusterUUID. The local engine-manager
+// uses loopback HTTP, including outside a cluster.
+func (d *daemon) fetchModels(ip string, port int, clusterUUID string) (modelInventory, bool) {
 	client, scheme, ok := d.modelsClient(ip, clusterUUID)
 	if !ok {
 		slog.Debug("model enrichment skipped: peer is not a pinned cluster member",
 			"ip", ip, "clusterUuid", clusterUUID)
-		return nil, nil, nil, false
+		return modelInventory{}, false
 	}
 	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/models"
 	resp, err := client.Get(url)
 	if err != nil {
 		slog.Debug("model enrichment failed", "ip", ip, "url", url, "err", err)
-		return nil, nil, nil, false
+		return modelInventory{}, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, nil, false
+		return modelInventory{}, false
 	}
 	var body struct {
 		Models         []string            `json:"models"`
@@ -1410,9 +1209,17 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string,
 		LoadedByEngine map[string][]string `json:"loadedByEngine"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, nil, nil, false
+		return modelInventory{}, false
 	}
-	return body.Models, body.ModelsByEngine, body.LoadedByEngine, true
+	inventory := modelInventory{models: body.Models, byEngine: body.ModelsByEngine, loadedByEngine: body.LoadedByEngine}
+	if scheme == "https" {
+		d.mesh.Refresh()
+		if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 || !d.mesh.VerifyPeerCertificate(clusterUUID, resp.TLS.PeerCertificates[0]) {
+			return modelInventory{}, false
+		}
+		inventory.certificate = resp.TLS.PeerCertificates[0]
+	}
+	return inventory, true
 }
 
 // modelsClient picks the transport for a model fetch: the plain client over
@@ -1421,7 +1228,7 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string,
 // false when a peer holds no pin here, which is the client-side cluster gate —
 // there is deliberately no plaintext fallback for a peer.
 func (d *daemon) modelsClient(ip, clusterUUID string) (*http.Client, string, bool) {
-	if isLoopbackHost(ip) {
+	if clusterUUID == "" && isLoopbackHost(ip) {
 		return d.modelsHTTP, "http", true
 	}
 	d.mesh.Refresh()
@@ -1441,17 +1248,9 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// refreshPeersLoop periodically re-reads what each peer reports about itself over
-// HTTP and folds any change back into the directory, independent of mDNS browse
-// events. It is the convergence mechanism for facts that change without moving
-// the raw mDNS record, or whose announcement was simply not received — neither of
-// which produces a browse event, so neither reaches the enrichment in onBrowse.
-// Stops when ctx is cancelled (the daemon's existing shutdown path).
-//
-// Cluster membership is refreshed before models on the same tick, because the
-// model fetch is pinned mTLS keyed on the peer's principal: reading membership
-// first means a peer that just joined or left is dialed under its current
-// identity rather than the previous one.
+// refreshPeersLoop refreshes models and local address selection periodically.
+// Local publications and newly authenticated peers wake models immediately. Sweeps
+// finish before the next starts, sharing the same model concurrency limit.
 func (d *daemon) refreshPeersLoop(ctx context.Context) {
 	ticker := time.NewTicker(peerRefreshInterval)
 	defer ticker.Stop()
@@ -1459,13 +1258,14 @@ func (d *daemon) refreshPeersLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-d.modelsWake:
+			d.refreshModelsOnce()
 		case <-ticker.C:
 			d.refreshAdvertisedAddressesOnce()
 			d.mesh.Refresh()
 			if d.modelsClients != nil {
 				d.modelsClients.DropUnpinned()
 			}
-			d.refreshClusterIdentityOnce()
 			d.refreshModelsOnce()
 		}
 	}
@@ -1541,10 +1341,10 @@ func (d *daemon) dispatchTelemetry(
 		if !ok {
 			continue
 		}
-		hosts := append([]string(nil), n.CandidateIPs()...)
-		if n.HostUUID == self {
-			hosts = []string{loopbackHost}
+		if n.HostUUID == self || n.IdentityVerification != noderec.IdentityPinned {
+			continue // local telemetry arrives through discovery:local-node-info
 		}
+		hosts := append([]string(nil), n.CandidateIPs()...)
 		if len(hosts) == 0 {
 			continue
 		}
@@ -1555,7 +1355,7 @@ func (d *daemon) dispatchTelemetry(
 		}
 
 		workers.Add(1)
-		go func(hostUUID string, hosts []string, port int, token uint64, backoff bool) {
+		go func(hostUUID string, hosts []string, port int, token uint64) {
 			defer workers.Done()
 			select {
 			case sem <- struct{}{}:
@@ -1565,289 +1365,141 @@ func (d *daemon) dispatchTelemetry(
 				return
 			}
 			ok := d.refreshNodeTelemetryCandidates(ctx, hostUUID, hosts, port)
-			if !backoff || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				ok = true
 			}
 			d.telemetryRetries.finish(hostUUID, token, ok, time.Now())
-		}(n.HostUUID, hosts, ni.Port, retryToken, n.HostUUID != self)
+		}(n.HostUUID, hosts, ni.Port, retryToken)
 	}
 }
 
-const maxTelemetryAge = int64(1<<63 - 1)
-
-// refreshNodeTelemetry emits one node's current GPU utilization. Failed fetches
-// stay silent so downstream freshness expiry handles temporary unreachability.
-// A response naming another host is never attributed to the directory entry
-// whose address was queried.
-func (d *daemon) refreshNodeTelemetry(ctx context.Context, hostUUID, ip string, niPort int) bool {
-	return d.refreshNodeTelemetryCandidates(ctx, hostUUID, []string{ip}, niPort)
-}
-
-// telemetrySample is one node-info answer plus when the request that produced it
-// began. The reported age has to be advanced by that request's own latency, and a
-// failover attempt asks several addresses at once, so the time belongs to the
-// answer rather than to the sweep.
-type telemetrySample struct {
-	info      NodeInfoResponse
-	startedAt time.Time
-}
-
-// refreshNodeTelemetryCandidates is refreshNodeTelemetry with address failover.
-//
-// Healthy nodes are sampled every two seconds. Failed remote nodes back off, and
-// each due attempt goes through the same node-info memory the enrichment sweeps
-// use: the address that answered is asked by itself, and the rest of the list
-// only once it stops answering. Without that, a peer whose canonical address is
-// a link this host cannot reach reported no telemetry at all, and the scheduler
-// then assigned it neutral pressure and scheduled it blind.
+// refreshNodeTelemetryCandidates reads the current canonical peer target once
+// for inventory and scheduling. Failed reads retain inventory while samples age;
+// a retained peer can expire after its discoveries and availability evidence end.
 func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID string, hosts []string, niPort int) bool {
-	ask := func(host string) (telemetrySample, bool) {
-		startedAt := time.Now()
-		candidate, ok := d.fetchNodeInfoWithin(ctx, host, niPort)
-		if !ok {
-			return telemetrySample{}, false
-		}
-		if candidate.HostUUID != hostUUID {
-			slog.Debug("skipping telemetry reported by a different host at this address; trying next",
-				"expected_host_uuid", hostUUID, "reported_host_uuid", candidate.HostUUID, "ip", host)
-			return telemetrySample{}, false
-		}
-		return telemetrySample{info: candidate, startedAt: startedAt}, true
+	node, ok := d.dir.get(hostUUID)
+	if !ok || node.IdentityVerification != noderec.IdentityPinned || node.Services[noderec.ServiceNodeInfo].Port != niPort || !slices.Equal(node.CandidateIPs(), hosts) {
+		return false
 	}
-	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceNodeInfo}
-	_, sample, ok := askRemembered(&d.enrichHosts, key, hosts, ask)
+	sample, ok := d.readPeerInfo(ctx, node)
 	if !ok {
+		if ctx.Err() == nil {
+			d.noteNodeInfo(hostUUID, net.JoinHostPort(node.IP, strconv.Itoa(niPort)), false)
+			d.expireRetainedPeer(node)
+		}
 		return false
 	}
-	info, startedAt := sample.info, sample.startedAt
-
-	age := int64(0)
-	if info.TelemetryValid {
-		age = info.MSSince
-		if age < 0 {
-			age = 0
-		}
-		elapsed := time.Since(startedAt).Milliseconds()
-		if elapsed > maxTelemetryAge-age {
-			age = maxTelemetryAge
-		} else {
-			age += elapsed
-		}
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	if !d.currentPeerResult(node, sample) {
+		return false
 	}
-	var utilization uint32
-	for i := range info.GPUs {
-		if info.GPUs[i].UtilizationPercent > utilization {
-			utilization = info.GPUs[i].UtilizationPercent
-		}
-	}
-	d.emitTelemetry(noderec.NodeTelemetry{
-		HostUUID:          hostUUID,
-		GPUUtilizationPct: utilization,
-		TelemetryValid:    info.TelemetryValid,
-		MSSince:           age,
-	})
+	d.noteNodeInfo(hostUUID, net.JoinHostPort(node.IP, strconv.Itoa(niPort)), true)
+	d.publishPeerInfo("", sample)
 	return true
 }
 
-// refreshClusterIdentityOnce re-reads every peer's cluster membership from its
-// node-info endpoint and folds any change into the directory.
-//
-// Membership otherwise reaches this daemon only as the cluster-uuid= key on a
-// peer's mDNS record, which is read exactly once per browse *change* event. A
-// peer that leaves its cluster and re-advertises produces such an event — but if
-// it is not received, nothing asks again: the browse diff has no notion of a fact
-// it never saw, and the liveness probe keeps the entry alive precisely because the
-// peer is still reachable. The stale principal then outlives the cluster, and a
-// client suppresses the invite that would bring that peer back.
-//
-// node-info is the right place to ask because it is the one inter-node surface
-// deliberately kept plain (see the broker's spawnNodeInfo), so it answers whether
-// or not this node and the peer share a cluster — and it is reached over TCP at
-// the address the peer advertised, sharing nothing with multicast reception.
-//
-// Self is excluded: this node's own entry is registry-driven (publishSelf owns its
-// principal), not something to learn from a loopback HTTP read.
-func (d *daemon) refreshClusterIdentityOnce() {
-	self := ""
-	if d.reg != nil {
-		self = d.reg.record().HostUUID
-	}
-	// One refresh for the whole sweep: every peer is then annotated against the
-	// same pin set, and 16 concurrent re-reads of the trust store are avoided.
-	d.mesh.Refresh()
-	sem := make(chan struct{}, modelsRefreshConcurrency)
-	var wg sync.WaitGroup
-	for _, n := range d.dir.snapshot(noderec.ServiceNodeInfo) {
-		ni, ok := n.Services[noderec.ServiceNodeInfo]
-		if !ok || n.IP == "" || n.HostUUID == self {
-			continue
+// expireRetainedPeer removes an unavailable peer after its last discovery has
+// expired. The caller has just failed to refresh target. Membership and pins stay.
+func (d *daemon) expireRetainedPeer(target noderec.DirectoryNode) {
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	for _, candidate := range d.candidates {
+		if candidate.peerUUID == target.HostUUID {
+			return
 		}
-		wg.Add(1)
-		sem <- struct{}{}
-		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID string, hosts []string, port int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			d.refreshNodeClusterIdentityCandidates(hostUUID, hosts, port)
-		}(n.HostUUID, hosts, ni.Port)
 	}
-	wg.Wait()
+	peer, present := d.dir.get(target.HostUUID)
+	if !present || peer.IdentityVerification != noderec.IdentityPinned ||
+		peer.DiscoveryRecordID != target.DiscoveryRecordID || peer.ClusterUUID != target.ClusterUUID ||
+		peer.Services[noderec.ServiceNodeInfo].Port != target.Services[noderec.ServiceNodeInfo].Port ||
+		!slices.Equal(peer.CandidateIPs(), target.CandidateIPs()) {
+		return
+	}
+	d.infoMu.Lock()
+	at := d.lastInfoAt[peer.HostUUID]
+	d.infoMu.Unlock()
+	if time.Since(at) < retainedPeerGrace {
+		return
+	}
+	if since, ok := d.activitySince(peer.HostUUID); ok && since < activityFreshness {
+		return
+	}
+	d.forget(peer.HostUUID)
+	d.dir.remove(peer.HostUUID)
+	d.emit(noderec.NotifyNodeRemoved, peer)
 }
 
-// refreshNodeClusterIdentity reads one peer's reported membership and applies it,
-// emitting one discovery:node-updated when it moved. Returns whether it emitted
-// (used by tests).
-//
-// Two answers mean "leave the annotation alone": a failed fetch, and a peer that
-// reports no clusterUuid field at all because it predates it. Only the peer's own
-// explicit value is acted on — inferring "unclustered" from silence would mark a
-// clustered peer invitable, which is the failure this annotation exists to
-// prevent.
-//
-// A third: the machine answering may not be the one this entry describes. An
-// address outlives its occupant — a wiped and reinstalled node, or a reused DHCP
-// lease — and node-info names who it really is, so a mismatched hostUuid means
-// writing a stranger's membership onto someone else's entry. Skipped rather than
-// corrected here: the entry ages out through the same identity check in the
-// liveness probe (see identityAlive), which owns that decision. A peer reporting
-// no hostUuid predates the field and cannot be checked either way, so it is taken
-// at its word — the same fallback that probe applies to the same answer.
-func (d *daemon) refreshNodeClusterIdentity(hostUUID, ip string, niPort int) bool {
-	return d.refreshNodeClusterIdentityCandidates(hostUUID, []string{ip}, niPort)
-}
-
-// refreshNodeClusterIdentityCandidates is refreshNodeClusterIdentity with
-// address failover. A response from a different host is not authoritative for
-// this entry, but it is also not the end of the candidate list: shared
-// direct-connect addresses can legitimately resolve to a different machine.
-func (d *daemon) refreshNodeClusterIdentityCandidates(hostUUID string, hosts []string, niPort int) bool {
-	ask := func(host string) (NodeInfoResponse, bool) {
-		candidate, ok := d.fetchNodeInfo(host, niPort)
-		if !ok {
-			return NodeInfoResponse{}, false
-		}
-		if candidate.HostUUID != "" && candidate.HostUUID != hostUUID {
-			slog.Debug("skipping cluster membership reported by a different host at this address; trying next",
-				"expected_host_uuid", hostUUID, "reported_host_uuid", candidate.HostUUID, "ip", host)
-			return NodeInfoResponse{}, false
-		}
-		return candidate, true
-	}
-	// Shares the node-info memory with the enrichment sweep, so the two node-info
-	// callers converge on one address per peer rather than each finding it again.
-	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceNodeInfo}
-	_, info, _ := askRemembered(&d.enrichHosts, key, hosts, ask)
-	if info.ClusterUUID == nil {
-		return false
-	}
-	node, changed := d.dir.applyClusterIdentity(hostUUID, info.ClusterUUID, d.mesh.HasPin)
-	if !changed {
-		return false
-	}
-	slog.Info("peer cluster membership changed", "host_uuid", hostUUID,
-		"clustered", node.Clustered(), "trusted", node.Trusted)
-	d.emit(noderec.NotifyNodeUpdated, node)
-	return true
-}
-
-// refreshModelsOnce snapshots every directory node advertising engine-manager
-// (em) with a usable IP and refreshes each concurrently, bounded by
-// modelsRefreshConcurrency so an unexpectedly large network can't spawn an
-// unbounded burst of fetches. Running the sweep to completion (wg.Wait) before
-// the loop reads the next tick makes overlapping sweeps impossible, and each
-// per-node goroutine uses modelsHTTP's own timeout, so one slow peer never
-// consumes another's budget.
+// refreshModelsOnce refreshes local and authenticated peer model inventories.
+// Each sweep waits for its bounded workers, preventing overlapping sweeps.
+// Requests have independent timeouts, so one slow peer does not consume another's
+// request budget.
 func (d *daemon) refreshModelsOnce() {
 	sem := make(chan struct{}, modelsRefreshConcurrency)
 	var wg sync.WaitGroup
-	for _, n := range d.dir.snapshot(noderec.ServiceEngineManager) {
-		em, ok := n.Services[noderec.ServiceEngineManager]
-		if !ok || n.IP == "" {
+	for _, target := range d.dir.snapshot(noderec.ServiceEngineManager) {
+		if !target.HasService(noderec.ServiceEngineManager) || target.IP == "" || (target.IdentityVerification != noderec.IdentityLocal && target.IdentityVerification != noderec.IdentityPinned) {
 			continue
 		}
+		// Keep the addresses and endpoint from this sweep even while a previous
+		// worker holds the last permit and newer inventory replaces the directory.
+		target.IPs = slices.Clone(target.CandidateIPs())
+		target.Services = maps.Clone(target.Services)
 		wg.Add(1)
 		sem <- struct{}{}
-		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID, guardIP string, hosts []string, port int, clusterUUID string) {
+		go func(target noderec.DirectoryNode) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			d.refreshNodeModelsCandidates(hostUUID, guardIP, hosts, port, clusterUUID)
-		}(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+			d.refreshNodeModels(target)
+		}(target)
 	}
 	wg.Wait()
 }
 
-// refreshNodeModels fetches one peer's /v1/models and, on success, applies it to
-// the directory under the removed/re-addressed guard (directory.applyModels).
-// A failed fetch retains the last successful inventory: no cache write, no
-// directory change, no event. On a change it refreshes the enrichment caches
-// (so a later browse-driven fallback can't revert the directory to a stale
-// value) and emits exactly one discovery:node-updated carrying the full node.
-// Returns whether it emitted an update (used by tests).
-//
-// The fetch dials our OWN engine-manager over loopback, never the advertised
-// LAN ip=: this loop — not the registry-driven publishSelf — is what converges
-// model-only changes (a pull/delete, a late engine start) that don't move the
-// registry, so on the Windows self-LAN firewall block this daemon guards
-// against, a LAN dial would make self's model list freeze at its
-// startup value. The stored ip is still passed to applyModels as the
-// stale-address guard, so an in-flight result can't overwrite a re-addressed
-// node. Peers are still dialed at their advertised address.
-func (d *daemon) refreshNodeModels(hostUUID, ip string, emPort int, clusterUUID string) bool {
-	return d.refreshNodeModelsCandidates(hostUUID, ip, []string{ip}, emPort, clusterUUID)
-}
-
-// refreshNodeModelsCandidates is refreshNodeModels with address failover. The
-// canonical IP remains the stale-result guard even when a later address is the
-// one that answered.
-//
-// Which address is asked is askRemembered's business — the one that answered last
-// sweep, alone — and it shares that memory with the enrichment path, so both
-// converge on one address per peer instead of each rediscovering it.
-func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []string, emPort int, clusterUUID string) bool {
-	if d.reg != nil && hostUUID == d.reg.record().HostUUID {
+// refreshNodeModels fetches inventory for a target captured before queuing. Its
+// complete address and proof snapshot guards against queued or in-flight results
+// from a replaced endpoint. Local reads use the owned engine-manager's loopback
+// HTTP endpoint; remote reads require the verified peer's pinned mTLS.
+func (d *daemon) refreshNodeModels(target noderec.DirectoryNode) bool {
+	if _, present := d.dir.get(target.HostUUID); !present {
+		return false
+	}
+	hosts := target.CandidateIPs()
+	emPort := target.Services[noderec.ServiceEngineManager].Port
+	clusterUUID := target.ClusterUUID
+	if d.reg != nil && target.HostUUID == d.reg.record().HostUUID {
 		hosts = []string{loopbackHost}
+		clusterUUID = ""
 	}
 	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, emPort, clusterUUID)
-		if !fetched {
-			return modelInventory{}, false
-		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
+		return d.fetchModels(host, emPort, clusterUUID)
 	}
-	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager}
+	key := hostKey{hostUUID: target.HostUUID, service: noderec.ServiceEngineManager}
 	_, inventory, fetched := askRemembered(&d.enrichHosts, key, hosts, ask)
 	if !fetched {
 		return false
 	}
 	models, byEngine, loadedByEngine := inventory.models, inventory.byEngine, inventory.loadedByEngine
-	// Refresh the enrichment cache BEFORE touching the directory: the caches
-	// (infoMu) and the directory (dir.mu) are guarded by different locks, so if
-	// the directory were updated first, a concurrent onBrowse->enrichModelsAt whose
-	// own fetch fails would fall back to a still-stale lastModels and upsert the
-	// old inventory, reverting this update. Writing the cache first means that
-	// fallback reads the fresh value. The only side effect — caching a value for
-	// a node applyModels then finds removed — is benign (it is the last-known-good
-	// value the cache exists to preserve, and forget() clears it on eviction).
-	d.infoMu.Lock()
-	if d.lastModels == nil {
-		d.lastModels = make(map[string][]string)
+	d.peerMu.Lock()
+	defer d.peerMu.Unlock()
+	d.mesh.Refresh()
+	if current, present := d.dir.get(target.HostUUID); present && current.IdentityVerification == noderec.IdentityPinned {
+		if current.ClusterUUID != clusterUUID ||
+			current.DiscoveryRecordID != target.DiscoveryRecordID ||
+			!d.currentPeerRecord(current) ||
+			!slices.Equal(current.CandidateIPs(), hosts) ||
+			!d.mesh.VerifyPeerCertificate(clusterUUID, inventory.certificate) {
+			return false
+		}
 	}
-	if d.lastModelsByEngine == nil {
-		d.lastModelsByEngine = make(map[string]map[string][]string)
-	}
-	if d.lastLoadedByEngine == nil {
-		d.lastLoadedByEngine = make(map[string]map[string][]string)
-	}
-	d.lastModels[hostUUID] = models
-	d.lastModelsByEngine[hostUUID] = byEngine
-	d.lastLoadedByEngine[hostUUID] = loadedByEngine
-	d.infoMu.Unlock()
-
-	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, models, byEngine, loadedByEngine)
+	node, changed, valid := d.dir.applyModels(target.HostUUID, target.IP, emPort, models, byEngine, loadedByEngine)
 	if !valid {
 		return false
 	}
+	if node.IdentityVerification == noderec.IdentityLocal {
+		d.localModels = inventory
+	}
+
 	if changed {
 		d.emit(noderec.NotifyNodeUpdated, node)
 	}
@@ -1858,12 +1510,14 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 // re-discovery re-probes from scratch rather than resurrecting stale metrics.
 func (d *daemon) forget(hostUUID string) {
 	d.telemetryRetries.forget(hostUUID)
+	if d.dir != nil {
+		if node, present := d.dir.get(hostUUID); present {
+			d.enrichHosts.forget(hostKey{hostUUID: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
+		}
+	}
+	d.enrichHosts.forget(hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager})
 	d.infoMu.Lock()
-	delete(d.lastInfo, hostUUID)
 	delete(d.lastInfoAt, hostUUID)
-	delete(d.lastModels, hostUUID)
-	delete(d.lastModelsByEngine, hostUUID)
-	delete(d.lastLoadedByEngine, hostUUID)
 	delete(d.nodeInfoDown, hostUUID)
 	d.infoMu.Unlock()
 	d.activityMu.Lock()
@@ -1926,6 +1580,15 @@ func (d *daemon) activitySince(hostUUID string) (time.Duration, bool) {
 // filtered directory snapshot.
 func (d *daemon) handle(msg *Message) bool {
 	switch msg.Method {
+	case noderec.MethodLocalNodeInfo:
+		var params noderec.LocalNodeInfoParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			slog.Warn("invalid local node-info snapshot", "err", err)
+			return true
+		}
+		d.acceptLocalNodeInfo(params.Info)
+		return true
+
 	case noderec.MethodRegister, noderec.MethodUpdateTXT:
 		var p noderec.RegisterParams
 		if err := json.Unmarshal(msg.Params, &p); err != nil {

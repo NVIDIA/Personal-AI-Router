@@ -7,6 +7,8 @@ import (
 	"net"
 	"sort"
 	"strings"
+
+	"nvpair-shared/noderec"
 )
 
 // Being listed and being reachable are different facts: a cluster member that
@@ -97,12 +99,13 @@ func (m nodeMembership) relationship() string {
 //   - cluster   — membership state for peers we have paired with
 //   - manual    — user-added entries discovery cannot see, plus their probes
 //
-// One machine can appear in all three. Merging on a stable key is what stops it
-// rendering as three separate rows.
+// Verified host identities join matching feeds. Unverified discoveries retain
+// separate record keys, and unverified manual configurations retain manual keys.
 type nodeRow struct {
-	key     string
-	name    string
-	address string
+	identityVerification noderec.IdentityVerification
+	key                  string
+	name                 string
+	address              string
 	// addresses is every address the node published, ranked by the node itself
 	// with address first. Anything that dials the node walks this rather than
 	// assuming the first one is reachable from here.
@@ -116,11 +119,9 @@ type nodeRow struct {
 	// manualID is the handle node/remove needs. Empty unless the entry was
 	// added by hand.
 	manualID string
-	// nodeInfoTLS is a hand-added node that serves node-info over TLS. That
-	// endpoint needs the backend's cluster trust, which this client does not
-	// hold, so it is never polled from here: probedTelemetry, the manual-node
-	// worker's own reading, is shown instead, and is nil while the worker has
-	// none.
+	// nodeInfoTLS marks a manual TLS configuration. The TUI uses the worker's
+	// verified reading for this endpoint because the TUI does not hold the
+	// cluster certificate needed for a TLS request.
 	nodeInfoTLS     bool
 	probedTelemetry *nodeTelemetry
 
@@ -145,8 +146,8 @@ type nodeFeeds struct {
 // Discovery is the base layer because it carries the richest record. The
 // cluster roster then contributes membership and, critically, keeps a member
 // listed even when discovery has dropped it — that node is offline, not gone.
-// Manual entries are matched by address so a hand-added host that discovery
-// later finds does not appear twice.
+// Manual entries join matching authenticated host identities. Names and shared
+// addresses never join unverified discoveries to those records.
 func mergeNodes(in nodeFeeds) []nodeRow {
 	byKey := make(map[string]*nodeRow, len(in.discovered)+len(in.members)+len(in.manual))
 	order := make([]string, 0, len(byKey))
@@ -163,10 +164,14 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 
 	for _, d := range in.discovered {
 		key := d.HostUUID
+		if d.IdentityVerification == noderec.IdentityUnverified {
+			key = d.DiscoveryRecordID
+		}
 		if key == "" {
 			key = "name:" + d.Name
 		}
 		row := get(key)
+		row.identityVerification = d.IdentityVerification
 		row.name = d.Name
 		row.address = d.IPAddress
 		row.addresses = candidateAddresses(d)
@@ -176,7 +181,7 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 		row.loadedByEngine = d.LoadedByEngine
 		row.presence = discoveredPresence(d)
 		switch {
-		case d.Trusted:
+		case d.Trusted && d.IdentityVerification != noderec.IdentityUnverified:
 			row.membership = membershipMember
 		case d.Clustered:
 			row.membership = membershipForeign
@@ -207,7 +212,7 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 	}
 
 	for _, m := range in.manual {
-		row := matchManual(byKey, order, m)
+		row := matchManual(byKey, m)
 		if row == nil {
 			row = get("manual:" + m.ID)
 			row.name = m.Name
@@ -224,7 +229,7 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 		}
 		if m.TLSEnabled {
 			row.nodeInfoTLS = true
-			if m.NodeInfoUp {
+			if m.IdentityVerification == noderec.IdentityPinned && m.NodeInfoUp {
 				row.probedTelemetry = &nodeTelemetry{
 					GPUs: m.GPUs, CPU: m.CPU, Memory: m.Memory,
 					TelemetryValid: m.TelemetryValid,
@@ -310,46 +315,13 @@ func candidateAddresses(d availableNode) []string {
 	return out
 }
 
-// matchManual finds the existing row a manual entry describes.
-//
-// The host UUID comes first, once the worker's probe has read one from the
-// node's node-info. It is the only join that works when the operator typed a
-// hostname and discovery reports the same machine by IP.
-//
-// Otherwise it falls back to the address, normalised — the manual one was typed
-// by an operator, the discovered one comes off the wire — and compared against
-// every address a node published, so a multi-homed node matches on any of
-// them.
-//
-// An address is not an identity. Once the probe has read a UUID, the entry
-// never joins a row that has a different UUID of its own: that is another
-// machine now answering at the same address, and merging them would show one
-// machine's membership and models under the other's name.
-func matchManual(byKey map[string]*nodeRow, order []string, m manualNode) *nodeRow {
-	if m.HostUUID != "" {
-		if row, ok := byKey[m.HostUUID]; ok {
-			return row
-		}
+// matchManual joins only authenticated host identities. Configuration keys
+// otherwise remain independent of names, addresses, and unverified UUID claims.
+func matchManual(byKey map[string]*nodeRow, m manualNode) *nodeRow {
+	if m.IdentityVerification == noderec.IdentityPinned && m.HostUUID != "" {
+		return byKey[m.HostUUID]
 	}
-	want := normalizeHost(m.Address)
-	if want == "" {
-		return nil
-	}
-	for _, key := range order {
-		row := byKey[key]
-		if m.HostUUID != "" && hasHostIdentity(key) {
-			continue
-		}
-		if normalizeHost(row.address) == want {
-			return row
-		}
-		for _, candidate := range row.addresses {
-			if normalizeHost(candidate) == want {
-				return row
-			}
-		}
-	}
-	return nil
+	return byKey["manual:"+m.ID]
 }
 
 // hasHostIdentity reports whether a row key is a machine's own UUID, rather

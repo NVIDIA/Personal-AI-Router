@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 
 `nvpair-manual-nodes` owns the set of user-entered peer node addresses on networks where mDNS discovery is unavailable, filtered, or incomplete. A client hands it a bare host (`node/add`), and it becomes the authority for whether that host is currently reachable and what it serves: it probes each entered address for an Ollama engine, an LM Studio engine, and an `nvpair-node-info` telemetry endpoint every ten seconds, and reports the aggregate as a `ManualNodeStatus` on `node/discovered` / `node/updated` / `node/removed`. Its purpose is to make an address the user asserts routable — the supervising `nvpair-ui-broker` merges its events into the same discovery snapshot `nvpair-node-scanner` feeds, bridges reachable manual nodes into the matching Ollama or LM Studio facade of `nvpair-proxy`, and feeds their GPU telemetry to `nvpair-job-scheduler`, so for those two engines a manual node is routable and schedulable like a discovered one. It does not cover llama.cpp: a manual-only node is never a llama.cpp target (§4).
 
-It exists because `nvpair-node-scanner` has no manual concept at all: the scanner only reports what it browses over mDNS, and it has no `node/add` surface. Every non-multicast path into the fleet is this worker's. It is deliberately a probe engine and nothing more — it opens no network listener, keeps its entries only in `map[string]*trackedNode`, and writes no file. The durable list and its replay after a restart live in the PAIR desktop app (§7.6, §9).
+It exists because `nvpair-node-scanner` has no manual concept at all: the scanner only reports what it browses over mDNS, and it has no `node/add` surface. Every non-multicast path into the fleet is this worker's. It is deliberately a probe engine and nothing more — it opens no network listener, keeps its entries only in `map[string]*trackedNode`, and writes no file. The supervising broker owns the durable list and replays it after a restart (§7.6, §9).
 
 ## 2. Scope
 
@@ -18,12 +18,12 @@ It exists because `nvpair-node-scanner` has no manual concept at all: the scanne
 - Accept, track, and drop user-entered node addresses (`node/add`, `node/remove`, `nodes/list`).
 - Probe each tracked address on a fixed ten-second cycle for Ollama, LM Studio, and `nvpair-node-info`.
 - Derive per-engine model inventories and node-info telemetry (GPU, CPU, memory, GPU sample validity and age, `hostUuid`) from those probes.
-- Emit change-gated status notifications and, on sustained unreachability, `errors:report` / `errors:clear`.
-- Choose the probe transport for the node-info leg: plain HTTP, an operator-supplied TLS client, or cluster mTLS.
+- Emit changed engine status and every accepted hardware snapshot, plus sustained-unreachability `errors:report` / `errors:clear`.
+- Require exact current cluster pins for every service node-info read; keep public HTTP hardware displays in desktop/TUI.
 
 **Out of scope**
 
-- Durable storage of the entry list — the desktop app persists `manual-nodes.json` and replays it (§7.6); neither this worker nor `nvpair-ui-broker` holds an authoritative copy.
+- Durable storage of the entry list — `nvpair-ui-broker` persists and replays `manual-nodes.json` (§7.6); this worker holds only current probe state.
 - mDNS browsing and advertisement — `nvpair-node-scanner`.
 - Merging manual and discovered nodes into one snapshot, the per-engine proxy bridge, and the scheduler telemetry feed — `nvpair-ui-broker`.
 - Inference routing and node ranking — `nvpair-proxy` and `nvpair-job-scheduler`.
@@ -34,28 +34,27 @@ It exists because `nvpair-node-scanner` has no manual concept at all: the scanne
 ## 3. Key Use Cases
 
 - **Add a node**: a client sends `node/add` with `{"address": "10.0.1.50"}`. The worker upserts the entry, responds immediately with an unprobed `ManualNodeStatus` (ports filled, all `*_up` false), then probes on a goroutine and emits `node/discovered` with the real outcome.
-- **Track reachability**: every `probeInterval` (10 s) the probe loop walks a snapshot of the entries and re-probes each. A `node/updated` fires only when a watched field actually changed (§7.2).
-- **Learn a stable identity**: once the remote's `/v1/node-info` answers with `hostUuid`, that value rides on every subsequent status, and `nvpair-ui-broker` rekeys the node from the manual id onto the real host UUID — collapsing a machine that is both manually added and mDNS-discovered into one entry.
+- **Track reachability**: every `probeInterval` (10 s), re-probe the entries. Publish changed engine status and every accepted hardware snapshot, including unchanged measurements.
+- **Learn a stable identity**: pinned mTLS and matching `hostUuid` / `clusterUuid` bind the response to its certificate. The broker may then merge this manual source with the same verified host. Unverified configurations retain independent keys.
 - **Remove a node**: `node/remove` with `{"id": "lab"}` deletes the tracked entry, emits `node/removed` with just the id, and fires a defensive `errors:clear` for that node's probe-failed id.
 - **List for a UI**: `nvpair-tui`'s Nodes tab re-lists `nodes/list` every 10 s and merges the hand-added entries into its one node table, so their reachability stays current.
 - **Edge case — probe still in flight when removed**: `node/remove` between `node/add` and its initial probe completing wins. The probe goroutine re-reads the map, finds the id gone, and returns without emitting `node/discovered`; `probeNode` likewise drops its result if the id vanished mid-probe.
-- **Edge case — node-info blip while an engine stays up**: a failed node-info probe returns no `hostUuid`. The previously learned value is carried forward rather than blanked, so the broker's store key does not flap from UUID to manual id and back.
+- **Edge case — node-info blip while an engine stays up**: clear the failed measurement and its verification. The explicitly configured engine remains independently routable when it answers; no public hardware fallback supplies scheduling data.
 - **Edge case — engine reachable, model list unparseable**: LM Studio answering `200` with a body that fails to decode is still reported `lmstudio_up: true` with no models. Ollama answering `200` on `/` but failing `/api/tags` is `ollama_up: true` with no models.
-- **Edge case — duplicate add**: `node/add` with a name (or address) that resolves to an existing id overwrites that entry's `ManualEntry` in place and re-probes it. The same address added under two different names produces two independent ids that only collapse downstream, after `hostUuid` is learned.
+- **Edge case — duplicate add**: `node/add` with a name (or address) that resolves to an existing id overwrites that entry's `ManualEntry` in place and re-probes it. The same address added under two different names produces two independent ids that only collapse downstream, after `hostUuid` is authenticated.
 - **Edge case — malformed params**: `node/add` whose params are not an object, or whose `address` is empty, is rejected `-32602` and adds nothing.
 - **Edge case — notification instead of request**: an id-less `node/add` frame is logged and ignored; state is not mutated and nothing is emitted.
 
 ## 4. Open Questions / Risks
 
-- **Entry durability (known limitation — fix in progress)**: the worker keeps entries only in memory and `nvpair-ui-broker` keeps no authoritative copy, so a manual-nodes restart loses the user's nodes. The broker's `clearManualNodesState` evicts the orphaned entries from the discovery store and the Ollama and LM Studio facades so the view stays honest, and the client must re-add them. This is a known limitation, and open pull requests will fix it soon.
-- **Durable list has readers but no writer (open — needs a product decision)**: the desktop app reads `manual-nodes.json` (`listManualNodeEntries`) and replays it through `node/add` after broker ready, and prunes it on member removal (`removeManualNodeEntry`), but no code path appends a newly added node to it. Entries added through `nvpair-tui`'s `node/add` are never persisted. In practice the replay list stays empty unless the file is authored by hand.
-- **Risk — `node/updated` on every probe**: change detection compares `cpu`, `memory`, and `gpus` by value, and also `telemetryValid` and `msSince`. Because `msSince` is the remote GPU sample's age at response time, it differs on essentially every probe, so any node whose `nvpair-node-info` reports valid GPU telemetry emits a full `node/updated` every 10 s. Each one makes the broker re-project the discovery snapshot, re-bridge the node into `nvpair-proxy`, and re-ingest its telemetry.
+- **Worker restart**: current probe results are lost. The broker withdraws the retired worker's records and samples, then replays durable entries to the replacement worker. Restored configurations start unverified and must authenticate again before supplying hardware data.
+- **Hardware refresh cost**: every accepted authenticated hardware snapshot emits a full `node/updated`, even when measurements are unchanged, so scheduler caches keep observing live samples. Each one makes the broker re-project the discovery snapshot, re-bridge the node into `nvpair-proxy`, and re-ingest its telemetry. Change detection covers configuration, identity, engine models, and service availability rather than hardware values.
 - **llama.cpp is not supported (open — gap)**: llama.cpp is the third registered engine, but the prober checks only `11434` and `1234`, `ManualNodeStatus` has no llama.cpp fields, and the broker's `bridgeManualNode`, `removeManualNodeFromProxies`, and `manualModelsByEngine` handle only `ollama` and `lmstudio`. A manual-only node therefore never enters the llama.cpp facade's candidate set and advertises no llama.cpp models. A machine that mDNS also discovers still reaches that facade through the broker's discovery relay under its `lc` record.
-- **Risk — fixed engine and telemetry ports**: `11434` (Ollama), `1234` (LM Studio), and `14318` (plain-HTTP node-info) are compiled in. A remote engine on a non-default port is invisible, and an address entered as `host:port` produces a malformed probe URL, so the node reads permanently down. Only `tls_port` lets a caller move a probe port, and only for the node-info leg.
+- **Risk — fixed engine and telemetry ports**: `11434` (Ollama), `1234` (LM Studio), and `14318` (pinned node-info) are compiled in. A remote engine on a non-default port is invisible, and an address entered as `host:port` produces a malformed probe URL, so the node reads permanently down. Only `tls_port` lets a caller move a probe port, and only for the node-info leg.
 - **Risk — non-EOF read errors loop**: `readLoop` treats every non-`io.EOF` read error as recoverable and continues. `nvpair-shared/jsonrpc` distinguishes a per-frame `DecodeError` from a terminal transport error, but the manager ignores that distinction, so a permanently failing pipe spins the loop logging on each iteration.
-- **Risk — IP-literal entries cannot self-heal**: an entry added by raw IP is dead once the device is reassigned an address; only a hostname entry re-resolves (keep-alives are disabled precisely so each probe re-resolves). The probe-failed message says so, but nothing re-discovers the node.
+- **Risk — IP-literal entries cannot self-heal**: an entry added by raw IP is dead once the device is reassigned an address; only a hostname entry re-resolves (engine keep-alives are disabled so each engine probe re-resolves). The probe-failed message says so, but nothing re-discovers the node.
 - **Risk — no address validation**: any non-empty string is accepted as an address. A typo is indistinguishable from a powered-off node until the 30-second failure threshold reports it.
-- **Risk — inert `mtls` field**: `mtls` is persisted and echoed as `mtls_required`, but the probe path never reads it; the transport decision is driven entirely by `tls_port` and the cluster mesh. A caller could reasonably read it as a requirement it is not.
+- **Configuration hints**: `tls_port` selects the node-info port and `mtls` is echoed as a configuration hint. Hardware reads always require pinned mTLS, including when both hints are absent. Neither hint changes the independently configured plain HTTP engine routes.
 - **Firewall inventory divergence (open — needs reconciliation)**: the Windows NSIS installer adds an inbound rule `"NVPAIR Manual Nodes"` for a binary that opens no listening socket, while `MODULAR_RUNTIME_BINARIES` marks it `needsFirewallAccess: false` and the macOS privileged helper grants it no rule. The inbound rule is unnecessary.
 - **Future — engine port discovery**: if `nvpair-engine-manager` ever reports remote engine ports, the hardcoded `11434` / `1234` probes should be replaced by the reported values rather than extended with more entry-level hints.
 
@@ -66,9 +65,9 @@ It exists because `nvpair-node-scanner` has no manual concept at all: the scanne
 - Accept `node/add` with a required `address` and optional `name`, `tls_port`, `mtls`; reject an absent or empty `address`.
 - Key each entry by `nodeID(entry)`: the caller's `name` when non-empty, else `"manual:" + address`.
 - Respond to `node/add` before probing, with the entry's ports and TLS flags already populated.
-- Probe every tracked entry every `probeInterval` (10 s) with a `probeTimeout` (3 s) per HTTP request and idle connection reuse disabled.
-- Emit `node/discovered` once after an entry's initial probe, and `node/updated` on every subsequent probe whose watched fields changed.
-- Preserve the last-learned `hostUuid` when a node-info probe fails and reports none.
+- Probe every tracked entry every `probeInterval` (10 s), with a `probeTimeout` (3 s) per request. Engine probes disable idle reuse; known peer hardware reads use shared pooled clients.
+- Emit `node/discovered` after the initial probe, and `node/updated` when watched state changes or a new authenticated hardware sample arrives.
+- Clear measurements and verification on failed authenticated reads. Local measurements belong exclusively to owned-worker IPC, including for manually entered loopback endpoints.
 - Emit exactly one `errors:report` per failure episode, on the probe where `consecutiveFails` first reaches `probeFailThreshold` (3), and one `errors:clear` on the first reachable probe after having been at or above the threshold.
 - Emit `errors:clear` for a removed node's probe-failed id unconditionally on `node/remove`.
 - Return `{"removed": false}` for `node/remove` of an unknown id, without emitting `node/removed`.
@@ -96,7 +95,7 @@ It exists because `nvpair-node-scanner` has no manual concept at all: the scanne
 {
   "address": "10.0.1.50",
   "name": "lab",
-  "tls_port": 14319,
+  "tls_port": 14318,
   "mtls": true
 }
 ```
@@ -130,7 +129,9 @@ It exists because `nvpair-node-scanner` has no manual concept at all: the scanne
   "memory": { "total_bytes": 137438953472, "used_bytes": 34359738368 },
   "telemetryValid": true,
   "msSince": 137,
-  "hostUuid": "b1f0c2de-8a44-4d0e-9c1a-77e2f5b3a901"
+  "hostUuid": "b1f0c2de-8a44-4d0e-9c1a-77e2f5b3a901",
+  "discoveryRecordId": "peer:b1f0c2de-8a44-4d0e-9c1a-77e2f5b3a901:opaque-binding",
+  "identityVerification": "pinned"
 }
 ```
 
@@ -138,10 +139,12 @@ It exists because `nvpair-node-scanner` has no manual concept at all: the scanne
 
 `telemetryValid` and `msSince` are always present. They copy node-info's GPU sample validity and the sample's age in milliseconds, preserving its distinction between an idle 0% reading and no reading at all, and they read `false` and `0` whenever node-info is down. Consumers ignore `msSince` while `telemetryValid` is false.
 
+`discoveryRecordId` is an opaque binding to the current local identity and admission and the exact peer pin. It is present only after authentication. Removed or replaced authorization clears that binding, `hostUuid`, and service hardware measurements. Cached status reads and notifications include elapsed time since the accepted hardware response.
+
 Example emitted frame (`node/discovered`, an unnamed entry whose LM Studio is absent):
 
 ```json
-{"jsonrpc":"2.0","method":"node/discovered","params":{"id":"manual:10.0.1.50","address":"10.0.1.50","ollama_up":true,"ollama_port":11434,"ollama_models":["llama3.2:latest"],"lmstudio_up":false,"lmstudio_port":1234,"node_info_up":false,"node_info_port":14318,"telemetryValid":false,"msSince":0}}
+{"jsonrpc":"2.0","method":"node/discovered","params":{"identityVerification":"unverified","id":"manual:10.0.1.50","address":"10.0.1.50","ollama_up":true,"ollama_port":11434,"ollama_models":["llama3.2:latest"],"lmstudio_up":false,"lmstudio_port":1234,"node_info_up":false,"node_info_port":14318,"telemetryValid":false,"msSince":0}}
 ```
 
 ## 7. API / Interface Contract
@@ -158,31 +161,29 @@ One interface: newline-delimited JSON-RPC 2.0 over `stdin`/`stdout`, or over the
 | `shutdown` | none | `null` |
 | `log/set-level` | `{ "level": "debug"\|"info"\|"warn"\|"error" }` | `{ "level": string }` |
 
-Notifications emitted: `ready` with `{ "version": string }` (once, before the probe loop starts); `node/discovered` with a full `ManualNodeStatus` (once per entry, after its initial probe); `node/updated` with a full `ManualNodeStatus` (on a changed re-probe); `node/removed` with a `ManualNodeStatus` carrying only `id`, plus `address`, `ollama_up`, `ollama_port`, `lmstudio_up`, `lmstudio_port`, `node_info_up`, `node_info_port`, `telemetryValid`, and `msSince` at their zero values; `errors:report` with an `nvpair-shared/errors` `ServiceError`; and `errors:clear` with a `ClearParams` (`{ "id": string }`).
+Notifications emitted: `ready` with `{ "version": string }` (once, before the probe loop starts); `node/discovered` with a full `ManualNodeStatus` (once per entry, after its initial probe); `node/updated` with a full `ManualNodeStatus` (on changed state or every accepted hardware sample); `node/removed` with a `ManualNodeStatus` carrying only `id`, plus `address`, `ollama_up`, `ollama_port`, `lmstudio_up`, `lmstudio_port`, `node_info_up`, `node_info_port`, `telemetryValid`, and `msSince` at their zero values; `errors:report` with an `nvpair-shared/errors` `ServiceError`; and `errors:clear` with a `ClearParams` (`{ "id": string }`).
 
 ### 7.1 Address entry, identity, and idempotency
 
-`nodeID(entry)` is the entry's identity: `name` when non-empty, otherwise `"manual:" + address`. Adds are upserts into `map[string]*trackedNode` — re-adding the same id replaces its `ManualEntry` and its probe baseline, so a second `node/add` under an existing name silently repoints that id at the new address. Two names for one address are two independent entries; each probes the host separately, and `nvpair-ui-broker` collapses them onto one discovery key only once `hostUuid` is learned. Removal is idempotent: the second `node/remove` of an id returns `{"removed": false}` and emits nothing.
+`nodeID(entry)` is the entry's identity: `name` when non-empty, otherwise `"manual:" + address`. Adds are upserts into `map[string]*trackedNode` — re-adding the same id replaces its `ManualEntry` and its probe baseline, so a second `node/add` under an existing name silently repoints that id at the new address. Two names for one address are two independent entries; each probes the host separately, and the broker joins them to one canonical host only after authentication. Removal is idempotent: the second `node/remove` of an id returns `{"removed": false}` and emits nothing. Broker clients select exactly one of worker entry `id` or broker node key `nodeId`; the worker itself accepts `id` only.
 
 ### 7.2 Probe protocol and reachability
 
-Each probe cycle performs up to four HTTP GETs against the entered address, each bounded by `probeTimeout` (3 s) on a transport with `DisableKeepAlives: true` so every cycle re-resolves the address:
+Each probe cycle performs up to four HTTP GETs against the entered address, each bounded by `probeTimeout` (3 s). Engine probes disable keep-alives so each cycle re-resolves the address. Hardware reads use the transport in §7.3:
 
 - Ollama: `GET http://<address>:11434/` must return `200`; on success `GET http://<address>:11434/api/tags` supplies `ollama_models` from `models[].name`.
 - LM Studio: `GET http://<address>:1234/v1/models` must return `200`; the same response supplies `lmstudio_models` from `data[].id`.
-- node-info: `GET <scheme>://<address>:<port>/v1/node-info` must return `200` and decode into `NodeInfoResponse` (`GPUs`, `cpu`, `memory`, `telemetryValid`, `msSince`, `hostUuid`). A decode failure counts as down.
+- node-info: `GET https://<address>:<port>/v1/node-info` must return `200`, fit within 64 KiB, and decode into `NodeInfoResponse`. Require an exact current pin, matching host and cluster response identities, and a remote identity distinct from this host.
 
-`node_info_port` is `14318` over `http` unless the entry set `tls_port > 0`, in which case it is `tls_port` over `https`. The two engine legs are always plain HTTP. `reachable` is `ollama_up || lmstudio_up || node_info_up`. A `node/updated` fires only when `ollama_up`, `lmstudio_up`, `node_info_up`, `hostUuid`, `ollama_models`, `lmstudio_models`, `gpus`, `cpu`, `memory`, `telemetryValid`, or `msSince` differs from the previous status; a stable probe logs at debug and emits nothing. In practice `msSince` makes every probe of a node with valid GPU telemetry a change (§4).
+`node_info_port` is `14318` unless `tls_port > 0` overrides it. Hardware reads always use pinned mTLS. Engine legs remain explicitly configured plain HTTP. `reachable` is `ollama_up || lmstudio_up || node_info_up`. Publish changed status and every accepted hardware snapshot so stable values do not stop refreshing the scheduling cache.
 
-### 7.3 Probe transport: operator TLS and cluster mTLS
+### 7.3 Probe transport and authenticated identity
 
-Three transports exist for the node-info leg, selected in this order:
+Refresh the live cluster mesh before reading hardware. Without membership and an approved certificate, no service hardware request is made. For an unknown manual endpoint, `ClientTLSConfigAny()` presents this node's leaf and accepts a currently pinned certificate. Subsequent reads reuse the shared peer-client pool for that proved principal. Recheck the actual response certificate against current pins after reading the body, and require both response identities to match it. Self certificates cannot supply local service measurements over HTTP.
 
-1. **Plain HTTP** (`tls_port` absent or zero) — the default client, port `14318`.
-2. **Operator-supplied TLS** (`tls_port > 0`) — the client built from `--client-cert` / `--client-key` / `--ca-bundle`, at TLS 1.2 minimum. `--ca-bundle` is appended to the system pool, so enterprise and public roots both work; `--client-cert` requires `--client-key` and vice versa, and a mismatch is a fatal startup error. With none of the three set, the client falls back to Go's default system trust store, so an HTTPS node with a publicly trusted certificate is probed with no flags at all.
-3. **Cluster mTLS** (`tls_port > 0` and `--cluster-dir` resolves to a clustered mesh) — `clustertrust.Mesh.Refresh()` runs first so a cluster joined or a peer paired after startup is picked up without a restart, then `ClientTLSConfigAny()` yields a client presenting this node's leaf and accepting any currently-pinned peer certificate by exact DER match. This is the only way to reach a clustered peer's node-info, which is pin-gated and serves no plaintext listener. A manual node carries no discovery record to key a specific pin on, hence "any pinned cert".
+Capture the authorization binding before writing the request, including on reused connections, and recheck it before publishing the result. A local identity or admission change, peer pin replacement or removal, or replacement of the tracked manual entry invalidates in-flight hardware results. A separate trust watcher withdraws cached verification independently of slow engine probes. A retired worker's callback cannot restore state in the broker.
 
-A successful probe proves only that *something* at that address answered an expected HTTP shape. On the plain-HTTP and operator-TLS paths nothing authenticates the peer to PAIR, and `hostUuid` is self-reported by the remote. Only the cluster-mTLS path binds the answer to a certificate `nvpair-cluster-manager` already pinned. A manually entered address is therefore a user assertion of reachability, never proof of a trusted peer.
+Redirects are refused. Request deadlines and response-size limits apply, and sample age includes request time. Failed reads never downgrade to public HTTP or operator-CA TLS. Public HTTP remains available to desktop and TUI for display only. Explicit manual engine configuration independently authorizes the engine probes and routes, never the use of public hardware data.
 
 ### 7.4 Failure reporting through the errors pipeline
 
@@ -190,15 +191,15 @@ A successful probe proves only that *something* at that address answered an expe
 
 ### 7.5 Downstream projection
 
-`nvpair-ui-broker` consumes the notifications in `forwardManualNodesNotification`. `node/discovered` and `node/updated` go through `manualToEnriched` into the same discovery store `nvpair-node-scanner` feeds, under source `sourceManual`: `Host` and `Addresses` come from `address`, `Port` from `node_info_port`, `Models` from the de-duplicated union of both engines' lists, and `ModelsByEngine` from `{"ollama": …, "lmstudio": …}`. The store key is `hostUuid` when reported, else the manual id, so manual and mDNS nodes share one `discovery:get-nodes` / `discovery:nodes-changed` snapshot. In parallel, `bridgeManualNode` upserts the node into the `nvpair-proxy` Ollama and LM Studio facades whose engine is reachable, with the engine-addressed `ollama:node/add-manual` or `lmstudio:node/add-manual`, and withdraws it from either facade whose engine is not with `<engine>:node/remove-manual`. The llama.cpp facade receives no manual nodes (§4). The candidate is keyed identically, so `nvpair-job-scheduler` priority and `scheduledOn` resolve to it.
+`nvpair-ui-broker` consumes the notifications in `forwardManualNodesNotification`. `node/discovered` and `node/updated` go through `manualToEnriched` into the same discovery store `nvpair-node-scanner` feeds, under source `sourceManual`: `Host` and `Addresses` come from `address`, `Port` from `node_info_port`, `Models` from the de-duplicated union of both engines' lists, and `ModelsByEngine` from `{"ollama": …, "lmstudio": …}`. The store key is the authenticated `hostUuid`, otherwise the independent `manual:<entry-id>` record key, so manual and mDNS nodes share one `discovery:get-nodes` / `discovery:nodes-changed` snapshot. In parallel, `bridgeManualNode` upserts the node into the `nvpair-proxy` Ollama and LM Studio facades whose engine is reachable, with the engine-addressed `ollama:node/add-manual` or `lmstudio:node/add-manual`, and withdraws it from either facade whose engine is not with `<engine>:node/remove-manual`. The llama.cpp facade receives no manual nodes (§4). The candidate is keyed identically, so `nvpair-job-scheduler` priority and `scheduledOn` resolve to it.
 
-The broker also reduces each status to the highest `utilization_percent` across its GPUs plus `telemetryValid` and `msSince`, and caches that as the manual telemetry source for the same key. A scanner observation of the same host takes precedence. The broker ages the cached sample and relays it to `nvpair-job-scheduler`, which is how a manual node gets GPU pressure in scheduling.
+The broker reduces only pinned statuses to the highest `utilization_percent` across its GPUs plus `telemetryValid` and `msSince`, and caches that as the manual telemetry source for the same key. A scanner observation of the same host takes precedence. The broker ages the cached sample and relays it to `nvpair-job-scheduler`, which is how a manual node gets GPU pressure in scheduling.
 
 `node/removed` drops the alias and either reprojects the key from a surviving alias or releases the store, telemetry, and proxy claims. `nvpair-node-scanner` participates in none of this — it has no manual concept.
 
 ### 7.6 Durable entry list and replay
 
-This worker persists nothing. The durable list is a JSON array of `{ id, address, name }` at `configs/manual-nodes.json` under the PAIR desktop user-data directory (§9), written atomically (temp file plus rename). The desktop app reads it after broker `app:ready` and replays each entry as `node/add` with `{ address, name }`, and prunes an entry when the corresponding node is removed. Malformed files, non-array roots, and entries without an `address` are skipped rather than treated as an error.
+This worker persists nothing. The broker owns a JSON array of `{ id, address, name?, tls_port?, mtls? }` at `configs/manual-nodes.json` beneath its shared application-data directory (§9). It persists successful add/remove operations atomically through a temporary file and rename, and replays entries as `node/add` whenever the worker starts. Entries without an address are skipped; unreadable or malformed configuration is reported rather than silently overwritten. The broker serializes configuration mutations and replay. It restores configuration, not cached proof or measurements, so each new worker must authenticate hardware again.
 
 ### 7.7 Error codes
 
@@ -212,40 +213,40 @@ This worker persists nothing. The durable list is a JSON array of `{ id, address
 
 - **Upstream**: `nvpair-ui-broker` — the parent that spawns this worker (`--manual-nodes-path`), feeds it `node/add` / `node/remove` / `nodes/list` relayed from clients, and closes its `stdin` to stop it. The PAIR desktop app and `nvpair-tui` reach it only through that relay.
 - **Downstream**: `nvpair-ui-broker`'s discovery store, per-engine proxy bridge, and telemetry cache; `nvpair-errors` (via the broker) for probe-failed reports; `nvpair-proxy`, whose Ollama and LM Studio facades receive bridged manual nodes; `nvpair-job-scheduler`, which ranks them alongside discovered nodes using the GPU telemetry the broker relays.
-- **External**: each probed host's Ollama server (`:11434`), LM Studio OpenAI-compatible server (`:1234`), and `nvpair-node-info` endpoint (`:14318` plain, or the entry's `tls_port` over TLS); the cluster directory minted by `nvpair-cluster-manager` when `--cluster-dir` is passed; `github.com/Microsoft/go-winio` for the Windows named-pipe transport.
+- **External**: each probed host's Ollama server (`:11434`), LM Studio OpenAI-compatible server (`:1234`), and `nvpair-node-info` endpoint (`:14318` or the entry's `tls_port`, always pinned mTLS); the cluster directory minted by `nvpair-cluster-manager` when `--cluster-dir` is passed; `github.com/Microsoft/go-winio` for the Windows named-pipe transport.
 
 ## 9. Data Ownership
 
 - **Owned**: the in-memory `map[string]*trackedNode` — each entry's `ManualEntry`, its latest `ManualNodeStatus`, and its `consecutiveFails` counter. Nothing durable.
-- **Source of truth**: authoritative for *current* manual-node reachability, per-engine model lists, and node-info telemetry while the process lives. Not the source of truth for the entry list — the desktop app's `manual-nodes.json` is, and the user is. Not the source of truth for `hostUuid`, which the remote's `nvpair-node-info` reports.
-- **Storage**: none written by this binary. The durable list is `configs/manual-nodes.json` under the per-user PAIR data directory: `%LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\configs\manual-nodes.json` on Windows, `$XDG_CONFIG_HOME/Nvidia Corporation/Personal AI Router/configs/manual-nodes.json` (falling back to `~/.config`) on Linux, and `~/Library/Application Support/Nvidia Corporation/Personal AI Router/configs/manual-nodes.json` on macOS. `services/shared/appdir` resolves that same `<base>/Nvidia Corporation/Personal AI Router` root for Go components, and the broker's default `--cluster-dir` is `cluster/` beneath it; this worker imports neither and only ever reads the cluster directory it is handed.
+- **Source of truth**: authoritative for *current* manual-node reachability, per-engine model lists, and authenticated node-info telemetry while the process lives. The broker owns the durable entry list and the user chooses its contents. Remote `hostUuid` is accepted only when it matches the certificate and current pin.
+- **Storage**: none written by this binary. Broker owns `configs/manual-nodes.json` under the shared per-user PAIR data root, or its configured manual-node file. `services/shared/appdir` resolves the default application-data directory; this worker reads only the supplied cluster directory and keeps configurations and probe results in memory.
 
 ## 10. Design Constraints
 
-- **Performance**: probe cost is bounded by `probeTimeout` (3 s) per request, and entries are probed sequentially within a cycle, so a cycle over N nodes can take up to roughly 4 × 3 s × N in the worst case — with the fixed 10 s ticker, unreachable nodes can push a cycle past its interval. Keep-alives are disabled by design; a fresh dial per probe is cheap at this cadence and guarantees re-resolution.
+- **Performance**: probe cost is bounded by `probeTimeout` (3 s) per request, and entries are probed sequentially within a cycle, so a cycle over N nodes can take up to roughly 4 × 3 s × N in the worst case — with the fixed 10 s ticker, unreachable nodes can push a cycle past its interval. All probes use fresh connections to re-resolve manual hostnames. Known peer hardware reads reuse bounded cluster clients but close each connection after the response.
 - **Scalability**: sized for a handful of hand-entered nodes on a small cluster, not for fleet-scale scanning. State is one map entry per node.
-- **Reliability**: probes are best-effort with no retry inside a cycle; the next cycle is the retry. A three-cycle grace window absorbs transient failures before the user sees an error. Restarting the worker loses all entries; the broker evicts the orphans so no stale node lingers.
-- **Security**: no listening socket, so no inbound attack surface. A manually entered address is a user assertion, not proof of a trusted peer, and a successful plain-HTTP or operator-TLS probe authenticates nothing. Cluster identity, pins, pairing, and membership belong to `nvpair-cluster-manager`; this worker only consumes the mesh read-only to build a client config. Certificate and key material is read from the paths given on the command line and never logged or emitted.
+- **Reliability**: probes are best-effort with no retry inside a cycle; the next cycle is the retry. A three-cycle grace window absorbs transient failures before the user sees an error. The broker withdraws retired probe state and replays durable configurations after worker restart.
+- **Security**: no listening socket. Manual addresses authorize explicit engine routes, never public hardware as a service input. Hardware requires exact current cluster pins and matching response identities. Cluster identity, pairing, pins, and membership remain owned by `nvpair-cluster-manager`; this worker consumes the mesh read-only and never logs key material.
 - **Compliance**: probe traffic touches only capability and telemetry endpoints. No prompt, chat message, request body, or inference response is read, forwarded, or logged.
 
 ## 11. Assumptions
 
 - `nvpair-ui-broker` is the parent: it spawns this worker, relays client requests to it, and closing its `stdin` is the shutdown signal.
 - The entered address is a bare host or IP, with no port and no scheme; the worker appends its own ports.
-- Remote engines listen on their defaults (`11434`, `1234`), and remote `nvpair-node-info` on `14318` for plain HTTP.
-- A clustered peer's node-info is pin-gated mTLS with no plaintext listener, so reaching it requires `tls_port` plus a populated cluster directory.
+- Remote engines listen on their defaults (`11434`, `1234`), and remote `nvpair-node-info` on `14318` for pinned mTLS.
+- Node-info supports public display HTTP and pinned mTLS on the registered port. Service hardware reads always require the latter.
 - `hostUuid` reported by a remote is stable for that host and unique in the fleet, which is what makes UUID-keyed deduplication with mDNS-discovered nodes correct.
-- A client re-adds its manual nodes after this worker restarts.
+- The broker replays saved manual entries after this worker restarts.
 
 ## 12. Failure Modes and Mitigations
 
-- **Worker restart or crash**: every entry is lost, since state is memory-only. → `nvpair-ui-broker`'s `clearManualNodesState` drops the worker handle, evicts every manual-origin node from the discovery store (leaving a co-located scanner record intact), drops its manual telemetry, and withdraws it from the Ollama and LM Studio facades, so nothing stale is routed to; the client re-adds. Losing entries on restart is a known limitation with a fix in progress (§4).
+- **Worker restart or crash**: probe state is lost. → The broker drops the retired handle, rejects its callbacks, removes manual-origin records and samples while preserving an independent scanner source, and withdraws manual proxy claims. It replays durable entries to the new worker, which authenticates hardware again.
 - **Host unreachable for three consecutive cycles**: the node reads down everywhere and inference cannot route to it. → One `errors:report` under `manual-nodes:probe-failed:<node-id>` surfaces it in the UI after roughly 30 s, with re-add guidance for IP-literal entries; a reachable probe emits `errors:clear`.
 - **Entered address is a typo or a `host:port` string**: the probe URL is unreachable or malformed and the node reads permanently down. → The same probe-failed report fires; the address is not otherwise validated, so the operator has to correct the entry.
-- **node-info drops while an engine stays up**: a blanked `hostUuid` would rekey the broker's discovery entry from UUID to manual id and back. → The last-learned `hostUuid` is carried forward whenever a failed node-info probe reports none.
+- **node-info drops while an engine stays up**: the explicit engine route survives under its configuration key, while verification and service measurements become unavailable.
 - **Remote returns `200` with an unparseable model list**: a strict parse would report a live engine as down. → The engine is reported up with an empty model list; only the models are lost.
-- **Remove races the initial probe**: a removed node could be resurrected by an in-flight probe's `node/discovered`. → Both `addNode`'s probe goroutine and `probeNode` re-check the map under lock after probing and drop the result when the id is gone.
-- **TLS material misconfigured** (`--client-cert` without `--client-key`, unreadable bundle, no PEM in the bundle): probes would silently fall back to an unintended transport. → `tlsClientOptions.validate()` and `buildTLSClient` fail at startup with a fatal log rather than starting degraded.
+- **Remove or replacement races a probe**: a removed entry could be resurrected, or a replacement under the same ID could inherit an old response. → Both the probe and initial-discovery publication require the original tracked entry to remain current under the manager lock.
+- **Cluster identity or pin unavailable**: service hardware cannot authenticate. → Hardware remains unavailable or is withdrawn; no operator CA, unencrypted request, or configured engine supplies substitute proof. Explicit engine routes remain independent.
 - **Malformed inbound frame**: a bad params blob could panic a handler or corrupt state. → Every handler unmarshals into a typed struct and answers `-32602` on failure; unknown methods answer `-32601`; notifications are logged and dropped.
 - **Parent pipe severed** (`stdin` EOF): an orphaned prober would keep probing with nowhere to report. → EOF returns from `readLoop`, which cancels the context, stops the probe loop, and exits zero. `SIGINT`/`SIGTERM` and a `shutdown` request take the same path.
 
@@ -259,9 +260,9 @@ This worker persists nothing. The durable list is a JSON array of `{ id, address
 
 `nvpair-ui-broker` spawns the worker as `nvpair-manual-nodes --log-level info --cluster-dir <dir>` over stdio pipes. The worker emits `ready` carrying the version stamped into the binary at build time, which the broker logs, then starts its 10-second probe ticker.
 
-A user enters `10.0.1.50` and names it `lab`. The client's request reaches the broker, which relays it with `RelayRequest` (no timeout, because `node/add` triggers a probe) as `{"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"lab"}}`. The worker computes `nodeID` = `"lab"`, stores the entry, and answers immediately with an unprobed `ManualNodeStatus` — `ollama_port` `11434`, `lmstudio_port` `1234`, `node_info_port` `14318`, every `*_up` false — which the broker relays back so the UI can render the row at once.
+A user enters `10.0.1.50` and names it `lab`. The broker relays `{"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"lab"}}`. The worker stores entry `lab` and immediately returns unprobed status: engine and node-info ports filled, every `*_up` false, and unverified identity. Broker persists the successful entry and returns the result to the client while the initial probe runs independently.
 
-On its goroutine the worker probes: `GET http://10.0.1.50:11434/` returns `200`, so `GET /api/tags` yields `["llama3.2:latest"]`; `GET http://10.0.1.50:1234/v1/models` fails to connect, so LM Studio is down; `GET http://10.0.1.50:14318/v1/node-info` returns one GPU, a CPU object, a memory object, a valid GPU sample with its age, and `hostUuid`. It emits `node/discovered` with the filled `ManualNodeStatus`. The broker's `forwardManualNodesNotification` upserts it through `manualToEnriched` into the discovery store keyed by the reported `hostUuid`, caches its GPU telemetry for the scheduler under the same key, and `bridgeManualNode` sends `nvpair-proxy` `ollama:node/add-manual` under that key and `lmstudio:node/remove-manual`. The node now appears in `discovery:nodes-changed` beside mDNS nodes and is a routable, schedulable Ollama target.
+On its goroutine the worker probes: `GET http://10.0.1.50:11434/` returns `200`, so `GET /api/tags` yields `["llama3.2:latest"]`; `GET http://10.0.1.50:1234/v1/models` fails to connect, so LM Studio is down; `GET https://10.0.1.50:14318/v1/node-info` over pinned mTLS returns one GPU, a CPU object, a memory object, a valid GPU sample with its age, and matching host/cluster identities. Without a valid pin, hardware stays unavailable while explicit engine routing remains supported. It emits `node/discovered` with the filled `ManualNodeStatus`. The broker's `forwardManualNodesNotification` upserts it through `manualToEnriched` into the discovery store keyed by the reported `hostUuid`, caches its GPU telemetry for the scheduler under the same key, and `bridgeManualNode` sends `nvpair-proxy` `ollama:node/add-manual` under that key and `lmstudio:node/remove-manual`. The node now appears in `discovery:nodes-changed` beside mDNS nodes and is a routable, schedulable Ollama target.
 
 The host is then powered off. The first cycle that finds nothing emits `node/updated` with every `*_up` false, which withdraws the proxy candidate. After three consecutive such cycles the worker emits one `errors:report` with `id` `manual-nodes:probe-failed:lab` and `severity` `"warning"`; the broker stamps the local node id and timestamp and forwards it to `nvpair-errors`. When the host returns, the next probe emits `node/updated` and `errors:clear` for the same id. If the user instead removes the node, `node/remove` answers `{"removed": true}`, emits `node/removed` with `{"id":"lab"}` and an `errors:clear`, and the broker releases the store and proxy claims.
 
@@ -272,14 +273,11 @@ The host is then powered off. The first cycle that finds nothing emits `node/upd
 | Flag | Default | Effect |
 |---|---|---|
 | `--ipc <path>` | `""` (stdio) | Dial a Unix domain socket or Windows named pipe via `nvpair-shared/ipc` instead of using `stdin`/`stdout`. A dial failure is fatal. |
-| `--client-cert <path>` | `""` | PEM client certificate presented on every TLS probe. Requires `--client-key`. |
-| `--client-key <path>` | `""` | PEM private key matching `--client-cert`. Requires `--client-cert`. |
-| `--ca-bundle <path>` | `""` | PEM CA bundle for verifying probe server certificates, appended to the system trust store. |
-| `--cluster-dir <path>` | `""` | Cluster config dir (`node.crt` / `node.key` plus `trusted/`). When it resolves to a clustered mesh, a `tls_port` probe uses cluster mTLS. |
+| `--cluster-dir <path>` | `""` | Cluster config dir (`node.crt` / `node.key` plus `trusted/`). All hardware reads require current cluster membership and pinned mTLS. |
 | `--log-level <level>` | `$NVPAIR_LOG_LEVEL`, else `info` | Initial `slog` level (`debug`\|`info`\|`warn`\|`error`); registered by `applog.RegisterFlag`. |
 | `--version` | off | Print `Version` and exit `0`. |
 
-Startup order: parse flags, print version and exit if asked, `applog.Init`, `clustertrust.Open(--cluster-dir)` (a live view, so a cluster joined later is picked up without a restart), validate the TLS option triple (fatal on a half-configured pair), open the transport, install the `SIGINT`/`SIGTERM` handler, construct the `Manager`, emit `ready`, start the probe loop, and enter the read loop.
+Startup order: parse flags, print version and exit if asked, `applog.Init`, `clustertrust.Open(--cluster-dir)` (a live view, so a cluster joined later is picked up without a restart), open the transport, install the `SIGINT`/`SIGTERM` handler, construct the `Manager`, emit `ready`, start the probe loop, and enter the read loop.
 
 The process is always a child. `nvpair-ui-broker` spawns the binary named by its `--manual-nodes-path` flag, which the desktop application always passes, and otherwise looks for `nvpair-manual-nodes` in its own working directory. It spawns it through `startRPCWorker` with `--log-level <current>` plus `--cluster-dir <dir>` when the broker resolved one, wires `stdin`/`stdout` pipes, and inherits the child's `stderr`. It is registered as an optional worker under a restart policy, so a crash respawns it and triggers `clearManualNodesState`. The broker's `Stop` closes `stdin`; the child observes EOF, returns from `readLoop`, cancels its context to stop the probe loop, closes the transport, and exits `0`. A `shutdown` request and a caught signal follow the same cancellation path. Electron never launches this worker directly — only the broker does.
 

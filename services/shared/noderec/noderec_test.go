@@ -7,10 +7,51 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSampleAging_PreservesValidityAndFreshness(t *testing.T) {
+	// Aging must retain sample validity and add elapsed time without making
+	// negative ages, backward clock movement, or overflow produce fresh samples.
+	test := func(name string, info NodeInfo, elapsed time.Duration, wantAge int64) {
+		t.Run(name, func(t *testing.T) {
+			got := info.Aged(elapsed)
+			assert.Equal(t, info.TelemetryValid, got.TelemetryValid)
+			assert.Equal(t, wantAge, got.MSSince)
+
+			telemetry := NodeTelemetry{HostUUID: "host-a", GPUUtilizationPct: 84, TelemetryValid: info.TelemetryValid, MSSince: info.MSSince}
+			want := telemetry
+			want.MSSince = wantAge
+			assert.Equal(t, want, telemetry.Aged(elapsed), "compact scheduling samples share the hardware age rules")
+		})
+	}
+	test("queue time", NodeInfo{TelemetryValid: true, MSSince: 137}, 250*time.Millisecond, 387)
+	test("unavailable sample", NodeInfo{MSSince: 137}, time.Second, 0)
+	test("negative source age", NodeInfo{TelemetryValid: true, MSSince: -1}, time.Second, 1000)
+	test("clock moves backwards", NodeInfo{TelemetryValid: true, MSSince: 137}, -time.Second, 137)
+	test("age saturates", NodeInfo{TelemetryValid: true, MSSince: 1<<63 - 2}, time.Second, 1<<63-1)
+}
+
+func TestNodeInfo_PeerMetadataIsOptionalOnTheWire(t *testing.T) {
+	test := func(name string, peer *PeerMetadata) {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(NodeInfo{HostUUID: "host-a", Peer: peer})
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(body, &fields))
+			_, present := fields["peer"]
+			assert.Equal(t, peer != nil, present)
+			var decoded NodeInfo
+			require.NoError(t, json.Unmarshal(body, &decoded))
+			assert.Equal(t, peer, decoded.Peer)
+		})
+	}
+	test("public hardware", nil)
+	test("peer node inventory", &PeerMetadata{Name: "workstation", Addresses: []string{"192.0.2.20"}, Services: map[ServiceKey]int{ServiceNodeInfo: 14318}})
+}
 
 func TestEngineModels_PrefersPerEngineInventoryAndFallsBackToLegacyModels(t *testing.T) {
 	// Attribution present: each engine gets exactly its own list, never the union.
@@ -157,6 +198,64 @@ func TestDirectoryNode_ReportsMembershipAndServicePresence(t *testing.T) {
 	assert.False(t, (DirectoryNode{}).Clustered(), "empty node should not be Clustered")
 }
 
+func TestDirectoryNode_EqualsComparesValues(t *testing.T) {
+	original := DirectoryNode{
+		DiscoveryRecordID: "peer:host-1", IdentityVerification: IdentityPinned,
+		HostUUID: "host-1", ClusterUUID: "host-1", Trusted: true,
+		Name: "host", IP: "192.0.2.20", IPs: []string{"192.0.2.20"},
+		Services:       map[ServiceKey]ServiceStatus{ServiceNodeInfo: {Port: 14318}},
+		GPUs:           []GPUInfo{{Name: "GPU", VramBytes: 1024}},
+		CPU:            &CPUInfo{Name: "CPU", Cores: 8},
+		Memory:         &MemoryInfo{TotalBytes: 4096},
+		Models:         []string{"model-a"},
+		ModelsByEngine: map[string][]string{"ollama": {"model-a"}},
+		LoadedByEngine: map[string][]string{"ollama": {"model-a"}},
+		LastSeen:       123,
+	}
+	// Decoding produces separate allocations with the same values.
+	body, err := json.Marshal(original)
+	require.NoError(t, err)
+	var decoded DirectoryNode
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	assert.True(t, original.Equals(decoded))
+	assert.True(t, decoded.Equals(original))
+	assert.True(t, (DirectoryNode{}).Equals(DirectoryNode{}))
+}
+
+func TestDirectoryNode_EqualsDistinguishesRecordChanges(t *testing.T) {
+	test := func(name string, a, b DirectoryNode) {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, a.Equals(b))
+			assert.False(t, b.Equals(a))
+		})
+	}
+	test("verification changes", DirectoryNode{IdentityVerification: IdentityUnverified}, DirectoryNode{IdentityVerification: IdentityPinned})
+	test("address order changes", DirectoryNode{IPs: []string{"192.0.2.20", "192.0.2.21"}}, DirectoryNode{IPs: []string{"192.0.2.21", "192.0.2.20"}})
+	test("model list changes", DirectoryNode{Models: []string{"model-a"}}, DirectoryNode{Models: []string{"model-b"}})
+	test("model attribution changes", DirectoryNode{ModelsByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{ModelsByEngine: map[string][]string{"lmstudio": {"model-a"}}})
+	test("loaded models change", DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-b"}}})
+	test("timestamp changes", DirectoryNode{LastSeen: 1}, DirectoryNode{LastSeen: 2})
+}
+
+func TestDirectoryNode_EqualsDistinguishesAbsentAndEmptyValues(t *testing.T) {
+	test := func(name string, a, b DirectoryNode) {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, a.Equals(b))
+			assert.False(t, b.Equals(a))
+		})
+	}
+	test("addresses", DirectoryNode{}, DirectoryNode{IPs: []string{}})
+	test("services", DirectoryNode{}, DirectoryNode{Services: map[ServiceKey]ServiceStatus{}})
+	test("GPUs", DirectoryNode{}, DirectoryNode{GPUs: []GPUInfo{}})
+	test("CPU", DirectoryNode{}, DirectoryNode{CPU: &CPUInfo{}})
+	test("memory", DirectoryNode{}, DirectoryNode{Memory: &MemoryInfo{}})
+	test("models", DirectoryNode{}, DirectoryNode{Models: []string{}})
+	test("models by engine", DirectoryNode{}, DirectoryNode{ModelsByEngine: map[string][]string{}})
+	test("loaded models by engine", DirectoryNode{}, DirectoryNode{LoadedByEngine: map[string][]string{}})
+	test("engine model list", DirectoryNode{ModelsByEngine: map[string][]string{"ollama": nil}}, DirectoryNode{ModelsByEngine: map[string][]string{"ollama": {}}})
+	test("engine loaded model list", DirectoryNode{LoadedByEngine: map[string][]string{"ollama": nil}}, DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {}}})
+}
+
 func TestDirectoryNode_RoundTripsJSON(t *testing.T) {
 	orig := DirectoryNode{
 		HostUUID: "host-1", Name: "host", IP: "192.168.1.10", ClusterUUID: "clu",
@@ -182,4 +281,35 @@ func TestValidateTXTSize_RejectsOversizedEntries(t *testing.T) {
 	require.NoError(t, ValidateTXTSize([]string{"v=1", "ni=14318"}), "small TXT flagged")
 	big := "x=" + strings.Repeat("m", 300)
 	assert.Error(t, ValidateTXTSize([]string{"v=1", big}), "oversized TXT entry not flagged")
+}
+
+func TestDirectoryNode_JSONRoundTripPreservesIdentityFields(t *testing.T) {
+	type nodeIdentityFields struct {
+		HostUUID             string `json:"hostUuid"`
+		DiscoveryRecordID    string `json:"discoveryRecordId"`
+		IdentityVerification string `json:"identityVerification"`
+	}
+
+	test := func(name, discoveryRecordID, verification string) {
+		t.Run(name, func(t *testing.T) {
+			identity := nodeIdentityFields{
+				HostUUID:             "host-a",
+				DiscoveryRecordID:    discoveryRecordID,
+				IdentityVerification: verification,
+			}
+			body, err := json.Marshal(identity)
+			require.NoError(t, err)
+			var node DirectoryNode
+			require.NoError(t, json.Unmarshal(body, &node))
+			body, err = json.Marshal(node)
+			require.NoError(t, err)
+			var got nodeIdentityFields
+			require.NoError(t, json.Unmarshal(body, &got))
+			assert.Equal(t, identity, got)
+		})
+	}
+
+	test("owned local record", "local:host-a", "local")
+	test("authenticated peer record", "peer:host-a", "pinned")
+	test("unverified discovery record", "observation:candidate-a", "unverified")
 }

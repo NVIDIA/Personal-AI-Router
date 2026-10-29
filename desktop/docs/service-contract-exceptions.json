@@ -1,6 +1,7 @@
 {
     "$comment": "Intentionally unintegrated JSON-RPC methods for desktop ↔ services contract checks. Each ignoredMethods entry needs a current technical reason. Edit by hand; run npm run service-contracts:write to refresh docs/services-api.md after services/ changes.",
     "ignoredMethods": {
+        "nodeinfo:info-updated": "Owned node-info worker inventory, consumed by Broker.acceptLocalInfo and relayed to its scanner as discovery:local-node-info. Desktop and TUI retain their independent public HTTP hardware display path.",
         "engine:settings-projection": "Broker-to-engine-manager full settings projection for the pinned peer subscription hub. Consumed by Manager.handleSettingsMessage; the desktop consumes engine:settings-changed instead.",
         "engine:settings-reply": "Correlated broker-to-engine-manager reply to the pinned peer settings relay and the configure operation's narrow proxy rebind callback. Consumed by settingsRelay.reply, never a renderer event.",
         "engine:settings-request": "Engine-manager-to-broker correlated request for settings get/preview/apply or a validated operation's proxy rebind. Consumed by Broker.handleSettingsRelay.",

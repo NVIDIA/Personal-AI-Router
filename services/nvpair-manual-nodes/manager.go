@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"sync"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
+	"nvpair-shared/noderec"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -43,51 +46,26 @@ const (
 	probeFailThreshold = 3
 )
 
-type GPUInfo struct {
-	Name               string `json:"name"`
-	VramBytes          uint64 `json:"vram_bytes,omitempty"`
-	VramUsedBytes      uint64 `json:"vram_used_bytes,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
-}
+type (
+	GPUInfo    = noderec.GPUInfo
+	CPUInfo    = noderec.CPUInfo
+	MemoryInfo = noderec.MemoryInfo
+)
 
-// CPUInfo and MemoryInfo mirror the top-level objects nvpair-node-info
-// now emits. Pointer-optional so manually-added nodes that aren't
-// actually running nvpair-node-info (Ollama-only routing targets) don't
-// falsely surface as having an unknown CPU + zero memory — the whole
-// object stays absent until we see one in a real response.
-type CPUInfo struct {
-	Name               string `json:"name,omitempty"`
-	Cores              uint32 `json:"cores,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
-}
-
-type MemoryInfo struct {
-	TotalBytes uint64 `json:"total_bytes,omitempty"`
-	UsedBytes  uint64 `json:"used_bytes,omitempty"`
-}
-
+// NodeInfoResponse adds the local proof and receipt time to the shared snapshot.
+// Those fields never travel over the hardware response's JSON boundary.
 type NodeInfoResponse struct {
-	GPUs           []GPUInfo   `json:"GPUs"`
-	CPU            *CPUInfo    `json:"cpu,omitempty"`
-	Memory         *MemoryInfo `json:"memory,omitempty"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
-	// HostUUID is the remote node's stable per-host identity, reported by
-	// node-info. We surface it so a manual node is tracked by the same permanent
-	// identity as the rest of the fleet — including deduping with the same
-	// machine if it's also discovered over mDNS. Empty when the remote
-	// predates this field or isn't a NVPAIR node-info server.
-	HostUUID string `json:"hostUuid,omitempty"`
+	noderec.NodeInfo
+	discoveryRecordID string
+	receivedAt        time.Time
 }
 
-// ManualEntry is the user-supplied identity of a manually added
-// node. Address + Name are the historical fields. TLSPort is an
-// optional hint that node-info on this host listens for HTTPS on
-// the given port (typically 14319 with our default node-info
-// flags); a zero TLSPort means "probe plain HTTP on 14318" — the
-// historical behavior. MTLS is informational only on the entry
-// (we don't probe differently), but it's persisted so the UI can
-// show the operator the configuration they set.
+// ManualEntry identifies a user-configured endpoint by its bare hostname or IP
+// address and optional name. TLSPort overrides the node-info port, defaulting
+// to 14318 when zero. Hardware probes always use HTTPS with current cluster
+// pins and our client certificate, regardless of TLSPort or MTLS. MTLS is an
+// informational configuration flag echoed in status, not a transport switch.
+// The separate Ollama and LM Studio engine probes use plain HTTP.
 type ManualEntry struct {
 	Address string `json:"address"`
 	Name    string `json:"name"`
@@ -95,20 +73,19 @@ type ManualEntry struct {
 	MTLS    bool   `json:"mtls,omitempty"`
 }
 
-// ManualNodeStatus mirrors a manual entry plus the latest probe
-// outcome. TLSEnabled is the entry-level configuration echoed to
-// the UI so the node card can render a lock icon without having to
-// cross-reference the entries list. NodeInfoPort reflects whichever
-// port we actually reached (TLS port if TLS is configured, plain
-// 14318 otherwise) so existing UI that displays the port stays
-// correct.
+// ManualNodeStatus combines a manual entry with its latest probe results.
+// TLSEnabled and MTLSRequired echo the entry's configuration hints for the UI;
+// they do not describe whether the hardware probe uses TLS (it always does).
+// NodeInfoPort is the attempted HTTPS port, even when that probe fails.
 type ManualNodeStatus struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name,omitempty"`
-	Address      string   `json:"address"`
-	OllamaUp     bool     `json:"ollama_up"`
-	OllamaPort   int      `json:"ollama_port"`
-	OllamaModels []string `json:"ollama_models,omitempty"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId,omitempty"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	Name                 string                       `json:"name,omitempty"`
+	Address              string                       `json:"address"`
+	OllamaUp             bool                         `json:"ollama_up"`
+	OllamaPort           int                          `json:"ollama_port"`
+	OllamaModels         []string                     `json:"ollama_models,omitempty"`
 	// LM Studio is probed on its default OpenAI-API port the same way Ollama
 	// is on 11434, so a manually-added node running LM Studio can be bridged
 	// into lmstudio-proxy by a supervising broker.
@@ -130,6 +107,36 @@ type ManualNodeStatus struct {
 	HostUUID string `json:"hostUuid,omitempty"`
 }
 
+// sameAvailability compares identity, configuration, engine models, and service
+// availability. Every authenticated hardware sample is published independently.
+func (s ManualNodeStatus) sameAvailability(other ManualNodeStatus) bool {
+	return s.DiscoveryRecordID == other.DiscoveryRecordID &&
+		s.IdentityVerification == other.IdentityVerification &&
+		s.ID == other.ID &&
+		s.Name == other.Name &&
+		s.Address == other.Address &&
+		s.OllamaUp == other.OllamaUp &&
+		s.OllamaPort == other.OllamaPort &&
+		sliceEqual(s.OllamaModels, other.OllamaModels) &&
+		s.LMStudioUp == other.LMStudioUp &&
+		s.LMStudioPort == other.LMStudioPort &&
+		sliceEqual(s.LMStudioModels, other.LMStudioModels) &&
+		s.NodeInfoUp == other.NodeInfoUp &&
+		s.NodeInfoPort == other.NodeInfoPort &&
+		s.TLSEnabled == other.TLSEnabled &&
+		s.MTLSRequired == other.MTLSRequired &&
+		s.HostUUID == other.HostUUID
+}
+
+func (s ManualNodeStatus) withoutVerification() ManualNodeStatus {
+	s.IdentityVerification = noderec.IdentityUnverified
+	s.DiscoveryRecordID, s.HostUUID = "", ""
+	s.NodeInfoUp = false
+	s.GPUs, s.CPU, s.Memory = nil, nil, nil
+	s.TelemetryValid, s.MSSince = false, 0
+	return s
+}
+
 type ReadyParams struct {
 	Version string `json:"version"`
 }
@@ -145,52 +152,52 @@ type trackedNode struct {
 	// probeFailThreshold so a single transient failure doesn't
 	// generate UI noise.
 	consecutiveFails int
+	observedAt       time.Time
 }
 
+// statusAt projects cached hardware at send time without resetting its age.
+func (n *trackedNode) statusAt(now time.Time) ManualNodeStatus {
+	status := n.status
+	if status.TelemetryValid {
+		status.MSSince = (noderec.NodeInfo{TelemetryValid: true, MSSince: status.MSSince}).Aged(now.Sub(n.observedAt)).MSSince
+	}
+	return status
+}
+
+// Manager keeps manual entries in memory and publishes their probe results.
+// The supervising broker owns durable configuration and downstream routing.
 type Manager struct {
 	codec  *Codec
 	cancel context.CancelFunc
 
-	// client is the plain-HTTP probe client (Ollama on :11434 and
-	// nvpair-node-info's HTTP listener). tlsClient is used only when
-	// the entry sets TLSPort > 0; if the operator hasn't given us
-	// any TLS material via flags, tlsClient still works because
-	// the default *http.Client respects the system trust store
-	// (which covers public CAs and any roots an enterprise has
-	// installed). client_test.go reaches in and replaces the
-	// transports on both for unit tests, so they're plain
-	// *http.Client values rather than something more elaborate.
-	client    *http.Client
-	tlsClient *http.Client
+	// client probes Ollama and LM Studio over plain HTTP. Fresh connections
+	// let hostname entries recover after their remote address changes.
+	client *http.Client
 
-	// mesh is non-nil when this node is clustered (--cluster-dir): a TLS manual
-	// node is probed over cluster mTLS (presenting our leaf, accepting any
-	// currently-pinned server cert) since a clustered peer's node-info is
-	// pin-gated and serves no plaintext listener.
+	// mesh supplies current membership, our client certificate, and exact
+	// peer pins. Hardware probes require these even without a TLS port hint.
 	mesh *clustertrust.Mesh
+
+	// peerClients reuses clients bound to a previously verified host UUID.
+	// Unknown endpoints first use mesh.ClientTLSConfigAny to learn which
+	// pinned peer answered, and probeNodeInfo checks that binding afterward.
+	peerClients *clustertrust.PeerClientPool
 
 	mu    sync.RWMutex
 	nodes map[string]*trackedNode
 }
 
-func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh) (*Manager, error) {
-	tlsClient, err := buildTLSClient(tlsOpts, probeTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("build TLS client: %w", err)
-	}
-	if tlsClient == nil {
-		tlsClient = &http.Client{Timeout: probeTimeout, Transport: noKeepAliveTransport()}
-	}
+func NewManager(codec *Codec, mesh *clustertrust.Mesh) *Manager {
 	return &Manager{
-		codec: codec,
-		mesh:  mesh,
+		codec:       codec,
+		mesh:        mesh,
+		peerClients: clustertrust.NewPeerClientPool(mesh, probeTimeout),
 		client: &http.Client{
 			Timeout:   probeTimeout,
 			Transport: noKeepAliveTransport(),
 		},
-		tlsClient: tlsClient,
-		nodes:     make(map[string]*trackedNode),
-	}, nil
+		nodes: make(map[string]*trackedNode),
+	}
 }
 
 // noKeepAliveTransport returns a probe transport with idle-connection reuse
@@ -207,14 +214,47 @@ func (m *Manager) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
 	defer cancel()
+	defer m.peerClients.CloseIdle()
 
 	if err := m.codec.Notify("ready", ReadyParams{Version: Version}); err != nil {
 		return fmt.Errorf("failed to send ready notification: %w", err)
 	}
 
 	go m.probeLoop(ctx)
+	go m.watchTrust(ctx)
 
 	return m.readLoop(ctx)
+}
+
+func (m *Manager) watchTrust(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.reconcileTrust()
+		}
+	}
+}
+
+// reconcileTrust withdraws cached proofs independently of slow engine probes.
+// Status writes and notifications share mu with removal and probe completion.
+func (m *Manager) reconcileTrust() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mesh.Refresh()
+	for _, node := range m.nodes {
+		status := node.status
+		if status.IdentityVerification == noderec.IdentityPinned && (status.DiscoveryRecordID == "" || status.DiscoveryRecordID != m.mesh.PeerRecordID(status.HostUUID)) {
+			node.status = status.withoutVerification()
+			if err := m.codec.Notify("node/updated", node.status); err != nil {
+				slog.Warn("failed to withdraw manual hardware", "node_id", status.ID, "err", err)
+			}
+		}
+	}
+	m.peerClients.DropUnpinned()
 }
 
 func (m *Manager) probeLoop(ctx context.Context) {
@@ -247,110 +287,128 @@ func (m *Manager) probeAll(ctx context.Context) {
 	}
 }
 
+// probeNode refreshes Ollama and LM Studio reachability and attempts a pinned
+// mTLS node-info read for one manual entry. It saves the combined status if the
+// entry is still tracked, publishes changes and every accepted hardware sample,
+// and reports sustained outages. An answering engine alone does not verify the
+// host's identity or authorize its hardware data for scheduling.
 func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
+	m.mu.RLock()
+	tracked := m.nodes[id]
+	m.mu.RUnlock()
+	if tracked == nil || tracked.entry != entry {
+		return
+	}
 
 	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
 	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
 
-	// Pick scheme + port + client based on the entry's TLS hint.
-	// The operator decides which scheme this manual node uses; we
-	// don't probe both. TLSPort > 0 means HTTPS on that port via
-	// the TLS client (which carries the operator's client cert,
-	// if configured). Otherwise it's plain HTTP on the historical
-	// 14318.
-	scheme := "http"
+	// The entry selects a port, not a protocol: even the default 14318 is
+	// probed with pinned HTTPS, never through the public HTTP hardware path.
 	nodeInfoPort := 14318
-	probeClient := m.client
 	if entry.TLSPort > 0 {
-		scheme = "https"
 		nodeInfoPort = entry.TLSPort
-		probeClient = m.tlsClient
-		// Clustered: a TLS manual node is a cluster peer whose node-info is
-		// pin-gated mTLS with no plaintext listener. Dial it with our cluster
-		// leaf, accepting any currently-pinned server cert (a manual node has no
-		// cluster-uuid= TXT to key a specific pin on). Refresh first so a cluster
-		// joined, or a peer paired, after startup is seen; falls back to the BYO
-		// tlsClient while unclustered.
-		m.mesh.Refresh()
-		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
-			probeClient = &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
-		}
 	}
-	nodeInfoUp, info := m.probeNodeInfo(probeClient, scheme, addr, nodeInfoPort)
+	// Refresh membership before selecting a client. A previously verified entry
+	// uses its host's exact pin; an unknown endpoint may present any current
+	// pin, then must bind its response identities to that certificate.
+	m.mesh.Refresh()
+	localRecordID := m.mesh.PeerRecordID(m.mesh.NodeUUID())
+	nodeInfoUp, info := false, NodeInfoResponse{}
+	m.mu.RLock()
+	var knownUUID string
+	if current := m.nodes[id]; current != nil && current.status.IdentityVerification == noderec.IdentityPinned {
+		knownUUID = current.status.HostUUID
+	}
+	m.mu.RUnlock()
+	if client, ok := m.peerClients.Client(knownUUID); knownUUID != "" && ok {
+		nodeInfoUp, info = m.probeNodeInfo(client, addr, nodeInfoPort, localRecordID)
+	} else if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
+		client := &http.Client{
+			Timeout: probeTimeout,
+			Transport: &http.Transport{
+				TLSClientConfig:   cfg,
+				DisableKeepAlives: true,
+			},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		nodeInfoUp, info = m.probeNodeInfo(client, addr, nodeInfoPort, localRecordID)
+	}
+	m.peerClients.DropUnpinned()
 
 	newStatus := ManualNodeStatus{
-		ID:             id,
-		Name:           entry.Name,
-		Address:        addr,
-		OllamaUp:       ollamaUp,
-		OllamaPort:     11434,
-		OllamaModels:   ollamaModels,
-		LMStudioUp:     lmStudioUp,
-		LMStudioPort:   lmStudioPort,
-		LMStudioModels: lmStudioModels,
-		NodeInfoUp:     nodeInfoUp,
-		NodeInfoPort:   nodeInfoPort,
-		TLSEnabled:     entry.TLSPort > 0,
-		MTLSRequired:   entry.TLSPort > 0 && entry.MTLS,
-		GPUs:           info.GPUs,
-		CPU:            info.CPU,
-		Memory:         info.Memory,
-		TelemetryValid: info.TelemetryValid,
-		MSSince:        info.MSSince,
-		HostUUID:       info.HostUUID,
+		DiscoveryRecordID:    info.discoveryRecordID,
+		IdentityVerification: noderec.IdentityUnverified,
+		ID:                   id,
+		Name:                 entry.Name,
+		Address:              addr,
+		OllamaUp:             ollamaUp,
+		OllamaPort:           11434,
+		OllamaModels:         ollamaModels,
+		LMStudioUp:           lmStudioUp,
+		LMStudioPort:         lmStudioPort,
+		LMStudioModels:       lmStudioModels,
+		NodeInfoUp:           nodeInfoUp,
+		NodeInfoPort:         nodeInfoPort,
+		TLSEnabled:           entry.TLSPort > 0,
+		MTLSRequired:         entry.TLSPort > 0 && entry.MTLS,
+		GPUs:                 info.GPUs,
+		CPU:                  info.CPU,
+		Memory:               info.Memory,
+		TelemetryValid:       info.TelemetryValid,
+		MSSince:              info.MSSince,
+		HostUUID:             info.HostUUID,
 	}
-
-	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
+	if newStatus.NodeInfoUp {
+		newStatus.IdentityVerification = noderec.IdentityPinned
+	}
 
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
-	if !exists {
+	if !exists || tn != tracked {
 		m.mu.Unlock()
 		return
 	}
+	defer m.mu.Unlock()
+	m.mesh.Refresh()
+	if newStatus.NodeInfoUp && (newStatus.DiscoveryRecordID == "" || newStatus.DiscoveryRecordID != m.mesh.PeerRecordID(newStatus.HostUUID)) {
+		newStatus = newStatus.withoutVerification()
+	}
+	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
 
 	prev := tn.status
 	prevFails := tn.consecutiveFails
-	// A failed node-info probe returns no HostUUID; preserve the last-learned one
-	// so a transient node-info blip (while Ollama stays reachable) doesn't rekey
-	// a live node UUID -> manual-id -> UUID — the broker keys the discovery store
-	// by HostUUID.
-	if !nodeInfoUp && newStatus.HostUUID == "" {
-		newStatus.HostUUID = prev.HostUUID
-	}
+	// A failed authenticated read clears service measurements and proof. The
+	// configured engine target remains independently available when it answers.
 	tn.status = newStatus
+	tn.observedAt = info.receivedAt
 	if reachable {
 		tn.consecutiveFails = 0
 	} else {
 		tn.consecutiveFails++
 	}
 	curFails := tn.consecutiveFails
-	m.mu.Unlock()
 
-	changed := prev.OllamaUp != newStatus.OllamaUp ||
-		prev.LMStudioUp != newStatus.LMStudioUp ||
-		prev.NodeInfoUp != newStatus.NodeInfoUp ||
-		prev.HostUUID != newStatus.HostUUID ||
-		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
-		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
-		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
-		!cpuEqual(prev.CPU, newStatus.CPU) ||
-		!memoryEqual(prev.Memory, newStatus.Memory) ||
-		prev.TelemetryValid != newStatus.TelemetryValid ||
-		prev.MSSince != newStatus.MSSince
+	changed := !prev.sameAvailability(newStatus)
 
 	if changed {
 		slog.Info("manual node state changed",
 			"node_id", id, "addr", addr,
 			"ollama_up", newStatus.OllamaUp, "node_info_up", newStatus.NodeInfoUp,
 			"models", len(newStatus.OllamaModels), "gpus", len(newStatus.GPUs))
-		m.codec.Notify("node/updated", newStatus)
 	} else {
 		slog.Debug("manual node probe stable",
 			"node_id", id, "addr", addr,
 			"ollama_up", newStatus.OllamaUp, "node_info_up", newStatus.NodeInfoUp)
+	}
+	if changed || newStatus.NodeInfoUp {
+		if err := m.codec.Notify("node/updated", tn.statusAt(time.Now())); err != nil {
+			slog.Warn("failed to publish manual node status", "node_id", id, "err", err)
+		}
 	}
 
 	// Surface the consecutive-failure transition through the errors
@@ -496,33 +554,91 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 	return names
 }
 
-func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port int) (bool, NodeInfoResponse) {
-	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/node-info"
+// probeNodeInfo reads a bounded HTTPS hardware snapshot and binds its reported
+// host and principal to the response certificate and current cluster pins.
+// Success means the remote identity was authenticated, not that GPU telemetry
+// is valid. Any transport, decoding, or identity failure returns false and an
+// empty response so stale or unverified measurements cannot survive the probe.
+func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int, localRecordID string) (bool, NodeInfoResponse) {
+	url := "https://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/node-info"
 	start := time.Now()
-	resp, err := client.Get(url)
+	// Capture authorization before writing the request, including on reused
+	// connections and when the endpoint's peer UUID was initially unknown.
+	var recordID string
+	trace := &httptrace.ClientTrace{GotConn: func(connection httptrace.GotConnInfo) {
+		if conn, ok := connection.Conn.(*tls.Conn); ok {
+			state := conn.ConnectionState()
+			if len(state.PeerCertificates) > 0 {
+				recordID = m.mesh.PeerRecordID(clustertrust.UUIDFromCert(state.PeerCertificates[0]))
+			}
+		}
+	}}
+	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, url, nil)
+	if err != nil {
+		return false, NodeInfoResponse{}
+	}
+	// Resolve manual hostnames again on every probe, just as engine reads do,
+	// so a reassigned name cannot retain the previous host's hardware identity.
+	request.Close = true
+	resp, err := client.Do(request)
 	if err != nil {
 		slog.Debug("manual probe node-info failed",
-			"addr", addr, "port", port, "scheme", scheme,
+			"addr", addr, "port", port,
 			"duration_ms", time.Since(start).Milliseconds(), "err", err)
 		return false, NodeInfoResponse{}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		slog.Debug("manual probe node-info non-OK",
-			"addr", addr, "port", port, "scheme", scheme, "status", resp.StatusCode,
+			"addr", addr, "port", port, "status", resp.StatusCode,
 			"duration_ms", time.Since(start).Milliseconds())
 		return false, NodeInfoResponse{}
 	}
 
 	var result NodeInfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
+	if err != nil || len(body) > 64<<10 {
+		// Partial or oversized data cannot supply a complete accepted snapshot.
+		return false, NodeInfoResponse{}
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		slog.Debug("manual probe node-info decode failed",
-			"addr", addr, "port", port, "scheme", scheme, "err", err,
+			"addr", addr, "port", port, "err", err,
 			"duration_ms", time.Since(start).Milliseconds())
 		return false, NodeInfoResponse{}
 	}
+	m.mesh.Refresh()
+	if localRecordID == "" || localRecordID != m.mesh.PeerRecordID(m.mesh.NodeUUID()) {
+		return false, NodeInfoResponse{}
+	}
+	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+		// Without the server's TLS certificate, the response has no identity
+		// proof to check against our pins.
+		return false, NodeInfoResponse{}
+	}
+	if result.HostUUID == "" || result.HostUUID == m.mesh.NodeUUID() {
+		// The snapshot must name a remote host. Our own measurements come from
+		// the locally owned worker, never from a manually entered HTTP endpoint.
+		return false, NodeInfoResponse{}
+	}
+	if result.ClusterUUID == nil || *result.ClusterUUID != result.HostUUID {
+		// The response's principal must name the same host as its hardware data.
+		// A missing or conflicting principal cannot authorize that snapshot.
+		return false, NodeInfoResponse{}
+	}
+	if !m.mesh.VerifyPeerCertificate(result.HostUUID, resp.TLS.PeerCertificates[0]) {
+		// Recheck the actual server certificate after reading the body: its pin
+		// may have been removed or replaced since the TLS handshake completed.
+		return false, NodeInfoResponse{}
+	}
+	if recordID == "" || recordID != m.mesh.PeerRecordID(result.HostUUID) {
+		return false, NodeInfoResponse{}
+	}
+	result.NodeInfo = result.NodeInfo.Aged(time.Since(start))
+	result.discoveryRecordID = recordID
+	result.receivedAt = time.Now()
 	slog.Debug("manual probe node-info up",
-		"addr", addr, "port", port, "scheme", scheme, "gpus", len(result.GPUs),
+		"addr", addr, "port", port, "gpus", len(result.GPUs),
 		"has_cpu", result.CPU != nil, "has_memory", result.Memory != nil,
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, result
@@ -536,30 +652,30 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 		nodeInfoPort = entry.TLSPort
 	}
 	status := ManualNodeStatus{
-		ID:           id,
-		Name:         entry.Name,
-		Address:      entry.Address,
-		OllamaPort:   11434,
-		NodeInfoPort: nodeInfoPort,
-		TLSEnabled:   entry.TLSPort > 0,
-		MTLSRequired: entry.TLSPort > 0 && entry.MTLS,
+		IdentityVerification: noderec.IdentityUnverified,
+		ID:                   id,
+		Name:                 entry.Name,
+		Address:              entry.Address,
+		OllamaPort:           11434,
+		NodeInfoPort:         nodeInfoPort,
+		TLSEnabled:           entry.TLSPort > 0,
+		MTLSRequired:         entry.TLSPort > 0 && entry.MTLS,
 	}
 
+	tracked := &trackedNode{entry: entry, status: status}
 	m.mu.Lock()
-	m.nodes[id] = &trackedNode{entry: entry, status: status}
+	m.nodes[id] = tracked
 	m.mu.Unlock()
 
 	go func() {
 		m.probeNode(entry)
-		m.mu.RLock()
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		tn, exists := m.nodes[id]
-		if !exists {
-			m.mu.RUnlock()
+		if !exists || tn != tracked {
 			return
 		}
-		status = tn.status
-		m.mu.RUnlock()
-		m.codec.Notify("node/discovered", status)
+		m.codec.Notify("node/discovered", tn.statusAt(time.Now()))
 	}()
 
 	return status
@@ -567,11 +683,11 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 
 func (m *Manager) removeNode(id string) bool {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	_, exists := m.nodes[id]
 	if exists {
 		delete(m.nodes, id)
 	}
-	m.mu.Unlock()
 
 	if exists {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: id})
@@ -590,11 +706,12 @@ func (m *Manager) removeNode(id string) bool {
 }
 
 func (m *Manager) listNodes() []ManualNodeStatus {
+	m.reconcileTrust()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]ManualNodeStatus, 0, len(m.nodes))
 	for _, tn := range m.nodes {
-		result = append(result, tn.status)
+		result = append(result, tn.statusAt(time.Now()))
 	}
 	return result
 }
@@ -711,48 +828,4 @@ func sliceEqual(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func gpusEqual(a, b []GPUInfo) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Name != b[i].Name ||
-			a[i].VramBytes != b[i].VramBytes ||
-			a[i].VramUsedBytes != b[i].VramUsedBytes ||
-			a[i].UtilizationPercent != b[i].UtilizationPercent {
-			return false
-		}
-	}
-	return true
-}
-
-// cpuEqual and memoryEqual are nil-aware equality helpers for the new
-// pointer-optional fields. Both sides being nil is equal (the node
-// doesn't report that subsystem); exactly one being nil is a real
-// change (the node started or stopped reporting it, e.g. an OS-level
-// upgrade of nvpair-node-info); both non-nil compares the underlying
-// struct by value. This mirrors what sliceEqual / gpusEqual do for
-// their respective fields — any change, including a utilization tick
-// moving from 41% to 42%, fires a node/updated event so downstream
-// consumers can refresh their view.
-func cpuEqual(a, b *CPUInfo) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
-}
-
-func memoryEqual(a, b *MemoryInfo) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
 }

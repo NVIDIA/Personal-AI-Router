@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/clustertrust"
 	"nvpair-shared/netpick"
 	"nvpair-shared/noderec"
 
@@ -34,13 +35,14 @@ type (
 )
 
 type EnrichedNode struct {
-	ID string `json:"id"`
-	// HostUUID is the node's stable per-host identity (the daemon's uuid= TXT).
-	// It's the discovery-store key, so a PC rename — which changes the hostname
-	// (ID) but not the UUID — updates the existing entry in place instead of
-	// leaving a ghost under the old name. It stays off the wire; the
-	// client-facing id/name remain the hostname. Empty for manual nodes, which
-	// fall back to keying by their own ID.
+	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	// HostUUID identifies the host for local or pinned records.
+	// For unverified mDNS records it is the advertised UUID, which is only a claim.
+	// For unverified manual entries it is "manual:" + the entry ID, matching the
+	// configured engine route's key. The store uses DiscoveryRecordID for both
+	// kinds of unverified record so they stay separate from verified hosts.
 	HostUUID  string      `json:"-"`
 	Host      string      `json:"host"`
 	Port      int         `json:"port"`
@@ -73,11 +75,8 @@ type EnrichedNode struct {
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
 }
 
-// directoryToEnriched projects the promoted daemon's DirectoryNode onto the
-// broker's EnrichedNode so the client-facing store (which already merges manual
-// nodes and serves discovery:get-nodes) can be fed by the new pipeline. ID is
-// the mDNS instance name (hostname), matching the legacy node/* key so the two
-// feeds dedup during the migration; Port is the node-info port.
+// directoryToEnriched preserves scanner provenance in the client-facing store.
+// ID remains the display name; Port is the node-info port.
 //
 // The node's whole ranked address list travels through, both as Addresses and as
 // the ip= / ips= TXT the netpick projection reads, so its own order survives to
@@ -95,31 +94,32 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		port = ni.Port
 	}
 	return EnrichedNode{
-		ID:             n.Name,
-		HostUUID:       n.HostUUID,
-		Host:           n.Name,
-		Port:           port,
-		Addresses:      addrs,
-		TXT:            txt,
-		GPUs:           n.GPUs,
-		CPU:            n.CPU,
-		Memory:         n.Memory,
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered(),
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
+		DiscoveryRecordID:    n.DiscoveryRecordID,
+		IdentityVerification: n.IdentityVerification,
+		ID:                   n.Name,
+		HostUUID:             n.HostUUID,
+		Host:                 n.Name,
+		Port:                 port,
+		Addresses:            addrs,
+		TXT:                  txt,
+		GPUs:                 n.GPUs,
+		CPU:                  n.CPU,
+		Memory:               n.Memory,
+		Trusted:              n.Trusted,
+		Clustered:            n.Clustered(),
+		Models:               n.Models,
+		ModelsByEngine:       n.ModelsByEngine,
+		LoadedByEngine:       n.LoadedByEngine,
 	}
 }
 
-// storeKey is the discovery-store key for a node: its stable host UUID. Every
-// node carries one by the time it reaches the store — a real UUID for mDNS and
-// manual nodes alike (manual nodes learn theirs from the peer's node-info),
-// computed at each ingestion boundary — so keying is uniform and a hostname
-// change never duplicates or splits an entry. No id fallback: an empty
-// key is rejected by Upsert rather than silently keyed by name.
+// storeKey merges only proved host identities. Unverified discoveries and
+// manual configurations retain independent record keys.
 func (n EnrichedNode) storeKey() string {
-	return n.HostUUID
+	if n.IdentityVerification == noderec.IdentityLocal || n.IdentityVerification == noderec.IdentityPinned {
+		return n.HostUUID
+	}
+	return n.DiscoveryRecordID
 }
 
 // nodeSource identifies which feed contributed a store record. The same node
@@ -134,8 +134,8 @@ const (
 	sourceManual
 )
 
-// storedNode is the broker's in-memory record per discovered node, keyed by
-// hostUuid. It keeps each contributing source's last full EnrichedNode payload
+// storedNode keeps a verified host by UUID or an unverified discovery by its
+// separate record ID. It keeps each source's last full EnrichedNode payload
 // (including GPU / CPU / memory the wire doesn't expose) so a record can be
 // re-projected from the surviving source when the other is removed. lastSeen is
 // bumped on every discovered/updated event, giving clients a freshness signal.
@@ -143,6 +143,54 @@ type storedNode struct {
 	scanner  *EnrichedNode
 	manual   *EnrichedNode
 	lastSeen time.Time
+}
+
+// AcceptInfo reports whether hardware belongs to the scanner's current verified
+// record. A candidate with the same claimed UUID cannot supply its measurements.
+func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sn, ok := s.nodes[value.HostUUID]
+	if !ok || sn.scanner == nil {
+		return false
+	}
+	node := sn.scanner
+	if node.DiscoveryRecordID != value.DiscoveryRecordID || node.IdentityVerification != value.IdentityVerification || value.Info.HostUUID != value.HostUUID {
+		return false
+	}
+	if value.IdentityVerification != noderec.IdentityLocal {
+		if value.IdentityVerification != noderec.IdentityPinned || !node.Trusted {
+			// Remote hardware needs both proved identity and current trust.
+			return false
+		}
+		if value.ClusterUUID != value.HostUUID {
+			// The event's authenticated principal must identify this same host.
+			return false
+		}
+		if value.Info.ClusterUUID == nil || *value.Info.ClusterUUID != value.ClusterUUID {
+			// The hardware body must name that principal too; a missing or
+			// conflicting identity cannot supply verified measurements.
+			return false
+		}
+	}
+	return true
+}
+
+func (s *discoveryStore) verifiedSource(hostUUID string, source nodeSource) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sn := s.nodes[hostUUID]
+	node := sn.scanner
+	if source == sourceManual {
+		node = sn.manual
+	}
+	if node == nil {
+		return false
+	}
+	if node.IdentityVerification == noderec.IdentityLocal {
+		return true
+	}
+	return node.IdentityVerification == noderec.IdentityPinned && node.Trusted
 }
 
 // projected returns the EnrichedNode a consumer sees. When both sources claim
@@ -182,8 +230,8 @@ func (sn storedNode) hasSource(source nodeSource) bool {
 
 // discoveryStore is the broker's live view of network-discovered nodes.
 // It's the single source of truth that "discovery:get-nodes" reads from.
-// All mutations come from the scanner-event reader goroutine; reads come
-// from RPC handlers, so the lock is sized for a low-contention r/w mix.
+// Scanner, manual-worker, trust, and restart updates are serialized by the
+// broker's discoveryMu; RPC readers use the store's own read lock.
 //
 // onChange, when non-nil, is invoked after every Upsert and Remove
 // AFTER the write lock has been released. It's the broker's hook for
@@ -191,9 +239,8 @@ func (sn storedNode) hasSource(source nodeSource) bool {
 // off the lock means a caller is free to snapshot inside it without
 // deadlocking. The store does not guarantee that two rapid mutations
 // produce two separate callback invocations in strict happens-before
-// order with the lock — but since the only writer in practice is the
-// single-threaded scanner-event reader, that ordering already holds at
-// the call site.
+// order with the lock. The broker orders mutations and callbacks at the call
+// sites with discoveryMu.
 type discoveryStore struct {
 	mu       sync.RWMutex
 	nodes    map[string]storedNode
@@ -202,6 +249,36 @@ type discoveryStore struct {
 
 func newDiscoveryStore() *discoveryStore {
 	return &discoveryStore{nodes: make(map[string]storedNode)}
+}
+
+func (s *discoveryStore) sourceNodes(source nodeSource) []EnrichedNode {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var nodes []EnrichedNode
+	for _, stored := range s.nodes {
+		node := stored.scanner
+		if source == sourceManual {
+			node = stored.manual
+		}
+		if node != nil {
+			nodes = append(nodes, *node)
+		}
+	}
+	return nodes
+}
+
+func (s *discoveryStore) sourceNode(key string, source nodeSource) (EnrichedNode, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	stored := s.nodes[key]
+	node := stored.scanner
+	if source == sourceManual {
+		node = stored.manual
+	}
+	if node == nil {
+		return EnrichedNode{}, false
+	}
+	return *node, true
 }
 
 // SetOnChange installs (or removes, with nil) the post-mutation hook.
@@ -216,8 +293,8 @@ func (s *discoveryStore) SetOnChange(fn func()) {
 }
 
 // Upsert records one source's view of a node (node/discovered or node/updated).
-// The record is keyed by hostUuid and merges the source's payload with any
-// other source already claiming that key. The client snapshot is always the
+// Verified sources share a host UUID key; unverified discoveries keep their
+// separate record keys. The client snapshot is always the
 // latest full picture, not a diff stream.
 func (s *discoveryStore) Upsert(n EnrichedNode, source nodeSource) {
 	key := n.storeKey()
@@ -279,13 +356,42 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 // for future RPCs; only the fields the external schema requires are
 // projected out here.
 func (s *discoveryStore) Snapshot() []AvailableNode {
+	return s.snapshot(false)
+}
+
+// SchedulingSnapshot includes local discoveries, pinned and trusted peers,
+// and explicitly configured manual engine targets. Unverified scanner claims
+// are excluded. Manual hardware still requires separate authentication.
+func (s *discoveryStore) SchedulingSnapshot() []AvailableNode {
+	return s.snapshot(true)
+}
+
+func (s *discoveryStore) snapshot(scheduling bool) []AvailableNode {
 	s.mu.RLock()
 	out := make([]AvailableNode, 0, len(s.nodes))
 	for _, sn := range s.nodes {
+		// Explicit manual configurations independently authorize engine routing.
+		if scheduling && sn.manual == nil {
+			verification := sn.scanner.IdentityVerification
+			if verification != noderec.IdentityLocal && verification != noderec.IdentityPinned {
+				// An unverified advertisement cannot create a scheduling target.
+				continue
+			}
+			if verification == noderec.IdentityPinned && !sn.scanner.Trusted {
+				// Proving a remote identity is insufficient without current trust.
+				// Local records come from the owned worker and need no peer pin.
+				continue
+			}
+		}
 		out = append(out, sn.toAvailable())
 	}
 	s.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ID == out[j].ID {
+			return out[i].DiscoveryRecordID < out[j].DiscoveryRecordID
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
@@ -311,18 +417,20 @@ func (sn storedNode) toAvailable() AvailableNode {
 		candidates = nil
 	}
 	return AvailableNode{
-		ID:             n.ID,
-		Name:           n.ID,
-		HostUUID:       n.HostUUID,
-		IPAddress:      primary,
-		IPAddresses:    candidates,
-		Port:           n.Port,
-		LastSeen:       sn.lastSeen.Unix(),
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered,
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
+		DiscoveryRecordID:    n.DiscoveryRecordID,
+		IdentityVerification: n.IdentityVerification,
+		ID:                   n.ID,
+		Name:                 n.ID,
+		HostUUID:             n.HostUUID,
+		IPAddress:            primary,
+		IPAddresses:          candidates,
+		Port:                 n.Port,
+		LastSeen:             sn.lastSeen.Unix(),
+		Trusted:              n.Trusted && n.IdentityVerification != noderec.IdentityUnverified,
+		Clustered:            n.Clustered,
+		Models:               n.Models,
+		ModelsByEngine:       n.ModelsByEngine,
+		LoadedByEngine:       n.LoadedByEngine,
 	}
 }
 
@@ -331,8 +439,11 @@ func (sn storedNode) toAvailable() AvailableNode {
 // (id-correlation + read pump), so the broker can Call the scanner and push
 // notifications down to it — the foundation for relaying discovery:register /
 // subscribe to the promoted daemon and reading its acks — while
-// the scanner's node/* notifications are routed into the discovery store.
+// the scanner's discovery:node-* notifications enter the discovery store.
 type scannerProcess struct {
+	stateMu  *sync.Mutex
+	mesh     *clustertrust.Mesh
+	stopped  bool // protected by stateMu, alongside directory mutations
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	peer     *Peer
@@ -348,6 +459,9 @@ type scannerProcess struct {
 	onNodeLost         func(uuid, name string)
 	onTelemetry        func(noderec.NodeTelemetry)
 	onTelemetryRemoved func(hostUUID string)
+	onLocalNode        func(noderec.DirectoryNode)
+	onNodeInfo         func(noderec.NodeInfoEvent)
+	localInfo          chan localInfoObservation
 	// activity queues peer liveness reports for the scanner. It exists so the
 	// proxy-reader goroutine that receives them never waits on the scanner's
 	// pipe: reports arrive while inference is streaming, and a wedged scanner
@@ -390,10 +504,14 @@ func (s *scannerProcess) Done() <-chan struct{} { return s.done }
 func startScanner(
 	binaryPath, logLevel string,
 	store *discoveryStore,
+	stateMu *sync.Mutex,
+	mesh *clustertrust.Mesh,
 	relayDir *relay.Directory,
 	onNodeLost func(uuid, name string),
 	onTelemetry func(noderec.NodeTelemetry),
 	onTelemetryRemoved func(hostUUID string),
+	onLocalNode func(noderec.DirectoryNode),
+	onNodeInfo func(noderec.NodeInfoEvent),
 	extraArgs ...string,
 ) (*scannerProcess, error) {
 	cmd := exec.Command(binaryPath, append([]string{"--log-level", logLevel}, extraArgs...)...)
@@ -416,6 +534,8 @@ func startScanner(
 	}
 
 	sp := &scannerProcess{
+		stateMu:            stateMu,
+		mesh:               mesh,
 		cmd:                cmd,
 		stdin:              stdin,
 		peer:               NewPeer(NewCodec(readWriter{stdout, stdin})),
@@ -424,6 +544,9 @@ func startScanner(
 		onNodeLost:         onNodeLost,
 		onTelemetry:        onTelemetry,
 		onTelemetryRemoved: onTelemetryRemoved,
+		onLocalNode:        onLocalNode,
+		onNodeInfo:         onNodeInfo,
+		localInfo:          make(chan localInfoObservation, 1),
 		activity:           make(chan nodeActivityReport, activityQueueDepth),
 		done:               make(chan struct{}),
 	}
@@ -476,10 +599,9 @@ func (s *scannerProcess) reloadIdentity() {
 	}
 }
 
-// reloadTrust tells the daemon this node's cluster pin set changed, so it
-// re-derives the trusted annotation on every node in its directory. The daemon
-// otherwise only answers that question when a peer's mDNS record moves, and a
-// peer that was already advertising when this node joined never moves again.
+// reloadTrust promptly invalidates stale peer proofs and schedules candidate
+// authentication after a pin change. Scanner also reconciles live trust on its
+// periodic refresh loops, independently of mDNS changes.
 func (s *scannerProcess) reloadTrust() {
 	ctx, cancel := context.WithTimeout(context.Background(), pushRegisterTimeout)
 	defer cancel()
@@ -524,8 +646,17 @@ func (s *scannerProcess) reportNodeActivity(hostUUID string, observedAt time.Tim
 	}
 }
 
-// drainNodeActivity forwards queued liveness reports to the daemon until the
-// scanner exits.
+// reportLocalInfo queues an owned-worker snapshot without blocking the caller.
+// A full queue drops the new sample, allowing existing measurements to age.
+func (s *scannerProcess) reportLocalInfo(observation localInfoObservation) {
+	select {
+	case s.localInfo <- observation:
+	default:
+	}
+}
+
+// drainNodeActivity forwards queued liveness reports and owned inventory to the
+// daemon until the scanner exits.
 //
 // They go as notifications, not requests. The daemon has nothing to say back —
 // it records the report and returns — so an id-bearing call would buy a pending
@@ -535,6 +666,11 @@ func (s *scannerProcess) drainNodeActivity() {
 		select {
 		case <-s.done:
 			return
+		case observation := <-s.localInfo:
+			info := observation.info.Aged(time.Since(observation.receivedAt))
+			if err := s.peer.Notify(noderec.MethodLocalNodeInfo, noderec.LocalNodeInfoParams{Info: info}); err != nil {
+				slog.Debug("relay local node-info to daemon failed", "err", err)
+			}
 		case report := <-s.activity:
 			// Aged at send time, not enqueue time, so any wait in the queue is
 			// included: the daemon measures freshness against this number.
@@ -568,6 +704,17 @@ func (s *scannerProcess) pushUnregister(svc noderec.ServiceKey) {
 // is logged. Responses to broker-issued Calls are demuxed by the peer itself and
 // never reach here; any other notification is ignored.
 func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
+	receivedAt := time.Now()
+	if s.stateMu != nil {
+		s.stateMu.Lock()
+		defer s.stateMu.Unlock()
+	}
+	if s.stopped {
+		return
+	}
+	if s.mesh != nil {
+		s.mesh.Refresh()
+	}
 	switch method {
 	case noderec.NotifyNodeDiscovered, noderec.NotifyNodeUpdated, noderec.NotifyNodeRemoved:
 		var ev noderec.NodeEvent
@@ -575,13 +722,27 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 			slog.Warn("daemon emitted invalid node event", "method", method, "err", err)
 			return
 		}
+		if method != noderec.NotifyNodeRemoved && !s.currentRecord(ev.Node.HostUUID, ev.Node.DiscoveryRecordID, ev.Node.IdentityVerification) {
+			return
+		}
+		if method == noderec.NotifyNodeRemoved && s.store != nil {
+			// A delayed removal for a previous pin must not remove its newly
+			// authenticated replacement under the same canonical host UUID.
+			if node, present := s.store.sourceNode(directoryToEnriched(ev.Node).storeKey(), sourceScanner); present && node.DiscoveryRecordID != ev.Node.DiscoveryRecordID {
+				return
+			}
+		}
+		if method != noderec.NotifyNodeRemoved && s.onLocalNode != nil {
+			s.onLocalNode(ev.Node)
+		}
 		// Fold into the relay directory (internal subscribers: proxies, mesh
 		// services) and the client-facing store (discovery:get-nodes /
 		// nodes-changed, merging manual nodes), carrying the trusted annotation.
 		if s.relayDir != nil {
 			s.relayDir.Apply(method, ev.Node)
 		}
-		if method == noderec.NotifyNodeRemoved && s.onTelemetryRemoved != nil {
+		verified := ev.Node.IdentityVerification == noderec.IdentityLocal || ev.Node.IdentityVerification == noderec.IdentityPinned
+		if method == noderec.NotifyNodeRemoved && verified && s.onTelemetryRemoved != nil {
 			s.onTelemetryRemoved(ev.Node.HostUUID)
 		}
 		if s.store != nil {
@@ -595,10 +756,14 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 				// present, so we must not fail its jobs. Identify the departed
 				// node by HostUUID, the value workloads are stamped/keyed with,
 				// not the display hostname.
-				if s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner) && s.onNodeLost != nil {
+				if s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner) && verified && s.onNodeLost != nil {
 					s.onNodeLost(ev.Node.HostUUID, ev.Node.Name)
 				}
 			} else {
+				previous, present := s.store.sourceNode(directoryToEnriched(ev.Node).storeKey(), sourceScanner)
+				if present && previous.DiscoveryRecordID != ev.Node.DiscoveryRecordID && s.onTelemetryRemoved != nil {
+					s.onTelemetryRemoved(ev.Node.HostUUID)
+				}
 				s.store.Upsert(directoryToEnriched(ev.Node), sourceScanner)
 			}
 		}
@@ -612,12 +777,43 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 			slog.Warn("daemon emitted node telemetry without hostUuid")
 			return
 		}
-		if s.onTelemetry != nil {
+		if !s.currentHost(telemetry.HostUUID) {
+			return
+		}
+		if s.store != nil && s.store.verifiedSource(telemetry.HostUUID, sourceScanner) && s.onTelemetry != nil {
+			telemetry = telemetry.Aged(time.Since(receivedAt))
 			s.onTelemetry(telemetry)
+		}
+	case noderec.NotifyNodeInfo:
+		var value noderec.NodeInfoEvent
+		if json.Unmarshal(params, &value) != nil || s.store == nil || !s.currentRecord(value.HostUUID, value.DiscoveryRecordID, value.IdentityVerification) {
+			return
+		}
+		if !s.store.AcceptInfo(value) {
+			return
+		}
+		if s.onNodeInfo != nil {
+			value.Info = value.Info.Aged(time.Since(receivedAt))
+			s.onNodeInfo(value)
 		}
 	case "ready":
 		slog.Info("scanner reported ready", "params", string(params))
 	}
+}
+
+func (s *scannerProcess) currentRecord(uuid, recordID string, verification noderec.IdentityVerification) bool {
+	if s.mesh == nil || verification != noderec.IdentityPinned {
+		return true
+	}
+	return recordID != "" && recordID == s.mesh.PeerRecordID(uuid)
+}
+
+func (s *scannerProcess) currentHost(uuid string) bool {
+	if s.store == nil {
+		return false
+	}
+	node, present := s.store.sourceNode(uuid, sourceScanner)
+	return present && node.IdentityVerification != noderec.IdentityUnverified && s.currentRecord(uuid, node.DiscoveryRecordID, node.IdentityVerification)
 }
 
 // writeSetLevelFrame marshals a newline-delimited log/set-level
@@ -634,32 +830,6 @@ func writeSetLevelFrame(mu *sync.Mutex, w io.Writer, level string) error {
 		JSONRPC: "2.0",
 		Method:  applog.SetLevelMethod,
 		Params:  applog.SetLevelParams{Level: level},
-	}
-	data, err := json.Marshal(frame)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
-	mu.Lock()
-	defer mu.Unlock()
-	_, err = w.Write(data)
-	return err
-}
-
-// writeClusterIdentityFrame marshals a newline-delimited
-// nodeinfo:set-cluster-identity notification and writes it to a child's stdin
-// under mu. An empty principal is a real value ("this node is in no cluster"),
-// so it is sent like any other.
-func writeClusterIdentityFrame(mu *sync.Mutex, w io.Writer, clusterUUID string) error {
-	frame := struct {
-		JSONRPC string                        `json:"jsonrpc"`
-		Method  string                        `json:"method"`
-		Params  noderec.ClusterIdentityParams `json:"params"`
-	}{
-		JSONRPC: "2.0",
-		Method:  noderec.MethodSetClusterIdentity,
-		Params:  noderec.ClusterIdentityParams{ClusterUUID: clusterUUID},
 	}
 	data, err := json.Marshal(frame)
 	if err != nil {

@@ -13,8 +13,6 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
-const maxTelemetryMilliseconds = int64(1<<63 - 1)
-
 type telemetryObservation struct {
 	value      noderec.NodeTelemetry
 	receivedAt time.Time
@@ -68,7 +66,7 @@ func newTelemetryCache() *telemetryCache {
 // Upsert records one source's latest observation and returns the source-aware
 // projection to forward. Scanner is authoritative while present; manual
 // telemetry is the fallback for nodes without a scanner claim.
-func (c *telemetryCache) Upsert(source nodeSource, value noderec.NodeTelemetry, receivedAt time.Time) (noderec.NodeTelemetry, bool) {
+func (c *telemetryCache) Upsert(source nodeSource, value noderec.NodeTelemetry, receivedAt, now time.Time) (noderec.NodeTelemetry, bool) {
 	if value.HostUUID == "" {
 		return noderec.NodeTelemetry{}, false
 	}
@@ -86,7 +84,7 @@ func (c *telemetryCache) Upsert(source nodeSource, value noderec.NodeTelemetry, 
 	if !ok {
 		return noderec.NodeTelemetry{}, false
 	}
-	return observedTelemetryAt(*projected, receivedAt), true
+	return observedTelemetryAt(*projected, now), true
 }
 
 // Remove drops one source. If another source survives, its current projection
@@ -130,24 +128,7 @@ func (c *telemetryCache) Snapshot(now time.Time) []noderec.NodeTelemetry {
 }
 
 func observedTelemetryAt(observation telemetryObservation, now time.Time) noderec.NodeTelemetry {
-	value := observation.value
-	if !value.TelemetryValid {
-		value.MSSince = 0
-		return value
-	}
-	if value.MSSince < 0 {
-		value.MSSince = 0
-	}
-	elapsed := now.Sub(observation.receivedAt).Milliseconds()
-	if elapsed <= 0 {
-		return value
-	}
-	if elapsed > maxTelemetryMilliseconds-value.MSSince {
-		value.MSSince = maxTelemetryMilliseconds
-	} else {
-		value.MSSince += elapsed
-	}
-	return value
+	return observation.value.Aged(now.Sub(observation.receivedAt))
 }
 
 func (b *Broker) ingestTelemetry(source nodeSource, value noderec.NodeTelemetry) {
@@ -155,12 +136,13 @@ func (b *Broker) ingestTelemetry(source nodeSource, value noderec.NodeTelemetry)
 }
 
 func (b *Broker) ingestTelemetryAt(source nodeSource, value noderec.NodeTelemetry, receivedAt time.Time) {
-	if b.telemetry == nil {
+	if b.telemetry == nil || b.store == nil || !b.store.verifiedSource(value.HostUUID, source) {
 		return
 	}
-	projected, ok := b.telemetry.Upsert(source, value, receivedAt)
+	projectedAt := time.Now()
+	projected, ok := b.telemetry.Upsert(source, value, receivedAt, projectedAt)
 	if ok {
-		b.fanTelemetryToScheduler(projected)
+		b.fanTelemetryToScheduler(projected, projectedAt)
 	}
 }
 
@@ -168,20 +150,27 @@ func (b *Broker) removeTelemetry(source nodeSource, hostUUID string) {
 	if b.telemetry == nil {
 		return
 	}
-	projected, ok := b.telemetry.Remove(hostUUID, source, time.Now())
+	projectedAt := time.Now()
+	projected, ok := b.telemetry.Remove(hostUUID, source, projectedAt)
 	if ok {
-		b.fanTelemetryToScheduler(projected)
+		b.fanTelemetryToScheduler(projected, projectedAt)
 	}
 }
 
-func (b *Broker) fanTelemetryToScheduler(telemetry noderec.NodeTelemetry) {
+// fanTelemetryToScheduler includes time waiting for the ordered scheduler feed
+// and live authorization checks after the cache projected this sample.
+func (b *Broker) fanTelemetryToScheduler(telemetry noderec.NodeTelemetry, projectedAt time.Time) {
 	b.schedulerFeedMu.Lock()
 	defer b.schedulerFeedMu.Unlock()
+	if telemetry.TelemetryValid && b.clusterDir != "" && !b.currentTelemetrySource(telemetry.HostUUID) {
+		telemetry = noderec.NodeTelemetry{HostUUID: telemetry.HostUUID}
+	}
 
 	scheduler := b.getScheduler()
 	if scheduler == nil {
 		return
 	}
+	telemetry = observedTelemetryAt(telemetryObservation{value: telemetry, receivedAt: projectedAt}, time.Now())
 	if err := scheduler.Notify(schedulerwire.MethodTelemetry, telemetry); err != nil {
 		slog.Warn("fan telemetry to scheduler failed", "host_uuid", telemetry.HostUUID, "err", err)
 	}
@@ -195,7 +184,12 @@ func (b *Broker) replayTelemetryToScheduler(scheduler *rpcWorker) int {
 		return 0
 	}
 	replayed := 0
-	for _, telemetry := range b.telemetry.Snapshot(time.Now()) {
+	snapshotAt := time.Now()
+	for _, telemetry := range b.telemetry.Snapshot(snapshotAt) {
+		if b.clusterDir != "" && !b.currentTelemetrySource(telemetry.HostUUID) {
+			continue
+		}
+		telemetry = telemetry.Aged(time.Since(snapshotAt))
 		if err := scheduler.Notify(schedulerwire.MethodTelemetry, telemetry); err != nil {
 			slog.Warn("replay telemetry to scheduler failed", "host_uuid", telemetry.HostUUID, "err", err)
 			break
@@ -203,4 +197,20 @@ func (b *Broker) replayTelemetryToScheduler(scheduler *rpcWorker) int {
 		replayed++
 	}
 	return replayed
+}
+
+// currentTelemetrySource checks the source the cache would project, rather
+// than allowing a different, surviving source to authorize its old sample.
+func (b *Broker) currentTelemetrySource(uuid string) bool {
+	b.telemetry.mu.RLock()
+	sources := b.telemetry.nodes[uuid]
+	source := sourceManual
+	if sources.scanner != nil {
+		source = sourceScanner
+	}
+	b.telemetry.mu.RUnlock()
+	mesh := b.currentDiscoveryMesh()
+	mesh.Refresh()
+	node, present := b.store.sourceNode(uuid, source)
+	return present && (node.IdentityVerification == noderec.IdentityLocal || (node.IdentityVerification == noderec.IdentityPinned && node.Trusted && node.DiscoveryRecordID != "" && node.DiscoveryRecordID == mesh.PeerRecordID(uuid)))
 }
