@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.7 — Copy API endpoints with /v1 included (#185)
+
+- API endpoint URLs now include `/v1` when displayed or copied, so they can be pasted directly into Hermes and other clients that expect an OpenAI-compatible base URL.
+- The getting-started examples use the copied URL directly and explain how to remove `/v1` for native Ollama clients.
+
 ## 1.0.6 — Model lookups through PAIR reach a node that has the model (#163)
 
 - `/api/show` requests to PAIR's Ollama port now go only to a node that has the requested model. Before, they could reach a node without it and get a 404, so a client such as Hermes Agent could not read the model's details.
