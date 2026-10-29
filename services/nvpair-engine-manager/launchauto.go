@@ -146,10 +146,16 @@ func (c hfModelConfig) dtypeBytes() int64 {
 // readHFModel finds the model's complete snapshot in the Hugging Face hub cache
 // and returns its parsed config and size on disk.
 func readHFModel(hubDir, id string) (cfg hfModelConfig, size int64, ok bool) {
+	_, cfg, size, ok = findHFSnapshot(hubDir, id)
+	return cfg, size, ok
+}
+
+// findHFSnapshot is readHFModel that also returns the snapshot's directory.
+func findHFSnapshot(hubDir, id string) (dir string, cfg hfModelConfig, size int64, ok bool) {
 	repo := filepath.Join(hubDir, "models--"+strings.ReplaceAll(id, "/", "--"))
 	snapshots, err := os.ReadDir(filepath.Join(repo, "snapshots"))
 	if err != nil {
-		return cfg, 0, false
+		return "", cfg, 0, false
 	}
 	for _, snapshot := range snapshots {
 		dir := filepath.Join(repo, "snapshots", snapshot.Name())
@@ -161,9 +167,9 @@ func readHFModel(hubDir, id string) (cfg hfModelConfig, size int64, ok bool) {
 		if err != nil || json.Unmarshal(raw, &cfg) != nil {
 			continue
 		}
-		return cfg, bytes, true
+		return dir, cfg, bytes, true
 	}
-	return cfg, 0, false
+	return "", cfg, 0, false
 }
 
 // planHFContext decides the extra vLLM arguments for the model named in args:
