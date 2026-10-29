@@ -65,8 +65,10 @@ func frontBackendPort(f *Front, public int) (int, error) {
 }
 
 // frontGateway forwards every request to the engine on its backend port and
-// streams the response back. It adds, removes and logs nothing: it is a
-// transparent hop, and request or response bodies never pass through a log.
+// streams the response back. It is a transparent hop, with one exception: a
+// chat request that offers tools to an engine started without a tool-call
+// parser has them removed (see dropUnparsableTools). Request and response
+// bodies never pass through a log.
 //
 // It also keeps the one fact idle unload needs: when the engine last did
 // inference work, and whether any is in flight.
@@ -104,6 +106,9 @@ type frontGateway struct {
 	// them to its model list, since the engine itself only names the one it serves.
 	modelsFn func(ctx context.Context) []string
 	list     modelList
+	// toolCalls is true when the engine was launched with a tool-call parser,
+	// so it can answer requests that offer tools.
+	toolCalls bool
 	// readMu lets one read of the downloaded models serve every request waiting
 	// for it.
 	readMu sync.Mutex
@@ -363,6 +368,70 @@ func (g *frontGateway) setModel(model string) {
 	g.mu.Unlock()
 }
 
+// setToolCalls records whether the engine being launched parses tool calls.
+func (g *frontGateway) setToolCalls(on bool) {
+	g.mu.Lock()
+	g.toolCalls = on
+	g.mu.Unlock()
+}
+
+// toolsUnavailableHeader is set on a response whose request had its tools
+// removed, so a client or a person debugging one can tell why no tool was called.
+const toolsUnavailableHeader = "X-PAIR-Tool-Calls"
+
+// dropUnparsableTools removes the tools from a chat request that an engine
+// without a tool-call parser would reject, and reports whether it did. vLLM
+// answers HTTP 400 to tool_choice "auto", which is what a request that offers
+// tools and names no choice means, and agent clients offer their tools on
+// every request. Without them the model answers in plain text,
+// as it would have to anyway. A request that demands a tool, with "required"
+// or a named function, is left alone: answering it without one would break
+// what the client asked for, and vLLM's own error explains the refusal.
+func dropUnparsableTools(r *http.Request) bool {
+	if r.URL.Path != "/v1/chat/completions" || r.Body == nil || !strings.Contains(r.Header.Get("Content-Type"), "json") {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, frontPeekLimit+1))
+	keep := func() bool {
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
+		return false
+	}
+	if err != nil || len(body) > frontPeekLimit {
+		return keep()
+	}
+	var fields map[string]json.RawMessage
+	var tools []json.RawMessage
+	if json.Unmarshal(body, &fields) != nil || json.Unmarshal(fields["tools"], &tools) != nil || len(tools) == 0 {
+		return keep()
+	}
+	if choice, ok := fields["tool_choice"]; ok {
+		var mode string
+		if json.Unmarshal(choice, &mode) != nil || mode != "auto" {
+			return keep()
+		}
+	}
+	delete(fields, "tools")
+	delete(fields, "tool_choice")
+	delete(fields, "parallel_tool_calls")
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(fields) != nil {
+		return keep()
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{bytes.NewReader(out.Bytes()), r.Body}
+	r.ContentLength = int64(out.Len())
+	r.Header.Del("Content-Length")
+	r.TransferEncoding = nil
+	return true
+}
+
 // drain returns once no inference request is running, which is when the model
 // can be unloaded without cutting one off. Requests that need the model are held
 // while a switch is in progress, so nothing new starts meanwhile.
@@ -552,7 +621,11 @@ func (g *frontGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			g.inflight++
 			g.lastActive = time.Now()
 		}
+		parsesTools := g.toolCalls
 		g.mu.Unlock()
+		if !parsesTools && wakeable(r) && dropUnparsableTools(r) {
+			w.Header().Set(toolsUnavailableHeader, "removed: the model has no tool-call parser")
+		}
 		break
 	}
 	if activity {

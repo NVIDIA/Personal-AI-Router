@@ -279,6 +279,12 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if launch, err = applyFrontBackend(rt, launch, port); err != nil {
 		return err
 	}
+	st.mu.Lock()
+	front := st.front
+	st.mu.Unlock()
+	if front != nil {
+		front.setToolCalls(parsesToolCalls(launch.Args))
+	}
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()

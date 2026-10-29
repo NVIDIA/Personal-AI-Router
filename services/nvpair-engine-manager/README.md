@@ -70,11 +70,25 @@ launch is left untouched. A model that is not yet downloaded gets only a capped
 memory share. The added arguments appear in the engine-manager log
 (`engine launch adjusted for the model and GPU`) and not in the saved settings,
 so switching models re-sizes for the new one.
-It also enables tool calling, which agents such as Hermes need on every request
-(vLLM answers HTTP 400 to `tool_choice: "auto"` otherwise): for the Qwen families
-it adds `--enable-auto-tool-choice --tool-call-parser hermes`. Other families are
-left at vLLM's default until their parser has been tried; name one in the launch
-arguments to enable it.
+It also enables tool calling, which agent clients need on every request
+(vLLM answers HTTP 400 to `tool_choice: "auto"` otherwise). The parser is found
+from the model, not from a list of families: `hf` when the tokenizer ships
+`response_template` metadata, otherwise the parser of the installed vLLM that
+reads the model's own tool-call format. To find it, `toolparser_probe.py` runs
+with vLLM's Python, renders the model's chat template with one example tool call,
+and offers that text to every parser vLLM provides; among parsers that read it
+equally, `hermes`, `qwen3_coder`, `llama3_json`, `mistral` and `pythonic` are
+preferred in that order. The probe downloads nothing, runs no code from the model
+repository, takes a few seconds, and is done once per model and vLLM while the
+service runs. The chosen parser appears in the log
+(`vLLM tool-call parser chosen from the model's chat template`).
+When no parser reads the model's format (Nemotron Nano v2's `<TOOLCALL>`, or a
+template with no tool support), nothing is added, and the gateway removes `tools`
+from chat requests that leave `tool_choice` unset or `"auto"`, so the model
+answers in plain text instead of failing with HTTP 400. The response carries
+`X-PAIR-Tool-Calls: removed: …`. A request with `tool_choice: "required"` or a
+named function is forwarded unchanged and gets vLLM's own error. A parser named
+in the launch arguments is always used as given.
 The environment sets `VLLM_USE_FLASHINFER_SAMPLER=0`. vLLM's FlashInfer sampler
 compiles GPU kernels on first start, and that build cannot handle the spaces in
 PAIR's app-data folder (`Nvidia Corporation/Personal AI Router`), so the
