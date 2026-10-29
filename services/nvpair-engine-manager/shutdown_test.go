@@ -115,7 +115,14 @@ func TestStopAllSweepsOnce(t *testing.T) {
 func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	adoptedEngineOnLivePort(t, ex)
+	st, err := ex.state("fake")
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
 
+	// Holding the engine's opMu parks the sweep before doStop, so it cannot
+	// finish until the test lets it, however the goroutines are scheduled.
+	st.opMu.Lock()
 	sweepDone := make(chan struct{})
 	go func() {
 		defer close(sweepDone)
@@ -123,28 +130,35 @@ func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
 	}()
 
 	// Join behind the first caller only once it owns the sweep: only the sweep
-	// sets shuttingDown, and it does so before probing anything.
+	// sets shuttingDown, and it does so before stopping anything.
 	deadline := time.Now().Add(5 * time.Second)
 	for !ex.shuttingDown.Load() {
 		if time.Now().After(deadline) {
+			st.opMu.Unlock()
 			t.Fatal("the first StopAll caller never started the sweep")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	second := time.Now()
-	ex.StopAll()
-	waited := time.Since(second)
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		ex.StopAll()
+	}()
 
-	// Both callers return when the sweep ends, but the first goroutine's deferred
-	// close can land a moment later. The grace is far shorter than the probe an
-	// early return would have skipped.
 	select {
-	case <-sweepDone:
-	case <-time.After(100 * time.Millisecond):
+	case <-secondDone:
+		st.opMu.Unlock()
 		t.Fatal("the second caller returned while the first sweep was still running")
+	case <-time.After(200 * time.Millisecond):
 	}
-	if waited < 100*time.Millisecond {
-		t.Fatalf("second caller waited only %v; it did not join the sweep in flight", waited)
+
+	st.opMu.Unlock()
+	for name, done := range map[string]chan struct{}{"first": sweepDone, "second": secondDone} {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the %s StopAll caller never returned once the sweep was released", name)
+		}
 	}
 }
 
