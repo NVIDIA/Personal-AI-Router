@@ -24,13 +24,14 @@ import {
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
-import { DefaultIdleExpiry, EnginesWithIdleTimeout } from '@/shared/constants/engines'
+import { DefaultIdleExpiry, EnginesWithIdleTimeout, EngineTypes } from '@/shared/constants/engines'
 import {
     emptyEngineStatus,
     engineManagerName,
     engineTypeFromManagerName,
     idleSecondsToExpiry,
-    isEngineType
+    isEngineType,
+    unsupportedEngineStatus
 } from '@/shared/utils/engines'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
@@ -910,6 +911,12 @@ class ModularBridgeState {
         { installed: boolean; running: boolean; port: number; idle: boolean }
     >()
     /**
+     * The engines `nvpair-engine-manager` lists for this host. It leaves out an
+     * engine the host cannot run, such as vLLM on Windows, which is then
+     * reported as `unsupported`. Null until the first full listing.
+     */
+    private localEngineList: ReadonlySet<EngineType> | null = null
+    /**
      * How long an engine whose expiry is an idle limit may sit idle before it
      * unloads its model, in seconds (0 is never), as the engine manager reports it.
      */
@@ -978,6 +985,8 @@ class ModularBridgeState {
      * evicted.
      */
     private remoteEngineFacts = new Map<string, RemoteEngineFacts>()
+    /** The engines each peer's engine manager lists, as {@link localEngineList} is for this host. */
+    private remoteEngineLists = new Map<string, ReadonlySet<EngineType>>()
     /**
      * The model of an in-flight remote pull keyed by {@link remoteOpKey}. The
      * backend's `engine:remote-progress` frames carry **no** `model` field
@@ -1122,6 +1131,14 @@ class ModularBridgeState {
                             status: loaded.has(item.name) ? 'loaded' : 'idle'
                         }))
                     })
+                }
+            }
+        }
+
+        if (selfId && this.localEngineList) {
+            for (const engineType of EngineTypes) {
+                if (!this.localEngineList.has(engineType)) {
+                    statuses.push(unsupportedEngineStatus(selfId, engineType))
                 }
             }
         }
@@ -1344,6 +1361,27 @@ class ModularBridgeState {
     clearWorkloads(): void {
         for (const [key, workload] of Array.from(this.workloads)) {
             this.evictWorkload(key, workload)
+        }
+    }
+
+    /**
+     * Record a full `engine:get-installed` listing: each engine's status, and
+     * which engines the host can run at all. One left out is `unsupported`.
+     */
+    applyEngineManagerList(result: JsonValue | undefined): void {
+        const list = objectValue(result)?.engines
+        if (!Array.isArray(list)) return
+        const listed = new Set<EngineType>()
+        for (const entry of list) {
+            this.applyEngineManagerStatus(entry)
+            const engineType = engineTypeFromManagerName(stringValue(objectValue(entry)?.engine))
+            if (engineType) listed.add(engineType)
+        }
+        // An empty listing says nothing about what the host can run.
+        if (listed.size === 0) return
+        this.localEngineList = listed
+        for (const engineType of EngineTypes) {
+            if (!listed.has(engineType)) this.emitLocalEngineStatus(engineType)
         }
     }
 
@@ -1770,6 +1808,8 @@ class ModularBridgeState {
         nodeId: string,
         engine: ProxyEngine
     ): EngineStatusData | null {
+        const listed = this.remoteEngineLists.get(nodeId)
+        if (listed && !listed.has(engine)) return unsupportedEngineStatus(nodeId, engine)
         const node = this.nodes.get(nodeId)
         const presence = node?.engines[engine]
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engine))
@@ -1841,6 +1881,8 @@ class ModularBridgeState {
             })
             seen.add(engineType)
         }
+        // A peer leaves out an engine it cannot run. An empty listing says nothing.
+        if (seen.size > 0) this.remoteEngineLists.set(nodeId, seen)
         for (const engine of PROXY_ENGINES) {
             if (!seen.has(engine)) {
                 this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
@@ -1873,6 +1915,7 @@ class ModularBridgeState {
 
     /** Forget a node's authoritative remote-engine facts (on eviction/leave). */
     private dropRemoteEngineFacts(nodeId: string): void {
+        this.remoteEngineLists.delete(nodeId)
         for (const engine of PROXY_ENGINES) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
             this.remotePullModels.delete(this.remoteOpKey(nodeId, engine))
@@ -2112,6 +2155,9 @@ class ModularBridgeState {
     ): EngineStatusData | undefined {
         const nodeId = this.selfId
         if (!nodeId) return undefined
+        if (this.localEngineList && !this.localEngineList.has(engineType)) {
+            return unsupportedEngineStatus(nodeId, engineType)
+        }
         const facts = this.engineManagerFacts.get(engineType)
 
         // An in-flight lifecycle op outranks the fact-derived status so the UI

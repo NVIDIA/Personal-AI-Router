@@ -90,7 +90,10 @@ export const EngineProcessStatuses = [
     'uninstalling',
     'starting',
     'stopping',
-    'initializing'
+    'initializing',
+    // The node's engine manager does not list the engine because the node
+    // cannot run it (vLLM on Windows), so it is not shown for that node.
+    'unsupported'
 ] as const
 
 /**

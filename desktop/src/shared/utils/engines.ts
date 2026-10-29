@@ -85,6 +85,17 @@ export function emptyEngineStatus(nodeId: string, engineType: EngineType): Engin
     }
 }
 
+/** An engine the node's engine manager does not list, because the node cannot run it. */
+export function unsupportedEngineStatus(nodeId: string, engineType: EngineType): EngineStatusData {
+    return {
+        engineType,
+        nodeId,
+        processStatus: 'unsupported',
+        enginePort: null,
+        proxyPort: null
+    }
+}
+
 /** Shallow placeholder when no model list has been pushed for this node/engine yet. */
 export function emptyEngineModels(nodeId: string, engineType: EngineType): EngineModels {
     return { nodeId, engineType, models: [] }

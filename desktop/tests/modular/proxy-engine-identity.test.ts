@@ -106,15 +106,19 @@ describe('proxy engine identity', () => {
                 ]
             }
         })
+        // A peer lists every engine it can run; one it leaves out is unsupported.
         state.applyRemoteEngineFacts(nodeId, {
             engines: [
+                { engine: 'ollama', installed: true, running: true, healthy: true, port: 11435 },
+                { engine: 'lmstudio', installed: true, running: true, healthy: true, port: 1235 },
                 {
                     engine: 'llamacpp',
                     installed: true,
                     running: true,
                     healthy: true,
                     port: 8081
-                }
+                },
+                { engine: 'vllm', installed: false, running: false, healthy: false, port: 0 }
             ]
         })
 
@@ -137,7 +141,8 @@ describe('proxy engine identity', () => {
                 processStatus: 'running',
                 enginePort: 8081,
                 proxyPort: 8080
-            })
+            }),
+            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' })
         ])
 
         const llamaModels = state

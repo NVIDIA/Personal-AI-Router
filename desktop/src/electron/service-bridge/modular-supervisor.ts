@@ -1081,8 +1081,8 @@ class ModularSupervisor {
             const result = await this.callProcess('broker', 'engine:get-installed')
             const obj = objectValue(result)
             if (!obj || !Array.isArray(obj.engines)) return
+            getModularBridgeState().applyEngineManagerList(result)
             for (const engine of obj.engines) {
-                getModularBridgeState().applyEngineManagerStatus(engine)
                 this.refreshManagedEngineModels(engine)
             }
         } catch (err) {

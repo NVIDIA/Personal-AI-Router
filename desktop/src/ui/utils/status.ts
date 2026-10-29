@@ -11,5 +11,6 @@ export const statusLabel: Record<EngineProcessStatus, string> = {
     uninstalling: 'Uninstalling...',
     starting: 'Starting...',
     stopping: 'Stopping...',
-    initializing: 'Initializing...'
+    initializing: 'Initializing...',
+    unsupported: 'Not Supported'
 }
