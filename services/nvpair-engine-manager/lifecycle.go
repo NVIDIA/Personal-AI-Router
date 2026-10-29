@@ -815,18 +815,16 @@ func (e *Executor) retryFailedStops() {
 // and guarantees every engine gets its stop signal immediately. Each engine
 // still serializes on its own opMu, so this is safe.
 func (e *Executor) stopEngines(names []string) []string {
-	var (
-		wg       sync.WaitGroup
-		failedMu sync.Mutex
-		failed   []string
-	)
-	for _, n := range names {
+	var wg sync.WaitGroup
+	// Each goroutine writes only its own index, so no lock is needed.
+	retry := make([]bool, len(names))
+	for i, n := range names {
 		st, err := e.state(n)
 		if err != nil {
 			continue
 		}
 		wg.Add(1)
-		go func(st *engineState, n string) {
+		go func(i int, st *engineState, n string) {
 			defer wg.Done()
 			st.mu.Lock()
 			cancel := st.startCancel
@@ -839,15 +837,17 @@ func (e *Executor) stopEngines(names []string) []string {
 			defer st.opMu.Unlock()
 			if err := e.doStop(st, n); err != nil {
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
-				if retryable {
-					failedMu.Lock()
-					failed = append(failed, n)
-					failedMu.Unlock()
-				}
+				retry[i] = retryable
 			}
-		}(st, n)
+		}(i, st, n)
 	}
 	wg.Wait()
+	var failed []string
+	for i, n := range names {
+		if retry[i] {
+			failed = append(failed, n)
+		}
+	}
 	return failed
 }
 
