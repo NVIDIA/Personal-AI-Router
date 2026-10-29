@@ -15,9 +15,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -62,15 +64,11 @@ func TestStopAll_StopsEveryEngine(t *testing.T) {
 func adoptedEngineOnLivePort(t *testing.T, ex *Executor) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	t.Cleanup(func() { _ = ln.Close() })
 
 	st, err := ex.state("fake")
-	if err != nil {
-		t.Fatalf("state: %v", err)
-	}
+	require.NoError(t, err)
 	st.mu.Lock()
 	st.running = true
 	st.adopted = true
@@ -80,48 +78,45 @@ func adoptedEngineOnLivePort(t *testing.T, ex *Executor) {
 	st.mu.Unlock()
 }
 
-// TestStopAllSweepsOnce is the quit-latency guard. An ordinary quit asks for
-// StopAll twice — the broker's engine:prepare-shutdown during its teardown, and
-// the stdin-EOF path in Run once the broker closes stdin. An engine whose stop
-// can only be declined stays running, so each repeat sweep would re-pay
-// doStop's readiness probe for it.
-func TestStopAllSweepsOnce(t *testing.T) {
+// TestStopAll_RunsOneSweepPerProcess is the quit-latency guard. An ordinary quit
+// asks for StopAll twice — the broker's engine:prepare-shutdown during its
+// teardown, and the stdin-EOF path in Run once the broker closes stdin. An
+// engine whose stop can only be declined stays running, so each repeat sweep
+// would re-pay doStop's readiness probe for it.
+func TestStopAll_RunsOneSweepPerProcess(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	adoptedEngineOnLivePort(t, ex)
 
 	first := time.Now()
 	ex.StopAll()
 	sweep := time.Since(first)
-	if sweep < 500*time.Millisecond {
-		t.Fatalf("first sweep took %v; too fast to have probed, so this no longer covers the repeat", sweep)
-	}
+	require.GreaterOrEqual(t, sweep, 500*time.Millisecond,
+		"the first sweep was too fast to have probed, so this no longer covers the repeat")
 
 	// The engine is still there and still un-stoppable, so an unguarded sweep
 	// would spend the probe again.
 	repeat := time.Now()
 	ex.StopAll()
 	ex.StopAll()
-	if elapsed := time.Since(repeat); elapsed > sweep/2 {
-		t.Fatalf("two further StopAll calls took %v against a %v sweep; the sweep is repeating", elapsed, sweep)
-	}
+	assert.LessOrEqual(t, time.Since(repeat), sweep/2, "two further StopAll calls must not repeat the sweep")
 }
 
-// TestStopAllWaitsForTheSweepInFlight is the other half, and the reason this is
-// a joining guard rather than a plain skip. A caller that returned while the
+// TestStopAll_WaitsForTheSweepInFlight is the other half, and the reason this
+// is a joining guard rather than a plain skip. A caller that returned while the
 // first sweep was still running would report engines stopped before they were:
 // the broker would close stdin, engine-manager would exit, and the engines it
 // launched would be left running with nothing owning them.
-func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
+func TestStopAll_WaitsForTheSweepInFlight(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	adoptedEngineOnLivePort(t, ex)
 	st, err := ex.state("fake")
-	if err != nil {
-		t.Fatalf("state: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Holding the engine's opMu parks the sweep before doStop, so it cannot
 	// finish until the test lets it, however the goroutines are scheduled.
 	st.opMu.Lock()
+	releaseSweep := sync.OnceFunc(st.opMu.Unlock)
+	t.Cleanup(releaseSweep)
 	sweepDone := make(chan struct{})
 	go func() {
 		defer close(sweepDone)
@@ -130,34 +125,31 @@ func TestStopAllWaitsForTheSweepInFlight(t *testing.T) {
 
 	// Join behind the first caller only once it owns the sweep: only the sweep
 	// sets shuttingDown, and it does so before stopping anything.
-	deadline := time.Now().Add(5 * time.Second)
-	for !ex.shuttingDown.Load() {
-		if time.Now().After(deadline) {
-			st.opMu.Unlock()
-			t.Fatal("the first StopAll caller never started the sweep")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	require.Eventually(t, ex.shuttingDown.Load, 5*time.Second, 5*time.Millisecond,
+		"the first StopAll caller never started the sweep")
 	secondDone := make(chan struct{})
 	go func() {
 		defer close(secondDone)
 		ex.StopAll()
 	}()
 
-	select {
-	case <-secondDone:
-		st.opMu.Unlock()
-		t.Fatal("the second caller returned while the first sweep was still running")
-	case <-time.After(200 * time.Millisecond):
-	}
+	require.Never(t, func() bool { return isClosed(secondDone) }, 200*time.Millisecond, 10*time.Millisecond,
+		"the second caller returned while the first sweep was still running")
 
-	st.opMu.Unlock()
-	for name, done := range map[string]chan struct{}{"first": sweepDone, "second": secondDone} {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the %s StopAll caller never returned once the sweep was released", name)
-		}
+	releaseSweep()
+	require.Eventually(t, func() bool { return isClosed(sweepDone) }, 10*time.Second, 10*time.Millisecond,
+		"the first StopAll caller never returned once the sweep was released")
+	require.Eventually(t, func() bool { return isClosed(secondDone) }, 10*time.Second, 10*time.Millisecond,
+		"the second StopAll caller never returned once the sweep was released")
+}
+
+// isClosed reports whether done has been closed, without blocking.
+func isClosed(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -191,20 +183,16 @@ func commandDaemon(t *testing.T, startMarker, stopMarker string) int {
 		}
 	}()
 	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse daemon URL: %v", err)
-	}
+	require.NoError(t, err, "parse daemon URL")
 	port, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("parse daemon port: %v", err)
-	}
+	require.NoError(t, err, "parse daemon port")
 	return port
 }
 
-// TestStopAllRetriesAStopCommandThatFailed checks that a later StopAll caller
+// TestStopAll_RetriesAFailedStopCommand checks that a later StopAll caller
 // retries an engine whose stop command failed during the sweep, so a stop
 // command that errors once does not leave the engine running after quit.
-func TestStopAllRetriesAStopCommandThatFailed(t *testing.T) {
+func TestStopAll_RetriesAFailedStopCommand(t *testing.T) {
 	dir := t.TempDir()
 	startMarker := filepath.Join(dir, "started")
 	stopAttempt := filepath.Join(dir, "stop-attempted")
@@ -225,22 +213,18 @@ func TestStopAllRetriesAStopCommandThatFailed(t *testing.T) {
 			},
 		},
 	})
-	if err := ex.Start(context.Background(), "daemon"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), "daemon"))
 	ex.StopAll()
-	if st, err := ex.Status("daemon"); err != nil || !st.Running {
-		t.Fatalf("after the sweep, status = %+v, err = %v; want the failed stop to leave it running", st, err)
-	}
+	st, err := ex.Status("daemon")
+	require.NoError(t, err)
+	require.True(t, st.Running, "the failed stop must leave the engine running after the sweep")
 
 	ex.StopAll()
 
-	if !fileExists(stopMarker) {
-		t.Fatal("the later StopAll did not run the stop command again")
-	}
-	if st, err := ex.Status("daemon"); err != nil || st.Running {
-		t.Fatalf("after the retry, status = %+v, err = %v; want stopped", st, err)
-	}
+	assert.FileExists(t, stopMarker, "the later StopAll must run the stop command again")
+	st, err = ex.Status("daemon")
+	require.NoError(t, err)
+	assert.False(t, st.Running, "the retried stop must leave the engine stopped")
 }
 
 func TestStopAll_CancelsCommandStartWithoutError(t *testing.T) {
