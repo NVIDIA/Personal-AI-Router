@@ -240,19 +240,19 @@ func TestGraceFor_ClipsToRemainingBudget(t *testing.T) {
 // supervisor.Stop's own report threshold so a healthy-but-unhurried worker isn't
 // also being logged as stuck.
 type slowStopHandle struct {
-	takes time.Duration
-	done  chan struct{}
-	once  sync.Once
+	stopDuration time.Duration
+	done         chan struct{}
+	once         sync.Once
 }
 
-func newSlowStopHandle(takes time.Duration) *slowStopHandle {
-	return &slowStopHandle{takes: takes, done: make(chan struct{})}
+func newSlowStopHandle(stopDuration time.Duration) *slowStopHandle {
+	return &slowStopHandle{stopDuration: stopDuration, done: make(chan struct{})}
 }
 
 func (h *slowStopHandle) Done() <-chan struct{} { return h.done }
 func (h *slowStopHandle) Stop() {
 	h.once.Do(func() {
-		time.Sleep(h.takes)
+		time.Sleep(h.stopDuration)
 		close(h.done)
 	})
 }
@@ -296,11 +296,11 @@ func TestStopWorkersJoinsConcurrently(t *testing.T) {
 // any stop running concurrently with it is recorded first.
 type lateOrderedHandle struct {
 	*orderedLifecycleHandle
-	takes time.Duration
+	stopDuration time.Duration
 }
 
 func (h *lateOrderedHandle) Stop() {
-	time.Sleep(h.takes)
+	time.Sleep(h.stopDuration)
 	h.orderedLifecycleHandle.Stop()
 }
 
@@ -316,7 +316,7 @@ func TestStopWorkersStopsTheProxyFirst(t *testing.T) {
 	handles := map[string]supervisedHandle{
 		engines.ProxyComponent: &lateOrderedHandle{
 			orderedLifecycleHandle: newOrderedLifecycleHandle(engines.ProxyComponent, order),
-			takes:                  200 * time.Millisecond,
+			stopDuration:           200 * time.Millisecond,
 		},
 		engineManagerWorkerName: newOrderedLifecycleHandle(engineManagerWorkerName, order),
 	}
