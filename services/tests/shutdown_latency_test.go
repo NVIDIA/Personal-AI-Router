@@ -110,8 +110,7 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 //
 // This counts sweeps rather than milliseconds so it cannot flake on a loaded
 // CI machine. An engine whose stop can only be declined stays marked running,
-// so every repeat sweep would re-pay its readiness probe on the quit path. The
-// elapsed teardown is logged for reference.
+// so every repeat sweep would re-pay its readiness probe on the quit path.
 func TestQuitSweepsEnginesOnce(t *testing.T) {
 	configDir := t.TempDir()
 	port := startForeignEngine(t)
@@ -131,12 +130,8 @@ func TestQuitSweepsEnginesOnce(t *testing.T) {
 		t.Fatalf("engine:get-installed errored: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
 	}
 
-	started := time.Now()
 	sendReq(t, stdin, 99, "shutdown")
 	sweeps := quitAndCountStderr(t, msgs, stderrLines, foreignStopDeclinedRe, stdin, 99, 30*time.Second)
-	elapsed := time.Since(started)
-
-	t.Logf("teardown took %s with %d declined-stop sweep(s)", elapsed, sweeps)
 
 	if sweeps == 0 {
 		t.Fatal("engine-manager never declined a stop; the foreign engine was not adopted, so this exercised nothing")
