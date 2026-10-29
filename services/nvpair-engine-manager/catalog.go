@@ -29,8 +29,7 @@ import (
 // holds, but not what its upstream offers.
 //
 // It lives here rather than in a client so both the desktop app and the terminal
-// interface see the same catalogue. Each engine has exactly one curated source,
-// and they are deliberately different in kind:
+// interface see the same catalogue. Sources differ by engine:
 //
 //   - Ollama has no public library API, only a client-rendered web page. A live
 //     scrape was fragile and broke whenever the markup changed, so the list is a
@@ -39,10 +38,10 @@ import (
 //   - LM Studio's catalogue *is* a Hugging Face org (`lmstudio-community`), whose
 //     repo ids are exactly the strings `lms get` accepts. That has a real API, so
 //     it is fetched live and cached.
-//   - llama.cpp downloads any GGUF repo on Hugging Face as `repo:quantization`.
-//     The browse list is the GGUF repos of a few approved publishers, fetched
-//     live and cached; a query searches all of Hugging Face, each query cached
-//     on its own.
+//   - llama.cpp downloads GGUF repos from its selected Hugging Face or ModelScope
+//     source as `repo:quantization`.
+//     Hugging Face browses approved publishers; ModelScope browses popular
+//     repositories. Both fetch live, with each source and search cached separately.
 
 // catalogSourceKind distinguishes how an engine's catalogue is obtained.
 type catalogSourceKind int
@@ -244,7 +243,9 @@ type catalogService struct {
 	// baseURL overrides the listing endpoint in tests. Empty means the real one;
 	// the caching and coalescing around the fetch is the part worth testing, and
 	// it cannot be exercised against the live API.
-	baseURL string
+	baseURL            string
+	modelScopeEndpoint string
+	llamaSource        func() (string, error)
 }
 
 // listingCache holds one fetched catalogue. It serves from memory while the
@@ -325,6 +326,21 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		query, err := catalogQuery(query)
 		if err != nil {
 			return CatalogResult{}, err
+		}
+		if c.llamaSource != nil {
+			source, err := c.llamaSource()
+			if err != nil {
+				return CatalogResult{}, err
+			}
+			if source == "modelscope" {
+				models, fetchedAt, err := c.catalogSearch("modelscope:"+strings.ToLower(query), func(ctx context.Context) ([]CatalogModel, error) {
+					return c.fetchModelScope(ctx, query)
+				}).get(ctx)
+				if err != nil {
+					return CatalogResult{}, err
+				}
+				return CatalogResult{Models: models, Source: modelScopeURL + "/models", Platform: platform, Arch: arch, FetchedAt: fetchedAt.UTC().Format(time.RFC3339), Searchable: true, Query: query}, nil
+			}
 		}
 		models, fetchedAt, err := c.llamaCPPCatalog(ctx, query)
 		if err != nil {
@@ -579,7 +595,16 @@ func (c *catalogService) llamaCPPCatalog(ctx context.Context, query string) ([]C
 // llamaCPPSearch is the cache for one query, created on first use. Queries
 // differing only in case share one.
 func (c *catalogService) llamaCPPSearch(query string) *listingCache {
-	key := strings.ToLower(query)
+	return c.catalogSearch("huggingface:"+strings.ToLower(query), func(ctx context.Context) ([]CatalogModel, error) {
+		rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
+		if err != nil {
+			return nil, err
+		}
+		return normalizeLlamaCPPRows(rows), nil
+	})
+}
+
+func (c *catalogService) catalogSearch(key string, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
 	search, ok := c.llamaSearches[key]
@@ -587,13 +612,7 @@ func (c *catalogService) llamaCPPSearch(query string) *listingCache {
 		search = &listingCache{
 			label:   "llama.cpp search",
 			emptyOK: true,
-			fetch: func(ctx context.Context) ([]CatalogModel, error) {
-				rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
-				if err != nil {
-					return nil, err
-				}
-				return normalizeLlamaCPPRows(rows), nil
-			},
+			fetch:   fetch,
 		}
 		c.llamaSearches[key] = search
 	}

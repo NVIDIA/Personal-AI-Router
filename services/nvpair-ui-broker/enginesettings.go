@@ -201,7 +201,7 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 	if !ready && record != nil {
 		configuredProxy = record.Snapshot.Settings.ProxyPort
 	}
-	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText}
+	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText, ModelSource: launch.ModelSource}
 	if record == nil {
 		record = &engineSettingsRecord{Snapshot: settings.Snapshot{NodeID: b.nodeID, Engine: engine, Revision: 1, AppliedRevision: 1, Epoch: b.engineSettingsEpoch, Phase: "idle", Settings: current}, Receipts: make(map[string]settingsReceipt)}
 		b.engineSettings[engine] = record

@@ -19,6 +19,21 @@ vendor options can fail at startup.
 For installing, starting and updating engines, refer to
 [Managing engines](engine-lifecycle.mdx).
 
+## Model Download Source
+
+For llama.cpp, choose **Hugging Face** (the default) or **ModelScope** in
+**Model download source**, then select **Apply**. A running engine asks to restart
+before changing sources; a stopped engine stays stopped. The choice is saved
+on the device running the engine and also selects the source used by the model
+browser and search. Public GGUF repositories use the same `owner/repository:quant`
+names, with `Q4_K_M` offered in the browser. Repository availability can differ
+between sources. Downloaded files stay in llama.cpp's existing cache.
+
+PAIR manages llama.cpp's `MODEL_ENDPOINT` from this selection. Set the source
+with the dropdown rather than an environment assignment. ModelScope downloads
+do not forward Hugging Face credentials; private or gated ModelScope models are
+not supported.
+
 ## Argument Notation
 
 The text contains engine arguments and optional leading environment assignments.

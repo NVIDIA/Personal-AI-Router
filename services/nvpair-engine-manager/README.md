@@ -22,6 +22,13 @@ The `llamacpp` manifest runs `llama-server` in router mode on loopback port
 uses the router's native `DELETE /models` cache operation and does not restart
 the router. `LLAMA_CACHE` points at the manifest's `models_dir`, `~/.llamacpp`,
 which no removal this service performs will delete.
+The llama.cpp `modelSource` setting selects Hugging Face (default) or ModelScope
+for both its catalogue and downloads. The manager translates ModelScope metadata
+through a loopback-only adapter and sets the router's `MODEL_ENDPOINT`; llama.cpp
+still owns GGUF selection, caching, progress and cancellation. ModelScope serves
+public, ungated models without forwarding Hugging Face credentials.
+Repositories that reach ModelScope's 3,000-entry file-list limit are excluded
+rather than offered with incomplete GGUF shard metadata.
 Readiness requires `/props` to report `role:"router"`, so model-selection
 arguments that switch `llama-server` to single-model mode and incompatible
 listeners already occupying the port are rejected rather than adopted.

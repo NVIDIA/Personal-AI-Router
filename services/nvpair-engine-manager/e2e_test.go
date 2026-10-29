@@ -366,19 +366,21 @@ func waitNotify(t *testing.T, frames <-chan frame, method string, timeout time.D
 // servicing unrelated messages; literal settings survive a fresh worker.
 func TestEngineManager_RelaysSettingsRebindAndReloadsWorker(t *testing.T) {
 	cfg, home := t.TempDir(), t.TempDir()
-	fixture := settingsExecutor(t, false)
-	manifest, _ := fixture.reg.Get("fake")
+	engine := "llamacpp"
+	port, err := freePort()
+	require.NoError(t, err)
 	for _, dir := range []string{filepath.Join(cfg, "Nvidia Corporation", "Personal AI Router", "engines"), filepath.Join(home, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines")} {
-		writeE2EManifest(t, dir, manifest)
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		require.NoError(t, writeJSONAtomic(filepath.Join(dir, engine+".json"), map[string]any{"engine": engine, "runtime": map[string]int{"port": port}}))
 	}
 	manager := startE2EManager(t, cfg, home)
 	send(t, manager.stdin, 1, "engine:get-installed", nil)
 	waitResult(t, manager.frames, "1", 5*time.Second)
-	send(t, manager.stdin, 2, "engine:get-launch", map[string]string{"engine": "fake"})
+	send(t, manager.stdin, 2, "engine:get-launch", map[string]string{"engine": engine})
 	var launch settings.LaunchState
 	require.NoError(t, json.Unmarshal(waitResult(t, manager.frames, "2", 5*time.Second), &launch))
-	desired := settings.Config{ServerPort: launch.ServerPort, ProxyPort: 54301, LaunchText: `OLLAMA_ORIGINS="http://localhost" PAIR_TEST_LITERAL="$HOME {port}" ` + launch.LaunchText}
-	send(t, manager.stdin, 3, "engine:configure-launch", settings.Configure{Engine: "fake", Settings: desired, OperationID: "operation"})
+	desired := settings.Config{ServerPort: launch.ServerPort, ProxyPort: 54301, LaunchText: `OLLAMA_ORIGINS="http://localhost" PAIR_TEST_LITERAL="$HOME {port}" ` + launch.LaunchText, ModelSource: "modelscope"}
+	send(t, manager.stdin, 3, "engine:configure-launch", settings.Configure{Engine: engine, Settings: desired, OperationID: "operation"})
 	var relay settings.Relay
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
@@ -386,6 +388,9 @@ func TestEngineManager_RelaysSettingsRebindAndReloadsWorker(t *testing.T) {
 	for waiting {
 		select {
 		case f := <-manager.frames:
+			if string(f.ID) == "3" {
+				require.Contains(t, []string{"", "null"}, string(f.Error), "configure failed before rebind")
+			}
 			if f.Method == "engine:settings-request" {
 				require.NoError(t, json.Unmarshal(f.Params, &relay))
 				waiting = false
@@ -397,18 +402,21 @@ func TestEngineManager_RelaysSettingsRebindAndReloadsWorker(t *testing.T) {
 	require.Equal(t, "rebind", relay.Method, "bad relay (%v)", relay)
 	require.Equal(t, "operation", relay.Request.RequestID, "bad relay (%v)", relay)
 	require.Equal(t, 54301, relay.Request.Settings.ProxyPort, "bad relay (%v)", relay)
-	send(t, manager.stdin, 4, "engine:describe", map[string]string{"engine": "fake"})
+	require.Equal(t, "modelscope", relay.Request.Settings.ModelSource)
+	send(t, manager.stdin, 4, "engine:describe", map[string]string{"engine": engine})
 	waitResult(t, manager.frames, "4", 5*time.Second)
 	notify(t, manager.stdin, "engine:settings-reply", settingsReply{ID: relay.ID, Result: json.RawMessage(`{}`)})
 	require.NoError(t, json.Unmarshal(waitResult(t, manager.frames, "3", 5*time.Second), &launch), "configure result")
 	require.False(t, launch.Running, "configure result (%v)", launch)
+	require.Equal(t, "modelscope", launch.ModelSource)
 	saved := launch.LaunchText
 	manager.stop(t)
 	restored := startE2EManager(t, cfg, home)
 	send(t, restored.stdin, 1, "engine:get-installed", nil)
 	waitResult(t, restored.frames, "1", 5*time.Second)
-	send(t, restored.stdin, 2, "engine:get-launch", map[string]string{"engine": "fake"})
+	send(t, restored.stdin, 2, "engine:get-launch", map[string]string{"engine": engine})
 	require.NoError(t, json.Unmarshal(waitResult(t, restored.frames, "2", 5*time.Second), &launch), "worker reload lost literal settings")
 	require.Equal(t, saved, launch.LaunchText, "worker reload lost literal settings (%v)", launch)
+	require.Equal(t, "modelscope", launch.ModelSource)
 	restored.stop(t)
 }

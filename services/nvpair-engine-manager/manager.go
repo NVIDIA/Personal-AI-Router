@@ -98,6 +98,15 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		cancel:  func() {},
 	}
 	m.settingsRelay.send = codec.Notify
+	m.catalog.llamaSource = func() (string, error) {
+		state, err := exec.state("llamacpp")
+		if err != nil {
+			return "", err
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return modelSource(state.plat.Runtime), nil
+	}
 	exec.settingsParent = m.settingsRelay.call
 	return m
 }

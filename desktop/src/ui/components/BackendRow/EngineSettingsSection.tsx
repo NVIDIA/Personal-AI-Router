@@ -10,6 +10,7 @@ import {
     ModalDialog,
     ModalHeading,
     ModalRoot,
+    Select,
     Stack,
     Text,
     TextArea,
@@ -36,14 +37,19 @@ interface Draft {
     serverPort: string
     proxyPort: string
     launchText: string
+    modelSource: NonNullable<EngineSettingsConfig['modelSource']>
 }
 const asDraft = (config: EngineSettingsConfig): Draft => ({
     ...config,
     serverPort: String(config.serverPort),
-    proxyPort: String(config.proxyPort)
+    proxyPort: String(config.proxyPort),
+    modelSource: config.modelSource ?? 'huggingface'
 })
 const sameDraft = (a: Draft, b: Draft): boolean =>
-    a.serverPort === b.serverPort && a.proxyPort === b.proxyPort && a.launchText === b.launchText
+    a.serverPort === b.serverPort &&
+    a.proxyPort === b.proxyPort &&
+    a.launchText === b.launchText &&
+    a.modelSource === b.modelSource
 
 export function EngineSettingsSection({
     nodeId,
@@ -61,7 +67,12 @@ export function EngineSettingsSection({
     const connected = useConnectionStore(state => state.connected)
     const isLocalNode = useConnectionStore(state => state.selfId === nodeId)
     const [base, setBase] = useState<EngineSettingsSnapshot>()
-    const [draft, setDraft] = useState<Draft>({ serverPort: '', proxyPort: '', launchText: '' })
+    const [draft, setDraft] = useState<Draft>({
+        serverPort: '',
+        proxyPort: '',
+        launchText: '',
+        modelSource: 'huggingface'
+    })
     const [errorDialog, setErrorDialog] = useState('')
     const [confirmation, setConfirmation] = useState<EngineSettingsRequest>()
     const [checking, setChecking] = useState(false)
@@ -109,7 +120,7 @@ export function EngineSettingsSection({
         }
     }, [snapshot, base, dirty])
 
-    function change(field: keyof Draft, value: string): void {
+    function change<K extends keyof Draft>(field: K, value: Draft[K]): void {
         generation.current++
         if (field === 'serverPort') serverPortEdited.current = true
         setDraft(current => ({ ...current, [field]: value }))
@@ -142,7 +153,12 @@ export function EngineSettingsSection({
         const request: EngineSettingsRequest = {
             ...target,
             expectedRevision: base.revision,
-            settings: { serverPort, proxyPort, launchText: draft.launchText },
+            settings: {
+                serverPort,
+                proxyPort,
+                launchText: draft.launchText,
+                ...(engineType === 'llama-cpp' ? { modelSource: draft.modelSource } : {})
+            },
             resolution: useServerPort ? 'server' : 'launch'
         }
         try {
@@ -254,6 +270,24 @@ export function EngineSettingsSection({
                         />
                     </FormField>
                 </Flex>
+                {engineType === 'llama-cpp' && (
+                    <FormField slotLabel="Model download source">
+                        <Select
+                            size="small"
+                            aria-label="Model download source"
+                            value={draft.modelSource}
+                            items={[
+                                { value: 'huggingface', children: 'Hugging Face' },
+                                { value: 'modelscope', children: 'ModelScope' }
+                            ]}
+                            onValueChange={value => {
+                                if (value === 'huggingface' || value === 'modelscope')
+                                    change('modelSource', value)
+                            }}
+                            disabled={locked || snapshot?.settings.modelSource === undefined}
+                        />
+                    </FormField>
+                )}
                 <FormField slotLabel="Engine arguments">
                     <TextArea
                         size="small"
@@ -340,7 +374,7 @@ export function EngineSettingsSection({
                 }}
                 title="Restart engine?"
                 confirmLabel="Restart"
-                message="Applying these arguments will restart your engine, continue?"
+                message="Applying these settings will restart your engine, continue?"
                 onConfirm={() => {
                     if (confirmation) void apply(confirmation)
                 }}

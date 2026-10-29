@@ -110,7 +110,9 @@ is validated again before execution, including settings saved by earlier version
 
 The editor saves literal extra arguments in
 host-platform `runtime.launch_args` and explicit environment assignments in
-`runtime.launch_env`, after trusted template expansion. Empty arrays clear the
+`runtime.launch_env`, after trusted template expansion. llama.cpp's selected
+download provider is saved in host-platform `runtime.model_source` (`huggingface`
+or `modelscope`). Empty arrays clear the
 saved arguments or environment assignments. See [LAUNCH_TEXT.md](LAUNCH_TEXT.md) for validation
 and [the broker protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md) for application
 and recovery. Editing `args`/`start` directly remains trusted manifest authoring.

@@ -240,6 +240,24 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
+	if engine == "llamacpp" {
+		endpoint := "https://huggingface.co"
+		if modelSource(rt) == "modelscope" {
+			endpoint, err = e.modelScopeEndpoint()
+			if err != nil {
+				return err
+			}
+		}
+		if launch.Env == nil {
+			launch.Env = map[string]string{}
+		}
+		for key := range launch.Env {
+			if environmentKey(key) == environmentKey("MODEL_ENDPOINT") {
+				delete(launch.Env, key)
+			}
+		}
+		launch.Env["MODEL_ENDPOINT"] = endpoint
+	}
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()
@@ -789,6 +807,11 @@ func (e *Executor) StopAll() {
 		}(st, n)
 	}
 	wg.Wait()
+	e.mu.Lock()
+	if e.modelScope != nil {
+		_ = e.modelScope.Close()
+	}
+	e.mu.Unlock()
 }
 
 func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string, port int, gen int64) {

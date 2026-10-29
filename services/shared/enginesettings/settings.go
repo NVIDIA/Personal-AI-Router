@@ -9,7 +9,8 @@ type Config struct {
 	ProxyPort  int `json:"proxyPort"`
 	// Arguments and leading environment assignments; excludes the executable
 	// and manifest-owned startup subcommand. Snapshot.Format identifies syntax.
-	LaunchText string `json:"launchText"`
+	LaunchText  string `json:"launchText"`
+	ModelSource string `json:"modelSource,omitempty"`
 }
 
 type Request struct {
@@ -70,6 +71,7 @@ type LaunchState struct {
 	ServerPort    int    `json:"serverPort"`
 	EffectivePort int    `json:"effectivePort"`
 	LaunchText    string `json:"launchText"`
+	ModelSource   string `json:"modelSource,omitempty"`
 	Running       bool   `json:"running"`
 	Adopted       bool   `json:"adopted"`
 	Editable      bool   `json:"editable"`

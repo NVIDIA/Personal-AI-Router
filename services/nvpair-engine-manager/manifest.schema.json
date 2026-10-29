@@ -23,6 +23,9 @@
     "runtime": {
       "type": "object",
       "properties": {
+        "model_source": {
+          "enum": ["huggingface", "modelscope"]
+        },
         "editable_launch": {
           "$ref": "#/definitions/editableLaunch"
         }

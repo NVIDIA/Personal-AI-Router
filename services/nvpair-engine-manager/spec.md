@@ -67,6 +67,21 @@ extensibility story for an open-source product.
 - **Edge case — checksum mismatch**: install fails before `run`, is reported, and never executes an unverified payload.
 - **Edge case — readiness timeout / crash**: failed readiness returns to Stopped; a later crash flips health and is reported.
 
+### llama.cpp model sources
+
+The node-owned engine settings `modelSource` field selects `huggingface` (default)
+or `modelscope` for llama.cpp catalogue queries and downloads. It is saved as
+host-platform `runtime.model_source` and included in launch snapshots. Changing
+the source uses the existing preview/apply, revision, restart and paired-device
+settings protocol; stopped engines stay stopped. Other engines omit the field.
+
+ModelScope's public GGUF catalogue is normalized through the same quantization
+and generative-model filters as Hugging Face. A loopback-only adapter translates
+ModelScope metadata and streams file requests without forwarding Hugging Face
+credentials. The pinned llama.cpp router remains responsible for GGUF selection,
+cache layout, split files, progress and cancellation. Its `MODEL_ENDPOINT` is
+managed from the selected source; no TypeScript download implementation is used.
+
 ## 4. Open Questions / Risks
 - **`engine:*` method stability**: the Broker forwards the namespace verbatim; evolve it additively and preserve `engine:get-installed` as the installed-engine query.
 - **`severity` / `action` enums**: current wire values are `info|warning|error` and `dismiss|retry|none`; coordinate any future shared-enum expansion without changing existing values.
