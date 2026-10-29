@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // removalCall is one request removalBroker received.
@@ -60,9 +61,7 @@ func removalBroker(t *testing.T, fail string) (*rpc.Client, <-chan removalCall) 
 // reply back into the view until it reports an outcome.
 func confirmRemoval(t *testing.T, v *nodesView) {
 	t.Helper()
-	if cmd := v.removeSelected(); cmd != nil {
-		t.Fatal("removal was dispatched without confirmation")
-	}
+	require.Nil(t, v.removeSelected(), "removal was dispatched without confirmation")
 	cmd := v.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	for cmd != nil {
 		msg := cmd()
@@ -72,7 +71,7 @@ func confirmRemoval(t *testing.T, v *nodesView) {
 		}
 		cmd = v.Update(msg)
 	}
-	t.Fatal("the removal ended without reporting an outcome")
+	require.FailNow(t, "the removal ended without reporting an outcome")
 }
 
 // wantCall checks the next request the broker received carries field = value.
@@ -80,18 +79,12 @@ func wantCall(t *testing.T, calls <-chan removalCall, method, field, value strin
 	t.Helper()
 	select {
 	case c := <-calls:
-		if c.method != method {
-			t.Fatalf("broker received %s, want %s", c.method, method)
-		}
+		require.Equal(t, method, c.method)
 		var params map[string]string
-		if err := json.Unmarshal(c.params, &params); err != nil {
-			t.Fatalf("decode %s params: %v", method, err)
-		}
-		if params[field] != value {
-			t.Errorf("%s %s = %q, want %q", method, field, params[field], value)
-		}
+		require.NoError(t, json.Unmarshal(c.params, &params), "decode %s params", method)
+		assert.Equal(t, value, params[field], "%s %s", method, field)
 	case <-time.After(2 * time.Second):
-		t.Fatalf("broker never received %s", method)
+		require.FailNow(t, "broker never received "+method)
 	}
 }
 
@@ -108,10 +101,10 @@ func peerAddedByAddress(client *rpc.Client) *nodesView {
 	return v
 }
 
-// TestRemoveMemberForgetsItsManualEntry checks un-pairing a peer that was added
+// TestRemoveMember_ForgetsItsManualEntry checks un-pairing a peer that was added
 // by address forgets that address too. The broker keeps manual entries on disk
 // and re-adds them when it starts, so one left behind brought the peer back.
-func TestRemoveMemberForgetsItsManualEntry(t *testing.T) {
+func TestRemoveMember_ForgetsItsManualEntry(t *testing.T) {
 	client, calls := removalBroker(t, "")
 	v := peerAddedByAddress(client)
 
@@ -122,9 +115,9 @@ func TestRemoveMemberForgetsItsManualEntry(t *testing.T) {
 	assert.Contains(t, v.status.render(), "remove peer ok", "the removal is reported")
 }
 
-// TestRemoveMemberForgetsEveryManualEntry checks a peer added twice, by
+// TestRemoveMember_ForgetsEveryManualEntry checks a peer added twice, by
 // hostname and by IP, has both entries forgotten when it is un-paired.
-func TestRemoveMemberForgetsEveryManualEntry(t *testing.T) {
+func TestRemoveMember_ForgetsEveryManualEntry(t *testing.T) {
 	client, calls := removalBroker(t, "")
 	v := peerAddedByAddress(client)
 	v.feeds.manual = append(v.feeds.manual,
@@ -139,20 +132,16 @@ func TestRemoveMemberForgetsEveryManualEntry(t *testing.T) {
 	assert.Contains(t, v.status.render(), "remove peer ok", "the removal is reported")
 }
 
-// TestFailedRemoveMemberKeepsItsManualEntry checks a peer the cluster manager
+// TestRemoveMember_KeepsTheManualEntryWhenUnpairingFails checks a peer the cluster manager
 // would not un-pair keeps the address it was added by: it is still a member,
 // and that address is how it is reached.
-func TestFailedRemoveMemberKeepsItsManualEntry(t *testing.T) {
+func TestRemoveMember_KeepsTheManualEntryWhenUnpairingFails(t *testing.T) {
 	client, calls := removalBroker(t, "nodes:remove")
 	v := peerAddedByAddress(client)
 
 	confirmRemoval(t, v)
 
 	wantCall(t, calls, "nodes:remove", "nodeUuid", "peer")
-	select {
-	case c := <-calls:
-		t.Errorf("a failed un-pairing went on to call %s", c.method)
-	default:
-	}
+	assert.Empty(t, calls, "a failed un-pairing must not go on to forget the manual entry")
 	assert.Contains(t, v.status.render(), "remove peer failed", "the failure is reported")
 }
