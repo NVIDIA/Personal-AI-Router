@@ -191,9 +191,9 @@ inference engine or the node that serves the request. PAIR calls that local
 address an endpoint.
 
 Select **Endpoints** in the top toolbar to open the **API endpoints** window. It
-lists one copyable `http://127.0.0.1:<port>` URL per engine. Copy the one for the
-engine you prepared. If it says **No engines are running**, return to step 4 and
-start an engine.
+lists one copyable `http://127.0.0.1:<port>/v1` URL per engine, ready to use as an
+OpenAI-compatible base URL. Copy the one for the engine you prepared. If it says
+**No engines are running**, return to step 4 and start an engine.
 
 ![The API endpoints window listing a copyable local URL for each running engine.](assets/onboarding/getting-started/08-api-endpoints.png)
 
@@ -250,7 +250,7 @@ same way, and neither one changes which node serves the request.
 ### OpenAI-Style Request (Works With Every Engine)
 
 ```bash
-curl <PAIR_BASE_URL>/v1/chat/completions \
+curl <PAIR_BASE_URL>/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "<MODEL_NAME>",
@@ -269,8 +269,11 @@ Sending this to the LM Studio or llama.cpp endpoint fails, because those engines
 do not implement Ollama's API. The `-N` flag tells `curl` not to buffer, so it
 displays the response stream as it is generated.
 
+For this request, replace `<PAIR_PROXY_URL>` with the copied endpoint after
+removing its trailing `/v1`, for example `http://127.0.0.1:11434`.
+
 ```bash
-curl -N <PAIR_BASE_URL>/api/chat \
+curl -N <PAIR_PROXY_URL>/api/chat \
   -H "Content-Type: application/json" \
   -d '{
     "model": "<MODEL_NAME>",
@@ -444,9 +447,10 @@ Any client that lets you set a base URL and a model name can use PAIR — Hermes
 for example. Point the base URL at the endpoint you copied in step 5, and use a
 model you prepared in step 4.
 
-What that base URL serves depends on the engine behind it:
+The available paths depend on the engine behind the proxy. Paths below are
+relative to the proxy URL, before the `/v1` suffix:
 
-| Endpoint | Default base URL | Paths it serves |
+| Endpoint | Default proxy URL | Paths it serves |
 | --- | --- | --- |
 | Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — plus the OpenAI-compatible and Anthropic APIs listed below|
 | LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible and Anthropic APIs listed below |
@@ -463,13 +467,12 @@ All three endpoints expose these OpenAI-compatible paths:
 Ollama and LM Studio support the following Anthropic APIs:
 - `POST /v1/messages` - [Messages](https://platform.claude.com/docs/en/api/messages/create)
 
-The distinction matters when you fill in an application's settings. A client
-written against the OpenAI API usually wants the `/v1` included, as in
-`http://127.0.0.1:11434/v1`, and appends the rest of the path itself. A client
-written against Ollama wants the host on its own,
-`http://127.0.0.1:11434`. Either way, copy the current value from **Endpoints**
-rather than typing a port from memory, because a port you changed moves the
-endpoint with it.
+**Endpoints** includes `/v1` in the displayed and copied URL, so you can paste it
+directly into Hermes or another client that expects an OpenAI-compatible base
+URL, such as `http://127.0.0.1:11434/v1`. The client appends the rest of the path.
+For a client using Ollama's native API, remove the trailing `/v1` and use
+`http://127.0.0.1:11434`. Copy the current value from **Endpoints** rather than
+typing a port from memory, because a port you changed moves the endpoint with it.
 
 For what PAIR supports, operating systems, engines, and client applications,
 refer to [What is supported](../README.md#what-is-supported) in the README.
@@ -526,7 +529,7 @@ Ask the endpoint what it can serve. This proves the proxy is listening and routi
 without depending on any particular model working:
 
 ```bash
-curl <PAIR_BASE_URL>/v1/models
+curl <PAIR_BASE_URL>/models
 ```
 
 The reply is the cluster's inventory, not only this machine's, which is also a
