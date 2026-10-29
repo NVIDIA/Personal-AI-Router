@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -60,13 +61,19 @@ func TestLoopbackAlias_UsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 
 	disc := NewDiscovery()
 	disc.AddManual(nodeForModel(t, "upstream", upstream.URL, "test"))
-	primaryPort := freeTCPPort(t)
+	// Hold the primary listener while choosing the alias so their ports differ.
+	primary, err := net.Listen("tcp", ":0")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := primary.Close(); !errors.Is(err, net.ErrClosed) {
+			assert.NoError(t, err)
+		}
+	})
+	primaryPort := primary.Addr().(*net.TCPAddr).Port
 	aliasPort := freeTCPPort(t)
 	p := newTestProxy(ollamaOnlyProfile(t), NewCodec(rec), disc, primaryPort)
 	require.NoError(t, p.soleFacade().setLoopbackAlias(fmt.Sprintf("127.0.0.1:%d", aliasPort)))
 	p.soleFacade().bindLoopbackAlias()
-	primary, err := net.Listen("tcp", fmt.Sprintf(":%d", primaryPort))
-	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	p.soleFacade().serveHTTP(ctx, primary)
