@@ -788,10 +788,7 @@ func (e *Executor) stopAllNow() {
 		names = append(names, n)
 	}
 	e.mu.Unlock()
-	failed := e.stopEngines(names)
-	e.retryMu.Lock()
-	e.failedStops = failed
-	e.retryMu.Unlock()
+	e.failedStops = e.stopEngines(names)
 }
 
 // retryFailedStops tries again to stop the engines whose stop failed in the

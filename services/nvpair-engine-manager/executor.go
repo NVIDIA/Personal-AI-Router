@@ -130,8 +130,10 @@ type Executor struct {
 	// stopAllOnce collapses the shutdown entry points into a single sweep.
 	// See StopAll.
 	stopAllOnce sync.Once
-	// retryMu guards failedStops: the engines whose stop failed through a
-	// process handle or a stop command, which later StopAll callers retry.
+	// failedStops holds the engines whose stop failed through a process handle
+	// or a stop command, which later StopAll callers retry. The sweep writes it
+	// without retryMu, since stopAllOnce returns to no caller before the sweep
+	// finishes; retryMu serializes the retries that follow.
 	retryMu     sync.Mutex
 	failedStops []string
 	mu          sync.Mutex
