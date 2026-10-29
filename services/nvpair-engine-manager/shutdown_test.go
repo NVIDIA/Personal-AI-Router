@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -175,9 +174,7 @@ func commandDaemon(t *testing.T, startMarker, stopMarker string) int {
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
-	var closeOnce sync.Once
-	closeServer := func() { closeOnce.Do(srv.Close) }
-	t.Cleanup(closeServer)
+	t.Cleanup(srv.Close)
 	stopWatch := make(chan struct{})
 	t.Cleanup(func() { close(stopWatch) })
 	go func() {
@@ -187,7 +184,7 @@ func commandDaemon(t *testing.T, startMarker, stopMarker string) int {
 				return
 			case <-time.After(50 * time.Millisecond):
 				if fileExists(stopMarker) {
-					closeServer()
+					srv.Close()
 					return
 				}
 			}
