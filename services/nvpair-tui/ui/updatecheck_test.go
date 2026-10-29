@@ -6,11 +6,12 @@ package ui
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // withReleaseVersion stamps a version for one test and restores it after.
@@ -21,7 +22,7 @@ func withReleaseVersion(t *testing.T, v string) {
 	t.Cleanup(func() { ReleaseVersion = prev })
 }
 
-func TestNewerVersionComparesReleaseNumbers(t *testing.T) {
+func TestNewerVersion_ComparesReleaseNumbers(t *testing.T) {
 	cases := []struct {
 		running, latest string
 		want            bool
@@ -54,84 +55,62 @@ func TestNewerVersionComparesReleaseNumbers(t *testing.T) {
 		{"1.2.0", "1.2", false, "shorter latest version"},
 	}
 	for _, tc := range cases {
-		if got := newerVersion(tc.running, tc.latest); got != tc.want {
-			t.Errorf("newerVersion(%q, %q) = %v, want %v (%s)",
-				tc.running, tc.latest, got, tc.want, tc.why)
-		}
+		assert.Equal(t, tc.want, newerVersion(tc.running, tc.latest), "%s: running %q, latest %q", tc.why, tc.running, tc.latest)
 	}
 }
 
-func TestUpdateCheckIsDisabledByEnvironment(t *testing.T) {
+func TestUpdateCheck_IsDisabledByEnvironment(t *testing.T) {
 	// A server reaching the internet unasked is a real objection, so the opt-out
 	// has to actually stop the request being built at all.
 	withReleaseVersion(t, "0.91.7")
-	if !updateCheckEnabled() {
-		t.Fatal("check is disabled with nothing set")
-	}
+	require.True(t, updateCheckEnabled(), "check is disabled with nothing set")
 
 	t.Setenv(disableUpdateCheckEnv, "1")
-	if updateCheckEnabled() {
-		t.Error("check still enabled with the opt-out set")
-	}
-	if checkUpdateCmd() != nil {
-		t.Error("a command was still issued with the opt-out set")
-	}
-	if updateCheckTickCmd() != nil {
-		t.Error("the check was still re-armed with the opt-out set")
-	}
+	assert.False(t, updateCheckEnabled(), "check still enabled with the opt-out set")
+	assert.Nil(t, checkUpdateCmd(), "a command must not be issued with the opt-out set")
+	assert.Nil(t, updateCheckTickCmd(), "the check must not be re-armed with the opt-out set")
 }
 
-func TestUpdateCheckIsSkippedForAnUnstampedBuild(t *testing.T) {
+func TestUpdateCheck_IsSkippedForAnUnstampedBuild(t *testing.T) {
 	// Running from source has nothing to compare, and a developer does not want
 	// to be told to go download a release.
 	withReleaseVersion(t, "dev")
-	if updateCheckEnabled() {
-		t.Error("check enabled for an unstamped build")
-	}
-	if checkUpdateCmd() != nil {
-		t.Error("a command was issued for an unstamped build")
-	}
+	assert.False(t, updateCheckEnabled(), "check enabled for an unstamped build")
+	assert.Nil(t, checkUpdateCmd(), "a command must not be issued for an unstamped build")
 }
 
-func TestFetchLatestReleaseReadsTheTag(t *testing.T) {
+func TestFetchLatestRelease_ReadsTheTag(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Accept"); got != "application/vnd.github+json" {
-			t.Errorf("Accept header = %q", got)
-		}
+		assert.Equal(t, "application/vnd.github+json", r.Header.Get("Accept"))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tag_name":"v0.92.0","draft":false,"prerelease":false}`))
+		_, err := w.Write([]byte(`{"tag_name":"v0.92.0","draft":false,"prerelease":false}`))
+		assert.NoError(t, err)
 	}))
 	defer srv.Close()
 
 	got, err := fetchLatestRelease(srv.URL)
-	if err != nil {
-		t.Fatalf("fetchLatestRelease: %v", err)
-	}
-	if got != "0.92.0" {
-		t.Errorf("got %q, want the tag without its v", got)
-	}
+	require.NoError(t, err, "fetchLatestRelease")
+	assert.Equal(t, "0.92.0", got, "tag should omit its v")
 }
 
-func TestFetchLatestReleaseIgnoresDraftsAndPrereleases(t *testing.T) {
-	for _, body := range []string{
-		`{"tag_name":"v0.92.0","draft":true,"prerelease":false}`,
-		`{"tag_name":"v0.92.0","draft":false,"prerelease":true}`,
-	} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(body))
-		}))
-		got, err := fetchLatestRelease(srv.URL)
-		srv.Close()
-		if err != nil {
-			t.Fatalf("fetchLatestRelease: %v", err)
-		}
-		if got != "" {
-			t.Errorf("body %s offered %q; drafts and prereleases must be ignored", body, got)
-		}
+func TestFetchLatestRelease_IgnoresDraftsAndPrereleases(t *testing.T) {
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, err := w.Write([]byte(body))
+				assert.NoError(t, err)
+			}))
+			defer srv.Close()
+			got, err := fetchLatestRelease(srv.URL)
+			require.NoError(t, err, "fetchLatestRelease")
+			assert.Empty(t, got)
+		})
 	}
+	test("draft", `{"tag_name":"v0.92.0","draft":true,"prerelease":false}`)
+	test("prerelease", `{"tag_name":"v0.92.0","draft":false,"prerelease":true}`)
 }
 
-func TestFetchLatestReleaseHandlesNoReleases(t *testing.T) {
+func TestFetchLatestRelease_HandlesNoReleases(t *testing.T) {
 	// A repository with nothing published answers 404. There is nothing newer,
 	// and nothing to report.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -139,18 +118,18 @@ func TestFetchLatestReleaseHandlesNoReleases(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := fetchLatestRelease(srv.URL); err == nil {
-		t.Error("a 404 was treated as a successful answer")
-	}
+	_, err := fetchLatestRelease(srv.URL)
+	assert.Error(t, err, "a 404 must not be treated as a successful answer")
 }
 
-func TestFetchLatestReleaseRefusesRedirects(t *testing.T) {
+func TestFetchLatestRelease_RefusesRedirects(t *testing.T) {
 	// A redirect could point this at an arbitrary host, and a release feed has
 	// no legitimate reason to issue one.
 	var reached bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
-		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+		_, err := w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+		assert.NoError(t, err)
 	}))
 	defer target.Close()
 
@@ -159,13 +138,10 @@ func TestFetchLatestReleaseRefusesRedirects(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, _ := fetchLatestRelease(srv.URL)
-	if reached {
-		t.Error("the redirect was followed")
-	}
-	if got == "9.9.9" {
-		t.Error("a redirected body was accepted")
-	}
+	got, err := fetchLatestRelease(srv.URL)
+	assert.Error(t, err, "redirect must be refused")
+	assert.False(t, reached, "the redirect was followed")
+	assert.NotEqual(t, "9.9.9", got, "a redirected body must not be accepted")
 }
 
 // send drives one message through the shell and hands the model back.
@@ -175,40 +151,33 @@ func send(m Model, msg tea.Msg) Model {
 	return updated
 }
 
-func TestBannerAnnouncesOnlyANewerRelease(t *testing.T) {
+func TestBanner_AnnouncesOnlyANewerRelease(t *testing.T) {
 	withReleaseVersion(t, "0.91.7")
 
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 120, 30
 
-	if got := m.banner(); got != "" {
-		t.Errorf("a banner appeared before any check: %q", got)
-	}
+	assert.Empty(t, m.banner(), "a banner must not appear before any check")
 
 	// Neither an equal nor an older release is an update.
 	m = send(m, updateCheckMsg{latest: "0.91.7"})
 	m = send(m, updateCheckMsg{latest: "0.90.0"})
-	if got := m.banner(); got != "" {
-		t.Errorf("announced %q for a release that is not newer", got)
-	}
+	assert.Empty(t, m.banner(), "a release that is not newer must not be announced")
 
 	// A failure is dropped rather than shown.
 	m = send(m, updateCheckMsg{err: errStub{}})
-	if got := m.banner(); got != "" {
-		t.Errorf("a failed check produced %q; it should be silent", got)
-	}
+	assert.Empty(t, m.banner(), "a failed check should be silent")
 
 	// A newer one names both versions, where to get it, and how to dismiss it.
 	m = send(m, updateCheckMsg{latest: "0.92.0"})
 	banner := m.banner()
-	for _, want := range []string{"0.92.0", "0.91.7", updateReleasesPage, "ctrl+x"} {
-		if !strings.Contains(banner, want) {
-			t.Errorf("banner %q does not mention %q", banner, want)
-		}
-	}
+	assert.Contains(t, banner, "0.92.0")
+	assert.Contains(t, banner, "0.91.7")
+	assert.Contains(t, banner, updateReleasesPage)
+	assert.Contains(t, banner, "ctrl+x")
 }
 
-func TestBannerShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
+func TestBanner_ShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
 	// The whole point of moving it out of the Service tab: the operator it is
 	// for is the one who never opens that tab.
 	withReleaseVersion(t, "0.91.7")
@@ -219,9 +188,7 @@ func TestBannerShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
 
 	for i := range m.views {
 		m.selectTab(i)
-		if !strings.Contains(m.View(), "0.92.0") {
-			t.Errorf("tab %d (%s) does not show the notice", i+1, m.views[i].Title())
-		}
+		assert.Contains(t, m.View(), "0.92.0", "tab %d (%s) must show the notice", i+1, m.views[i].Title())
 	}
 
 	// Dismissing from one tab clears it on all of them, and it stays gone.
@@ -229,25 +196,19 @@ func TestBannerShowsOnEveryTabAndDismissesEverywhere(t *testing.T) {
 	m = send(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 	for i := range m.views {
 		m.selectTab(i)
-		if strings.Contains(m.View(), "0.92.0") {
-			t.Errorf("tab %d (%s) still shows the notice after dismissal", i+1, m.views[i].Title())
-		}
+		assert.NotContains(t, m.View(), "0.92.0", "tab %d (%s) must hide the notice after dismissal", i+1, m.views[i].Title())
 	}
 
 	// A repeat of the same release does not bring it back.
 	m = send(m, updateCheckMsg{latest: "0.92.0"})
-	if got := m.banner(); got != "" {
-		t.Errorf("the dismissed release came back: %q", got)
-	}
+	assert.Empty(t, m.banner(), "the dismissed release came back")
 
 	// A newer one does, because that is not what was acknowledged.
 	m = send(m, updateCheckMsg{latest: "0.93.0"})
-	if !strings.Contains(m.banner(), "0.93.0") {
-		t.Error("a release newer than the dismissed one was suppressed")
-	}
+	assert.Contains(t, m.banner(), "0.93.0", "a release newer than the dismissed one must not be suppressed")
 }
 
-func TestBannerKeepsTheDismissHintAtEveryWidth(t *testing.T) {
+func TestBanner_KeepsTheDismissHintAtEveryWidth(t *testing.T) {
 	// The hint is the rightmost thing on the row, and the frame is clamped to
 	// the terminal — so an over-long banner loses exactly the one key that
 	// closes it, leaving a notice the operator cannot get rid of. The full
@@ -267,13 +228,11 @@ func TestBannerKeepsTheDismissHintAtEveryWidth(t *testing.T) {
 
 		// Clamped the way View() clamps the frame, since that is what truncates.
 		row := lipgloss.NewStyle().MaxWidth(w).Render(m.banner())
-		if !strings.Contains(row, hint) {
-			t.Fatalf("width %d: %q does not keep %q", w, row, hint)
-		}
+		require.Contains(t, row, hint, "width %d must keep the dismiss hint", w)
 	}
 }
 
-func TestBannerComesOutOfTheContentBudget(t *testing.T) {
+func TestBanner_ComesOutOfTheContentBudget(t *testing.T) {
 	// A row added to the frame without coming out of the budget is a row the
 	// shell deletes from the bottom of the active view — and the bottom is where
 	// every view keeps its messages.
@@ -286,13 +245,8 @@ func TestBannerComesOutOfTheContentBudget(t *testing.T) {
 	m = send(m, updateCheckMsg{latest: "0.92.0"})
 	after := m.contentHeight()
 
-	if after != before-1 {
-		t.Errorf("budget went from %d to %d; the banner's row was not taken from it",
-			before, after)
-	}
+	assert.Equal(t, before-1, after, "the banner's row must be taken from the budget")
 
 	m = send(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	if got := m.contentHeight(); got != before {
-		t.Errorf("budget is %d after dismissal, want the original %d", got, before)
-	}
+	assert.Equal(t, before, m.contentHeight(), "dismissal must restore the original budget")
 }

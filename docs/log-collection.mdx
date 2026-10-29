@@ -1,12 +1,15 @@
+---
+title: Collecting and Sanitizing Logs
+description: Collect NVIDIA PAIR logs and replace the host names, addresses, and account names in them before you share them.
+---
+
 {/*
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 */}
 
-# Collecting and sanitizing logs
-
 `scripts/collect-logs.sh` (and its Windows twin `scripts/collect-logs.ps1`) reads
-Personal AI Router logs and replaces the identifiers in them, so you can
+NVIDIA PAIR logs and replaces the identifiers in them, so you can
 hand over a log without carrying host names, addresses, or account names.
 
 ```bash

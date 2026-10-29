@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.6 — Model lookups through PAIR reach a node that has the model (#163)
+
+- `/api/show` requests to PAIR's Ollama port now go only to a node that has the requested model. Before, they could reach a node without it and get a 404, so a client such as Hermes Agent could not read the model's details.
+- Ollama model names that include the default `library` namespace or `registry.ollama.ai` host, or that differ only in case, now match the same model when PAIR picks a node. Inference requests that use such names reach a node that has the model instead of failing with a 502.
+
 ## 1.0.5 — Harden trusted-peer file paths (#159)
 
 - Reject unsafe peer identifiers before loading, writing, or removing trust-store files, protecting cluster data from path traversal.

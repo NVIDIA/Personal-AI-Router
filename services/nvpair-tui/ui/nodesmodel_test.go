@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -27,7 +30,7 @@ func findRow(t *testing.T, rows []nodeRow, name string) nodeRow {
 			return r
 		}
 	}
-	t.Fatalf("no row named %q in %d rows", name, len(rows))
+	require.FailNowf(t, "node row is missing", "no row named %q in %d rows", name, len(rows))
 	return nodeRow{}
 }
 
@@ -37,41 +40,35 @@ func findRow(t *testing.T, rows []nodeRow, name string) nodeRow {
 // TestFilterNodeRowsMatchesNameAndAddress checks both of the things an operator
 // knows a machine by. Addresses matter especially for nodes added by address,
 // whose reported name they may never have seen.
-func TestFilterNodeRowsMatchesNameAndAddress(t *testing.T) {
+func TestFilterNodeRows_MatchesNameAndAddress(t *testing.T) {
 	rows := []nodeRow{
 		{key: "a", name: "workstation", address: "10.0.0.5", addresses: []string{"10.0.0.5", "192.168.1.9"}},
 		{key: "b", name: "laptop", address: "10.0.0.6"},
 		{key: "c", name: "Server-01", address: "10.0.1.7"},
 	}
 
-	cases := map[string][]string{
-		"work":        {"a"},      // name substring
-		"10.0.0.":     {"a", "b"}, // shared address prefix
-		"192.168.1.9": {"a"},      // a secondary address
-		"SERVER":      {"c"},      // case-insensitive
-		"  laptop  ":  {"b"},      // surrounding whitespace ignored
-		"nothing":     {},
-	}
-	for needle, want := range cases {
-		got := filterNodeRows(rows, needle)
-		if len(got) != len(want) {
-			t.Errorf("filter %q matched %d rows, want %d", needle, len(got), len(want))
-			continue
-		}
-		for i, key := range want {
-			if got[i].key != key {
-				t.Errorf("filter %q row %d = %q, want %q", needle, i, got[i].key, key)
+	test := func(name, needle string, want ...string) {
+		t.Run(name, func(t *testing.T) {
+			got := filterNodeRows(rows, needle)
+			keys := make([]string, len(got))
+			for i, row := range got {
+				keys[i] = row.key
 			}
-		}
+			assert.Equal(t, append([]string{}, want...), keys)
+		})
 	}
+	test("name substring", "work", "a")
+	test("shared address prefix", "10.0.0.", "a", "b")
+	test("secondary address", "192.168.1.9", "a")
+	test("case insensitive name", "SERVER", "c")
+	test("surrounding whitespace", "  laptop  ", "b")
+	test("no matches", "nothing")
 
 	// An empty filter is not a filter.
-	if got := filterNodeRows(rows, "   "); len(got) != len(rows) {
-		t.Errorf("blank filter dropped rows: %d of %d", len(got), len(rows))
-	}
+	assert.Len(t, filterNodeRows(rows, "   "), len(rows), "blank filter must preserve rows")
 }
 
-func TestMergeKeepsOfflineMembersListed(t *testing.T) {
+func TestMerge_KeepsOfflineMembersListed(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "up", Name: "up-host", IPAddress: "10.0.0.1", Port: 14318,
@@ -83,22 +80,14 @@ func TestMergeKeepsOfflineMembersListed(t *testing.T) {
 		},
 	})
 
-	if len(rows) != 2 {
-		t.Fatalf("got %d rows, want both members listed", len(rows))
-	}
+	require.Len(t, rows, 2, "both members must be listed")
 
 	gone := findRow(t, rows, "gone-host")
-	if gone.presence != presenceOffline {
-		t.Errorf("departed member presence = %v, want Offline", gone.presence)
-	}
-	if gone.membership != membershipMember {
-		t.Errorf("departed member membership = %v, want Member", gone.membership)
-	}
+	assert.Equal(t, nodePresence(presenceOffline), gone.presence)
+	assert.Equal(t, nodeMembership(membershipMember), gone.membership)
 
 	up := findRow(t, rows, "up-host")
-	if up.presence != presenceOnline {
-		t.Errorf("live member presence = %v, want Online", up.presence)
-	}
+	assert.Equal(t, nodePresence(presenceOnline), up.presence)
 }
 
 // TestMergeDoesNotAgeOutDiscoveryOnItsOwnClock is the regression guard for a
@@ -113,7 +102,7 @@ func TestMergeKeepsOfflineMembersListed(t *testing.T) {
 //
 // An hour-old timestamp is used deliberately: under the previous rule it was
 // forty-eight thresholds stale.
-func TestMergeDoesNotAgeOutDiscoveryOnItsOwnClock(t *testing.T) {
+func TestMerge_DoesNotAgeOutDiscoveryOnItsOwnClock(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "fresh", Name: "fresh", IPAddress: "10.0.0.1", Port: 14318,
@@ -125,17 +114,14 @@ func TestMergeDoesNotAgeOutDiscoveryOnItsOwnClock(t *testing.T) {
 	})
 
 	for _, name := range []string{"fresh", "quiet", "never"} {
-		if got := findRow(t, rows, name).presence; got != presenceOnline {
-			t.Errorf("%s presence = %v, want Online: it is in the snapshot with an address",
-				name, got)
-		}
+		assert.Equal(t, nodePresence(presenceOnline), findRow(t, rows, name).presence, "%s is in the snapshot with an address", name)
 	}
 }
 
 // TestMergeNeedsSomewhereToReachANode mirrors the desktop app's rule, whose
 // nodeInfoUp starts as `Boolean(ipAddress) && port > 0`. A snapshot entry with
 // nowhere to connect is not a reachable node.
-func TestMergeNeedsSomewhereToReachANode(t *testing.T) {
+func TestMerge_NeedsSomewhereToReachANode(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "noaddr", Name: "noaddr", Port: 14318},
@@ -144,15 +130,13 @@ func TestMergeNeedsSomewhereToReachANode(t *testing.T) {
 	})
 
 	for _, name := range []string{"noaddr", "noport"} {
-		if got := findRow(t, rows, name).presence; got != presenceOffline {
-			t.Errorf("%s presence = %v, want Offline", name, got)
-		}
+		assert.Equal(t, nodePresence(presenceOffline), findRow(t, rows, name).presence, "%s", name)
 	}
 }
 
 // TestMergeDeduplicatesAcrossFeeds checks one machine appearing in all three
 // feeds renders as a single row carrying every feed's contribution.
-func TestMergeDeduplicatesAcrossFeeds(t *testing.T) {
+func TestMerge_DeduplicatesAcrossFeeds(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{{
 			HostUUID:  "u1",
@@ -166,25 +150,17 @@ func TestMergeDeduplicatesAcrossFeeds(t *testing.T) {
 		manual:  []manualNode{{ID: "m1", Address: "10.0.0.5", NodeInfoUp: true}},
 	})
 
-	if len(rows) != 1 {
-		t.Fatalf("one machine produced %d rows", len(rows))
-	}
+	require.Len(t, rows, 1, "one machine must produce one row")
 	row := rows[0]
-	if row.manualID != "m1" {
-		t.Errorf("manual handle lost in merge: %q", row.manualID)
-	}
-	if row.membership != membershipMember {
-		t.Errorf("membership = %v, want Member", row.membership)
-	}
-	if row.modelCount() != 2 {
-		t.Errorf("model count = %d, want 2", row.modelCount())
-	}
+	assert.Equal(t, "m1", row.manualID, "manual handle must survive the merge")
+	assert.Equal(t, nodeMembership(membershipMember), row.membership)
+	assert.Equal(t, 2, row.modelCount())
 }
 
 // TestMergeManualProbeBeatsDiscoverySilence covers a host on a network that
 // filters multicast: it never announces, but a successful probe is direct
 // evidence that it is up.
-func TestMergeManualProbeBeatsDiscoverySilence(t *testing.T) {
+func TestMergeManualProbe_BeatsDiscoverySilence(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		manual: []manualNode{
 			{ID: "m1", Name: "reachable", Address: "10.0.0.7", NodeInfoUp: true},
@@ -192,12 +168,8 @@ func TestMergeManualProbeBeatsDiscoverySilence(t *testing.T) {
 		},
 	})
 
-	if got := findRow(t, rows, "reachable").presence; got != presenceOnline {
-		t.Errorf("probed-up manual node presence = %v, want Online", got)
-	}
-	if got := findRow(t, rows, "dead").presence; got != presenceOffline {
-		t.Errorf("unreachable manual node presence = %v, want Offline", got)
-	}
+	assert.Equal(t, nodePresence(presenceOnline), findRow(t, rows, "reachable").presence)
+	assert.Equal(t, nodePresence(presenceOffline), findRow(t, rows, "dead").presence)
 }
 
 // TestMergeUsesEveryFactTheManualWorkerReports is the regression guard for the
@@ -207,25 +179,19 @@ func TestMergeManualProbeBeatsDiscoverySilence(t *testing.T) {
 // running only LM Studio read Offline, a hostname typed by hand could not be
 // joined to the same machine discovered by IP, and the node-info port and TLS
 // setting the probe found were dropped.
-func TestMergeUsesEveryFactTheManualWorkerReports(t *testing.T) {
+func TestMerge_UsesEveryFactTheManualWorkerReports(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		manual: []manualNode{{ID: "m1", Name: "lms-only", Address: "10.0.0.7", LMStudioUp: true}},
 	})
-	if got := findRow(t, rows, "lms-only").presence; got != presenceOnline {
-		t.Errorf("a host answering only on LM Studio reads %v, want Online", got)
-	}
+	assert.Equal(t, nodePresence(presenceOnline), findRow(t, rows, "lms-only").presence, "a host answering only on LM Studio must read online")
 
 	// Typed as a hostname, discovered by IP: only the UUID ties them together.
 	rows = mergeNodes(nodeFeeds{
 		discovered: []availableNode{{HostUUID: "u1", Name: "gpu-box", IPAddress: "10.0.0.5", Port: 14318}},
 		manual:     []manualNode{{ID: "m1", Address: "gpu-box.lan", HostUUID: "u1", NodeInfoUp: true}},
 	})
-	if len(rows) != 1 {
-		t.Fatalf("one machine produced %d rows; the manual entry was not joined by its UUID", len(rows))
-	}
-	if rows[0].manualID != "m1" {
-		t.Errorf("the joined row lost its manual handle: %q", rows[0].manualID)
-	}
+	require.Len(t, rows, 1, "the manual entry must be joined by its UUID")
+	assert.Equal(t, "m1", rows[0].manualID, "the joined row must retain its manual handle")
 
 	// A hand-added node reached on a non-default node-info port, over TLS.
 	rows = mergeNodes(nodeFeeds{
@@ -236,12 +202,10 @@ func TestMergeUsesEveryFactTheManualWorkerReports(t *testing.T) {
 		}},
 	})
 	tls := findRow(t, rows, "tls-box")
-	if tls.port != 14319 {
-		t.Errorf("port = %d, want the node-info port the probe reached", tls.port)
-	}
-	if !tls.nodeInfoTLS || tls.probedTelemetry == nil || len(tls.probedTelemetry.GPUs) != 1 {
-		t.Errorf("TLS node-info was not carried with the worker's reading: tls=%v telemetry=%+v",
-			tls.nodeInfoTLS, tls.probedTelemetry)
+	assert.Equal(t, 14319, tls.port, "node-info port must match the probe")
+	assert.True(t, tls.nodeInfoTLS, "TLS node-info must be carried with the worker's reading")
+	if assert.NotNil(t, tls.probedTelemetry, "worker's reading must be carried") {
+		assert.Len(t, tls.probedTelemetry.GPUs, 1)
 	}
 }
 
@@ -250,33 +214,28 @@ func TestMergeUsesEveryFactTheManualWorkerReports(t *testing.T) {
 // discovered row with a different UUID at the same address — that is another
 // machine now answering there. An entry the probe has not identified still
 // joins by address, as it must for a host discovery reports by IP.
-func TestAReusedAddressDoesNotMergeTwoMachines(t *testing.T) {
+func TestAReusedAddress_DoesNotMergeTwoMachines(t *testing.T) {
 	discovered := []availableNode{{HostUUID: "machine-b", Name: "b", IPAddress: "10.0.0.5", Port: 14318}}
 
 	rows := mergeNodes(nodeFeeds{
 		discovered: discovered,
 		manual:     []manualNode{{ID: "m1", Name: "a", Address: "10.0.0.5", HostUUID: "machine-a", NodeInfoUp: true}},
 	})
-	if len(rows) != 2 {
-		t.Fatalf("two machines at one address produced %d row(s), want 2", len(rows))
-	}
-	if b := findRow(t, rows, "b"); b.manualID != "" {
-		t.Errorf("machine b took the manual entry for machine a (manualID %q)", b.manualID)
-	}
+	require.Len(t, rows, 2, "two machines at one address must remain distinct")
+	assert.Empty(t, findRow(t, rows, "b").manualID, "machine b must not take the manual entry for machine a")
 
 	rows = mergeNodes(nodeFeeds{
 		discovered: discovered,
 		manual:     []manualNode{{ID: "m1", Address: "10.0.0.5"}},
 	})
-	if len(rows) != 1 || rows[0].manualID != "m1" {
-		t.Errorf("an unidentified entry did not join the machine at its address: %+v", rows)
-	}
+	require.Len(t, rows, 1, "an unidentified entry must join the machine at its address")
+	assert.Equal(t, "m1", rows[0].manualID)
 }
 
 // TestTLSNodeInfoIsNotPolledInPlainText checks the detail screen shows the
 // worker's reading for a TLS node rather than polling it itself. That endpoint
 // needs the backend's cluster trust, and a plain-HTTP poll to it only fails.
-func TestTLSNodeInfoIsNotPolledInPlainText(t *testing.T) {
+func TestTLSNodeInfo_IsNotPolledInPlainText(t *testing.T) {
 	d := newNodeDetail(nil, nodeRow{
 		key: "manual:m2", name: "tls-box", address: "10.0.0.9", port: 14319,
 		presence: presenceOnline, nodeInfoTLS: true,
@@ -284,32 +243,26 @@ func TestTLSNodeInfoIsNotPolledInPlainText(t *testing.T) {
 			GPUs: []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}}},
 	})
 	d.SetSize(100, 30)
-	if d.telemetryCmd() != nil {
-		t.Error("the detail screen polled a TLS node-info endpoint over plain HTTP")
-	}
-	if !contains(d.View(), "GPU 0") {
-		t.Errorf("the worker's hardware reading is not shown: %q", d.View())
-	}
+	assert.Nil(t, d.telemetryCmd(), "the detail screen must not poll a TLS node-info endpoint over plain HTTP")
+	assert.Contains(t, d.View(), "GPU 0", "the worker's hardware reading must be shown")
 }
 
 // TestMembershipGovernsInvitability is the guard for re-inviting a node that
 // already has a relationship. Only a standalone node may be invited.
-func TestMembershipGovernsInvitability(t *testing.T) {
-	cases := map[nodeMembership]bool{
-		membershipNone:    true,
-		membershipMember:  false,
-		membershipForeign: false,
-		membershipPending: false,
+func TestNodeInvitation_RequiresEligibleClusterMembership(t *testing.T) {
+	test := func(name string, membership nodeMembership, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, membership.invitable())
+		})
 	}
-	for membership, want := range cases {
-		if got := membership.invitable(); got != want {
-			t.Errorf("%v invitable = %v, want %v", membership, got, want)
-		}
-	}
+	test("standalone node can be invited", membershipNone, true)
+	test("cluster member cannot be invited", membershipMember, false)
+	test("foreign member cannot be invited", membershipForeign, false)
+	test("pairing node cannot be invited", membershipPending, false)
 }
 
 // TestMergeMarksSelf checks this machine is identified and always reads online.
-func TestMergeMarksSelf(t *testing.T) {
+func TestMerge_MarksSelf(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "me", Name: "this-host", LastSeen: seenAgo(time.Hour)},
@@ -319,21 +272,15 @@ func TestMergeMarksSelf(t *testing.T) {
 	})
 
 	self := findRow(t, rows, "this-host")
-	if !self.self {
-		t.Error("self node not marked")
-	}
-	if self.presence != presenceOnline {
-		t.Errorf("self presence = %v; this machine is by definition reachable", self.presence)
-	}
-	if rows[0].name != "this-host" {
-		t.Errorf("self sorted to position of %q, want first", rows[0].name)
-	}
+	assert.True(t, self.self, "self node not marked")
+	assert.Equal(t, nodePresence(presenceOnline), self.presence, "this machine is by definition reachable")
+	assert.Equal(t, "this-host", rows[0].name, "self must sort first")
 }
 
 // TestMergeSortsOnlineBeforeOffline checks reachable nodes lead the list. The
 // offline one here is a cluster member discovery has never reported, which is
 // what an unreachable node now looks like.
-func TestMergeSortsOnlineBeforeOffline(t *testing.T) {
+func TestMerge_SortsOnlineBeforeOffline(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "z", Name: "zzz", IPAddress: "10.0.0.2", Port: 14318,
@@ -342,14 +289,12 @@ func TestMergeSortsOnlineBeforeOffline(t *testing.T) {
 		members: []clusterNode{{ID: "a", NodeUUID: "a", Name: "aaa", State: "joined"}},
 	})
 
-	if rows[0].name != "zzz" {
-		t.Errorf("first row = %q, want the online node despite its later name", rows[0].name)
-	}
+	assert.Equal(t, "zzz", rows[0].name, "online node must sort first despite its later name")
 }
 
 // TestMergeForeignClusterNotInvitable checks a node clustered elsewhere is
 // distinguished from one of ours.
-func TestMergeForeignClusterNotInvitable(t *testing.T) {
+func TestMergeNodes_MarksForeignClusterNodesUninvitable(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{
 			{HostUUID: "f", Name: "foreign", Clustered: true, LastSeen: seenAgo(time.Second)},
@@ -357,16 +302,10 @@ func TestMergeForeignClusterNotInvitable(t *testing.T) {
 		},
 	})
 
-	if got := findRow(t, rows, "foreign").membership; got != membershipForeign {
-		t.Errorf("foreign membership = %v", got)
-	}
-	if got := findRow(t, rows, "standalone").membership; !got.invitable() {
-		t.Errorf("standalone node reported not invitable (%v)", got)
-	}
+	assert.Equal(t, nodeMembership(membershipForeign), findRow(t, rows, "foreign").membership)
+	assert.True(t, findRow(t, rows, "standalone").membership.invitable(), "standalone node must be invitable")
 }
 
-func TestMergeEmptyFeeds(t *testing.T) {
-	if rows := mergeNodes(nodeFeeds{}); len(rows) != 0 {
-		t.Errorf("empty feeds produced %d rows", len(rows))
-	}
+func TestMergeNodes_ReturnsEmptyRowsForEmptyFeeds(t *testing.T) {
+	assert.Empty(t, mergeNodes(nodeFeeds{}))
 }

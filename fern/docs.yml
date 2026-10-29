@@ -7,7 +7,7 @@ instances:
   - url: nvidia-personal-ai-router.docs.buildwithfern.com
     custom-domain: docs.nvidia.com/personal-ai-router
 
-title: NVIDIA Personal AI Router
+title: NVIDIA PAIR
 
 global-theme: nvidia
 
@@ -16,7 +16,7 @@ navbar-links:
     value: https://github.com/NVIDIA/Personal-AI-Router
 
 logo:
-  right-text: Personal AI Router
+  right-text: PAIR
 
 navigation:
   - page: Overview

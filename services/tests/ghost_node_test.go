@@ -17,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/grandcat/zeroconf"
 
 	"nvpair-shared/jsonrpc"
@@ -38,7 +41,7 @@ import (
 // responder publishes the record, and a local HTTP server plays its node-info.
 // Flipping that server's reported hostUuid is exactly the signal a wipe
 // produces, and is what the probe must notice.
-func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
+func TestScanner_EvictsRecordSupersededAtItsAddress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("multicast + miss-threshold timing; skipped under -short")
 	}
@@ -61,18 +64,15 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"GPUs":[],"hostUuid":"` + reported.Load().(string) + `"}`))
+		_, writeErr := w.Write([]byte(`{"GPUs":[],"hostUuid":"` + reported.Load().(string) + `"}`))
+		assert.NoError(t, writeErr)
 	}))
 	defer nodeInfo.Close()
 
 	_, niPortStr, err := net.SplitHostPort(strings.TrimPrefix(nodeInfo.URL, "http://"))
-	if err != nil {
-		t.Fatalf("node-info addr: %v", err)
-	}
+	require.NoError(t, err, "node-info addr")
 	niPort, err := strconv.Atoi(niPortStr)
-	if err != nil {
-		t.Fatalf("node-info port: %v", err)
-	}
+	require.NoError(t, err, "node-info port")
 
 	// Publish the peer's _nvpair-node record pointing at that node-info.
 	txt := []string{
@@ -82,9 +82,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 		fmt.Sprintf("%s=%d", noderec.ServiceNodeInfo, niPort),
 	}
 	responder, err := zeroconf.Register(peerInstance, noderec.ServiceType, testDomain, noderec.SRVPort, txt, nil)
-	if err != nil {
-		t.Fatalf("register peer: %v", err)
-	}
+	require.NoError(t, err, "register peer")
 	responderDown := false
 	defer func() {
 		if !responderDown {
@@ -96,7 +94,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 
 	// The scanner must see the peer before there is anything to evict. A slow
 	// or lossy multicast environment is an inconclusive run, not a failure.
-	if !awaitNodeEvent(events, noderec.NotifyNodeDiscovered, originalUUID, 30*time.Second) {
+	if !awaitNodeEvent(t, events, noderec.NotifyNodeDiscovered, originalUUID, 30*time.Second) {
 		t.Skip("peer record was never discovered; multicast is unavailable in this environment")
 	}
 
@@ -111,11 +109,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 	// inference load — so this deadline is generous by design. The identity probe
 	// runs on every scan from ~15s in, so the mismatch is detected long before the
 	// eviction it eventually authorizes.
-	if !awaitNodeEvent(events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute) {
-		t.Fatalf("scanner never evicted %s after its address began answering as %s; "+
-			"a record whose machine was re-identified must not be kept alive by a TCP probe",
-			originalUUID, wipedUUID)
-	}
+	require.True(t, awaitNodeEvent(t, events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute))
 }
 
 // startScannerForGhostTest runs the scanner binary on stdio and returns its
@@ -133,28 +127,23 @@ func startScannerForGhostTest(t *testing.T) <-chan jsonrpc.Message {
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("scanner stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "scanner stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("scanner stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start scanner: %v", err)
-	}
+	require.NoError(t, err, "scanner stdout pipe")
+	require.NoError(t, cmd.Start(), "start scanner")
 	t.Cleanup(func() {
 		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	return startMsgReader(stdout)
+	return startMsgReader(t, stdout)
 }
 
 // awaitNodeEvent reports whether the named discovery:node-* event for hostUUID
 // arrives before the deadline. Other events (this node's own record, the peer's
 // enrichment updates) are ignored.
-func awaitNodeEvent(events <-chan jsonrpc.Message, method, hostUUID string, timeout time.Duration) bool {
+func awaitNodeEvent(t *testing.T, events <-chan jsonrpc.Message, method, hostUUID string, timeout time.Duration) bool {
+	t.Helper()
 	deadline := time.After(timeout)
 	for {
 		select {
@@ -166,9 +155,7 @@ func awaitNodeEvent(events <-chan jsonrpc.Message, method, hostUUID string, time
 				continue
 			}
 			var ev noderec.NodeEvent
-			if err := json.Unmarshal(msg.Params, &ev); err != nil {
-				continue
-			}
+			require.NoError(t, json.Unmarshal(msg.Params, &ev))
 			if ev.Node.HostUUID == hostUUID {
 				return true
 			}

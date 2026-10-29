@@ -1,9 +1,12 @@
+---
+title: Engine Settings in NVIDIA PAIR
+description: Change the server port, proxy port, and launch arguments of an Ollama, LM Studio, or llama.cpp engine in NVIDIA PAIR.
+---
+
 {/*
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 */}
-
-# Engine Settings in NVIDIA Personal AI Router
 
 Open a device's Ollama, LM Studio, or llama.cpp row and expand **Settings**.
 Edit the server port, proxy port and engine arguments, then select the green
@@ -16,7 +19,7 @@ vendor options can fail at startup.
 For installing, starting and updating engines, refer to
 [Managing engines](engine-lifecycle.mdx).
 
-## Argument notation
+## Argument Notation
 
 The text contains engine arguments and optional leading environment assignments.
 PAIR supplies the executable and startup subcommand. Leave the text empty to use
@@ -42,7 +45,7 @@ OLLAMA_ORIGINS="https://example.com"
 --port 1235 --bind 127.0.0.1
 ```
 
-## Environment variables
+## Environment Variables
 
 Environment assignments are saved and passed literally to the engine on every
 launch. PAIR does not maintain a list of supported variables or validate their
@@ -72,7 +75,7 @@ Startup failures include a bounded excerpt of the engine’s own output. PAIR
 redacts supplied values by exact match, but an engine may transform or encode
 them. Do not put secrets in launch values.
 
-## Ports and validation
+## Ports and Validation
 
 PAIR understands only the networking controls needed to keep engine and proxy
 configuration consistent:
@@ -103,7 +106,7 @@ needs to restart. Progress appears as a spinner inside Apply. A running engine
 restarts for launch/server changes; changing only the proxy port leaves the
 engine running. Stopped engines remain stopped. Saved settings survive restart.
 
-## Concurrent edits
+## Concurrent Edits
 
 Changes from another device update a clean editor. An unfinished draft stays
 intact; applying a stale draft opens an error dialog. **Reload saved settings** deliberately
