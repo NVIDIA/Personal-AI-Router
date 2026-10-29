@@ -122,6 +122,23 @@ func TestRemoveMemberForgetsItsManualEntry(t *testing.T) {
 	assert.Contains(t, v.status.render(), "remove peer ok", "the removal is reported")
 }
 
+// TestRemoveMemberForgetsEveryManualEntry checks a peer added twice, by
+// hostname and by IP, has both entries forgotten when it is un-paired.
+func TestRemoveMemberForgetsEveryManualEntry(t *testing.T) {
+	client, calls := removalBroker(t, "")
+	v := peerAddedByAddress(client)
+	v.feeds.manual = append(v.feeds.manual,
+		manualNode{ID: "manual:peer.lan", Address: "peer.lan", HostUUID: "peer"})
+	v.rebuild()
+
+	confirmRemoval(t, v)
+
+	wantCall(t, calls, "nodes:remove", "nodeUuid", "peer")
+	wantCall(t, calls, "node/remove", "id", "manual:10.0.0.2")
+	wantCall(t, calls, "node/remove", "id", "manual:peer.lan")
+	assert.Contains(t, v.status.render(), "remove peer ok", "the removal is reported")
+}
+
 // TestFailedRemoveMemberKeepsItsManualEntry checks a peer the cluster manager
 // would not un-pair keeps the address it was added by: it is still a member,
 // and that address is how it is reached.
