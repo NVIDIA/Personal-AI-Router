@@ -5,10 +5,12 @@ package rpc
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // discardWriter drops writes; these tests only exercise the read side.
@@ -24,7 +26,7 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 // frame it could not parse and continued, which burned a core, never closed the
 // notifications channel, and left the UI reporting a service it could no longer
 // reach.
-func TestRunReturnsOnBrokenStream(t *testing.T) {
+func TestRun_ReturnsOnBrokenStream(t *testing.T) {
 	// One frame longer than the cap, which is exactly the failure the frame
 	// cap's own comment describes.
 	oversized := `{"jsonrpc":"2.0","method":"x","params":"` +
@@ -37,27 +39,23 @@ func TestRunReturnsOnBrokenStream(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, ErrStreamBroken) {
-			t.Errorf("Run returned %v, want ErrStreamBroken", err)
-		}
+		assert.ErrorIs(t, err, ErrStreamBroken)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return on a broken stream; it is spinning")
+		require.FailNow(t, "Run did not return on a broken stream; it is spinning")
 	}
 
 	// Consumers must observe the disconnect.
 	select {
 	case _, open := <-c.Notifications():
-		if open {
-			t.Error("notifications channel delivered after the stream broke")
-		}
+		assert.False(t, open, "notifications channel delivered after the stream broke")
 	case <-time.After(time.Second):
-		t.Error("notifications channel was never closed, so the UI never learns it is disconnected")
+		assert.Fail(t, "notifications channel was never closed, so the UI never learns it is disconnected")
 	}
 }
 
 // TestRunSkipsUnparseableFrame checks the other direction is unchanged: a frame
 // this client does not model must not kill a working session.
-func TestRunSkipsUnparseableFrame(t *testing.T) {
+func TestRun_SkipsUnparseableFrame(t *testing.T) {
 	stream := "{not json at all}\n" +
 		`{"jsonrpc":"1.0","method":"wrong-version"}` + "\n" +
 		`{"jsonrpc":"2.0","method":"app:ready"}` + "\n"
@@ -67,13 +65,9 @@ func TestRunSkipsUnparseableFrame(t *testing.T) {
 
 	select {
 	case msg, ok := <-c.Notifications():
-		if !ok {
-			t.Fatal("session ended on a malformed frame instead of skipping it")
-		}
-		if msg.Method != "app:ready" {
-			t.Errorf("first delivered notification = %q, want app:ready", msg.Method)
-		}
+		require.True(t, ok, "session ended on a malformed frame instead of skipping it")
+		assert.Equal(t, "app:ready", msg.Method)
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out; a malformed frame stalled the loop")
+		require.FailNow(t, "timed out; a malformed frame stalled the loop")
 	}
 }

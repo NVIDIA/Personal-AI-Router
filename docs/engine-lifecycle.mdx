@@ -1,11 +1,14 @@
+---
+title: Managing Engines in NVIDIA PAIR
+description: Install, start, stop, update, and remove the Ollama, LM Studio, and llama.cpp engines that NVIDIA PAIR uses to run models.
+---
+
 {/*
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 */}
 
-# Managing Engines in NVIDIA Personal AI Router
-
-An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
+An **engine** is the local inference runtime NVIDIA PAIR uses to
 run models. Today that means Ollama, LM Studio, or llama.cpp on a given machine.
 PAIR can install and run those engines for you, or work with a supported
 existing Ollama or LM Studio installation. This page explains what you can
@@ -166,16 +169,16 @@ After systems are paired, you can view another machine's engines from
 **Overview** and, where supported, start or stop engines and pull models on that
 peer.
 
-Some actions stay **local only** on each machine: uninstalling, updating, and
-changing an engine's CORS settings. Perform those on the machine that owns the
+Some actions stay **local only** on each machine: uninstalling an engine and
+changing its CORS settings. Perform those on the machine that owns the
 engine, or connect to that machine's PAIR application or terminal interface.
 Ports and startup arguments can be edited from a paired machine, as described in
 [Engine Settings](engine-settings.mdx).
 
 Everything you change is scoped to one machine. A port you set on this node moves
 that node's engine and nothing else. The other nodes keep the ports they already
-had, and PAIR does not push the value across the cluster. Installing, updating,
-and uninstalling work the same way, because each is a decision about one machine.
+had, and PAIR does not push the value across the cluster. Installing and
+uninstalling work the same way, because each is a decision about one machine.
 This is why the endpoint to use is the one shown on the machine you are working
 at, rather than a port you remember from somewhere else.
 

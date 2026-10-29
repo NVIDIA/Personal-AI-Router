@@ -13,6 +13,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // These tests measure what a view *renders*, before the shell clamps it.
@@ -47,7 +49,7 @@ func contentBudget(t *testing.T, w, h int) int {
 // TestNodesViewNeverOverflowsItsBudget covers the tab with the most optional
 // chrome: a filter note, a feed warning, an inbound-invite prompt, an inline
 // editor, and a status toast can all be present at once.
-func TestNodesViewNeverOverflowsItsBudget(t *testing.T) {
+func TestNodesView_NeverOverflowsItsBudget(t *testing.T) {
 	const w, h = 80, 24
 	budget := contentBudget(t, w, h)
 
@@ -67,46 +69,42 @@ func TestNodesViewNeverOverflowsItsBudget(t *testing.T) {
 		return v
 	}
 
-	cases := map[string]func(*nodesView){
-		"plain":   func(*nodesView) {},
-		"filter":  func(v *nodesView) { v.filter = "node"; v.rebuild() },
-		"warning": func(v *nodesView) { v.noteFeed(feedManual, errStub{}) },
-		"status":  func(v *nodesView) { v.status.error("something failed") },
-		"inbound": func(v *nodesView) { v.inbound = &clusterInvite{FromNodeName: "peer"} },
-		"editor":  func(v *nodesView) { v.beginInput(nodesInputManualAddress, "host") },
-		"filter+warning": func(v *nodesView) {
-			v.filter = "node"
-			v.rebuild()
-			v.noteFeed(feedManual, errStub{})
-		},
-		"everything": func(v *nodesView) {
-			v.filter = "node"
-			v.rebuild()
-			v.noteFeed(feedManual, errStub{})
-			v.inbound = &clusterInvite{FromNodeName: "peer"}
-			v.beginInput(nodesInputManualAddress, "host")
-			v.status.error("something failed")
-		},
-		"filter matches nothing": func(v *nodesView) {
-			v.filter = "no-such-node"
-			v.rebuild()
-			v.status.error("something failed")
-		},
+	test := func(name string, setup func(*nodesView)) {
+		t.Run(name, func(t *testing.T) {
+			v := build()
+			setup(v)
+			assert.LessOrEqual(t, renderedRows(v.View()), budget, "the shell must not delete the last lines")
+		})
 	}
-
-	for name, setup := range cases {
-		v := build()
-		setup(v)
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%s: rendered %d rows into a %d-row budget; the shell will delete the last %d line(s)",
-				name, got, budget, got-budget)
-		}
-	}
+	test("plain", func(*nodesView) {})
+	test("filter", func(v *nodesView) { v.filter = "node"; v.rebuild() })
+	test("warning", func(v *nodesView) { v.noteFeed(feedManual, errStub{}) })
+	test("status", func(v *nodesView) { v.status.error("something failed") })
+	test("inbound", func(v *nodesView) { v.inbound = &clusterInvite{FromNodeName: "peer"} })
+	test("editor", func(v *nodesView) { v.beginInput(nodesInputManualAddress, "host") })
+	test("filter+warning", func(v *nodesView) {
+		v.filter = "node"
+		v.rebuild()
+		v.noteFeed(feedManual, errStub{})
+	})
+	test("everything", func(v *nodesView) {
+		v.filter = "node"
+		v.rebuild()
+		v.noteFeed(feedManual, errStub{})
+		v.inbound = &clusterInvite{FromNodeName: "peer"}
+		v.beginInput(nodesInputManualAddress, "host")
+		v.status.error("something failed")
+	})
+	test("filter matches nothing", func(v *nodesView) {
+		v.filter = "no-such-node"
+		v.rebuild()
+		v.status.error("something failed")
+	})
 }
 
 // TestErrorsViewNeverOverflowsItsBudget covers the context line added for the
 // selected error, which appears exactly when an engine failure is highlighted.
-func TestErrorsViewNeverOverflowsItsBudget(t *testing.T) {
+func TestErrorsView_NeverOverflowsItsBudget(t *testing.T) {
 	const w, h = 80, 24
 	budget := contentBudget(t, w, h)
 
@@ -130,24 +128,24 @@ func TestErrorsViewNeverOverflowsItsBudget(t *testing.T) {
 		return v
 	}
 
-	for _, n := range []int{0, 1, 30} {
-		v := build(n)
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%d errors: rendered %d rows into %d", n, got, budget)
-		}
+	test := func(name string, n int) {
+		t.Run(name, func(t *testing.T) {
+			v := build(n)
+			assert.LessOrEqual(t, renderedRows(v.View()), budget)
 
-		v = build(n)
-		v.status.ok("cleared")
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%d errors + status: rendered %d rows into %d; the status line is what gets cut",
-				n, got, budget)
-		}
+			v = build(n)
+			v.status.ok("cleared")
+			assert.LessOrEqual(t, renderedRows(v.View()), budget, "the status line must not be cut")
+		})
 	}
+	test("no errors", 0)
+	test("one error", 1)
+	test("many errors", 30)
 }
 
 // TestNodeDetailNeverOverflowsItsBudget covers the screen with two tables
 // sharing one budget plus a hardware block whose height depends on the node.
-func TestNodeDetailNeverOverflowsItsBudget(t *testing.T) {
+func TestNodeDetail_NeverOverflowsItsBudget(t *testing.T) {
 	const w, h = 80, 24
 	budget := contentBudget(t, w, h)
 
@@ -168,28 +166,25 @@ func TestNodeDetailNeverOverflowsItsBudget(t *testing.T) {
 		return d
 	}
 
-	cases := map[string]func(*nodeDetail){
-		"plain":  func(*nodeDetail) {},
-		"editor": func(d *nodeDetail) { d.mode = detailInputEnginePort },
-		"status": func(d *nodeDetail) { d.status.error("start failed: no such engine") },
-		"editor+status": func(d *nodeDetail) {
-			d.mode = detailInputModelName
-			d.status.error("download failed")
-		},
-		"hardware": func(d *nodeDetail) {
-			d.telemetryOK = true
-			d.telemetry = nodeTelemetry{TelemetryValid: true}
-			d.SetSize(w, budget)
-		},
+	test := func(name string, setup func(*nodeDetail)) {
+		t.Run(name, func(t *testing.T) {
+			d := build()
+			setup(d)
+			assert.LessOrEqual(t, renderedRows(d.View()), budget)
+		})
 	}
-
-	for name, setup := range cases {
-		d := build()
-		setup(d)
-		if got := renderedRows(d.View()); got > budget {
-			t.Errorf("%s: rendered %d rows into a %d-row budget", name, got, budget)
-		}
-	}
+	test("plain", func(*nodeDetail) {})
+	test("editor", func(d *nodeDetail) { d.mode = detailInputEnginePort })
+	test("status", func(d *nodeDetail) { d.status.error("start failed: no such engine") })
+	test("editor+status", func(d *nodeDetail) {
+		d.mode = detailInputModelName
+		d.status.error("download failed")
+	})
+	test("hardware", func(d *nodeDetail) {
+		d.telemetryOK = true
+		d.telemetry = nodeTelemetry{TelemetryValid: true}
+		d.SetSize(w, budget)
+	})
 }
 
 // TestEveryViewRendersWithinBudget is the blanket guard.
@@ -200,7 +195,7 @@ func TestNodeDetailNeverOverflowsItsBudget(t *testing.T) {
 // show, at every size worth caring about, with and without a status line, and
 // asserts two things: it does not panic, and it does not overflow. A new view
 // is covered the moment it is added to defaultViews.
-func TestEveryViewRendersWithinBudget(t *testing.T) {
+func TestEveryView_RendersWithinBudget(t *testing.T) {
 	// Every height from the supported minimum upward, not a handful of sampled
 	// sizes. The sampled list jumped from a budget of 21 to 11 and stepped
 	// straight over the band where the Service tab overran by one row — a hole
@@ -228,18 +223,9 @@ func TestEveryViewRendersWithinBudget(t *testing.T) {
 
 				// A panic here is a crash of the whole program, so it is worth
 				// naming the view and size rather than letting the suite die.
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							t.Errorf("%s panicked at %dx%d (status=%v): %v",
-								v.Title(), w, h, withStatus, r)
-						}
-					}()
-					if got := renderedRows(v.View()); got > budget {
-						t.Errorf("%s rendered %d rows into a %d-row budget at %dx%d (status=%v)",
-							v.Title(), got, budget, w, h, withStatus)
-					}
-				}()
+				assert.NotPanics(t, func() {
+					assert.LessOrEqual(t, renderedRows(v.View()), budget, "%s at %dx%d (status=%v)", v.Title(), w, h, withStatus)
+				}, "%s at %dx%d (status=%v)", v.Title(), w, h, withStatus)
 			}
 		}
 	}
@@ -255,7 +241,7 @@ func TestEveryViewRendersWithinBudget(t *testing.T) {
 // terminal would otherwise wrap, and every wrapped row pushes the footer one
 // row further off the screen. This proves the clamp holds for the real views,
 // not only for the stub the shell's own frame test uses.
-func TestNarrowTerminalClipsRatherThanOverruns(t *testing.T) {
+func TestNarrowTerminal_ClipsRatherThanOverruns(t *testing.T) {
 	const h = 24
 	for w := minTerminalWidth; w <= 100; w++ {
 		for _, withStatus := range []bool{false, true} {
@@ -266,14 +252,8 @@ func TestNarrowTerminalClipsRatherThanOverruns(t *testing.T) {
 				m := newTestModel(v)
 				m.width, m.height = w, h
 				out := m.View()
-				if got := lipgloss.Width(out); got > w {
-					t.Errorf("%s at %d columns (status=%v): frame is %d columns wide",
-						v.Title(), w, withStatus, got)
-				}
-				if got := lipgloss.Height(out); got != h {
-					t.Errorf("%s at %d columns (status=%v): frame is %d rows, want %d",
-						v.Title(), w, withStatus, got, h)
-				}
+				assert.LessOrEqual(t, lipgloss.Width(out), w, "%s at %d columns (status=%v)", v.Title(), w, withStatus)
+				assert.Equal(t, h, lipgloss.Height(out), "%s at %d columns (status=%v)", v.Title(), w, withStatus)
 			}
 		}
 	}
@@ -287,7 +267,7 @@ func TestNarrowTerminalClipsRatherThanOverruns(t *testing.T) {
 // row appeared and the shell deleted the last line — which is the status row
 // carrying "press y to confirm" for the data reset. The operator pressed enter
 // on the wipe, saw nothing change, and was left armed with no prompt.
-func TestServiceConfirmationSurvivesEveryHeight(t *testing.T) {
+func TestServiceConfirmation_SurvivesEveryHeight(t *testing.T) {
 	for h := minTerminalHeight; h <= 44; h++ {
 		budget := contentBudget(t, 80, h)
 		if budget <= 0 {
@@ -300,14 +280,10 @@ func TestServiceConfirmationSurvivesEveryHeight(t *testing.T) {
 		v.status.arm("Reset all data and quit - press y to confirm, any other key to cancel")
 
 		out := v.View()
-		if got := renderedRows(out); got > budget {
-			t.Errorf("80x%d (budget %d): rendered %d rows", h, budget, got)
-		}
+		assert.LessOrEqual(t, renderedRows(out), budget, "80x%d", h)
 		// Within the budget is necessary but not sufficient: the prompt must be
 		// among the rows that survive the shell's clamp.
-		if !contains(fitLines(out, budget), "press y to confirm") {
-			t.Errorf("80x%d: the reset confirmation is not on the frame:\n%s", h, out)
-		}
+		assert.Contains(t, fitLines(out, budget), "press y to confirm", "80x%d: the reset confirmation must stay on the frame", h)
 	}
 }
 
@@ -316,7 +292,7 @@ func TestServiceConfirmationSurvivesEveryHeight(t *testing.T) {
 // eight-GPU box produced ten unshrinkable lines that pushed the engine table,
 // the models list, and the status line off the frame — leaving a hardware
 // readout and no sign anything was missing.
-func TestDetailSurvivesAManyGpuHost(t *testing.T) {
+func TestDetail_SurvivesAManyGpuHost(t *testing.T) {
 	for _, gpuCount := range []int{1, 2, 4, 8, 16} {
 		gpus := make([]noderec.GPUInfo, gpuCount)
 		for i := range gpus {
@@ -343,16 +319,10 @@ func TestDetailSurvivesAManyGpuHost(t *testing.T) {
 			d.status.error("start lmstudio failed: port in use")
 
 			out := d.View()
-			if got := renderedRows(out); got > budget {
-				t.Errorf("%d GPUs at 80x%d (budget %d): rendered %d rows",
-					gpuCount, h, budget, got)
-			}
+			assert.LessOrEqual(t, renderedRows(out), budget, "%d GPUs at 80x%d", gpuCount, h)
 			// The status line is what the operator just caused; it must not be
 			// the thing a long device list displaces.
-			if !contains(fitLines(out, budget), "start lmstudio failed") {
-				t.Errorf("%d GPUs at 80x%d: the status line was displaced:\n%s",
-					gpuCount, h, out)
-			}
+			assert.Contains(t, fitLines(out, budget), "start lmstudio failed", "%d GPUs at 80x%d: the status line must stay on the frame", gpuCount, h)
 		}
 	}
 }
@@ -363,16 +333,14 @@ func TestDetailSurvivesAManyGpuHost(t *testing.T) {
 // digit, which leaves it armed behind a prompt that is no longer on screen — to
 // be confirmed by whatever the operator presses on returning. One of the three
 // sites had this and the other two did not.
-func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
+func TestArmedActions_CaptureKeysAcrossViews(t *testing.T) {
 	// Armed through the real key paths, so the prompt is set the way it is at
 	// runtime rather than by poking the flag.
 	nodesLeave := newNodesView(nil)
 	nodesLeave.SetSize(80, 20)
 	nodesLeave.identity.ClusterID = "cluster-1"
 	nodesLeave.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	if !nodesLeave.confirmLeave {
-		t.Fatal("leave did not arm")
-	}
+	require.True(t, nodesLeave.confirmLeave, "leave did not arm")
 
 	nodesRemove := newNodesView(nil)
 	nodesRemove.SetSize(80, 20)
@@ -382,17 +350,13 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 	nodesRemove.rebuild()
 	nodesRemove.selectedKey = "peer"
 	nodesRemove.removeSelected()
-	if nodesRemove.confirmRemove == "" {
-		t.Fatal("remove did not arm")
-	}
+	require.NotEmpty(t, nodesRemove.confirmRemove, "remove did not arm")
 
 	svc := newServiceView(nil)
 	svc.SetSize(80, 20)
 	svc.cursor = len(svc.items) - 1
 	svc.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if svc.confirming < 0 {
-		t.Fatal("reset did not arm")
-	}
+	require.GreaterOrEqual(t, svc.confirming, 0, "reset did not arm")
 
 	detail := localDetail()
 	detail.models = modelsResult{ModelsByEngine: map[string][]string{"ollama": {"victim"}}}
@@ -406,9 +370,7 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 		"service/reset": svc,
 		"detail/delete": detail,
 	} {
-		if !ic.CapturingInput() {
-			t.Errorf("%s: armed but not capturing input; tab or a digit escapes the confirmation", name)
-		}
+		assert.True(t, ic.CapturingInput(), "%s: armed actions must capture input so tab or a digit cannot escape confirmation", name)
 	}
 
 	// And every armed prompt must stay on screen for as long as it is armed.
@@ -418,12 +380,8 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 		"service/reset": &svc.status,
 		"detail/delete": &detail.status,
 	} {
-		if s.expired() {
-			t.Errorf("%s: the confirmation prompt expired while the action stayed armed", name)
-		}
-		if !contains(s.render(), "press y to confirm") {
-			t.Errorf("%s: the prompt does not say how to confirm: %q", name, s.render())
-		}
+		assert.False(t, s.expired(), "%s: the confirmation prompt must stay while the action is armed", name)
+		assert.Contains(t, s.render(), "press y to confirm", "%s: the prompt must say how to confirm", name)
 	}
 }
 
@@ -436,7 +394,7 @@ func TestArmedActionsOwnTheKeyboardEverywhere(t *testing.T) {
 // it was about to render, so the section went through at exactly the sizes
 // where it did not fit — and the shell deleted the status line, which is where
 // an armed "press y to confirm" lives.
-func TestDetailStaysInBudgetWithAStaleEngineList(t *testing.T) {
+func TestDetail_StaysInBudgetWithAStaleEngineList(t *testing.T) {
 	gpus := make([]noderec.GPUInfo, 4)
 	for i := range gpus {
 		gpus[i] = noderec.GPUInfo{Name: "GPU", VramBytes: 1 << 30}
@@ -461,13 +419,8 @@ func TestDetailStaysInBudgetWithAStaleEngineList(t *testing.T) {
 			d.status.error("start failed: port in use")
 
 			out := d.View()
-			if got := renderedRows(out); got > budget {
-				t.Errorf("stale=%v at 80x%d (budget %d): rendered %d rows",
-					stale, h, budget, got)
-			}
-			if !contains(fitLines(out, budget), "start failed") {
-				t.Errorf("stale=%v at 80x%d: the status line was displaced", stale, h)
-			}
+			assert.LessOrEqual(t, renderedRows(out), budget, "stale=%v at 80x%d", stale, h)
+			assert.Contains(t, fitLines(out, budget), "start failed", "stale=%v at 80x%d: the status line must stay on the frame", stale, h)
 		}
 	}
 }
@@ -480,21 +433,17 @@ func TestDetailStaysInBudgetWithAStaleEngineList(t *testing.T) {
 // bindings regardless — so the composed line advertised keys that no longer
 // reached the shell. In a port field the digits are what you are meant to type,
 // and q typed a q instead of quitting.
-func TestFooterHidesGlobalsWhileCapturing(t *testing.T) {
+func TestFooter_HidesGlobalsWhileCapturing(t *testing.T) {
 	m := newTestModel(defaultViews(nil)...)
 	m.width, m.height = 80, 24
 	m.resizeViews()
 
 	nodes, ok := m.views[0].(*nodesView)
-	if !ok {
-		t.Fatal("first view is not the nodes tab")
-	}
+	require.True(t, ok, "first view is not the nodes tab")
 
 	// Not capturing: the globals are there, and first, so a narrow terminal
 	// cannot truncate away the way out.
-	if got := m.footerView(); !contains(got, "quit") {
-		t.Errorf("idle footer does not offer quit: %s", got)
-	}
+	assert.Contains(t, m.footerView(), "quit", "idle footer must offer quit")
 
 	for name, arm := range map[string]func(){
 		"text field": func() { nodes.beginInput(nodesInputManualAddress, "host") },
@@ -506,10 +455,7 @@ func TestFooterHidesGlobalsWhileCapturing(t *testing.T) {
 		arm()
 		footer := m.footerView()
 		for _, dead := range []string{"quit", "go to tab", "next"} {
-			if contains(footer, dead) {
-				t.Errorf("%s: footer advertises %q, which does not reach the shell: %s",
-					name, dead, footer)
-			}
+			assert.NotContains(t, footer, dead, "%s: footer must omit keys that do not reach the shell", name)
 		}
 	}
 }
@@ -585,7 +531,7 @@ func noteStatus(v View) {
 
 // TestCatalogBrowserStaysInBudget covers the overlay, which replaces a whole
 // screen and so gets the full content budget.
-func TestCatalogBrowserStaysInBudget(t *testing.T) {
+func TestCatalogBrowser_StaysInBudget(t *testing.T) {
 	for _, size := range [][2]int{{120, 40}, {80, 24}, {60, 12}, {40, 12}} {
 		w, h := size[0], size[1]
 		budget := contentBudget(t, w, h)
@@ -603,20 +549,16 @@ func TestCatalogBrowserStaysInBudget(t *testing.T) {
 		b.refresh()
 		b.SetSize(w, budget)
 
-		if got := renderedRows(b.View()); got > budget {
-			t.Errorf("catalog rendered %d rows into %d at %dx%d", got, budget, w, h)
-		}
+		assert.LessOrEqual(t, renderedRows(b.View()), budget, "catalog at %dx%d", w, h)
 
 		b.status.error("download failed")
-		if got := renderedRows(b.View()); got > budget {
-			t.Errorf("catalog + status rendered %d rows into %d at %dx%d", got, budget, w, h)
-		}
+		assert.LessOrEqual(t, renderedRows(b.View()), budget, "catalog + status at %dx%d", w, h)
 	}
 }
 
 // TestNodeDetailStaysInBudgetWhenShort covers the drill-down at sizes below the
 // 80x24 the per-view test uses, where its two tables and hardware block compete.
-func TestNodeDetailStaysInBudgetWhenShort(t *testing.T) {
+func TestNodeDetail_StaysInBudgetWhenShort(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {80, 16}, {80, 13}, {60, 12}, {40, 12}} {
 		w, h := size[0], size[1]
 		budget := contentBudget(t, w, h)
@@ -640,15 +582,13 @@ func TestNodeDetailStaysInBudgetWhenShort(t *testing.T) {
 		d.status.error("start failed: no such engine")
 		d.mode = detailInputEnginePort
 
-		if got := renderedRows(d.View()); got > budget {
-			t.Errorf("node detail rendered %d rows into %d at %dx%d", got, budget, w, h)
-		}
+		assert.LessOrEqual(t, renderedRows(d.View()), budget, "node detail at %dx%d", w, h)
 	}
 }
 
 // TestNarrowAndShortTerminalsStayInBudget checks the smallest sizes anyone
 // plausibly uses, where the budget can go to almost nothing.
-func TestNarrowAndShortTerminalsStayInBudget(t *testing.T) {
+func TestTerminalViews_FitNarrowAndShortDimensions(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {80, 14}, {60, 12}, {40, 12}} {
 		w, h := size[0], size[1]
 		budget := contentBudget(t, w, h)
@@ -668,9 +608,7 @@ func TestNarrowAndShortTerminalsStayInBudget(t *testing.T) {
 		v.noteFeed(feedManual, errStub{})
 		v.status.error("failed")
 
-		if got := renderedRows(v.View()); got > budget {
-			t.Errorf("%dx%d: nodes rendered %d rows into %d", w, h, got, budget)
-		}
+		assert.LessOrEqual(t, renderedRows(v.View()), budget, "nodes at %dx%d", w, h)
 	}
 }
 
