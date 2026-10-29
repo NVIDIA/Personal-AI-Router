@@ -136,9 +136,9 @@ Requests (caller → service):
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
+| `engine:get-installed` | — | `{ engines: [EngineStatus] }` for every engine this host can run; an engine whose manifest has no block for the host's OS and CPU is left out |
 | `engine:describe` | `{ engine }` | the engine's manifest |
-| `engine:status` | `{ engine }` | `EngineStatus` |
+| `engine:status` | `{ engine }` | `EngineStatus`; an error for an engine this host cannot run |
 | `engine:install` | `{ engine }` | `EngineStatus` (after install) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes the engines this service installed, selected by their install marker, each through the `engine:uninstall` path. Backs both clients' "reset all data"; the platform uninstallers reach the same code through `--uninstall-managed` because they have no broker. Neither `removed` nor `error` means the engine was left alone as not ours. |

@@ -241,7 +241,7 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	}
 	plat, ok := m.HostPlatform()
 	if !ok {
-		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("%s is not supported on %s/%s", m.DisplayName, runtime.GOOS, runtime.GOARCH)
 	}
 	st := &engineState{
 		manifest:   m,

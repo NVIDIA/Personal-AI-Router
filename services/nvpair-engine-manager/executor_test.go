@@ -408,6 +408,29 @@ func TestGetInstalled_AdoptsExternallyRunningEngineWithoutDetectPath(t *testing.
 	require.True(t, statuses[0].Healthy, "expected get-installed to adopt the external engine (%v)", statuses)
 }
 
+// An engine whose manifest has no block for this OS and CPU, the way vLLM has
+// none for Windows, can never be installed here, so it is not offered.
+func TestGetInstalled_OmitsEnginesThisHostCannotRun(t *testing.T) {
+	runsHere := testEngineManifest(fakeEngineBin)
+	elsewhere := &Manifest{
+		Engine: "elsewhere", DisplayName: "Elsewhere", ManifestVersion: 1,
+		Platforms: map[string]Platform{"plan9/mips": {Runtime: Runtime{Bin: "elsewhere", Port: 1}}},
+	}
+	reg := NewRegistry()
+	reg.engines[runsHere.Engine] = runsHere
+	reg.engines[elsewhere.Engine] = elsewhere
+	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+
+	var listed []string
+	for _, st := range ex.GetInstalled() {
+		listed = append(listed, st.Engine)
+	}
+	assert.Equal(t, []string{runsHere.Engine}, listed)
+
+	_, err := ex.Status("elsewhere")
+	require.ErrorContains(t, err, "Elsewhere is not supported on "+runtime.GOOS+"/"+runtime.GOARCH)
+}
+
 func TestInstall_AdoptsExternalServiceWithoutDownloading(t *testing.T) {
 	engineSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/version" {

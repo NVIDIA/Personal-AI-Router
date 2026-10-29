@@ -43,7 +43,8 @@ claim GPU activation.
 
 The `vllm` manifest covers Linux (`linux/amd64` and `linux/arm64`, NVIDIA GPU
 with a CUDA 13 driver) and Apple Silicon macOS (`darwin/arm64`, macOS 15 or newer,
-through the vLLM-Metal plugin). There is no native Windows or Intel Mac path. The
+through the vLLM-Metal plugin). There is no native Windows path, so on Windows
+`engine:get-installed` leaves vLLM out and PAIR does not offer it. The
 macOS install builds a managed Python 3.12 venv with a sha256-pinned `uv` and
 installs the pinned vLLM core and vLLM-Metal wheels, each checked against a
 digest, so no compiler is needed. The engine's PAIR gateway listens on `8001`
@@ -216,9 +217,9 @@ Requests (caller → service):
 
 | Method | Params | Result |
 |---|---|---|
-| `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
+| `engine:get-installed` | — | `{ engines: [EngineStatus] }` for every engine this host can run; an engine whose manifest has no block for the host's OS and CPU is left out |
 | `engine:describe` | `{ engine }` | the engine's manifest |
-| `engine:status` | `{ engine }` | `EngineStatus` |
+| `engine:status` | `{ engine }` | `EngineStatus`; an error for an engine this host cannot run |
 | `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes every engine this service installed, selected by its install marker, each through the `engine:uninstall` path. Backs "reset all data" in both clients; downloaded models are kept. Neither `removed` nor `error` means the engine was left alone as not ours |

@@ -59,12 +59,6 @@ func (e *Executor) Status(engine string) (EngineStatus, error) {
 func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, error) {
 	st, err := e.state(engine)
 	if err != nil {
-		// Known engine with no host-platform block: return a shell status
-		// (matching get-installed) rather than erroring, so status is
-		// consistent for the same engine across methods.
-		if m, ok := e.reg.Get(engine); ok {
-			return EngineStatus{Engine: engine, DisplayName: m.DisplayName}, nil
-		}
 		return EngineStatus{}, err
 	}
 	// A start, stop, install or model switch holds opMu for as long as it takes,
@@ -87,19 +81,14 @@ func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, err
 	return e.snapshot(engine, st), nil
 }
 
-// GetInstalled lists every known engine with its current status.
+// GetInstalled lists every engine this host can run with its current status.
 func (e *Executor) GetInstalled() []EngineStatus {
 	var out []EngineStatus
 	for _, name := range e.reg.Names() {
 		st, err := e.state(name)
 		if err != nil {
-			// Known engine with no block for this host: surface a shell
-			// status so the UI can still list it as unavailable here.
-			dn := name
-			if m, ok := e.reg.Get(name); ok {
-				dn = m.DisplayName
-			}
-			out = append(out, EngineStatus{Engine: name, DisplayName: dn})
+			// No block for this host, such as vLLM on Windows: the engine
+			// cannot be installed or run here, so it is not offered at all.
 			continue
 		}
 		// Same reasoning as StatusAtPort: one engine mid-start must not hold up
