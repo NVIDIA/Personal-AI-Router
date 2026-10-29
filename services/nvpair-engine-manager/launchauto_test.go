@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -226,32 +227,89 @@ func TestApplyAutoLaunchAppendsAfterTheUsersArguments(t *testing.T) {
 	}
 }
 
-func TestToolCallingIsEnabledForKnownFamilies(t *testing.T) {
-	cases := map[string]string{"qwen3": "hermes", "qwen2": "hermes", "qwen3_vl": "hermes"}
-	for modelType, parser := range cases {
-		cfg := strings.Replace(qwen8BConfig, `{`, `{"model_type":"`+modelType+`",`, 1)
-		cache := cachedModel(t, "org/m", cfg, 1_000_000)
-		extra := planToolCalling([]string{"--model", "org/m"}, cache)
-		if flagOf(t, extra, "--tool-call-parser") != parser || !slices.Contains(extra, "--enable-auto-tool-choice") {
-			t.Errorf("%s: got %v, want parser %s and auto tool choice", modelType, extra, parser)
-		}
+func TestPlanToolCalling_UsesTheParserThatReadsTheModelsToolCalls(t *testing.T) {
+	cache := cachedModel(t, "org/m", qwen8BConfig, 1_000_000)
+	var probedSnapshot string
+	withToolParserProbe(t, func(bin, snapshot string) (toolParserProbe, error) {
+		probedSnapshot = snapshot
+		return toolParserProbe{Matches: []string{"ernie45", "granite4", "hermes", "qwen3_json"}}, nil
+	})
+
+	extra, parser := planToolCalling([]string{"--model", "org/m"}, cache, "/opt/vllm/venv/bin/vllm")
+
+	if parser != "hermes" || flagOf(t, extra, "--tool-call-parser") != "hermes" || !slices.Contains(extra, "--enable-auto-tool-choice") {
+		t.Fatalf("got %v (%q), want the hermes parser and auto tool choice", extra, parser)
+	}
+	if !strings.Contains(probedSnapshot, filepath.Join("models--org--m", "snapshots")) {
+		t.Fatalf("probed %q, want the model's snapshot directory", probedSnapshot)
 	}
 }
 
-func TestToolCallingLeavesUnknownFamiliesAndUserChoicesAlone(t *testing.T) {
-	unknown := cachedModel(t, "org/m", strings.Replace(qwen8BConfig, `{`, `{"model_type":"someother",`, 1), 1_000_000)
-	if extra := planToolCalling([]string{"--model", "org/m"}, unknown); len(extra) != 0 {
-		t.Fatalf("a family with no verified parser must be left as vLLM defaults: %v", extra)
+func TestPlanToolCalling_PrefersTheModelsOwnResponseTemplate(t *testing.T) {
+	cache := cachedModel(t, "org/m", qwen8BConfig, 1_000_000)
+	withToolParserProbe(t, func(bin, snapshot string) (toolParserProbe, error) {
+		return toolParserProbe{HF: true, Matches: []string{"hermes"}}, nil
+	})
+
+	extra, _ := planToolCalling([]string{"--model", "org/m"}, cache, "vllm")
+
+	if flagOf(t, extra, "--tool-call-parser") != "hf" {
+		t.Fatalf("got %v, want the hf parser for a model that ships response_template", extra)
 	}
-	if extra := planToolCalling([]string{"--model", "org/not-cached"}, t.TempDir()); len(extra) != 0 {
-		t.Fatalf("an uncached model has no known family: %v", extra)
+}
+
+func TestPlanToolCalling_AddsNothingWhenNoParserCanBeChosen(t *testing.T) {
+	cache := cachedModel(t, "org/m", qwen8BConfig, 1_000_000)
+	cases := map[string]func(bin, snapshot string) (toolParserProbe, error){
+		"no parser reads the format": func(bin, snapshot string) (toolParserProbe, error) { return toolParserProbe{}, nil },
+		"the probe fails":            func(bin, snapshot string) (toolParserProbe, error) { return toolParserProbe{}, errors.New("no python") },
 	}
-	qwen := cachedModel(t, "org/q", strings.Replace(qwen8BConfig, `{`, `{"model_type":"qwen3",`, 1), 1_000_000)
-	if extra := planToolCalling([]string{"--model", "org/q", "--tool-call-parser", "qwen3_xml", "--enable-auto-tool-choice"}, qwen); len(extra) != 0 {
+	for name, probe := range cases {
+		withToolParserProbe(t, probe)
+		if extra, parser := planToolCalling([]string{"--model", "org/m"}, cache, "vllm"); len(extra) != 0 || parser != "" {
+			t.Errorf("%s: got %v (%q), want vLLM's defaults", name, extra, parser)
+		}
+	}
+
+	withToolParserProbe(t, func(bin, snapshot string) (toolParserProbe, error) {
+		t.Fatal("a model that is not downloaded has no template to probe")
+		return toolParserProbe{}, nil
+	})
+	if extra, _ := planToolCalling([]string{"--model", "org/not-cached"}, t.TempDir(), "vllm"); len(extra) != 0 {
+		t.Fatalf("an uncached model got %v", extra)
+	}
+}
+
+func TestPlanToolCalling_KeepsTheParserTheUserChose(t *testing.T) {
+	cache := cachedModel(t, "org/q", qwen8BConfig, 1_000_000)
+	withToolParserProbe(t, func(bin, snapshot string) (toolParserProbe, error) {
+		t.Fatal("a parser the user named needs no probe")
+		return toolParserProbe{}, nil
+	})
+
+	if extra, _ := planToolCalling([]string{"--model", "org/q", "--tool-call-parser", "qwen3_xml", "--enable-auto-tool-choice"}, cache, "vllm"); len(extra) != 0 {
 		t.Fatalf("the user set both: %v", extra)
 	}
-	extra := planToolCalling([]string{"--model", "org/q", "--tool-call-parser", "qwen3_xml"}, qwen)
-	if slices.Contains(extra, "--tool-call-parser") || !slices.Contains(extra, "--enable-auto-tool-choice") {
-		t.Fatalf("the user's parser must stand and only the enable flag be added: %v", extra)
+	extra, parser := planToolCalling([]string{"--model", "org/q", "--tool-call-parser", "qwen3_xml"}, cache, "vllm")
+	if parser != "qwen3_xml" || !slices.Equal(extra, []string{"--enable-auto-tool-choice"}) {
+		t.Fatalf("got %v (%q), want only the enable flag beside the user's parser", extra, parser)
+	}
+}
+
+func TestParsesToolCalls_NeedsBothFlags(t *testing.T) {
+	cases := map[string]struct {
+		args []string
+		want bool
+	}{
+		"both flags":       {[]string{"--model", "m", "--tool-call-parser", "hermes", "--enable-auto-tool-choice"}, true},
+		"equals form":      {[]string{"--tool-call-parser=hermes", "--enable-auto-tool-choice"}, true},
+		"parser only":      {[]string{"--tool-call-parser", "hermes"}, false},
+		"enable flag only": {[]string{"--enable-auto-tool-choice"}, false},
+		"neither":          {[]string{"--model", "m"}, false},
+	}
+	for name, c := range cases {
+		if got := parsesToolCalls(c.args); got != c.want {
+			t.Errorf("%s: got %v, want %v", name, got, c.want)
+		}
 	}
 }

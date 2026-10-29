@@ -66,9 +66,9 @@ func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir
 	}
 	hub := filepath.Join(expandPath(modelsDir), "hub")
 	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens))
-	if tools := planToolCalling(command.Args, hub); len(tools) > 0 {
+	if tools, parser := planToolCalling(command.Args, hub, command.Bin); len(tools) > 0 {
 		extra = append(extra, tools...)
-		note += " tool calling enabled"
+		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
 	}
 	if len(extra) == 0 {
 		return command
@@ -309,47 +309,50 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 	return extra, fmt.Sprintf("native window %d, target %d, weights %.1f GiB, GPU free %.1f GiB", native, target, float64(weights)/float64(gib), float64(free)/float64(gib))
 }
 
-// toolCallParsers maps a model's config.json model_type to the vLLM tool-call
-// parser that understands its tool-call format. Only families whose parser has
-// been run against a real model here are listed; others keep vLLM's default,
-// where a request that sets tool_choice "auto" is rejected, and can name a
-// parser in the launch arguments.
-var toolCallParsers = map[string]string{
-	"qwen2":        "hermes",
-	"qwen2_moe":    "hermes",
-	"qwen3":        "hermes",
-	"qwen3_moe":    "hermes",
-	"qwen2_vl":     "hermes",
-	"qwen2_5_vl":   "hermes",
-	"qwen3_vl":     "hermes",
-	"qwen3_vl_moe": "hermes",
-}
-
 // planToolCalling returns the arguments that let clients send tool_choice
-// "auto", which agents such as Hermes do on every request. vLLM answers HTTP 400
-// unless both --enable-auto-tool-choice and --tool-call-parser are set. A flag
-// the user already supplied is left as given.
-func planToolCalling(args []string, hubDir string) []string {
+// "auto", which agent clients do on every request. vLLM answers HTTP 400
+// unless both --enable-auto-tool-choice and --tool-call-parser are set. The
+// parser is the one the installed vLLM provides for the model's own tool-call
+// format (see detectToolParser), so no list of model families is kept here. A
+// flag the user already supplied is left as given. When no parser fits, nothing
+// is added, and the gateway takes tools out of the requests vLLM would reject.
+func planToolCalling(args []string, hubDir, bin string) (extra []string, parser string) {
 	model, ok := launchFlagValue(args, "--model")
 	if !ok || model == "" {
-		return nil
+		return nil, ""
 	}
-	_, hasParser := launchFlagValue(args, "--tool-call-parser")
+	userParser, hasParser := launchFlagValue(args, "--tool-call-parser")
 	_, hasEnable := launchFlagValue(args, "--enable-auto-tool-choice")
 	if hasParser && hasEnable {
-		return nil
+		return nil, userParser
 	}
-	var extra []string
-	if !hasParser {
-		cfg, _, cached := readHFModel(hubDir, model)
-		parser := toolCallParsers[cfg.ModelType]
-		if !cached || parser == "" {
-			return nil
-		}
-		extra = append(extra, "--tool-call-parser", parser)
+	if hasParser {
+		return []string{"--enable-auto-tool-choice"}, userParser
 	}
+	snapshot, _, _, cached := findHFSnapshot(hubDir, model)
+	if !cached {
+		return nil, ""
+	}
+	parser, matched, err := detectToolParser(bin, snapshot)
+	if err != nil {
+		slog.Warn("could not work out the model's tool-call format; requests with tools are answered without them", "model", model, "err", err)
+		return nil, ""
+	}
+	if parser == "" {
+		slog.Info("no vLLM tool-call parser reads this model's tool calls; requests with tools are answered without them", "model", model)
+		return nil, ""
+	}
+	slog.Info("vLLM tool-call parser chosen from the model's chat template", "model", model, "parser", parser, "matched", matched)
+	extra = []string{"--tool-call-parser", parser}
 	if !hasEnable {
 		extra = append(extra, "--enable-auto-tool-choice")
 	}
-	return extra
+	return extra, parser
+}
+
+// parsesToolCalls reports whether a vLLM launch can answer tool_choice "auto".
+func parsesToolCalls(args []string) bool {
+	_, hasParser := launchFlagValue(args, "--tool-call-parser")
+	_, hasEnable := launchFlagValue(args, "--enable-auto-tool-choice")
+	return hasParser && hasEnable
 }

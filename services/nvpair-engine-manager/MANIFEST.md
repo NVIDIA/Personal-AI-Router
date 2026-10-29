@@ -388,8 +388,9 @@ Hugging Face cache and the free GPU memory, then appends `--max-model-len`
 native window, and `--gpu-memory-utilization` sized to weights plus KV cache.
 Arguments the user saved always win and nothing added is written back to saved
 settings, so a model switch is re-sized for the new model. It also adds
-`--enable-auto-tool-choice` and the matching `--tool-call-parser` for model
-families known to work (Qwen: `hermes`). Tensor- or
+`--enable-auto-tool-choice` and a `--tool-call-parser` found from the model's own
+chat template with the installed vLLM (see the README's vLLM section), or nothing
+when no parser reads the model's tool calls. Tensor- or
 pipeline-parallel launches are left alone. It requires a process-mode runtime
 with `editable_launch`.
 
