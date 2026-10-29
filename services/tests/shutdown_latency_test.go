@@ -163,7 +163,7 @@ func quitAndCountStderr(t *testing.T, msgs <-chan jsonrpc.Message, lines <-chan 
 				msgs = nil
 				continue
 			}
-			if replied || msg.Method != "" || !idEquals(msg.ID, replyID) {
+			if replied || msg.Method != "" || !idEquals(t, msg.ID, replyID) {
 				continue
 			}
 			if msg.Error != nil {
