@@ -263,10 +263,8 @@ func (h *slowStopHandle) Stop() {
 func TestStopWorkersJoinsConcurrently(t *testing.T) {
 	resetTeardownClock()
 
-	const (
-		workers  = 10
-		stopTime = 400 * time.Millisecond
-	)
+	workers := 10
+	stopTime := 400 * time.Millisecond
 	b := &Broker{}
 	for i := 0; i < workers; i++ {
 		h := newSlowStopHandle(stopTime)
@@ -284,7 +282,7 @@ func TestStopWorkersJoinsConcurrently(t *testing.T) {
 
 	// Comfortably under the sequential sum, and no faster than one worker's exit
 	// (which would mean the joins were not awaited at all).
-	if elapsed >= workers*stopTime/2 {
+	if elapsed >= time.Duration(workers)*stopTime/2 {
 		t.Fatalf("teardown took %v for %d workers of %v each; the joins are still serialized",
 			elapsed, workers, stopTime)
 	}
