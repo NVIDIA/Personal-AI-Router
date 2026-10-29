@@ -515,9 +515,6 @@ func (v *nodesView) updateList(msg tea.Msg) tea.Cmd {
 	case inviteCancelledMsg:
 		return v.handleInviteCancelled(msg)
 
-	case memberRemovedMsg:
-		return v.handleMemberRemoved(msg)
-
 	case NotificationMsg:
 		return v.handleNotification(msg.Msg)
 
@@ -1387,30 +1384,17 @@ func (v *nodesView) removeMember(key string) tea.Cmd {
 	v.status.busy("removing %s from the cluster...", name)
 	return call(v.client, "nodes:remove", map[string]string{"nodeUuid": key},
 		func(_ *rpc.Message, err error) tea.Msg {
-			return memberRemovedMsg{name: name, manualID: manualID, err: err}
-		})
-}
-
-// memberRemovedMsg is the outcome of nodes:remove, carrying the manual entry
-// still to be forgotten.
-type memberRemovedMsg struct {
-	name     string
-	manualID string
-	err      error
-}
-
-// handleMemberRemoved reports an un-pairing, forgetting the peer's manual entry
-// first when it has one.
-func (v *nodesView) handleMemberRemoved(msg memberRemovedMsg) tea.Cmd {
-	if msg.err != nil || msg.manualID == "" {
-		return func() tea.Msg { return nodeActionMsg{what: "remove " + msg.name, err: msg.err} }
-	}
-	return call(v.client, "node/remove", map[string]string{"id": msg.manualID},
-		func(_ *rpc.Message, err error) tea.Msg {
-			if err != nil {
-				return nodeActionMsg{what: "remove manual entry " + msg.name, err: err}
+			if err != nil || manualID == "" {
+				return nodeActionMsg{what: "remove " + name, err: err}
 			}
-			return nodeActionMsg{what: "remove " + msg.name}
+			// Still on the command's goroutine, so the follow-up runs in line.
+			return call(v.client, "node/remove", map[string]string{"id": manualID},
+				func(_ *rpc.Message, err error) tea.Msg {
+					if err != nil {
+						return nodeActionMsg{what: "remove manual entry " + name, err: err}
+					}
+					return nodeActionMsg{what: "remove " + name}
+				})()
 		})
 }
 
