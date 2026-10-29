@@ -11,11 +11,11 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
@@ -195,13 +195,10 @@ func TestGraceFor_SharesTheRemainingBudget(t *testing.T) {
 	// Half the budget is left: enough for any single worker's own grace.
 	setTeardownStart(time.Now().Add(-teardownBudget / 2))
 
-	if got := graceFor("scanner"); got != workerStopGrace {
-		t.Fatalf("ordinary worker grace = %v, want its full %v with half the budget left",
-			got, workerStopGrace)
-	}
-	if got := graceFor(engineManagerWorkerName); got < teardownBudget/2-100*time.Millisecond {
-		t.Fatalf("engine-manager grace = %v, want about the %v remaining", got, teardownBudget/2)
-	}
+	assert.Equal(t, workerStopGrace, graceFor("scanner"), "an ordinary worker keeps its full grace with half the budget left")
+	// Give or take the clock ticking between setting the start and reading it.
+	assert.GreaterOrEqual(t, graceFor(engineManagerWorkerName), teardownBudget/2-100*time.Millisecond,
+		"engine-manager reads the same remaining budget, with nothing reserved")
 }
 
 // TestEngineShutdownDeadlineDrawsOnTheBudget checks the one step that used to have
@@ -257,10 +254,10 @@ func (h *slowStopHandle) Stop() {
 	})
 }
 
-// TestStopWorkersJoinsConcurrently checks that teardown costs the slowest
+// TestStopWorkers_JoinsWorkersConcurrently checks that teardown costs the slowest
 // worker's exit rather than the sum. The proxy and node-info both drain HTTP
 // servers on their way out, so on a loaded tree the sum is several drains.
-func TestStopWorkersJoinsConcurrently(t *testing.T) {
+func TestStopWorkers_JoinsWorkersConcurrently(t *testing.T) {
 	resetTeardownClock()
 
 	workers := 10
@@ -270,9 +267,7 @@ func TestStopWorkersJoinsConcurrently(t *testing.T) {
 		h := newSlowStopHandle(stopTime)
 		sup := newSupervisor(fmt.Sprintf("worker-%d", i), noRestartPolicy(),
 			func() (supervisedHandle, error) { return h, nil })
-		if err := sup.Start(); err != nil {
-			t.Fatalf("start worker-%d: %v", i, err)
-		}
+		require.NoError(t, sup.Start(), "start worker-%d", i)
 		b.trackWorker(sup)
 	}
 
@@ -282,14 +277,8 @@ func TestStopWorkersJoinsConcurrently(t *testing.T) {
 
 	// Comfortably under the sequential sum, and no faster than one worker's exit
 	// (which would mean the joins were not awaited at all).
-	if elapsed >= time.Duration(workers)*stopTime/2 {
-		t.Fatalf("teardown took %v for %d workers of %v each; the joins are still serialized",
-			elapsed, workers, stopTime)
-	}
-	if elapsed < stopTime {
-		t.Fatalf("teardown took %v, less than one worker's %v exit; the joins were not awaited",
-			elapsed, stopTime)
-	}
+	assert.Less(t, elapsed, time.Duration(workers)*stopTime/2, "the joins must not be serialized")
+	assert.GreaterOrEqual(t, elapsed, stopTime, "the joins must be awaited")
 }
 
 // lateOrderedHandle is an orderedLifecycleHandle that takes a while to exit, so
@@ -304,12 +293,12 @@ func (h *lateOrderedHandle) Stop() {
 	h.orderedLifecycleHandle.Stop()
 }
 
-// TestStopWorkersStopsTheProxyFirst covers a Serve that returns before
+// TestStopWorkers_StopsTheProxyFirst covers a Serve that returns before
 // shutdownInferenceStack, e.g. on a failed app:ready. Ingress must still close
 // before engine-manager starts stopping engines, even though the joins fan out.
 // The proxy is slow to exit, so a proxy stop fanned out with the rest would be
 // recorded after engine-manager's.
-func TestStopWorkersStopsTheProxyFirst(t *testing.T) {
+func TestStopWorkers_StopsTheProxyFirst(t *testing.T) {
 	resetTeardownClock()
 
 	order := make(chan string, 2)
@@ -323,9 +312,7 @@ func TestStopWorkersStopsTheProxyFirst(t *testing.T) {
 	b := &Broker{}
 	for name, h := range handles {
 		sup := newSupervisor(name, noRestartPolicy(), func() (supervisedHandle, error) { return h, nil })
-		if err := sup.Start(); err != nil {
-			t.Fatalf("start %s: %v", name, err)
-		}
+		require.NoError(t, sup.Start(), "start %s", name)
 		if name == engines.ProxyComponent {
 			b.proxySup = sup
 		}
@@ -334,17 +321,14 @@ func TestStopWorkersStopsTheProxyFirst(t *testing.T) {
 
 	b.stopWorkers()
 
-	got := []string{<-order, <-order}
-	if got[0] != engines.ProxyComponent {
-		t.Fatalf("stop order = %v, want %s first", got, engines.ProxyComponent)
-	}
+	assert.Equal(t, []string{engines.ProxyComponent, engineManagerWorkerName}, []string{<-order, <-order})
 }
 
-// TestTeardownReportCoversThePhasesAheadOfTheJoins checks the slow-teardown
+// TestSlowTeardownReport_IncludesThePhasesBeforeTheJoins checks the slow-teardown
 // report times from the start of teardown and names the phases ahead of the
 // joins. Here the joins are instant and the engine sweep is what took the time,
 // so a report that timed only the joins would stay silent.
-func TestTeardownReportCoversThePhasesAheadOfTheJoins(t *testing.T) {
+func TestSlowTeardownReport_IncludesThePhasesBeforeTheJoins(t *testing.T) {
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -358,40 +342,31 @@ func TestTeardownReportCoversThePhasesAheadOfTheJoins(t *testing.T) {
 		{name: "engine-sweep", took: 2500 * time.Millisecond},
 	}}
 	sup := newSupervisor("scanner", noRestartPolicy(), func() (supervisedHandle, error) { return newSlowStopHandle(0), nil })
-	if err := sup.Start(); err != nil {
-		t.Fatalf("start scanner: %v", err)
-	}
+	require.NoError(t, sup.Start(), "start scanner")
 	b.trackWorker(sup)
 
 	b.stopWorkers()
 
 	out := logs.String()
-	if !strings.Contains(out, "teardown was slow") {
-		t.Fatalf("no slow-teardown report for a 3s teardown; got %q", out)
-	}
-	if !strings.Contains(out, `phases="proxy=100ms engine-sweep=2500ms"`) {
-		t.Fatalf("report does not name the phases ahead of the joins: %q", out)
-	}
+	require.Contains(t, out, "teardown was slow", "a 3s teardown must be reported")
+	assert.Contains(t, out, `phases="proxy=100ms engine-sweep=2500ms"`)
 	m := regexp.MustCompile(`totalMs=(\d+)`).FindStringSubmatch(out)
-	if m == nil {
-		t.Fatalf("report has no totalMs: %q", out)
-	}
-	if total, _ := strconv.Atoi(m[1]); total < 3000 {
-		t.Fatalf("totalMs = %d, want at least 3000: it must count from the start of teardown", total)
-	}
+	require.Len(t, m, 2, "the report must carry totalMs")
+	total, err := strconv.Atoi(m[1])
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, total, 3000, "totalMs must count from the start of teardown")
 }
 
-// TestStopWorkersSkipsUnstartedTree guards the empty case: a Serve that returns
+// TestStopWorkers_LeavesTheBudgetUnarmedWithNoWorkers guards the empty case: a Serve that returns
 // before any worker came up must not arm the teardown budget or block.
-func TestStopWorkersSkipsUnstartedTree(t *testing.T) {
+func TestStopWorkers_LeavesTheBudgetUnarmedWithNoWorkers(t *testing.T) {
 	resetTeardownClock()
 
 	b := &Broker{}
 	b.stopWorkers()
 
-	if _, active := teardownRemaining(); active {
-		t.Fatal("armed the teardown budget for a tree with no started workers")
-	}
+	_, active := teardownRemaining()
+	assert.False(t, active, "a tree with no started workers must not arm the teardown budget")
 }
 
 func setTeardownStart(at time.Time) {
