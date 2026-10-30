@@ -33,9 +33,19 @@ const (
 	minAutoUtil    = 0.15
 )
 
-// gpuMemory reports total and free bytes on GPU 0. It is a variable so tests
-// can supply a machine.
-var gpuMemory = nvidiaSMIMemory
+// unifiedMemoryHeadroom is taken off the system's available memory when the
+// device shares it, because vLLM measures free memory after its own runtime and
+// execution context have been set up. On a DGX Spark that costs about 3 GiB, so
+// a share sized from the reading before the launch would be refused at startup.
+const unifiedMemoryHeadroom = 3 * gib
+
+// meminfoPath is where the system memory figures come from. It is a variable so
+// tests can supply a machine.
+var meminfoPath = "/proc/meminfo"
+
+// deviceMemory reports total and free bytes on device 0. It is a variable so
+// tests can supply a machine.
+var deviceMemory = detectDeviceMemory
 
 func nvidiaSMIMemory() (total, free int64, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -44,21 +54,21 @@ func nvidiaSMIMemory() (total, free int64, ok bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	return parseGPUMemory(string(out), systemMemory)
+	return gpuMemoryFromQuery(string(out))
 }
 
-// parseGPUMemory reads the first row of nvidia-smi's memory.total,memory.free
-// query, in MiB. On a unified-memory machine such as DGX Spark the GPU shares
-// system RAM and nvidia-smi reports [N/A]; system memory then stands in, as it
-// does in nvpair-node-info, and as vLLM itself sees it there.
-func parseGPUMemory(out string, system func() (total, available int64, ok bool)) (total, free int64, ok bool) {
+// gpuMemoryFromQuery reads the output of the nvidia-smi memory query. A GPU
+// with unified memory, such as the GB10 in a DGX Spark, has no memory of its
+// own and reports "[N/A]" for both figures; its memory is the system's, so the
+// figures come from there instead.
+func gpuMemoryFromQuery(out string) (total, free int64, ok bool) {
 	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
 	parts := strings.Split(line, ",")
 	if len(parts) != 2 {
 		return 0, 0, false
 	}
-	if nvidiaSMINotApplicable(parts[0]) {
-		return system()
+	if memoryNotReported(parts[0]) && memoryNotReported(parts[1]) {
+		return unifiedMemory()
 	}
 	t, errT := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 	f, errF := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
@@ -68,27 +78,21 @@ func parseGPUMemory(out string, system func() (total, available int64, ok bool))
 	return t * 1024 * 1024, f * 1024 * 1024, true
 }
 
-// nvidiaSMINotApplicable reports an nvidia-smi field that holds no number, such
-// as the [N/A] or [Not Supported] a unified-memory GPU gives for its memory.
-func nvidiaSMINotApplicable(field string) bool {
-	value := strings.ToLower(strings.Trim(strings.TrimSpace(field), "[]"))
-	return value == "n/a" || value == "not supported"
+func memoryNotReported(field string) bool {
+	v := strings.ToLower(strings.Trim(strings.TrimSpace(field), "[]"))
+	return v == "n/a" || v == "not supported"
 }
 
-// systemMemory reports total and available system memory from /proc/meminfo.
-func systemMemory() (total, available int64, ok bool) {
-	raw, err := os.ReadFile("/proc/meminfo")
+// unifiedMemory reports the system's total memory and what is left of it for a
+// GPU that shares it, less the headroom vLLM's own startup uses.
+func unifiedMemory() (total, free int64, ok bool) {
+	raw, err := os.ReadFile(meminfoPath)
 	if err != nil {
 		return 0, 0, false
 	}
-	return parseMeminfo(string(raw))
-}
-
-// parseMeminfo reads MemTotal and MemAvailable, which /proc/meminfo gives in kB.
-// Available rather than free counts the page cache the kernel can reclaim.
-func parseMeminfo(text string) (total, available int64, ok bool) {
-	for _, line := range strings.Split(text, "\n") {
-		key, rest, found := strings.Cut(line, ":")
+	var available int64
+	for _, line := range strings.Split(string(raw), "\n") {
+		name, rest, found := strings.Cut(line, ":")
 		if !found {
 			continue
 		}
@@ -96,18 +100,21 @@ func parseMeminfo(text string) (total, available int64, ok bool) {
 		if len(fields) == 0 {
 			continue
 		}
-		kb, err := strconv.ParseInt(fields[0], 10, 64)
+		kib, err := strconv.ParseInt(fields[0], 10, 64)
 		if err != nil {
 			continue
 		}
-		switch key {
+		switch name {
 		case "MemTotal":
-			total = kb * 1024
+			total = kib * 1024
 		case "MemAvailable":
-			available = kb * 1024
+			available = kib * 1024
 		}
 	}
-	return total, available, total > 0 && available > 0
+	if total <= 0 || available <= 0 {
+		return 0, 0, false
+	}
+	return total, max(available-unifiedMemoryHeadroom, 0), true
 }
 
 // applyAutoLaunch appends the arguments the manifest's auto_launch asks for.
@@ -118,7 +125,7 @@ func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir
 		return command
 	}
 	hub := filepath.Join(expandPath(modelsDir), "hub")
-	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens))
+	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), command.Bin)
 	if tools, parser := planToolCalling(command.Args, hub, command.Bin); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
@@ -126,7 +133,7 @@ func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir
 	if len(extra) == 0 {
 		return command
 	}
-	slog.Info("engine launch adjusted for the model and GPU", "engine", engine, "added_args", extra, "reason", note)
+	slog.Info("engine launch adjusted for the model and device memory", "engine", engine, "added_args", extra, "reason", note)
 	command.Args = append(append([]string{}, command.Args...), extra...)
 	return command
 }
@@ -228,15 +235,15 @@ func findHFSnapshot(hubDir, id string) (dir string, cfg hfModelConfig, size int6
 // planHFContext decides the extra vLLM arguments for the model named in args:
 //
 //   - --max-model-len: the target window, or the model's own limit when that is
-//     lower and cannot be extended, or what fits in GPU memory when less.
+//     lower and cannot be extended, or what fits in device memory when less.
 //   - --hf-overrides: YaRN rope scaling when the target exceeds the model's
 //     native window, so a 40K model can serve 64K.
 //   - --gpu-memory-utilization: just enough for weights, KV cache and overhead,
 //     not vLLM's 92% default that would starve other engines.
 //
 // A flag the user already set is never touched. Tensor or pipeline parallel
-// launches are left alone entirely: sizing them needs more than GPU 0.
-func planHFContext(args []string, hubDir string, target int64) (extra []string, note string) {
+// launches are left alone entirely: sizing them needs more than device 0.
+func planHFContext(args []string, hubDir string, target int64, bin string) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
 	}
@@ -255,12 +262,12 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 		return nil, ""
 	}
 
-	total, free, haveGPU := gpuMemory()
+	total, free, haveDevice := deviceMemory(bin)
 	cfg, weights, cached := readHFModel(hubDir, model)
 	if !cached {
 		// Not downloaded yet, so its size and limits are unknown. Only the memory
 		// share can be bounded sensibly.
-		if haveGPU && !userUtil && !userKV {
+		if haveDevice && !userUtil && !userKV {
 			util := math.Floor(math.Min(0.5, float64(free-freeMargin)/float64(total))*100) / 100
 			if util >= minAutoUtil {
 				return []string{"--gpu-memory-utilization", fmt.Sprintf("%.2f", util)}, "model not in cache"
@@ -295,19 +302,19 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 		ctx = native
 	}
 
-	// The GPU share and window must fit together.
+	// The device share and window must fit together.
 	var budget int64
 	switch {
 	case userUtil:
 		util, err := strconv.ParseFloat(userUtilText, 64)
-		if err != nil || !haveGPU {
+		if err != nil || !haveDevice {
 			return nil, ""
 		}
 		budget = int64(util * float64(total))
-	case haveGPU:
+	case haveDevice:
 		budget = free - freeMargin
 	}
-	if haveGPU && budget > 0 && fixed+perToken*ctx > budget {
+	if haveDevice && budget > 0 && fixed+perToken*ctx > budget {
 		fit := (budget - fixed) / perToken
 		fit -= fit % 1024
 		if fit >= minAutoContext {
@@ -338,7 +345,7 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 			extra = append(extra, "--hf-overrides", overrides)
 		}
 	}
-	if !userUtil && !userKV && haveGPU {
+	if !userUtil && !userKV && haveDevice {
 		utilCtx := ctx
 		if userLen {
 			if v, _ := launchFlagValue(args, "--max-model-len"); v != "" {
@@ -359,7 +366,7 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 	if len(extra) == 0 {
 		return nil, ""
 	}
-	return extra, fmt.Sprintf("native window %d, target %d, weights %.1f GiB, GPU free %.1f GiB", native, target, float64(weights)/float64(gib), float64(free)/float64(gib))
+	return extra, fmt.Sprintf("native window %d, target %d, weights %.1f GiB, device free %.1f GiB", native, target, float64(weights)/float64(gib), float64(free)/float64(gib))
 }
 
 // planToolCalling returns the arguments that let clients send tool_choice
