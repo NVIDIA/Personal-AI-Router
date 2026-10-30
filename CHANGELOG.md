@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.10 — Background services shut down in parallel (#173)
+
+- The background services now shut down in parallel rather than one at a time, so a busy machine no longer pays each service's shutdown in turn.
+- When quitting is slow, the service log records where the time went.
+
 ## 1.0.9 — Quitting is prompt again (#137)
 
 - Quitting no longer stalls when an engine is running outside PAIR's control. The engine shutdown that runs on the way out was being performed twice, and the repeat cost about a second.
