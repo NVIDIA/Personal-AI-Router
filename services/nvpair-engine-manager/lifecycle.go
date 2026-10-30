@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 const (
 	unavailableConfirmations  = 3
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
+	maxProbeJSONBytes         = 1 << 20
 )
 
 type listenerProbeResult uint8
@@ -172,11 +175,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
-	vars := map[string]string{
-		"host":        effectiveBind(rt.Bind, opts.Bind),
-		"port":        strconv.Itoa(port),
-		"install_dir": st.installDir,
-	}
+	vars := st.pathVars()
+	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -279,7 +280,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop()
+		proc.stop(stopGrace(rt))
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
@@ -498,7 +499,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop()
+		proc.stop(stopGrace(rt))
 	}
 
 	e.markStopped(st, engine)
@@ -513,7 +514,8 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	if sp == nil || len(sp.Cmd) == 0 {
 		return fmt.Errorf("cannot stop engine %q: no stop command is configured", engine)
 	}
-	vars := map[string]string{"port": strconv.Itoa(port), "install_dir": st.installDir}
+	vars := st.pathVars()
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -749,7 +751,36 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
+//
+// Two entry points ask for it on an ordinary quit — the
+// engine:prepare-shutdown handler, which the broker calls from its own
+// teardown, and the stdin-EOF path in Run, which follows when the broker then
+// closes stdin — because each is the right trigger for a different way of
+// being shut down: a broker ordering its teardown, and a parent that simply
+// severed the pipe.
+//
+// One sweep runs per process, and every caller returns only once it has
+// finished. A caller that returned while the sweep was still running would
+// report engines stopped before they were: the broker would close stdin,
+// engine-manager would exit, and the engines it launched would be orphaned.
+// Repeating the sweep would re-pay doStop's readiness probe for every adopted
+// engine whose stop it declines, each time.
+//
+// A later caller does retry the engines whose stop failed through a process
+// handle or a stop command, such as an `lms server stop` that errored, because
+// another attempt can succeed where a declined stop cannot.
 func (e *Executor) StopAll() {
+	swept := false
+	e.stopAllOnce.Do(func() {
+		swept = true
+		e.stopAllNow()
+	})
+	if !swept {
+		e.retryFailedStops()
+	}
+}
+
+func (e *Executor) stopAllNow() {
 	e.shuttingDown.Store(true)
 	e.mu.Lock()
 	names := make([]string, 0, len(e.engines))
@@ -757,24 +788,47 @@ func (e *Executor) StopAll() {
 		names = append(names, n)
 	}
 	e.mu.Unlock()
-	// Stop engines concurrently. Each doStop can wait up to the manifest grace
-	// (default 5s) for its engine to exit, so a sequential sweep would take
-	// sum(grace) across engines and let a slow first engine delay — or, if the
-	// parent severs us mid-sweep, entirely prevent — every later engine from
-	// even being signaled. Running them in parallel bounds the whole sweep to
-	// ~one grace and guarantees every engine gets its stop signal immediately.
-	// Each engine still serializes on its own opMu, so this is safe.
+	e.failedStops = e.stopEngines(names)
+}
+
+// retryFailedStops tries again to stop the engines whose stop failed in the
+// sweep. Callers take turns, so two retries never stop one engine at once.
+func (e *Executor) retryFailedStops() {
+	e.retryMu.Lock()
+	defer e.retryMu.Unlock()
+	if len(e.failedStops) == 0 {
+		return
+	}
+	e.failedStops = e.stopEngines(e.failedStops)
+}
+
+// stopEngines stops the named engines and returns those whose stop failed
+// through a process handle or a stop command, the failures a later attempt can
+// fix. Without either, doStop declines a foreign listener or has already
+// escalated against PAIR's own orphan, and a retry would only repeat that.
+//
+// Engines stop concurrently. Each doStop can wait up to the manifest grace
+// (default 5s) for its engine to exit, so a sequential sweep would take
+// sum(grace) across engines and let a slow first engine delay — or, if the
+// parent severs us mid-sweep, entirely prevent — every later engine from even
+// being signaled. Running them in parallel bounds the whole sweep to ~one grace
+// and guarantees every engine gets its stop signal immediately. Each engine
+// still serializes on its own opMu, so this is safe.
+func (e *Executor) stopEngines(names []string) []string {
 	var wg sync.WaitGroup
-	for _, n := range names {
+	// Each goroutine writes only its own index, so no lock is needed.
+	retry := make([]bool, len(names))
+	for i, n := range names {
 		st, err := e.state(n)
 		if err != nil {
 			continue
 		}
 		wg.Add(1)
-		go func(st *engineState, n string) {
+		go func(i int, st *engineState, n string) {
 			defer wg.Done()
 			st.mu.Lock()
 			cancel := st.startCancel
+			retryable := st.plat.Runtime.modeOrDefault() == "command" || st.proc != nil
 			st.mu.Unlock()
 			if cancel != nil {
 				cancel()
@@ -783,10 +837,18 @@ func (e *Executor) StopAll() {
 			defer st.opMu.Unlock()
 			if err := e.doStop(st, n); err != nil {
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
+				retry[i] = retryable
 			}
-		}(st, n)
+		}(i, st, n)
 	}
 	wg.Wait()
+	var failed []string
+	for i, n := range names {
+		if retry[i] {
+			failed = append(failed, n)
+		}
+	}
+	return failed
 }
 
 func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string, port int, gen int64) {
@@ -874,12 +936,30 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 			return false
 		}
 
-		httpcon.DrainAndClose(resp.Body)
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		statusMatches := resp.StatusCode == want
+		if p.JSONMatch == nil {
+			httpcon.DrainAndClose(resp.Body)
+			return statusMatches
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeJSONBytes+1))
+		httpcon.DrainAndClose(resp.Body)
+		if !statusMatches || err != nil || len(body) > maxProbeJSONBytes {
+			return false
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(body, &obj); err != nil {
+			return false
+		}
+		value, ok := resolveObjectPath(obj, p.JSONMatch.Field)
+		if !ok {
+			return false
+		}
+		var actual string
+		return json.Unmarshal(value, &actual) == nil && actual == p.JSONMatch.Value
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)

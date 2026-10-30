@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/security-policy-green.svg)](SECURITY.md)
 
-NVIDIA Personal AI Router (PAIR) is a local inference router for a group of
-compatible computers on the same network. It discovers participating nodes,
+NVIDIA Personal AI Router (PAIR), shown as **NVIDIA PAIR** once installed, is a
+local inference router for a group of compatible computers on the same network. It discovers participating nodes,
 manages supported inference engines, and presents local proxy endpoints for
 Ollama-compatible, OpenAI-compatible, and Anthropic Messages API requests.
 Independent requests can be routed to eligible nodes according to engine
@@ -38,7 +38,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama and LM Studio |
+| **Inference engines** | Ollama, LM Studio, and llama.cpp |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -75,7 +75,7 @@ Release downloads include:
 - a macOS disk image.
 
 **On Windows and macOS,** double-click the download and follow the installer's
-usual prompts — on macOS that means dragging NVIDIA Personal AI Router to your
+usual prompts — on macOS that means dragging **NVIDIA PAIR** to your
 **Applications** folder.
 
 **On Linux,** install the package from the directory you downloaded it into:
@@ -96,19 +96,21 @@ you want by its full filename instead.
   background services and gives you a full-screen view in the terminal.
 
 - **Let it finish starting.** **Overview** shows this machine once the services
-  are up. If it stays on **Loading...**, open **Settings → Service** and read the
-  status there.
+  are up. If it stays on **Starting service...** or **Fetching nodes**, open
+  **Settings → Service** and read the status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
-  select **Install** next to Ollama or LM Studio. PAIR downloads and sets the
-  engine up for you, so nothing needs to be in place beforehand. If PAIR already
-  found an engine you installed yourself, start that one instead.
+  select **Install** next to Ollama, LM Studio, or llama.cpp. PAIR downloads and
+  sets the engine up for you, so nothing needs to be in place beforehand.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
 - **Add a model.** Select **Add model** on the same card and download one.
   `qwen4:12b` is used for this example; it can be replaced with a model of your
-  choice.
+  choice. llama.cpp populates this list from popular GGUF repositories on
+  Hugging Face. Type to filter the list, or press Enter to search the wider
+  public catalog. Its exact IDs include the repository and quantization, such
+  as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`.
 
   ![A node card with its engine expanded, one model pulling and the Add model button beside the list.](docs/assets/onboarding/getting-started/07-add-model.png)
 
@@ -149,8 +151,10 @@ The reply is ordinary OpenAI-shaped JSON, abbreviated here:
 }
 ```
 
-If you changed a port, or you are using LM Studio rather than Ollama, copy the
-URL from **Endpoints → API endpoints** instead of assuming the one above.
+If you changed a port, or you are using LM Studio or llama.cpp rather than
+Ollama, copy the URL from **Endpoints → API endpoints** instead of assuming the
+one above. The copied URL includes `/v1`, ready for Hermes and other
+OpenAI-compatible clients. Append `/chat/completions` for the request above.
 
 That is a single machine working. To route across machines, pair a second one
 from **Settings → Cluster** and repeat the engine and model steps there. The
@@ -174,23 +178,31 @@ your data. Decline and it stays; accept and it is removed.
 **Linux.** `sudo apt remove nvpair` uninstalls the application and keeps your
 data. Use `sudo apt purge nvpair` to remove the data as well. Run
 `dpkg -l | grep -i pair` first if you need to confirm the installed package name.
+A purge removes the engines PAIR installed under its own data directory, but not
+one a vendor installer placed in your home, as LM Studio does — uninstall that
+engine from PAIR before removing the package, or use its own uninstaller.
 
 **macOS.** Run the uninstaller that ships inside the app bundle. It stops PAIR,
 removes its firewall rules, unregisters its privileged helper, and then removes
 the application:
 
 ```bash
-sudo "/Applications/PAIR.app/Contents/Resources/installer-tools/uninstall-macos.sh"
+sudo "/Applications/NVIDIA PAIR.app/Contents/Resources/installer-tools/uninstall-macos.sh"
 ```
 
-Add `--purge` to remove your data as well. Dragging PAIR to the Trash instead
+An install from before the app was renamed is still called `PAIR.app`; use
+`/Applications/PAIR.app` in the path instead. Add `--purge` to remove your data
+as well. Dragging PAIR to the Trash instead
 leaves the privileged helper registered, so use the uninstaller.
 
 Your data means settings, logs, cluster identity and certificates, and any engine
-PAIR installed for you. **Model weights are not touched** — they live in the
-engine's own storage, such as `~/.ollama`, so removing PAIR does not delete the
-models you downloaded. Delete those through the engine, or by removing its
-directory.
+PAIR installed for you. An engine the uninstaller cannot remove — one still
+holding a file open, say — is left in place rather than stopping the uninstall;
+remove it with its own uninstaller. **Model weights are not touched** — they live in the
+engine's own storage (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`), so
+removing PAIR does not delete the models you downloaded. Delete those through the
+engine, or by removing its directory. An engine you installed yourself is also
+left alone.
 
 **To clear your data without uninstalling,** use **Settings → Service → Reset app
 data**. It removes the same set — settings, logs, cluster identity and
@@ -202,7 +214,8 @@ If this machine belongs to a cluster, deal with membership too — otherwise the
 other nodes keep listing it as a member. You have two options:
 
 - **Leave from this machine** before uninstalling: **Settings → Cluster →
-  Leave**, or press `L` on the terminal interface's **Cluster** tab.
+  Leave**, or press `l` on the terminal interface's **Nodes** tab and confirm
+  with `y`.
 - **Remove it from another node**, which any member can do from
   **Settings → Cluster** by removing that node from the list.
 
@@ -218,7 +231,9 @@ Each entry assumes the ones before it.
    together. Start here so the vocabulary in every other document makes sense.
 2. **[Getting started](docs/getting-started.mdx)** — install it, pair two
    machines, prepare a model, and send a first request. This is the only document
-   most users need.
+   most users need. When you update, **[Release notes](docs/release-notes.mdx)**
+   lists what changed and the **[Upgrade guide](docs/upgrade-guide.mdx)** covers
+   any steps the update needs.
 3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
    update, and uninstall engines; what PAIR restores after you quit or relaunch.
 4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and
@@ -268,7 +283,7 @@ feedback and contributions will help shape priorities.
 
 ### Engines and integrations
 
-- [ ] llama.cpp support.
+- [x] llama.cpp support.
 - [ ] vLLM support.
 - [ ] EXO support.
 - [ ] ComfyUI integration.

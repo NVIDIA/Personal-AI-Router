@@ -3,154 +3,190 @@
 
 package main
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/engines"
+)
+
+func TestProxyProfiles_MatchCanonicalEngineList(t *testing.T) {
+	names := make([]string, len(profiles))
+	for i, profile := range profiles {
+		names[i] = profile.Name
+	}
+	require.Equal(t, engines.Names(), names, "proxy profiles must match the canonical engines")
+}
+
+func TestLlamaCPPProfile_DeclaresChatRouteAndReservedEnginePort(t *testing.T) {
+	profile, ok := profileFor("llamacpp")
+	require.True(t, ok, "llamacpp profile missing")
+	role, ok := profile.roleFor("POST", "/v1/chat/completions")
+	require.True(t, ok, "chat route missing")
+	require.Equal(t, roleInferencePOST, role, "chat route")
+	require.Equal(t, "org/model:Q4_K_M", profile.normalizeModel("org/model:Q4_K_M"), "model identifiers must match exactly")
+	require.Equal(t, 8080, profile.StandalonePort, "standalone facade port")
+	require.Equal(t, 8081, profile.ReservedPersistedPort, "reserved engine port")
+}
+
+func TestLlamaCPPModelList_UsesNativeInventoryForBothPublicRoutes(t *testing.T) {
+	profile, ok := profileFor("llamacpp")
+	require.True(t, ok, "llamacpp profile missing")
+	test := func(name, path string) {
+		t.Run(name, func(t *testing.T) {
+			route, ok := profile.routeFor(http.MethodGet, path)
+			require.True(t, ok, "model list route is not classified")
+			require.Equal(t, roleModelListOpenAIGET, route.Role, "model list route")
+			require.Equal(t, "/models", route.upstreamPath(), "upstream model list path")
+		})
+	}
+	test("native model list", "/models")
+	test("OpenAI model list", "/v1/models")
+}
 
 // Routes is a classifier, not an allowlist. handlePlain forwards every
 // loopback path into handleHTTP with no filtering, so a path the table does
-// not mention must still reach the upstream verbatim — that is how /api/show,
-// /api/pull, /api/ps, /api/version and OPTIONS preflights keep working.
-func TestRoleForClassifiesOnlyDeclaredRoutes(t *testing.T) {
+// not mention must still reach the upstream verbatim — that is how /api/pull,
+// /api/ps, /api/version and OPTIONS preflights keep working.
+func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	ollama, ok := profileFor("ollama")
-	if !ok {
-		t.Fatal("ollama profile missing")
-	}
+	require.True(t, ok, "ollama profile missing")
 	lmstudio, ok := profileFor("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio profile missing")
-	}
+	require.True(t, ok, "lmstudio profile missing")
+	llamacpp, ok := profileFor("llamacpp")
+	require.True(t, ok, "llamacpp profile missing")
 
-	for _, tc := range []struct {
-		name     string
-		profile  engineProfile
-		method   string
-		path     string
-		wantRole routeRole
-		wantOK   bool
-	}{
-		{"ollama native chat", ollama, "POST", "/api/chat", roleInferencePOST, true},
-		{"ollama openai chat", ollama, "POST", "/v1/chat/completions", roleInferencePOST, true},
-		{"ollama anthropic messages", ollama, "POST", "/v1/messages", roleInferencePOST, true},
-		{"ollama native list", ollama, "GET", "/api/tags", roleModelListNativeGET, true},
-		{"ollama openai list", ollama, "GET", "/v1/models", roleModelListOpenAIGET, true},
-		{"ollama passthrough", ollama, "POST", "/api/pull", 0, false},
-		{"ollama version passthrough", ollama, "GET", "/api/version", 0, false},
-
-		{"lmstudio chat", lmstudio, "POST", "/v1/chat/completions", roleInferencePOST, true},
-		{"lmstudio anthropic messages", lmstudio, "POST", "/v1/messages", roleInferencePOST, true},
-		{"lmstudio list", lmstudio, "GET", "/v1/models", roleModelListOpenAIGET, true},
-		// LM Studio serves no native Ollama routes, so /api/chat is not
-		// inference for it — it is forwarded verbatim like any other path.
-		{"lmstudio has no native routes", lmstudio, "POST", "/api/chat", 0, false},
-
-		// The method is part of the classification. Without it a POST to the
-		// model-list path would be served as a list, and a GET to an
-		// inference path would emit a workload.
-		{"wrong method on list", ollama, "POST", "/v1/models", 0, false},
-		{"wrong method on inference", ollama, "GET", "/api/chat", 0, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			role, ok := tc.profile.roleFor(tc.method, tc.path)
-			if ok != tc.wantOK {
-				t.Fatalf("roleFor(%s %s) ok = %v, want %v", tc.method, tc.path, ok, tc.wantOK)
-			}
-			if ok && role != tc.wantRole {
-				t.Fatalf("roleFor(%s %s) role = %v, want %v", tc.method, tc.path, role, tc.wantRole)
-			}
+	accept := func(name string, profile engineProfile, method, path string, wantRole routeRole) {
+		t.Run(name, func(t *testing.T) {
+			role, ok := profile.roleFor(method, path)
+			require.True(t, ok, "roleFor(%s %s) did not classify a declared route", method, path)
+			require.Equal(t, wantRole, role, "roleFor(%s %s)", method, path)
 		})
 	}
+	reject := func(name string, profile engineProfile, method, path string) {
+		t.Run(name, func(t *testing.T) {
+			role, ok := profile.roleFor(method, path)
+			require.False(t, ok, "roleFor(%s %s) classified an undeclared route with role %v", method, path, role)
+		})
+	}
+
+	accept("ollama native chat", ollama, http.MethodPost, "/api/chat", roleInferencePOST)
+	accept("ollama openai chat", ollama, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
+	accept("ollama openai responses", ollama, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("ollama anthropic messages", ollama, http.MethodPost, "/v1/messages", roleInferencePOST)
+	accept("ollama native list", ollama, http.MethodGet, "/api/tags", roleModelListNativeGET)
+	accept("ollama openai list", ollama, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
+	accept("ollama show", ollama, http.MethodPost, "/api/show", roleModelLookupPOST)
+
+	accept("lmstudio chat", lmstudio, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
+	accept("lmstudio responses", lmstudio, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("lmstudio anthropic messages", lmstudio, http.MethodPost, "/v1/messages", roleInferencePOST)
+	accept("lmstudio list", lmstudio, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
+	accept("lmstudio openai responses", lmstudio, http.MethodPost, "/v1/responses", roleInferencePOST)
+
+	accept("llamacpp responses", llamacpp, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("llamacpp openai responses", llamacpp, http.MethodPost, "/v1/responses", roleInferencePOST)
+
+	reject("ollama passthrough", ollama, http.MethodPost, "/api/pull")
+	reject("ollama version passthrough", ollama, http.MethodGet, "/api/version")
+	reject("ollama models passthrough", ollama, http.MethodGet, "/models")
+	reject("wrong method on list", ollama, http.MethodPost, "/v1/models")
+	reject("wrong method on inference", ollama, http.MethodGet, "/api/chat")
+	reject("wrong method on responses", ollama, http.MethodGet, "/v1/responses")
+	reject("wrong method on show", ollama, http.MethodGet, "/api/show")
+
+	reject("lmstudio models passthrough", lmstudio, http.MethodGet, "/models")
+	// LM Studio serves no native Ollama routes, so /api/chat is forwarded verbatim.
+	reject("lmstudio has no native routes", lmstudio, http.MethodPost, "/api/chat")
+	reject("lmstudio has no show", lmstudio, http.MethodPost, "/api/show")
+
+	reject("llamacpp models post passthrough", llamacpp, http.MethodPost, "/models")
 }
 
-func TestIsInferenceRequestFollowsTheProfile(t *testing.T) {
+func TestIsInferenceRequest_FollowsTheProfile(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	if !isInferenceRequest(ollama, "POST", "/api/generate") {
-		t.Error("ollama /api/generate must be inference")
-	}
-	if isInferenceRequest(lmstudio, "POST", "/api/generate") {
-		t.Error("lmstudio serves no native routes, so /api/generate is not inference for it")
-	}
-	if isInferenceRequest(ollama, "GET", "/api/tags") {
-		t.Error("a model list is not inference")
-	}
+	assert.True(t, isInferenceRequest(ollama, "POST", "/api/generate"), "ollama /api/generate must be inference")
+	assert.True(t, isInferenceRequest(ollama, "POST", "/v1/responses"), "ollama /v1/responses must be inference so model-owner filtering applies")
+	assert.True(t, isInferenceRequest(lmstudio, "POST", "/v1/responses"), "lmstudio /v1/responses must be inference so model-owner filtering applies")
+	assert.False(t, isInferenceRequest(lmstudio, "POST", "/api/generate"), "lmstudio serves no native routes, so /api/generate is not inference for it")
+	assert.False(t, isInferenceRequest(ollama, "GET", "/api/tags"), "a model list is not inference")
+	assert.False(t, isInferenceRequest(ollama, "POST", "/api/show"), "a model lookup is not inference")
 }
 
 // One naming convention governs both the federated list's dedupe key and the
 // routing gate. If they disagreed the proxy could advertise a model it then
 // refuses to route.
-func TestModelNaming(t *testing.T) {
+func TestModelNames_FollowEngineNormalizationRules(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	for _, tc := range []struct {
-		profile engineProfile
-		in      string
-		want    string
-	}{
-		{ollama, "llama3", "llama3:latest"},
-		{ollama, "llama3:latest", "llama3:latest"},
-		{ollama, "llama3:8b", "llama3:8b"},
-		{ollama, "registry.example/llama3", "registry.example/llama3:latest"},
-		{ollama, "llama3@sha256:abc", "llama3@sha256:abc"},
-		{ollama, "", ""},
-
-		{lmstudio, "qwen3-8b", "qwen3-8b"},
-		{lmstudio, "qwen3-8b:latest", "qwen3-8b:latest"},
-		{lmstudio, "", ""},
-	} {
-		if got := tc.profile.normalizeModel(tc.in); got != tc.want {
-			t.Errorf("%s normalizeModel(%q) = %q, want %q", tc.profile.Name, tc.in, got, tc.want)
-		}
+	test := func(name string, profile engineProfile, in, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, profile.normalizeModel(in))
+		})
 	}
+	test("Ollama default tag", ollama, "llama3", "llama3:latest")
+	test("Ollama explicit default tag", ollama, "llama3:latest", "llama3:latest")
+	test("Ollama explicit tag", ollama, "llama3:8b", "llama3:8b")
+	test("Ollama registry prefix", ollama, "registry.example/llama3", "registry.example/llama3:latest")
+	test("Ollama digest", ollama, "llama3@sha256:abc", "llama3@sha256:abc")
+	test("Ollama library namespace", ollama, "library/qwen3:latest", "qwen3:latest")
+	test("Ollama default registry and library", ollama, "registry.ollama.ai/library/qwen3:latest", "qwen3:latest")
+	test("Ollama registry URL", ollama, "https://registry.ollama.ai/library/qwen3", "qwen3:latest")
+	test("Ollama case normalization", ollama, "Qwen3", "qwen3:latest")
+	test("Ollama explicit registry without namespace", ollama, "registry.ollama.ai/qwen3", "registry.ollama.ai/qwen3:latest")
+	test("Ollama custom registry case normalization", ollama, "hf.co/Org/Model:Q4_K_M", "hf.co/org/model:q4_k_m")
+	test("Ollama registry port", ollama, "localhost:5000/ns/m", "localhost:5000/ns/m:latest")
+	test("Ollama empty name", ollama, "", "")
+	test("LM Studio untagged name", lmstudio, "qwen3-8b", "qwen3-8b")
+	test("LM Studio exact tag", lmstudio, "qwen3-8b:latest", "qwen3-8b:latest")
+	test("LM Studio preserves case", lmstudio, "Qwen3-8B", "Qwen3-8B")
+	test("LM Studio empty name", lmstudio, "", "")
 }
 
-func TestNodeAdvertisesModelUsesTheProfilesNaming(t *testing.T) {
+func TestNodeAdvertisesModel_UsesEngineSpecificModelNames(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
 	tagged := Node{Models: []string{"llama3:latest"}}
-	if !nodeAdvertisesModel(ollama, tagged, "llama3") {
-		t.Error("ollama must treat an untagged request as the :latest tag")
-	}
-	if nodeAdvertisesModel(lmstudio, tagged, "llama3") {
-		t.Error("lmstudio matches identifiers exactly, so llama3 is not llama3:latest")
-	}
-	if nodeAdvertisesModel(ollama, Node{Models: []string{"llama3:latest"}}, "") {
-		t.Error("an empty request model advertises nothing")
-	}
+	assert.True(t, nodeAdvertisesModel(ollama, tagged, "llama3"), "ollama must treat an untagged request as the :latest tag")
+	assert.False(t, nodeAdvertisesModel(lmstudio, tagged, "llama3"), "lmstudio matches identifiers exactly, so llama3 is not llama3:latest")
+	assert.False(t, nodeAdvertisesModel(ollama, Node{Models: []string{"llama3:latest"}}, ""), "an empty request model advertises nothing")
 }
 
 // A path may legitimately be declared twice under different methods. roleFor
 // used to return on the first path match, which made the second entry
 // unreachable — it would be forwarded verbatim instead of classified, and
 // nothing would say so.
-func TestRoleForFindsAPathDeclaredUnderTwoMethods(t *testing.T) {
+func TestRoleFor_FindsAPathDeclaredUnderTwoMethods(t *testing.T) {
 	p := engineProfile{Routes: []route{
 		{Path: "/v1/models", Role: roleInferencePOST},
 		{Path: "/v1/models", Role: roleModelListOpenAIGET},
 	}}
 
-	if role, ok := p.roleFor("GET", "/v1/models"); !ok || role != roleModelListOpenAIGET {
-		t.Errorf("GET /v1/models = (%v, %v), want the model-list role", role, ok)
-	}
-	if role, ok := p.roleFor("POST", "/v1/models"); !ok || role != roleInferencePOST {
-		t.Errorf("POST /v1/models = (%v, %v), want the inference role", role, ok)
-	}
-	if _, ok := p.roleFor("DELETE", "/v1/models"); ok {
-		t.Error("DELETE /v1/models classified; an undeclared method must forward verbatim")
-	}
+	role, ok := p.roleFor("GET", "/v1/models")
+	assert.True(t, ok, "GET /v1/models (%v, %v)", role, ok)
+	assert.Equal(t, roleModelListOpenAIGET, role, "GET /v1/models (%v, %v)", role, ok)
+	role, ok = p.roleFor("POST", "/v1/models")
+	assert.True(t, ok, "POST /v1/models (%v, %v)", role, ok)
+	assert.Equal(t, roleInferencePOST, role, "POST /v1/models (%v, %v)", role, ok)
+	_, ok = p.roleFor("DELETE", "/v1/models")
+	assert.False(t, ok, "DELETE /v1/models classified; an undeclared method must forward verbatim")
 }
 
 // No shipped engine declares the same (path, method) twice; a duplicate would
 // make whichever entry came second dead.
-func TestNoDuplicateRoutePerMethod(t *testing.T) {
+func TestEngineProfiles_DeclareEachMethodAndPathOnce(t *testing.T) {
 	for _, p := range profiles {
 		seen := map[string]bool{}
 		for _, r := range p.Routes {
 			key := r.Role.method() + " " + r.Path
-			if seen[key] {
-				t.Errorf("%s declares %q twice; the second entry is unreachable", p.Name, key)
-			}
+			assert.NotContains(t, seen, key)
 			seen[key] = true
 		}
 	}
@@ -160,27 +196,19 @@ func TestNoDuplicateRoutePerMethod(t *testing.T) {
 // broker's expectations. The persisted-port filename deliberately does NOT
 // derive: Ollama's predates the multi-engine world, and deriving it would
 // rename the file under every existing install and orphan the port a user set.
-func TestDerivedIdentifiers(t *testing.T) {
+func TestEngineProfiles_PreservePortFilesAndDeriveErrorIdentifiers(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
-	if got := ollama.PortFile; got != "proxy-port.json" {
-		t.Errorf("ollama PortFile = %q, want the pre-unification name", got)
-	}
-	if got := lmstudio.PortFile; got != "lmstudio-proxy-port.json" {
-		t.Errorf("lmstudio PortFile = %q", got)
-	}
-	if got := upstreamUnreachableID(ollama, "peer-A"); got != "ollama-proxy:upstream-unreachable:peer-A" {
-		t.Errorf("ollama upstreamUnreachableID = %q", got)
-	}
-	if got := upstreamUnreachableID(lmstudio, "peer-A"); got != "lmstudio-proxy:upstream-unreachable:peer-A" {
-		t.Errorf("lmstudio upstreamUnreachableID = %q", got)
-	}
+	assert.Equal(t, "proxy-port.json", ollama.PortFile, "ollama PortFile")
+	assert.Equal(t, "lmstudio-proxy-port.json", lmstudio.PortFile, "lmstudio PortFile")
+	assert.Equal(t, "ollama-proxy:upstream-unreachable:peer-A", upstreamUnreachableID(ollama, "peer-A"), "ollama upstreamUnreachableID")
+	assert.Equal(t, "lmstudio-proxy:upstream-unreachable:peer-A", upstreamUnreachableID(lmstudio, "peer-A"), "lmstudio upstreamUnreachableID")
 }
 
 // chooseStartupPort restores a previously chosen port, except when the broker
 // forces one or when the stored value belongs to the engine itself.
-func TestChooseStartupPort(t *testing.T) {
+func TestChooseStartupPort_RespectsOverridesAndReservedPorts(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
 
@@ -205,9 +233,7 @@ func TestChooseStartupPort(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := chooseStartupPort(tc.profile, tc.flagPort, tc.ignorePersisted, tc.persisted, tc.hasPersisted)
-			if got != tc.want {
-				t.Fatalf("chooseStartupPort = %d, want %d", got, tc.want)
-			}
+			require.Equal(t, tc.want, got, "chooseStartupPort (%v)", got)
 		})
 	}
 }

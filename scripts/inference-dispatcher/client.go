@@ -111,9 +111,12 @@ func decodeObject(data []byte, target any) error {
 func (c *backendClient) listModels(ctx context.Context) ([]RegisteredModel, error) {
 	var models []RegisteredModel
 	var err error
-	if c.cfg.Backend == "lmstudio" {
+	switch c.cfg.Backend {
+	case "lmstudio":
 		models, err = c.listLMStudioModels(ctx)
-	} else {
+	case "llamacpp":
+		models, err = c.listLlamaCPPModels(ctx)
+	default:
 		models, err = c.listOllamaModels(ctx)
 	}
 	if err != nil {
@@ -126,6 +129,14 @@ func (c *backendClient) listModels(ctx context.Context) ([]RegisteredModel, erro
 		return strings.ToLower(models[i].Name) < strings.ToLower(models[j].Name)
 	})
 	return models, nil
+}
+
+func (c *backendClient) listLlamaCPPModels(ctx context.Context) ([]RegisteredModel, error) {
+	data, err := c.request(ctx, http.MethodGet, "/v1/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("query llama.cpp models: %w", err)
+	}
+	return parseOpenAIModels(data)
 }
 
 func (c *backendClient) listOllamaModels(ctx context.Context) ([]RegisteredModel, error) {
@@ -173,7 +184,7 @@ func (c *backendClient) listLMStudioModels(ctx context.Context) ([]RegisteredMod
 	openAIData, openAIErr := c.request(ctx, http.MethodGet, "/v1/models", nil)
 	var models []RegisteredModel
 	if openAIErr == nil {
-		parsed, err := parseLMStudioOpenAIModels(openAIData)
+		parsed, err := parseOpenAIModels(openAIData)
 		if err != nil {
 			openAIErr = err
 		} else if len(parsed) == 0 {
@@ -251,7 +262,7 @@ func parseLMStudioNativeModels(data []byte) ([]RegisteredModel, error) {
 	return models, nil
 }
 
-func parseLMStudioOpenAIModels(data []byte) ([]RegisteredModel, error) {
+func parseOpenAIModels(data []byte) ([]RegisteredModel, error) {
 	var response struct {
 		Data []struct {
 			ID    string `json:"id"`
@@ -341,15 +352,19 @@ func (c *backendClient) resolveModel(ctx context.Context) (string, []RegisteredM
 }
 
 func (c *backendClient) inferencePath() string {
-	if c.cfg.Backend == "lmstudio" {
+	if c.usesOpenAIProtocol() {
 		return "/v1/chat/completions"
 	}
 	return "/api/generate"
 }
 
+func (c *backendClient) usesOpenAIProtocol() bool {
+	return c.cfg.Backend == "lmstudio" || c.cfg.Backend == "llamacpp"
+}
+
 func (c *backendClient) infer(ctx context.Context, model, prompt string) (string, error) {
 	var payload map[string]any
-	if c.cfg.Backend == "lmstudio" {
+	if c.usesOpenAIProtocol() {
 		payload = map[string]any{
 			"model":    model,
 			"messages": []map[string]string{{"role": "user", "content": prompt}},
@@ -386,8 +401,8 @@ func (c *backendClient) infer(ctx context.Context, model, prompt string) (string
 	if err != nil {
 		return "", err
 	}
-	if c.cfg.Backend == "lmstudio" {
-		return parseLMStudioResponse(data)
+	if c.usesOpenAIProtocol() {
+		return parseOpenAIResponse(data)
 	}
 	var response struct {
 		Response string `json:"response"`
@@ -398,7 +413,7 @@ func (c *backendClient) infer(ctx context.Context, model, prompt string) (string
 	return strings.TrimSpace(response.Response), nil
 }
 
-func parseLMStudioResponse(data []byte) (string, error) {
+func parseOpenAIResponse(data []byte) (string, error) {
 	var response struct {
 		Choices []struct {
 			Message struct {
@@ -411,7 +426,7 @@ func parseLMStudioResponse(data []byte) (string, error) {
 		return "", err
 	}
 	if len(response.Choices) == 0 {
-		return "", errors.New("LM Studio response contained no choices")
+		return "", errors.New("OpenAI-compatible response contained no choices")
 	}
 	choice := response.Choices[0]
 	switch content := choice.Message.Content.(type) {

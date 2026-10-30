@@ -1,11 +1,14 @@
+---
+title: NVIDIA PAIR
+description: Understand the process model, discovery, routing, and trust boundaries behind NVIDIA PAIR and its local Go services.
+---
+
 {/*
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 */}
 
-# NVIDIA Personal AI Router Architecture
-
-Personal AI Router (PAIR) is a desktop-or-headless control plane around local Go
+NVIDIA PAIR is a desktop-or-headless control plane around local Go
 services and HTTP inference proxies. Its control traffic and inference traffic
 follow separate paths.
 
@@ -35,14 +38,13 @@ flowchart TB
     EngineB1 --- ModelB1
 ```
 
-- A **cluster** is a set of nodes that have paired with each other. There is no
-  founder, no primary, and membership is symmetric. A node belongs to at most
-  one cluster.
+- A **cluster** is a set of mutually trusted nodes. There is no founder, no
+  primary, and membership is symmetric. A node belongs to at most one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node, Ollama or LM Studio. A node can
-  run both, one, or neither, and a node with no running engine is not eligible to
-  serve.
+- An **engine** is an inference server on a node: Ollama, LM Studio, or
+  llama.cpp. A node can run any combination, and a node with no running engine
+  is not eligible to serve.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
   model on two nodes is two independent copies and that duplication is what makes
   the two nodes interchangeable for a request.
@@ -98,7 +100,7 @@ the layers that are checked:
 | --- | --- |
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
-| The broker | A `ping` request clients can call, which the terminal interface's health view uses. |
+| The broker | A `ping` request clients can call, which the terminal interface's **Service** tab uses. |
 | Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
 
 Worker supervision is restart-based. An unexpected exit is retried with
@@ -186,8 +188,8 @@ PAIR on a network where that is unacceptable.
 
 ### Two Personalities on One Port
 
-The proxies and `nvpair-cluster-manager` serve two different things on a single
-port, chosen by the connection's first byte. A TLS handshake record starts with
+Each inference proxy serves plaintext HTTP and mutual TLS on the same port,
+distinguished by the connection's first byte. A TLS handshake record starts with
 `0x16`, and no HTTP method does:
 
 | First Byte | Personality | Who Uses It |
@@ -197,21 +199,23 @@ port, chosen by the connection's first byte. A TLS handshake record starts with
 
 This is why an endpoint is `http://127.0.0.1:11434` for an application on the
 machine itself while the same port serves authenticated TLS to the network. Local
-clients need no certificates, and routed inference between nodes is never
-plaintext.
+clients need no certificates. Routed inference between paired nodes uses mutual
+TLS; explicitly added unpaired engines may use plaintext HTTP.
 
 The loopback restriction is enforced, not merely conventional. The listener binds
 all interfaces so the TLS personality can accept peers, but a plaintext request
 from any non-loopback address is refused with `403`. Without that check the port
 would be an open relay for anything on the network.
 
+The cluster manager uses the same protocol split, but its plaintext endpoint
+serves pairing requests from the LAN.
+
 Two consequences follow, and together they define how clients are expected to
 reach PAIR:
 
-- **A machine that is not a node has no way in.** It cannot use the plaintext
-  personality, because it is not loopback, and it cannot use the TLS personality,
-  because it holds no pinned cluster certificate. Pointing an application at
-  another machine's proxy port does not work by design.
+- **A remote machine without current cluster credentials cannot use a node's
+  inference proxy.** Plaintext requests from other machines are rejected, and TLS
+  requests require a certificate trusted as a current member.
 - **A peer request is served, not re-routed.** The mTLS ingress forwards straight
   to that node's own engine and never re-enters candidate selection, so a peer
   cannot chain a request onward through a third node.
@@ -291,11 +295,9 @@ across all candidates when the request has no parsed model, the order is:
 3. **Remaining nodes by stable node ID**, so cold start and unlisted nodes are
    predictable rather than random.
 
-Manual selection is a proxy capability rather than a desktop feature. The desktop
-application never pins a node. It renders routing state and lets the scheduler
-decide. The only way to pin one today is the terminal interface's **Proxies** tab,
-which selects a node with `enter` and returns to automatic with `a`. Treat
-automatic routing as the normal case.
+Manual selection is a proxy capability that neither front end uses. The desktop
+application and the terminal interface both render routing state and let the
+scheduler decide, so automatic routing is the only case PAIR produces.
 
 <Note>
 A pin cannot override model eligibility. If the pinned node does not advertise
@@ -314,8 +316,8 @@ ordering reaches a proxy in three steps:
 
 The ranking combines *pending work and GPU pressure*. A workload counts as
 pending while it is queued or running, and it is attributed to the node it was
-placed on. Both engines count together, so Ollama load affects LM Studio ordering
-and vice versa.
+placed on. Every engine counts in the same node-wide pool, so work through one
+facade affects the others' ordering.
 
 GPU pressure is deliberately coarse. The scheduler smooths the busiest GPU's
 utilization, maps it to 0–3 pressure units at 40%, 70%, and 85%, and uses lower
@@ -366,9 +368,10 @@ advertised owner eligible.
 
 A request whose model cannot be parsed keeps the ordinary non-model ordering.
 
-Model listings are not routed at all. A `GET` of `/v1/models` or `/api/tags` is
-fanned out to every candidate concurrently and the replies are merged, which is
-why the answer is the cluster's inventory rather than one node's.
+Model listings are not routed at all. A `GET` of `/v1/models`, Ollama's
+`/api/tags`, or llama.cpp's `/models` is fanned out to every candidate for that
+engine concurrently and the replies are merged, which is why the answer is the
+cluster's inventory for that engine rather than one node's.
 
 #### Failover and Inventory Freshness
 
@@ -428,8 +431,8 @@ one place lower in the order.
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**Both engines are counted as one pool.** Ollama and LM Studio load is summed,
-and maximum GPU pressure applies to the whole node. That is conservative on a
+**All engines are counted as one pool.** Ollama, LM Studio, and llama.cpp load is
+summed, and maximum GPU pressure applies node-wide. This is conservative on a
 typical single-GPU machine and can underuse a multi-GPU node where the engines
 occupy different devices.
 
@@ -466,16 +469,23 @@ known install locations for each engine, so an Ollama or LM Studio you installed
 yourself is found where it already is. "Installing" an engine that is already
 present downloads nothing and reports it as installed.
 
+llama.cpp uses PAIR's managed router rather than an arbitrary existing server.
+Its readiness check requires the listener to identify itself as a router, so a
+single-model `llama-server` on the configured port is rejected instead of
+adopted. Its models live in `~/.llamacpp`, outside PAIR's own data directory, so
+they survive uninstalling the engine, resetting PAIR's data, and removing PAIR.
+
 Starting is similarly deferential. If something is already serving the engine's
 port, PAIR **adopts** that instance instead of spawning a second copy, and reports
 it as running even though it did not start it.
 
-Adoption is a real distinction, not a label. PAIR cannot stop or move a process
-it did not start, so it refuses operations that need process ownership rather
-than faking them. Changing the port of an adopted engine returns an error
-instead of leaving two listeners on different ports. To get an instance PAIR can
-fully manage, stop the engine in its own application and let PAIR start it on a
-port nothing else is serving.
+Adoption is a real distinction, not a label. PAIR does not kill a process it did
+not start, so it refuses operations that would need to rather than faking them.
+The exception is an engine with an official stop command: PAIR stops an adopted
+LM Studio with `lms server stop` and brings it back on the new port. Changing the
+port of an adopted Ollama returns an error instead of leaving two listeners on
+different ports. To get an instance PAIR can fully manage, stop the engine in its
+own application and let PAIR start it on a port nothing else is serving.
 
 ### Port Takeover
 
@@ -483,8 +493,8 @@ An application that already works with Ollama is configured for `11434`. If PAIR
 listened somewhere else, every tool would need reconfiguring to gain anything, so
 PAIR inverts it: the **proxy** takes the port the engine would normally use, and
 the engine moves behind it — Ollama to `11435` and upwards, LM Studio to `1235`
-and upwards. Existing clients keep working untouched and transparently gain the
-cluster.
+and upwards. The managed llama.cpp router stays on `8081` while its facade takes
+`8080`. Existing clients keep working untouched and transparently gain the cluster.
 
 This is also what makes the engine unreachable from outside. Engines PAIR starts
 bind to loopback, so the only network-facing listener is the proxy, which is where
@@ -492,7 +502,7 @@ cluster authentication lives.
 
 An inherited `OLLAMA_HOST` naming a different local plaintext port is honored as
 well. The broker gives the proxy that normalized loopback-only alias, reserved
-against every engine and both proxies' port plans so a relocating engine can never
+against every engine and every facade's port plan so a relocating engine can never
 land on it. `localhost` claims IPv4 and IPv6 together, and remote and HTTPS
 targets are never intercepted. Clients already configured through the variable
 therefore enter the same routing path without being reconfigured.
@@ -522,7 +532,8 @@ A default installation listens on these ports:
 | --- | --- |
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
-| `14318` | Node hardware and model inventory |
+| `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
+| `14318` | Node hardware and telemetry |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
 | `14321` | Pairing and cluster membership |
@@ -550,7 +561,7 @@ browsing themselves.
 The scanner advertises one `_nvpair-node._tcp` multicast DNS (mDNS) record for
 each host, and that record carries two kinds of content:
 
-- The ports its sibling services registered: node-info, both proxies, errors,
+- The ports its sibling services registered: node-info, engine proxies, errors,
   workloads, cluster manager, and engine manager
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
   reach it — `ip=` for the address the node ranks first, and `ips=` for the whole
@@ -617,9 +628,10 @@ distinguish a paired node from a stranger it can merely see.
 
 ### Node Eviction
 
-The scanner scans every five seconds and tolerates three consecutive misses
-before it treats a node as gone. Even then it does not drop the node right away.
-It runs these checks and keeps the node if any of them answers:
+The scanner scans every five seconds. Once a node has missed three scans in a
+row, about fifteen seconds, the scanner checks on it at every scan, and any answer
+resets the count. It drops the node only after twelve consecutive misses, about a
+minute, with every check along the way failing. These are the checks:
 
 - Inference the node served in the last minute, which the proxies report
 - Recent telemetry from that node
@@ -660,7 +672,7 @@ to the peer's real UUID as soon as that node reports it.
 
 ```mermaid
 flowchart TB
-    subgraph Host["local operating-system account"]
+    subgraph Host["PAIR runtime and data (per OS account)"]
         Renderer["renderer"]
         Main["preload and Electron main"]
         Broker["broker and worker processes"]
@@ -676,7 +688,7 @@ flowchart TB
     Renderer -->|"allowlisted IPC"| Main
     Main -->|"stdio JSON-RPC"| Broker
     Broker --> Data
-    Loopback -->|"promoted proxy traffic after pairing"| Peer
+    Loopback -->|"cluster inference over mutual TLS"| Peer
     Broker <-->|"discovery and selected metadata"| Lan
     Unknown --> Lan
     Broker -->|"configuration-dependent"| External

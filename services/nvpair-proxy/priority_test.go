@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/schedulerwire"
 )
 
@@ -44,18 +47,11 @@ func candidateIDsForModel(p *Proxy, model string) []string {
 
 func assertOrder(t *testing.T, got, want []string) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("candidate order = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("candidate order = %v, want %v", got, want)
-		}
-	}
+	require.Equal(t, want, got, "candidate order")
 }
 
 // TestResolveCandidates_PriorityOrder: the priority list dictates auto order.
-func TestResolveCandidates_PriorityOrder(t *testing.T) {
+func TestResolveCandidates_UsesSchedulerPriorityOrder(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"c", "a", "b"})
 	assertOrder(t, candidateIDs(p), []string{"c", "a", "b"})
@@ -63,14 +59,14 @@ func TestResolveCandidates_PriorityOrder(t *testing.T) {
 
 // TestResolveCandidates_UnlistedFallback: nodes absent from the priority list
 // come last, in stable ID order.
-func TestResolveCandidates_UnlistedFallback(t *testing.T) {
+func TestResolveCandidates_AppendsNodesMissingFromPriority(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"b"})
 	assertOrder(t, candidateIDs(p), []string{"b", "a", "c"})
 }
 
 // TestResolveCandidates_UnknownIgnored: an id not in discovery is skipped.
-func TestResolveCandidates_UnknownIgnored(t *testing.T) {
+func TestResolveCandidates_IgnoresUnknownPriorityNodes(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"zzz", "c"})
 	assertOrder(t, candidateIDs(p), []string{"c", "a", "b"})
@@ -78,7 +74,7 @@ func TestResolveCandidates_UnknownIgnored(t *testing.T) {
 
 // TestResolveCandidates_ManualPinOverridesPriority: an explicit node/select pin
 // wins over the priority list; the rest follow priority order.
-func TestResolveCandidates_ManualPinOverridesPriority(t *testing.T) {
+func TestResolveCandidates_PrefersManuallySelectedNode(t *testing.T) {
 	p := prProxy(t, "a", "b", "c")
 	p.SetPriority([]string{"a", "b", "c"})
 	p.soleFacade().SetSelected("b")
@@ -103,7 +99,7 @@ func TestResolveCandidates_FiltersBeforeSelectionAndPriority(t *testing.T) {
 
 // TestResolveCandidates_EmptyReverts: an empty priority list reverts to the
 // default stable ID order.
-func TestResolveCandidates_EmptyReverts(t *testing.T) {
+func TestResolveCandidates_RevertsToDefaultOrderForEmptyPriority(t *testing.T) {
 	p := prProxy(t, "c", "a", "b")
 	p.SetPriority([]string{"c", "a"})
 	p.SetPriority(nil) // clear
@@ -112,20 +108,16 @@ func TestResolveCandidates_EmptyReverts(t *testing.T) {
 
 // TestSetPriority_CountAndCopy: SetPriority returns the stored length and
 // PriorityList hands back an independent copy.
-func TestSetPriority_CountAndCopy(t *testing.T) {
+func TestSetPriority_ReturnsCountAndCopiesInput(t *testing.T) {
 	p := prProxy(t, "a")
-	if n := p.SetPriority([]string{"a", "b", "c"}); n != 3 {
-		t.Fatalf("SetPriority count = %d, want 3", n)
-	}
+	require.Equal(t, 3, p.SetPriority([]string{"a", "b", "c"}), "SetPriority count")
 	got := p.PriorityList()
 	got[0] = "mutated"
-	if again := p.PriorityList(); again[0] != "a" {
-		t.Fatalf("PriorityList returned an aliased slice: %v", again)
-	}
+	require.Equal(t, "a", p.PriorityList()[0], "PriorityList returned an aliased slice")
 }
 
 // TestHandleSetPriority_Response: the node/set-priority request returns {count}.
-func TestHandleSetPriority_Response(t *testing.T) {
+func TestHandleSetPriority_RespondsWithAcceptedNodeCount(t *testing.T) {
 	rec := &recRW{}
 	p := newTestProxy(anyProfile(t), NewCodec(rec), NewDiscovery(), 11435)
 
@@ -137,12 +129,8 @@ func TestHandleSetPriority_Response(t *testing.T) {
 		Params:  json.RawMessage(`{"generation":1,"nodes":["x","y"]}`),
 	})
 
-	if !rec.has(`"count":2`) {
-		t.Fatalf("expected response with count=2, got: %s", rec.b)
-	}
-	if got := p.PriorityList(); len(got) != 2 || got[0] != "x" || got[1] != "y" {
-		t.Fatalf("stored priority = %v, want [x y]", got)
-	}
+	require.Contains(t, rec.String(), `"count":2`, "expected response with count=2")
+	require.Equal(t, []string{"x", "y"}, p.PriorityList(), "stored priority")
 }
 
 // A generation is required, because this method is relayed verbatim from any
@@ -157,9 +145,7 @@ func TestHandleSetPriority_RejectsUnversionedSnapshot(t *testing.T) {
 	// Establish a baseline plus a live reservation against it.
 	applySnapshot(p, schedulerwire.Priority{Nodes: []string{"x", "y"}})
 	_, held := p.reserveCandidate(p.soleFacade(), reservationCandidates("x", "y"))
-	if !held.held {
-		t.Fatal("no reservation was taken from the baseline")
-	}
+	require.True(t, held.held, "no reservation was taken from the baseline")
 
 	id := json.RawMessage(`8`)
 	p.handleMessage(&Message{
@@ -169,14 +155,10 @@ func TestHandleSetPriority_RejectsUnversionedSnapshot(t *testing.T) {
 		Params:  json.RawMessage(`{"nodes":["y","x"]}`),
 	})
 
-	if !rec.has(`"code":-32602`) {
-		t.Fatalf("unversioned snapshot was not rejected: %s", rec.b)
-	}
+	require.Contains(t, rec.String(), `"code":-32602`, "unversioned snapshot was not rejected")
 	// The baseline and the reservation both survive the rejection.
-	if got := p.PriorityList(); len(got) != 2 || got[0] != "x" {
-		t.Errorf("a rejected snapshot changed the baseline: %v", got)
-	}
-	if got := reservationCount(p, held.nodeID); got != 1 {
-		t.Errorf("a rejected snapshot cleared the reservation on %q: %d", held.nodeID, got)
-	}
+	got := p.PriorityList()
+	require.Len(t, got, 2, "a rejected snapshot changed the baseline")
+	assert.Equal(t, "x", got[0], "a rejected snapshot changed the baseline (%v)", got)
+	assert.Equal(t, 1, reservationCount(p, held.nodeID), "a rejected snapshot cleared the reservation on")
 }

@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useMemo, memo } from 'react'
+import { useMemo, memo, type CSSProperties } from 'react'
 import { Card, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
+import { WORKLOAD_COLOR_MAP } from '@/ui/constants/colors'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
 import { getWorkloadColorBar } from '@/ui/utils/colors'
+import { workloadNodeLabel } from '@/ui/utils/workload-labels'
 import EngineIcon from '@/ui/components/EngineIcon'
 
 const formatDate = (timestamp: number) => {
@@ -40,10 +42,17 @@ const formatDate = (timestamp: number) => {
     }
 }
 
+// sheen.css paints the in-flight card's corner from this property, so the card
+// and its connection line share one color.
+const CARD_STYLE: CSSProperties & { '--workload-in-flight-color': string } = {
+    direction: 'ltr',
+    '--workload-in-flight-color': WORKLOAD_COLOR_MAP.yellow
+}
+
 function WorkloadItemCard({ workload }: { workload: Workload }) {
     // Subscribe to only this workload's execution node name. Selecting the whole
     // nodes array re-rendered every job card on any node/metrics update.
-    const ranOnNodeText = useNodesStore(state => {
+    const executionNodeText = useNodesStore(state => {
         const executionNodeId = workloadExecutionNodeId(workload)
         if (!executionNodeId) return ''
         return state.nodes.get(executionNodeId)?.name ?? ''
@@ -54,7 +63,6 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         if (!workload.originatedFrom) return ''
         return state.nodes.get(workload.originatedFrom)?.name ?? ''
     })
-    const ranOnLabel = workload.state === 'running' ? 'Running on' : 'Ran on'
     const barColor = useMemo(() => getWorkloadColorBar(workload.state), [workload.state])
 
     const subtext = useMemo(() => {
@@ -65,10 +73,11 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         switch (state) {
             case 'queued':
                 value = workload.createdAt
-                // Not "Queued at": PAIR runs no queue of its own, and the
-                // elapsed wait is the useful part for a job that has been
-                // accepted but is not generating yet.
-                label = 'Waiting since'
+                // "In flight", not "Queued": PAIR runs no queue of its own, and
+                // a job that has not started may be waiting for a node, waiting
+                // in an engine's queue, or already being processed where PAIR
+                // cannot see it.
+                label = 'In flight since'
                 break
             case 'running':
                 value = workload.startedAt ?? 0
@@ -120,7 +129,7 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         <Card
             className={className}
             density="compact"
-            style={{ direction: 'ltr' }}
+            style={CARD_STYLE}
             data-workload-id={workload.id}
             data-workload-origin={workload.originatedFrom ?? ''}
             attributes={{ CardContent: { className: 'workload-card-content' } }}
@@ -134,7 +143,7 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                     </Text>
                 </Flex>
 
-                {(requestedFromNodeText || ranOnNodeText) && (
+                {(requestedFromNodeText || executionNodeText) && (
                     <Stack gap="0" className="mt-1">
                         {requestedFromNodeText && (
                             <Flex align="center" wrap="wrap" gap="1">
@@ -146,13 +155,13 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                                 </Text>
                             </Flex>
                         )}
-                        {ranOnNodeText && (
+                        {executionNodeText && (
                             <Flex align="center" wrap="wrap" gap="1">
                                 <Text kind="body/regular/sm" className="text-subtle-color">
-                                    {ranOnLabel}
+                                    {workloadNodeLabel(workload)}
                                 </Text>
                                 <Text kind="body/regular/sm" className="text-subtle-color">
-                                    {ranOnNodeText}
+                                    {executionNodeText}
                                 </Text>
                             </Flex>
                         )}
