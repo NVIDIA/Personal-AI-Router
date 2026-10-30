@@ -24,18 +24,22 @@ flowchart TB
     EngineA1["<b>Engine</b><br/>Ollama"]
     EngineA2["<b>Engine</b><br/>LM Studio"]
     EngineB1["<b>Engine</b><br/>Ollama"]
+    EngineB2["<b>Engine</b><br/>llama.cpp"]
     ModelA1["<b>Models</b><br/>present on this engine"]
     ModelA2["<b>Models</b>"]
     ModelB1["<b>Models</b>"]
+    ModelB2["<b>Models</b>"]
 
     Cluster --- NodeA
     Cluster --- NodeB
     NodeA --- EngineA1
     NodeA --- EngineA2
     NodeB --- EngineB1
+    NodeB --- EngineB2
     EngineA1 --- ModelA1
     EngineA2 --- ModelA2
     EngineB1 --- ModelB1
+    EngineB2 --- ModelB2
 ```
 
 - A **cluster** is a set of mutually trusted nodes. There is no founder, no
@@ -50,7 +54,7 @@ flowchart TB
   the two nodes interchangeable for a request.
 
 PAIR evaluates eligibility at the bottom of that hierarchy. A request names a
-model, so it can only be served by a node whose running engine holds it. Cluster
+model, so only a node whose running engine holds that model can serve it. Cluster
 membership makes a node reachable. It does not make it capable.
 
 ## Process Architecture
@@ -85,10 +89,10 @@ attempts bounded restart with backoff. Workers log to stderr, and stdout is
 reserved for newline-delimited JSON-RPC when stdio is used.
 
 The terminal interface is a separate broker client for headless use, and is what
-the `nvpair` command on PATH resolves to. Do not run it and the desktop
-application on the same machine at the same time, because each starts its own
-broker and worker tree and the two would then contend for the same local ports,
-engines, and persisted settings.
+the `nvpair` command on `PATH` resolves to. Do not run it and the desktop
+application on the same machine at the same time. Each starts its own broker and
+worker tree, and the two would then contend for the same local ports, engines,
+and persisted settings.
 
 ### Health and Failure Detection
 
@@ -96,26 +100,26 @@ There is no `/health` endpoint on any PAIR service, and the broker does not
 heartbeat its workers. What exists is uneven, so it is worth being precise about
 the layers that are checked:
 
-| Layer | How it is checked |
+| Layer | How it is Checked |
 | --- | --- |
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
 | The broker | A `ping` request clients can call, which the terminal interface's **Service** tab uses. |
 | Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
 
-Worker supervision is restart-based. An unexpected exit is retried with
-exponential backoff from roughly one second to 16, with a budget of five attempts
-for each unhealthy streak and a 60-second window after which a worker that
-stayed up is considered recovered and its budget resets. A crash raises a sticky
+Worker supervision is restart-based. The broker retries an unexpected exit with
+exponential backoff from roughly one second to 16 seconds, with a budget of five
+attempts for each unhealthy streak. A worker that stays up for a 60-second window
+is considered recovered and its budget resets. A crash raises a sticky
 error entry so the interface can show that a component is down. Recovery clears
 it, and a worker that exhausts its budget is left down with the entry standing.
 `nvpair-errors` is the exception that cannot report its own death, so its crashes
 go to stderr instead.
 
 The gap this leaves is a worker that is running but wedged. It is still holding its
-stdio pipe, but no longer answering. Nothing detects that today. It is detected when
-requests or by a UI state that quietly stops updating. To recover, restart the service from
-**Settings > Service**.
+stdio pipe but no longer answering. Nothing detects that today. It shows up instead
+as jobs that never complete or UI state that quietly stops updating. To recover,
+restart the service from **Settings > Service**.
 
 ## Control Flow
 
@@ -157,11 +161,11 @@ Most peer traffic runs over *mutual Transport Layer Security (TLS)*. Each node
 holds a stable universally unique identifier (UUID) and a self-signed leaf
 certificate, and pairing pins each side's certificate against the other's UUID. A
 cluster-gated endpoint verifies that its caller presents a certificate pinned for
-a current member and refuses anything else, so a machine that can reach the port
-but has not been paired cannot read model inventory, read workloads, or drive a
-remote engine.
+a current member and refuses anything else. A machine that can reach the port but
+has not been paired therefore cannot read model inventory, read workloads, or
+drive a remote engine.
 
-Certificates and pinning are owned by `nvpair-cluster-manager`. Refer to
+`nvpair-cluster-manager` owns certificates and pinning. Refer to
 [SECURITY.md](../SECURITY.md) for the trust model and its limits.
 
 Not every surface is gated, and the exceptions are deliberate:
@@ -200,11 +204,11 @@ distinguished by the connection's first byte. A TLS handshake record starts with
 This is why an endpoint is `http://127.0.0.1:11434` for an application on the
 machine itself while the same port serves authenticated TLS to the network. Local
 clients need no certificates. Routed inference between paired nodes uses mutual
-TLS; explicitly added unpaired engines may use plaintext HTTP.
+TLS. Explicitly added unpaired engines can use plaintext HTTP.
 
 The loopback restriction is enforced, not merely conventional. The listener binds
-all interfaces so the TLS personality can accept peers, but a plaintext request
-from any non-loopback address is refused with `403`. Without that check the port
+all interfaces so the TLS personality can accept peers, but the proxy refuses a
+plaintext request from any non-loopback address with `403`. Without that check the port
 would be an open relay for anything on the network.
 
 The cluster manager uses the same protocol split, but its plaintext endpoint
@@ -221,8 +225,9 @@ reach PAIR:
   cannot chain a request onward through a third node.
 
 The second point is why the routing decision belongs to the machine the request
-originates on. To give a workstation the whole cluster, make it a node. After it is a node, its local
-proxy then routes on its behalf, whether or not it runs an engine itself.
+originates on. To give a workstation the whole cluster, make it a node. After it
+is a node, its local proxy routes on its behalf, whether or not it runs an engine
+itself.
 
 ### What Peers Exchange
 
@@ -238,9 +243,9 @@ shows:
 Each of these listens on its own port. Refer to the [port map](#port-map) below.
 
 Electron polls every discovered node's `/v1/node-info` directly because that
-detail is richer than the broker's control surface exposes. Healthy nodes are
-sampled every two seconds; consecutive failures back off to 4, 8, 16, then 30
-seconds and reset on success. This is the one place Electron makes service-data
+detail is richer than the broker's control surface exposes. Electron samples
+healthy nodes every two seconds. Consecutive failures back off to 4, 8, 16, then
+30 seconds and reset on success. This is the one place Electron makes service-data
 HTTP calls of its own. Separately, the backend scanner samples a compact
 maximum-GPU utilization value for scheduling with the same healthy cadence and
 capped failure backoff, which the broker relays straight to the job scheduler.
@@ -285,7 +290,7 @@ The proxy owns the per-request decision, and it does not produce a single winner
 It produces an **ordered failover list** of nodes eligible for that request, then
 walks it.
 
-For model-bearing inference, eligibility is a hard gate: the proxy takes a
+For model-bearing inference, eligibility is a hard gate. The proxy takes a
 request-local copy of the latest discovery snapshot and keeps only nodes whose
 per-engine inventory advertises the requested model. Within that owner set, or
 across all candidates when the request has no parsed model, the order is:
@@ -351,7 +356,7 @@ two different mechanisms, and they compose in one direction:
   the requested model, then applies the scheduler's ordering to the remaining
   owners.
 
-So load balancing happens **among the nodes that can serve the request**, not
+Load balancing therefore happens **among the nodes that can serve the request**, not
 across the cluster as a whole.
 
 #### Capability Gate
@@ -359,18 +364,19 @@ across the cluster as a whole.
 When an inference request contains a non-empty model, only nodes whose current
 inventory for that engine advertises the model enter the failover list. An empty
 inventory and an inventory that lists other models are both ineligible. Ollama's
-implicit `:latest` tag is normalized; LM Studio model IDs match exactly.
+implicit `:latest` tag is normalized. LM Studio and llama.cpp model IDs match
+exactly.
 
 If no advertised owner is routable, the proxy returns an actionable local `502`
 without sending the request to an engine. It does not broaden the candidate list
-or refresh inventory synchronously; a later discovery update makes a newly
+or refresh inventory synchronously. A later discovery update makes a newly
 advertised owner eligible.
 
 A request whose model cannot be parsed keeps the ordinary non-model ordering.
 
-Model listings are not routed at all. A `GET` of `/v1/models`, Ollama's
-`/api/tags`, or llama.cpp's `/models` is fanned out to every candidate for that
-engine concurrently and the replies are merged, which is why the answer is the
+Model listings are not routed at all. The proxy fans a `GET` of `/v1/models`,
+Ollama's `/api/tags`, or llama.cpp's `/models` out to every candidate for that
+engine concurrently and merges the replies. That is why the answer is the
 cluster's inventory for that engine rather than one node's.
 
 #### Failover and Inventory Freshness
@@ -423,9 +429,9 @@ running one enormous request looks more idle than a node running two trivial one
 
 **Model load state is not considered.** Eligibility asks whether a node *has* the
 model, not whether it is already loaded in memory. PAIR knows which models are
-loaded, and the interface shows it, but routing does not use it, so a request can
-be sent to a node that must cold-load the model while a node holding it warm sits
-one place lower in the order.
+loaded, and the interface shows it, but routing does not use it. A request can
+therefore go to a node that must cold-load the model while a node holding it warm
+sits one place lower in the order.
 
 **Only work PAIR routed contributes to pending counts.** Inference sent straight
 to an engine's own port is absent from workload events. GPU-heavy external work
@@ -440,7 +446,7 @@ occupy different devices.
 schedule. Two nodes dispatching at the same moment can briefly steer work to the
 same idle peer, because each sees an eventually consistent picture and a peer's
 counts trail by relay latency. Per-proxy reservations cover the local burst case,
-but they are local: one node cannot see what another just dispatched. The system
+but they are local. One node cannot see what another just dispatched. The system
 self-corrects through workload relay and periodic reconciliation rather than
 preventing the collision.
 
@@ -448,7 +454,7 @@ preventing the collision.
 ranked yet is ordered by node ID, which has nothing to do with load. That happens
 at cold start, or for a manual proxy target the scheduler's discovery never saw.
 The fallback degrades ranking quality without causing a misroute. Missing
-telemetry for a ranked node is different: that node takes the neutral pressure
+telemetry for a ranked node is different. That node takes the neutral pressure
 value and stays in the normal ranking.
 
 Improving this, and likely offering a choice of policies, is planned work. Which
@@ -491,9 +497,9 @@ own application and let PAIR start it on a port nothing else is serving.
 
 An application that already works with Ollama is configured for `11434`. If PAIR
 listened somewhere else, every tool would need reconfiguring to gain anything, so
-PAIR inverts it: the **proxy** takes the port the engine would normally use, and
-the engine moves behind it — Ollama to `11435` and upwards, LM Studio to `1235`
-and upwards. The managed llama.cpp router stays on `8081` while its facade takes
+PAIR inverts it. The **proxy** takes the port the engine would normally use, and
+the engine moves behind it. Ollama moves to `11435` and upwards, and LM Studio
+moves to `1235` and upwards. The managed llama.cpp router stays on `8081` while its facade takes
 `8080`. Existing clients keep working untouched and transparently gain the cluster.
 
 This is also what makes the engine unreachable from outside. Engines PAIR starts
@@ -522,7 +528,8 @@ The rearrangement is conditional, and PAIR yields rather than fights:
 The practical consequence is the one in
 [Troubleshooting](troubleshooting.mdx#requests-work-but-pair-shows-no-jobs). Start
 the Ollama desktop application and it takes `11434` for itself, so PAIR cannot,
-and requests reach that local Ollama without ever being routed.
+and requests reach that local Ollama without ever being routed. A `llama-server`
+you start yourself on `8080` does the same to the llama.cpp facade.
 
 ### Port Map
 
@@ -564,8 +571,8 @@ each host, and that record carries two kinds of content:
 - The ports its sibling services registered: node-info, engine proxies, errors,
   workloads, cluster manager, and engine manager
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
-  reach it — `ip=` for the address the node ranks first, and `ips=` for the whole
-  ranked list
+  reach it, with `ip=` for the address the node ranks first and `ips=` for the
+  whole ranked list
 
 Publishing the list rather than one address is what lets a peer keep trying. A
 machine can be reachable on one interface and not another, so a peer works
@@ -606,7 +613,7 @@ egress on multi-homed Windows hosts.
 Those sockets set `SO_REUSEADDR` so they coexist with Bonjour, Avahi, and other
 PAIR processes. A Darwin sender also sets `SO_REUSEPORT`, matching the BSD
 multicast sharing behavior needed to coexist with the system mDNS responder.
-Linux deliberately omits `SO_REUSEPORT`: there it can load-balance incoming
+Linux deliberately omits `SO_REUSEPORT`. On Linux it can load-balance incoming
 unicast datagrams into a short-lived send socket and steal replies from the
 long-lived receiver.
 
@@ -628,9 +635,9 @@ distinguish a paired node from a stranger it can merely see.
 
 ### Node Eviction
 
-The scanner scans every five seconds. Once a node has missed three scans in a
-row, about fifteen seconds, the scanner checks on it at every scan, and any answer
-resets the count. It drops the node only after twelve consecutive misses, about a
+The scanner scans every five seconds. After a node has missed three scans in a
+row, about 15 seconds, the scanner checks on it at every scan, and any answer
+resets the count. It drops the node only after 12 consecutive misses, about a
 minute, with every check along the way failing. These are the checks:
 
 - Inference the node served in the last minute, which the proxies report
@@ -702,11 +709,12 @@ The important boundaries are:
    Optional socket or named-pipe mode relies on operating-system endpoint
    permissions. JSON-RPC has no independent per-message token.
 3. **Loopback HTTP.** Local clients can submit sensitive inference content.
-   Listener addresses, browser access, CORS, and host account security matter.
-   The proxies add no permissive CORS default: they pass the upstream engine's
-   headers and its refusals through, so a web page reaches a model through PAIR
-   only where the engine would have allowed it directly, and a cluster-wide
-   request needs every engine that answered to allow the origin. Refer to
+   Listener addresses, browser access, cross-origin resource sharing (CORS), and
+   host account security matter. The proxies add no permissive CORS default. They
+   pass the upstream engine's headers and its refusals through, so a web page
+   reaches a model through PAIR only where the engine would have allowed it
+   directly. A cluster-wide request needs every engine that answered to allow the
+   origin. Refer to
    [Engine settings](engine-settings.mdx) for allowing an origin.
 4. **LAN discovery and metadata.** The network can reveal service presence and
    selected host information. Some enrichment endpoints use plain HTTP.
@@ -737,7 +745,7 @@ stale or hand-placed binary is caught rather than silently supervised.
 
 `services/build.sh` and `services/build.bat` stage every executable together,
 stamped from `versions.json`. Building one component by hand without restaging is
-the one thing to avoid: the broker keeps running whatever is in `build/bin/`.
+the one thing to avoid. The broker keeps running whatever is in `build/bin/`.
 
 Both paths produce binaries you run on the machine that built them. This tree
 provides build materials only. There is no packaging, installer, or signing step
