@@ -529,9 +529,10 @@ last resort.
 
 ### 5.10 Model-list aggregation
 
-The model-list routes are the one exception to forwarding a request to a single
-node. They resolve with no model, so no owner filter applies, and fan out
-concurrently to every resolved candidate, dialed as §5.9 describes, with
+The model-list routes are the one exception among forwarded requests to
+sending a request to a single node; CORS preflights also fan out (§5.8). They
+resolve with no model, so no owner filter applies, and fan out concurrently to
+every resolved candidate, dialed as §5.9 describes, with
 redirects not followed. Each candidate is queried at the request's own path,
 except on the llama.cpp facade, where `GET /models` and `GET /v1/models` both
 query the candidate's `/models`.
