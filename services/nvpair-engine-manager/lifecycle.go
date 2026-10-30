@@ -248,6 +248,9 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
+	if err := validateAutoLaunch(rt, launch, vars["models_dir"]); err != nil {
+		return err
+	}
 	launch = applyAutoLaunch(engine, rt, launch, vars["models_dir"])
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
