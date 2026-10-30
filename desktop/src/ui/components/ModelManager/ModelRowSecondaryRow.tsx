@@ -17,6 +17,8 @@ export function ModelRowSecondaryRow({
     progress,
     busyLabel,
     hasExpiry,
+    expiryOptions,
+    expiryText,
     expiryDd,
     onExpiryChange
 }: {
@@ -25,18 +27,24 @@ export function ModelRowSecondaryRow({
     /** Optimistic "working" label (load/eject/delete in flight) shown with a spinner. */
     busyLabel?: string | null
     hasExpiry: boolean
+    /** The expiry values on offer; all of them when absent. */
+    expiryOptions?: readonly ModelExpiry[]
+    /** How the current expiry reads; "Expires …" when absent. */
+    expiryText?: (expiry: ModelExpiry) => string
     expiryDd: ModelRowDropdownControl
     onExpiryChange: (modelName: string, value: ModelExpiry) => void
 }) {
     const expiryItems: DropdownEntry[] = useMemo(
         () =>
-            EXPIRY_OPTIONS.map(item => ({
-                children: item.children,
-                onSelect: () => {
-                    if (isModelExpiry(item.id)) onExpiryChange(model.name, item.id)
-                }
-            })),
-        [model.name, onExpiryChange]
+            EXPIRY_OPTIONS.filter(item => !expiryOptions || expiryOptions.includes(item.id)).map(
+                item => ({
+                    children: item.children,
+                    onSelect: () => {
+                        if (isModelExpiry(item.id)) onExpiryChange(model.name, item.id)
+                    }
+                })
+            ),
+        [model.name, onExpiryChange, expiryOptions]
     )
 
     return (
@@ -94,9 +102,11 @@ export function ModelRowSecondaryRow({
                     >
                         <Text
                             kind="body/regular/sm"
-                            className="text-subtle-color truncate max-w-[7rem]"
+                            className="text-subtle-color truncate max-w-[12rem]"
                         >
-                            {`Expires ${EXPIRY_SHORT_LABELS[model.expiry ?? '10m']}`}
+                            {expiryText
+                                ? expiryText(model.expiry ?? '10m')
+                                : `Expires ${EXPIRY_SHORT_LABELS[model.expiry ?? '10m']}`}
                         </Text>
                     </Dropdown>
                 )}

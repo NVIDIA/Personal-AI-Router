@@ -17,6 +17,9 @@ export const EXPIRY_SHORT_LABELS: Record<ModelExpiry, string> = {
     '1s': '1s',
     '10s': '10s',
     '1m': '1m',
+    '5m': '5m',
     '10m': '10m',
+    '30m': '30m',
+    '1h': '1h',
     '-1': 'never'
 }

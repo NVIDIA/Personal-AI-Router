@@ -99,11 +99,22 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
-`EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
+`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and `vllm`.
+vLLM serves one model per process, so `unloadModel` (Eject) stops its process,
+which frees its GPU memory while the engine stays on, and `loadModel` loads it
+again. An engine status with `idle: true` is on with nothing loaded, and loads on
+the next request; `setModelExpiry` on vLLM sets how long it may sit idle before it
+unloads (1 minute to 1 hour, or never). Its model
+list is the Hugging Face cache, which stays available while the engine is stopped, `deleteModel` removes a cached model (not the one
+loaded in vLLM; deleting an ejected or stopped vLLM's model leaves it with no model
+selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo into
+that cache (no running engine needed), and `loadModel` on a cached model switches
+the served model by restarting vLLM on it.
 `searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
-live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
-query performs an explicit bounded search across public Hugging Face GGUF
-repositories; other calls return the populated engine catalog. llama.cpp pull
+live Hugging Face catalogs for LM Studio, llama.cpp and vLLM. A non-empty
+llama.cpp or vLLM query performs an explicit bounded search across public
+Hugging Face repositories (GGUF for llama.cpp, safetensors chat models for vLLM);
+other calls return the populated engine catalog. llama.cpp pull
 IDs are exact `owner/repository:quantization` values; load, unload, and delete
 all use that same exact id.
 

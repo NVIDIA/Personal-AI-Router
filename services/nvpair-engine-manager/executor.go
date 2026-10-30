@@ -40,6 +40,9 @@ type EngineStatus struct {
 	Running     bool   `json:"running"`
 	Healthy     bool   `json:"healthy"`
 	Port        int    `json:"port,omitempty"`
+	// Idle is true for an engine that is ON with its model unloaded because it
+	// was idle, and will load again on demand. Omitted otherwise.
+	Idle bool `json:"idle,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -73,6 +76,20 @@ type engineState struct {
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
 	startCancel context.CancelFunc
+	// front is the gateway in front of an engine that declares one (Runtime.Front);
+	// nil for every other engine.
+	front *frontGateway
+	// idle is set while front's engine is unloaded for being idle: the engine is
+	// ON (running is true) but has no process.
+	idle bool
+	// idleModel is the model the engine was set to serve when it was unloaded. It
+	// is kept so the engine goes on advertising it, without reading the launch
+	// settings while a lifecycle operation holds them.
+	idleModel string
+	// idleSecs is the idle limit chosen at run time, when idleSet; otherwise the
+	// manifest's applies. Atomic because the idle watcher reads it on every tick.
+	idleSet  atomic.Bool
+	idleSecs atomic.Int64
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
@@ -233,7 +250,7 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	}
 	plat, ok := m.HostPlatform()
 	if !ok {
-		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("%s is not supported on %s/%s", m.DisplayName, runtime.GOOS, runtime.GOARCH)
 	}
 	st := &engineState{
 		manifest:   m,

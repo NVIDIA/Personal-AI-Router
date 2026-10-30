@@ -31,6 +31,17 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, action)
 	}
+	if act.LaunchModel != nil {
+		// Like restart_after, the restart gets the caller's context: it is a stop
+		// plus a readiness-probed start that the action timeout does not budget for.
+		return e.switchLaunchModel(ctx, engine, act.LaunchModel, params)
+	}
+	if act.StopEngine {
+		return e.ejectByStopping(ctx, engine, params)
+	}
+	if act.FrontIdle != "" {
+		return e.frontIdleAction(engine, act.FrontIdle, params)
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err
@@ -100,6 +111,9 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	// it to be up.
 	if act.RemovePath != nil {
 		return e.runRemovePathAction(ctx, st, act, params)
+	}
+	if act.HFCache != nil {
+		return e.runHFCacheAction(st, engine, act, params)
 	}
 	if len(act.Cmd) > 0 {
 		return e.runCmdAction(ctx, st, act, port, params)

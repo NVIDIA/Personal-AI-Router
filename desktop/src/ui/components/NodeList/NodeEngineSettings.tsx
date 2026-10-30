@@ -75,35 +75,39 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
     void engineFingerprint
     void modelsFingerprint
 
-    const allBackends: { backend: BackendInfo; statusKnown: boolean }[] = EnabledEngineTypes.map(
-        type => {
-            const statusStore = useEngineStatusStore.getState()
-            // Distinguish "the service reported this engine" from "we synthesized
-            // a placeholder". The placeholder's processStatus is 'initializing';
-            // without this flag a never-reported remote engine spins forever.
-            const statusKnown = statusStore.statusByNode.get(nodeId)?.has(type) ?? false
-            const status = statusStore.getStatus(nodeId, type)
-            const models = useEngineModelsStore.getState().getModels(nodeId, type)
-            const updateAvailable = useEngineUpdateAvailableStore.getState().getInfo(nodeId, type)
-
-            return {
-                backend: {
-                    type,
-                    displayName: EngineDisplayNames[type],
-                    source: 'detected',
-                    processStatus: status.processStatus,
-                    port: status.enginePort,
-                    proxyPort: status.proxyPort,
-                    models: models.models,
-                    docsUrl: EngineDefaultLinks[type]?.docsUrl,
-                    installUrl: EngineDefaultLinks[type]?.installUrl,
-                    installedVersion: status.installedVersion,
-                    updateAvailable
-                },
-                statusKnown
-            }
-        }
+    // An engine the node cannot run, such as vLLM on Windows, gets no row.
+    const shownTypes = EnabledEngineTypes.filter(
+        type =>
+            useEngineStatusStore.getState().getStatus(nodeId, type).processStatus !== 'unsupported'
     )
+    const allBackends: { backend: BackendInfo; statusKnown: boolean }[] = shownTypes.map(type => {
+        const statusStore = useEngineStatusStore.getState()
+        // Distinguish "the service reported this engine" from "we synthesized
+        // a placeholder". The placeholder's processStatus is 'initializing';
+        // without this flag a never-reported remote engine spins forever.
+        const statusKnown = statusStore.statusByNode.get(nodeId)?.has(type) ?? false
+        const status = statusStore.getStatus(nodeId, type)
+        const models = useEngineModelsStore.getState().getModels(nodeId, type)
+        const updateAvailable = useEngineUpdateAvailableStore.getState().getInfo(nodeId, type)
+
+        return {
+            backend: {
+                type,
+                displayName: EngineDisplayNames[type],
+                source: 'detected',
+                processStatus: status.processStatus,
+                idle: status.idle,
+                port: status.enginePort,
+                proxyPort: status.proxyPort,
+                models: models.models,
+                docsUrl: EngineDefaultLinks[type]?.docsUrl,
+                installUrl: EngineDefaultLinks[type]?.installUrl,
+                installedVersion: status.installedVersion,
+                updateAvailable
+            },
+            statusKnown
+        }
+    })
 
     return (
         <Stack gap="6" className="pt-1 pb-2">

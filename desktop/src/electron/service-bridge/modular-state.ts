@@ -8,6 +8,7 @@ import type {
     EngineProgress,
     EngineStatusData,
     EngineType,
+    ModelExpiry,
     ModelItem
 } from '@/shared/types/engines'
 import type { LogEntry, LogPage } from '@/shared/types/log'
@@ -18,15 +19,19 @@ import type { Workload, WorkloadState } from '@/shared/types/workloads'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import {
+    MODEL_SWITCH_TIMEOUT_MS,
     MODULAR_NODE_INFO_SELF_HOST,
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
+import { DefaultIdleExpiry, EnginesWithIdleTimeout, EngineTypes } from '@/shared/constants/engines'
 import {
     emptyEngineStatus,
     engineManagerName,
     engineTypeFromManagerName,
-    isEngineType
+    idleSecondsToExpiry,
+    isEngineType,
+    unsupportedEngineStatus
 } from '@/shared/utils/engines'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
@@ -168,7 +173,8 @@ function emptyEngines(): Record<ProxyEngine, EnginePresence> {
     return {
         ollama: emptyPresence(),
         'lm-studio': emptyPresence(),
-        'llama-cpp': emptyPresence()
+        'llama-cpp': emptyPresence(),
+        vllm: emptyPresence()
     }
 }
 
@@ -576,7 +582,7 @@ function sameTelemetry(
     )
 }
 
-function modelItem(name: string, loaded = false): ModelItem {
+function modelItem(name: string, loaded = false, expiry: ModelExpiry = '10m'): ModelItem {
     return {
         name,
         size: 0,
@@ -588,7 +594,7 @@ function modelItem(name: string, loaded = false): ModelItem {
         digest: '',
         sizeVram: null,
         expiresAt: null,
-        expiry: '10m',
+        expiry,
         capabilities: []
     }
 }
@@ -890,7 +896,8 @@ class ModularBridgeState {
     private proxyPorts: Record<ProxyEngine, number> = {
         ollama: 0,
         'lm-studio': 0,
-        'llama-cpp': 0
+        'llama-cpp': 0,
+        vllm: 0
     }
     private selfId: string | null = null
     /**
@@ -901,8 +908,19 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; port: number }
+        { installed: boolean; running: boolean; port: number; idle: boolean }
     >()
+    /**
+     * The engines `nvpair-engine-manager` lists for this host. It leaves out an
+     * engine the host cannot run, such as vLLM on Windows, which is then
+     * reported as `unsupported`. Null until the first full listing.
+     */
+    private localEngineList: ReadonlySet<EngineType> | null = null
+    /**
+     * How long an engine whose expiry is an idle limit may sit idle before it
+     * unloads its model, in seconds (0 is never), as the engine manager reports it.
+     */
+    private idleSeconds = new Map<EngineType, number>()
     /**
      * Local model lists pulled from `nvpair-engine-manager`'s `list_models` action by
      * the supervisor. Cached so `engines:get-initial` can include them and survive
@@ -928,6 +946,15 @@ class ModularBridgeState {
      */
     private pendingEngineOps = new Map<EngineType, EngineProcessStatus>()
     private pendingOpTimers = new Map<EngineType, ReturnType<typeof setTimeout>>()
+    /**
+     * Engines in the middle of a model switch, which restarts the engine. Unlike
+     * a pending op this is not resolved by `engine:state-changed`: the restart
+     * reports "stopped" first, and showing that as the engine being off made it
+     * look disabled. It ends when the switch request itself finishes (success or
+     * failure), with a timeout in case that never arrives.
+     */
+    private modelSwitches = new Set<EngineType>()
+    private modelSwitchTimers = new Map<EngineType, ReturnType<typeof setTimeout>>()
     /**
      * Optimistic transitional status for a remote peer while a user-initiated
      * `engine:remote-*` op is in flight on this node (the client). Keyed by
@@ -958,6 +985,8 @@ class ModularBridgeState {
      * evicted.
      */
     private remoteEngineFacts = new Map<string, RemoteEngineFacts>()
+    /** The engines each peer's engine manager lists, as {@link localEngineList} is for this host. */
+    private remoteEngineLists = new Map<string, ReadonlySet<EngineType>>()
     /**
      * The model of an in-flight remote pull keyed by {@link remoteOpKey}. The
      * backend's `engine:remote-progress` frames carry **no** `model` field
@@ -1102,6 +1131,14 @@ class ModularBridgeState {
                             status: loaded.has(item.name) ? 'loaded' : 'idle'
                         }))
                     })
+                }
+            }
+        }
+
+        if (selfId && this.localEngineList) {
+            for (const engineType of EngineTypes) {
+                if (!this.localEngineList.has(engineType)) {
+                    statuses.push(unsupportedEngineStatus(selfId, engineType))
                 }
             }
         }
@@ -1328,6 +1365,27 @@ class ModularBridgeState {
     }
 
     /**
+     * Record a full `engine:get-installed` listing: each engine's status, and
+     * which engines the host can run at all. One left out is `unsupported`.
+     */
+    applyEngineManagerList(result: JsonValue | undefined): void {
+        const list = objectValue(result)?.engines
+        if (!Array.isArray(list)) return
+        const listed = new Set<EngineType>()
+        for (const entry of list) {
+            this.applyEngineManagerStatus(entry)
+            const engineType = engineTypeFromManagerName(stringValue(objectValue(entry)?.engine))
+            if (engineType) listed.add(engineType)
+        }
+        // An empty listing says nothing about what the host can run.
+        if (listed.size === 0) return
+        this.localEngineList = listed
+        for (const engineType of EngineTypes) {
+            if (!listed.has(engineType)) this.emitLocalEngineStatus(engineType)
+        }
+    }
+
+    /**
      * Record a `nvpair-engine-manager` `engine:state-changed` (or hydrated
      * `engine:get-installed` entry). Facts are kept regardless of whether the
      * self node is known yet; `setSelfId` triggers a refresh once it resolves.
@@ -1341,7 +1399,8 @@ class ModularBridgeState {
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            idle: booleanValue(obj.idle)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -1349,6 +1408,68 @@ class ModularBridgeState {
         // already carries the resolved, fact-derived status.
         this.discardPendingOp(engineType)
         this.emitLocalEngineStatus(engineType)
+    }
+
+    /** The expiry the models of an engine show: its idle limit, or the default. */
+    private expiryFor(engineType: EngineType): ModelExpiry {
+        const seconds = this.idleSeconds.get(engineType)
+        if (seconds !== undefined) return idleSecondsToExpiry(seconds)
+        return EnginesWithIdleTimeout.includes(engineType) ? DefaultIdleExpiry : '10m'
+    }
+
+    /**
+     * Record how long an engine may sit idle before it unloads its model, and show
+     * it on the engine's models.
+     */
+    setEngineIdleSeconds(engineType: EngineType, seconds: number): void {
+        this.idleSeconds.set(engineType, seconds)
+        const nodeId = this.selfId
+        const current = this.localManagerModels.get(engineType)
+        if (!nodeId || !current) return
+        const expiry = this.expiryFor(engineType)
+        const items = current.map(item => ({ ...item, expiry }))
+        this.localManagerModels.set(engineType, items)
+        emitBridgePush('engines:state-changed', {
+            nodeId,
+            engineType,
+            models: { engineType, nodeId, models: items }
+        })
+    }
+
+    /**
+     * Mark an engine as switching model. While it is down for the restart the UI
+     * shows it as starting, not stopped, and its model list is kept. The caller
+     * ends it with {@link clearLocalModelSwitch} when the request finishes.
+     */
+    beginLocalModelSwitch(engineType: EngineType): void {
+        if (!this.selfId) return
+        this.dropModelSwitch(engineType)
+        this.modelSwitches.add(engineType)
+        this.modelSwitchTimers.set(
+            engineType,
+            setTimeout(() => this.clearLocalModelSwitch(engineType), MODEL_SWITCH_TIMEOUT_MS)
+        )
+        this.emitLocalEngineStatus(engineType)
+    }
+
+    /** End a model switch and show the engine's real status again. */
+    clearLocalModelSwitch(engineType: EngineType): void {
+        if (!this.modelSwitches.has(engineType)) return
+        this.dropModelSwitch(engineType)
+        this.emitLocalEngineStatus(engineType)
+    }
+
+    isLocalModelSwitching(engineType: EngineType): boolean {
+        return this.modelSwitches.has(engineType)
+    }
+
+    private dropModelSwitch(engineType: EngineType): void {
+        const timer = this.modelSwitchTimers.get(engineType)
+        if (timer) {
+            clearTimeout(timer)
+            this.modelSwitchTimers.delete(engineType)
+        }
+        this.modelSwitches.delete(engineType)
     }
 
     /**
@@ -1687,6 +1808,8 @@ class ModularBridgeState {
         nodeId: string,
         engine: ProxyEngine
     ): EngineStatusData | null {
+        const listed = this.remoteEngineLists.get(nodeId)
+        if (listed && !listed.has(engine)) return unsupportedEngineStatus(nodeId, engine)
         const node = this.nodes.get(nodeId)
         const presence = node?.engines[engine]
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engine))
@@ -1758,6 +1881,8 @@ class ModularBridgeState {
             })
             seen.add(engineType)
         }
+        // A peer leaves out an engine it cannot run. An empty listing says nothing.
+        if (seen.size > 0) this.remoteEngineLists.set(nodeId, seen)
         for (const engine of PROXY_ENGINES) {
             if (!seen.has(engine)) {
                 this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
@@ -1790,6 +1915,7 @@ class ModularBridgeState {
 
     /** Forget a node's authoritative remote-engine facts (on eviction/leave). */
     private dropRemoteEngineFacts(nodeId: string): void {
+        this.remoteEngineLists.delete(nodeId)
         for (const engine of PROXY_ENGINES) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
             this.remotePullModels.delete(this.remoteOpKey(nodeId, engine))
@@ -1833,7 +1959,8 @@ class ModularBridgeState {
         // row to idle. The loaded set is seeded by discovery self-enrichment and
         // kept fresh by {@link applyLocalLoadedModels}.
         const loaded = loadedNamesForEngine(nodeId ? this.nodes.get(nodeId) : undefined, engineType)
-        const items = modelNames.map(name => modelItem(name, loaded.has(name)))
+        const expiry = this.expiryFor(engineType)
+        const items = modelNames.map(name => modelItem(name, loaded.has(name), expiry))
         this.localManagerModels.set(engineType, items)
         if (!nodeId) return
         emitBridgePush('engines:state-changed', {
@@ -2028,6 +2155,9 @@ class ModularBridgeState {
     ): EngineStatusData | undefined {
         const nodeId = this.selfId
         if (!nodeId) return undefined
+        if (this.localEngineList && !this.localEngineList.has(engineType)) {
+            return unsupportedEngineStatus(nodeId, engineType)
+        }
         const facts = this.engineManagerFacts.get(engineType)
 
         // An in-flight lifecycle op outranks the fact-derived status so the UI
@@ -2048,11 +2178,14 @@ class ModularBridgeState {
             return {
                 engineType,
                 nodeId,
+                ...(facts.running && facts.idle ? { idle: true } : {}),
                 processStatus: facts.running
                     ? 'running'
-                    : facts.installed
-                      ? 'stopped'
-                      : 'not-installed',
+                    : this.modelSwitches.has(engineType)
+                      ? 'starting'
+                      : facts.installed
+                        ? 'stopped'
+                        : 'not-installed',
                 // The engine-manager reports the manifest's configured port for a
                 // pinned-port engine (for example managed llama.cpp on 8081 behind
                 // its 8080 proxy facade) whether it is running or merely installed,

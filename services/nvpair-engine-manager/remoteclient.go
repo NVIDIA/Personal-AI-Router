@@ -38,8 +38,8 @@ type remoteClient struct {
 }
 
 // waitsForEngineReadiness reports whether a peer may only answer after an
-// engine is healthy or an Ollama model is loaded, which the ordinary 30s
-// response-header budget cannot cover.
+// engine is healthy or an Ollama or vLLM model is loaded, which the ordinary
+// 30s response-header budget cannot cover.
 //
 // Cutting such a call off is worse than slow. The initiator's cancellation
 // propagates into the peer's in-flight handler, so bringUpCommand tears the
@@ -51,8 +51,10 @@ func waitsForEngineReadiness(path, engine string) bool {
 	}
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
+	// vLLM's load_model restarts the engine on the new model and replies once
+	// it is ready.
 	if path == controlLoadPath {
-		return engine == "ollama"
+		return engine == "ollama" || engine == "vllm"
 	}
 	return path == controlStartPath || path == controlDeletePath
 }

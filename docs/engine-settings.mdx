@@ -8,7 +8,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 */}
 
-Open a device's Ollama, LM Studio, or llama.cpp row and expand **Settings**.
+Open a device's Ollama, LM Studio, llama.cpp, or vLLM row and expand **Settings**.
 Edit the server port, proxy port and engine arguments, then select the green
 **Apply** button. A paired device that supports settings can be edited from
 another device in the cluster.
@@ -85,6 +85,7 @@ configuration consistent:
 | Ollama | `OLLAMA_HOST=127.0.0.1:<port>` | The host in `OLLAMA_HOST` | `OLLAMA_ORIGINS` |
 | LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
 | llama.cpp | `--port` | `--host` | `--cors-origins` |
+| vLLM | `--port` | `--host` | Not managed |
 
 For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235` and `-p=1235`
 all synchronize the same server-port field. Conflicting repetitions and invalid
@@ -94,6 +95,22 @@ add or remove the switch locally. Origin lists are normalized before validation;
 conflicting repeated lists are rejected. Other vendor options remain opaque.
 llama.cpp must remain in router mode; model-selection arguments such as `-m`
 or `-hf` switch it to an incompatible single-model server and fail readiness.
+vLLM always serves one model: its launch arguments name that model with
+`--model <Hugging Face id>`, and changing it restarts the engine. At every start
+PAIR sizes the rest for that model: a 64K context (`--max-model-len`, shrunk if
+the free GPU memory cannot hold it), YaRN rope scaling when the model's own window
+is smaller (for example Qwen3-8B's 40,960 tokens), and a GPU memory share just large
+enough for the weights and that context, so other engines can run alongside it.
+Arguments you add to the launch text, such as your own `--max-model-len` or
+`--gpu-memory-utilization`, take precedence, and a launch with
+`--tensor-parallel-size` or `--pipeline-parallel-size` is left as written. PAIR
+also turns on tool calling, which agent clients require: it checks how the
+model's chat template writes a tool call and picks the vLLM parser that reads
+that format (for example `hermes` for Qwen3, `qwen3_coder` for Qwen3.5 and
+Granite 4.2). For a model no vLLM parser can read, such as Nemotron Nano v2, chat
+requests that offer tools are answered in plain text, without the tools, instead
+of failing. To choose a parser yourself, add `--tool-call-parser <name>` to the
+launch text.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation

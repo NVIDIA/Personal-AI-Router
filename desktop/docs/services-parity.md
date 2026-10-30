@@ -16,25 +16,26 @@ history.
 
 ## Status summary
 
-| Domain                     | Status                          | Current state                                                                                                                                   |
-| -------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                      |
-| Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                 |
-| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                 |
-| Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                     |
-| Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
-| LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
-| llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                            |
-| Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                 |
-| Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                               |
-| Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                           |
-| Engine version metadata    | Backend-limited                 | The backend status surface does not provide a complete version/install-owner/update contract                                                    |
-| Errors                     | Complete                        | Broker-relayed registry with peer synchronization                                                                                               |
-| Workloads                  | Complete after subscription     | Local and peer workload events feed one Electron catalog                                                                                        |
-| Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                           |
-| Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none |
-| Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                            |
-| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp         |
+| Domain                     | Status                          | Current state                                                                                                                                                                                                                            |
+| -------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                                                                                                               |
+| Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                                                                                                          |
+| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                                                                                                          |
+| Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                                                                                                             |
+| Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                                                                                                                   |
+| LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                                                                                                                 |
+| llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                                                                                                                    |
+| vLLM engine                | Integrated (Linux, macOS arm64) | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), Hugging Face catalog search and download, endpoints and routing; eject (stops the engine), delete of cached models; no demo traffic |
+| Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                                                                                                          |
+| Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                                                                                                                        |
+| Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                                                                                                                    |
+| Engine version metadata    | Backend-limited                 | The backend status surface does not provide a complete version/install-owner/update contract                                                                                                                                             |
+| Errors                     | Complete                        | Broker-relayed registry with peer synchronization                                                                                                                                                                                        |
+| Workloads                  | Complete after subscription     | Local and peer workload events feed one Electron catalog                                                                                                                                                                                 |
+| Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                                                                                                                    |
+| Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none                                                                                          |
+| Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                                                                                                                   |
+| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp                                                                                                  |
 
 ## Supervision
 
@@ -182,6 +183,42 @@ Current limits are explicit: the manual-node worker does not probe llama.cpp,
 the catalog offers no alternate quantizations, and package selection is fixed
 rather than driver-aware or offline-repacked.
 
+### vLLM support
+
+The bundled `vllm` manifest covers Linux (NVIDIA GPU) and Apple Silicon macOS
+(vLLM-Metal). It installs a pinned vLLM release into a private virtualenv
+through a checksum-pinned `uv` bootstrap, or adopts a `vllm` already installed
+at a detected path. The engine's PAIR gateway listens on `8001`, with the
+`vllm serve` process on loopback `18001`, behind the proxy facade on `8000`. vLLM serves one model per process and has no
+load or unload API, so the engine manager puts a gateway on its port (`front`):
+Start and the restore after a restart bring it up idle with nothing loaded, the
+first request or a Load loads the model, it unloads after an idle limit (five
+minutes by default, `get_idle_timeout` and `set_idle_timeout`, shown as the
+model row's expiry control), and Eject (`unload_model`, a `stop_engine` action)
+unloads it on demand while the engine stays on; the card shows an idle engine
+as "Idle · loads on next request" (`idle` on the engine status). Its model list
+(`list_models` on disk) is kept while stopped. It downloads and deletes
+through the shared Hugging Face cache (`pull_model` is an `hf_pull` action,
+`delete_model` an `hf_cache` delete that refuses the model an engine process
+serves and, on an ejected or stopped engine, also clears it from the launch
+arguments),
+and has a Hugging Face catalog. Load switches the served model through `load_model` (a
+`launch_model` action): it saves `--model <id>` into the launch arguments and
+restarts the engine, restoring the previous model if the new one does not start.
+Every cached model is advertised to peers and the proxy. A request that names
+one that is not loaded switches vLLM to it through the gateway; if that switch
+fails, the request gets a 503 and vLLM is left unloaded, with nothing rolled
+back. A Load switch passes through a stopped engine for the length of the
+restart, so the desktop marks the engine as switching: its card shows starting
+rather than stopped, and its model list is kept, until the load request finishes
+(success, or failure with the previous model restored). Weights live in the shared
+Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
+never remove.
+
+Current limits are explicit: the manual-node worker does not probe vLLM, the
+Inference Demo does not use it, and the icon is a placeholder lettermark rather
+than the vLLM project logo.
+
 ## Engine lifecycle
 
 `nvpair-engine-manager` is authoritative for installed, running, healthy, and
@@ -284,16 +321,16 @@ restart-backed delete, the reply is withheld until the engine is ready again
 `MODULAR_MODEL_ACTION_TIMEOUT_MS` anchors the delete-specific observers. Ollama
 Load uses a separate 10/11-minute response-header budget:
 
-| Budget                                                        | Value | Why                                                                                                                                                                                                                           |
-| ------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MODULAR_MODEL_ACTION_TIMEOUT_MS` (`modular-runtime.ts`)      | 120s  | The RPC must outlast a full stop + readiness-probed start.                                                                                                                                                                    |
-| `RESTART_DELETE_TIMEOUT_MS` (`pending-actions.store.ts`)      | 180s  | The optimistic-spinner safety net must outlast the RPC, or it expires mid-flight and drops the spinner while the delete is still running.                                                                                     |
-| `engineResponseHeaderTimeout` (`executor.go`)                 | 30s   | Downloads and ordinary local HTTP actions retain a prompt response-header bound; probe contexts stay shorter.                                                                                                                 |
-| `pullProgressTimeout` (`executor.go`)                         | 30min | Streaming Ollama and llama.cpp pulls may run indefinitely while layer/file completed bytes advance; 30 minutes without advancing bytes cancels the stalled pull.                                                              |
-| `ollamaLoadResponseHeaderTimeout` (`executor.go`)             | 10min | Only Ollama's local `run_model` action gets the cold-load allowance.                                                                                                                                                          |
-| `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 12min | Ollama's Load control stays locked beyond the remote path's 11-minute header budget, while backend success or failure still clears it immediately.                                                                            |
-| `PENDING_TIMEOUT_MS`                                          | 60s   | Unchanged for every other command, including an Ollama delete.                                                                                                                                                                |
-| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 11min | Remote start/delete responses can wait on engine readiness, and a cold Ollama model load can withhold headers for minutes, so those calls use the readiness-sized client. Other model actions retain the ordinary 30s budget. |
+| Budget                                                        | Value | Why                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MODULAR_MODEL_ACTION_TIMEOUT_MS` (`modular-runtime.ts`)      | 120s  | The RPC must outlast a full stop + readiness-probed start.                                                                                                                                                                                                                          |
+| `RESTART_DELETE_TIMEOUT_MS` (`pending-actions.store.ts`)      | 180s  | The optimistic-spinner safety net must outlast the RPC, or it expires mid-flight and drops the spinner while the delete is still running.                                                                                                                                           |
+| `engineResponseHeaderTimeout` (`executor.go`)                 | 30s   | Downloads and ordinary local HTTP actions retain a prompt response-header bound; probe contexts stay shorter.                                                                                                                                                                       |
+| `pullProgressTimeout` (`executor.go`)                         | 30min | Streaming Ollama and llama.cpp pulls may run indefinitely while layer/file completed bytes advance; 30 minutes without advancing bytes cancels the stalled pull.                                                                                                                    |
+| `ollamaLoadResponseHeaderTimeout` (`executor.go`)             | 10min | Only Ollama's local `run_model` action gets the cold-load allowance.                                                                                                                                                                                                                |
+| `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 12min | Ollama's Load control stays locked beyond the remote path's 11-minute header budget, while backend success or failure still clears it immediately.                                                                                                                                  |
+| `PENDING_TIMEOUT_MS`                                          | 60s   | Unchanged for every other command, including an Ollama delete.                                                                                                                                                                                                                      |
+| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 11min | Remote start/delete responses can wait on engine readiness, and a cold Ollama model load or a vLLM load (which restarts vLLM on the new model) can withhold headers for minutes, so those calls use the readiness-sized client. Other model actions retain the ordinary 30s budget. |
 
 The net is a backstop, not the mechanism: a delete now ends the spinner on real
 backend truth either way. On success the refreshed `list_models` drops the model;
@@ -487,15 +524,15 @@ its effect is observable.
 The following responsibilities remain in Personal AI Router because the backend does not
 provide an equivalent client-facing contract:
 
-| Responsibility                                              | Location                                         |
-| ----------------------------------------------------------- | ------------------------------------------------ |
-| Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                            |
-| Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
-| Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
-| Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |
-| Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
-| Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
-| Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |
+| Responsibility                                              | Location                                    |
+| ----------------------------------------------------------- | ------------------------------------------- |
+| Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                       |
+| Bridge the local node into engine proxies                   | `modular-supervisor.ts`                     |
+| Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state    |
+| Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`           |
+| Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts` |
+| Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                        |
+| Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`    |
 
 These are current integration boundaries. Do not add compatibility shims or
 duplicate backend services around them.

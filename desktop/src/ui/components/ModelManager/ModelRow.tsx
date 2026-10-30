@@ -49,7 +49,11 @@ function ModelRowInner({
         items.push({
             id: 'load',
             children: 'Load',
-            disabled: busy || isLoaded || !model.downloaded || !isRunning
+            disabled:
+                busy ||
+                isLoaded ||
+                !model.downloaded ||
+                (!isRunning && !capabilities.modelOpsWhenStopped)
         })
         if (capabilities.hasEject) {
             items.push({
@@ -63,12 +67,19 @@ function ModelRowInner({
             })
         }
         if (capabilities.hasDeleteModel) {
-            items.push({ id: 'delete', children: 'Delete', danger: true, disabled: busy })
+            items.push({
+                id: 'delete',
+                children: 'Delete',
+                danger: true,
+                disabled: busy || (isLoaded && !!capabilities.deleteBlockedWhileLoaded)
+            })
         }
         return items
     }, [
         capabilities.hasEject,
         capabilities.hasDeleteModel,
+        capabilities.deleteBlockedWhileLoaded,
+        capabilities.modelOpsWhenStopped,
         isLoaded,
         isRunning,
         model.downloaded,
@@ -97,6 +108,8 @@ function ModelRowInner({
                     progress={progress}
                     busyLabel={busyLabel}
                     hasExpiry={capabilities.hasExpiry}
+                    expiryOptions={capabilities.expiryOptions}
+                    expiryText={capabilities.expiryText}
                     expiryDd={expiryDd}
                     onExpiryChange={onExpiryChange}
                 />

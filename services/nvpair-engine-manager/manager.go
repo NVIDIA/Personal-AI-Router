@@ -125,7 +125,16 @@ func (m *Manager) Run(ctx context.Context) error {
 	go m.exec.watchLoaded(ctx)
 	go m.watchPeerSettings(ctx)
 
-	err := m.readLoop(ctx)
+	// The read blocks on stdin until the parent sends something or closes it, so
+	// a SIGTERM that cancels ctx would otherwise never reach the shutdown below:
+	// the process would sit there, with its engines running, until stdin closed.
+	readDone := make(chan error, 1)
+	go func() { readDone <- m.readLoop(ctx) }()
+	var err error
+	select {
+	case err = <-readDone:
+	case <-ctx.Done():
+	}
 	// Cancel first so any in-flight start aborts at its readiness wait,
 	// then stop engines so the parent's exit doesn't orphan them.
 	cancel()

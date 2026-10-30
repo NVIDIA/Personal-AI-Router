@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 */}
 
 An **engine** is the local inference runtime NVIDIA PAIR uses to
-run models. Today that means Ollama, LM Studio, or llama.cpp on a given machine.
+run models. Today that means Ollama, LM Studio, llama.cpp, or vLLM on a given machine.
 PAIR can install and run those engines for you, or work with a supported
 existing Ollama or LM Studio installation. This page explains what you can
 expect when you install, start, stop, update, or remove an engine.
@@ -88,6 +88,42 @@ When you install an engine, consider the following:
   demand and is not part of the PAIR installer. Package choice is not
   driver-aware; llama.cpp retains CPU fallback when GPU acceleration is
   unavailable.
+- vLLM is available on Linux with an NVIDIA GPU and on Apple Silicon Macs
+  running macOS 15 or newer (through vLLM-Metal). If a `vllm` is already
+  installed at a known location (`~/.local/bin/vllm` on Linux,
+  `~/.venv-vllm-metal/bin/vllm` on macOS), PAIR uses it and downloads nothing.
+  Otherwise PAIR downloads a checksum-pinned `uv`, creates a private Python
+  environment and installs a pinned vLLM release into it. On Linux this is
+  several GiB because it includes PyTorch and the CUDA libraries, and PAIR first
+  checks for an NVIDIA driver that supports CUDA 13 or newer and about 25 GB of
+  free disk, enough for the engine and its default model. On macOS it installs
+  checksum-pinned vLLM and vLLM-Metal wheels and needs about 20 GB of free disk. Either way PAIR stops with a clear message if a
+  requirement is missing.
+  Nothing is compiled. vLLM serves a single model per process. Until you choose
+  one it serves Qwen3.5-4B, downloaded on the first start (about 9.3 GB, and a GPU
+  with at least 16 GB of memory); on a smaller GPU, add and load a smaller model
+  first. Its model list
+  shows the complete text models already in your Hugging Face cache
+  (`~/.cache/huggingface`), and **Load** on one of them switches vLLM to it by
+  restarting the engine, which takes as long as the model needs to load; if the
+  new model does not start, the previous one is restored. **Add model** browses
+  and searches Hugging Face (open safetensors chat models) and downloads the one
+  you pick into the same cache, with a progress bar, even while vLLM is stopped;
+  it then appears in the list. **Delete** removes a cached model from disk, except the one vLLM has loaded (eject it first). Deleting the model a stopped or ejected vLLM is set to serve leaves it with no model selected, and **Start** refuses with an error until you **Load** another model. **Start** brings vLLM up idle, with nothing loaded, as Ollama and llama.cpp
+  start a server: it takes about a second and the card reads "Idle · loads on next
+  request". The model loads when the first request arrives (the request waits for
+  it, about 25 seconds for an 8B model) or when you press **Load**, and the same
+  happens after PAIR restarts. After five minutes without a request vLLM unloads
+  the model and frees the GPU, but stays on, and the next request loads it again;
+  the "Unloads after … idle" control on the model row changes the time, or keeps
+  it loaded. **Eject** does the same unload on demand, and **Stop** turns the
+  engine off. Other nodes and the proxy are told about every model in the cache,
+  even while vLLM is unloaded, so requests reach it. A request for a different
+  cached model waits for the requests already running to finish, then switches
+  vLLM to that model and is answered once it has loaded. Unlike **Load**, a
+  switch made by a request does not restore the previous model if the new one
+  fails: the request gets an error saying why, and vLLM stays on with nothing
+  loaded until the next request.
 
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model
@@ -130,7 +166,7 @@ an engine PAIR installed. Use it when you no longer want PAIR to own that engine
 on the machine.
 
 Uninstalling an engine does **not** remove its models. Downloaded model files stay
-on disk in the engine's own storage — `~/.ollama`, `~/.llamacpp`, or
+on disk in the engine's own storage — `~/.ollama`, `~/.llamacpp`, `~/.cache/huggingface`, or
 `~/.lmstudio/models` — so uninstalling and reinstalling does not cost you
 re-downloading them. The same is true of removing PAIR itself, or of resetting
 its data. Both remove the engines PAIR installed as far as they can, and never

@@ -506,3 +506,82 @@ describe('LM Studio model reconciliation', () => {
         hasProcess.mockRestore()
     })
 })
+
+describe('model list during a vLLM model switch', () => {
+    const nodeId = 'vllm-switch-list-node'
+
+    function vllmModels() {
+        return getModularBridgeState()
+            .getEngineInitialState()
+            .models.find(models => models.nodeId === nodeId && models.engineType === 'vllm')
+            ?.models.map(model => model.name)
+    }
+
+    function startVllmNode() {
+        const state = getModularBridgeState()
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'vllm-switch-host',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            running: true,
+            healthy: true,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', ['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+        return state
+    }
+
+    it('keeps the cached-model list while the engine restarts for a switch', () => {
+        const state = startVllmNode()
+        const supervisor = getModularSupervisor()
+        const call = vi.spyOn(supervisor, 'callProcess')
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+
+        // A switch restarts the engine, which reports stopped on its way down. The
+        // list of models has not changed, so the card must not empty out.
+        state.beginLocalModelSwitch('vllm')
+        supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+        state.clearLocalModelSwitch('vllm')
+        call.mockRestore()
+    })
+
+    // vLLM's list is the Hugging Face cache on disk, so a stopped (or ejected)
+    // engine still has it: the list is read, not cleared, unlike every other engine.
+    it('reads the cached-model list from disk while the engine is stopped', async () => {
+        const state = startVllmNode()
+        const supervisor = getModularSupervisor()
+        const hasProcess = vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
+        const call = vi
+            .spyOn(supervisor, 'callProcess')
+            .mockResolvedValue({ data: [{ id: 'Qwen/Qwen3-8B' }, { id: 'org/new' }] })
+
+        supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
+        await Promise.resolve()
+        await Promise.resolve()
+
+        expect(call).toHaveBeenCalledWith('broker', 'engine:action', {
+            engine: 'vllm',
+            action: 'list_models'
+        })
+        expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'org/new'])
+        expect(state.getEngineInitialState().statuses.length).toBeGreaterThan(0)
+        call.mockRestore()
+        hasProcess.mockRestore()
+    })
+})

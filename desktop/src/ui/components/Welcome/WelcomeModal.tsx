@@ -51,7 +51,15 @@ export function WelcomeModal({ open, onOpenChange, selfId }: WelcomeModalProps) 
     const failedTargets = useRef(new Set<EngineType>())
     const knownErrors = useRef(new Map<string, number>())
 
-    const candidates = useMemo(() => getWelcomeEngineCandidates(window.windowApi.platform), [])
+    // The engine manager has the last word on what this machine can run, so an
+    // engine it leaves out is not offered here.
+    const candidates = useMemo(
+        () =>
+            getWelcomeEngineCandidates(window.windowApi.platform).filter(
+                t => statusByNode.get(selfId)?.get(t)?.processStatus !== 'unsupported'
+            ),
+        [statusByNode, selfId]
+    )
     const allEnginesInstalled = useMemo(
         () => areWelcomeEnginesInstalled(statusByNode, selfId, candidates),
         [candidates, selfId, statusByNode]

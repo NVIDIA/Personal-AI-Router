@@ -238,7 +238,7 @@ probes.
 ### Actions
 
 Each action is a config-declared operation exposed over `engine:action`.
-Exactly one of `http`, `cmd`, or `remove_path`:
+Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
 
 - **`http`** — call the engine's loopback control API. The caller's
   `params` are sent as the JSON request body by default. Set
@@ -254,6 +254,30 @@ Exactly one of `http`, `cmd`, or `remove_path`:
   action `params` as placeholders); the resolved target must stay under
   the declared root. Symlink escapes and missing targets are rejected.
   Does **not** require the engine to be running.
+- **`hf_cache`** — list the models in a Hugging Face hub cache directory.
+  `hf_cache.dir` is templated, normally `"{models_dir}/hub"`. The reply is
+  `{"data":[{"id","size"}]}`, so `result: {"array": "data", "field": "id"}`
+  turns it into a model list. A repository is listed when its snapshot is a
+  complete download holding a config, a tokenizer and weights: vision-only and
+  GGUF-only repositories, interrupted downloads (`.incomplete` blobs, shards
+  missing from the index or from a `-0000N-of-0000M` set, several unnumbered
+  weight files with no index) and links whose blob is gone are left out. This is
+  a check on file layout, not on whether the engine supports the architecture.
+  A missing directory is an empty cache. Does **not** require the engine to be
+  running.
+- **`launch_model`** — switch the model an engine serves, for an engine with no
+  load call because the model is a launch argument (vLLM). `launch_model.flag`
+  names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
+  Hugging Face id such as `org/name`; anything that could be read as a flag, a
+  path or a shell fragment is refused), writes it into the saved launch
+  settings exactly as the settings editor would, and restarts a running engine
+  on it. If the new model does not come up, the previous one is restored and the
+  error says so; a stopped engine is started on it, and asking a running engine
+  for the model already in the launch arguments restarts nothing. An engine
+  with a `launch_model` action will not start while its launch arguments lack
+  the flag: it has no model selected, and refusing beats letting the engine
+  pick and download a default of its own. Requires `runtime.editable_launch`
+  and `runtime.ready` on every platform.
 
 An optional **`result`** declares how `engine:models` extracts a normalized
 name list from the action's JSON response: `array` is the top-level array
@@ -312,6 +336,66 @@ placeholder before the action runs:
   `owner/repo` pull key, or an on-disk path) to concrete files under the
   declared `remove_path.root` via `lms ls --json`. When no indexed file
   matches, the runner falls back to `{root}/{model}` if that path exists.
+
+A manifest-level **`advertised_models`** (`"list"`, the default, or `"loaded"`)
+chooses what the node tells its peers and its own proxy it can serve. The proxy
+sends a request to any node advertising the model, so an engine that serves one
+model per process and cannot switch on request sets `"loaded"` and advertises only
+`loaded_models`, even when its `list_models` offers many models it could be
+switched to. An engine behind a `front` switches models on request, so it
+advertises its whole `list_models`. With `"loaded"`,
+`list_models` is not queried for `engine:models`, and a `loaded_models` action is
+required.
+
+An **`hf_pull`** action (`{"tool": "hf", "dir": "{models_dir}/hub"}`, only as
+`pull_model`) downloads a Hugging Face repository with the named tool, looked up
+in the directory that holds the engine binary, and reports byte progress taken
+from the cache directory. It needs no running engine.
+
+A runtime **`front`** (`{"backend_port_offset": 10000}`) puts a PAIR-owned
+HTTP gateway on the engine's public port and runs the engine itself on a loopback
+port at that offset (8001 becomes 18001). Clients, the proxy and probes keep using
+the public port; the gateway forwards every request unchanged, streams responses
+as they arrive, stops the engine's work when the client leaves, and answers 503
+until the engine is ready. The launch a user sees and edits keeps the public
+port: only the spawned process is repointed. `idle_timeout_s` (default 300 for
+vLLM, 0 never) unloads the engine after that long with no inference request:
+its process is stopped and its GPU memory freed, while the gateway, and the
+engine's ON state, stay. Only requests that change something count as activity
+(not GET, HEAD or OPTIONS, which is what health checks, monitors and the model
+list use), and a request still running keeps the engine loaded. While unloaded
+the gateway answers `/health` with 200 and `engine:status` reports `idle: true`.
+A request that needs the model (POST under `/v1/` and a few other inference paths)
+loads it again and is answered after the load; other requests get 503. Requests
+that arrive together share one load. The fixed offset lets a stale engine
+left by a crashed run be found and reclaimed. It requires a process-mode runtime
+whose `editable_launch` has a flag control for `{server.port}`, and only
+`vllm.json` declares one.
+
+A **`front_idle`** action (`"get"` or `"set"`) reads or changes the idle limit of
+an engine with a front, in seconds with 0 for never; a change applies at once and
+is saved in the override file. With a front, Start and a restore bring the
+engine up idle, with nothing loaded, and applying launch settings or loading a
+model loads it at once.
+
+A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
+serves a single model per process and so cannot unload it while running. A
+`launch_model` action on a stopped engine saves the choice and starts it.
+
+A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536}`)
+lets the manager add start-time arguments that depend on the model and the
+machine. For `hf_context` it reads the served model's `config.json` from the
+Hugging Face cache and the free GPU memory, then appends `--max-model-len`
+(the target, the model's own limit when it cannot be extended, or what fits),
+`--hf-overrides` with YaRN rope scaling when the target exceeds the model's
+native window, and `--gpu-memory-utilization` sized to weights plus KV cache.
+Arguments the user saved always win and nothing added is written back to saved
+settings, so a model switch is re-sized for the new model. It also adds
+`--enable-auto-tool-choice` and a `--tool-call-parser` found from the model's own
+chat template with the installed vLLM (see the README's vLLM section), or nothing
+when no parser reads the model's tool calls. Tensor- or
+pipeline-parallel launches are left alone. It requires a process-mode runtime
+with `editable_launch`.
 
 An optional **`restart_after`** restarts the engine once the action succeeds.
 Declare it on an action that changes state the engine only reads at startup:
@@ -398,7 +482,10 @@ path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
 is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),
 an action sets none or more than one of
-`http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
+`http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`, an `hf_cache` action omits
+`dir`, a `launch_model` flag is not a flag or a platform lacks
+`editable_launch` or `ready`, `advertised_models` is unknown or `"loaded"`
+without a `loaded_models` action, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
 both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or
@@ -518,7 +605,7 @@ GPU selection, and auth.
 | **Ollama** | strong (env-first) | `ollama serve` (foreground) | env: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MAX_QUEUE`, `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_FLASH_ATTENTION` | HTTP `/api/tags`, `/api/pull`; CLI `ollama pull/ls/ps/stop` |
 | **llama.cpp** | strong (env+flags) — **reference design** | `llama-server --host 127.0.0.1 --port {port}` (foreground) | flags + `LLAMA_ARG_*` (host/port, ctx-size, n-parallel, cont-batching, flash-attn, device, n-gpu-layers, tensor-split, main-gpu, api-key, models-dir/max) | HTTP `/v1/models`, `/models` download/delete, `/models/load`, `/models/unload`, `/health`, `/slots` |
 | **LM Studio** | command / daemon | `lms daemon up` → `lms server start --port {port}` | small env (`LMS_SERVER_HOST`, `LM_API_TOKEN`); most config is flags/API/settings (`lms load --context-length/--gpu/--ttl`) | HTTP `/api/v1/models[/download\|load\|unload]`; CLI `lms ls/get/load/unload/ps` |
-| **vLLM** | flags-first — **Linux/WSL only** | `vllm serve <model> --host 127.0.0.1 --port {port}` | flags (host/port/api-key); `HF_HOME` for cache. `VLLM_PORT`/`VLLM_HOST_IP` are **not** the API bind | OpenAI `/v1/models`; one model per process (unload = restart) |
+| **vLLM** | flags-first — **Linux/WSL and Apple Silicon macOS** | `vllm serve <model> --host 127.0.0.1 --port {port}` | flags (host/port/api-key); `HF_HOME` for cache. `VLLM_PORT`/`VLLM_HOST_IP` are **not** the API bind | OpenAI `/v1/models`; one model per process (unload = restart) |
 | **Jan** | hybrid (on llama.cpp router) | `jan serve <model> --port {port}` (CLI) | forwards `LLAMA_ARG_*`; perf settings are router-preset-driven | `jan serve` auto-downloads HF repos |
 | **GPT4All** | weak (GUI app) | none (Local API Server toggled in the GUI, `:4891`) | desktop settings / Python SDK — not env | OpenAI `/v1` once enabled in-app |
 
@@ -526,5 +613,5 @@ Caveats worth encoding when authoring these:
 - **Model store location**: leave each engine's model cache at the engine's own default — `~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models` — and declare that path as `models_dir`. Never point one inside `{install_dir}` or anywhere else under the app data root: `uninstall` skips `models_dir`, but the app-level "remove all data" uninstall deletes the entire app data root and nothing can exempt a subdirectory of it. See Model stores.
 - **llama.cpp** ships prebuilt archives with **published SHA-256s**, so it's an ideal checksum-pinned `fetch`+`run` target (no placeholder SHA needed).
 - **LM Studio** model dir is settings-controlled (no documented relocation env); surface its config as flags/API, not env.
-- **vLLM**: native Windows is unsupported (WSL only); the bind is a flag, not env.
+- **vLLM**: native Windows is unsupported (WSL only), and macOS is Apple Silicon only through the vLLM-Metal plugin (`darwin/arm64`); the bind is a flag, not env. The bundled `vllm.json` is the reference: it passes the model as `--model`, since manifest `runtime.args` have no `{model}` token, and installs through a sha256-pinned `uv` bootstrap with a detect-first path.
 - **GPT4All**: no first-class headless CLI today — out of scope for a config-only manager unless targeting its Python SDK.

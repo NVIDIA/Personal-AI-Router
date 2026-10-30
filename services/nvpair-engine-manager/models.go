@@ -80,6 +80,8 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	listOK := make([]bool, len(engineNames))
 	loaded := make([][]string, len(engineNames))
 	loadedOK := make([]bool, len(engineNames))
+	advertiseLoaded := make([]bool, len(engineNames))
+	idleModel := make([]string, len(engineNames))
 	var wg sync.WaitGroup
 	for i, name := range engineNames {
 		mf, ok := e.reg.Get(name)
@@ -96,12 +98,35 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		if listSpec == nil && loadedSpec == nil {
 			continue
 		}
+		// An engine that can only answer for what it is running advertises its
+		// loaded set. Its list_models is a view of what could be loaded, which
+		// is not what a peer or the proxy may route to, so it is not queried here.
+		if mf.AdvertisedModels == advertisedModelsLoaded && loadedSpec != nil {
+			advertiseLoaded[i] = true
+			listSpec = nil
+		}
 		wg.Add(1)
 		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
 			defer wg.Done()
 			st, err := e.Status(name)
 			if err != nil || !st.Running {
 				return
+			}
+			if st.Idle && loadedSpec != nil {
+				// Unloaded for being idle: nothing is resident, but the engine still
+				// answers for the model it is set to serve, by loading it on demand.
+				model := e.idleModelOf(name)
+				if model == "" {
+					return
+				}
+				idleModel[i] = model
+				loaded[i], loadedOK[i] = []string{}, true
+				if listSpec == nil {
+					return
+				}
+				// An engine that advertises its inventory goes on doing so while it
+				// is unloaded: it loads whichever of those models a request names.
+				loadedSpec = nil
 			}
 			if listSpec != nil {
 				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {
@@ -115,6 +140,16 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			}
 			if loadedSpec != nil {
 				if raw, err := e.Action(ctx, name, "loaded_models", nil); err != nil {
+					// The engine may have been unloaded between the status read and this
+					// query, which then fails. It is idle, not missing: it still answers
+					// for its model.
+					if fresh, _ := e.Status(name); fresh.Idle {
+						if model := e.idleModelOf(name); model != "" {
+							idleModel[i] = model
+							loaded[i], loadedOK[i] = []string{}, true
+							return
+						}
+					}
 					slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, loadedSpec); ok {
 					// A successful query — even an empty result — records the key
@@ -133,6 +168,12 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	res := ModelsResult{Models: []string{}}
 	seen := map[string]bool{}
 	for i, models := range perEngine {
+		if advertiseLoaded[i] {
+			models, listOK[i] = loaded[i], loadedOK[i]
+			if idleModel[i] != "" {
+				models, listOK[i] = []string{idleModel[i]}, true
+			}
+		}
 		if listOK[i] {
 			if res.ByEngine == nil {
 				res.ByEngine = make(map[string][]string)

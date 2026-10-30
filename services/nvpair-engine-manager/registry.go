@@ -63,6 +63,12 @@ type Manifest struct {
 	ManifestVersion int                 `json:"manifest_version"`
 	Platforms       map[string]Platform `json:"platforms"`
 	Actions         map[string]Action   `json:"actions,omitempty"`
+	// AdvertisedModels says which models this node tells its peers and its own
+	// proxy it can serve: "list" (the default) advertises list_models, "loaded"
+	// advertises loaded_models. An engine that serves one model per process
+	// can list many models it has on disk but only answer for the one it is
+	// running, and the proxy sends a request to any node advertising its model.
+	AdvertisedModels string `json:"advertised_models,omitempty"`
 }
 
 // Platform is the per-`<goos>/<goarch>` block. Variance lives here
@@ -150,6 +156,13 @@ type Runtime struct {
 	// a non-nil empty slice keeps only fixed and managed arguments. Use
 	// omitzero to omit nil while preserving explicit empty arrays in JSON.
 	LaunchArgs []string `json:"launch_args,omitzero"`
+	// Front, when set, puts a PAIR gateway on the engine's public port and runs the
+	// engine on a derived loopback port behind it. See front.go.
+	Front *Front `json:"front,omitempty"`
+	// AutoLaunch lets the manager add startup arguments that depend on the model
+	// being served and the machine, at every start. Arguments the user saved
+	// always win, and nothing added here is written back to saved settings.
+	AutoLaunch *AutoLaunch `json:"auto_launch,omitempty"`
 	// Mode selects the lifecycle model: "process" means PAIR owns the launched
 	// foreground process; "command" means PAIR invokes commands that manage a
 	// separate daemon. Empty defaults to "process".
@@ -187,6 +200,19 @@ type Runtime struct {
 	// Health is the periodic availability probe for a running engine.
 	Health *Probe `json:"health,omitempty"`
 }
+
+// AutoLaunch configures start-time launch arguments. The only kind is
+// "hf_context": read the model's config.json from the Hugging Face cache and
+// set the context length, any rope scaling it needs, and the GPU memory share.
+type AutoLaunch struct {
+	Kind string `json:"kind"`
+	// ContextTokens is the context window to aim for. Models that natively
+	// support less are extended where that is safe; models that support more are
+	// capped here so the KV cache stays affordable.
+	ContextTokens int `json:"context_tokens"`
+}
+
+const autoLaunchHFContext = "hf_context"
 
 type EditableLaunch struct {
 	FixedArgs  []string        `json:"fixed_args"`
@@ -257,6 +283,24 @@ type Action struct {
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
 	Cmd         []string          `json:"cmd,omitempty"`
 	RemovePath  *ActionRemovePath `json:"remove_path,omitempty"`
+	// HFCache lists the models in a Hugging Face hub cache directory. It reads
+	// the disk and needs no running engine, so an engine that serves one model
+	// per process can still show everything it could be switched to.
+	HFCache *ActionHFCache `json:"hf_cache,omitempty"`
+	// LaunchModel makes the action switch the model an engine is serving, for an
+	// engine that has no load call because the model is a launch argument.
+	LaunchModel *ActionLaunchModel `json:"launch_model,omitempty"`
+	// HFPull downloads a Hugging Face repository into the hub cache with the
+	// engine's own `hf` tool, reporting byte progress. Only pull_model uses it.
+	HFPull *ActionHFPull `json:"hf_pull,omitempty"`
+	// StopEngine makes the action stop the engine. It is how an engine that serves
+	// one model per process ejects that model: the process cannot drop its model
+	// and keep running, but stopping it frees all of its GPU memory. Only
+	// unload_model may set it.
+	StopEngine bool `json:"stop_engine,omitempty"`
+	// FrontIdle reads ("get") or sets ("set") how long an engine behind a gateway
+	// may sit idle before it is unloaded.
+	FrontIdle string `json:"front_idle,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -312,6 +356,33 @@ type ResultMatch struct {
 type ActionRemovePath struct {
 	Path string `json:"path"`
 	Root string `json:"root"`
+}
+
+// ActionHFCache names the Hugging Face hub cache directory to list. Dir is
+// templated, normally "{models_dir}/hub". The result is {"data":[{"id","size"}]},
+// which the ordinary result extractor reads with array "data" and field "id".
+type ActionHFCache struct {
+	Dir string `json:"dir"`
+	// Delete turns the action into the removal of one model, named by the
+	// caller's {"model": "<org/name>"} param, from that cache. Only a
+	// delete_model action may set it.
+	Delete bool `json:"delete,omitempty"`
+}
+
+// ActionHFPull downloads a model repository. Tool is the file name of the
+// Hugging Face CLI, looked up in the directory that holds the engine binary
+// (a vLLM virtualenv ships `hf` beside `vllm`). Dir is the hub cache directory,
+// normally "{models_dir}/hub".
+type ActionHFPull struct {
+	Tool string `json:"tool"`
+	Dir  string `json:"dir"`
+}
+
+// ActionLaunchModel names the launch flag that selects the engine's model, such
+// as "--model". The action takes {"model": "<id>"}, writes it into the saved
+// launch settings and restarts a running engine on it.
+type ActionLaunchModel struct {
+	Flag string `json:"flag"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -716,6 +787,19 @@ func (m *Manifest) Validate() error {
 		// process is spawned, the reply races the engine's own startup, and the
 		// caller can still be handed the pre-restart state. Fail at load rather
 		// than ship a guarantee the manifest cannot keep.
+		// launch_model rewrites the saved launch settings and restarts the engine,
+		// so every platform needs editable launch settings and a readiness probe
+		// for the same reason as restart_after.
+		if a.LaunchModel != nil {
+			for key, p := range m.Platforms {
+				if p.Runtime.EditableLaunch == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.editable_launch", name, key)
+				}
+				if p.Runtime.Ready == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.ready", name, key)
+				}
+			}
+		}
 		if a.RestartAfter {
 			for key, p := range m.Platforms {
 				if p.Runtime.Ready == nil {
@@ -724,10 +808,53 @@ func (m *Manifest) Validate() error {
 			}
 		}
 	}
+	switch m.AdvertisedModels {
+	case "", advertisedModelsList:
+	case advertisedModelsLoaded:
+		if _, ok := m.Actions["loaded_models"]; !ok {
+			return fmt.Errorf("advertised_models %q requires a loaded_models action", m.AdvertisedModels)
+		}
+	default:
+		return fmt.Errorf("advertised_models %q invalid (want %q or %q)", m.AdvertisedModels, advertisedModelsList, advertisedModelsLoaded)
+	}
 	return m.validatePlaceholders()
 }
 
+// advertisedModels values for Manifest.AdvertisedModels.
+const (
+	advertisedModelsList   = "list"
+	advertisedModelsLoaded = "loaded"
+)
+
 func (p *Platform) validate(key string) error {
+	if front := p.Runtime.Front; front != nil {
+		if front.IdleTimeoutS < 0 || front.IdleTimeoutS > 86400 {
+			return fmt.Errorf("platform %q: front.idle_timeout_s must be between 0 and 86400", key)
+		}
+		if front.BackendPortOffset < 1 || front.BackendPortOffset > 60000 {
+			return fmt.Errorf("platform %q: front.backend_port_offset must be between 1 and 60000", key)
+		}
+		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
+			return fmt.Errorf("platform %q: front requires a process-mode runtime with editable_launch", key)
+		}
+		hasPort := false
+		for _, control := range p.Runtime.EditableLaunch.Controls {
+			if _, ok := frontBackendValue(control.Value, 1); ok && len(control.Flags) > 0 && strings.Contains(control.Value, "{server.port}") {
+				hasPort = true
+			}
+		}
+		if !hasPort {
+			return fmt.Errorf("platform %q: front needs a flag-based launch control for {server.port}", key)
+		}
+	}
+	if auto := p.Runtime.AutoLaunch; auto != nil {
+		if auto.Kind != autoLaunchHFContext || auto.ContextTokens < 1024 {
+			return fmt.Errorf("platform %q: auto_launch needs kind %q and context_tokens of at least 1024", key, autoLaunchHFContext)
+		}
+		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
+			return fmt.Errorf("platform %q: auto_launch requires a process-mode runtime with editable_launch", key)
+		}
+	}
 	if policy := p.Runtime.EditableLaunch; policy != nil {
 		if policy.StartIndex < 0 || (p.Runtime.modeOrDefault() == "command" && policy.StartIndex >= len(p.Runtime.Start)) {
 			return fmt.Errorf("platform %q: invalid editable launch definition", key)
@@ -883,6 +1010,9 @@ func (a *Action) validate(name string) error {
 	hasHTTP := a.HTTP != nil
 	hasCmd := len(a.Cmd) > 0
 	hasRemovePath := a.RemovePath != nil
+	hasHFCache := a.HFCache != nil
+	hasLaunchModel := a.LaunchModel != nil
+	hasHFPull := a.HFPull != nil
 	kinds := 0
 	if hasHTTP {
 		kinds++
@@ -893,8 +1023,47 @@ func (a *Action) validate(name string) error {
 	if hasRemovePath {
 		kinds++
 	}
+	if hasHFCache {
+		kinds++
+	}
+	if hasLaunchModel {
+		kinds++
+	}
+	if hasHFPull {
+		kinds++
+	}
+	if a.StopEngine {
+		kinds++
+	}
+	if a.FrontIdle != "" {
+		kinds++
+		if a.FrontIdle != "get" && a.FrontIdle != "set" {
+			return fmt.Errorf("action %q: front_idle must be \"get\" or \"set\"", name)
+		}
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, or remove_path is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, stop_engine, or front_idle is required", name)
+	}
+	if a.StopEngine && name != "unload_model" {
+		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)
+	}
+	if hasHFPull {
+		tool := a.HFPull.Tool
+		if name != pullModelAction || tool == "" || tool != filepath.Base(tool) || strings.TrimSpace(a.HFPull.Dir) == "" {
+			return fmt.Errorf("action %q: hf_pull belongs to pull_model and needs a tool file name and a dir", name)
+		}
+	}
+	if hasLaunchModel {
+		flag := a.LaunchModel.Flag
+		if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+			return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+		}
+	}
+	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
+		return fmt.Errorf("action %q: hf_cache.dir is required", name)
+	}
+	if hasHFCache && a.HFCache.Delete && name != "delete_model" {
+		return fmt.Errorf("action %q: hf_cache.delete belongs to delete_model", name)
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {
@@ -1030,6 +1199,12 @@ func (m *Manifest) actionTemplatedStrings() []string {
 		if act.RemovePath != nil {
 			out = append(out, act.RemovePath.Root)
 			// Path may template caller params (e.g. {model}); validated at call time.
+		}
+		if act.HFPull != nil {
+			out = append(out, act.HFPull.Dir)
+		}
+		if act.HFCache != nil {
+			out = append(out, act.HFCache.Dir)
 		}
 	}
 	// Action http.path / cmd are resolved from runtime params (e.g.

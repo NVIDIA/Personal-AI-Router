@@ -1,0 +1,242 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"slices"
+	"strings"
+
+	settings "nvpair-shared/enginesettings"
+)
+
+// hfModelIDRe accepts a Hugging Face repository id, "name" or "org/name". It
+// refuses anything that could be read as a flag, a path or a shell fragment,
+// since the value becomes an engine argument.
+var hfModelIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,95}(/[A-Za-z0-9][A-Za-z0-9._-]{0,95})?$`)
+
+// switchLaunchModel is the launch_model action. An engine that serves one model
+// per process has no load call: the model it serves is a launch argument, so
+// "loading" a model means writing that argument into the saved launch settings
+// and restarting the engine on it. This is the same path the settings editor
+// takes, so the saved launch text always shows what the engine is running.
+//
+// A running engine is restarted, and if the new model does not come up (it does
+// not fit in GPU memory, or the id does not exist) the previous model is
+// restored, so a failed switch does not leave the engine down. A stopped engine
+// only has its saved launch text changed.
+func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *ActionLaunchModel, params json.RawMessage) (json.RawMessage, error) {
+	var request struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(params, &request); err != nil {
+		return nil, errors.New(`launch_model params must be {"model": "<model id>"}`)
+	}
+	model := strings.TrimSpace(request.Model)
+	if !hfModelIDRe.MatchString(model) {
+		return nil, fmt.Errorf("%q is not a valid model id (want a Hugging Face id such as org/name)", request.Model)
+	}
+
+	current, err := e.LaunchSettings(engine)
+	if err != nil {
+		return nil, err
+	}
+	if !current.Editable {
+		return nil, fmt.Errorf("the launch settings of engine %q cannot be changed: %s", engine, current.Reason)
+	}
+	text, changed, err := withLaunchFlag(current.LaunchText, spec.Flag, model)
+	if err != nil {
+		return nil, err
+	}
+	// Putting the previous model back must not depend on the caller still
+	// waiting: a remote caller that gives up cancels ctx mid-start, and a restore
+	// under that ctx would fail at once and leave the engine down.
+	restoreCtx := context.WithoutCancel(ctx)
+	result := func(restarted bool) (json.RawMessage, error) {
+		return json.Marshal(struct {
+			Model     string `json:"model"`
+			Restarted bool   `json:"restarted"`
+		}{model, restarted})
+	}
+	if !changed && current.Running {
+		// An engine unloaded for being idle serves nothing, so asking for the model
+		// it is set to serve is asking to load it.
+		if status, _ := e.Status(engine); status.Idle {
+			if err := e.wakeIdle(ctx, engine); err != nil {
+				return nil, fmt.Errorf("loading %s failed: %w", model, err)
+			}
+			return result(true)
+		}
+		return result(false)
+	}
+	if !current.Running {
+		// Load on a stopped engine, such as after Eject, means serve the model: save
+		// the choice and start. A start that fails puts the previous choice back.
+		if changed {
+			if _, err := e.ConfigureLaunch(ctx, settings.Configure{
+				Engine:   engine,
+				Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: text},
+			}, func() error { return nil }); err != nil {
+				return nil, err
+			}
+		}
+		if err := e.StartWith(ctx, engine, startOpts{Eager: true}); err != nil {
+			if changed {
+				_, _ = e.ConfigureLaunch(restoreCtx, settings.Configure{
+					Engine:   engine,
+					Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: current.LaunchText},
+				}, func() error { return nil })
+			}
+			return nil, fmt.Errorf("starting %s failed; the previous model was restored: %w", model, err)
+		}
+		return result(true)
+	}
+
+	apply := func(ctx context.Context, launchText string, resume bool) error {
+		_, err := e.ConfigureLaunch(ctx, settings.Configure{
+			Engine:   engine,
+			Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: launchText},
+			Resume:   resume,
+		}, func() error { return nil })
+		return err
+	}
+	if err := apply(ctx, text, false); err != nil {
+		if !current.Running {
+			return nil, err
+		}
+		// The engine's own error carries a long log tail, so say what happened first.
+		if restoreErr := apply(restoreCtx, current.LaunchText, true); restoreErr != nil {
+			return nil, fmt.Errorf("switching to %s failed and restoring the previous model also failed (%v): %w", model, restoreErr, err)
+		}
+		return nil, fmt.Errorf("switching to %s failed; the previous model was restored: %w", model, err)
+	}
+	return result(current.Running)
+}
+
+// withLaunchFlag returns launch text with flag set to value. Every existing
+// "flag value" or "flag=value" collapses into one "flag value" at the position
+// of the first, and every other argument is kept in place; when the flag is
+// absent it is added before any "--" terminator. changed is false when the
+// arguments already say the same thing, whatever their quoting: the launch text
+// shown to a user is quoted canonically, so comparing text would call an
+// unchanged launch changed.
+func withLaunchFlag(text, flag, value string) (result string, changed bool, err error) {
+	tokens, err := parseLaunchText(text)
+	if err != nil {
+		return "", false, err
+	}
+	rest, at := dropLaunchFlag(tokens, flag)
+	out := slices.Insert(rest, at, flag, value)
+	result, err = formatLaunchText(out)
+	return result, !slices.Equal(tokens, out), err
+}
+
+// withoutLaunchFlag returns launch text with every "flag value" and
+// "flag=value" before any "--" terminator removed, and whether any was.
+func withoutLaunchFlag(text, flag string) (result string, changed bool, err error) {
+	tokens, err := parseLaunchText(text)
+	if err != nil {
+		return "", false, err
+	}
+	rest, _ := dropLaunchFlag(tokens, flag)
+	result, err = formatLaunchText(rest)
+	return result, len(rest) != len(tokens), err
+}
+
+// dropLaunchFlag returns the arguments without any "flag value" or "flag=value"
+// before a "--" terminator, and the index in that result where the flag first
+// stood. Without the flag, the index is the terminator's, or the end.
+// Arguments are a list rather than key/value pairs: flags repeat, may take no
+// value, and keep their order, so the list is walked rather than looked up.
+func dropLaunchFlag(tokens []string, flag string) (rest []string, at int) {
+	rest = make([]string, 0, len(tokens)+2)
+	at = -1
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		switch {
+		case token == "--":
+			if at < 0 {
+				at = len(rest)
+			}
+			return append(rest, tokens[i:]...), at
+		case token == flag || strings.HasPrefix(token, flag+"="):
+			if at < 0 {
+				at = len(rest)
+			}
+			if token == flag {
+				i++ // its value
+			}
+		default:
+			rest = append(rest, token)
+		}
+	}
+	if at < 0 {
+		at = len(rest)
+	}
+	return rest, at
+}
+
+// modelLaunchFlag is the flag an engine's launch_model action writes, or "" for
+// an engine that does not choose its model by launch argument.
+func modelLaunchFlag(m *Manifest) string {
+	for _, act := range m.Actions {
+		if act.LaunchModel != nil {
+			return act.LaunchModel.Flag
+		}
+	}
+	return ""
+}
+
+// ejectByStopping ejects the served model by stopping the engine, which is the
+// only way an engine with one model per process gives its GPU memory back. A
+// stopped engine has nothing loaded, so that is a successful no-op. A model
+// other than the served one is refused, since stopping would eject the wrong one.
+func (e *Executor) ejectByStopping(ctx context.Context, engine string, params json.RawMessage) (json.RawMessage, error) {
+	var request struct {
+		Model string `json:"model"`
+	}
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, errors.New(`unload params must be {"model": "<model id>"}`)
+		}
+	}
+	state, err := e.LaunchSettings(engine)
+	if err != nil {
+		return nil, err
+	}
+	stopped := func(did bool) (json.RawMessage, error) {
+		return json.Marshal(map[string]any{"model": request.Model, "stopped": did})
+	}
+	if !state.Running {
+		return stopped(false)
+	}
+	status, _ := e.Status(engine)
+	idle := status.Idle
+	if model := strings.TrimSpace(request.Model); model != "" {
+		if served, err := e.servedModel(engine); err == nil && served != model {
+			return nil, fmt.Errorf("%s is not the model %s is serving (%s)", model, engine, served)
+		}
+	}
+	// An engine behind a gateway is ejected the way the other engines unload a
+	// model: its process goes and the GPU is freed, but the engine stays ON.
+	if st, err := e.state(engine); err == nil {
+		st.mu.Lock()
+		g := st.front
+		st.mu.Unlock()
+		if g != nil {
+			if idle {
+				return stopped(false)
+			}
+			return stopped(e.unloadFront(st, engine, g, 0, true))
+		}
+	}
+	if err := e.Stop(engine); err != nil {
+		return nil, err
+	}
+	return stopped(true)
+}

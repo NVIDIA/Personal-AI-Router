@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { EngineType } from '@/shared/types/engines'
+import { IdleTimeoutExpiries } from '@/shared/constants/engines'
+import { EXPIRY_SHORT_LABELS } from '@/ui/constants/model-row'
 import type { EngineCaps } from '@/ui/types/engine-manifest'
 
 export const EngineCapabilities: Record<EngineType, EngineCaps> = {
@@ -20,6 +22,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
         hasDeleteModel: true,
+        hasPullModel: true,
         engineHub: { label: 'Ollama', url: 'https://ollama.com/library' }
     },
     'lm-studio': {
@@ -38,6 +41,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
         hasDeleteModel: true,
+        hasPullModel: true,
         // LM Studio answers /v1/models from an index it builds at startup and
         // exposes no rescan, so nvpair-engine-manager's delete_model restarts the
         // server. Deleting therefore interrupts inference and needs a warning.
@@ -57,9 +61,51 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         modelOpsWhenStopped: false,
         // The router removes cached models in-process via DELETE /models.
         hasDeleteModel: true,
+        hasPullModel: true,
+        hubSearch: true,
         engineHub: {
             label: 'llama.cpp',
             url: 'https://huggingface.co/models?library=gguf'
+        }
+    },
+    vllm: {
+        // The expiry is how long vLLM may sit idle before it unloads its model and
+        // frees the GPU. The engine manager keeps it; the next request loads the
+        // model again.
+        hasExpiry: true,
+        expiryOptions: IdleTimeoutExpiries,
+        expiryText: expiry =>
+            expiry === '-1' ? 'Stays loaded' : `Unloads after ${EXPIRY_SHORT_LABELS[expiry]} idle`,
+        // vLLM serves one model per process and cannot drop it while running, so
+        // Eject stops the engine, which frees all of its GPU memory. Load starts
+        // it again on the chosen model.
+        hasEject: true,
+        // Linux (NVIDIA) and Apple Silicon macOS (vLLM-Metal). vLLM has no
+        // native Windows path.
+        hasInstall: ['linux', 'darwin'],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        // The cache is on disk, so the model list, Add model, Delete and Load all
+        // work while the engine is stopped (Load starts it).
+        hasModelSearchOnlyWhenRunning: false,
+        modelOpsWhenStopped: true,
+        // delete_model removes a model from the shared Hugging Face cache. The
+        // loaded model is refused, so Delete is disabled on it until Eject.
+        // Deleting the model an ejected or stopped vLLM is set to serve leaves it
+        // with no model selected until Load picks one.
+        hasDeleteModel: true,
+        deleteBlockedWhileLoaded: true,
+        // The engine manager downloads a Hugging Face repo into the shared cache
+        // with the engine's own `hf` tool (pull_model). The model list is what
+        // that cache holds, and Load switches the served model by restarting vLLM.
+        hasPullModel: true,
+        hubSearch: true,
+        engineHub: {
+            label: 'vLLM',
+            url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
         }
     }
 }

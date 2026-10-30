@@ -64,6 +64,14 @@ type startOpts struct {
 	RequireOwned bool
 	Port         int
 	Bind         string
+	// Wake starts an engine that is marked running but has no process, one that
+	// was unloaded for being idle, instead of treating it as already started.
+	Wake bool
+	// Eager makes an engine that loads its model lazily load it now. A start
+	// brings such an engine up idle, like Ollama and llama.cpp start a server with
+	// nothing loaded; a caller that has to prove the launch works, or is asking for
+	// the model, sets this.
+	Eager bool
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -122,7 +130,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.mu.Lock()
 	running := st.running
 	adopted := st.adopted
-	if running && !adopted {
+	if running && !adopted && !opts.Wake {
 		st.mu.Unlock()
 		return nil
 	}
@@ -144,7 +152,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if err := e.reservedPortError(port); err != nil {
 		return err
 	}
-	presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, true)
+	presence := e.presenceForStart(ctx, engine, st, pathInstalled, port)
 	if presence.Identified {
 		if opts.RequireOwned {
 			return fmt.Errorf("cannot apply launch settings: another process already owns the server port")
@@ -175,6 +183,14 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
+	// An engine whose model is a launch argument cannot start without one. vLLM
+	// would serve, and first download, a default model of its own instead.
+	if flag := modelLaunchFlag(st.manifest); flag != "" {
+		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
+		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
+			return fmt.Errorf("%s has no model selected; load a model to start it", st.manifest.DisplayName)
+		}
+	}
 	vars := st.pathVars()
 	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
 	vars["port"] = strconv.Itoa(port)
@@ -187,7 +203,27 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.stopping = false
 	st.mu.Unlock()
 
+	if rt.Front != nil && !opts.Wake && !opts.Eager {
+		return e.enterLazy(st, engine, rt, vars, port)
+	}
+
+	// An engine with a front is reached through a PAIR gateway on its public port
+	// while the process itself listens elsewhere. The gateway is up before the
+	// process so that readiness probes on the public port see it; it answers 503
+	// until the engine is ready.
+	var gateway *frontGateway
+	reusedGateway := false
+	if rt.Front != nil {
+		g, reused, err := e.startFront(st, engine, rt, vars["host"], port)
+		if err != nil {
+			return err
+		}
+		gateway, reusedGateway = g, reused
+	}
 	if err := e.bringUp(ctx, st, engine, rt, port, vars); err != nil {
+		if !reusedGateway {
+			gateway.close()
+		}
 		return err
 	}
 
@@ -208,6 +244,13 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.mu.Unlock()
 	if proc != nil {
 		e.watch(st, engine, proc)
+		if gateway != nil {
+			gateway.closeWhen(proc.done)
+			if model, err := e.servedModelLocked(engine, st); err == nil {
+				gateway.setModel(model)
+			}
+			gateway.markUp()
+		}
 	}
 
 	if rt.Health != nil {
@@ -239,6 +282,16 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	}
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
+	}
+	launch = applyAutoLaunch(engine, rt, launch, vars["models_dir"])
+	if launch, err = applyFrontBackend(rt, launch, port); err != nil {
+		return err
+	}
+	st.mu.Lock()
+	front := st.front
+	st.mu.Unlock()
+	if front != nil {
+		front.setToolCalls(parsesToolCalls(launch.Args))
 	}
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
@@ -280,7 +333,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop(stopGrace(rt))
+		proc.stop(e.stopGraceFor(rt))
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
@@ -435,6 +488,12 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 		st.mu.Unlock()
 		return nil
 	}
+	if st.idle {
+		// Unloaded for being idle: there is no process, only the gateway.
+		st.mu.Unlock()
+		e.markStopped(st, engine)
+		return nil
+	}
 	proc := st.proc
 	port := st.port
 	adopted := st.adopted
@@ -455,7 +514,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			// we manage :11435) is never touched; we decline only a process
 			// whose image we can't confirm is ours.
 			pid, image, ok := pidOnPort(port)
-			if ok && isManagedInstallPath(binPath, st.installDir) && isOurEngineImage(image, binPath) {
+			if ok && isManagedInstallPath(binPath, st.installDir) && (isOurEngineImage(image, binPath) || procRunsScript(pid, binPath)) {
 				st.mu.Lock()
 				st.stopping = true
 				if st.healthStop != nil {
@@ -463,7 +522,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 					st.healthStop = nil
 				}
 				st.mu.Unlock()
-				grace := stopGrace(rt)
+				grace := e.stopGraceFor(rt)
 				terminatePID(pid, grace)
 				if !pidAlive(pid) {
 					e.markStopped(st, engine)
@@ -499,7 +558,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop(stopGrace(rt))
+		proc.stop(e.stopGraceFor(rt))
 	}
 
 	e.markStopped(st, engine)
@@ -550,6 +609,26 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 // stopGrace is how long to wait after a graceful stop before escalating to a
 // forced kill, taken from the manifest's stop spec: default 5s, the spec's
 // grace_s when set, or 0 when the spec asks for an immediate kill.
+// shutdownStopGraceCap is the longest an engine is given to exit on a polite
+// signal once the whole service is shutting down. The parent bounds the engine
+// stop to a few seconds (the broker allows engine-manager 5s for it) and then
+// kills engine-manager, which cannot escalate to a forced kill after that: the
+// engine, running in its own process group, would be left behind. So at
+// shutdown the force kill has to come inside that window, however generous the
+// manifest's grace is for an ordinary stop. An engine that is still loading
+// (vLLM with its weights half read) does not answer a polite signal at all.
+const shutdownStopGraceCap = 3 * time.Second
+
+// stopGraceFor is the grace for stopping an engine now: the manifest's, capped
+// during shutdown.
+func (e *Executor) stopGraceFor(rt Runtime) time.Duration {
+	grace := stopGrace(rt)
+	if e.shuttingDown.Load() && grace > shutdownStopGraceCap {
+		return shutdownStopGraceCap
+	}
+	return grace
+}
+
 func stopGrace(rt Runtime) time.Duration {
 	grace := 5 * time.Second
 	if sp := rt.Stop; sp != nil {
@@ -586,7 +665,13 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 	st.stopping = true
 	st.adopted = false
 	st.proc = nil
+	st.idle = false
+	front := st.front
+	st.front = nil
 	st.mu.Unlock()
+	// Closed here, not left to the process-exit watcher, so that a restart can
+	// take the public port back at once.
+	front.close()
 	// A deliberately-stopped engine has no live unhealthy/crash condition.
 	e.reporter.clear(unhealthyID(engine))
 	e.reporter.clear(exitedID(engine))
@@ -864,6 +949,14 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			// An engine unloaded for being idle, or loading again, is not serving
+			// and is not failing: there is nothing to probe.
+			st.mu.Lock()
+			skip := st.idle
+			st.mu.Unlock()
+			if skip {
+				continue
+			}
 			ok := e.probe(ctx, h, port)
 			st.mu.Lock()
 			// Bail if stopped or if a newer start superseded this loop —
@@ -871,6 +964,11 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 			if !st.running || st.gen != gen {
 				st.mu.Unlock()
 				return
+			}
+			if st.idle {
+				// It was unloaded while the probe ran, so the result is no answer.
+				st.mu.Unlock()
+				continue
 			}
 			was := st.healthy
 			st.healthy = ok

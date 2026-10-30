@@ -28,6 +28,7 @@
  * state.
  */
 import { create } from 'zustand'
+import { MODEL_SWITCH_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import type { EngineCommandPayload, EngineCommandType } from '@/shared/types/engine-api'
 import type { EngineProcessStatus, EngineType } from '@/shared/types/engines'
@@ -39,6 +40,8 @@ import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 const PENDING_TIMEOUT_MS = 60_000
 /** Keep Ollama Load locked one safety-net interval beyond the longest (11m) backend path. */
 const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 12 * 60_000
+/** vLLM Load restarts the engine on the new model; keep the row locked as long as the app waits for it. */
+const VLLM_LOAD_PENDING_TIMEOUT_MS = MODEL_SWITCH_TIMEOUT_MS
 /**
  * Safety net for a delete on an engine whose backend restarts to pick the
  * deletion up (`EngineCaps.restartsOnModelDelete` / the manifest's
@@ -109,6 +112,9 @@ interface PendingAction {
 function timeoutFor(command: EngineCommandType, engineType: EngineType): number {
     if (command === 'loadModel' && engineType === 'ollama') {
         return OLLAMA_LOAD_PENDING_TIMEOUT_MS
+    }
+    if (command === 'loadModel' && engineType === 'vllm') {
+        return VLLM_LOAD_PENDING_TIMEOUT_MS
     }
     if (command === 'deleteModel' && EngineCapabilities[engineType]?.restartsOnModelDelete) {
         return RESTART_DELETE_TIMEOUT_MS
