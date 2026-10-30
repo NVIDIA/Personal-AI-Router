@@ -119,10 +119,11 @@ async function nodeSettingString(method: string): Promise<string> {
 async function toggleLocalEngine(engine: string, engineType: EngineType): Promise<void> {
     const supervisor = getModularSupervisor()
     try {
-        // `engine:status` is a fast detect (no lifecycle lock), so awaiting the
-        // read is fine. Lifecycle ops stay fire-and-forget to the renderer. A stop
-        // observes its eventual response because an ownership rejection has no
-        // resolving `engine:state-changed`; start keeps its existing push path.
+        // `engine:status` probes independently of lifecycle operations, so it
+        // cannot wait on their lock. Lifecycle ops stay fire-and-forget to the
+        // renderer. A stop observes its eventual response because an ownership
+        // rejection has no resolving `engine:state-changed`; start keeps its
+        // existing push path.
         const status = await supervisor.callProcess('broker', 'engine:status', { engine })
         const running = booleanValue(objectValue(status)?.running)
         // Synthesize the transitional status the engine-manager never emits, so

@@ -64,8 +64,8 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 //     model must not rewrite the engine's saved ON/OFF intent. doStop/doStart
 //     are the intent-neutral pair (StopAll uses them for the same reason).
 func (e *Executor) restartAfterAction(ctx context.Context, st *engineState, engine, action string) error {
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	st.mu.Lock()
 	running := st.running
 	st.mu.Unlock()

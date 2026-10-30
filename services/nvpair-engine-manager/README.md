@@ -57,7 +57,7 @@ Requests (caller → service):
 |---|---|---|
 | `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
 | `engine:describe` | `{ engine }` | the engine's manifest |
-| `engine:status` | `{ engine }` | `EngineStatus` |
+| `engine:status` | `{ engine, port? }` | `EngineStatus` |
 | `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes every engine this service installed, selected by its install marker, each through the `engine:uninstall` path. Backs "reset all data" in both clients; downloaded models are kept. Neither `removed` nor `error` means the engine was left alone as not ours |
@@ -77,6 +77,12 @@ Requests (caller → service):
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
+
+`GET /v1/models` has a five-second limit covering waiting for engine operations,
+checking engine status, and fetching model lists. It returns 503 if the request
+expires or a status check cannot complete, allowing other devices to keep their
+previous model lists. Individual model-list fetch failures can still produce a
+successful response containing results from other engines.
 
 `EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
 
@@ -231,6 +237,18 @@ would only collide on the port. Consequences worth knowing:
   following `start:true` then adopts the running instance.
 - **Liveness reconciliation uses the same probe.** A fixed-port engine found
   already serving is reported `running: true` even though NVPAIR never started it.
+
+`engine:status` and `engine:get-installed` check engines without holding the lock
+used by start, stop, and port changes. Overlapping requests for the same engine
+and port share one check while the engine's state remains unchanged. Each shared
+check has a four-second limit. A result is discarded if the engine's state
+changes before the check finishes. Reading, previewing, or validating launch
+settings does not invalidate an ongoing status check; applying settings does.
+
+During an engine operation, ordinary status requests return the current recorded
+state. A status request that explicitly selects a port waits for the operation
+to finish before checking that port. Model-list requests also wait, with their
+five-second limit covering both the wait and the work that follows.
 
 To get a **NVPAIR-owned, stoppable** instance, start it on a port nothing is
 already serving — the probe misses, so the service spawns and owns the child

@@ -10,6 +10,24 @@ import (
 
 const presenceRefusalWindow = 500 * time.Millisecond
 
+// A shared passive probe has its own bound, so one caller's cancellation does
+// not stop other readers. It is canceled early when its last reader leaves.
+const passiveProbeTimeout = 4 * time.Second
+
+type statusProbeKey struct {
+	revision uint64
+	port     int
+}
+
+type statusProbeRun struct {
+	done    chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
+	waiters int
+	err     error
+	stale   bool
+}
+
 // presenceResult distinguishes a positively identified engine from an
 // occupied/indeterminate target. Callers that might spawn or install must fail
 // closed when Occupied is true: a listener that did not pass the identity probe
@@ -26,6 +44,23 @@ func (e *Executor) Detect(engine string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	installed, binPath := detectPath(st)
+	st.mu.Lock()
+	changed := st.installed != installed || (binPath != "" && st.binPath != binPath)
+	st.installed = installed
+	if binPath != "" {
+		st.binPath = binPath
+	}
+	if changed {
+		st.revision++
+	}
+	st.mu.Unlock()
+	return installed, nil
+}
+
+// detectPath observes the filesystem without publishing a partial state. A
+// passive status check applies this result together with its port observation.
+func detectPath(st *engineState) (bool, string) {
 	installed := false
 	binPath := ""
 	for _, p := range st.plat.Detect {
@@ -39,16 +74,11 @@ func (e *Executor) Detect(engine string) (bool, error) {
 			break
 		}
 	}
-	st.mu.Lock()
-	st.installed = installed
-	if binPath != "" {
-		st.binPath = binPath
-	}
-	st.mu.Unlock()
-	return installed, nil
+	return installed, binPath
 }
 
-// Status returns a fresh snapshot (re-detecting installed-ness).
+// Status refreshes installation and fixed-port presence when no lifecycle
+// operation is active. During an operation it returns the current snapshot.
 func (e *Executor) Status(engine string) (EngineStatus, error) {
 	return e.StatusAtPort(engine, 0)
 }
@@ -57,6 +87,12 @@ func (e *Executor) Status(engine string) (EngineStatus, error) {
 // lets upgrade orchestration identify a legacy listener before changing the
 // persisted backend port; successful identification updates the live state.
 func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, error) {
+	return e.statusWithContext(context.Background(), engine, probePort, probePort > 0)
+}
+
+// statusWithContext lets deadline-bound callers leave a shared presence probe
+// while other status readers continue to use its result.
+func (e *Executor) statusWithContext(ctx context.Context, engine string, probePort int, waitForOperation bool) (EngineStatus, error) {
 	st, err := e.state(engine)
 	if err != nil {
 		// Known engine with no host-platform block: return a shell status
@@ -67,42 +103,89 @@ func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, err
 		}
 		return EngineStatus{}, err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
-	pathInstalled, _ := e.Detect(engine)
-	st.mu.Lock()
-	port := st.port
-	st.mu.Unlock()
-	if probePort > 0 {
-		port = probePort
+	for {
+		st.mu.Lock()
+		port := st.port
+		if probePort > 0 {
+			port = probePort
+		}
+		// Normal status reads can return the current transition state. A
+		// one-shot port probe or model sweep must wait for an authoritative
+		// post-operation observation, within its caller's deadline.
+		if st.opDone != nil {
+			if waitForOperation {
+				done := st.opDone
+				st.mu.Unlock()
+				select {
+				case <-done:
+					continue
+				case <-ctx.Done():
+					return EngineStatus{}, ctx.Err()
+				}
+			}
+			result := statusLocked(engine, st)
+			st.mu.Unlock()
+			return result, nil
+		}
+		key := statusProbeKey{revision: st.revision, port: port}
+		if st.statusRuns == nil {
+			st.statusRuns = make(map[statusProbeKey]*statusProbeRun)
+		}
+		run := st.statusRuns[key]
+		if run == nil {
+			probeCtx, cancel := context.WithTimeout(context.Background(), passiveProbeTimeout)
+			run = &statusProbeRun{done: make(chan struct{}), ctx: probeCtx, cancel: cancel}
+			st.statusRuns[key] = run
+			go e.refreshPassiveStatus(engine, st, key, run)
+		}
+		run.waiters++
+		st.mu.Unlock()
+		var waitErr error
+		select {
+		case <-run.done:
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+		cancelRun := false
+		st.mu.Lock()
+		run.waiters--
+		if run.waiters == 0 && st.statusRuns[key] == run {
+			delete(st.statusRuns, key)
+			cancelRun = true
+		}
+		st.mu.Unlock()
+		if cancelRun {
+			run.cancel()
+		}
+		if waitErr != nil {
+			return EngineStatus{}, waitErr
+		}
+		if waitForOperation {
+			if run.err != nil {
+				return EngineStatus{}, run.err
+			}
+			if run.stale {
+				continue
+			}
+			st.mu.Lock()
+			if st.opDone != nil {
+				st.mu.Unlock()
+				continue
+			}
+			result := statusLocked(engine, st)
+			st.mu.Unlock()
+			return result, nil
+		}
+		return e.snapshot(engine, st), nil
 	}
-	e.reconcilePresence(context.Background(), engine, st, pathInstalled, port, false)
-	return e.snapshot(engine, st), nil
 }
 
 // GetInstalled lists every known engine with its current status.
 func (e *Executor) GetInstalled() []EngineStatus {
 	var out []EngineStatus
 	for _, name := range e.reg.Names() {
-		st, err := e.state(name)
-		if err != nil {
-			// Known engine with no block for this host: surface a shell
-			// status so the UI can still list it as unavailable here.
-			dn := name
-			if m, ok := e.reg.Get(name); ok {
-				dn = m.DisplayName
-			}
-			out = append(out, EngineStatus{Engine: name, DisplayName: dn})
-			continue
-		}
-		st.opMu.Lock()
-		pathInstalled, _ := e.Detect(name)
-		st.mu.Lock()
-		port := st.port
-		st.mu.Unlock()
-		e.reconcilePresence(context.Background(), name, st, pathInstalled, port, false)
-		out = append(out, e.snapshot(name, st))
-		st.opMu.Unlock()
+		status, _ := e.Status(name)
+		out = append(out, status)
 	}
 	return out
 }
@@ -124,6 +207,10 @@ func (e *Executor) Errors() []serviceError {
 func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	return statusLocked(engine, st)
+}
+
+func statusLocked(engine string, st *engineState) EngineStatus {
 	return EngineStatus{
 		Engine:      engine,
 		DisplayName: st.manifest.DisplayName,
@@ -131,6 +218,123 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Running:     st.running,
 		Healthy:     st.healthy,
 		Port:        st.port,
+	}
+}
+
+// refreshPassiveStatus stages filesystem and network observations without an
+// engine operation lock. Its short commit discards the result if any lifecycle
+// operation or another state update ran in the meantime. Concurrent readers of
+// the same port and revision wait on one probe.
+func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key statusProbeKey, run *statusProbeRun) {
+	defer func() {
+		st.mu.Lock()
+		if st.statusRuns[key] == run {
+			delete(st.statusRuns, key)
+		}
+		close(run.done)
+		st.mu.Unlock()
+	}()
+	defer run.cancel()
+	ctx := run.ctx
+
+	st.mu.Lock()
+	if st.opDone != nil || st.revision != key.revision {
+		run.stale = true
+		st.mu.Unlock()
+		return
+	}
+	running, adopted, proc := st.running, st.adopted, st.proc
+	ready := st.plat.Runtime.Ready
+	mode := st.plat.Runtime.modeOrDefault()
+	st.mu.Unlock()
+
+	pathInstalled, binPath := detectPath(st)
+	checkPresence := pathInstalled || mode == "process"
+	checkPresence = checkPresence && key.port != 0 && ready != nil && proc == nil && (!running || adopted)
+	var listener listenerProbeResult
+	var identified, refusedConfirmed bool
+	if checkPresence {
+		probeCtx, stopProbe := context.WithTimeout(ctx, presenceRefusalWindow)
+		listener = probeListener(probeCtx, ready, key.port)
+		stopProbe()
+		switch listener {
+		case listenerProbeRefused:
+			if running && adopted {
+				refusedConfirmed = e.waitUnavailableContext(ctx, ready, key.port, presenceRefusalWindow)
+			}
+		case listenerProbeReachable:
+			identified = e.probe(ctx, ready, key.port)
+		}
+	}
+	if ctx.Err() != nil {
+		run.err = ctx.Err()
+		return
+	}
+
+	st.mu.Lock()
+	if st.opDone != nil || st.revision != key.revision {
+		run.stale = true
+		st.mu.Unlock()
+		return
+	}
+	before := statusLocked(engine, st)
+	oldBinPath, oldAdopted := st.binPath, st.adopted
+	emit := false
+	st.installed = pathInstalled
+	if pathInstalled {
+		st.binPath = binPath
+	}
+	if checkPresence {
+		switch {
+		case listener == listenerProbeRefused && refusedConfirmed:
+			emit = before.Running || before.Healthy || oldAdopted || before.Installed != pathInstalled
+			if st.healthStop != nil {
+				st.healthStop()
+				st.healthStop = nil
+			}
+			st.running = false
+			st.healthy = false
+			st.adopted = false
+			if !pathInstalled {
+				st.binPath = ""
+			}
+		case listener == listenerProbeRefused || listener == listenerProbeIndeterminate:
+			// A single refusal or an uncertain transport result cannot prove
+			// an adopted service stopped.
+			if running && adopted {
+				st.installed = true
+				if !pathInstalled {
+					st.binPath = ""
+				}
+			}
+		case identified && !st.stopping:
+			emit = !before.Running || !before.Healthy || !oldAdopted || before.Port != key.port
+			st.installed = true
+			st.running = true
+			st.healthy = true
+			st.adopted = true
+			st.port = key.port
+			if !pathInstalled {
+				st.binPath = ""
+			}
+		case !identified && listener == listenerProbeReachable && running && adopted:
+			emit = before.Healthy
+			// A live listener that no longer identifies as this engine is
+			// unhealthy, but its port must not be treated as free.
+			st.installed = true
+			st.healthy = false
+			if !pathInstalled {
+				st.binPath = ""
+			}
+		}
+	}
+	after := statusLocked(engine, st)
+	if before != after || oldBinPath != st.binPath || oldAdopted != st.adopted {
+		st.revision++
+	}
+	st.mu.Unlock()
+	if emit {
+		e.emitState(engine)
 	}
 }
 

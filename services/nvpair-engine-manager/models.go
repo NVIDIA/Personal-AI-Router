@@ -62,24 +62,31 @@ func (e *Executor) Models(ctx context.Context) []string {
 // the server is down. Best-effort: a per-engine failure is logged and skipped
 // so the engines that did answer still surface their models.
 //
-// The per-engine queries run CONCURRENTLY. A host running several engines (e.g.
-// Ollama + LM Studio) must not have the later engines squeezed out of a single
-// shared deadline: sequential queries under one budget meant a slow first engine
-// left little for the second, and the peer's discovery daemon fetches this over
-// HTTP with its own (shorter) timeout, so a squeezed second engine silently
-// dropped its models for peers. Concurrency bounds the sweep by the slowest
-// single engine, not the sum.
+// Queries run concurrently so a slow engine does not consume the time available
+// to the others. The five-second limit covers status checks and model-list
+// requests for every engine.
 func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
+	res, _ := e.modelsResult(ctx)
+	return res
+}
+
+// modelsResult also reports a canceled sweep to HTTP callers, which must not
+// replace a peer's last-good inventory with a successful partial response.
+func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, modelsTimeout)
 	defer cancel()
 
+	type engineResult struct {
+		models    []string
+		modelsOK  bool
+		loaded    []string
+		loadedOK  bool
+		statusErr error
+	}
 	engineNames := e.reg.Names()
 	// Results indexed by engine position so the flattened output stays
 	// deterministic (registration order) despite concurrent completion.
-	perEngine := make([][]string, len(engineNames))
-	listOK := make([]bool, len(engineNames))
-	loaded := make([][]string, len(engineNames))
-	loadedOK := make([]bool, len(engineNames))
+	results := make([]engineResult, len(engineNames))
 	var wg sync.WaitGroup
 	for i, name := range engineNames {
 		mf, ok := e.reg.Get(name)
@@ -99,16 +106,21 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		wg.Add(1)
 		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
 			defer wg.Done()
-			st, err := e.Status(name)
-			if err != nil || !st.Running {
+			result := &results[i]
+			st, err := e.statusWithContext(ctx, name, 0, true)
+			if err != nil {
+				result.statusErr = err
+				return
+			}
+			if !st.Running {
 				return
 			}
 			if listSpec != nil {
 				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {
 					slog.Debug("engine:models list_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, listSpec); ok {
-					perEngine[i] = models
-					listOK[i] = true
+					result.models = models
+					result.modelsOK = true
 				} else {
 					slog.Debug("engine:models list_models returned an invalid inventory", "engine", name)
 				}
@@ -119,9 +131,9 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 				} else if models, ok := extractStringsResult(raw, loadedSpec); ok {
 					// A successful query — even an empty result — records the key
 					// so a consumer can tell "running, nothing loaded" apart from
-					// "unknown". An action or shape error leaves loadedOK[i] false.
-					loaded[i] = models
-					loadedOK[i] = true
+					// "unknown". An action or shape error leaves loadedOK false.
+					result.loaded = models
+					result.loadedOK = true
 				} else {
 					slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
 				}
@@ -132,13 +144,14 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 
 	res := ModelsResult{Models: []string{}}
 	seen := map[string]bool{}
-	for i, models := range perEngine {
-		if listOK[i] {
+	for i, result := range results {
+		if result.modelsOK {
 			if res.ByEngine == nil {
 				res.ByEngine = make(map[string][]string)
 			}
 			// Normalize nil -> [] so the wire distinguishes a successful empty
 			// inventory from a missing/not-queryable engine.
+			models := result.models
 			if models == nil {
 				models = []string{}
 			}
@@ -150,20 +163,28 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 				}
 			}
 		}
-		if loadedOK[i] {
+		if result.loadedOK {
 			if res.LoadedByEngine == nil {
 				res.LoadedByEngine = make(map[string][]string)
 			}
 			// Normalize nil -> [] so the wire carries an empty array ("queried,
 			// nothing resident"), never null.
-			ld := loaded[i]
+			ld := result.loaded
 			if ld == nil {
 				ld = []string{}
 			}
 			res.LoadedByEngine[engineNames[i]] = ld
 		}
 	}
-	return res
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+	for _, result := range results {
+		if result.statusErr != nil {
+			return res, result.statusErr
+		}
+	}
+	return res, nil
 }
 
 // extractStrings is the value-only wrapper used by focused extractor tests.

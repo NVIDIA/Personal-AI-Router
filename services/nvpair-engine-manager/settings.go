@@ -103,16 +103,21 @@ func resolveRuntimeCommand(rt Runtime, index int, vars map[string]string) (launc
 // launchForState is read-only; callers hold opMu, and neither preview nor a
 // settings read probes ports, starts processes or writes configuration.
 func launchForState(st *engineState, port int) (launchCommand, error) {
+	st.mu.Lock()
 	rt := st.plat.Runtime
-	vars := st.pathVars()
+	bin := st.binPath
+	st.mu.Unlock()
+	return resolveSettingsLaunch(rt, bin, port, st.pathVars())
+}
+
+// resolveSettingsLaunch uses captured values so a status update cannot change
+// the executable halfway through assembling a settings response.
+func resolveSettingsLaunch(rt Runtime, bin string, port int, vars map[string]string) (launchCommand, error) {
 	vars["host"] = effectiveBind(rt.Bind, "")
 	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
-	st.mu.Lock()
-	bin := st.binPath
-	st.mu.Unlock()
 	if rt.modeOrDefault() == "process" {
 		return resolveProcessLaunch(rt, bin, vars)
 	}
@@ -128,18 +133,19 @@ func launchForState(st *engineState, port int) (launchCommand, error) {
 
 func (e *Executor) launchStateLocked(engine string, st *engineState) settings.LaunchState {
 	st.mu.Lock()
-	result := settings.LaunchState{Engine: engine, ServerPort: st.plat.Runtime.Port, EffectivePort: st.port, Running: st.running, Adopted: st.adopted, Format: launchTextFormat}
+	rt, bin := st.plat.Runtime, st.binPath
+	result := settings.LaunchState{Engine: engine, ServerPort: rt.Port, EffectivePort: st.port, Running: st.running, Adopted: st.adopted, Format: launchTextFormat}
 	st.mu.Unlock()
-	command, err := launchForState(st, result.ServerPort)
+	command, err := resolveSettingsLaunch(rt, bin, result.ServerPort, st.pathVars())
 	if err == nil {
-		result.LaunchText, err = command.argumentText(st.plat.Runtime.EditableLaunch)
+		result.LaunchText, err = command.argumentText(rt.EditableLaunch)
 	}
 	switch {
 	case err != nil:
 		result.Reason = "The engine launch configuration cannot be displayed."
-	case st.plat.Runtime.EditableLaunch == nil:
+	case rt.EditableLaunch == nil:
 		result.Reason = "This engine does not support launch settings."
-	case result.Running && result.Adopted && !canMoveAdoptedEngine(st.plat.Runtime):
+	case result.Running && result.Adopted && !canMoveAdoptedEngine(rt):
 		result.Reason = "Stop this engine in its own application before changing settings."
 	default:
 		result.Editable = true
@@ -152,6 +158,7 @@ func (e *Executor) LaunchSettings(engine string) (settings.LaunchState, error) {
 	if err != nil {
 		return settings.LaunchState{}, err
 	}
+	// Serialize with configuration writes without invalidating status checks.
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	return e.launchStateLocked(engine, st), nil
@@ -396,8 +403,8 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	if err != nil {
 		return settings.LaunchState{}, err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if err := ctx.Err(); err != nil {
 		return settings.LaunchState{}, err
 	}
