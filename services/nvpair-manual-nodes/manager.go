@@ -251,7 +251,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
 
-	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
+	ollamaUp, ollamaAPIPort, ollamaModels := m.probeOllamaAPI(addr)
 	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
 
 	// Pick scheme + port + client based on the entry's TLS hint.
@@ -285,7 +285,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		Name:           entry.Name,
 		Address:        addr,
 		OllamaUp:       ollamaUp,
-		OllamaPort:     11434,
+		OllamaPort:     ollamaAPIPort,
 		OllamaModels:   ollamaModels,
 		LMStudioUp:     lmStudioUp,
 		LMStudioPort:   lmStudioPort,
@@ -402,6 +402,24 @@ func probeFailedID(nodeID string) string {
 // we assume the engine's default port rather than resolving it via the engine
 // manager (which only governs the local engine).
 const lmStudioPort = 1234
+
+// Default ports of Ollama and of llmman (https://github.com/llmmanorg/llmman),
+// which serves the same Ollama API on 17434.
+const (
+	ollamaPort = 11434
+	llmmanPort = 17434
+)
+
+// probeOllamaAPI probes Ollama first, then llmman, and returns whether one
+// answered, its port (ollamaPort when neither did) and its models.
+func (m *Manager) probeOllamaAPI(addr string) (bool, int, []string) {
+	for _, port := range []int{ollamaPort, llmmanPort} {
+		if up, models := m.probeOllama(addr, port); up {
+			return true, port, models
+		}
+	}
+	return false, ollamaPort, nil
+}
 
 // probeLMStudio checks LM Studio's OpenAI-compatible server on addr:port. A
 // single GET /v1/models doubles as the liveness check and the model list (the
@@ -539,7 +557,7 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 		ID:           id,
 		Name:         entry.Name,
 		Address:      entry.Address,
-		OllamaPort:   11434,
+		OllamaPort:   ollamaPort,
 		NodeInfoPort: nodeInfoPort,
 		TLSEnabled:   entry.TLSPort > 0,
 		MTLSRequired: entry.TLSPort > 0 && entry.MTLS,
