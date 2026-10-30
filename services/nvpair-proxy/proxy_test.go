@@ -4,15 +4,17 @@
 package main
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNodeCandidates covers the deterministic, loopback-first ordering and
 // de-duplication of a node's advertised addresses. Local-address rewriting is
 // not exercised (it depends on the host's interfaces); these addresses are
 // chosen to be non-local.
-func TestNodeCandidates(t *testing.T) {
+func TestNodeCandidates_UsesPublishedAddressOrder(t *testing.T) {
 	tests := []struct {
 		name string
 		node Node
@@ -46,20 +48,14 @@ func TestNodeCandidates(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nodeCandidates(tc.node); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("nodeCandidates = %v, want %v", got, tc.want)
-			}
+			assert.Equal(t, tc.want, nodeCandidates(tc.node), "nodeCandidates")
 		})
 	}
 }
 
-func TestUUIDFromTXT(t *testing.T) {
-	if got := uuidFromTXT([]string{"models=a;b", "uuid=abc-123"}); got != "abc-123" {
-		t.Errorf("got %q, want abc-123", got)
-	}
-	if got := uuidFromTXT([]string{"models=a;b"}); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
+func TestUUIDFromTXT_ExtractsNodeIdentity(t *testing.T) {
+	assert.Equal(t, "abc-123", uuidFromTXT([]string{"models=a;b", "uuid=abc-123"}))
+	assert.Equal(t, "", uuidFromTXT([]string{"models=a;b"}))
 }
 
 // TestNodeURL covers the URL-construction part of nodeURL — specifically
@@ -68,7 +64,7 @@ func TestUUIDFromTXT(t *testing.T) {
 // local-address shortcut is not exercised here because it depends on
 // the host's network interfaces (see init() in proxy.go) and would be
 // flaky across environments.
-func TestNodeURL(t *testing.T) {
+func TestNodeURL_FormatsIPv4IPv6AndServicePort(t *testing.T) {
 	// Pick addresses that are unlikely to appear on any local interface.
 	tests := []struct {
 		name     string
@@ -106,15 +102,9 @@ func TestNodeURL(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			u := nodeURL(tc.node)
-			if u == nil {
-				t.Fatalf("nodeURL returned nil")
-			}
-			if u.Host != tc.wantHost {
-				t.Errorf("Host = %q, want %q", u.Host, tc.wantHost)
-			}
-			if got := u.String(); got != tc.wantURL {
-				t.Errorf("String() = %q, want %q", got, tc.wantURL)
-			}
+			require.NotNil(t, u, "nodeURL returned nil")
+			assert.Equal(t, tc.wantHost, u.Host, "Host")
+			assert.Equal(t, tc.wantURL, u.String())
 		})
 	}
 }

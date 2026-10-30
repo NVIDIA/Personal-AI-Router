@@ -72,7 +72,10 @@ type Manager struct {
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
-	cancel     context.CancelFunc
+	// catalog answers engine:catalog: the models an engine can download, as
+	// opposed to the ones it already holds.
+	catalog *catalogService
+	cancel  context.CancelFunc
 }
 
 func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager {
@@ -91,7 +94,8 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		readyHTTP: clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
 			ResponseHeaderTimeout: remoteReadyResponseHeaderTimeout,
 		}),
-		cancel: func() {},
+		catalog: newCatalogService(),
+		cancel:  func() {},
 	}
 	m.settingsRelay.send = codec.Notify
 	exec.settingsParent = m.settingsRelay.call
@@ -208,6 +212,14 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.GetInstalled()})
 		}()
 
+	// Removes the engines PAIR installed. Long-running — each engine goes
+	// through the full uninstall — so it runs off the read loop like the other
+	// lifecycle operations.
+	case "engine:uninstall-managed":
+		go func() {
+			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.UninstallManaged(ctx)})
+		}()
+
 	case prepareShutdownMethod:
 		go func() {
 			m.exec.StopAll()
@@ -249,6 +261,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case "engine:models":
 		go m.runModels(ctx, msg)
+
+	case "engine:catalog":
+		go m.runCatalog(ctx, msg)
 
 	case "engine:install", "engine:uninstall", "engine:start", "engine:stop", "engine:restart":
 		go m.runOp(ctx, msg)
@@ -352,6 +367,25 @@ func (m *Manager) runSetPort(ctx context.Context, msg *Message) {
 // must not block the read loop.
 func (m *Manager) runModels(ctx context.Context, msg *Message) {
 	m.codec.Respond(msg.ID, m.exec.ModelsResult(ctx))
+}
+
+// runCatalog answers engine:catalog. It is off the request goroutine because the
+// LM Studio and llama.cpp sources are live fetches on a cold cache.
+func (m *Manager) runCatalog(ctx context.Context, msg *Message) {
+	var p catalogParams
+	if !m.parse(msg, &p) {
+		return
+	}
+	if p.Engine == "" {
+		m.codec.RespondError(msg.ID, -32602, "engine is required")
+		return
+	}
+	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch, p.Query)
+	if err != nil {
+		m.codec.RespondError(msg.ID, -32603, err.Error())
+		return
+	}
+	m.codec.Respond(msg.ID, res)
 }
 
 func (m *Manager) runAction(ctx context.Context, msg *Message) {

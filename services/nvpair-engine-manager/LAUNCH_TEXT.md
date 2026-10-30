@@ -149,15 +149,17 @@ The existing engine-manager suite also exercises the JSON-RPC stdio path.
 
 ## Networking adapter coverage
 
-The bundled engines are Ollama and LM Studio. The shared parser contains no engine
-name checks. Their mandatory networking declarations and all platform variants
-are pinned by TestBundledNetworkingControls; adding an engine requires extending
-that inventory and reviewing its networking alternatives. Other settings have no catalog.
+The bundled engines are Ollama, LM Studio, and llama.cpp. The shared parser
+contains no engine name checks. Their mandatory networking declarations and all
+platform variants are pinned by TestBundledNetworkingControls; adding an engine
+requires extending that inventory and reviewing its networking alternatives.
+Other settings have no catalog.
 
 | Engine | Port/bind controls | CORS controls | Vendor reference |
 | --- | --- | --- | --- |
 | Ollama | OLLAMA_HOST | OLLAMA_ORIGINS, including vendor quote stripping | [Environment source](https://github.com/ollama/ollama/blob/main/envconfig/config.go) |
 | LM Studio | --port / -p; --bind / LMS_SERVER_HOST | --cors (no short alias) | [Server command source](https://github.com/lmstudio-ai/lms/blob/main/src/subcommands/server.ts) |
+| llama.cpp | --host; --port | --cors-origins | [Server reference](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) |
 
 Remote CORS comparisons use normalized policy. The broker derives the internal
 preserveCORS preview guard from the authenticated caller and repeats validation

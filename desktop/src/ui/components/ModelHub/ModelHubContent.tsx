@@ -8,7 +8,7 @@ import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import { ModelEntry, SortState } from '@/ui/types/model-hub'
 import { ModelHubList } from './ModelHubList'
-import { searchEngineHub } from '@/ui/utils/model-hub-search'
+import { mergeModelHubResults, searchEngineHub } from '@/ui/utils/model-hub-search'
 import { resolveStoredSort, writeStoredSort } from '@/ui/utils/model-hub-content-storage'
 import { isHubEntryDownloaded } from '@/ui/utils/match-downloaded-model'
 import { EngineType } from '@/shared/types/engines'
@@ -42,7 +42,9 @@ export const ModelHubContent = ({
     const [disabledListClick, setDisabledListClick] = useState(false)
     const [loading, setLoading] = useState(true)
     const [allModels, setAllModels] = useState<ModelEntry[]>([])
+    const [remoteModels, setRemoteModels] = useState<ModelEntry[]>([])
     const [query, setQuery] = useState('')
+    const [searching, setSearching] = useState(false)
     const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set())
     const [sort, setSort] = useState<SortState>(() =>
         engine ? resolveStoredSort(engine, SORT_DEFAULT_STATE) : { ...SORT_DEFAULT_STATE }
@@ -55,6 +57,8 @@ export const ModelHubContent = ({
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
     const fetchGenRef = useRef(0)
+    const searchGenRef = useRef(0)
+    const submittedQueryRef = useRef('')
 
     const loadModels = useCallback(async (backend: EngineType) => {
         const cached = cacheRef.current.get(backend)
@@ -84,6 +88,9 @@ export const ModelHubContent = ({
     }, [])
 
     useEffect(() => {
+        setRemoteModels([])
+        setSearching(false)
+        submittedQueryRef.current = ''
         if (!engine) {
             setAllModels([])
             setQuery('')
@@ -95,16 +102,18 @@ export const ModelHubContent = ({
         setSort(resolveStoredSort(engine, SORT_DEFAULT_STATE))
         void loadModels(engine)
         return () => {
-            // Invalidate any in-flight fetch for the previous engine.
+            // Invalidate in-flight population or search for the previous engine.
             fetchGenRef.current += 1
+            searchGenRef.current += 1
         }
     }, [engine, loadModels])
 
     const queryFiltered = useMemo(() => {
         const q = query.toLowerCase().trim()
         if (!q) return allModels
-        return allModels.filter(m => m.name.toLowerCase().includes(q))
-    }, [allModels, query])
+        const populatedMatches = allModels.filter(m => m.name.toLowerCase().includes(q))
+        return mergeModelHubResults(populatedMatches, remoteModels)
+    }, [allModels, query, remoteModels])
 
     const visibleModels = useMemo(() => {
         if (!engine || !downloadedModels || downloadedModels.length === 0) return queryFiltered
@@ -121,8 +130,8 @@ export const ModelHubContent = ({
         [engine]
     )
 
-    const modelsRef = useRef(allModels)
-    modelsRef.current = allModels
+    const modelsRef = useRef(queryFiltered)
+    modelsRef.current = queryFiltered
 
     const handleSubmit = useCallback(
         (ids: string[]) => {
@@ -162,7 +171,41 @@ export const ModelHubContent = ({
         [multiple, onToggleSelectModel, handleSubmit]
     )
 
-    const handleSearchSubmit = useCallback((q: string) => setQuery(q), [])
+    const handleQueryChange = useCallback((nextQuery: string) => {
+        setQuery(nextQuery)
+        if (nextQuery.trim() === submittedQueryRef.current) return
+        searchGenRef.current += 1
+        submittedQueryRef.current = ''
+        setRemoteModels([])
+        setSearching(false)
+    }, [])
+
+    const handleSearch = useCallback(
+        async (nextQuery: string) => {
+            const normalized = nextQuery.trim()
+            setQuery(nextQuery)
+            if (engine !== 'llama-cpp' || normalized.length === 0) return
+
+            const generation = ++searchGenRef.current
+            submittedQueryRef.current = normalized
+            setRemoteModels([])
+            setSearching(true)
+            try {
+                const result = await searchEngineHub(engine, normalized)
+                if (searchGenRef.current !== generation) return
+                setRemoteModels(result)
+            } catch (error) {
+                if (searchGenRef.current !== generation) return
+                setErrors(prev => [
+                    ...prev,
+                    { id: performance.now().toString(), message: getErrorString(error) }
+                ])
+            } finally {
+                if (searchGenRef.current === generation) setSearching(false)
+            }
+        },
+        [engine]
+    )
 
     return (
         <Stack gap="0" className="overflow-hidden min-h-0 min-w-0 grow w-full">
@@ -183,7 +226,10 @@ export const ModelHubContent = ({
                     )}
                     <ModelHubSearchBar
                         onMenuOpenChange={setDisabledListClick}
-                        onSubmit={handleSearchSubmit}
+                        query={query}
+                        searching={searching}
+                        onQueryChange={handleQueryChange}
+                        onSearch={handleSearch}
                         sort={sort}
                         onSort={handleSortPersist}
                     />

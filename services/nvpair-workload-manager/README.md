@@ -81,7 +81,7 @@ Defined in [`workload.go`](workload.go):
 | --- | --- |
 | `id` | Stable workload identifier |
 | `model`, `engine` | What was requested and by which engine |
-| `runId` | Producing process's nonce, minted at proxy startup. Part of the dedup key: `id` is a per-process counter that both engine proxies start at 1 and that resets on restart, so `runId` keeps a reused id from colliding with an older workload |
+| `runId` | Producing process's nonce, minted at proxy startup. Part of the dedup key: `id` is a per-facade counter that every engine facade starts at 1 and that resets on restart, so `runId` keeps a reused id from colliding with an older workload |
 | `state` | `queued`, `running`, `completed`, `failed`, or `cancelled` |
 | `originatedFrom` | Node the request entered the cluster on |
 | `scheduledOn` | Node it was routed to; absent until a target is chosen |

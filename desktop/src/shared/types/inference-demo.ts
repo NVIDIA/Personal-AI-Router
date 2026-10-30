@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { DispatcherBackend } from '@/shared/types/inference-dispatcher'
+import type { EngineType } from '@/shared/types/engines'
 
 /**
  * Inference Demo — a fixed, node-local burst of synthetic inference traffic sent
@@ -17,8 +18,8 @@ import type { DispatcherBackend } from '@/shared/types/inference-dispatcher'
  * status toast.
  *
  * Scheduling lives entirely in the Electron main process
- * (`@/electron/inference-demo`). The Go `inference-dispatcher` binary is
- * unchanged and is invoked once per scheduled request group.
+ * (`@/electron/inference-demo`). The Go `inference-dispatcher` binary is invoked
+ * once per scheduled request.
  */
 
 /** Wall-clock offsets, in seconds, at which a cohort of simulated agents starts. */
@@ -54,10 +55,11 @@ export const DEMO_REQUEST_TIMEOUT_SECONDS = 120
 export const DEMO_ENGINE_PROBES: readonly {
     backend: DispatcherBackend
     /** Engine key used by the broker's proxy port registry. */
-    proxyEngine: 'ollama' | 'lm-studio'
+    proxyEngine: EngineType
 }[] = [
     { backend: 'ollama', proxyEngine: 'ollama' },
-    { backend: 'lmstudio', proxyEngine: 'lm-studio' }
+    { backend: 'lmstudio', proxyEngine: 'lm-studio' },
+    { backend: 'llamacpp', proxyEngine: 'llama-cpp' }
 ]
 
 /**

@@ -9,18 +9,24 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestStopAllStopsEveryEngine guards the concurrent StopAll: with more than one
 // engine running, every engine must be stopped — a regression guard for the old
 // sequential loop where a slow first engine could leave later engines running.
-func TestStopAllStopsEveryEngine(t *testing.T) {
+func TestStopAll_StopsEveryEngine(t *testing.T) {
 	reg := NewRegistry()
 	names := []string{"fake-a", "fake-b"}
 	for _, name := range names {
@@ -33,29 +39,195 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 
 	ports := make([]int, len(names))
 	for i, name := range names {
-		if err := ex.Start(ctx, name); err != nil {
-			t.Fatalf("start %s: %v", name, err)
-		}
-		st, _ := ex.Status(name)
-		if !st.Running || st.Port == 0 {
-			t.Fatalf("%s not running: %+v", name, st)
-		}
+		require.NoError(t, ex.Start(ctx, name), "start (%v)", name)
+		st, err := ex.Status(name)
+		require.NoError(t, err)
+		require.True(t, st.Running, " (%v, %v)", name, st)
+		require.NotEqual(t, 0, st.Port, " (%v, %v)", name, st)
 		ports[i] = st.Port
 	}
 
 	ex.StopAll()
 
-	for i, name := range names {
-		if !waitPortClosed(ports[i], 5*time.Second) {
-			t.Fatalf("engine %s still serving on port %d after StopAll", name, ports[i])
-		}
-	}
-	if err := ex.Start(ctx, names[0]); !errors.Is(err, context.Canceled) {
-		t.Fatalf("start after StopAll error = %v, want context canceled", err)
+	require.True(t, waitPortClosed(ports[0], 5*time.Second), "engine (%v)", names[0])
+	require.True(t, waitPortClosed(ports[1], 5*time.Second), "engine (%v)", names[1])
+	require.ErrorIs(t, ex.Start(ctx, names[0]), context.Canceled, "start after StopAll error")
+}
+
+// adoptedEngineOnLivePort seeds an engine that this process did not launch and
+// cannot stop: running, adopted, no owned proc, and a real listener on its port
+// so doStop's readiness probe can never confirm it went away. That is the one
+// shape whose stop is refused, leaving st.running true — so a repeated sweep
+// does the whole thing again instead of hitting the !st.running early return.
+// Its bin path is outside the managed install dir, so the port-reclaim branch
+// declines it rather than terminating a stranger's process.
+func adoptedEngineOnLivePort(t *testing.T, ex *Executor) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "listen")
+	t.Cleanup(func() { _ = ln.Close() })
+
+	st, err := ex.state("fake")
+	require.NoError(t, err)
+	st.mu.Lock()
+	st.running = true
+	st.adopted = true
+	st.proc = nil
+	st.port = ln.Addr().(*net.TCPAddr).Port
+	st.binPath = filepath.Join(t.TempDir(), "someone-elses-engine")
+	st.mu.Unlock()
+}
+
+// TestStopAll_RunsOneSweepPerProcess is the quit-latency guard. An ordinary quit
+// asks for StopAll twice — the broker's engine:prepare-shutdown during its
+// teardown, and the stdin-EOF path in Run once the broker closes stdin. An
+// engine whose stop can only be declined stays running, so each repeat sweep
+// would re-pay doStop's readiness probe for it.
+func TestStopAll_RunsOneSweepPerProcess(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	adoptedEngineOnLivePort(t, ex)
+
+	first := time.Now()
+	ex.StopAll()
+	sweep := time.Since(first)
+	require.GreaterOrEqual(t, sweep, 500*time.Millisecond,
+		"the first sweep was too fast to have probed, so this no longer covers the repeat")
+
+	// The engine is still there and still un-stoppable, so an unguarded sweep
+	// would spend the probe again.
+	repeat := time.Now()
+	ex.StopAll()
+	ex.StopAll()
+	assert.LessOrEqual(t, time.Since(repeat), sweep/2, "two further StopAll calls must not repeat the sweep")
+}
+
+// TestStopAll_WaitsForTheSweepInFlight is the other half, and the reason this
+// is a joining guard rather than a plain skip. A caller that returned while the
+// first sweep was still running would report engines stopped before they were:
+// the broker would close stdin, engine-manager would exit, and the engines it
+// launched would be left running with nothing owning them.
+func TestStopAll_WaitsForTheSweepInFlight(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	adoptedEngineOnLivePort(t, ex)
+	st, err := ex.state("fake")
+	require.NoError(t, err)
+
+	// Holding the engine's opMu parks the sweep before doStop, so it cannot
+	// finish until the test lets it, however the goroutines are scheduled.
+	st.opMu.Lock()
+	releaseSweep := sync.OnceFunc(st.opMu.Unlock)
+	t.Cleanup(releaseSweep)
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		ex.StopAll()
+	}()
+
+	// Join behind the first caller only once it owns the sweep: only the sweep
+	// sets shuttingDown, and it does so before stopping anything.
+	require.Eventually(t, ex.shuttingDown.Load, 5*time.Second, 5*time.Millisecond,
+		"the first StopAll caller never started the sweep")
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		ex.StopAll()
+	}()
+
+	require.Never(t, func() bool { return isClosed(secondDone) }, 200*time.Millisecond, 10*time.Millisecond,
+		"the second caller returned while the first sweep was still running")
+
+	releaseSweep()
+	require.Eventually(t, func() bool { return isClosed(sweepDone) }, 10*time.Second, 10*time.Millisecond,
+		"the first StopAll caller never returned once the sweep was released")
+	require.Eventually(t, func() bool { return isClosed(secondDone) }, 10*time.Second, 10*time.Millisecond,
+		"the second StopAll caller never returned once the sweep was released")
+}
+
+// isClosed reports whether done has been closed, without blocking.
+func isClosed(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
 
-func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
+// commandDaemon stands in for a command-mode engine's daemon: it serves the
+// readiness endpoint once startMarker exists and closes its listener once
+// stopMarker does, as a daemon told to stop by its control CLI would. It
+// returns the daemon's port.
+func commandDaemon(t *testing.T, startMarker, stopMarker string) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fileExists(startMarker) && !fileExists(stopMarker) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	stopWatch := make(chan struct{})
+	t.Cleanup(func() { close(stopWatch) })
+	go func() {
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-time.After(50 * time.Millisecond):
+				if fileExists(stopMarker) {
+					srv.Close()
+					return
+				}
+			}
+		}
+	}()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err, "parse daemon URL")
+	port, err := strconv.Atoi(u.Port())
+	require.NoError(t, err, "parse daemon port")
+	return port
+}
+
+// TestStopAll_RetriesAFailedStopCommand checks that a later StopAll caller
+// retries an engine whose stop command failed during the sweep, so a stop
+// command that errors once does not leave the engine running after quit.
+func TestStopAll_RetriesAFailedStopCommand(t *testing.T) {
+	dir := t.TempDir()
+	startMarker := filepath.Join(dir, "started")
+	stopAttempt := filepath.Join(dir, "stop-attempted")
+	stopMarker := filepath.Join(dir, "stopped")
+	port := commandDaemon(t, startMarker, stopMarker)
+	ex := newTestExecutor(t, &Manifest{
+		Engine: "daemon", DisplayName: "Daemon Engine", ManifestVersion: 1,
+		Platforms: map[string]Platform{
+			hostKey(): {
+				Detect: []string{fakeEngineBin},
+				Runtime: Runtime{
+					Mode:  "command",
+					Port:  port,
+					Start: [][]string{{fakeEngineBin, "touch", startMarker}},
+					Stop:  &StopSpec{Cmd: []string{fakeEngineBin, "failoncethentouch", stopAttempt, stopMarker}},
+					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/", Status: http.StatusOK, TimeoutS: 10},
+				},
+			},
+		},
+	})
+	require.NoError(t, ex.Start(context.Background(), "daemon"))
+	ex.StopAll()
+	st, err := ex.Status("daemon")
+	require.NoError(t, err)
+	require.True(t, st.Running, "the failed stop must leave the engine running after the sweep")
+
+	ex.StopAll()
+
+	assert.FileExists(t, stopMarker, "the later StopAll must run the stop command again")
+	st, err = ex.Status("daemon")
+	require.NoError(t, err)
+	assert.False(t, st.Running, "the retried stop must leave the engine stopped")
+}
+
+func TestStopAll_CancelsCommandStartWithoutError(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
 	t.Setenv("FAKE_PID_FILE", pidFile)
 
@@ -83,9 +255,7 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 			time.Sleep(25 * time.Millisecond)
 		}
 	}
-	if pid == 0 {
-		t.Fatal("command-mode fake engine did not publish its PID")
-	}
+	require.NotEqual(t, 0, pid, "command-mode fake engine did not publish its PID")
 	t.Cleanup(func() {
 		if pidAlive(pid) {
 			_ = signalPID(pid, true)
@@ -97,24 +267,18 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("command-mode start did not return after StopAll")
+		require.FailNow(t, "command-mode start did not return after StopAll")
 	}
-	if pidAlive(pid) {
-		t.Fatalf("command-mode fake engine PID %d survived StopAll", pid)
-	}
-	if hasErr(ex.Errors(), startFailedID("fake")) {
-		t.Fatalf("shutdown cancellation retained a command-mode start-failed error: %+v", ex.Errors())
-	}
+	require.False(t, pidAlive(pid), "command-mode fake engine PID (%v)", pid)
+	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "shutdown cancellation retained a command-mode start-failed error")
 }
 
-func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
+func TestStopAll_StopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	dir := t.TempDir()
 	startMarker := filepath.Join(dir, "started")
 	stopMarker := filepath.Join(dir, "stopped")
 	port, err := freePort()
-	if err != nil {
-		t.Fatalf("free port: %v", err)
-	}
+	require.NoError(t, err, "free port")
 
 	manifest := testEngineManifest(fakeEngineBin)
 	platform := manifest.Platforms[hostKey()]
@@ -178,29 +342,19 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 
 	started := make(chan error, 1)
 	go func() { started <- ex.Start(context.Background(), "fake") }()
-	if err := <-daemonStarted; err != nil {
-		t.Fatalf("detached command daemon: %v", err)
-	}
-	if !portServing(port) {
-		t.Fatal("detached command daemon did not start serving")
-	}
+	require.NoError(t, <-daemonStarted, "detached command daemon")
+	require.True(t, portServing(port), "detached command daemon did not start serving")
 
 	ex.StopAll()
 
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("command-mode start did not return after StopAll")
+		require.FailNow(t, "command-mode start did not return after StopAll")
 	}
-	if !fileExists(stopMarker) {
-		t.Fatal("StopAll skipped the command-mode stop CLI after start detached")
-	}
-	if !waitPortClosed(port, 5*time.Second) {
-		t.Fatalf("detached command daemon remained on port %d after StopAll", port)
-	}
-	if hasErr(ex.Errors(), startFailedID("fake")) {
-		t.Fatalf("shutdown cancellation retained a command-mode start-failed error: %+v", ex.Errors())
-	}
+	require.FileExists(t, stopMarker, "StopAll skipped the command-mode stop CLI after start detached")
+	require.True(t, waitPortClosed(port, 5*time.Second), "detached command daemon remained on port (%v)", port)
+	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "shutdown cancellation retained a command-mode start-failed error")
 }
 
 // TestE2EStdinCloseStopsEngine drives the real engine-manager binary and stops
@@ -208,7 +362,7 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 // prepare-shutdown or shutdown RPC. The EOF path must run StopAll and take the
 // engine's port down — this is the backstop the broker relies on now that it no
 // longer force-kills engine-manager on a timeout.
-func TestE2EStdinCloseStopsEngine(t *testing.T) {
+func TestE2EStdinClose_StopsEngine(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	for _, dir := range []string{
@@ -221,16 +375,13 @@ func TestE2EStdinCloseStopsEngine(t *testing.T) {
 	m := startE2EManager(t, cfg, home)
 	send(t, m.stdin, 1, "engine:start", map[string]any{"engine": "fake"})
 	var started EngineStatus
-	if err := json.Unmarshal(waitResult(t, m.frames, "1", 20*time.Second), &started); err != nil || !started.Running {
-		t.Fatalf("start status=%+v err=%v", started, err)
-	}
+	require.NoError(t, json.Unmarshal(waitResult(t, m.frames, "1", 20*time.Second), &started), "start status")
+	require.True(t, started.Running, "start status (%v)", started)
 
 	// stop() closes stdin and waits for the process to exit on its own.
 	m.stop(t)
 
-	if !waitPortClosed(started.Port, 5*time.Second) {
-		t.Fatalf("engine port %d remained open after stdin close", started.Port)
-	}
+	require.True(t, waitPortClosed(started.Port, 5*time.Second), "engine port")
 }
 
 // waitPortClosed polls until nothing is serving on the port or the timeout

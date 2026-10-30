@@ -11,6 +11,110 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.10 — Background services shut down in parallel (#173)
+
+- The background services now shut down in parallel rather than one at a time, so a busy machine no longer pays each service's shutdown in turn.
+- When quitting is slow, the service log records where the time went.
+
+## 1.0.9 — Quitting is prompt again (#137)
+
+- Quitting no longer stalls when an engine is running outside PAIR's control. The engine shutdown that runs on the way out was being performed twice, and the repeat cost about a second.
+
+## 1.0.8 — Removing a machine you added by address forgets it in the terminal interface (#172)
+
+- In the terminal interface, removing a cluster member that you added with `f` now also forgets its address, so it no longer reappears after a restart.
+
+## 1.0.7 — Copy API endpoints with /v1 included (#185)
+
+- API endpoint URLs now include `/v1` when displayed or copied, so they can be pasted directly into Hermes and other clients that expect an OpenAI-compatible base URL.
+- The getting-started examples use the copied URL directly and explain how to remove `/v1` for native Ollama clients.
+
+## 1.0.6 — Model lookups through PAIR reach a node that has the model (#163)
+
+- `/api/show` requests to PAIR's Ollama port now go only to a node that has the requested model. Before, they could reach a node without it and get a 404, so a client such as Hermes Agent could not read the model's details.
+- Ollama model names that include the default `library` namespace or `registry.ollama.ai` host, or that differ only in case, now match the same model when PAIR picks a node. Inference requests that use such names reach a node that has the model instead of failing with a 502.
+
+## 1.0.5 — Harden trusted-peer file paths (#159)
+
+- Reject unsafe peer identifiers before loading, writing, or removing trust-store files, protecting cluster data from path traversal.
+
+## 1.0.4 — Manual nodes persist across restarts (#60)
+
+- Manually added nodes are restored after the broker or manual-node worker restarts.
+
+## 1.0.3 — Report Ollama model download failures correctly (#138)
+
+- Ollama model downloads now report failures when the engine sends an error record after starting an HTTP 200 stream.
+
+## 1.0.2 — Route OpenAI Responses requests by model (#155)
+
+- POST /v1/responses now counts as inference. PAIR sends it to a node that advertises the requested model and records it as a workload. That path used to be forwarded with no model filter.
+
+## 1.0.1 — Add documentation for registry.go and refactor types/tests (#140)
+
+- Refactored saved engine launch settings while preserving literal arguments, environment values, and explicit empty overrides.
+
+## 1.0.0 — Personal AI Router 1.0.0
+
+- Cuts release 1.0.0, which collects every change since 0.1.1 listed below. See the [1.0.0 release notes](docs/release-notes.mdx).
+
+## 0.1.15 — Safer engine removal and data resets (#153)
+
+- Removing an engine never follows a symlink or Windows junction into another folder.
+- An LM Studio models folder linked from `~/.lmstudio/models` is kept when LM Studio is removed.
+- Resetting app data, from Settings or the terminal interface, stops before deleting anything if an engine PAIR installed cannot be removed, and says which one.
+
+## 0.1.14 — Engine install no longer shows a fake percentage (#145)
+
+- Installing an engine no longer sits at a made-up 75%. Download progress still shows a real percentage; the install step itself now shows "Installing" with no number.
+
+## 0.1.13 — Uninstalling keeps your downloaded models (#150)
+
+- Uninstalling an engine keeps the models it downloaded. Uninstalling LM Studio no longer deletes `~/.lmstudio/models`.
+- llama.cpp keeps its downloaded models in `~/.llamacpp`, outside PAIR's data folder, so removing PAIR's data no longer deletes them.
+- Removing all data — when uninstalling PAIR, from Settings > Reset app data, or from the terminal interface's reset — now also uninstalls the engines PAIR installed, including LM Studio on Windows, and leaves engines you installed yourself alone. Downloaded models are kept.
+
+## 0.1.12 — A rebuilt terminal interface, and one model catalogue for both front ends (#117)
+
+- The terminal interface is organised around machines: Nodes, Jobs, Service, Errors, and Logs, with a per-machine drill-down for engines, models, ports, and hardware.
+- Engines can be started with your own arguments and environment variables, edited from the terminal interface on this machine or on a paired one. Changes are validated before they are saved.
+- Downloadable models are served by the engine manager, so the terminal interface and the desktop application browse the same catalogue.
+- The Inference Demo runs from the terminal interface's Jobs tab, so a headless machine can demonstrate routing.
+- The terminal interface says when a newer release of PAIR is published, on every tab until dismissed. It installs nothing.
+- Pairing keys follow the words on screen: `p` pairs, `a` accepts, `f` finds a machine by address.
+
+## 0.1.11 — llama.cpp is a PAIR-managed engine (#148)
+
+- llama.cpp can be installed, started, stopped, and updated from PAIR, alongside Ollama and LM Studio.
+- Browse and pull llama.cpp models from the model hub, sourced live from approved Hugging Face publishers, with a bounded search across public publishers.
+- Delete a downloaded llama.cpp model from the engine's model list.
+- Inference routed to llama.cpp goes through the local proxy, so the engine participates in cluster routing like the others.
+- On Windows, PAIR installs the Visual C++ runtime llama.cpp requires.
+
+## 0.1.10 — The desktop app is called NVIDIA PAIR (#147)
+
+- The application now appears as **NVIDIA PAIR** in Finder, the Dock, and the macOS menu bar, instead of the abbreviated `PAIR`.
+
+## 0.1.9 — Clearer in-flight jobs (#141)
+
+- Jobs that have not started yet are labeled In flight, and they and their connection lines use the same yellow as the GPU chart.
+- A job's card names the node it was sent to with "Sent to" until the job starts, including a job that fails or is cancelled before it starts, instead of "Ran on".
+
+## 0.1.8 — Retry failed scheduler priority notifications (#122)
+
+- The scheduler retries changed priorities after a failed local notification write and keeps its status aligned with the last successful delivery.
+
+## 0.1.7 — Workload broadcast reliability: ordered broadcasts, dedup after emit (#80)
+
+- Inter-node workload broadcasts are now serialized in origin order, so a lifecycle remove can no longer overtake its own upsert on a peer and resurrect a ghost workload.
+- Dedup keys are recorded only after the broker emit succeeds; a failed emit's retry is no longer swallowed as a duplicate.
+
+## 0.1.6 — The app is now called NVIDIA PAIR (#132)
+
+- The desktop app, tray, shortcuts, and installer now show the name NVIDIA PAIR.
+- Installed programs lists show NVIDIA Corporation as the publisher.
+- Existing installs keep their settings, engines, cluster membership, and firewall rules when they update.
+
 ## 0.1.5 — Avoid unnecessary cluster trust notifications (#62)
 
 - Cluster trust notifications now follow successfully saved peer endorsements. Duplicate endorsements and failed writes no longer cause unnecessary refreshes.

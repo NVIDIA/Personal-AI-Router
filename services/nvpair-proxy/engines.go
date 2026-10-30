@@ -54,6 +54,12 @@ const (
 	// and the federated response is re-emitted as
 	// {"object": "list", "data": [...]}.
 	roleModelListOpenAIGET
+
+	// roleModelLookupPOST is a POST that names a model but is not a workload:
+	// Ollama's /api/show. Like inference it is routed to an owner of the
+	// requested model and retries a 404 on another owner, but it emits no
+	// workload notifications.
+	roleModelLookupPOST
 )
 
 // modelNaming is how an engine spells a model identifier. It governs the
@@ -78,8 +84,12 @@ const (
 
 // route is one classified request path.
 type route struct {
+	// Path is the client-facing path matched on the facade.
 	Path string
-	Role routeRole
+
+	// UpstreamPath optionally rewrites Path for the engine; empty preserves it.
+	UpstreamPath string
+	Role         routeRole
 }
 
 // engineProfile is everything the proxy needs to front one engine.
@@ -97,8 +107,7 @@ type engineProfile struct {
 
 	// Routes classifies the paths this engine's clients call. It is NOT an
 	// allowlist: an unlisted path is forwarded verbatim, which is how
-	// /api/show, /api/pull, /api/ps, /api/version and OPTIONS preflights keep
-	// working.
+	// /api/pull, /api/ps, /api/version and OPTIONS preflights keep working.
 	Routes []route
 
 	// ModelNaming is how this engine spells model identifiers.
@@ -124,6 +133,7 @@ var ollamaBaseRoutes = []route{
 	{Path: "/api/chat", Role: roleInferencePOST},
 	{Path: "/api/embeddings", Role: roleInferencePOST},
 	{Path: "/api/embed", Role: roleInferencePOST},
+	{Path: "/api/show", Role: roleModelLookupPOST},
 	{Path: "/api/tags", Role: roleModelListNativeGET},
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
@@ -134,11 +144,19 @@ var lmStudioBaseRoutes = []route{
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
 
+// llamaCPPBaseRoutes serves both model-list paths through the fleet inventory,
+// querying llama.cpp's router endpoint. Its response uses the OpenAI envelope.
+var llamaCPPBaseRoutes = []route{
+	{Path: "/models", Role: roleModelListOpenAIGET},
+	{Path: "/v1/models", UpstreamPath: "/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
 	{Path: "/v1/completions", Role: roleInferencePOST},
 	{Path: "/v1/embeddings", Role: roleInferencePOST},
+	{Path: "/v1/responses", Role: roleInferencePOST},
 }
 
 // anthropicInferenceRoutes is the Anthropic-compatible inference surface.
@@ -151,8 +169,10 @@ var profiles = buildProfiles()
 func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
+	llamacpp, _ := engines.ByName("llamacpp")
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
+	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -172,6 +192,13 @@ func buildProfiles() []engineProfile {
 			// proxy that restored it would sit on the engine's own port. The
 			// stored value predates the current default of 1234.
 			ReservedPersistedPort: 1235,
+		},
+		{
+			Engine:                llamacpp,
+			StandalonePort:        8080,
+			Routes:                llamaCPPRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: 8081,
 		},
 	}
 }
@@ -195,9 +222,9 @@ func engineNames() string {
 	return strings.Join(names, ", ")
 }
 
-// roleFor classifies a request. The bool reports whether the path is one this
+// routeFor classifies a request. The bool reports whether the path is one this
 // engine handles specially; false means forward it verbatim.
-func (p engineProfile) roleFor(method, path string) (routeRole, bool) {
+func (p engineProfile) routeFor(method, path string) (route, bool) {
 	for _, r := range p.Routes {
 		// Keep scanning on a method mismatch rather than bailing: a path may
 		// legitimately appear twice under different methods, and returning
@@ -206,14 +233,26 @@ func (p engineProfile) roleFor(method, path string) (routeRole, bool) {
 		if r.Path != path || r.Role.method() != method {
 			continue
 		}
-		return r.Role, true
+		return r, true
 	}
-	return 0, false
+	return route{}, false
+}
+
+func (p engineProfile) roleFor(method, path string) (routeRole, bool) {
+	r, ok := p.routeFor(method, path)
+	return r.Role, ok
+}
+
+func (r route) upstreamPath() string {
+	if r.UpstreamPath != "" {
+		return r.UpstreamPath
+	}
+	return r.Path
 }
 
 // method is the HTTP method a role applies to.
 func (r routeRole) method() string {
-	if r == roleInferencePOST {
+	if r == roleInferencePOST || r == roleModelLookupPOST {
 		return "POST"
 	}
 	return "GET"
@@ -226,14 +265,37 @@ func (r routeRole) isModelList() bool {
 
 // normalizeModel applies the engine's naming convention to a model
 // identifier, so the federated list's dedupe key and the routing gate agree.
+// Ollama names reduce to the shortest form Ollama itself matches on: the
+// default registry.ollama.ai host and library namespace are dropped, an
+// untagged name gets ":latest", and case is folded.
 func (p engineProfile) normalizeModel(model string) string {
 	model = strings.TrimSpace(model)
-	if p.ModelNaming != impliedLatestTag || model == "" {
+	if p.ModelNaming != impliedLatestTag || model == "" || strings.Contains(model, "@") {
 		return model
 	}
-	name := model[strings.LastIndex(model, "/")+1:]
-	if name != "" && !strings.ContainsAny(name, ":@") {
-		return model + ":latest"
+	rest, tag := model, "latest"
+	if i := strings.LastIndex(model, ":"); i > strings.LastIndex(model, "/") {
+		rest, tag = model[:i], model[i+1:]
 	}
-	return model
+	host, namespace, name := "registry.ollama.ai", "library", rest
+	if i := strings.LastIndex(rest, "/"); i >= 0 {
+		namespace, name = rest[:i], rest[i+1:]
+		if j := strings.LastIndex(namespace, "/"); j >= 0 {
+			host, namespace = namespace[:j], namespace[j+1:]
+			if _, h, ok := strings.Cut(host, "://"); ok {
+				host = h
+			}
+		}
+	}
+	if name == "" {
+		return model
+	}
+	prefix := ""
+	switch {
+	case !strings.EqualFold(host, "registry.ollama.ai"):
+		prefix = host + "/" + namespace + "/"
+	case !strings.EqualFold(namespace, "library"):
+		prefix = namespace + "/"
+	}
+	return strings.ToLower(prefix + name + ":" + tag)
 }
