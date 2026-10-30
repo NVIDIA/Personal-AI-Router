@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	settings "nvpair-shared/enginesettings"
 )
@@ -277,6 +278,37 @@ func TestLaunchModelRestoresThePreviousModelWhenTheNewOneFails(t *testing.T) {
 	}
 	if !mustStatus(t, e).Running {
 		t.Fatal("the engine was left down after a failed switch")
+	}
+}
+
+// A remote caller that stops waiting cancels the switch while the new model is
+// still starting. The previous model must still come back: restoring it under
+// the cancelled context would fail at once and leave the engine down.
+func TestLaunchModel_RestoresThePreviousModelWhenTheCallerGivesUp(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	// Every launch from here on takes a second to become ready, so the switch
+	// below is still starting when its caller gives up.
+	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
+		ServerPort: mustStatus(t, e).Port, LaunchText: "FAKE_START_DELAY=1s " + launchTextOf(t, e),
+	}}, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before := launchTextOf(t, e)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := e.Action(ctx, "fake", "load_model", json.RawMessage(`{"model":"org/slow"}`))
+	if err == nil {
+		t.Fatal("a switch whose caller gave up was reported as done")
+	}
+	if !strings.Contains(err.Error(), "the previous model was restored") {
+		t.Fatalf("err = %v, want the previous model restored", err)
+	}
+	if got := launchTextOf(t, e); got != before {
+		t.Fatalf("launch text = %q, want the previous %q", got, before)
+	}
+	if !mustStatus(t, e).Running {
+		t.Fatal("the engine was left down after the caller gave up")
 	}
 }
 

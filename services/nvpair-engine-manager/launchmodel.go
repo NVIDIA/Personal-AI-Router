@@ -53,6 +53,10 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 	if err != nil {
 		return nil, err
 	}
+	// Putting the previous model back must not depend on the caller still
+	// waiting: a remote caller that gives up cancels ctx mid-start, and a restore
+	// under that ctx would fail at once and leave the engine down.
+	restoreCtx := context.WithoutCancel(ctx)
 	result := func(restarted bool) (json.RawMessage, error) {
 		return json.Marshal(struct {
 			Model     string `json:"model"`
@@ -83,7 +87,7 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		}
 		if err := e.StartWith(ctx, engine, startOpts{Eager: true}); err != nil {
 			if changed {
-				_, _ = e.ConfigureLaunch(ctx, settings.Configure{
+				_, _ = e.ConfigureLaunch(restoreCtx, settings.Configure{
 					Engine:   engine,
 					Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: current.LaunchText},
 				}, func() error { return nil })
@@ -93,7 +97,7 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		return result(true)
 	}
 
-	apply := func(launchText string, resume bool) error {
+	apply := func(ctx context.Context, launchText string, resume bool) error {
 		_, err := e.ConfigureLaunch(ctx, settings.Configure{
 			Engine:   engine,
 			Settings: settings.Config{ServerPort: current.ServerPort, LaunchText: launchText},
@@ -101,12 +105,12 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		}, func() error { return nil })
 		return err
 	}
-	if err := apply(text, false); err != nil {
+	if err := apply(ctx, text, false); err != nil {
 		if !current.Running {
 			return nil, err
 		}
 		// The engine's own error carries a long log tail, so say what happened first.
-		if restoreErr := apply(current.LaunchText, true); restoreErr != nil {
+		if restoreErr := apply(restoreCtx, current.LaunchText, true); restoreErr != nil {
 			return nil, fmt.Errorf("switching to %s failed and restoring the previous model also failed (%v): %w", model, restoreErr, err)
 		}
 		return nil, fmt.Errorf("switching to %s failed; the previous model was restored: %w", model, err)
