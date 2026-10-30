@@ -200,19 +200,6 @@ func loadPhysicalAdapterLUIDs() (map[uint64]struct{}, error) {
 	return out, nil
 }
 
-// keepPhysicalAdapter applies the DirectX-registry LUID gate to a single
-// adapter. When physical is nil or empty the gate is skipped (the name
-// denylist still runs); otherwise only LUIDs present in the registry are
-// kept. Callers go through selectPhysicalAdapters, which additionally
-// refuses a gate that would empty the whole inventory.
-func keepPhysicalAdapter(luid uint64, physical map[uint64]struct{}) bool {
-	if len(physical) == 0 {
-		return true
-	}
-	_, ok := physical[luid]
-	return ok
-}
-
 // adapterCandidate is one DXGI adapter that has already passed the
 // DXGI_ADAPTER_FLAG_SOFTWARE and virtual-display-name checks, i.e. everything
 // that depends only on the adapter itself. luid is the packed value the
@@ -222,19 +209,15 @@ type adapterCandidate struct {
 	luid uint64
 }
 
-// One-shot warning latches. While the inventory is empty, adapter detection
-// is retried on a timer (stats_windows.go), and each of these conditions
-// persists until something outside this process changes, so a plain slog.Warn
-// in the path would repeat the same line on every retry.
-var (
-	dxgiFactoryWarned        atomic.Bool
-	luidGateUnreadableWarned atomic.Bool
-	luidGateEmptyWarned      atomic.Bool
-	staleLUIDGateWarned      atomic.Bool
-)
+// A failed DXGI factory leaves the inventory empty and can be retried, so warn
+// only once. Registry filtering runs only after candidates have been found and
+// always keeps at least one. Since detection stops at the first non-empty list,
+// registry warnings need no separate latches during service startup.
+var dxgiFactoryWarned atomic.Bool
 
 // selectPhysicalAdapters applies the DirectX-registry LUID gate to a whole
 // enumeration, and declines to apply it when it would leave nothing behind.
+// A missing or empty registry set leaves the candidates unchanged.
 //
 // The gate exists to drop RDP phantom clones: under a remote session the same
 // card enumerates twice and only the real adapter's LUID is written under
@@ -255,7 +238,7 @@ func selectPhysicalAdapters(candidates []adapterCandidate, physical map[uint64]s
 	}
 	kept := make([]adapterCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		if keepPhysicalAdapter(c.luid, physical) {
+		if _, ok := physical[c.luid]; ok {
 			kept = append(kept, c)
 			continue
 		}
@@ -263,11 +246,9 @@ func selectPhysicalAdapters(candidates []adapterCandidate, physical map[uint64]s
 			"name", c.gpu.Name, "luid", fmt.Sprintf("0x%016x", c.luid))
 	}
 	if len(kept) == 0 {
-		if staleLUIDGateWarned.CompareAndSwap(false, true) {
-			slog.Warn("DirectX registry lists none of this boot's adapter LUIDs; treating it as stale and keeping every adapter",
-				"candidates", len(candidates),
-				"registry_luids", len(physical))
-		}
+		slog.Warn("DirectX registry lists none of this boot's adapter LUIDs; treating it as stale and keeping every adapter",
+			"candidates", len(candidates),
+			"registry_luids", len(physical))
 		return candidates
 	}
 	return kept
@@ -278,16 +259,12 @@ func selectPhysicalAdapters(candidates []adapterCandidate, physical map[uint64]s
 func physicalAdapterGate() map[uint64]struct{} {
 	physical, err := loadPhysicalAdapterLUIDs()
 	if err != nil {
-		if luidGateUnreadableWarned.CompareAndSwap(false, true) {
-			slog.Warn("DirectX registry LUID gate unavailable; RDP phantom clones may appear",
-				"err", err)
-		}
+		slog.Warn("DirectX registry LUID gate unavailable; RDP phantom clones may appear",
+			"err", err)
 		return nil
 	}
 	if len(physical) == 0 {
-		if luidGateEmptyWarned.CompareAndSwap(false, true) {
-			slog.Warn("DirectX registry listed no AdapterLuid values; skipping LUID gate")
-		}
+		slog.Warn("DirectX registry listed no AdapterLuid values; skipping LUID gate")
 		return nil
 	}
 	return physical

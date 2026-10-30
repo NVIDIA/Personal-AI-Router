@@ -308,14 +308,10 @@ func (c *statsCollector) runGPUInventory() {
 	defer c.wg.Done()
 	for attempts := 1; ; attempts++ {
 		if gpus := c.detect(); len(gpus) > 0 {
-			if attempts > 1 {
-				// The state this loop exists for: the host enumerated no
-				// adapter at startup and now has some.
-				slog.Info("GPU inventory recovered after an empty enumeration",
-					"adapters", len(gpus), "attempts", attempts)
-			} else {
-				slog.Debug("GPU inventory detected", "adapters", len(gpus))
-			}
+			// Recovery runs only after startup found no adapters, so even a
+			// successful first attempt repairs an empty startup inventory.
+			slog.Info("GPU inventory recovered after an empty enumeration",
+				"adapters", len(gpus), "attempts", attempts)
 			c.gpuInventory.Store(&gpus)
 			return
 		}

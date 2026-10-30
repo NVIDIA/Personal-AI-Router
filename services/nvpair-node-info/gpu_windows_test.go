@@ -76,23 +76,6 @@ func TestLuidUint64_CombinesHighAndLowParts(t *testing.T) {
 	test("signed high word", 0xffffffff, -1, 0xffffffffffffffff)
 }
 
-func TestKeepPhysicalAdapter_FiltersByPhysicalAdapterIdentity(t *testing.T) {
-	physical := map[uint64]struct{}{
-		0x1000: {},
-		0x2000: {},
-	}
-	test := func(name string, luid uint64, physical map[uint64]struct{}, want bool) {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, want, keepPhysicalAdapter(luid, physical))
-		})
-	}
-	test("nil map keeps all", 0x9999, nil, true)
-	test("empty map keeps all", 0x9999, map[uint64]struct{}{}, true)
-	test("listed LUID kept", 0x1000, physical, true)
-	test("unlisted LUID dropped", 0x9999, physical, false)
-	test("second listed LUID kept", 0x2000, physical, true)
-}
-
 // The whole-enumeration gate still drops a Remote Desktop phantom clone while
 // the registry knows the real card, and refuses to apply a registry that knows
 // none of the current adapters. That stale state at boot used to publish an
