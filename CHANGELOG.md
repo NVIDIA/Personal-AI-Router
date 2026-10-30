@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.8 — Removing a machine you added by address forgets it in the terminal interface (#172)
+
+- In the terminal interface, removing a cluster member that you added with `f` now also forgets its address, so it no longer reappears after a restart.
+
 ## 1.0.7 — Copy API endpoints with /v1 included (#185)
 
 - API endpoint URLs now include `/v1` when displayed or copied, so they can be pasted directly into Hermes and other clients that expect an OpenAI-compatible base URL.
