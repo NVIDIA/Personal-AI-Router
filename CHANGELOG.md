@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.9 — Quitting is prompt again (#137)
+
+- Quitting no longer stalls when an engine is running outside PAIR's control. The engine shutdown that runs on the way out was being performed twice, and the repeat cost about a second.
+
 ## 1.0.8 — Removing a machine you added by address forgets it in the terminal interface (#172)
 
 - In the terminal interface, removing a cluster member that you added with `f` now also forgets its address, so it no longer reappears after a restart.
