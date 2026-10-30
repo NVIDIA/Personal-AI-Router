@@ -4,9 +4,11 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1261,7 +1263,8 @@ func (v *nodesView) declineWaiting() []tea.Cmd {
 }
 
 // removeSelected drops the selected node's strongest relationship: cluster
-// membership if it is a member, otherwise the manual entry that added it.
+// membership if it is a member, along with the manual entry that added it,
+// otherwise that manual entry alone.
 func (v *nodesView) removeSelected() tea.Cmd {
 	row := v.selectedRow()
 	if row == nil {
@@ -1282,11 +1285,11 @@ func (v *nodesView) removeSelected() tea.Cmd {
 			row.name)
 		return nil
 
-	case row.manualID != "":
-		return call(v.client, "node/remove", map[string]string{"id": row.manualID},
-			func(_ *rpc.Message, err error) tea.Msg {
-				return nodeActionMsg{what: "remove manual entry " + row.name, err: err}
-			})
+	case len(row.manualIDs) > 0:
+		name, ids := row.name, row.manualIDs
+		return func() tea.Msg {
+			return nodeActionMsg{what: "remove manual entry " + name, err: forgetManualEntries(v.client, ids)}
+		}
 
 	default:
 		v.status.info("%s is only discovered - nothing to remove", row.name)
@@ -1358,17 +1361,23 @@ func (v *nodesView) handleInviteCancelled(msg inviteCancelledMsg) tea.Cmd {
 	return nil
 }
 
-// removeMember un-pairs a confirmed peer.
+// removeMember un-pairs a confirmed peer, then forgets every manual entry that
+// added it.
 //
 // Keyed by the stable nodeUuid rather than the display name: a member that
 // renamed its PC keeps its UUID, so matching on a possibly stale name would
 // silently fail. The row is looked up again by key so a list that re-sorted
 // between arming and confirming cannot redirect the removal at another node.
+//
+// The broker keeps manual entries on disk and re-adds them whenever it starts,
+// so one left behind brings the removed peer back as a manual row, here and in
+// the desktop app. They are forgotten only once the un-pairing succeeds: a peer
+// still in the cluster keeps the addresses that reach it.
 func (v *nodesView) removeMember(key string) tea.Cmd {
-	name := key
+	name, manualIDs := key, []string(nil)
 	for _, n := range v.all {
 		if n.key == key {
-			name = n.name
+			name, manualIDs = n.name, n.manualIDs
 			break
 		}
 	}
@@ -1377,8 +1386,29 @@ func (v *nodesView) removeMember(key string) tea.Cmd {
 	v.status.busy("removing %s from the cluster...", name)
 	return call(v.client, "nodes:remove", map[string]string{"nodeUuid": key},
 		func(_ *rpc.Message, err error) tea.Msg {
-			return nodeActionMsg{what: "remove " + name, err: err}
+			if err != nil {
+				return nodeActionMsg{what: "remove " + name, err: err}
+			}
+			// Still on the command's goroutine, so the follow-ups run in line.
+			if err := forgetManualEntries(v.client, manualIDs); err != nil {
+				return nodeActionMsg{what: "remove manual entry " + name, err: err}
+			}
+			return nodeActionMsg{what: "remove " + name}
 		})
+}
+
+// forgetManualEntries removes each manual entry in turn, stopping at the first
+// that fails. Each request gets its own callTimeout, as it would through call.
+func forgetManualEntries(client *rpc.Client, ids []string) error {
+	for _, id := range ids {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		_, err := client.Call(ctx, "node/remove", map[string]string{"id": id})
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // leaveCluster unjoins this node. The cluster-manager tears down local trust and
@@ -1444,9 +1474,9 @@ func (v *nodesView) followDetail() {
 			return
 		}
 	}
-	if id := v.detail.node.manualID; id != "" {
+	if ids := v.detail.node.manualIDs; len(ids) > 0 {
 		for _, n := range v.all {
-			if n.manualID == id {
+			if slices.Contains(n.manualIDs, ids[0]) {
 				v.detail.followNode(n, true)
 				return
 			}
