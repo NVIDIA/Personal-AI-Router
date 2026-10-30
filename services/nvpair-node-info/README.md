@@ -102,7 +102,7 @@ DXGI enumeration is filtered against the `AdapterLuid` values under `HKLM\SOFTWA
 
 If startup detection finds no adapter at all (a display driver that is not ready yet, or a failed DXGI factory), it is retried on its own goroutine, never on the 1 s stats tick. The retry runs **every 10 s until the first detection that returns at least one adapter**; that list is published once and the retry stops. Recovered adapters carry the same LUID key the PDH counters use, so their VRAM and utilization fill in on the next tick. A node that came up with an empty GPU list therefore repairs itself instead of needing a restart.
 
-There is deliberately no periodic refresh after that first publication. Windows reissues adapter LUIDs during a session (a driver update or restart, or a GPU timeout and recovery), the LUID is the key adapters are merged by, and a later re-detection would list the same physical card a second time under its new key. As a result, an adapter that first appears after a successful detection (a card hot-plugged later) is reported after the next service restart, not before.
+Recovery is skipped entirely when startup detection already found adapters. There is deliberately no periodic refresh after that first publication. Windows reissues adapter LUIDs during a session (a driver update or restart, or a GPU timeout and recovery), the LUID is the key adapters are merged by, and a later re-detection would list the same physical card a second time under its new key. As a result, an adapter that first appears after a successful detection (a card hot-plugged later) is reported after the next service restart, not before.
 
 ## Shutdown
 

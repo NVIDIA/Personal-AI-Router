@@ -93,12 +93,12 @@ func TestKeepPhysicalAdapter_FiltersByPhysicalAdapterIdentity(t *testing.T) {
 	test("second listed LUID kept", 0x2000, physical, true)
 }
 
-// TestSelectPhysicalAdapters covers the whole-enumeration gate: it still drops
-// an RDP phantom clone while the registry knows the real card, and it refuses
-// to apply a registry that knows none of them — the stale state a node is in
-// for the first minute after boot, which used to publish an empty GPU list
-// until the service was restarted.
-func TestSelectPhysicalAdapters(t *testing.T) {
+// The whole-enumeration gate still drops a Remote Desktop phantom clone while
+// the registry knows the real card, and refuses to apply a registry that knows
+// none of the current adapters. That stale state at boot used to publish an
+// empty GPU list until the service was restarted, even though DXGI (the Windows
+// graphics API) had found the adapters.
+func TestSelectPhysicalAdapters_FiltersOnlyWhenRegistryMatchesAdapters(t *testing.T) {
 	card := adapterCandidate{
 		gpu:  GPUInfo{Name: "Test Adapter", statsKey: "luid_card"},
 		luid: 0x1000,
@@ -109,97 +109,34 @@ func TestSelectPhysicalAdapters(t *testing.T) {
 	}
 	both := []adapterCandidate{card, clone}
 
-	cases := []struct {
-		name       string
-		candidates []adapterCandidate
-		physical   map[uint64]struct{}
-		want       []string
-	}{
-		{
-			name:       "gate keeps the listed subset",
-			candidates: both,
-			physical:   map[uint64]struct{}{0x1000: {}},
-			want:       []string{"luid_card"},
-		},
-		{
-			name:       "gate that would drop every adapter is skipped",
-			candidates: both,
-			physical:   map[uint64]struct{}{0x9999: {}, 0xaaaa: {}},
-			want:       []string{"luid_card", "luid_clone"},
-		},
-		{
-			name:       "nil map keeps all",
-			candidates: both,
-			physical:   nil,
-			want:       []string{"luid_card", "luid_clone"},
-		},
-		{
-			name:       "empty map keeps all",
-			candidates: both,
-			physical:   map[uint64]struct{}{},
-			want:       []string{"luid_card", "luid_clone"},
-		},
-		{
-			name:       "no candidates stays empty",
-			candidates: nil,
-			physical:   map[uint64]struct{}{0x1000: {}},
-			want:       nil,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var got []string
-			for _, c := range selectPhysicalAdapters(tc.candidates, tc.physical) {
-				got = append(got, c.gpu.statsKey)
-			}
-			if !slices.Equal(got, tc.want) {
-				t.Fatalf("selectPhysicalAdapters kept %v, want %v", got, tc.want)
-			}
+	test := func(name string, candidates []adapterCandidate, physical map[uint64]struct{}, want []adapterCandidate) {
+		t.Run(name, func(t *testing.T) {
+			// Keep inputs and expectations independent even when a case uses
+			// the same fixture for both, so an in-place change cannot mask a bug.
+			input := slices.Clone(candidates)
+			expected := slices.Clone(want)
+			assert.Equal(t, expected, selectPhysicalAdapters(input, physical))
 		})
 	}
+	test("gate keeps the listed subset", both, map[uint64]struct{}{0x1000: {}}, []adapterCandidate{card})
+	test("gate that would drop every adapter is skipped", both, map[uint64]struct{}{0x9999: {}, 0xaaaa: {}}, both)
+	test("all listed adapters are kept", both, map[uint64]struct{}{0x1000: {}, 0x2000: {}}, both)
+	test("nil map keeps all", both, nil, both)
+	test("empty map keeps all", both, map[uint64]struct{}{}, both)
+	t.Run("no candidates stays empty", func(t *testing.T) {
+		assert.Empty(t, selectPhysicalAdapters(nil, map[uint64]struct{}{0x1000: {}}))
+	})
 }
 
-// TestDetectGPUsLive runs only when NVPAIR_LIVE_GPU=1. On a real host,
-// detection must report at least one adapter, and handing the gate a registry
-// map that knows none of this boot's LUIDs — the literal stale-registry state
-// — must still return every adapter rather than none.
-func TestDetectGPUsLive(t *testing.T) {
+// This smoke test requires NVPAIR_LIVE_GPU=1 and a Windows host with GPUs.
+// Registry filtering scenarios are covered above with fixed adapter lists.
+func TestDetectGPUs_ReportsLiveAdapters(t *testing.T) {
 	if os.Getenv("NVPAIR_LIVE_GPU") == "" {
 		t.Skip("set NVPAIR_LIVE_GPU=1 to run against the host's GPUs")
 	}
 	gpus := detectGPUs()
-	if len(gpus) == 0 {
-		t.Fatal("detectGPUs reported no adapters on a host that has them")
-	}
+	require.NotEmpty(t, gpus, "detectGPUs reported no adapters on a host that has them")
 	for i, gpu := range gpus {
 		t.Logf("GPU %d: %s (%d MiB, %s)", i, gpu.Name, gpu.VramBytes/(1024*1024), gpu.statsKey)
-	}
-
-	candidates := enumerateAdapterCandidates()
-	t.Logf("enumerated %d candidate adapter(s), detection reported %d", len(candidates), len(gpus))
-	if len(candidates) < len(gpus) {
-		t.Fatalf("enumerated %d candidates but detection reported %d GPUs", len(candidates), len(gpus))
-	}
-
-	stale := make(map[uint64]struct{}, len(candidates))
-	for _, c := range candidates {
-		stale[^c.luid] = struct{}{}
-	}
-	kept := selectPhysicalAdapters(candidates, stale)
-	if len(kept) != len(candidates) {
-		t.Fatalf("a stale registry kept %d of %d adapters; the gate is not stale-safe",
-			len(kept), len(candidates))
-	}
-	for _, c := range kept {
-		t.Logf("stale-registry gate kept %s (%s)", c.gpu.Name, c.gpu.statsKey)
-	}
-
-	fresh := make(map[uint64]struct{}, len(candidates))
-	for _, c := range candidates {
-		fresh[c.luid] = struct{}{}
-	}
-	if got := selectPhysicalAdapters(candidates, fresh); len(got) != len(candidates) {
-		t.Fatalf("a registry holding this boot's LUIDs kept %d of %d adapters",
-			len(got), len(candidates))
 	}
 }

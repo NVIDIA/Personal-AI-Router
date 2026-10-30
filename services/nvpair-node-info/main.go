@@ -380,7 +380,7 @@ func main() {
 		log.Print("memory total detection returned no info")
 	}
 
-	collector := startStatsCollector()
+	collector := startStatsCollector(gpus)
 	defer collector.Stop()
 
 	// Where the reported cluster principal comes from is decided by the

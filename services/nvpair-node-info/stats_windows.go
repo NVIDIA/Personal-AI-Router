@@ -117,7 +117,7 @@ var (
 	procPdhGetFormattedCounterArrayW = modPDH.NewProc("PdhGetFormattedCounterArrayW")
 	procPdhCloseQuery                = modPDH.NewProc("PdhCloseQuery")
 
-	modKernel32             = windows.NewLazySystemDLL("kernel32.dll")
+	modKernel32              = windows.NewLazySystemDLL("kernel32.dll")
 	procGlobalMemoryStatusEx = modKernel32.NewProc("GlobalMemoryStatusEx")
 
 	// Per-counter "unavailable" latches. Set once on first
@@ -244,7 +244,7 @@ func newStatsCollector(detect func() []GPUInfo) *statsCollector {
 // no-op whose Snapshot() yields a zero statsSnapshot forever (and
 // memory-used still gets published every tick regardless of PDH
 // state, since it's a pure syscall).
-func startStatsCollector() *statsCollector {
+func startStatsCollector(startupGPUs []GPUInfo) *statsCollector {
 	c := newStatsCollector(detectGPUs)
 
 	pdhOK := c.open() == nil
@@ -264,13 +264,18 @@ func startStatsCollector() *statsCollector {
 
 	c.wg.Add(1)
 	go c.run()
-	c.startGPUInventory()
+	c.startGPUInventory(startupGPUs)
 	return c
 }
 
-// startGPUInventory launches the inventory recovery loop. Separate from
+// startGPUInventory launches recovery only when startup detection was empty.
+// Keeping a successful startup list avoids enumerating the same card again
+// under a reissued LUID and appending it as a duplicate. Separate from
 // startStatsCollector so a test can run this loop on its own.
-func (c *statsCollector) startGPUInventory() {
+func (c *statsCollector) startGPUInventory(startupGPUs []GPUInfo) {
+	if len(startupGPUs) > 0 {
+		return
+	}
 	c.wg.Add(1)
 	go c.runGPUInventory()
 }

@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unsafe"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,27 +76,31 @@ func testAdapter(name string, low uint32) GPUInfo {
 	return GPUInfo{Name: name, VramBytes: 8 << 30, statsKey: luidKey(low, 0)}
 }
 
-// startTestInventoryCollector runs only the inventory loop, at millisecond
-// cadence, with an injected detect function — no PDH query, no pollers.
-func startTestInventoryCollector(t *testing.T, detect func() []GPUInfo) *statsCollector {
+// startTestInventoryCollector runs only inventory recovery, with a supplied
+// startup list, retry interval, and detector — no performance-counter query or
+// stats ticker. This keeps the test's startup and timing conditions explicit.
+func startTestInventoryCollector(t *testing.T, startup []GPUInfo, retryEvery time.Duration, detect func() []GPUInfo) *statsCollector {
 	t.Helper()
 	c := newStatsCollector(detect)
-	c.inventoryRecoverEvery = time.Millisecond
-	c.startGPUInventory()
-	t.Cleanup(c.Stop)
+	c.inventoryRecoverEvery = retryEvery
+	c.startGPUInventory(startup)
+	t.Cleanup(func() { stopTestInventoryCollector(t, c) })
 	return c
 }
 
-func waitForStats(t *testing.T, what string, cond func() bool) {
+// Bound Stop itself so a shutdown regression cannot hang the test or cleanup.
+func stopTestInventoryCollector(t *testing.T, c *statsCollector) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	stopped := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not stop the GPU inventory collector")
 	}
-	t.Fatalf("timed out waiting for %s", what)
 }
 
 // waitForInventoryLoopExit fails the test when the inventory goroutine is still
@@ -114,76 +120,84 @@ func waitForInventoryLoopExit(t *testing.T, c *statsCollector) {
 	}
 }
 
-// TestWindowsCollectorRetriesEmptyGPUInventory is the defect this loop exists
-// for: adapter detection at boot came up empty (the DirectX registry still held
-// the previous boot's LUIDs, or the display driver was not ready) and nothing
-// ever looked again, so the node served an empty GPU list until it was
-// restarted. An empty detection is retried until adapters appear, and no
-// detection is spent after the one that found them.
-func TestWindowsCollectorRetriesEmptyGPUInventory(t *testing.T) {
+// Adapter detection at boot can come up empty while the display driver is not
+// ready. Previously nothing looked again, so the node served an empty GPU list
+// until the service was restarted. Empty detections must be retried until
+// adapters appear, with no further detection after the first successful list
+// has been published.
+func TestWindowsCollector_RetriesUntilGPUInventoryIsAvailable(t *testing.T) {
 	const emptyDetections = 3
 	recovered := []GPUInfo{
 		testAdapter("Test Adapter A", 0x54f0),
 		testAdapter("Test Adapter B", 0x6a10),
 	}
 	var calls atomic.Int64
-	c := startTestInventoryCollector(t, func() []GPUInfo {
+	c := startTestInventoryCollector(t, nil, time.Millisecond, func() []GPUInfo {
 		if calls.Add(1) <= emptyDetections {
 			return nil
 		}
 		return recovered
 	})
 
-	waitForStats(t, "the recovered inventory", func() bool {
-		return len(c.Snapshot().GPUInventory) == len(recovered)
-	})
 	// Count only once the loop has exited, so a loop that kept detecting
 	// fails here instead of racing the read below.
 	waitForInventoryLoopExit(t, c)
 
-	if got := calls.Load(); got != emptyDetections+1 {
-		t.Fatalf("detect ran %d times, want %d empty detections and the one that found the adapters",
-			got, emptyDetections+1)
-	}
-	inventory := c.Snapshot().GPUInventory
-	for i, want := range recovered {
-		if inventory[i].Name != want.Name || inventory[i].statsKey != want.statsKey {
-			t.Fatalf("GPUInventory[%d] = %+v, want %+v", i, inventory[i], want)
-		}
-	}
+	require.Equal(t, int64(emptyDetections+1), calls.Load(), "empty attempts plus the successful detection")
+	require.Equal(t, recovered, c.Snapshot().GPUInventory)
 }
 
-// TestWindowsCollectorStopsRetryingWhenStopped covers the other way out of the
-// loop: a service shutting down while the inventory is still empty must not
-// wait for an adapter that never arrives.
-func TestWindowsCollectorStopsRetryingWhenStopped(t *testing.T) {
-	var calls atomic.Int64
-	c := startTestInventoryCollector(t, func() []GPUInfo {
-		calls.Add(1)
-		return nil
+// Shutdown is the other way out of the retry loop: a service stopping while
+// the inventory is still empty must not wait for an adapter that never arrives.
+// A long retry interval makes waiting for the next attempt exceed the shutdown
+// deadline. synctest's fake clock and Wait put the loop at its pending timer
+// before Stop is called, without spending real time waiting for that timer.
+func TestWindowsCollector_InterruptsInventoryRetryWaitWhenStopped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int64
+		c := startTestInventoryCollector(t, nil, time.Hour, func() []GPUInfo {
+			calls.Add(1)
+			return nil
+		})
+		synctest.Wait()
+		require.Equal(t, int64(1), calls.Load(), "the collector should be waiting for its next attempt")
+
+		stopTestInventoryCollector(t, c)
+		assert.Empty(t, c.Snapshot().GPUInventory, "a loop that never found an adapter must not publish inventory")
 	})
-	waitForStats(t, "a second empty detection", func() bool { return calls.Load() >= 2 })
-
-	c.Stop()
-	waitForInventoryLoopExit(t, c)
-	if inventory := c.Snapshot().GPUInventory; len(inventory) != 0 {
-		t.Fatalf("a loop that never found an adapter published %+v", inventory)
-	}
 }
 
-// TestWindowsCollectorStopsDetectingOncePublished pins the property that keeps
-// one physical card from being listed twice. Windows reissues adapter LUIDs
-// mid-session (driver update, restart, GPU timeout and recovery), and
-// mergeGPUInventory appends any adapter whose statsKey it has not seen. A loop
-// that kept re-detecting after its first publication would therefore add the
-// same card again under its new LUID. After the first non-empty detection the
-// loop must publish that list once, exit, and never call detect again, even
-// though a later enumeration would report a different LUID.
-func TestWindowsCollectorStopsDetectingOncePublished(t *testing.T) {
+// main detects the startup inventory before starting the stats collector. If
+// that detection succeeded, recovery must not enumerate again: a driver reset
+// between the two calls could otherwise report the same physical card with a
+// new identifier, which the response builder would append as a second GPU.
+func TestWindowsCollector_KeepsStartupGPUWithoutDetectingItsReissuedIdentifier(t *testing.T) {
+	startup := []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}
+	reissued := testAdapter("Test Adapter A", 0x7c20)
+	var calls atomic.Int64
+	c := startTestInventoryCollector(t, startup, time.Millisecond, func() []GPUInfo {
+		calls.Add(1)
+		return []GPUInfo{reissued}
+	})
+	waitForInventoryLoopExit(t, c)
+
+	assert.Zero(t, calls.Load(), "a populated startup inventory should prevent further detection")
+	var response NodeInfoResponse
+	require.NoError(t, json.Unmarshal(buildResponse(startup, nil, 0, c.Snapshot(), "host-uuid", nil), &response))
+	assert.Equal(t, []GPUInfo{{Name: "Test Adapter A", VramBytes: 8 << 30}}, response.GPUs)
+}
+
+// Stopping after the first publication keeps one physical card from being
+// listed twice. Windows can reissue adapter identifiers (LUIDs) during a driver
+// update, driver restart, or GPU timeout and recovery. mergeGPUInventory appends
+// any adapter whose statsKey it has not seen, so detecting again could add the
+// same card under its new identifier. The loop must publish once and exit even
+// though a later enumeration would report that new identifier.
+func TestWindowsCollector_StopsDetectingAfterFirstPublication(t *testing.T) {
 	original := testAdapter("Test Adapter A", 0x54f0)
 	reissued := testAdapter("Test Adapter A", 0x7c20) // same card, LUID reissued
 	var calls atomic.Int64
-	c := startTestInventoryCollector(t, func() []GPUInfo {
+	c := startTestInventoryCollector(t, nil, time.Millisecond, func() []GPUInfo {
 		if calls.Add(1) == 1 {
 			return []GPUInfo{original}
 		}
@@ -191,56 +205,35 @@ func TestWindowsCollectorStopsDetectingOncePublished(t *testing.T) {
 	})
 
 	waitForInventoryLoopExit(t, c)
-	published := c.gpuInventory.Load()
-
-	// Let many more retry intervals pass; the call count must not move.
-	time.Sleep(10 * c.inventoryRecoverEvery)
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("detect ran %d times, want exactly the one that found the adapter", got)
-	}
-	if c.gpuInventory.Load() != published {
-		t.Fatal("the published inventory was replaced after the loop finished")
-	}
-	inventory := c.Snapshot().GPUInventory
-	if len(inventory) != 1 || inventory[0].statsKey != original.statsKey {
-		t.Fatalf("GPUInventory = %+v, want only the adapter under its original LUID key %s",
-			inventory, original.statsKey)
-	}
+	require.Equal(t, int64(1), calls.Load(), "only the first detection should run")
+	require.Equal(t, []GPUInfo{original}, c.Snapshot().GPUInventory)
 }
 
-// TestWindowsCollectorRecoveredAdapterPicksUpDynamicStats checks the join the
-// recovery relies on: the PDH decoders key every adapter they see by the same
-// LUID instance name, whether or not the startup enumeration knew about it, so
-// an adapter recovered into the inventory is listed by buildResponse with its
-// dynamic numbers.
-func TestWindowsCollectorRecoveredAdapterPicksUpDynamicStats(t *testing.T) {
+// Recovered adapters and dynamic readings are published independently. Windows
+// performance counters key GPU readings by the same adapter identifier used in
+// the inventory, so the response builder can attach readings to a recovered GPU.
+// Snapshot must supply both publications together without losing GPU readings,
+// their collection timestamp, or CPU and memory readings. Seed the collector's
+// stats before taking the snapshot so this checks the combination itself. The
+// response builder's matching of readings to adapters is covered in stats_test.go.
+func TestWindowsCollectorSnapshot_PreservesStatsWhenAddingRecoveredInventory(t *testing.T) {
 	recovered := []GPUInfo{
 		testAdapter("Test Adapter A", 0x54f0),
 		testAdapter("Test Adapter B", 0x6a10),
 	}
-	c := startTestInventoryCollector(t, func() []GPUInfo { return recovered })
-	waitForStats(t, "the recovered inventory", func() bool {
-		return len(c.Snapshot().GPUInventory) == len(recovered)
-	})
+	c := startTestInventoryCollector(t, nil, time.Millisecond, func() []GPUInfo { return recovered })
+	latest := statsSnapshot{
+		GPU: map[string]gpuStat{
+			recovered[1].statsKey: {VRAMUsed: 1 << 30, UtilizationPct: 42},
+		},
+		GPUSampledAt: time.Time{}.Add(time.Second),
+		CPUUtilPct:   17,
+		MemUsedBytes: 6 << 30,
+	}
+	c.latest.Store(&latest)
+	waitForInventoryLoopExit(t, c)
 
-	snap := c.Snapshot()
-	snap.GPU = map[string]gpuStat{
-		recovered[1].statsKey: {VRAMUsed: 1 << 30, UtilizationPct: 42},
-	}
-	var got struct {
-		GPUs []GPUInfo `json:"GPUs"`
-	}
-	if err := json.Unmarshal(buildResponse(nil, nil, 0, snap, "host-uuid", nil), &got); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if len(got.GPUs) != 2 {
-		t.Fatalf("response listed %d GPUs: %+v", len(got.GPUs), got.GPUs)
-	}
-	if got.GPUs[0].Name != "Test Adapter A" || got.GPUs[0].VramBytes != 8<<30 {
-		t.Fatalf("first GPU = %+v", got.GPUs[0])
-	}
-	if got.GPUs[1].VramUsedBytes != 1<<30 ||
-		got.GPUs[1].UtilizationPercent != 42 {
-		t.Fatalf("recovered adapter did not pick up its dynamic stats: %+v", got.GPUs[1])
-	}
+	want := latest
+	want.GPUInventory = recovered
+	require.Equal(t, want, c.Snapshot())
 }
