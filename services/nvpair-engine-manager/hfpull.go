@@ -18,6 +18,11 @@ import (
 	"time"
 )
 
+// The download itself is done by Hugging Face's own `hf` CLI, which ships with
+// the huggingface_hub package vLLM depends on, so it writes the cache exactly as
+// vLLM reads it. This file only chooses the files to fetch, reports progress and
+// stops a download that stalls.
+
 // hfAPIBase is the Hugging Face model API. A variable so tests can point it at
 // a local server.
 var hfAPIBase = hfModelsAPI

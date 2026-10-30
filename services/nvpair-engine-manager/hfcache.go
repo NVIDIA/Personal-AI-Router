@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 // hfCacheModel is one usable model found in a Hugging Face hub cache. Size is
@@ -33,7 +36,7 @@ var hfTokenizerFiles = []string{"tokenizer.json", "tokenizer_config.json", "toke
 
 // hfShardRe matches the shard names Hugging Face repos use when they carry no
 // index file, such as model-00003-of-00004.safetensors.
-var hfShardRe = regexp.MustCompile(`^.+-(\d+)-of-(\d+)\.(?:safetensors|bin)$`)
+var hfShardRe = regexp.MustCompile(`-(\d+)-of-(\d+)\.(?:safetensors|bin)$`)
 
 // runHFCacheAction lists the models in act.HFCache.Dir. It needs no running
 // engine, so the list is available while the engine is stopped.
@@ -201,9 +204,11 @@ func hfWeightsComplete(snapshot string, files map[string]int64, weights []string
 		total = count
 		seen[n] = true
 	}
-	if total == 0 || len(seen) != total {
+	if total == 0 {
 		return false
 	}
+	// Shard numbers come from file names, so count alone is not enough:
+	// -00000-of-00002 and -00001-of-00002 are two files with shard 2 missing.
 	for n := 1; n <= total; n++ {
 		if !seen[n] {
 			return false
@@ -222,9 +227,11 @@ func hasAny(files map[string]int64, names []string) bool {
 }
 
 // deleteHFModel removes one model's repository folder from the hub cache, and
-// its download locks. The model the engine is serving, or will serve at its next
-// start, is refused: deleting it would break the running engine, or make the next
-// start download the model again without being asked.
+// its download locks. The model an engine process is serving is refused, since
+// the engine would download it again on its next start. The model a stopped or
+// ejected engine is set to serve is deleted and taken out of its launch
+// arguments, so the engine has no model selected and will not start until one
+// is loaded.
 func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Model string `json:"model"`
@@ -237,9 +244,6 @@ func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) 
 	if err != nil {
 		return nil, fmt.Errorf("delete: cannot tell which model %s is set to serve, so nothing was deleted: %w", engine, err)
 	}
-	if served == id {
-		return nil, fmt.Errorf("delete: %s is the model %s is set to serve; switch to another model first", id, engine)
-	}
 	name := "models--" + strings.ReplaceAll(id, "/", "--")
 	repo := filepath.Join(hubDir, name)
 	if rel, err := filepath.Rel(hubDir, repo); err != nil || rel != name {
@@ -248,6 +252,12 @@ func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) 
 	if _, err := os.Stat(repo); err != nil {
 		return nil, fmt.Errorf("delete: %s is not in the model cache", id)
 	}
+	reselect := func() {}
+	if served == id {
+		if reselect, err = e.unselectModel(engine, id); err != nil {
+			return nil, err
+		}
+	}
 	// Recent Hugging Face tooling keeps large files in one store shared by every
 	// repo, hub/blobs/<xx>/<hash>, and leaves symlinks in each repo's own blobs
 	// directory. Removing the repo alone would leave the weights behind, using the
@@ -255,6 +265,7 @@ func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) 
 	shared := sharedHFBlobs(hubDir, repo)
 	freed := hfBlobBytes(repo)
 	if err := os.RemoveAll(repo); err != nil {
+		reselect()
 		return nil, fmt.Errorf("delete %s: %w", id, err)
 	}
 	_ = os.RemoveAll(filepath.Join(hubDir, ".locks", name))
@@ -326,10 +337,58 @@ func removeUnreferencedHFBlobs(hubDir string, candidates []string) int64 {
 	return freed
 }
 
+// unselectModel takes the model flag out of a stopped engine's saved launch
+// arguments, and returns a function that puts it back. An engine whose process
+// is serving the model is refused. One ejected behind its gateway is on with no
+// process and nothing loaded, so it is stopped first: with no model selected it
+// could not load anything again.
+func (e *Executor) unselectModel(engine, id string) (reselect func(), err error) {
+	st, err := e.state(engine)
+	if err != nil {
+		return nil, err
+	}
+	refused := fmt.Errorf("delete: %s is the model %s is serving; eject it or load another model first", id, engine)
+	state, err := e.LaunchSettings(engine)
+	if err != nil {
+		return nil, err
+	}
+	if state.Running {
+		if status, _ := e.Status(engine); !status.Idle {
+			return nil, refused
+		}
+		if err := e.Stop(engine); err != nil {
+			return nil, fmt.Errorf("delete: stop %s before removing its model: %w", engine, err)
+		}
+		if state, err = e.LaunchSettings(engine); err != nil {
+			return nil, err
+		}
+	}
+	flag := modelLaunchFlag(st.manifest)
+	if state.Running || flag == "" || !state.Editable {
+		return nil, refused
+	}
+	text, _, err := withoutLaunchFlag(state.LaunchText, flag)
+	if err != nil {
+		return nil, err
+	}
+	save := func(launchText string) error {
+		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{
+			Engine:   engine,
+			Settings: settings.Config{ServerPort: state.ServerPort, LaunchText: launchText},
+		}, func() error { return nil })
+		return err
+	}
+	if err := save(text); err != nil {
+		return nil, fmt.Errorf("delete: could not clear %s from the launch settings of %s: %w", id, engine, err)
+	}
+	return func() { _ = save(state.LaunchText) }, nil
+}
+
 // servedModel returns the model the engine is set to serve, from its effective
-// launch arguments. It fails when that cannot be determined, so a caller that
-// must not touch the served model fails closed. The engine's binary is detected
-// first, because the launch cannot be resolved before that.
+// launch arguments, or "" when they name none. It fails when that cannot be
+// determined, so a caller that must not touch the served model fails closed.
+// The engine's binary is detected first, because the launch cannot be resolved
+// before that.
 func (e *Executor) servedModel(engine string) (string, error) {
 	state, err := e.LaunchSettings(engine)
 	if err != nil {
@@ -347,9 +406,6 @@ func (e *Executor) servedModel(engine string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model, ok := launchFlagValue(tokens, "--model")
-	if !ok || model == "" {
-		return "", fmt.Errorf("the launch arguments name no --model")
-	}
+	model, _ := launchFlagValue(tokens, "--model")
 	return model, nil
 }

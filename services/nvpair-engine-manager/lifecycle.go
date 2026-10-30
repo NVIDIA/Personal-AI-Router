@@ -183,6 +183,14 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
+	// An engine whose model is a launch argument cannot start without one. vLLM
+	// would serve, and first download, a default model of its own instead.
+	if flag := modelLaunchFlag(st.manifest); flag != "" {
+		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
+		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
+			return fmt.Errorf("%s has no model selected; load a model to start it", st.manifest.DisplayName)
+		}
+	}
 	vars := st.pathVars()
 	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
 	vars["port"] = strconv.Itoa(port)

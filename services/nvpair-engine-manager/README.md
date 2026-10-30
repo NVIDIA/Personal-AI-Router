@@ -54,13 +54,20 @@ or delete API of its own, so the manifest provides them as manager actions:
 `load_model`, `unload_model`, `pull_model`, `delete_model` and the idle-limit
 actions, described below.
 
-The default launch serves `Qwen/Qwen2.5-0.5B-Instruct` through
-`--model <hugging-face-id>`; edit that argument to serve another model. Only
+The default launch serves `Qwen/Qwen3.5-4B` through `--model <hugging-face-id>`.
+The model thinks before it answers, and with no `--reasoning-parser` in the launch
+that reasoning arrives in the reply ahead of the answer; adding
+`--reasoning-parser qwen3` in the launch settings moves it to
+`reasoning_content`. The model is about 9.3 GB of weights, so the default needs a GPU with at least 16 GB of
+memory; on a smaller GPU, download and load a smaller model before starting.
+Edit the `--model` argument, or use `load_model`, to serve another model. Only
 `--host` and `--port` are managed controls, and there is no CORS control.
 The context window and GPU share are chosen automatically at every start
 (`auto_launch`, kind `hf_context`), not pinned in the saved launch. The manager
 reads the model's `config.json` from the Hugging Face cache and the free GPU
-memory, then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
+memory (`nvidia-smi`; on a unified-memory machine such as DGX Spark, where it
+reports `[N/A]`, the total and available system memory from `/proc/meminfo`),
+then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
 model with a larger window is capped there, and a smaller one is shrunk to what
 fits), a YaRN `--hf-overrides` when the model's own window is below 64K (for
 example Qwen3-8B, which stops at 40,960), and a `--gpu-memory-utilization` just
@@ -175,13 +182,18 @@ not stopped, so the next request tries again. Reads such as `/health` and
 
 `unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops its process, which frees all of its GPU memory, while the gateway and the engine stay ON (an engine with no gateway is stopped) and the saved model choice is kept; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 
-`delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model vLLM is set to serve, running or not, is refused so a switch has to come first.
+`delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model a vLLM process is serving is refused. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments (an ejected engine is stopped first), and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one.
 
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not
 GGUF, ONNX, pickle copies of weights that also exist as safetensors, or a
-duplicate consolidated file), and runs the `hf` tool that ships beside `vllm` in
-the engine's virtualenv to download them into the hub cache. Progress is the
+duplicate consolidated file, or `original/` checkpoints), and runs the `hf` tool
+that ships beside `vllm` in the engine's virtualenv to download them into the hub
+cache. Like the other engines' pulls (one Ollama tag, one llama.cpp
+quantization), it downloads what the engine loads, not the whole repository: the
+same set vLLM fetches when it downloads a model itself. Other formats in the
+repository are not fetched; a full `hf download` adds them to the same cache
+without downloading the rest again. Progress is the
 share of those bytes that has landed in the cache, a download that makes no
 progress for the pull timeout is abandoned, and a cancelled one is stopped. It
 needs no running engine. A gated repo needs its terms accepted and `HF_TOKEN`
@@ -195,7 +207,7 @@ Python 3.12, creates `{install_dir}/venv` and installs a pinned `vllm` wheel fro
 PyPI. No source build happens. The pinned wheel is a CUDA 13 build, so the install
 first checks that `nvidia-smi` exists, that the driver supports CUDA 13 or newer
 (it reads either the `CUDA UMD Version` or the older `CUDA Version` field), and
-that at least 15 GB of disk is free. It fails with a clear message otherwise,
+that at least 25 GB of disk is free, enough for the engine and its default model. It fails with a clear message otherwise,
 before downloading anything. The
 download is several GB, because `torch` and the CUDA libraries come with it.
 Model weights download from Hugging Face on first start into `~/.cache/huggingface`

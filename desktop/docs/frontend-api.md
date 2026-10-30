@@ -106,7 +106,8 @@ again. An engine status with `idle: true` is on with nothing loaded, and loads o
 the next request; `setModelExpiry` on vLLM sets how long it may sit idle before it
 unloads (1 minute to 1 hour, or never). Its model
 list is the Hugging Face cache, which stays available while the engine is stopped, `deleteModel` removes a cached model (not the one
-it is set to serve), `pullModel` downloads a Hugging Face repo into
+loaded in vLLM; deleting an ejected or stopped vLLM's model leaves it with no model
+selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo into
 that cache (no running engine needed), and `loadModel` on a cached model switches
 the served model by restarting vLLM on it.
 `searchHub(engineType, query?)` serves Ollama's locked local catalog and cached

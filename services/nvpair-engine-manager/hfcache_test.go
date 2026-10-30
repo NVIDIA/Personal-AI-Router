@@ -93,6 +93,10 @@ func TestScanHFCacheListsCompleteModelsOnly(t *testing.T) {
 	writeHFRepo(t, cache, "Qwen/partial-numbered", llmFiles(map[string]string{
 		"model-00001-of-00004.safetensors": "a", "model-00002-of-00004.safetensors": "b", "model-00004-of-00004.safetensors": "d",
 	}))
+	// Two files for a two-shard model, but numbered from zero, so shard 2 is missing.
+	writeHFRepo(t, cache, "Qwen/misnumbered-shards", llmFiles(map[string]string{
+		"model-00000-of-00002.safetensors": "a", "model-00001-of-00002.safetensors": "b",
+	}))
 	writeHFRepo(t, cache, "Qwen/unnumbered-shards-no-index", llmFiles(map[string]string{
 		"layers-0.safetensors": "a", "layers-1.safetensors": "b",
 	}))
@@ -210,7 +214,7 @@ func TestDeleteHFModel(t *testing.T) {
 		return e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 	}
 
-	if _, err := del("org/served"); err == nil || !strings.Contains(err.Error(), "switch to another model first") {
+	if _, err := del("org/served"); err == nil || !strings.Contains(err.Error(), "or load another model first") {
 		t.Fatalf("the model being served must be refused: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cache, "models--org--served")); err != nil {
@@ -237,6 +241,44 @@ func TestDeleteHFModel(t *testing.T) {
 	}
 }
 
+// A stopped engine's model can be deleted. The engine is then left with no model
+// selected, so it refuses to start rather than download one, until a model is
+// loaded.
+func TestDeleteHFModel_LeavesAStoppedEngineWithNoModelSelected(t *testing.T) {
+	cache := t.TempDir()
+	e := switchModelExecutor(t, "--model")
+	if _, err := loadModel(t, e, "org/served"); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	m, _ := e.reg.Get("fake")
+	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true}}
+	writeHFRepo(t, cache, "org/served", llmFiles(map[string]string{"model.safetensors": "w"}))
+	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "w"}))
+	if err := e.Stop("fake"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	if _, err := e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`)); err != nil {
+		t.Fatalf("deleting the model of a stopped engine: %v", err)
+	}
+	if ids := scannedIDs(t, cache); !slices.Equal(ids, []string{"org/other"}) {
+		t.Fatalf("remaining models = %v", ids)
+	}
+	if text := launchTextOf(t, e); strings.Contains(text, "--model") {
+		t.Fatalf("launch text still names a model: %q", text)
+	}
+
+	if err := e.Start(context.Background(), "fake"); err == nil || !strings.Contains(err.Error(), "no model selected") {
+		t.Fatalf("start with no model selected = %v, want a no-model error", err)
+	}
+	if _, err := loadModel(t, e, "org/other"); err != nil {
+		t.Fatalf("loading another model: %v", err)
+	}
+	if state, err := e.LaunchSettings("fake"); err != nil || !state.Running {
+		t.Fatalf("after load: running=%v err=%v", state.Running, err)
+	}
+}
+
 // With the bundled manifest and no saved settings the served model is the
 // default launch's, even in a manager that has not been asked about the engine
 // yet. Deleting also fails closed, rather than assuming nothing is served, when
@@ -249,7 +291,7 @@ func TestDeleteHFModelRefusesTheBundledDefaultModel(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	cache := filepath.Join(home, ".cache", "huggingface", "hub")
-	writeHFRepo(t, cache, "Qwen/Qwen2.5-0.5B-Instruct", llmFiles(map[string]string{"model.safetensors": "w"}))
+	writeHFRepo(t, cache, "Qwen/Qwen3.5-4B", llmFiles(map[string]string{"model.safetensors": "w"}))
 	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "w"}))
 
 	reg := loadWithOverrides(t, t.TempDir())
@@ -259,11 +301,11 @@ func TestDeleteHFModelRefusesTheBundledDefaultModel(t *testing.T) {
 		return err
 	}
 
-	// The bundled default launch serves Qwen/Qwen2.5-0.5B-Instruct.
-	if err := act("Qwen/Qwen2.5-0.5B-Instruct"); err == nil {
+	// The bundled default launch serves Qwen/Qwen3.5-4B.
+	if err := act("Qwen/Qwen3.5-4B"); err == nil {
 		t.Fatal("the default served model was deleted by a manager that had not detected the engine")
 	}
-	if _, err := os.Stat(filepath.Join(cache, "models--Qwen--Qwen2.5-0.5B-Instruct")); err != nil {
+	if _, err := os.Stat(filepath.Join(cache, "models--Qwen--Qwen3.5-4B")); err != nil {
 		t.Fatal("the served model is gone from the cache")
 	}
 	if err := act("org/other"); err != nil {

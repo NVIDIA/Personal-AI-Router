@@ -789,6 +789,42 @@ func TestEjectUnloadsButKeepsTheEngineOn(t *testing.T) {
 	}
 }
 
+// Eject leaves an engine behind its gateway on with nothing loaded. Deleting the
+// model it is set to serve then stops it and leaves it with no model selected,
+// rather than being refused as if the model were still loaded.
+func TestDeleteAfterEject_StopsTheEngineAndUnselectsTheModel(t *testing.T) {
+	e, _, _ := frontExecutor(t, 0)
+	m, _ := e.reg.Get("fronted")
+	cache := m.Actions["list_models"].HFCache.Dir
+	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true}}
+	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {
+		t.Fatal(err)
+	}
+	del := func() error {
+		_, err := e.Action(context.Background(), "fronted", "delete_model", []byte(`{"model":"org/m"}`))
+		return err
+	}
+	if err := del(); err == nil || !strings.Contains(err.Error(), "eject it or load another model first") {
+		t.Fatalf("deleting the loaded model = %v, want it refused", err)
+	}
+
+	if _, err := e.Action(context.Background(), "fronted", "unload_model", []byte(`{"model":"org/m"}`)); err != nil {
+		t.Fatalf("eject: %v", err)
+	}
+	if err := del(); err != nil {
+		t.Fatalf("deleting the ejected model: %v", err)
+	}
+	if st, _ := e.Status("fronted"); st.Running {
+		t.Fatalf("status = %+v, want the engine stopped once its model is gone", st)
+	}
+	if text := launchTextOfEngine(t, e, "fronted"); strings.Contains(text, "--model") {
+		t.Fatalf("launch text still names a model: %q", text)
+	}
+	if ids := scannedIDs(t, cache); slices.Contains(ids, "org/m") {
+		t.Fatalf("org/m is still in the cache: %v", ids)
+	}
+}
+
 func TestIdleEngineStillAdvertisesItsModel(t *testing.T) {
 	e, _, backend := frontExecutor(t, 0)
 	if err := e.StartWith(context.Background(), "fronted", startOpts{Eager: true}); err != nil {

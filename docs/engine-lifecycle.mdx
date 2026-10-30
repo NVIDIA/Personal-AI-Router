@@ -95,18 +95,21 @@ When you install an engine, consider the following:
   Otherwise PAIR downloads a checksum-pinned `uv`, creates a private Python
   environment and installs a pinned vLLM release into it. On Linux this is
   several GiB because it includes PyTorch and the CUDA libraries, and PAIR first
-  checks for an NVIDIA driver that supports CUDA 13 or newer and about 15 GB of
-  free disk. On macOS it installs checksum-pinned vLLM and vLLM-Metal wheels and
-  needs about 10 GB of free disk. Either way PAIR stops with a clear message if a
+  checks for an NVIDIA driver that supports CUDA 13 or newer and about 25 GB of
+  free disk, enough for the engine and its default model. On macOS it installs
+  checksum-pinned vLLM and vLLM-Metal wheels and needs about 20 GB of free disk. Either way PAIR stops with a clear message if a
   requirement is missing.
-  Nothing is compiled. vLLM serves a single model per process. Its model list
+  Nothing is compiled. vLLM serves a single model per process. Until you choose
+  one it serves Qwen3.5-4B, downloaded on the first start (about 9.3 GB, and a GPU
+  with at least 16 GB of memory); on a smaller GPU, add and load a smaller model
+  first. Its model list
   shows the complete text models already in your Hugging Face cache
   (`~/.cache/huggingface`), and **Load** on one of them switches vLLM to it by
   restarting the engine, which takes as long as the model needs to load; if the
   new model does not start, the previous one is restored. **Add model** browses
   and searches Hugging Face (open safetensors chat models) and downloads the one
   you pick into the same cache, with a progress bar, even while vLLM is stopped;
-  it then appears in the list. **Delete** removes a cached model from disk, except the one vLLM is set to serve (switch first). **Start** brings vLLM up idle, with nothing loaded, as Ollama and llama.cpp
+  it then appears in the list. **Delete** removes a cached model from disk, except the one vLLM has loaded (eject it first). Deleting the model a stopped or ejected vLLM is set to serve leaves it with no model selected, and **Start** refuses with an error until you **Load** another model. **Start** brings vLLM up idle, with nothing loaded, as Ollama and llama.cpp
   start a server: it takes about a second and the card reads "Idle · loads on next
   request". The model loads when the first request arrives (the request waits for
   it, about 25 seconds for an 8B model) or when you press **Load**, and the same

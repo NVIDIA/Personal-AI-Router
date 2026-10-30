@@ -313,3 +313,38 @@ func TestParsesToolCalls_NeedsBothFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestParseGPUMemory_ReadsADiscreteGPUAndFallsBackOnUnifiedMemory(t *testing.T) {
+	system := func() (int64, int64, bool) { return 128 * gib, 100 * gib, true }
+	for _, tc := range []struct {
+		name        string
+		out         string
+		total, free int64
+		ok          bool
+	}{
+		{"discrete GPU, in MiB", "49140, 48600\n", 49140 << 20, 48600 << 20, true},
+		{"first GPU of several", "24576, 20000\n49140, 48600\n", 24576 << 20, 20000 << 20, true},
+		{"DGX Spark reports N/A", "[N/A], [N/A]\n", 128 * gib, 100 * gib, true},
+		{"not supported", "[Not Supported], [Not Supported]\n", 128 * gib, 100 * gib, true},
+		{"malformed", "error\n", 0, 0, false},
+		{"empty", "", 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			total, free, ok := parseGPUMemory(tc.out, system)
+			if total != tc.total || free != tc.free || ok != tc.ok {
+				t.Fatalf("parseGPUMemory(%q) = %d, %d, %v; want %d, %d, %v", tc.out, total, free, ok, tc.total, tc.free, tc.ok)
+			}
+		})
+	}
+}
+
+func TestParseMeminfo_ReadsTotalAndAvailable(t *testing.T) {
+	text := "MemTotal:       130567000 kB\nMemFree:         2000000 kB\nMemAvailable:   104000000 kB\nBuffers:          100 kB\n"
+	total, available, ok := parseMeminfo(text)
+	if !ok || total != 130567000*1024 || available != 104000000*1024 {
+		t.Fatalf("parseMeminfo = %d, %d, %v", total, available, ok)
+	}
+	if _, _, ok := parseMeminfo("MemTotal: 100 kB\n"); ok {
+		t.Fatal("a reading without MemAvailable must not count as known")
+	}
+}

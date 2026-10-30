@@ -199,7 +199,9 @@ unloads it on demand while the engine stays on; the card shows an idle engine
 as "Idle · loads on next request" (`idle` on the engine status). Its model list
 (`list_models` on disk) is kept while stopped. It downloads and deletes
 through the shared Hugging Face cache (`pull_model` is an `hf_pull` action,
-`delete_model` an `hf_cache` delete that refuses the model it is set to serve),
+`delete_model` an `hf_cache` delete that refuses the model an engine process
+serves and, on an ejected or stopped engine, also clears it from the launch
+arguments),
 and has a Hugging Face catalog. Load switches the served model through `load_model` (a
 `launch_model` action): it saves `--model <id>` into the launch arguments and
 restarts the engine, restoring the previous model if the new one does not start.

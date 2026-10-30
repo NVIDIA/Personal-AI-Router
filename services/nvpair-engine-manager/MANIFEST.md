@@ -272,9 +272,12 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   path or a shell fragment is refused), writes it into the saved launch
   settings exactly as the settings editor would, and restarts a running engine
   on it. If the new model does not come up, the previous one is restored and the
-  error says so; a stopped engine only has its saved launch changed, and asking
-  for the model already in the launch arguments restarts nothing. Requires
-  `runtime.editable_launch` and `runtime.ready` on every platform.
+  error says so; a stopped engine is started on it, and asking a running engine
+  for the model already in the launch arguments restarts nothing. An engine
+  with a `launch_model` action will not start while its launch arguments lack
+  the flag: it has no model selected, and refusing beats letting the engine
+  pick and download a default of its own. Requires `runtime.editable_launch`
+  and `runtime.ready` on every platform.
 
 An optional **`result`** declares how `engine:models` extracts a normalized
 name list from the action's JSON response: `array` is the top-level array

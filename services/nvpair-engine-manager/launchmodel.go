@@ -130,40 +130,66 @@ func withLaunchFlag(text, flag, value string) (result string, changed bool, err 
 	if err != nil {
 		return "", false, err
 	}
-	out := make([]string, 0, len(tokens)+2)
-	found := false
+	rest, at := dropLaunchFlag(tokens, flag)
+	out := slices.Insert(rest, at, flag, value)
+	result, err = formatLaunchText(out)
+	return result, !slices.Equal(tokens, out), err
+}
+
+// withoutLaunchFlag returns launch text with every "flag value" and
+// "flag=value" before any "--" terminator removed, and whether any was.
+func withoutLaunchFlag(text, flag string) (result string, changed bool, err error) {
+	tokens, err := parseLaunchText(text)
+	if err != nil {
+		return "", false, err
+	}
+	rest, _ := dropLaunchFlag(tokens, flag)
+	result, err = formatLaunchText(rest)
+	return result, len(rest) != len(tokens), err
+}
+
+// dropLaunchFlag returns the arguments without any "flag value" or "flag=value"
+// before a "--" terminator, and the index in that result where the flag first
+// stood. Without the flag, the index is the terminator's, or the end.
+// Arguments are a list rather than key/value pairs: flags repeat, may take no
+// value, and keep their order, so the list is walked rather than looked up.
+func dropLaunchFlag(tokens []string, flag string) (rest []string, at int) {
+	rest = make([]string, 0, len(tokens)+2)
+	at = -1
 	for i := 0; i < len(tokens); i++ {
 		token := tokens[i]
 		switch {
 		case token == "--":
-			if !found {
-				out = append(out, flag, value)
-				found = true
+			if at < 0 {
+				at = len(rest)
 			}
-			out = append(out, tokens[i:]...)
-			i = len(tokens)
-		case token == flag:
-			if !found {
-				out = append(out, flag, value)
-				found = true
+			return append(rest, tokens[i:]...), at
+		case token == flag || strings.HasPrefix(token, flag+"="):
+			if at < 0 {
+				at = len(rest)
 			}
-			if i+1 < len(tokens) {
-				i++ // the old value
-			}
-		case strings.HasPrefix(token, flag+"="):
-			if !found {
-				out = append(out, flag, value)
-				found = true
+			if token == flag {
+				i++ // its value
 			}
 		default:
-			out = append(out, token)
+			rest = append(rest, token)
 		}
 	}
-	if !found {
-		out = append(out, flag, value)
+	if at < 0 {
+		at = len(rest)
 	}
-	result, err = formatLaunchText(out)
-	return result, !slices.Equal(tokens, out), err
+	return rest, at
+}
+
+// modelLaunchFlag is the flag an engine's launch_model action writes, or "" for
+// an engine that does not choose its model by launch argument.
+func modelLaunchFlag(m *Manifest) string {
+	for _, act := range m.Actions {
+		if act.LaunchModel != nil {
+			return act.LaunchModel.Flag
+		}
+	}
+	return ""
 }
 
 // ejectByStopping ejects the served model by stopping the engine, which is the

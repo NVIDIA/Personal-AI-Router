@@ -44,10 +44,21 @@ func nvidiaSMIMemory() (total, free int64, ok bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return parseGPUMemory(string(out), systemMemory)
+}
+
+// parseGPUMemory reads the first row of nvidia-smi's memory.total,memory.free
+// query, in MiB. On a unified-memory machine such as DGX Spark the GPU shares
+// system RAM and nvidia-smi reports [N/A]; system memory then stands in, as it
+// does in nvpair-node-info, and as vLLM itself sees it there.
+func parseGPUMemory(out string, system func() (total, available int64, ok bool)) (total, free int64, ok bool) {
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
 	parts := strings.Split(line, ",")
 	if len(parts) != 2 {
 		return 0, 0, false
+	}
+	if nvidiaSMINotApplicable(parts[0]) {
+		return system()
 	}
 	t, errT := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 	f, errF := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
@@ -55,6 +66,48 @@ func nvidiaSMIMemory() (total, free int64, ok bool) {
 		return 0, 0, false
 	}
 	return t * 1024 * 1024, f * 1024 * 1024, true
+}
+
+// nvidiaSMINotApplicable reports an nvidia-smi field that holds no number, such
+// as the [N/A] or [Not Supported] a unified-memory GPU gives for its memory.
+func nvidiaSMINotApplicable(field string) bool {
+	value := strings.ToLower(strings.Trim(strings.TrimSpace(field), "[]"))
+	return value == "n/a" || value == "not supported"
+}
+
+// systemMemory reports total and available system memory from /proc/meminfo.
+func systemMemory() (total, available int64, ok bool) {
+	raw, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseMeminfo(string(raw))
+}
+
+// parseMeminfo reads MemTotal and MemAvailable, which /proc/meminfo gives in kB.
+// Available rather than free counts the page cache the kernel can reclaim.
+func parseMeminfo(text string) (total, available int64, ok bool) {
+	for _, line := range strings.Split(text, "\n") {
+		key, rest, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			continue
+		}
+		kb, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			continue
+		}
+		switch key {
+		case "MemTotal":
+			total = kb * 1024
+		case "MemAvailable":
+			available = kb * 1024
+		}
+	}
+	return total, available, total > 0 && available > 0
 }
 
 // applyAutoLaunch appends the arguments the manifest's auto_launch asks for.

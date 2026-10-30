@@ -60,6 +60,21 @@ func switchModelExecutor(t *testing.T, flag string) *Executor {
 	if err := m.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	// An engine that chooses its model by launch argument needs one to start.
+	state, err := e.LaunchSettings("fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _, err := withLaunchFlag(state.LaunchText, flag, "org/initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{
+		Engine:   "fake",
+		Settings: settings.Config{ServerPort: state.ServerPort, LaunchText: text},
+	}, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	if err := e.Start(context.Background(), "fake"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -75,11 +90,33 @@ func quoteJSON(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 func launchTextOf(t *testing.T, e *Executor) string {
 	t.Helper()
-	state, err := e.LaunchSettings("fake")
+	return launchTextOfEngine(t, e, "fake")
+}
+
+func launchTextOfEngine(t *testing.T, e *Executor, engine string) string {
+	t.Helper()
+	state, err := e.LaunchSettings(engine)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return state.LaunchText
+}
+
+func TestWithoutLaunchFlag_RemovesEveryFormOfTheFlag(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"separate value", "--model org/a --port 8001", "--port 8001"},
+		{"equals form", "--model=org/a --port 8001", "--port 8001"},
+		{"repeated", "--model org/a --port 8001 --model=org/b", "--port 8001"},
+		{"after the terminator is kept", "--port 8001 -- --model org/a", "--port 8001 -- --model org/a"},
+		{"absent", "--port 8001", "--port 8001"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed, err := withoutLaunchFlag(tc.in, "--model")
+			if err != nil || got != tc.want || changed != (tc.in != tc.want) {
+				t.Fatalf("withoutLaunchFlag(%q) = %q, %v, %v; want %q", tc.in, got, changed, err, tc.want)
+			}
+		})
+	}
 }
 
 func TestLaunchModelSwitchesAndRestartsARunningEngine(t *testing.T) {
@@ -179,12 +216,12 @@ func TestLaunchModelOnAStoppedEngineStartsIt(t *testing.T) {
 }
 
 func TestLaunchModelOnAStoppedEngineRestoresTheChoiceWhenItWillNotStart(t *testing.T) {
-	e := switchModelExecutor(t, "--fail-launch")
+	e := switchModelExecutor(t, "--model")
 	before := launchTextOf(t, e)
 	if err := e.Stop("fake"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadModel(t, e, "org/broken"); err == nil || !strings.Contains(err.Error(), "previous model was restored") {
+	if _, err := loadModel(t, e, "org/fails-to-load"); err == nil || !strings.Contains(err.Error(), "previous model was restored") {
 		t.Fatalf("err = %v, want the failed start reported with the restore", err)
 	}
 	if mustStatus(t, e).Running {
@@ -260,17 +297,17 @@ func TestLaunchModelRefusesAnythingThatIsNotAModelID(t *testing.T) {
 
 // If the new model does not come up, the engine goes back to the one it was
 // serving instead of staying down. The fake engine exits at once when it is
-// given "--fail-launch", which here stands in for a model that fails to load.
+// given the model org/fails-to-load, which stands in for a model that does not fit.
 func TestLaunchModelRestoresThePreviousModelWhenTheNewOneFails(t *testing.T) {
-	e := switchModelExecutor(t, "--fail-launch")
+	e := switchModelExecutor(t, "--model")
 	before := launchTextOf(t, e)
 
-	_, err := loadModel(t, e, "org/too-big")
+	_, err := loadModel(t, e, "org/fails-to-load")
 	if err == nil {
 		t.Fatal("a model that failed to start was reported as loaded")
 	}
 	// The note comes first: the engine's own error that follows it is a long log tail.
-	if !strings.HasPrefix(err.Error(), "switching to org/too-big failed; the previous model was restored: ") {
+	if !strings.HasPrefix(err.Error(), "switching to org/fails-to-load failed; the previous model was restored: ") {
 		t.Fatalf("error does not lead with the restore note: %v", err)
 	}
 	if got := launchTextOf(t, e); got != before {

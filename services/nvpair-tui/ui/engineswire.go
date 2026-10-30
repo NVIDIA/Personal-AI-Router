@@ -152,7 +152,7 @@ var downloadExamples = map[string]string{
 	engines.NameOllama:   "llama3.2",
 	engines.NameLMStudio: "lmstudio-community/Qwen3-8B-GGUF",
 	engines.NameLlamaCPP: "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
-	engines.NameVLLM:     "Qwen/Qwen2.5-0.5B-Instruct",
+	engines.NameVLLM:     "Qwen/Qwen3.5-4B",
 }
 
 // downloadPrompt is the placeholder for the download-by-name field, with an
