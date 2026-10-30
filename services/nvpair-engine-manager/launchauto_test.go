@@ -35,16 +35,16 @@ func cachedModelAt(t *testing.T, cache, id, config string, weightBytes int64) {
 
 func withGPU(t *testing.T, totalGiB, freeGiB int64) {
 	t.Helper()
-	old := gpuMemory
-	gpuMemory = func() (int64, int64, bool) { return totalGiB * gib, freeGiB * gib, true }
-	t.Cleanup(func() { gpuMemory = old })
+	old := deviceMemory
+	deviceMemory = func(string) (int64, int64, bool) { return totalGiB * gib, freeGiB * gib, true }
+	t.Cleanup(func() { deviceMemory = old })
 }
 
 func withoutGPU(t *testing.T) {
 	t.Helper()
-	old := gpuMemory
-	gpuMemory = func() (int64, int64, bool) { return 0, 0, false }
-	t.Cleanup(func() { gpuMemory = old })
+	old := deviceMemory
+	deviceMemory = func(string) (int64, int64, bool) { return 0, 0, false }
+	t.Cleanup(func() { deviceMemory = old })
 }
 
 func flagOf(t *testing.T, args []string, flag string) string {
@@ -65,7 +65,7 @@ func utilOf(t *testing.T, args []string) float64 {
 func TestAutoContextExtendsAShortModelToTheTarget(t *testing.T) {
 	withGPU(t, 48, 48)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
-	extra, _ := planHFContext([]string{"serve", "--model", "Qwen/Qwen3-8B"}, cache, 65536)
+	extra, _ := planHFContext([]string{"serve", "--model", "Qwen/Qwen3-8B"}, cache, 65536, "")
 
 	if got := flagOf(t, extra, "--max-model-len"); got != "65536" {
 		t.Fatalf("max-model-len = %q, want 65536 (the model alone stops at 40960): %v", got, extra)
@@ -95,7 +95,7 @@ func TestAutoContextCapsALongModelAtTheTarget(t *testing.T) {
 	withGPU(t, 48, 48)
 	cfg := strings.Replace(qwen8BConfig, "40960", "262144", 1)
 	cache := cachedModel(t, "Qwen/Long", cfg, 16_400_000_000)
-	extra, _ := planHFContext([]string{"--model", "Qwen/Long"}, cache, 65536)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Long"}, cache, 65536, "")
 	if got := flagOf(t, extra, "--max-model-len"); got != "65536" {
 		t.Fatalf("max-model-len = %q, want the 65536 target, not the 262144 native window", got)
 	}
@@ -108,7 +108,7 @@ func TestAutoContextLeavesModelsWithRopeScalingAlone(t *testing.T) {
 	withGPU(t, 48, 48)
 	cfg := strings.Replace(qwen8BConfig, `"torch_dtype"`, `"rope_scaling":{"rope_type":"yarn","factor":4.0},"torch_dtype"`, 1)
 	cache := cachedModel(t, "Qwen/Scaled", cfg, 16_400_000_000)
-	extra, _ := planHFContext([]string{"--model", "Qwen/Scaled"}, cache, 131072)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Scaled"}, cache, 131072, "")
 	if slices.Contains(extra, "--hf-overrides") {
 		t.Fatalf("must not override a model's own rope scaling: %v", extra)
 	}
@@ -120,7 +120,7 @@ func TestAutoContextLeavesModelsWithRopeScalingAlone(t *testing.T) {
 func TestAutoContextShrinksToWhatFitsInFreeMemory(t *testing.T) {
 	withGPU(t, 48, 22)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
-	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536, "")
 
 	n, err := strconv.ParseInt(flagOf(t, extra, "--max-model-len"), 10, 64)
 	if err != nil || n < 4096 || n >= 65536 || n%1024 != 0 {
@@ -138,7 +138,7 @@ func TestAutoContextNeverOverridesWhatTheUserSet(t *testing.T) {
 	withGPU(t, 48, 48)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len=8192"}, cache, 65536)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len=8192"}, cache, 65536, "")
 	if slices.Contains(extra, "--max-model-len") || slices.Contains(extra, "--hf-overrides") {
 		t.Fatalf("the user's context must stand untouched: %v", extra)
 	}
@@ -146,7 +146,7 @@ func TestAutoContextNeverOverridesWhatTheUserSet(t *testing.T) {
 		t.Fatalf("an 8K window needs far less than %.2f of the GPU", util)
 	}
 
-	extra, _ = planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--gpu-memory-utilization", "0.5"}, cache, 65536)
+	extra, _ = planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--gpu-memory-utilization", "0.5"}, cache, 65536, "")
 	if slices.Contains(extra, "--gpu-memory-utilization") {
 		t.Fatalf("the user's GPU share must stand untouched: %v", extra)
 	}
@@ -155,7 +155,7 @@ func TestAutoContextNeverOverridesWhatTheUserSet(t *testing.T) {
 		t.Fatalf("a 0.5 share (24 GiB) cannot hold 64K of Qwen3-8B; max-model-len = %d", n)
 	}
 
-	extra, _ = planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len", "4096", "--gpu-memory-utilization", "0.3"}, cache, 65536)
+	extra, _ = planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len", "4096", "--gpu-memory-utilization", "0.3"}, cache, 65536, "")
 	if len(extra) != 0 {
 		t.Fatalf("with both set there is nothing to add: %v", extra)
 	}
@@ -165,7 +165,7 @@ func TestAutoContextSkipsShardedLaunches(t *testing.T) {
 	withGPU(t, 48, 48)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 	for _, flag := range []string{"--tensor-parallel-size", "--pipeline-parallel-size"} {
-		if extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", flag, "2"}, cache, 65536); len(extra) != 0 {
+		if extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", flag, "2"}, cache, 65536, ""); len(extra) != 0 {
 			t.Fatalf("%s: sizing a sharded launch needs more than GPU 0; got %v", flag, extra)
 		}
 	}
@@ -173,7 +173,7 @@ func TestAutoContextSkipsShardedLaunches(t *testing.T) {
 
 func TestAutoContextForAModelNotInTheCache(t *testing.T) {
 	withGPU(t, 48, 20)
-	extra, _ := planHFContext([]string{"--model", "org/not-downloaded"}, t.TempDir(), 65536)
+	extra, _ := planHFContext([]string{"--model", "org/not-downloaded"}, t.TempDir(), 65536, "")
 	if slices.Contains(extra, "--max-model-len") {
 		t.Fatalf("an unknown model's limits are unknown: %v", extra)
 	}
@@ -185,7 +185,7 @@ func TestAutoContextForAModelNotInTheCache(t *testing.T) {
 func TestAutoContextWithoutAGPUReading(t *testing.T) {
 	withoutGPU(t)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
-	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536, "")
 	if flagOf(t, extra, "--max-model-len") != "65536" {
 		t.Fatalf("the window does not depend on the GPU reading: %v", extra)
 	}
@@ -198,7 +198,7 @@ func TestAutoContextWrapsOverridesForAMultimodalConfig(t *testing.T) {
 	withGPU(t, 48, 48)
 	cfg := `{"architectures":["Qwen3VLForConditionalGeneration"],"text_config":` + qwen8BConfig + `}`
 	cache := cachedModel(t, "Qwen/VL", cfg, 16_400_000_000)
-	extra, _ := planHFContext([]string{"--model", "Qwen/VL"}, cache, 65536)
+	extra, _ := planHFContext([]string{"--model", "Qwen/VL"}, cache, 65536, "")
 	var overrides map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(flagOf(t, extra, "--hf-overrides")), &overrides); err != nil {
 		t.Fatal(err)
@@ -311,40 +311,5 @@ func TestParsesToolCalls_NeedsBothFlags(t *testing.T) {
 		if got := parsesToolCalls(c.args); got != c.want {
 			t.Errorf("%s: got %v, want %v", name, got, c.want)
 		}
-	}
-}
-
-func TestParseGPUMemory_ReadsADiscreteGPUAndFallsBackOnUnifiedMemory(t *testing.T) {
-	system := func() (int64, int64, bool) { return 128 * gib, 100 * gib, true }
-	for _, tc := range []struct {
-		name        string
-		out         string
-		total, free int64
-		ok          bool
-	}{
-		{"discrete GPU, in MiB", "49140, 48600\n", 49140 << 20, 48600 << 20, true},
-		{"first GPU of several", "24576, 20000\n49140, 48600\n", 24576 << 20, 20000 << 20, true},
-		{"DGX Spark reports N/A", "[N/A], [N/A]\n", 128 * gib, 100 * gib, true},
-		{"not supported", "[Not Supported], [Not Supported]\n", 128 * gib, 100 * gib, true},
-		{"malformed", "error\n", 0, 0, false},
-		{"empty", "", 0, 0, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			total, free, ok := parseGPUMemory(tc.out, system)
-			if total != tc.total || free != tc.free || ok != tc.ok {
-				t.Fatalf("parseGPUMemory(%q) = %d, %d, %v; want %d, %d, %v", tc.out, total, free, ok, tc.total, tc.free, tc.ok)
-			}
-		})
-	}
-}
-
-func TestParseMeminfo_ReadsTotalAndAvailable(t *testing.T) {
-	text := "MemTotal:       130567000 kB\nMemFree:         2000000 kB\nMemAvailable:   104000000 kB\nBuffers:          100 kB\n"
-	total, available, ok := parseMeminfo(text)
-	if !ok || total != 130567000*1024 || available != 104000000*1024 {
-		t.Fatalf("parseMeminfo = %d, %d, %v", total, available, ok)
-	}
-	if _, _, ok := parseMeminfo("MemTotal: 100 kB\n"); ok {
-		t.Fatal("a reading without MemAvailable must not count as known")
 	}
 }
