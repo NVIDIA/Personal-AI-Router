@@ -259,7 +259,7 @@ Ten workers are supervised, started in this order:
 9. `nvpair-cluster-manager` (optional).
 10. `nvpair-job-scheduler` (optional). Every spawn is seeded with a replay of the telemetry cache.
 
-Every optional worker goes through `startOptionalWorker`, which resolves the binary, creates a supervisor with `defaultRestartPolicy()`, wires crash and recovery callbacks, and returns `nil` when the path is unset or the first spawn fails. Each carries a teardown callback that clears the state it owns, so a down worker cannot leave stale facts behind: `clearManualNodesState` drops that worker's manual claims and their telemetry from the discovery store and pulls the orphaned nodes out of every facade, the engine-manager callback drops the handle and its relay subscription, `setScheduler(nil)` drops the scheduler handle, and so on.
+Every optional worker goes through `startOptionalWorker`, which resolves the binary, creates a supervisor with `defaultRestartPolicy()`, wires crash and recovery callbacks, and returns `nil` when the path is unset or the first spawn fails. Each carries a teardown callback that clears the state it owns, so a down worker cannot leave stale facts behind: `clearManualNodesState` drops that worker's manual claims and their telemetry from the discovery store and pulls the orphaned nodes out of the Ollama and LM Studio facades, the engine-manager callback drops the handle and its relay subscription, `setScheduler(nil)` drops the scheduler handle, and so on.
 
 `nvpair-tui` is bundled with the product but is **not** supervised here — it is a client that spawns its own broker.
 
