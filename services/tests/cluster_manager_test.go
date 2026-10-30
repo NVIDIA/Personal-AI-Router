@@ -873,8 +873,9 @@ func TestClusterDecline_KeepsSiblingPendingInvite(t *testing.T) {
 // incorrect-pin), and — because its cluster was invite-created — it leaves so
 // both sides end standalone. Neither side pins the other.
 func TestClusterWrongPin_FailsBothSides(t *testing.T) {
-	portB := freePort(t)
-	a := startCM(t, t.TempDir(), freePort(t))
+	ports := freePorts(t, 2)
+	portB := ports[1]
+	a := startCM(t, t.TempDir(), ports[0])
 	defer a.stop()
 	b := startCM(t, t.TempDir(), portB)
 	defer b.stop()
@@ -931,8 +932,9 @@ func TestClusterWrongPin_FailsBothSides(t *testing.T) {
 // cluster of one is not dissolved when a pairing fails on a wrong PIN,
 // mirroring the decline variant.
 func TestClusterWrongPin_PreservesIntentionalSolo(t *testing.T) {
-	portB := freePort(t)
-	a := startCM(t, t.TempDir(), freePort(t))
+	ports := freePorts(t, 2)
+	portB := ports[1]
+	a := startCM(t, t.TempDir(), ports[0])
 	defer a.stop()
 	b := startCM(t, t.TempDir(), portB)
 	defer b.stop()
@@ -1045,8 +1047,9 @@ func waitUnclusteredWithin(t *testing.T, p *cmProc, timeout time.Duration) {
 // must detect that unanimous 403 and self-remove.
 func TestCluster_RemovesLocalMembershipAfterVerifiedOfflineRemoval(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
-	portB := freePort(t)
-	a := startCM(t, baseA, freePort(t))
+	ports := freePorts(t, 2)
+	portB := ports[1]
+	a := startCM(t, baseA, ports[0])
 	defer a.stop()
 	b := startCM(t, baseB, portB)
 
@@ -1096,7 +1099,8 @@ func TestCluster_RemovesLocalMembershipAfterVerifiedOfflineRemoval(t *testing.T)
 // no authenticated proof — and a bare 403 must not tear the survivor down.
 func TestCluster_KeepsMembershipWhenPeerLeaves(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
-	portA, portB := freePort(t), freePort(t)
+	ports := freePorts(t, 2)
+	portA, portB := ports[0], ports[1]
 	a := startCM(t, baseA, portA)
 	// B stays up (unclustered) for the whole test so A's reconcile reaches it
 	// and gets a live 403 rather than an "unreachable" that would block teardown
@@ -1158,8 +1162,9 @@ func assertStillClustered(t *testing.T, p *cmProc, wait time.Duration) {
 // cluster could self-evict.
 func TestCluster_KeepsMembershipWhenPeerAcceptsReconciliation(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
-	portB := freePort(t)
-	a := startCM(t, baseA, freePort(t))
+	ports := freePorts(t, 2)
+	portB := ports[1]
+	a := startCM(t, baseA, ports[0])
 	defer a.stop()
 	b := startCM(t, baseB, portB)
 
@@ -1195,8 +1200,9 @@ func TestCluster_KeepsMembershipWhenPeerAcceptsReconciliation(t *testing.T) {
 // removed) must never make the surviving node self-evict.
 func TestCluster_KeepsMembershipWhenPeerIsUnreachable(t *testing.T) {
 	baseA, baseB := t.TempDir(), t.TempDir()
-	portB := freePort(t)
-	a := startCM(t, baseA, freePort(t))
+	ports := freePorts(t, 2)
+	portB := ports[1]
+	a := startCM(t, baseA, ports[0])
 	defer a.stop()
 	b := startCM(t, baseB, portB)
 

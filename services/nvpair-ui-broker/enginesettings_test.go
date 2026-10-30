@@ -41,6 +41,19 @@ type settingsHarness struct {
 	launchMu sync.Mutex
 }
 
+// reserveSettingsPort holds a wildcard listener until release is called.
+// Registering the same release for cleanup also covers failed fixture setup.
+func reserveSettingsPort(t *testing.T) (int, func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", ":0")
+	require.NoError(t, err, "allocate fixture port")
+	release := sync.OnceFunc(func() {
+		require.NoError(t, ln.Close(), "release fixture port")
+	})
+	t.Cleanup(release)
+	return ln.Addr().(*net.TCPAddr).Port, release
+}
+
 func newSettingsHarness(t *testing.T) *settingsHarness {
 	t.Helper()
 	return newSettingsHarnessForEngine(t, "ollama")
@@ -49,15 +62,12 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	t.Helper()
 	ports := make([]int, 5)
-	listeners := []net.Listener{}
+	releases := make([]func(), len(ports))
 	for i := range ports {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		listeners = append(listeners, ln)
-		ports[i] = ln.Addr().(*net.TCPAddr).Port
+		ports[i], releases[i] = reserveSettingsPort(t)
 	}
-	for _, ln := range listeners {
-		_ = ln.Close()
+	for _, release := range releases {
+		release()
 	}
 	h := &settingsHarness{b: &Broker{codec: NewCodec(&bytes.Buffer{}), nodeID: "target", clusterDir: filepath.Join(t.TempDir(), "cluster")}}
 	worker, codec := newTestRPCWorkerPipe(t)

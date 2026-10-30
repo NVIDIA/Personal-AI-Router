@@ -538,6 +538,20 @@ are orphaned. A signal shuts down at once even while stdin is idle and an engine
 is still starting; the start is cancelled and its process group force-killed
 within the three-second shutdown grace (see Process-mode stops above).
 
+That engine sweep (`StopAll`) runs **exactly once per process**, and every
+caller returns only once it has finished. An ordinary quit asks for it twice:
+the broker sends `engine:prepare-shutdown` from its own teardown, and then
+closing stdin reaches the EOF path. Each is the right trigger for a different
+way of being shut down, so both stay.
+
+Later callers **wait** for the sweep in flight rather than returning early:
+returning early would report engines stopped before they were, and the broker
+would close stdin and exit while they were still running. They do not repeat
+the sweep, which would re-pay the readiness probe for every adopted engine whose
+stop is declined. They do retry any engine whose stop failed through a process
+handle or a stop command, such as an `lms server stop` that errored, because
+another attempt can succeed where a declined stop cannot.
+
 `engine:status` and `engine:get-installed` never wait for a lifecycle operation
 (a start, stop, install or model switch can hold an engine for minutes): while
 one runs they report what is already known and the operation reports its own

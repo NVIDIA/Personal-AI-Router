@@ -117,6 +117,10 @@ func TestBrokerLlamaCPPProxySetPort_RejectsConflicts(t *testing.T) {
 }
 
 func TestBrokerLlamaCPPProxySetPort_PersistsOnlyRequestedFacade(t *testing.T) {
+	// Reserve the target before the harness allocates and releases its ports,
+	// so the OS cannot return a port the fixture still reports as in use.
+	target, releaseTargetPort := reserveSettingsPort(t)
+
 	h := newSettingsHarnessForEngine(t, "llamacpp")
 	before, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "llamacpp"}, "")
 	require.NoError(t, err, "read initial settings")
@@ -124,10 +128,7 @@ func TestBrokerLlamaCPPProxySetPort_PersistsOnlyRequestedFacade(t *testing.T) {
 	for _, engine := range []string{"ollama", "lmstudio"} {
 		_, otherPorts[engine] = h.b.getProxy().Status(engine)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "allocate target port")
-	target := ln.Addr().(*net.TCPAddr).Port
-	require.NoError(t, ln.Close(), "release target port")
+	releaseTargetPort()
 	// The namespace determines the engine, even if parameters name another.
 	response := callBrokerPortRequest(t, h.b, "llamacpp-proxy:set-port", settingsJSON(map[string]any{"engine": "ollama", "port": target}))
 	require.Nil(t, response.Error, "set proxy port")

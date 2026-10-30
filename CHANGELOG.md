@@ -11,6 +11,24 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.10 — Background services shut down in parallel (#173)
+
+- The background services now shut down in parallel rather than one at a time, so a busy machine no longer pays each service's shutdown in turn.
+- When quitting is slow, the service log records where the time went.
+
+## 1.0.9 — Quitting is prompt again (#137)
+
+- Quitting no longer stalls when an engine is running outside PAIR's control. The engine shutdown that runs on the way out was being performed twice, and the repeat cost about a second.
+
+## 1.0.8 — Removing a machine you added by address forgets it in the terminal interface (#172)
+
+- In the terminal interface, removing a cluster member that you added with `f` now also forgets its address, so it no longer reappears after a restart.
+
+## 1.0.7 — Copy API endpoints with /v1 included (#185)
+
+- API endpoint URLs now include `/v1` when displayed or copied, so they can be pasted directly into Hermes and other clients that expect an OpenAI-compatible base URL.
+- The getting-started examples use the copied URL directly and explain how to remove `/v1` for native Ollama clients.
+
 ## 1.0.6 — Model lookups through PAIR reach a node that has the model (#163)
 
 - `/api/show` requests to PAIR's Ollama port now go only to a node that has the requested model. Before, they could reach a node without it and get a 404, so a client such as Hermes Agent could not read the model's details.
