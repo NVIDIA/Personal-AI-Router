@@ -97,13 +97,34 @@ answers in plain text instead of failing with HTTP 400. The response carries
 `X-PAIR-Tool-Calls: removed: …`. A request with `tool_choice: "required"` or a
 named function is forwarded unchanged and gets vLLM's own error. A parser named
 in the launch arguments is always used as given.
-The environment sets `VLLM_USE_FLASHINFER_SAMPLER=0`. vLLM's FlashInfer sampler
-compiles GPU kernels on first start, and that build cannot handle the spaces in
-PAIR's app-data folder (`Nvidia Corporation/Personal AI Router`), so the
-built-in sampler is used instead. As a side effect no CUDA toolkit or C++
-compiler is needed. The same limit means anything that forces a FlashInfer
-kernel build (for example choosing a FlashInfer attention backend) fails until
-the install can live on a path without spaces.
+PAIR installs its managed vLLM payload under `~/.nvpair/engine-bin/vllm`, rather
+than under the app-data folder whose `Nvidia Corporation/Personal AI Router`
+segments contain spaces. FlashInfer and DeepGEMM write unescaped source and
+include paths into load-time GPU builds, so the space-free physical location lets
+their attention and FP8/FP4 kernels compile normally. The engine's virtualenv is
+put first on `PATH` so those builds find its bundled `ninja`. Engine uninstall,
+Reset app data, and the platform uninstallers all remove this managed directory;
+downloaded Hugging Face models remain in `~/.cache/huggingface`.
+
+The environment still sets `VLLM_USE_FLASHINFER_SAMPLER=0`, so an ordinary model
+does not need a CUDA toolkit solely for the optional FlashInfer sampler. Other
+FlashInfer and DeepGEMM kernels are not disabled, and vLLM chooses their attention
+backend normally.
+
+Before choosing a context window and `--gpu-memory-utilization`, PAIR reads
+device memory from `nvidia-smi` when available and otherwise asks the installed
+vLLM platform. This covers CUDA/ROCm, Intel XPU, Apple Metal, CPU, and
+out-of-tree backends that expose vLLM's memory API. Shared-memory platforms keep
+3 GiB for runtime startup in addition to the normal 1 GiB free margin. If neither
+provider can measure free memory, PAIR does not invent a limit and leaves memory
+sizing to vLLM. On Apple Metal, a checkpoint whose weights are Metal-compatible
+but which declares an FP8 KV cache is launched with a dense KV cache matching its
+`bfloat16` or `float16` model dtype, because vLLM Metal stores paged KV data in
+the model dtype and rejects FP8 KV cache storage. An explicit launch option
+always wins. NVIDIA ModelOpt FP8 weight checkpoints are rejected before launch:
+vLLM Metal cannot load that tensor layout, so macOS needs a BF16, FP16, or
+MLX-compatible quantized checkpoint instead.
+
 Readiness polls `/health` for up to eight minutes while weights load.
 
 The model list is the Hugging Face cache (`~/.cache/huggingface/hub`), not what

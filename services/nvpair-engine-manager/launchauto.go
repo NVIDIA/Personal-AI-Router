@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -126,6 +127,10 @@ func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir
 	}
 	hub := filepath.Join(expandPath(modelsDir), "hub")
 	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), command.Bin)
+	if kvCache, reason := planMetalKVCache(command.Args, hub, runtime.GOOS); len(kvCache) > 0 {
+		extra = append(extra, kvCache...)
+		note = strings.TrimPrefix(note+"; "+reason, "; ")
+	}
 	if tools, parser := planToolCalling(command.Args, hub, command.Bin); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
@@ -136,6 +141,14 @@ func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir
 	slog.Info("engine launch adjusted for the model and device memory", "engine", engine, "added_args", extra, "reason", note)
 	command.Args = append(append([]string{}, command.Args...), extra...)
 	return command
+}
+
+func validateAutoLaunch(rt Runtime, command launchCommand, modelsDir string) error {
+	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
+		return nil
+	}
+	hub := filepath.Join(expandPath(modelsDir), "hub")
+	return validateMetalModel(command.Args, hub, runtime.GOOS)
 }
 
 // launchFlagValue returns the value of a flag in either "--flag value" or

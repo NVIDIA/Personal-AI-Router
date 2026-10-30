@@ -187,8 +187,11 @@ rather than driver-aware or offline-repacked.
 
 The bundled `vllm` manifest covers Linux (NVIDIA GPU) and Apple Silicon macOS
 (vLLM-Metal). It installs a pinned vLLM release into a private virtualenv
-through a checksum-pinned `uv` bootstrap, or adopts a `vllm` already installed
-at a detected path. The engine's PAIR gateway listens on `8001`, with the
+at the space-free managed path `~/.nvpair/engine-bin/vllm` through a
+checksum-pinned `uv` bootstrap, or adopts a `vllm` already installed at a
+detected path. The space-free physical path lets FlashInfer and DeepGEMM compile
+load-time GPU kernels; reset and uninstall include the path while preserving the
+model cache. The engine's PAIR gateway listens on `8001`, with the
 `vllm serve` process on loopback `18001`, behind the proxy facade on `8000`. vLLM serves one model per process and has no
 load or unload API, so the engine manager puts a gateway on its port (`front`):
 Start and the restore after a restart bring it up idle with nothing loaded, the
@@ -213,7 +216,9 @@ restart, so the desktop marks the engine as switching: its card shows starting
 rather than stopped, and its model list is kept, until the load request finishes
 (success, or failure with the previous model restored). Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
-never remove.
+never remove. On macOS the manager rejects NVIDIA ModelOpt FP8 weight
+checkpoints before launch because vLLM-Metal cannot load that tensor layout;
+the NVIDIA Linux path remains unchanged.
 
 Current limits are explicit: the manual-node worker does not probe vLLM, the
 Inference Demo does not use it, and the icon is a placeholder lettermark rather

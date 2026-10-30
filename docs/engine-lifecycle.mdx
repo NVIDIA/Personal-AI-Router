@@ -97,9 +97,16 @@ When you install an engine, consider the following:
   several GiB because it includes PyTorch and the CUDA libraries, and PAIR first
   checks for an NVIDIA driver that supports CUDA 13 or newer and about 25 GB of
   free disk, enough for the engine and its default model. On macOS it installs
-  checksum-pinned vLLM and vLLM-Metal wheels and needs about 20 GB of free disk. Either way PAIR stops with a clear message if a
-  requirement is missing.
-  Nothing is compiled. vLLM serves a single model per process. Until you choose
+  checksum-pinned vLLM and vLLM-Metal wheels and needs about 20 GB of free disk.
+  Either way PAIR stops with a clear message if a requirement is missing.
+  NVIDIA ModelOpt FP8 weight checkpoints run on the NVIDIA path but are not
+  loadable by vLLM-Metal; on macOS PAIR rejects them before launch and asks for
+  a BF16, FP16, or MLX-compatible quantized checkpoint.
+  PAIR's private environment lives at
+  `~/.nvpair/engine-bin/vllm`, outside the app-data path whose spaces break the
+  load-time GPU builds used by some models. Reset and uninstall still remove it.
+  Installation uses prebuilt wheels; loading a model may compile FlashInfer or
+  DeepGEMM GPU kernels. vLLM serves a single model per process. Until you choose
   one it serves Qwen3.5-4B, downloaded on the first start (about 9.3 GB, and a GPU
   with at least 16 GB of memory); on a smaller GPU, add and load a smaller model
   first. Its model list
