@@ -5,6 +5,7 @@
   "manifest_version": 1,
   "advertised_models": "loaded",
   "install": { "mode": "user" },
+  "install_dir": "~/.nvpair/engine-bin/vllm",
   "models_dir": "~/.cache/huggingface",
   "uninstall": { "remove": ["{install_dir}"] },
   "runtime": {

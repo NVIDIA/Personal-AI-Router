@@ -54,6 +54,35 @@ func TestValidate_AcceptsValidManifest(t *testing.T) {
 	require.NoError(t, m.Validate(), "valid manifest rejected")
 }
 
+func TestValidate_RejectsTemplatedInstallDirectory(t *testing.T) {
+	m := validManifest()
+	platform := m.Platforms["linux/amd64"]
+	platform.InstallDir = "{models_dir}/engine"
+	m.Platforms["linux/amd64"] = platform
+
+	require.ErrorContains(t, m.Validate(), "install_dir", "templated install directory accepted")
+}
+
+func TestValidate_AcceptsEnvironmentReferenceInInstallDirectory(t *testing.T) {
+	t.Setenv("NVPAIR_INSTALL_ROOT", t.TempDir())
+	m := validManifest()
+	platform := m.Platforms["linux/amd64"]
+	platform.InstallDir = "${NVPAIR_INSTALL_ROOT}/engine"
+	m.Platforms["linux/amd64"] = platform
+
+	require.NoError(t, m.Validate(), "supported braced environment reference rejected")
+}
+
+func TestValidate_RejectsModelStoreInsideDeclaredInstallDirectory(t *testing.T) {
+	m := validManifest()
+	platform := m.Platforms["linux/amd64"]
+	platform.InstallDir = "~/.nvpair/engine-bin/demo"
+	platform.ModelsDir = "~/.nvpair/engine-bin/demo/models"
+	m.Platforms["linux/amd64"] = platform
+
+	require.ErrorContains(t, m.Validate(), "models_dir", "model store inside managed install directory accepted")
+}
+
 func TestValidate_AcceptsCommandModeAndCmdAction(t *testing.T) {
 	m := validManifest()
 	p := m.Platforms["linux/amd64"]
@@ -440,7 +469,7 @@ func TestLoadRegistryMissingDir_IsSkipped(t *testing.T) {
 }
 
 // TestApplyPlatformDefaults covers the shared-base merge: a top-level
-// runtime/install block is inherited by each platform, per-platform keys
+// runtime/install block and install directory are inherited by each platform, per-platform keys
 // override, nested objects (env) deep-merge, and a platform can override
 // a shared scalar.
 func TestApplyPlatformDefaults_InheritsBaseFieldsAndKeepsPlatformOverrides(t *testing.T) {
@@ -449,6 +478,7 @@ func TestApplyPlatformDefaults_InheritsBaseFieldsAndKeepsPlatformOverrides(t *te
   "engine": "demo",
   "display_name": "Demo",
   "manifest_version": 1,
+  "install_dir": "~/.nvpair/engine-bin/demo",
   "install": { "mode": "user" },
   "runtime": {
     "args": ["serve"],
@@ -464,6 +494,7 @@ func TestApplyPlatformDefaults_InheritsBaseFieldsAndKeepsPlatformOverrides(t *te
       "runtime": { "bin": "{install_dir}/bin/demo", "env": { "EXTRA": "2" } }
     },
     "linux/arm64": {
+      "install_dir": "/opt/nvpair/demo",
       "detect": ["{install_dir}/bin/demo"],
       "install": { "fetch": { "url": "https://x/demo.tgz" }, "run": ["tar", "xf", "{download}", "-C", "{install_dir}"] },
       "uninstall": { "run": ["rm", "-rf", "{install_dir}"] },
@@ -489,6 +520,7 @@ func TestApplyPlatformDefaults_InheritsBaseFieldsAndKeepsPlatformOverrides(t *te
 		assert.Equal(t, "user", amd.Install.ModeOrDefault(), "amd64 install: expected base mode + platform fetch")
 		assert.NotNil(t, amd.Install.Fetch, "amd64 install: expected base mode + platform fetch")
 	}
+	assert.Equal(t, "~/.nvpair/engine-bin/demo", amd.InstallDir, "amd64 install_dir: expected inherited path")
 	// per-platform override applied:
 	assert.Equal(t, "{install_dir}/bin/demo", amd.Runtime.Bin, "amd64 bin override missing")
 	// nested object (env) deep-merges base + platform keys:
@@ -500,6 +532,7 @@ func TestApplyPlatformDefaults_InheritsBaseFieldsAndKeepsPlatformOverrides(t *te
 	require.True(t, ok, "linux/arm64 missing")
 	assert.Equal(t, 5678, arm.Runtime.Port, "arm64 port override expected 5678")
 	assert.Equal(t, "1", arm.Runtime.Env["SHARED"], "arm64 should still inherit base env SHARED")
+	assert.Equal(t, "/opt/nvpair/demo", arm.InstallDir, "arm64 install_dir override missing")
 }
 
 // TestBundledManifestsMerge guards the actual shipped manifests: they must

@@ -47,7 +47,8 @@
 ; model store as models_dir, and a test in services/nvpair-engine-manager fails
 ; if one of them resolves inside the app data root.
 ;
-; UNINSTALLER SAFETY: only ever delete the three per-user AppData roots below.
+; UNINSTALLER SAFETY: only ever delete the three per-user AppData roots and the
+; exact PAIR-managed vLLM payload below.
 ; Never touch $INSTDIR (C:\Program Files\...). The uninstaller itself lives at
 ; $INSTDIR\Uninstall ${PRODUCT_FILENAME}.exe and is removed by the template's
 ; own RMDir /r $INSTDIR + DeleteRegKey; deleting it here would orphan the
@@ -66,6 +67,7 @@
 ;   - Shared app data:    %LOCALAPPDATA%\Nvidia Corporation\Personal AI Router
 ;   - Previous app data:  %LOCALAPPDATA%\NVIDIA Corporation\PAIR
 ;   - electron-updater:   %LOCALAPPDATA%\nvpair-updater
+;   - Managed vLLM:       %USERPROFILE%\.nvpair\engine-bin\vllm
 ; On Windows the "NVIDIA Corporation" / "Nvidia Corporation" casing resolves to
 ; the same case-insensitive folder.
 ; Per-user data roots. Keep in sync with src/shared/constants/app.ts and the
@@ -74,10 +76,14 @@
   DetailPrint "Removing NVIDIA PAIR user data..."
   ClearErrors
   ReadEnvStr $0 LOCALAPPDATA
+  ReadEnvStr $1 USERPROFILE
   RMDir /r "$0\Nvidia Corporation\Personal AI Router"
   RMDir /r "$0\NVIDIA Corporation\PAIR"
   RMDir "$0\NVIDIA Corporation"
   RMDir /r "$0\nvpair-updater"
+  RMDir /r "$1\.nvpair\engine-bin\vllm"
+  RMDir "$1\.nvpair\engine-bin"
+  RMDir "$1\.nvpair"
   ClearErrors
 !macroend
 
@@ -109,6 +115,7 @@
 ; Best-effort: when the user opts to remove data, stop any process whose
 ; executable lives UNDER one of the data roots (e.g. an engine like Ollama
 ; running from %LOCALAPPDATA%\Nvidia Corporation\Personal AI Router\engine-bin\)
+; or the PAIR-managed vLLM directory
 ; so RMDir /r can then delete it. Scoped by ExecutablePath, so an external
 ; Ollama installed elsewhere is never touched. nsExec::ExecToLog never aborts the (un)installer,
 ; PowerShell swallows its own errors (-ErrorAction SilentlyContinue), and a
@@ -117,7 +124,7 @@
 ; containing spaces need no extra quoting.
 !macro pairKillProcessesInDataDirs
   DetailPrint "Stopping any processes running from NVIDIA PAIR data folders..."
-  nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and ($$_.ExecutablePath -like \"$$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*\") } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
+  nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and ($$_.ExecutablePath -like \"$$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*\" -or $$_.ExecutablePath -like \"$$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*\" -or $$_.ExecutablePath -like \"$$env:USERPROFILE\.nvpair\engine-bin\vllm\*\") } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   ; Give the OS a moment to release the file handles before RMDir /r.
   Sleep 1000
 !macroend
@@ -128,6 +135,7 @@
 ; continue — the uninstall must never abort over locked user data.
 !macro pairWarnIfDataRemains
   ReadEnvStr $0 LOCALAPPDATA
+  ReadEnvStr $1 USERPROFILE
   StrCpy $9 ""
   IfFileExists "$0\Nvidia Corporation\Personal AI Router\*.*" 0 +2
     StrCpy $9 "$9$\n$0\Nvidia Corporation\Personal AI Router"
@@ -135,6 +143,8 @@
     StrCpy $9 "$9$\n$0\NVIDIA Corporation\PAIR"
   IfFileExists "$0\nvpair-updater\*.*" 0 +2
     StrCpy $9 "$9$\n$0\nvpair-updater"
+  IfFileExists "$1\.nvpair\engine-bin\vllm\*.*" 0 +2
+    StrCpy $9 "$9$\n$1\.nvpair\engine-bin\vllm"
   StrCmp $9 "" pairNoLeftover
     MessageBox MB_OK|MB_ICONEXCLAMATION "Some NVIDIA PAIR data could not be removed because files were still in use (for example, a running engine such as Ollama).$\n$\nClose those programs, then delete these folders manually:$9"
   pairNoLeftover:

@@ -373,6 +373,13 @@ Personal AI Router and the Go services share one current per-user root:
 
 - `Nvidia Corporation/Personal AI Router`.
 
+Managed engine payloads normally live under that root. vLLM is the deliberate
+exception: its load-time GPU build tools cannot parse spaces in source/include
+paths, so PAIR installs its private environment at
+`~/.nvpair/engine-bin/vllm`. The append-only wipe inventory and every platform
+uninstaller include that exact PAIR-owned path; model weights remain in the
+separate Hugging Face cache.
+
 On first launch after the rename, Electron data under
 `NVIDIA Corporation/PAIR` is merged into the shared directory without
 overwriting backend files already present there.
