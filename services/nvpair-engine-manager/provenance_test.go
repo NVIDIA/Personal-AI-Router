@@ -105,6 +105,27 @@ func TestUninstallManaged_RemovesOnlyWhatPAIRInstalled(t *testing.T) {
 	assert.False(t, installedByPAIR(installDir), "install marker not cleared after a successful removal")
 }
 
+func TestUninstallManaged_RemovesEngineMarkedInDeclaredInstallDirectory(t *testing.T) {
+	vendorRoot := t.TempDir()
+	binary, weights := vendorEngineOnDisk(t, vendorRoot)
+	manifest := vendorEngineManifest(vendorRoot, filepath.Join(vendorRoot, "models"), []string{vendorRoot})
+	platformKey := runtime.GOOS + "/" + runtime.GOARCH
+	platform := manifest.Platforms[platformKey]
+	platform.InstallDir = filepath.Join(t.TempDir(), "managed", "vendor")
+	manifest.Platforms[platformKey] = platform
+	ex := managedExecutor(t, manifest)
+	require.NoError(t, writeInstallMarker(platform.InstallDir, "vendor"))
+
+	results := ex.UninstallManaged(context.Background())
+
+	require.Len(t, results, 1, "declared install directory outcome")
+	assert.True(t, results[0].Removed, "marked engine was not removed")
+	assert.Empty(t, results[0].Error, "marked engine removal")
+	assert.NoFileExists(t, binary, "engine binary survived")
+	assert.FileExists(t, weights, "removal deleted downloaded models")
+	assert.False(t, installedByPAIR(platform.InstallDir), "install marker survived removal")
+}
+
 // TestUninstallManagedKeepsTheMarkerWhenRemovalFails is the regression guard for
 // losing ownership. The marker is the only record that an engine is PAIR's, so
 // clearing it after a failure would leave the engine installed and every future

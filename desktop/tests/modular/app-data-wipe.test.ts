@@ -40,6 +40,19 @@ describe('repo-root wipe scripts', () => {
         }
     })
 
+    it('lists the managed space-free vLLM directory in both inventories', () => {
+        const shText = fs.readFileSync(sh, 'utf8')
+        const psText = fs.readFileSync(ps1, 'utf8')
+        expect(shText).toContain('VLLM_INSTALL_ROOT="$HOME_DIR/.nvpair/engine-bin/vllm"')
+        expect(shText).toContain('TARGETS+=("$VLLM_INSTALL_ROOT|PAIR-managed vLLM payload")')
+        expect(psText).toContain(
+            "$VLLMInstallRoot = Join-Path $HomeDir (Join-Path '.nvpair' (Join-Path 'engine-bin' 'vllm'))"
+        )
+        expect(psText).toContain(
+            "@{ Path = $VLLMInstallRoot; Reason = 'PAIR-managed vLLM payload' }"
+        )
+    })
+
     it('accepts the app-invoked wait-pid and relaunch options in both twins', () => {
         const shText = fs.readFileSync(sh, 'utf8')
         const psText = fs.readFileSync(ps1, 'utf8')

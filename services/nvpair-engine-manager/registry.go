@@ -75,15 +75,19 @@ type Manifest struct {
 // first; OS-specific Go code is the fallback only for primitives a
 // manifest cannot express (process termination, console hiding).
 type Platform struct {
-	Detect    []string   `json:"detect,omitempty"`
-	Install   *Install   `json:"install,omitempty"`
-	Uninstall *Uninstall `json:"uninstall,omitempty"`
-	Runtime   Runtime    `json:"runtime"`
+	// InstallDir overrides the default app-data-root engine directory. It is a
+	// literal user path with the same ~ and OS environment expansion as detect
+	// paths; its resolved value is exposed to the manifest as {install_dir}.
+	InstallDir string     `json:"install_dir,omitempty"`
+	Detect     []string   `json:"detect,omitempty"`
+	Install    *Install   `json:"install,omitempty"`
+	Uninstall  *Uninstall `json:"uninstall,omitempty"`
+	Runtime    Runtime    `json:"runtime"`
 	// ModelsDir is the engine's on-disk model store, referenced elsewhere as
 	// {models_dir}. Nothing this service removes may delete it: Uninstall skips
-	// it, and the app-level data purge never reaches it because validation
-	// rejects a models_dir that is a placeholder (and therefore cannot be
-	// derived from the install directory, which lives under the app data root).
+	// it, validation keeps it outside an explicit managed install directory, and
+	// the bundled-manifest tests keep it outside the app data root. App reset
+	// removes both kinds of managed application path.
 	// Declare the engine's real default — the path it would use on its own —
 	// so PAIR and a user's own copy of the engine share one library.
 	ModelsDir string `json:"models_dir,omitempty"`
@@ -670,9 +674,9 @@ func (r *Registry) mergeOntoBundled(override []byte) ([]byte, error) {
 }
 
 // applyPlatformDefaults implements manifest-level shared defaults: a
-// top-level "detect" / "install" / "uninstall" / "runtime" / "models_dir"
-// block is merged into every entry under "platforms", with the per-platform block
-// winning key-by-key. Nested objects (runtime, runtime.env, …) merge
+// top-level "install_dir" / "detect" / "install" / "uninstall" / "runtime" /
+// "models_dir" block is merged into every entry under "platforms", with the
+// per-platform block winning key-by-key. Nested objects (runtime, runtime.env, …) merge
 // recursively; arrays and scalars are replaced wholesale. The merge runs
 // at the JSON level before unmarshalling, so an omitted key truly
 // inherits the default while an explicit zero value (e.g. "port": 0)
@@ -685,7 +689,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	base := map[string]any{}
-	for _, k := range []string{"detect", "install", "uninstall", "runtime", "models_dir"} {
+	for _, k := range []string{"install_dir", "detect", "install", "uninstall", "runtime", "models_dir"} {
 		raw, ok := top[k]
 		if !ok {
 			continue
@@ -827,6 +831,24 @@ const (
 )
 
 func (p *Platform) validate(key string) error {
+	if p.InstallDir != "" {
+		if strings.TrimSpace(p.InstallDir) == "" {
+			return fmt.Errorf("platform %q: install_dir cannot be blank", key)
+		}
+		literalPath := p.InstallDir
+		if !strings.HasPrefix(key, "windows/") {
+			literalPath = unixEnvRe.ReplaceAllString(literalPath, "")
+		}
+		if strings.ContainsAny(literalPath, "{}") {
+			return fmt.Errorf("platform %q: install_dir %q must be a literal path, not a template", key, p.InstallDir)
+		}
+		if p.ModelsDir != "" && pathWithinRoot(
+			strings.ToLower(filepath.Clean(expandPath(p.InstallDir))),
+			strings.ToLower(filepath.Clean(expandPath(p.ModelsDir))),
+		) {
+			return fmt.Errorf("platform %q: models_dir %q cannot be inside install_dir %q — app reset removes managed engine payloads", key, p.ModelsDir, p.InstallDir)
+		}
+	}
 	if front := p.Runtime.Front; front != nil {
 		if front.IdleTimeoutS < 0 || front.IdleTimeoutS > 86400 {
 			return fmt.Errorf("platform %q: front.idle_timeout_s must be between 0 and 86400", key)
@@ -934,9 +956,8 @@ func (p *Platform) validate(key string) error {
 		}
 	}
 	// A models_dir derived from {install_dir} is the mistake this field exists to
-	// prevent: the install directory lives under the app data root, so the
-	// app-level "remove all data" uninstall would take the weights with it even
-	// though no engine uninstall ever touched them. Keeping it literal means the
+	// prevent: app reset removes every managed install directory, so it would take
+	// the weights too even though no engine uninstall ever touched them. Keeping it literal means the
 	// only way to point the model store at the data root is to type that path
 	// out, which review will catch.
 	if strings.Contains(p.ModelsDir, "{") {

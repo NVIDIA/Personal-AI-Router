@@ -39,6 +39,12 @@ func TestBundledVLLMManifest(t *testing.T) {
 		if len(platform.Detect) < 2 || !strings.HasPrefix(platform.Detect[0], "{install_dir}/") {
 			t.Errorf("%s detect order = %v, want the managed install first", key, platform.Detect)
 		}
+		if platform.InstallDir != "~/.nvpair/engine-bin/vllm" {
+			t.Errorf("%s install_dir = %q, want the space-free managed vLLM directory", key, platform.InstallDir)
+		}
+		if strings.ContainsAny(platform.InstallDir, " \t\r\n") {
+			t.Errorf("%s install_dir = %q, which still contains whitespace", key, platform.InstallDir)
+		}
 		if platform.Install == nil || platform.Install.Fetch == nil || platform.Install.Fetch.SHA256 == "" {
 			t.Errorf("%s: the uv bootstrap must be a sha256-pinned fetch", key)
 			continue
@@ -64,12 +70,14 @@ func TestBundledVLLMManifest(t *testing.T) {
 		if platform.ModelsDir != "~/.cache/huggingface" {
 			t.Errorf("%s: models_dir = %q, want the Hugging Face cache", key, platform.ModelsDir)
 		}
-		// vLLM compiles FlashInfer sampling kernels at first start and that build
-		// cannot cope with the spaces in PAIR's app-data path
-		// ("Nvidia Corporation/Personal AI Router"), so it must stay off. It also
-		// keeps a system CUDA toolkit and C++ compiler from being required.
+		// Keep the optional FlashInfer sampler off so an ordinary model does not
+		// need a CUDA toolkit solely for sampling. Other FlashInfer and DeepGEMM
+		// kernels remain enabled and can build from the space-free install_dir.
 		if rt.Env["VLLM_USE_FLASHINFER_SAMPLER"] != "0" {
 			t.Errorf("%s: the FlashInfer sampler must be disabled", key)
+		}
+		if _, disabled := rt.Env["VLLM_DISABLED_KERNELS"]; disabled {
+			t.Errorf("%s: vLLM kernels must stay enabled with the space-free install", key)
 		}
 		// vLLM reserves 92% of GPU memory by default and refuses a context above
 		// the model's own limit. Both are decided per model at start, so the

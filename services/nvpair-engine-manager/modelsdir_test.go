@@ -16,15 +16,14 @@ import (
 	"nvpair-shared/appdir"
 )
 
-// TestBundledModelStoresOutliveTheAppDataRoot is the regression guard for the
-// uninstall that deleted downloaded models. The app-level "remove all data"
-// uninstall deletes the whole app data root, so a model store anywhere inside it
-// is destroyed even though no engine uninstall touched it — which is exactly
-// what llama.cpp's cache did when it sat beside the install directory.
+// TestBundledModelStores_RemainOutsideManagedApplicationPaths is the regression
+// guard for the uninstall that deleted downloaded models. App reset deletes the
+// whole app data root and every declared external install directory, so a model
+// store inside either is destroyed even though no engine uninstall touched it.
 //
 // The app data root always ends in the vendor/product segments, so this holds
 // the line for every target platform rather than only the test host's.
-func TestBundledModelStores_RemainOutsideApplicationDataRoot(t *testing.T) {
+func TestBundledModelStores_RemainOutsideManagedApplicationPaths(t *testing.T) {
 	forbidden := []string{"nvidia corporation", "personal ai router"}
 	for name, manifest := range bundledManifestSet(t) {
 		for key, platform := range manifest.Platforms {
@@ -36,6 +35,9 @@ func TestBundledModelStores_RemainOutsideApplicationDataRoot(t *testing.T) {
 				if !assert.NotContains(t, resolved, segment, "%s/%s: models_dir is inside the app data root; the app uninstall would delete the user's models", name, key) {
 					break
 				}
+			}
+			if platform.InstallDir != "" {
+				assert.False(t, pathWithinRoot(expandPath(platform.InstallDir), expandPath(platform.ModelsDir)), "%s/%s: models_dir %q resolves under managed install_dir %q", name, key, platform.ModelsDir, platform.InstallDir)
 			}
 		}
 		platform, ok := manifest.HostPlatform()
