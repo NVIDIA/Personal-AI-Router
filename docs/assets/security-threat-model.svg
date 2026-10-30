@@ -1,0 +1,106 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="710" viewBox="0 0 1200 710" role="img" aria-labelledby="title description">
+  <title id="title">PAIR threat model</title>
+  <desc id="description">Three mutually trusted nodes form a cluster inside a LAN. An unapproved or removed device on that LAN has a crossed arrow toward the cluster. Intended external sources deliver models, metadata, engines, and updates to Node 2. A crossed arrow from attacker-spoofed models and updates points directly to Node 2. A browser on a trusted node connects to an attacker website, with a crossed arrow marking unauthorized PAIR access through web content. Crossed arrows represent attacks to block, not restrictions on normal browsing or downloads.</desc>
+  <defs>
+    <marker id="normal-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#52647a"/>
+    </marker>
+    <marker id="attack-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#b42332"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: Arial, Helvetica, sans-serif; fill: #182b42; }
+    .heading { font-size: 27px; font-weight: 700; }
+    .label { font-size: 19px; }
+    .small { font-size: 16px; }
+    .node-label { font-size: 22px; font-weight: 700; }
+    .attack-label { fill: #902332; font-size: 18px; }
+    .link { fill: none; stroke: #52647a; stroke-width: 3; }
+    .attack { fill: none; stroke: #b42332; stroke-width: 3; marker-end: url(#attack-arrow); }
+    .cross-under { fill: none; stroke: #ffffff; stroke-width: 11; stroke-linecap: round; }
+    .cross { fill: none; stroke: #b42332; stroke-width: 5; stroke-linecap: round; }
+    .attacker { fill: #fff0f0; stroke: #b42332; stroke-width: 2.5; }
+  </style>
+
+  <rect width="1200" height="710" rx="12" fill="#ffffff"/>
+  <text x="40" y="38" class="heading">PAIR threat model</text>
+
+  <rect x="30" y="70" width="665" height="610" rx="18" fill="#f5f8fc" stroke="#7c8ca0" stroke-width="2"/>
+  <text x="55" y="107" class="label" font-weight="700">LAN</text>
+
+  <path d="M 277 235 L 443 235 M 252 285 L 323 375 M 468 285 L 397 375" class="link"/>
+  <text x="360" y="302" text-anchor="middle" class="small">
+    <tspan x="360">Paired, mutually</tspan>
+    <tspan x="360" dy="23">trusted nodes</tspan>
+  </text>
+
+  <circle cx="215" cy="235" r="62" fill="#e4f0ff" stroke="#2361a8" stroke-width="3"/>
+  <circle cx="505" cy="235" r="62" fill="#e4f0ff" stroke="#2361a8" stroke-width="3"/>
+  <circle cx="360" cy="425" r="62" fill="#e4f0ff" stroke="#2361a8" stroke-width="3"/>
+  <text x="215" y="231" text-anchor="middle" class="node-label">Node 1</text>
+  <text x="215" y="256" text-anchor="middle" class="small">Trusted</text>
+  <text x="505" y="231" text-anchor="middle" class="node-label">Node 2</text>
+  <text x="505" y="256" text-anchor="middle" class="small">Trusted</text>
+  <text x="360" y="421" text-anchor="middle" class="node-label">Node 3</text>
+  <text x="360" y="446" text-anchor="middle" class="small">Trusted</text>
+
+  <path d="M 902 235 L 567 235" class="link" marker-end="url(#normal-arrow)"/>
+  <text x="795" y="167" text-anchor="middle" class="label">
+    <tspan x="795">Download models,</tspan>
+    <tspan x="795" dy="24">metadata, engines,</tspan>
+    <tspan x="795" dy="24">and updates</tspan>
+  </text>
+  <path d="M 939 282 C 891 282 887 220 929 209 C 925 163 984 148 1009 178 C 1037 139 1100 151 1111 190 C 1169 178 1200 248 1158 274 C 1147 282 1134 282 1122 282 Z" fill="#eaf6f3" stroke="#247c6d" stroke-width="2.5"/>
+  <text x="1042" y="234" text-anchor="middle" class="label" font-weight="700">Intended sources</text>
+  <text x="1042" y="259" text-anchor="middle" class="small">External services</text>
+
+  <polygon points="60,555 88,500 192,500 220,555 192,610 88,610" class="attacker"/>
+  <text x="140" y="538" text-anchor="middle" class="small">
+    <tspan x="140">Unapproved</tspan>
+    <tspan x="140" dy="22">or removed</tspan>
+    <tspan x="140" dy="22">device</tspan>
+  </text>
+  <path d="M 220 555 L 308 464" class="attack"/>
+  <path d="M 252 499 L 274 521 M 274 499 L 252 521" class="cross-under"/>
+  <path d="M 252 499 L 274 521 M 274 499 L 252 521" class="cross"/>
+  <text x="278" y="590" class="attack-label">
+    <tspan x="278">Unauthorized join</tspan>
+    <tspan x="278" dy="24">or use of old credentials</tspan>
+  </text>
+
+  <path d="M 505 297 L 505 434 L 545 434 L 545 460" class="link"/>
+  <rect x="470" y="460" width="150" height="96" rx="8" fill="#e7ecf2" stroke="#52647a" stroke-width="2.5"/>
+  <rect x="482" y="472" width="126" height="71" rx="3" fill="#ffffff" stroke="#a4b0bf" stroke-width="1.5"/>
+  <path d="M 545 557 L 545 576 M 523 577 L 567 577" class="link"/>
+  <text x="545" y="517" text-anchor="middle" class="label">Browser</text>
+
+  <polygon points="920,400 950,345 1140,345 1170,400 1140,455 950,455" class="attacker"/>
+  <text x="1045" y="393" text-anchor="middle" class="attack-label">
+    <tspan x="1045">Attacker-spoofed</tspan>
+    <tspan x="1045" dy="25">models, updates, etc.</tspan>
+  </text>
+  <path d="M 920 400 L 563 258" class="attack"/>
+  <path d="M 731 318 L 753 340 M 753 318 L 731 340" class="cross-under"/>
+  <path d="M 731 318 L 753 340 M 753 318 L 731 340" class="cross"/>
+  <text x="795" y="401" text-anchor="middle" class="attack-label">Impersonate or tamper</text>
+
+  <polygon points="930,555 965,495 1125,495 1160,555 1125,615 965,615" class="attacker"/>
+  <text x="1045" y="548" text-anchor="middle" class="attack-label">
+    <tspan x="1045">Attacker</tspan>
+    <tspan x="1045" dy="25">website</tspan>
+  </text>
+  <path d="M 930 555 L 621 510" class="attack"/>
+  <path d="M 764 521 L 786 543 M 786 521 L 764 543" class="cross-under"/>
+  <path d="M 764 521 L 786 543 M 786 521 L 764 543" class="cross"/>
+  <text x="795" y="582" text-anchor="middle" class="attack-label">
+    <tspan x="795">Unauthorized</tspan>
+    <tspan x="795" dy="24">PAIR access through</tspan>
+    <tspan x="795" dy="24">web content</tspan>
+  </text>
+
+</svg>

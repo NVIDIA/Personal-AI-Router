@@ -31,7 +31,21 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo ========================================
-echo  Step 2: Creating installer
+echo  Step 2: Staging Visual C++ Runtime
+echo ========================================
+echo.
+
+node "%ROOT%..\scripts\stage-vc-redist.mjs"
+if errorlevel 1 (
+    echo.
+    echo  Visual C++ Runtime staging failed -- aborting installer creation.
+    endlocal
+    exit /b 1
+)
+
+echo.
+echo ========================================
+echo  Step 3: Creating installer
 echo ========================================
 echo.
 

@@ -73,17 +73,14 @@ func (b *Broker) prepareExplicitEngineSettings(engine string) bool {
 		return false
 	}
 	profile, _ := engineProxyProfileFor(engine)
-	b.engineProxy(profile).explicitSettings.Store(true)
+	state := b.engineProxy(profile)
+	state.explicitSettings.Store(true)
+	state.managedFacade.Store(false)
+	state.backendPort.Store(int32(config.ServerPort))
+	state.startupPort.Store(int32(config.ProxyPort))
 	if engine == "ollama" {
-		b.ollamaState().managedFacade.Store(false)
 		b.managedOllamaBackend.Store(0)
-		b.ollamaState().backendPort.Store(int32(config.ServerPort))
-		b.ollamaState().startupPort.Store(int32(config.ProxyPort))
 		b.syncCurrentEngineOllamaHostAliasReservation()
-	} else {
-		b.lmstudioState().managedFacade.Store(false)
-		b.lmstudioState().backendPort.Store(int32(config.ServerPort))
-		b.lmstudioState().startupPort.Store(int32(config.ProxyPort))
 	}
 	return true
 }

@@ -144,11 +144,12 @@
     );
 }
 
+/* WorkloadItemCard sets --workload-in-flight-color from WORKLOAD_COLOR_MAP. */
 .pair-paper.workload-card-queued {
     background-image: radial-gradient(
         143% 109% at 0% 73%,
         transparent 62%,
-        var(--color-yellow-500) 105%
+        var(--workload-in-flight-color) 105%
     );
 }
 
