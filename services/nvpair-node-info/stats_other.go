@@ -21,7 +21,7 @@ func luidKey(low uint32, high int32) string { return "" }
 // than a literal zero.
 type statsCollector struct{}
 
-func startStatsCollector() *statsCollector { return &statsCollector{} }
+func startStatsCollector(_ []GPUInfo) *statsCollector { return &statsCollector{} }
 
 func (c *statsCollector) Snapshot() statsSnapshot { return statsSnapshot{} }
 

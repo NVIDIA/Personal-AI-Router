@@ -48,7 +48,7 @@ type statsCollector struct {
 	stopOnce   sync.Once
 }
 
-func startStatsCollector() *statsCollector {
+func startStatsCollector(_ []GPUInfo) *statsCollector {
 	return newDarwinStatsCollector(
 		readDarwinCPUTimes,
 		readDarwinMemoryUsed,

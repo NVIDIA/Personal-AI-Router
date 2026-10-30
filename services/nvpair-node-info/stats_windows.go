@@ -98,6 +98,14 @@ const (
 	// spikes) and keeps the memory sample fresh enough for a 2 s UI
 	// poll without being wastefully tight.
 	statsTickInterval = time.Second
+
+	// gpuInventoryRecoverInterval is how often adapter detection is retried
+	// while the inventory is still empty. 10 s is short enough that a node
+	// which came up before its display stack was ready reports its GPUs within
+	// seconds of them becoming visible, and the retry is a DXGI enumeration
+	// plus a registry read: cheap enough to repeat, far too slow to put on the
+	// 1 s stats tick. The retries end at the first non-empty detection.
+	gpuInventoryRecoverInterval = 10 * time.Second
 )
 
 var (
@@ -109,7 +117,7 @@ var (
 	procPdhGetFormattedCounterArrayW = modPDH.NewProc("PdhGetFormattedCounterArrayW")
 	procPdhCloseQuery                = modPDH.NewProc("PdhCloseQuery")
 
-	modKernel32             = windows.NewLazySystemDLL("kernel32.dll")
+	modKernel32              = windows.NewLazySystemDLL("kernel32.dll")
 	procGlobalMemoryStatusEx = modKernel32.NewProc("GlobalMemoryStatusEx")
 
 	// Per-counter "unavailable" latches. Set once on first
@@ -193,9 +201,40 @@ type statsCollector struct {
 	// the previous one.
 	latest atomic.Pointer[statsSnapshot]
 
-	stop     chan struct{}
-	done     chan struct{}
+	// gpuInventory is the adapter list runGPUInventory recovered after an
+	// empty startup enumeration, published into every Snapshot() as
+	// GPUInventory and folded into the startup list by main.go's
+	// mergeGPUInventory. nil until a detection returns at least one adapter;
+	// stored once and never replaced.
+	gpuInventory atomic.Pointer[[]GPUInfo]
+
+	// detect enumerates the host's adapters. Always detectGPUs in production;
+	// injected in tests so the recovery loop runs without DXGI.
+	detect func() []GPUInfo
+
+	// inventoryRecoverEvery is the retry cadence while the inventory is empty.
+	// A field rather than a constant so tests can run the loop at millisecond
+	// speed.
+	inventoryRecoverEvery time.Duration
+
+	stop chan struct{}
+	// wg covers the goroutines the collector owns: the 1 s stats tick and the
+	// GPU inventory loop, which ends on its own once it has published.
+	wg       sync.WaitGroup
 	stopOnce sync.Once
+}
+
+// newStatsCollector builds an unstarted collector. Split out of
+// startStatsCollector so tests can construct one with an injected detect
+// function and short intervals, and start only the goroutine under test.
+func newStatsCollector(detect func() []GPUInfo) *statsCollector {
+	c := &statsCollector{
+		stop:                  make(chan struct{}),
+		detect:                detect,
+		inventoryRecoverEvery: gpuInventoryRecoverInterval,
+	}
+	c.latest.Store(&statsSnapshot{})
+	return c
 }
 
 // startStatsCollector opens the query, adds whichever counters the
@@ -205,12 +244,8 @@ type statsCollector struct {
 // no-op whose Snapshot() yields a zero statsSnapshot forever (and
 // memory-used still gets published every tick regardless of PDH
 // state, since it's a pure syscall).
-func startStatsCollector() *statsCollector {
-	c := &statsCollector{
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
-	}
-	c.latest.Store(&statsSnapshot{})
+func startStatsCollector(startupGPUs []GPUInfo) *statsCollector {
+	c := newStatsCollector(detectGPUs)
 
 	pdhOK := c.open() == nil
 
@@ -227,8 +262,67 @@ func startStatsCollector() *statsCollector {
 			"effect", "GPU and CPU utilization / VRAM-used will not be reported; memory-used still works")
 	}
 
+	c.wg.Add(1)
 	go c.run()
+	c.startGPUInventory(startupGPUs)
 	return c
+}
+
+// startGPUInventory launches recovery only when startup detection was empty.
+// Keeping a successful startup list avoids enumerating the same card again
+// under a reissued LUID and appending it as a duplicate. Separate from
+// startStatsCollector so a test can run this loop on its own.
+func (c *statsCollector) startGPUInventory(startupGPUs []GPUInfo) {
+	if len(startupGPUs) > 0 {
+		return
+	}
+	c.wg.Add(1)
+	go c.runGPUInventory()
+}
+
+// runGPUInventory repairs an inventory that came up empty, off the 1 s tick, and
+// stops as soon as it has.
+//
+// Windows reassigns adapter LUIDs on every boot but rewrites the DirectX
+// registry keys about a minute later, so a service that enumerated inside that
+// window could gate every real adapter away against the previous boot's LUIDs
+// (the stale-registry case selectPhysicalAdapters now refuses) or simply lose a
+// race with the display driver, and then served an empty GPU list for as long as
+// it ran. This retries every inventoryRecoverEvery until a detection returns at
+// least one adapter, publishes that list once, and exits.
+//
+// It deliberately does not keep refreshing afterwards. An adapter's statsKey is
+// its LUID, and Windows reissues LUIDs mid-session (a driver update or restart,
+// a GPU timeout and recovery). mergeGPUInventory appends any adapter whose
+// statsKey it has not seen, so a later re-detection would list one physical card
+// twice, once under the key it held at startup and once under the reissued one.
+// Publishing a single detection means the inventory can only ever add adapters
+// the startup enumeration missed.
+//
+// Detection walks COM and reads the registry, which is why it lives on its own
+// goroutine rather than on the stats tick. Recovered adapters need no extra
+// join wiring: their statsKey is the PDH LUID instance name, and decodeGPU
+// already collects every LUID the counters report regardless of what the
+// inventory knew, so VRAM and utilization land on them at the next tick.
+func (c *statsCollector) runGPUInventory() {
+	defer c.wg.Done()
+	for attempts := 1; ; attempts++ {
+		if gpus := c.detect(); len(gpus) > 0 {
+			// Recovery runs only after startup found no adapters, so even a
+			// successful first attempt repairs an empty startup inventory.
+			slog.Info("GPU inventory recovered after an empty enumeration",
+				"adapters", len(gpus), "attempts", attempts)
+			c.gpuInventory.Store(&gpus)
+			return
+		}
+		timer := time.NewTimer(c.inventoryRecoverEvery)
+		select {
+		case <-c.stop:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 func (c *statsCollector) open() error {
@@ -296,7 +390,7 @@ func (c *statsCollector) addCounter(path string, unavailFlag *atomic.Bool) (uint
 }
 
 func (c *statsCollector) run() {
-	defer close(c.done)
+	defer c.wg.Done()
 	ticker := time.NewTicker(statsTickInterval)
 	defer ticker.Stop()
 	for {
@@ -524,15 +618,19 @@ func fetchCounterArray(counter uintptr, formatFlag uint32) ([]pdhFmtCounterValue
 // map, zero CPUUtilPct, zero MemUsedBytes) before the first tick
 // completes, so callers don't need nil checks.
 func (c *statsCollector) Snapshot() statsSnapshot {
-	p := c.latest.Load()
-	if p == nil {
-		return statsSnapshot{}
+	snap := statsSnapshot{}
+	if p := c.latest.Load(); p != nil {
+		snap = *p
 	}
-	return *p
+	if inventory := c.gpuInventory.Load(); inventory != nil {
+		snap.GPUInventory = *inventory
+	}
+	return snap
 }
 
-// Stop signals the tick goroutine to exit, waits for it, and closes the
-// PDH query. Safe to call any number of times from any number of
+// Stop signals the owned goroutines (the stats tick and, if it is still
+// retrying, the GPU inventory loop) to exit, waits for them, and closes the PDH
+// query. Safe to call any number of times from any number of
 // goroutines — sync.Once guarantees the shutdown body runs exactly
 // once. (A naive `select { case <-c.stop: default: }` guard would race
 // two concurrent callers past the guard before either ran the close,
@@ -543,7 +641,7 @@ func (c *statsCollector) Snapshot() statsSnapshot {
 func (c *statsCollector) Stop() {
 	c.stopOnce.Do(func() {
 		close(c.stop)
-		<-c.done
+		c.wg.Wait()
 		if c.query != 0 {
 			procPdhCloseQuery.Call(c.query)
 			c.query = 0
