@@ -552,8 +552,10 @@ one whose `digest` differs is logged as a conflict and dropped.
 Without an `Origin` header, no usable list is a `503` `{"error":"model
 inventory unavailable"}`; a candidate answering with an empty list is a
 success. With one, the browser-origin gate in §5.8 runs first and answers `502`
-with the same body when no candidate answered — every candidate unreachable, or
-none resolved — so the `503` arises only for a request without `Origin`. The
+with the same body when no candidate answered — every candidate unreachable or
+`5xx`, or none resolved — or when any candidate answered unusably, such as a
+`404` or a `200` without a valid list, even if another returned a good one
+(§5.8). So the `503` arises only for a request without `Origin`. The
 aggregate is reported as one request with `target: "cluster"` and no node id.
 
 ### 5.11 Discovery input
