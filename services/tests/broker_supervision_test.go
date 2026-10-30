@@ -81,6 +81,7 @@ func startBrokerWithDirsAndEnv(t *testing.T, configDir, clusterDir string, extra
 		"XDG_CONFIG_HOME="+configDir,
 		"APPDATA="+configDir,
 		"LOCALAPPDATA="+configDir,
+		"USERPROFILE="+configDir,
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 

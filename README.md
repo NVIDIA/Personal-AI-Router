@@ -153,7 +153,8 @@ The reply is ordinary OpenAI-shaped JSON, abbreviated here:
 
 If you changed a port, or you are using LM Studio or llama.cpp rather than
 Ollama, copy the URL from **Endpoints → API endpoints** instead of assuming the
-one above.
+one above. The copied URL includes `/v1`, ready for Hermes and other
+OpenAI-compatible clients. Append `/chat/completions` for the request above.
 
 That is a single machine working. To route across machines, pair a second one
 from **Settings → Cluster** and repeat the engine and model steps there. The

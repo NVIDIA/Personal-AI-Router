@@ -413,7 +413,15 @@ func TestHandleHTTP_BoundsRealSocketFlushes(t *testing.T) {
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err, "listen")
-	srv := &http.Server{Handler: http.HandlerFunc(p.soleFacade().handleHTTP)}
+	// Limit the sender as well: default TCP buffers can absorb the entire
+	// five-second paced stream without ever blocking a flush.
+	srv := &http.Server{
+		Handler: http.HandlerFunc(p.soleFacade().handleHTTP),
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			assert.NoError(t, c.(*net.TCPConn).SetWriteBuffer(4096), "set proxy write buffer")
+			return ctx
+		},
+	}
 	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 
@@ -430,6 +438,9 @@ func TestHandleHTTP_BoundsRealSocketFlushes(t *testing.T) {
 	_, err = conn.Write([]byte(reqText))
 	require.NoError(t, err, "write request")
 
+	// Bound the receive buffer so a paced stream reaches backpressure within
+	// the test budget rather than fitting in host-dependent TCP buffers.
+	require.NoError(t, conn.(*net.TCPConn).SetReadBuffer(1024), "set client read buffer")
 	// Read the status line only, then stop reading so the proxy's send buffer
 	// backs up and a Flush blocks.
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
