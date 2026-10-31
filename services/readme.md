@@ -178,6 +178,14 @@ NVPAIR_LOG_LEVEL=debug ./build/bin/nvpair-ui-broker
 
 Accepted values: `debug`, `info`, `warn`, `error`. The level can also be changed live over the broker's `log/set-level` JSON-RPC method (not persisted across restarts), so for launch-time issues use the env var or the flag.
 
+## Inference timeouts
+
+`nvpair-proxy` waits up to **30 minutes** for an engine or peer to start answering: first for the response headers, then for the first byte of content (`--response-header-timeout`, or `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT` in the environment the proxy inherits from the broker; `0` waits indefinitely). For a non-streaming completion the header clock covers queueing and the whole generation, because the engine sends nothing until the answer is complete. For a streaming one the first-content clock covers the time the request waits behind other work. The same deadline runs on a peer's ingress hop, so set it on every node a request may traverse — on a headless install, set it in the environment the broker starts with, such as its systemd unit. Unreachable hosts are still cut off by the 10 s dial timeout, and a client that disconnects cancels the upstream request immediately. The trade-off is failover: an engine that accepts a request and then hangs keeps it until the timeout expires. See [the proxy spec](nvpair-proxy/spec.md#51-retry-bounds).
+
+```bash
+NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT=1h ./build/bin/nvpair-ui-broker   # or 0 to disable
+```
+
 ## Testing
 
 There are two layers, and while you are editing a component you want the first
