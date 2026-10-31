@@ -3,7 +3,10 @@
 
 package eapnoob
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // EAP-NOOB error codes (RFC 9140, Section 5.3, Table 10).
 const (
@@ -39,8 +42,5 @@ func (e *ProtocolError) Error() string {
 
 // errorMessage builds the wire bytes for a Type=0 error notification.
 func errorMessage(code int, info string) ([]byte, error) {
-	t := typeError
-	m := &wireMessage{Type: &t, ErrorCode: &code, ErrorInfo: info}
-	b, _, err := encode(m)
-	return b, err
+	return json.Marshal(&wireMessage{Type: intp(typeError), ErrorCode: &code, ErrorInfo: info})
 }

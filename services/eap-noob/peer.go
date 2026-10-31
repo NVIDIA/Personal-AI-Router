@@ -10,56 +10,20 @@ import (
 	"fmt"
 )
 
-// PeerConfig configures the EAP peer role.
-type PeerConfig struct {
-	// NAI is the peer's Network Access Identifier. Defaults to
-	// "noob@eap-noob.arpa".
-	NAI string
-	// Versions are the protocol versions the peer supports. Defaults to
-	// []int{1}.
-	Versions []int
-	// Cryptosuites are the cryptosuites the peer supports. Defaults to
-	// []int{1, 2} (suite 1 is mandatory).
-	Cryptosuites []int
-	// PreferDir selects the OOB direction the peer prefers when the server
-	// offers both (1=peer-to-server, 2=server-to-peer). Defaults to
-	// server-to-peer.
-	PreferDir int
-	// PeerInfo is an optional application-defined JSON object sent to the
-	// server in the Initial Exchange.
-	PeerInfo map[string]any
-}
-
 // Peer drives the EAP peer side of one EAP-NOOB association.
 type Peer struct {
-	cfg   PeerConfig
-	store Store
-	state State
+	peerInfo           json.RawMessage
+	state              State
+	completionVerified bool
 
 	methodState
-
-	verp int
-	csp  int
-	dirp int
 }
 
-// NewPeer creates a peer using the given configuration and association store.
-// If store is nil an in-memory store is used.
-func NewPeer(cfg PeerConfig, store Store) *Peer {
-	if cfg.NAI == "" {
-		cfg.NAI = defaultNAI
-	}
-	if len(cfg.Versions) == 0 {
-		cfg.Versions = []int{1}
-	}
-	if len(cfg.Cryptosuites) == 0 {
-		cfg.Cryptosuites = []int{1, 2}
-	}
-	if store == nil {
-		store = NewMemoryStore()
-	}
-	p := &Peer{cfg: cfg, store: store, state: StateUnregistered}
-	p.nai = cfg.NAI
+// NewPeer creates a PAIR joiner. peerInfo carries the node's identity and
+// certificate; Completion authenticates it to the inviter.
+func NewPeer(peerInfo PairingInfo) *Peer {
+	p := &Peer{peerInfo: marshalInfo(peerInfo), state: StateUnregistered}
+	p.nai = defaultNAI
 	return p
 }
 
@@ -71,16 +35,6 @@ func (p *Peer) State() State { return p.state }
 // authenticated once the association reaches Registered.
 func (p *Peer) ServerInfo() json.RawMessage { return p.in.ServerInfo }
 
-// Association returns the registered association once the Completion Exchange
-// has succeeded, or nil.
-func (p *Peer) Association() *Association { return p.registered }
-
-// Export derives an arbitrary-length shared secret from the registered
-// association (see Association.Export).
-func (p *Peer) Export(label string, context []byte, length int) ([]byte, error) {
-	return p.registered.Export(label, context, length)
-}
-
 // Receive processes one inbound message from the server and returns the next
 // action.
 func (p *Peer) Receive(in []byte) (Outcome, error) {
@@ -91,6 +45,7 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 	if wm.EAP != "" {
 		return p.onResult(wm)
 	}
+	p.completionVerified = false
 	if wm.ErrorCode != nil {
 		return Outcome{State: p.state, Done: true, Err: &ProtocolError{Code: *wm.ErrorCode, Info: wm.ErrorInfo}}, nil
 	}
@@ -117,20 +72,15 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 
 func (p *Peer) onResult(wm *wireMessage) (Outcome, error) {
 	if wm.EAP == eapSuccess {
-		assoc := &Association{
-			PeerId:       p.peerId,
-			NAI:          p.nai,
-			Cryptosuitep: p.csp,
-			Kz:           append([]byte(nil), p.keyM.Kz...),
+		if !p.completionVerified {
+			return p.fail(ErrStateMismatch, "success before verified Completion")
 		}
-		if err := p.store.Save(assoc); err != nil {
-			return Outcome{}, err
-		}
-		p.registered = assoc
+		p.completionVerified = false
 		p.state = StateRegistered
 		return Outcome{State: p.state, Done: true, Success: true}, nil
 	}
 	// EAP-Failure: the conversation ended without registration.
+	p.completionVerified = false
 	return Outcome{State: p.state, Done: true}, nil
 }
 
@@ -162,46 +112,38 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Vers")
 	}
-	verp, ok := bestVersion(serverVers, p.cfg.Versions)
-	if !ok {
+	if !containsInt(serverVers, protocolVersion) {
 		return p.fail(ErrUnsupportedVersion, "no common protocol version")
 	}
 	serverCS, err := rawToIntSlice(wm.Cryptosuites)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Cryptosuites")
 	}
-	csp, ok := firstSupported(serverCS, p.cfg.Cryptosuites)
-	if !ok {
+	suite := firstSupportedSuite(serverCS)
+	if suite == nil {
 		return p.fail(ErrUnsupportedCryptosuite, "no common cryptosuite")
 	}
 	serverDirs, err := rawToInt(wm.Dirs)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Dirs")
 	}
-	dirp, ok := chooseDir(serverDirs, p.cfg.PreferDir)
-	if !ok {
+	if serverDirs != oobDirection && serverDirs != 3 {
 		return p.fail(ErrNoMutuallySupportedOOB, "no mutually supported OOB direction")
 	}
 
-	suite, err := suiteByID(csp)
-	if err != nil {
-		return p.fail(ErrUnsupportedCryptosuite, err.Error())
-	}
 	p.suite = suite
-	p.verp, p.csp, p.dirp = verp, csp, dirp
 
 	// Determine the effective NAI: a server-assigned NewNAI overrides the
-	// peer's configured NAI (RFC 9140, Section 3.3.1).
+	// default NAI (RFC 9140, Section 3.3.1).
 	if len(wm.NewNAI) > 0 {
 		if nai, err := rawToString(wm.NewNAI); err == nil {
 			p.nai = nai
 		}
 	}
 
-	verpRaw := rawInt(verp)
-	cspRaw := rawInt(csp)
-	dirpRaw := rawInt(dirp)
-	peerInfo := marshalInfo(p.cfg.PeerInfo)
+	verpRaw := rawInt(protocolVersion)
+	cspRaw := rawInt(int(suite.id))
+	dirpRaw := rawInt(oobDirection)
 
 	p.in.Vers = wm.Vers
 	p.in.PeerId = wm.PeerId
@@ -211,7 +153,7 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	p.in.Verp = verpRaw
 	p.in.Cryptosuitep = cspRaw
 	p.in.Dirp = dirpRaw
-	p.in.PeerInfo = peerInfo
+	p.in.PeerInfo = p.peerInfo
 	p.in.NAI = rawString(p.nai)
 
 	m := &wireMessage{
@@ -220,7 +162,7 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 		PeerId:       rawString(peerId),
 		Cryptosuitep: cspRaw,
 		Dirp:         dirpRaw,
-		PeerInfo:     peerInfo,
+		PeerInfo:     p.peerInfo,
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -230,6 +172,9 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 }
 
 func (p *Peer) onKeyExchangeRequest(wm *wireMessage) (Outcome, error) {
+	if p.state != StateUnregistered || p.suite == nil {
+		return p.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
+	}
 	jwk, err := rawToJWK(wm.PKs)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad PKs")
@@ -342,19 +287,8 @@ func (p *Peer) onCompletionRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	p.completionVerified = true
 	return Outcome{Send: b, State: p.state}, nil
-}
-
-// OOBOutput produces the out-of-band message for the peer-to-server direction
-// (RFC 9140, Section 3.2.3).
-func (p *Peer) OOBOutput() (OOBMessage, error) {
-	if p.state != StateWaiting {
-		return OOBMessage{}, fmt.Errorf("eapnoob: OOBOutput requires Waiting state, have %s", p.state)
-	}
-	if p.dirp != 1 && p.dirp != 3 {
-		return OOBMessage{}, fmt.Errorf("eapnoob: peer-to-server OOB not negotiated")
-	}
-	return oobOutput(&p.methodState, 1)
 }
 
 // OOBInput accepts the out-of-band message for the server-to-peer direction and
@@ -364,10 +298,7 @@ func (p *Peer) OOBInput(msg OOBMessage) error {
 	if p.state != StateWaiting {
 		return fmt.Errorf("eapnoob: OOBInput requires Waiting state, have %s", p.state)
 	}
-	if p.dirp != 2 && p.dirp != 3 {
-		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
-	}
-	if err := oobInput(&p.methodState, 2, msg); err != nil {
+	if err := oobInput(&p.methodState, msg); err != nil {
 		return err
 	}
 	p.state = StateOOBReceived
@@ -376,17 +307,13 @@ func (p *Peer) OOBInput(msg OOBMessage) error {
 
 // OOBInputNoob accepts a caller-supplied 16-byte Noob for the server-to-peer
 // direction (e.g. derived from a user-carried PIN) without an OOBMessage
-// envelope, recomputing the fingerprint locally rather than verifying a
-// received Hoob. On success the peer moves to the OOB Received state. Transcript
-// agreement is proven later by the Completion Exchange MACs.
+// envelope or Hoob computation. On success the peer moves to OOB Received.
+// Transcript agreement is proven later by the Completion Exchange MACs.
 func (p *Peer) OOBInputNoob(noob []byte) error {
 	if p.state != StateWaiting {
 		return fmt.Errorf("eapnoob: OOBInputNoob requires Waiting state, have %s", p.state)
 	}
-	if p.dirp != 2 && p.dirp != 3 {
-		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
-	}
-	if err := oobInputNoob(&p.methodState, noob); err != nil {
+	if err := setOOBNoob(&p.methodState, noob); err != nil {
 		return err
 	}
 	p.state = StateOOBReceived
@@ -394,6 +321,7 @@ func (p *Peer) OOBInputNoob(noob []byte) error {
 }
 
 func (p *Peer) fail(code int, info string) (Outcome, error) {
+	p.completionVerified = false
 	b, err := errorMessage(code, info)
 	if err != nil {
 		return Outcome{}, err
@@ -401,39 +329,11 @@ func (p *Peer) fail(code int, info string) (Outcome, error) {
 	return Outcome{Send: b, State: p.state, Done: true, Err: &ProtocolError{Code: code, Info: info}}, nil
 }
 
-// negotiation helpers ---------------------------------------------------------
-
-func bestVersion(serverVers, peerVers []int) (int, bool) {
-	best, ok := 0, false
-	for _, v := range serverVers {
-		if containsInt(peerVers, v) && v >= best {
-			best, ok = v, true
+func firstSupportedSuite(serverCS []int) *cryptosuite {
+	for _, offeredSuite := range serverCS {
+		if suite, err := suiteByID(cryptosuiteID(offeredSuite)); err == nil {
+			return suite
 		}
 	}
-	return best, ok
-}
-
-func firstSupported(serverCS, peerCS []int) (int, bool) {
-	for _, c := range serverCS {
-		if containsInt(peerCS, c) && isSupportedCryptosuite(c) {
-			return c, true
-		}
-	}
-	return 0, false
-}
-
-func chooseDir(serverDirs, prefer int) (int, bool) {
-	switch serverDirs {
-	case 1:
-		return 1, true
-	case 2:
-		return 2, true
-	case 3:
-		if prefer == 1 || prefer == 2 {
-			return prefer, true
-		}
-		return 2, true
-	default:
-		return 0, false
-	}
+	return nil
 }

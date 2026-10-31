@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"testing"
 
+	"eapnoob"
+
 	"github.com/stretchr/testify/require"
 )
 
 func TestLegacyPairingInfo_MapsToFirstAdmission(t *testing.T) {
 	peer := newTestManagerPort(t, 15123)
-	raw, err := json.Marshal(PairingInfo{
+	raw, err := json.Marshal(eapnoob.PairingInfo{
 		V:         1,
 		NodeUUID:  peer.identity.NodeUUID,
 		NodeID:    peer.identity.NodeID,

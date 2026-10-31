@@ -4,7 +4,7 @@
 package eapnoob_test
 
 import (
-	"bytes"
+	"encoding/json"
 	"fmt"
 
 	"eapnoob"
@@ -39,24 +39,25 @@ func run(srv *eapnoob.Server, peer *eapnoob.Peer) error {
 	}
 }
 
-// Example shows a full EAP-NOOB pairing followed by exporting a shared secret of
-// arbitrary length. Here the OOB message travels peer-to-server; the caller is
-// responsible for relaying it over a user-assisted channel (QR code, etc.).
+// Example shows PAIR's server-to-peer pairing with a caller-supplied Noob.
+// The cluster manager validates and encodes the user-carried PIN before calling
+// these methods, then pins the authenticated identity after Completion.
 func Example() {
-	srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 1}, nil)
-	peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 1}, nil)
+	srv := eapnoob.NewServer(eapnoob.PairingInfo{Name: "inviter"})
+	peer := eapnoob.NewPeer(eapnoob.PairingInfo{Name: "joiner"})
 
 	// Initial Exchange.
 	if err := run(srv, peer); err != nil {
 		panic(err)
 	}
 
-	// OOB Step: relay (PeerId, Noob, Hoob) from peer to server out of band.
-	oob, err := peer.OOBOutput()
-	if err != nil {
+	// A fixture representing PIN 000123, already validated and encoded by PAIR.
+	noob := make([]byte, 16)
+	noob[15] = 123
+	if err := srv.OOBOutputWith(noob); err != nil {
 		panic(err)
 	}
-	if err := srv.OOBInput(oob); err != nil {
+	if err := peer.OOBInputNoob(noob); err != nil {
 		panic(err)
 	}
 
@@ -65,22 +66,19 @@ func Example() {
 		panic(err)
 	}
 
-	// Both sides now share an association and can derive a secret of any length.
-	const secretLen = 48
-	serverSecret, err := srv.Export("my-application", nil, secretLen)
-	if err != nil {
+	var inviter, joiner eapnoob.PairingInfo
+	if err := json.Unmarshal(peer.ServerInfo(), &inviter); err != nil {
 		panic(err)
 	}
-	peerSecret, err := peer.Export("my-application", nil, secretLen)
-	if err != nil {
+	if err := json.Unmarshal(srv.PeerInfo(), &joiner); err != nil {
 		panic(err)
 	}
 
-	fmt.Println("registered:", srv.State() == eapnoob.StateRegistered)
-	fmt.Println("secret length:", len(serverSecret))
-	fmt.Println("secrets match:", bytes.Equal(serverSecret, peerSecret))
+	fmt.Println("registered:", srv.State() == eapnoob.StateRegistered && peer.State() == eapnoob.StateRegistered)
+	fmt.Println("authenticated inviter:", inviter.Name)
+	fmt.Println("authenticated joiner:", joiner.Name)
 	// Output:
 	// registered: true
-	// secret length: 48
-	// secrets match: true
+	// authenticated inviter: inviter
+	// authenticated joiner: joiner
 }

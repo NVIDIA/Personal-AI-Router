@@ -75,11 +75,11 @@ func noobArray(lead json.RawMessage, in macInputs) []byte {
 	)
 }
 
-// computeHoob returns the 16-byte fingerprint Hoob for the given OOB direction
+// computeHoob returns the 16-byte fingerprint Hoob for server-to-peer OOB
 // (RFC 9140, Section 3.3.2): the cryptosuite hash of the input array truncated
 // to its 16 leftmost bytes.
-func (cs *cryptosuite) computeHoob(dir int, in macInputs) []byte {
-	arr := noobArray(rawInt(dir), in)
+func (cs *cryptosuite) computeHoob(in macInputs) []byte {
+	arr := noobArray(rawInt(oobDirection), in)
 	return cs.hash(arr)[:16]
 }
 
