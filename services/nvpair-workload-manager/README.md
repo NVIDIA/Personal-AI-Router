@@ -19,7 +19,7 @@ through opaquely and forwards it.
 
 ## Communication
 
-Two channels:
+Two channels, plus an optional third entry point:
 
 - **Local** — bidirectional newline-delimited JSON-RPC 2.0 with the supervising
   `nvpair-ui-broker`. Stdio by default; `--ipc <path>` switches to a Unix domain
@@ -28,6 +28,9 @@ Two channels:
   (`POST /v1/workloads/events`) that accepts the same JSON-RPC frames from pinned
   peers, plus an outbound broadcaster that pushes local events to those peers with
   bounded retry.
+- **Local ingress (optional)** — a plaintext, loopback-only listener that accepts
+  the same frames from third-party producers on this machine. It is off unless
+  configured; see [Local ingress](#local-ingress-optional-loopback-only).
 
 Peers are discovered through the broker's node records rather than by this
 component browsing the network itself.
@@ -39,6 +42,7 @@ component browsing the network itself.
 | `--port <n>` | `14320` | Inter-node port to listen on and advertise |
 | `--ipc <path>` | _(stdio)_ | IPC endpoint: Unix socket or Windows named pipe |
 | `--cluster-dir <path>` | _(none)_ | Cluster config dir (`node.crt` / `node.key` + `trusted/`) supplying the identity and pins the inter-node mTLS channel requires. Without it the node has no cluster identity and exchanges no inter-node traffic |
+| `--local-ingress <host:port>` | _(off)_ | Loopback address of the optional [local ingress](#local-ingress-optional-loopback-only); a non-loopback address is refused. Without the flag, `<appdir>/workload-ingress.json` can enable it |
 | `--log-level <level>` | `info` | One of `error` / `warn` / `info` / `debug` |
 | `--version` | | Print version and exit |
 
@@ -58,6 +62,104 @@ after it joins without a rebind or a restart.
 Workload state is therefore only ever exchanged between paired members. See the
 repository [`SECURITY.md`](../../SECURITY.md) for the surrounding trust
 boundaries.
+
+## Local ingress (optional, loopback only)
+
+A third-party producer on the same machine — an external scheduler, a local
+inference harness that does not go through `nvpair-proxy` — can report its
+workloads so they appear in the Jobs list on every member. The ingress is
+**off by default** and **never leaves loopback**:
+
+- Enable it with `--local-ingress 127.0.0.1:14324`, or, when the broker
+  launches this worker without the flag, with `<appdir>/workload-ingress.json`
+  containing `{"listen": "127.0.0.1:14324"}` (file-registered, like an engine
+  manifest under `<appdir>/engines/`). A non-loopback address is refused at
+  startup; a port already in use fails startup loudly.
+- `POST /v1/workloads/events` takes the same JSON-RPC 2.0 frames as the
+  inter-node port: `workload:submitted` / `workload:started` /
+  `workload:completed` / `workload:errored` with `params.workloadInfo`, and
+  `workloads:remove` with `params.workloadId`. `originatedFrom` must be empty
+  (it is then stamped with this node's UUID) or this node's UUID; any other
+  value is `400`, because the ingress reports only workloads that run here.
+  `state` must be one of `queued`, `running`, `completed`, `failed` or
+  `cancelled`, and a workload id (`workloadInfo.id`, or `workloadId` on a
+  removal) is at most 256 bytes.
+- Field names must be spelt exactly as documented, and once. JSON decoders
+  match names without regard to case, so a variant such as `originatedfrom` or
+  `WorkloadInfo`, or two names that differ only in case, is `400` rather than
+  being read as the field. A `resync` name in any spelling is `400` too: it is
+  the peers' own marker for a re-assertion, and a frame carrying it would
+  bypass their dedup.
+- A web page in the user's browser can reach loopback, so a request is refused
+  before its body is read when it carries an `Origin` header (`403`), when its
+  `Host` is not `localhost`, a `127.0.0.0/8` address or `::1` with the ingress
+  port (`421`), or when its `Content-Type` is not `application/json` (`415`). A
+  body over 1 MiB is `413`. Other producer mistakes are `400`, any method other
+  than `POST` is `405`, and a broker that cannot be written is `500`. Request
+  header, read and idle timeouts are set. There is no write timeout: it would
+  also cover the wait for the broker, and cut off a producer whose frame was
+  in fact accepted.
+- A frame may carry `workloadInfo.seq`, the producer's event counter for that
+  workload, from 1. It is part of the key peers deduplicate on, so a producer
+  should stamp it: without it, peers drop an event that repeats a `state` and
+  `scheduledOn` the workload already had.
+- `cancelled` is a valid `state`, carried on `workload:errored`.
+- `workloadInfo.engine` is an opaque, non-empty identifier. It is not limited to
+  the engines PAIR manages: the terminal interface shows an identifier it does
+  not recognise as sent, and the desktop application shows it with a generic
+  badge.
+- A workload counts in the scheduler's pending work only when its frame sets
+  `scheduledOn` to the UUID of the node that runs it, and only while it is
+  `queued` or `running`. The ingress stamps `originatedFrom` but not
+  `scheduledOn`, so without it the workload is listed but does not weigh on
+  ranking.
+- An accepted frame is treated as **local origin**. It is first emitted to the
+  broker as `workloads:upsert` / `workloads:remove` — the same translation a
+  peer-origin event receives, so the local store, the Jobs list, the persisted
+  history and the scheduler all update — and only then tracked for re-sync and
+  queued for broadcast to pinned peers. If the broker write fails the frame is
+  neither tracked nor queued, so the producer can retry it.
+- `200` means the frame was written to the broker and queued for peers. The
+  peer side is best-effort like every broadcast: a frame is dropped with a
+  warning when the outbound queue is full, and a dropped removal is not
+  re-synced. A node that is not a cluster member has no peers, so its frames
+  reach only its own broker.
+- A workload removed through the ingress is remembered for a minute, up to
+  4096 removals (past that the oldest is forgotten first). In that window a
+  replay of the broker's store (sent to a restarted worker) that carries the
+  same workload is ignored instead of tracking it again; a new ingress frame
+  for it clears the memory.
+- Choose ingress ids that cannot collide with the ids of the engine facades in
+  `nvpair-proxy`, which count from 1: a removal matches on
+  `(originatedFrom, id)`, so it would also drop a proxy workload with the same
+  id, and that id is then ignored from the broker for the minute above.
+- The ingress writes to the broker while holding a lock, so a broker that stops
+  reading its pipe blocks ingress requests, as it blocks every other path that
+  writes to the broker.
+- Ordering: for one workload, the broker and the peers see the ingress frames in
+  the same order. That holds among ingress frames only. A `workloads:remove`
+  the broker itself sends for the same workload (a delete from the Jobs list)
+  while an ingress update for it is being written can reach the peers before
+  that update; the producer's next frame or its removal makes them converge.
+
+Example, a producer reporting one job that has started:
+
+```bash
+curl -X POST http://127.0.0.1:14324/v1/workloads/events \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{
+        "id":"job-17","model":"my-model","engine":"my-engine","runId":"9f3c1a7b",
+        "seq":1,"state":"running","createdAt":1716998400000,
+        "startedAt":1716998401000,"completedAt":null,"error":null,"requesterId":null}}}'
+```
+
+The trust boundary is the one `nvpair-proxy`'s plaintext listener already has
+(its README, "Cluster ingress"): a process that can reach this machine's
+loopback may report work, just as it may already submit it to a facade. The
+frame carries workload metadata only, and a producer must send nothing else:
+the ingress checks the fields it knows, but passes any other field inside
+`workloadInfo` (and `params`) through unchanged to the peers and keeps it in the
+re-sync set. Prompts, messages and response bodies must never be put in a frame.
 
 ## Lifecycle events
 
