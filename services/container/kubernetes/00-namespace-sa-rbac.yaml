@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pair
+  labels:
+    # NOT restricted: this pod needs the host's network namespace, which is the entire reason
+    # it can see the LAN at all. Everything else about it stays restricted -- arbitrary UID,
+    # no privilege escalation, all capabilities dropped.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pair
+  namespace: pair
+---
+# PAIR discovers peers by mDNS, which is multicast on the local link and never crosses a
+# router. A pod on the cluster's software-defined network has a pod-network address and is not
+# on the LAN's L2 segment at all, so it can neither hear the existing nodes nor be heard by
+# them. hostNetwork puts the pod directly on the LAN through the node's own interface, which
+# is what makes discovery and the mTLS session to the GPU node possible.
+#
+# In OpenShift an SCC is granted by binding its generated ClusterRole. `hostnetwork-v2` is the
+# right one, and it is also the tighter one -- measured rather than assumed:
+#
+#   hostnetwork      seccompProfiles=[]                requiredDropCapabilities=[KILL MKNOD SETUID SETGID]
+#   hostnetwork-v2   seccompProfiles=[runtime/default] requiredDropCapabilities=[ALL]
+#
+# This pod sets seccompProfile RuntimeDefault and drops ALL capabilities, which `hostnetwork`
+# refuses outright: an empty seccompProfiles list permits no profile at all, so the admission
+# failure reads only "seccomp may not be set" with no provider named beside it. Both still run
+# the container as an arbitrary UID from the namespace range; `privileged` would also work and
+# would give away far more.
+#
+# This binding is a privilege grant and should be applied by a cluster administrator.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pair-hostnetwork-v2
+  namespace: pair
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:hostnetwork-v2
+subjects:
+  - kind: ServiceAccount
+    name: pair
+    namespace: pair
