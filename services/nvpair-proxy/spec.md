@@ -454,6 +454,19 @@ redelivery and dropped by every peer.
 A job admitted but not yet dispatched has no execution node. Consumers must
 treat an absent `scheduledOn` as "not placed" rather than assuming a node.
 
+The terminal event also carries an additive `stats` block measured from the
+response body as it streamed: token counts from the engine's usage report
+(OpenAI `usage`, Ollama `eval_count`) or, failing that, counted from stream
+events and flagged `estimated`, plus decode throughput and time to first token.
+Only a committed response below 400 is measured, so the proxy's own error
+bodies and an engine's error body never are. The body is never buffered: only
+its last few kilobytes are inspected (`nvpair-shared/inferstats`). `stats` is
+absent while a job is queued or running, and when nothing could be measured.
+
+```json
+{"jsonrpc":"2.0","method":"workload:completed","params":{"workloadInfo":{"id":"17","model":"llama3:latest","engine":"ollama","runId":"3ce8a1740b62df95","state":"completed","originatedFrom":"","scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":1716998412000,"error":null,"requesterId":null,"seq":3,"stats":{"promptTokens":12,"completionTokens":340,"tokensPerSecond":42.3,"ttftMs":812}}}}
+```
+
 ### 5.6 Coverage gap: non-streaming requests
 
 A non-streaming request is the case the retry policy serves worst, and the
