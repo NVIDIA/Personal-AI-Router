@@ -29,6 +29,9 @@ const (
 	probeInterval = 10 * time.Second
 	probeTimeout  = 3 * time.Second
 
+	maxNodeInfoResponseBytes = 1 << 20
+	maxModelResponseBytes    = 16 << 20
+
 	// probeFailThreshold is the number of CONSECUTIVE probes (at
 	// probeInterval = 10s, so 30 s of unreachability) where neither
 	// Ollama nor node-info answered before we surface the node as
@@ -428,7 +431,7 @@ func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelResponseBytes)).Decode(&result); err != nil {
 		// Reachable, but the model list didn't parse — still report it up.
 		slog.Debug("manual probe lmstudio up (models parse failed)",
 			"addr", addr, "port", port, "err", err)
@@ -486,7 +489,7 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 			Name string `json:"name"`
 		} `json:"models"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelResponseBytes)).Decode(&result); err != nil {
 		return nil
 	}
 	names := make([]string, 0, len(result.Models))
@@ -515,7 +518,7 @@ func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port i
 	}
 
 	var result NodeInfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxNodeInfoResponseBytes)).Decode(&result); err != nil {
 		slog.Debug("manual probe node-info decode failed",
 			"addr", addr, "port", port, "scheme", scheme, "err", err,
 			"duration_ms", time.Since(start).Milliseconds())
