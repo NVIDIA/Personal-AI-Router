@@ -262,6 +262,35 @@ func (d *directory) applyModels(hostUUID, ip string, emPort int, models []string
 	return n, true, true
 }
 
+// applyInfo writes a node's node-info enrichment — GPUs, CPU and memory — in
+// place. Unlike applyModels it does not compare before writing: the three facets
+// are a handful of scalars, so a field-by-field compare costs about what the
+// write does, and a caller that republishes figures which happen to be unchanged
+// does no harm downstream.
+//
+// The guard is the node-info service and the endpoint the caller read the figures
+// from. A node whose address or port moved between the fetch and this call is left
+// alone, because the figures in hand came from the old endpoint; the next refresh
+// re-reads it where it lives now. ok == false means the result is stale (node gone
+// or re-addressed) and the caller must not cache or emit it.
+func (d *directory) applyInfo(hostUUID, ip string, niPort int, gpus []noderec.GPUInfo, cpu *noderec.CPUInfo, memory *noderec.MemoryInfo) (node noderec.DirectoryNode, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n, present := d.nodes[hostUUID]
+	if !present {
+		return noderec.DirectoryNode{}, false
+	}
+	ni, has := n.Services[noderec.ServiceNodeInfo]
+	if !has || n.IP != ip || ni.Port != niPort {
+		return n, false
+	}
+	n.GPUs = gpus
+	n.CPU = cpu
+	n.Memory = memory
+	d.nodes[hostUUID] = n
+	return n, true
+}
+
 // applyClusterIdentity sets one node's cluster principal and the trust annotation
 // derived from it, reporting whether either changed. It is the write path for both
 // membership reconciles — the pin-set pass (daemon.reconcileTrust) and the
