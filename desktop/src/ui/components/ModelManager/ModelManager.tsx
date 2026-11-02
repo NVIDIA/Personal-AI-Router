@@ -159,10 +159,6 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         () => caps?.hasModelSearchOnlyWhenRunning ?? false,
         [caps?.hasModelSearchOnlyWhenRunning]
     )
-    const modelOpsWhenStopped = useMemo(
-        () => caps?.modelOpsWhenStopped ?? false,
-        [caps?.modelOpsWhenStopped]
-    )
     const isRunning = useMemo(() => backend.processStatus === 'running', [backend.processStatus])
     const supportsSearch = useMemo(
         () => (caps?.hasPullModel ?? false) && (!hasModelSearchOnlyWhenRunning || isRunning),
@@ -184,6 +180,14 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         [backendType, nodeId]
     )
 
+    if (backend.processStatus === 'stopped') {
+        return (
+            <Text kind="body/regular/sm" className="text-subtle-color pl-2">
+                Start engine to see models
+            </Text>
+        )
+    }
+
     return (
         <Stack gap="4">
             {transientModel && (
@@ -200,22 +204,11 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
             {!isBusy && (
                 <>
-                    {(isRunning || modelOpsWhenStopped) &&
-                        models.length === 0 &&
-                        incomingSyncs.length === 0 && (
-                            <Text kind="body/regular/sm" className="text-subtle-color pl-2">
-                                No model/weight files downloaded
-                            </Text>
-                        )}
-                    {!modelOpsWhenStopped &&
-                        models.length === 0 &&
-                        incomingSyncs.length === 0 &&
-                        backend.processStatus === 'stopped' && (
-                            <Text kind="body/regular/sm" className="text-subtle-color pl-2">
-                                Start engine to see models
-                            </Text>
-                        )}
-
+                    {isRunning && models.length === 0 && incomingSyncs.length === 0 && (
+                        <Text kind="body/regular/sm" className="text-subtle-color pl-2">
+                            No model/weight files downloaded
+                        </Text>
+                    )}
                     {models.length > 0 && (
                         <Stack gap="1">
                             {models.map(model => (
