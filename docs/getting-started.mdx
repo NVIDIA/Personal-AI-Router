@@ -16,12 +16,12 @@ engine, and then point compatible applications at PAIR's local endpoint.
 > PAIR routes each request to one node. It does not pool GPU memory, combine
 > GPUs into a larger logical GPU, or split one model or request across systems.
 
-If a step does not go as described stop and check
-[Troubleshooting](troubleshooting.mdx). For example, nothing starts, no nodes appear, pairing
-stalls, or an application cannot connect. It is organized by symptom, so you can go
-straight to the one you are seeing.
+If a step does not go as described, stop and refer to
+[Troubleshooting](troubleshooting.mdx). Common examples are that nothing starts,
+no nodes appear, pairing stalls, or an application cannot connect. Troubleshooting
+is organized by symptom, so you can go straight to the one you are seeing.
 
-> **Setting PAIR up on a system with no desktop?** The desktop application needs
+> **On a system with no desktop, use the terminal interface.** The desktop application needs
 > a graphical session, so a headless system is driven from PAIR's terminal
 > interface instead. Follow
 > [Using the PAIR terminal interface](terminal-interface.mdx), which covers
@@ -31,7 +31,7 @@ straight to the one you are seeing.
 ## Before You Begin
 
 All you need is a machine to install PAIR on. One machine is enough to run local
-inference; two or more on the same local network let you try pairing and routing.
+inference. Two or more on the same local network let you try pairing and routing.
 
 Nothing else has to be in place first:
 
@@ -69,7 +69,7 @@ Choose from:
 - **macOS disk image:** Open the `.dmg` and drag **NVIDIA PAIR** to
   **Applications**, then launch it from there.
 
-  When updating from `PAIR.app` to `NVIDIA PAIR.app`, **Restart & install** may
+  When updating from `PAIR.app` to `NVIDIA PAIR.app`, **Restart & install** might
   finish installing the update without reopening the application. If PAIR does
   not reopen, open **NVIDIA PAIR** from your Applications folder. This applies
   only to the update that renames the app.
@@ -79,7 +79,7 @@ terminal interface for each platform. It contains no desktop application, so it
 is the headless option rather than another way to install this one. Refer to
 [Using the PAIR terminal interface](terminal-interface.mdx).
 
-### Quick Start From Source
+### Quick Start from Source
 
 If you prefer to compile PAIR, install the prerequisites listed under
 [Prerequisites](building.mdx#prerequisites), then:
@@ -95,7 +95,7 @@ npm start
 desktop assets, and launches the desktop application. No separate services build
 is required.
 
-Install or start PAIR on every system that will participate. Refer to
+Install or start PAIR on every system that participates. Refer to
 [Building and running PAIR from source](building.mdx) for standalone service
 builds and for running the services directly.
 
@@ -170,17 +170,17 @@ A node is eligible for a request only when it is online, a compatible engine is
 running, and the requested model is available there. To test routing across
 multiple nodes, prepare the same model on each of those nodes.
 
-llama.cpp downloads use exact `owner/repository:quantization` IDs. Its Add model
+llama.cpp downloads use exact `owner/repository:quantization` IDs. Its **Add model**
 list is populated from popular GGUF repositories published by `ggml-org`,
-`bartowski`, and `unsloth`. Typing filters those results locally; pressing
-Enter or the search button searches public Hugging Face repositories. PAIR
-offers one verified `Q4_K_M` option per result. Load, Eject, and Delete use that
-same exact model id; Delete removes the selected entry from llama.cpp's
-persistent cache.
+`bartowski`, and `unsloth`. Typing filters those results locally. Pressing
+**Enter** or selecting the search button searches public Hugging Face
+repositories. PAIR offers one verified `Q4_K_M` option for each result.
+**Load**, **Eject**, and **Delete** use that same exact model ID. **Delete**
+removes the selected entry from llama.cpp's persistent cache.
 
 Refer to [Managing engines](engine-lifecycle.mdx) for details about:
 
-- Installing, starting, stopping, updating, and uninstalling engines.
+- Installing, starting, stopping, and uninstalling engines.
 - Managing engines in a cluster.
 - Quitting or relaunching PAIR.
 
@@ -191,9 +191,9 @@ inference engine or the node that serves the request. PAIR calls that local
 address an endpoint.
 
 Select **Endpoints** in the top toolbar to open the **API endpoints** window. It
-lists one copyable `http://127.0.0.1:<port>/v1` URL per engine, ready to use as an
-OpenAI-compatible base URL. Copy the one for the engine you prepared. If it says
-**No engines are running**, return to step 4 and start an engine.
+lists one copyable `http://127.0.0.1:<port>` URL for each engine. Copy the one for the
+engine you prepared. If it says **No engines are running**, return to step 4 and
+start an engine.
 
 ![The API endpoints window listing a copyable local URL for each running engine.](assets/onboarding/getting-started/08-api-endpoints.png)
 
@@ -215,7 +215,7 @@ Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
 
 Your application connects to PAIR's proxy, not directly to the engine. A port
-from a standalone engine installation may now lead somewhere else. Copy the URL
+from a standalone engine installation can now lead somewhere else. Copy the URL
 from **Endpoints** instead of typing a port from memory.
 [Step 7](#7-connecting-your-agents-and-port-information) lists the defaults and
 how to change them.
@@ -247,7 +247,7 @@ only when something you already have is written against Ollama's `/api/...` API.
 The choice does not affect routing. Both styles are routed across your cluster the
 same way, and neither one changes which node serves the request.
 
-### OpenAI-Style Request (Works With Every Engine)
+### OpenAI-Style Request (Works with Every Engine)
 
 ```bash
 curl <PAIR_BASE_URL>/chat/completions \
@@ -288,7 +288,7 @@ curl -N <PAIR_PROXY_URL>/api/chat \
 
 Then confirm the request was routed: open **Overview**, use the **Jobs** filter in
 the left column, and read **Running on** or **Ran on** on the job card to identify
-the serving node. Once a job has been sent to a node, its card shows **Sent to**
+the serving node. After a job has been sent to a node, its card shows **Sent to**
 until the job starts, and keeps it if the job ends without starting.
 
 ![A job card under the Jobs filter naming the node that served the request.](assets/onboarding/getting-started/09-job-served-by-node.png)
@@ -298,7 +298,7 @@ always runs on one selected node. PAIR does not split an in-flight request
 between systems.
 
 **If you would rather not assemble requests yourself,** PAIR can send them for
-you: **Test** on **Settings → Service** runs a burst of inference through the
+you: **Test** on **Settings > Service** runs a burst of inference through the
 same path and shows the resulting jobs. It is the quickest way to see routing
 work across several nodes at once. Refer to
 [Generate Traffic Without an Application](#generate-traffic-without-an-application).
@@ -310,7 +310,7 @@ proxy takes the port the engine would normally use, so existing clients keep
 working without reconfiguration, and PAIR moves the engine itself to the next
 free port.
 
-| What an application connects to | Default port |
+| What an Application Connects To | Default Port |
 | --- | --- |
 | Ollama-compatible proxy | `11434` |
 | LM Studio / OpenAI-compatible proxy | `1234` |
@@ -378,7 +378,7 @@ current URL.
 ### Using an Engine's Own Command Line
 
 An engine PAIR installed for you is a normal installation, and you can drive it
-with its own command-line interface (CLI). Two things make that less obvious:
+with its own CLI. Two things make that less obvious:
 
 - The binaries are not on your `PATH` yet.
 - The engine is not on the port its CLI expects by default.
@@ -443,16 +443,16 @@ add an alias yourself.
 
 ## Use PAIR with Existing Applications
 
-Any client that lets you set a base URL and a model name can use PAIR — Hermes,
-for example. Point the base URL at the endpoint you copied in step 5, and use a
+Any client that lets you set a base URL and a model name can use PAIR, for
+example Hermes. Point the base URL at the endpoint you copied in step 5, and use a
 model you prepared in step 4.
 
 The available paths depend on the engine behind the proxy. Paths below are
 relative to the proxy URL, before the `/v1` suffix:
 
-| Endpoint | Default proxy URL | Paths it serves |
+| Endpoint | Default Proxy URL | Paths it Serves |
 | --- | --- | --- |
-| Ollama | `http://127.0.0.1:11434` | Ollama's own API — `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags` — plus the OpenAI-compatible and Anthropic APIs listed below|
+| Ollama | `http://127.0.0.1:11434` | Ollama's own API (`/api/chat`, `/api/generate`, `/api/embed`, and `/api/tags`), plus the OpenAI-compatible and Anthropic APIs listed below |
 | LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible and Anthropic APIs listed below |
 | llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible API listed below, plus `/models` for model listings |
 
@@ -465,7 +465,7 @@ All three endpoints expose these OpenAI-compatible paths:
 - `GET /v1/models` — [available models](https://developers.openai.com/api/reference/resources/models/methods/list)
 
 Ollama and LM Studio support the following Anthropic APIs:
-- `POST /v1/messages` - [Messages](https://platform.claude.com/docs/en/api/messages/create)
+- `POST /v1/messages` — [Messages](https://platform.claude.com/docs/en/api/messages/create)
 
 **Endpoints** includes `/v1` in the displayed and copied URL, so you can paste it
 directly into Hermes or another client that expects an OpenAI-compatible base
@@ -502,7 +502,7 @@ request and does not forward it onward.
 
 **If you need a network-reachable inference endpoint,** that is outside
 what PAIR does. You would configure an engine to listen on your network yourself
-and take on the exposure that implies. PAIR does not offer it by default and there
+and take on the exposure that implies. PAIR does not offer it by default, and there
 is no plan to add it as an option, because it would turn any node into an open
 relay for anything on the network.
 
@@ -513,9 +513,9 @@ thing that fails tells you where the problem is.
 
 ### 1. Check Service Health
 
-Open **Settings → Service** and confirm that **Status** reads **Running**. That
+Open **Settings > Service** and confirm that **Status** reads **Running**. That
 checks the background services without involving inference at all. If it reads
-anything else, nothing below will work. Refer to
+anything else, nothing below works. Refer to
 [PAIR does not become ready](troubleshooting.mdx#pair-does-not-become-ready).
 
 ![Settings > Service with Status reading Running, beside the Test, Stop, and Restart controls and the log options.](assets/onboarding/getting-started/11-service-health.png)
@@ -546,7 +546,7 @@ A reply alone does not prove routing. To identify the serving node:
 
 1. Open **Overview**.
 2. Use the **Jobs** filter in the left column.
-3. Read **Running on** or **Ran on** on the job card. Once a job has been sent
+3. Read **Running on** or **Ran on** on the job card. After a job has been sent
    to a node, its card shows **Sent to** until the job starts.
 
 ### 5. Verify Cluster Routing
@@ -565,7 +565,7 @@ to observe how PAIR routes them across eligible nodes.
 ### Generate Traffic Without an Application
 
 If you would rather watch routing work than assemble requests yourself, select
-**Test** on **Settings → Service**. It runs a sixty-second burst of synthetic
+**Test** on **Settings > Service**. It runs a 60-second burst of synthetic
 inference and takes you to **Overview**, where it appears as ordinary job
 activity you can filter and inspect like any other. A toast tracks the run and is
 where you stop it early.
@@ -583,7 +583,7 @@ want to observe.
 
 ### Read a Failure
 
-| Symptom | Usual meaning |
+| Symptom | Usual Meaning |
 | --- | --- |
 | Connection refused | Nothing is listening on that port. Check the port and service status. |
 | `502` with `no active node` | The proxy is running, but no routable engine node is available. |
@@ -593,18 +593,18 @@ want to observe.
 | `400` or `422` | The request is malformed. PAIR does not retry it because it would fail on every node. |
 
 When a status is not specific enough, the services' own reporting is behind
-**Open log file** on **Settings → Service**.
+**Open log file** on **Settings > Service**.
 
 ## Keeping PAIR Up to Date
 
 An installed PAIR looks for a newer release shortly after it starts, and every
-six hours while it keeps running. Checking is all it does on its own: PAIR never
+six hours while it keeps running. Checking is all it does on its own. PAIR never
 downloads or installs an update without you asking it to. What it offers is a
 shorter path than fetching an installer yourself, not an automatic upgrade.
 
 When a release is available, **Overview** shows an **Update available** message,
-and **Settings → Service → Application updates** offers **Download update**
-beside the version you are running. Once the download finishes, that card offers
+and **Settings > Service > Application updates** offers **Download update**
+beside the version you are running. After the download finishes, that card offers
 **Restart & install**, which stops PAIR's background services before handing
 over to the installer. **Check for updates** on the same card checks whenever
 you want, rather than waiting for the next scheduled check.
@@ -616,8 +616,9 @@ downloading again.
 Updating keeps your settings, logs, cluster identity, and cluster membership, so
 a node stays paired across an update. Model weights are untouched as well,
 because they belong to the engine rather than to PAIR. Updating PAIR does not
-update its inference engines — engines are updated separately from **Engine
-settings**, described in [Managing engines](engine-lifecycle.mdx).
+update its inference engines. To move an
+engine to a newer release, refer to
+[Updating and Uninstalling an Engine](engine-lifecycle.mdx#updating-and-uninstalling-an-engine).
 
 If you are updating from a version before 1.0.0, a few setups have a small extra
 step, such as tidying up the old app on macOS. The
