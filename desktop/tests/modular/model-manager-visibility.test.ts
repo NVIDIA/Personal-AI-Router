@@ -26,7 +26,7 @@ function cachedModel(): ModelItem {
         digest: '',
         sizeVram: null,
         expiresAt: null,
-        expiry: '5m',
+        expiry: '10m',
         capabilities: []
     }
 }
@@ -116,12 +116,11 @@ describe.each(EngineTypes)('%s model visibility', engineType => {
 })
 
 describe.each(['local-node', 'peer-node'])('vLLM state details on %s', nodeId => {
-    it('keeps models and controls visible when the engine is on but idle', () => {
+    it('keeps models and controls visible when running with an unloaded model', () => {
         const html = renderToStaticMarkup(
             createElement(ModelManager, {
                 backend: engineInfo('vllm', {
                     processStatus: 'running',
-                    idle: true,
                     models: [cachedModel()]
                 }),
                 nodeId
@@ -129,15 +128,15 @@ describe.each(['local-node', 'peer-node'])('vLLM state details on %s', nodeId =>
         )
 
         expect(html).toContain(cachedModel().name)
-        expect(html).toContain('Unloads after 5m idle')
+        expect(html).not.toContain('Unloads after')
         expect(html).toContain('Add model')
         expect(html).not.toContain('Start engine to see models')
     })
 
-    it('shows an empty inventory when on but idle with no cached models', () => {
+    it('shows an empty inventory when running with no cached models', () => {
         const html = renderToStaticMarkup(
             createElement(ModelManager, {
-                backend: engineInfo('vllm', { processStatus: 'running', idle: true }),
+                backend: engineInfo('vllm', { processStatus: 'running' }),
                 nodeId
             })
         )
