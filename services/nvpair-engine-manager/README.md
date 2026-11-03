@@ -174,6 +174,13 @@ always wins. NVIDIA ModelOpt FP8 weight checkpoints are rejected before launch:
 vLLM Metal cannot load that tensor layout, so macOS needs a BF16, FP16, or
 MLX-compatible quantized checkpoint instead.
 
+The vLLM Add-model catalog and search results exclude
+`nvidia/Llama-3.1-8B-Instruct-FP8` for macOS targets because this checkpoint's
+ModelOpt FP8 weights cannot be loaded by the pinned Metal engine. The same model
+remains available on Linux, including DGX Spark. This is an exact-model exclusion,
+not a general FP8 filter; other catalog entries are unchanged. The load-time
+compatibility check still applies to models already downloaded on a Mac.
+
 Readiness polls `/health` for up to eight minutes while weights load.
 
 The model list is the Hugging Face cache (`~/.cache/huggingface/hub`, or the

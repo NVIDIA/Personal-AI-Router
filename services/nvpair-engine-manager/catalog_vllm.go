@@ -27,6 +27,23 @@ var vllmPublishers = []string{"Qwen", "nvidia", "mistralai", "microsoft", "ibm-g
 // image-text-to-text and are served by vLLM like any other chat model.
 var vllmPipelines = []string{"text-generation", "image-text-to-text"}
 
+// Filter the response, not the shared upstream cache: another caller can request
+// the same catalog or search for a Linux target. This exact checkpoint failed
+// with the pinned Metal engine; its name is not evidence against other FP8 models.
+func vllmModelsForTarget(models []CatalogModel, platform string) []CatalogModel {
+	if platform != "darwin" {
+		return models
+	}
+	out := make([]CatalogModel, 0, len(models))
+	for _, model := range models {
+		if model.ID == "nvidia/Llama-3.1-8B-Instruct-FP8" {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
 func (c *catalogService) vllmCatalog(ctx context.Context, query string) ([]CatalogModel, time.Time, error) {
 	if query == "" {
 		return c.vllm.get(ctx)
