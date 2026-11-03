@@ -188,15 +188,10 @@ rather than driver-aware or offline-repacked.
 The bundled `vllm` manifest covers Linux (NVIDIA GPU) and Apple Silicon macOS
 (vLLM-Metal). It installs a pinned vLLM release into a private virtualenv
 through a checksum-pinned `uv` bootstrap, or adopts a `vllm` already installed
-at a detected path. The engine's PAIR gateway listens on `8001`, with the
-`vllm serve` process on loopback `18001`, behind the proxy facade on `8000`. vLLM serves one model per process and has no
-load or unload API, so the engine manager puts a gateway on its port (`front`):
-Start and the restore after a restart bring it up idle with nothing loaded, the
-first request or a Load loads the model, it unloads after an idle limit (five
-minutes by default, `get_idle_timeout` and `set_idle_timeout`, shown as the
-model row's expiry control), and Eject (`unload_model`, a `stop_engine` action)
-unloads it on demand while the engine stays on; the card shows an idle engine
-as "Idle · loads on next request" (`idle` on the engine status). Its model list
+at a detected path, then runs `vllm serve` on `8001` behind the proxy facade on
+`8000`. vLLM serves one model per process and has no load or unload API, so
+Eject (`unload_model`, a `stop_engine` action) stops the engine to free the GPU
+and Load on a stopped engine starts it; its model list
 (`list_models` on disk) is kept while stopped. It downloads and deletes
 through the shared Hugging Face cache (`pull_model` is an `hf_pull` action,
 `delete_model` an `hf_cache` delete that refuses the model an engine process
@@ -205,10 +200,8 @@ arguments),
 and has a Hugging Face catalog. Load switches the served model through `load_model` (a
 `launch_model` action): it saves `--model <id>` into the launch arguments and
 restarts the engine, restoring the previous model if the new one does not start.
-Every cached model is advertised to peers and the proxy. A request that names
-one that is not loaded switches vLLM to it through the gateway; if that switch
-fails, the request gets a 503 and vLLM is left unloaded, with nothing rolled
-back. A Load switch passes through a stopped engine for the length of the
+Only the model being served is advertised to peers and the proxy, so a request
+for another cached model is refused until it is loaded. A Load switch passes through a stopped engine for the length of the
 restart, so the desktop marks the engine as switching: its card shows starting
 rather than stopped, and its model list is kept, until the load request finishes
 (success, or failure with the previous model restored). Weights live in the shared

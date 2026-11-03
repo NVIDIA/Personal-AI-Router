@@ -8,7 +8,6 @@ import type {
     EngineProgress,
     EngineStatusData,
     EngineType,
-    ModelExpiry,
     ModelItem
 } from '@/shared/types/engines'
 import type { LogEntry, LogPage } from '@/shared/types/log'
@@ -24,12 +23,11 @@ import {
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
-import { DefaultIdleExpiry, EnginesWithIdleTimeout, EngineTypes } from '@/shared/constants/engines'
+import { EngineTypes } from '@/shared/constants/engines'
 import {
     emptyEngineStatus,
     engineManagerName,
     engineTypeFromManagerName,
-    idleSecondsToExpiry,
     isEngineType,
     unsupportedEngineStatus
 } from '@/shared/utils/engines'
@@ -582,7 +580,7 @@ function sameTelemetry(
     )
 }
 
-function modelItem(name: string, loaded = false, expiry: ModelExpiry = '10m'): ModelItem {
+function modelItem(name: string, loaded = false): ModelItem {
     return {
         name,
         size: 0,
@@ -594,7 +592,7 @@ function modelItem(name: string, loaded = false, expiry: ModelExpiry = '10m'): M
         digest: '',
         sizeVram: null,
         expiresAt: null,
-        expiry,
+        expiry: '10m',
         capabilities: []
     }
 }
@@ -908,7 +906,7 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; port: number; idle: boolean }
+        { installed: boolean; running: boolean; port: number }
     >()
     /**
      * The engines `nvpair-engine-manager` lists for this host. It leaves out an
@@ -916,11 +914,6 @@ class ModularBridgeState {
      * reported as `unsupported`. Null until the first full listing.
      */
     private localEngineList: ReadonlySet<EngineType> | null = null
-    /**
-     * How long an engine whose expiry is an idle limit may sit idle before it
-     * unloads its model, in seconds (0 is never), as the engine manager reports it.
-     */
-    private idleSeconds = new Map<EngineType, number>()
     /**
      * Local model lists pulled from `nvpair-engine-manager`'s `list_models` action by
      * the supervisor. Cached so `engines:get-initial` can include them and survive
@@ -1399,8 +1392,7 @@ class ModularBridgeState {
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
-            port: numberValue(obj.port),
-            idle: booleanValue(obj.idle)
+            port: numberValue(obj.port)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -1408,32 +1400,6 @@ class ModularBridgeState {
         // already carries the resolved, fact-derived status.
         this.discardPendingOp(engineType)
         this.emitLocalEngineStatus(engineType)
-    }
-
-    /** The expiry the models of an engine show: its idle limit, or the default. */
-    private expiryFor(engineType: EngineType): ModelExpiry {
-        const seconds = this.idleSeconds.get(engineType)
-        if (seconds !== undefined) return idleSecondsToExpiry(seconds)
-        return EnginesWithIdleTimeout.includes(engineType) ? DefaultIdleExpiry : '10m'
-    }
-
-    /**
-     * Record how long an engine may sit idle before it unloads its model, and show
-     * it on the engine's models.
-     */
-    setEngineIdleSeconds(engineType: EngineType, seconds: number): void {
-        this.idleSeconds.set(engineType, seconds)
-        const nodeId = this.selfId
-        const current = this.localManagerModels.get(engineType)
-        if (!nodeId || !current) return
-        const expiry = this.expiryFor(engineType)
-        const items = current.map(item => ({ ...item, expiry }))
-        this.localManagerModels.set(engineType, items)
-        emitBridgePush('engines:state-changed', {
-            nodeId,
-            engineType,
-            models: { engineType, nodeId, models: items }
-        })
     }
 
     /**
@@ -1959,8 +1925,7 @@ class ModularBridgeState {
         // row to idle. The loaded set is seeded by discovery self-enrichment and
         // kept fresh by {@link applyLocalLoadedModels}.
         const loaded = loadedNamesForEngine(nodeId ? this.nodes.get(nodeId) : undefined, engineType)
-        const expiry = this.expiryFor(engineType)
-        const items = modelNames.map(name => modelItem(name, loaded.has(name), expiry))
+        const items = modelNames.map(name => modelItem(name, loaded.has(name)))
         this.localManagerModels.set(engineType, items)
         if (!nodeId) return
         emitBridgePush('engines:state-changed', {
@@ -2178,7 +2143,6 @@ class ModularBridgeState {
             return {
                 engineType,
                 nodeId,
-                ...(facts.running && facts.idle ? { idle: true } : {}),
                 processStatus: facts.running
                     ? 'running'
                     : this.modelSwitches.has(engineType)

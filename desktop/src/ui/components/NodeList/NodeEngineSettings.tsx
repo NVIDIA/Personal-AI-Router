@@ -96,7 +96,6 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                 displayName: EngineDisplayNames[type],
                 source: 'detected',
                 processStatus: status.processStatus,
-                idle: status.idle,
                 port: status.enginePort,
                 proxyPort: status.proxyPort,
                 models: models.models,
