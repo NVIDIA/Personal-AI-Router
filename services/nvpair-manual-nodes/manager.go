@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -29,8 +30,9 @@ import (
 var Version = "dev"
 
 const (
-	probeInterval = 10 * time.Second
-	probeTimeout  = 3 * time.Second
+	probeInterval   = 10 * time.Second
+	probeTimeout    = 3 * time.Second
+	previewInterval = 2 * time.Second
 
 	// probeFailThreshold is the number of CONSECUTIVE probes (at
 	// probeInterval = 10s, so 30 s of unreachability) where neither
@@ -105,6 +107,9 @@ type ManualNodeStatus struct {
 	// manual node carries the same permanent identity the rest of the system
 	// keys on. Empty when node-info didn't report one.
 	HostUUID string `json:"hostUuid,omitempty"`
+	// Preview contains public display-only hardware for an unpaired entry.
+	// It does not establish identity, reachability, or scheduling measurements.
+	Preview *noderec.NodeInfo `json:"preview,omitempty"`
 }
 
 // sameAvailability compares identity, configuration, engine models, and service
@@ -117,10 +122,10 @@ func (s ManualNodeStatus) sameAvailability(other ManualNodeStatus) bool {
 		s.Address == other.Address &&
 		s.OllamaUp == other.OllamaUp &&
 		s.OllamaPort == other.OllamaPort &&
-		sliceEqual(s.OllamaModels, other.OllamaModels) &&
+		slices.Equal(s.OllamaModels, other.OllamaModels) &&
 		s.LMStudioUp == other.LMStudioUp &&
 		s.LMStudioPort == other.LMStudioPort &&
-		sliceEqual(s.LMStudioModels, other.LMStudioModels) &&
+		slices.Equal(s.LMStudioModels, other.LMStudioModels) &&
 		s.NodeInfoUp == other.NodeInfoUp &&
 		s.NodeInfoPort == other.NodeInfoPort &&
 		s.TLSEnabled == other.TLSEnabled &&
@@ -134,6 +139,7 @@ func (s ManualNodeStatus) withoutVerification() ManualNodeStatus {
 	s.NodeInfoUp = false
 	s.GPUs, s.CPU, s.Memory = nil, nil, nil
 	s.TelemetryValid, s.MSSince = false, 0
+	s.Preview = nil
 	return s
 }
 
@@ -151,8 +157,13 @@ type trackedNode struct {
 	// Used to gate probe-failed errors:report emits at
 	// probeFailThreshold so a single transient failure doesn't
 	// generate UI noise.
-	consecutiveFails int
-	observedAt       time.Time
+	consecutiveFails  int
+	observedAt        time.Time
+	previewObservedAt time.Time
+	// Once verified, this entry never falls back to a public preview after a
+	// failed authenticated read or trust withdrawal. A replacement entry starts
+	// with a new lifetime and must establish its own identity.
+	everAuthenticated bool
 }
 
 // statusAt projects cached hardware at send time without resetting its age.
@@ -160,6 +171,10 @@ func (n *trackedNode) statusAt(now time.Time) ManualNodeStatus {
 	status := n.status
 	if status.TelemetryValid {
 		status.MSSince = (noderec.NodeInfo{TelemetryValid: true, MSSince: status.MSSince}).Aged(now.Sub(n.observedAt)).MSSince
+	}
+	if status.Preview != nil {
+		preview := status.Preview.Aged(now.Sub(n.previewObservedAt))
+		status.Preview = &preview
 	}
 	return status
 }
@@ -222,6 +237,7 @@ func (m *Manager) Run(ctx context.Context) error {
 
 	go m.probeLoop(ctx)
 	go m.watchTrust(ctx)
+	go m.previewLoop(ctx)
 
 	return m.readLoop(ctx)
 }
@@ -248,6 +264,7 @@ func (m *Manager) reconcileTrust() {
 	for _, node := range m.nodes {
 		status := node.status
 		if status.IdentityVerification == noderec.IdentityPinned && (status.DiscoveryRecordID == "" || status.DiscoveryRecordID != m.mesh.PeerRecordID(status.HostUUID)) {
+			node.everAuthenticated = true
 			node.status = status.withoutVerification()
 			if err := m.codec.Notify("node/updated", node.status); err != nil {
 				slog.Warn("failed to withdraw manual hardware", "node_id", status.ID, "err", err)
@@ -255,6 +272,108 @@ func (m *Manager) reconcileTrust() {
 		}
 	}
 	m.peerClients.DropUnpinned()
+}
+
+func (m *Manager) previewLoop(ctx context.Context) {
+	ticker := time.NewTicker(previewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.previewAll(ctx)
+		}
+	}
+}
+
+func (n *trackedNode) permitsPreview() bool {
+	return n.entry.TLSPort <= 0 && !n.entry.MTLS &&
+		n.status.IdentityVerification != noderec.IdentityPinned && !n.everAuthenticated
+}
+
+func (n *trackedNode) previewPort() int {
+	if n.status.NodeInfoPort > 0 {
+		return n.status.NodeInfoPort
+	}
+	return 14318
+}
+
+type previewTarget struct {
+	id      string
+	entry   ManualEntry
+	port    int
+	tracked *trackedNode
+}
+
+// previewAll refreshes display hardware independently of engine probes. A
+// bounded set of readers prevents one unreachable entry from delaying every
+// other preview, and each result is checked against the current entry again.
+func (m *Manager) previewAll(ctx context.Context) {
+	m.mu.RLock()
+	targets := make([]previewTarget, 0, len(m.nodes))
+	for id, node := range m.nodes {
+		if !node.permitsPreview() {
+			continue
+		}
+		targets = append(targets, previewTarget{id: id, entry: node.entry, port: node.previewPort(), tracked: node})
+	}
+	m.mu.RUnlock()
+
+	var readers sync.WaitGroup
+	slots := make(chan struct{}, noderec.HardwarePreviewConcurrency)
+	for _, target := range targets {
+		select {
+		case <-ctx.Done():
+			readers.Wait()
+			return
+		case slots <- struct{}{}:
+		}
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			defer func() { <-slots }()
+			m.refreshPreview(ctx, target)
+		}()
+	}
+	readers.Wait()
+}
+
+// currentPreviewTarget returns an eligible entry only while the queued target
+// still matches. The caller must hold mu through any subsequent state change.
+func (m *Manager) currentPreviewTarget(target previewTarget) *trackedNode {
+	node := m.nodes[target.id]
+	if node == nil || node != target.tracked || node.entry != target.entry ||
+		!node.permitsPreview() || node.previewPort() != target.port {
+		return nil
+	}
+	return node
+}
+
+func (m *Manager) refreshPreview(ctx context.Context, target previewTarget) {
+	// A target may have been removed or authenticated while waiting for a reader.
+	m.mu.RLock()
+	current := m.currentPreviewTarget(target) != nil
+	m.mu.RUnlock()
+	if !current || ctx.Err() != nil {
+		return
+	}
+	preview, ok := noderec.ReadHardwarePreview(ctx, target.entry.Address, target.port)
+	receivedAt := time.Now()
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	node := m.currentPreviewTarget(target)
+	if node == nil || ctx.Err() != nil {
+		return
+	}
+	node.status.Preview = &preview
+	node.previewObservedAt = receivedAt
+	if err := m.codec.Notify("node/updated", node.statusAt(time.Now())); err != nil {
+		slog.Warn("failed to publish manual hardware preview", "node_id", target.id, "err", err)
+	}
 }
 
 func (m *Manager) probeLoop(ctx context.Context) {
@@ -297,8 +416,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	id := nodeID(entry)
 	m.mu.RLock()
 	tracked := m.nodes[id]
+	matches := tracked != nil && tracked.entry == entry
 	m.mu.RUnlock()
-	if tracked == nil || tracked.entry != entry {
+	if !matches {
 		return
 	}
 
@@ -382,6 +502,11 @@ func (m *Manager) probeNode(entry ManualEntry) {
 
 	prev := tn.status
 	prevFails := tn.consecutiveFails
+	if prev.IdentityVerification == noderec.IdentityPinned || newStatus.IdentityVerification == noderec.IdentityPinned {
+		tn.everAuthenticated = true
+	} else if tn.permitsPreview() {
+		newStatus.Preview = prev.Preview
+	}
 	// A failed authenticated read clears service measurements and proof. The
 	// configured engine target remains independently available when it answers.
 	tn.status = newStatus
@@ -595,18 +720,14 @@ func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int, loca
 		return false, NodeInfoResponse{}
 	}
 
-	var result NodeInfoResponse
-	body, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
-	if err != nil || len(body) > 64<<10 {
-		// Partial or oversized data cannot supply a complete accepted snapshot.
-		return false, NodeInfoResponse{}
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	info, err := noderec.DecodeNodeInfo(resp.Body)
+	if err != nil {
 		slog.Debug("manual probe node-info decode failed",
 			"addr", addr, "port", port, "err", err,
 			"duration_ms", time.Since(start).Milliseconds())
 		return false, NodeInfoResponse{}
 	}
+	result := NodeInfoResponse{NodeInfo: info}
 	m.mesh.Refresh()
 	if localRecordID == "" || localRecordID != m.mesh.PeerRecordID(m.mesh.NodeUUID()) {
 		return false, NodeInfoResponse{}
@@ -657,6 +778,7 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 		Name:                 entry.Name,
 		Address:              entry.Address,
 		OllamaPort:           11434,
+		LMStudioPort:         lmStudioPort,
 		NodeInfoPort:         nodeInfoPort,
 		TLSEnabled:           entry.TLSPort > 0,
 		MTLSRequired:         entry.TLSPort > 0 && entry.MTLS,
@@ -816,16 +938,4 @@ func nodeID(entry ManualEntry) string {
 		return entry.Name
 	}
 	return "manual:" + entry.Address
-}
-
-func sliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -351,7 +352,8 @@ func TestProxyDiscovery_CoalescesWhilePipeIsBlocked(t *testing.T) {
 		assert.NoError(t, proxySide.Close())
 	})
 	require.NoError(t, proxySide.SetDeadline(time.Now().Add(6*time.Second)))
-	writer := &observedProxyWriter{Conn: brokerSide, writing: make(chan struct{})}
+	writing := make(chan struct{})
+	writer := &observedProxyWriter{Conn: brokerSide, onWrite: sync.OnceFunc(func() { close(writing) })}
 	b := newManualTestBroker()
 	b.nodeID, b.clusterDir = "self", t.TempDir()
 	clustertrusttest.Join(t, b.clusterDir, "cluster", "self", "peer")
@@ -375,7 +377,7 @@ func TestProxyDiscovery_CoalescesWhilePipeIsBlocked(t *testing.T) {
 		close(subscribed)
 	}()
 	select {
-	case <-writer.writing:
+	case <-writing:
 	case <-time.After(time.Second):
 		require.FailNow(t, "the initial snapshot was not sent")
 	}
@@ -454,7 +456,8 @@ func TestProxyDiscovery_KeepsEachEnginesLatestSubscriptionSnapshot(t *testing.T)
 		assert.NoError(t, proxySide.Close())
 	})
 	require.NoError(t, proxySide.SetDeadline(time.Now().Add(3*time.Second)))
-	writer := &observedProxyWriter{Conn: brokerSide, writing: make(chan struct{})}
+	writing := make(chan struct{})
+	writer := &observedProxyWriter{Conn: brokerSide, onWrite: sync.OnceFunc(func() { close(writing) })}
 	directory := relay.NewDirectory()
 	node := noderec.DirectoryNode{
 		HostUUID: "peer", DiscoveryRecordID: "peer:peer", Name: "initial",
@@ -477,7 +480,7 @@ func TestProxyDiscovery_KeepsEachEnginesLatestSubscriptionSnapshot(t *testing.T)
 		close(subscribed)
 	}()
 	select {
-	case <-writer.writing:
+	case <-writing:
 	case <-time.After(time.Second):
 		require.FailNow(t, "the initial snapshot was not sent")
 	}

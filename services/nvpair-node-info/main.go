@@ -52,25 +52,13 @@ type GPUInfo struct {
 // CPUInfo is the node-level CPU readout. Name and Cores are filled once
 // at startup from ghw; UtilizationPercent is refreshed every collector tick
 // from PDH on Windows, /proc/stat on Linux, or Mach through gopsutil on macOS.
-// Every field is omitempty so a value we couldn't read drops from JSON rather
-// than appearing as a misleading literal zero — the one exception is
-// UtilizationPercent on a CPU that really is idle, which renders the same as
-// "unknown". That ambiguity is benign because it's visually identical to the
-// user either way.
-type CPUInfo struct {
-	Name               string `json:"name,omitempty"`
-	Cores              uint32 `json:"cores,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
-}
+type CPUInfo = noderec.CPUInfo
 
 // MemoryInfo is the node-level physical-RAM readout. TotalBytes is reported by
 // ghw at startup except on macOS, where gopsutil supplies both total and used
 // memory through Mach. Windows used memory comes from GlobalMemoryStatusEx and
 // Linux used memory comes from /proc/meminfo.
-type MemoryInfo struct {
-	TotalBytes uint64 `json:"total_bytes,omitempty"`
-	UsedBytes  uint64 `json:"used_bytes,omitempty"`
-}
+type MemoryInfo = noderec.MemoryInfo
 
 type NodeInfoResponse struct {
 	GPUs           []GPUInfo   `json:"GPUs"`
@@ -310,7 +298,8 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 }
 
 // publicNodeInfoHandler preserves the display response, including while this
-// node is clustered. Public readings carry no authoritative peer metadata.
+// node is clustered. It remains available for hardware previews before pairing.
+// Public readings carry no authoritative peer metadata.
 func publicNodeInfoHandler(mesh *clustertrust.Mesh, snapshot func() NodeInfoResponse) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mesh.Refresh()

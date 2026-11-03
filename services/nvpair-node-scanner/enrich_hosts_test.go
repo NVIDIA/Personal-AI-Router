@@ -169,8 +169,8 @@ func TestAskTogether_ProbesAddressesConcurrently(t *testing.T) {
 	hosts := []string{"192.168.240.1", "169.254.7.7", "172.17.0.1", "10.0.0.9"}
 	entered := make(chan string, len(hosts))
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
 	type probeResult struct {
 		host string
 		ok   bool
@@ -195,7 +195,7 @@ func TestAskTogether_ProbesAddressesConcurrently(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, hosts, asked)
-	releaseOnce.Do(func() { close(release) })
+	unblock()
 
 	select {
 	case result := <-finished:

@@ -171,8 +171,7 @@ func TestWorkloadManager_RehydratesActiveWorkloadOnRestart(t *testing.T) {
 	// the request. An engine that blocks before producing content leaves the
 	// workload "queued", which is the truth but not what this test is about.
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	stopEngine := func() { releaseOnce.Do(func() { close(release) }) }
+	stopEngine := sync.OnceFunc(func() { close(release) })
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, copyErr := io.Copy(io.Discard, r.Body)
 		assert.NoError(t, copyErr)

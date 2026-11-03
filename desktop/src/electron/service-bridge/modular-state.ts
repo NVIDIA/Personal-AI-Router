@@ -17,7 +17,6 @@ import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/s
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
 import type { ClusterNode, Invite, NodeIdentityVerification } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
-import { MODULAR_NODE_INFO_SELF_HOST } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
 import {
     emptyEngineStatus,
@@ -78,7 +77,19 @@ interface RemoteEngineFacts {
     port: number
 }
 
-interface ModularNode {
+interface NodeHardware {
+    gpus: ModularGpu[]
+    cpu: ModularCpu | null
+    memory: ModularMemory | null
+    telemetryTimestamp?: number
+    // Node-level list of inference-ready hardware ids from broker hardware, mapped
+    // straight to SystemTopology.inferenceHardwareIds. undefined = the backend
+    // does not report readiness yet (UI shows all GPUs). See the routing
+    // limitations in docs/services-parity.md.
+    inferenceHardwareIds?: string[]
+}
+
+interface ModularNode extends NodeHardware {
     discoveryRecordId?: string
     identityVerification?: NodeIdentityVerification
     // Row key: host UUID for local/pinned hosts, discovery record ID for
@@ -102,33 +113,17 @@ interface ModularNode {
     clustered: boolean
     nodeInfoPort: number
     nodeInfoUp: boolean
-    // The node's own ranked candidate list from broker discovery
-    // (`AvailableNode.ipAddresses`, or its single `ipAddress`). Authoritative and
-    // ordered: a broker snapshot replaces this wholesale, so an address the node
-    // has re-ranked away stops being polled and stops being projected. It is a
-    // separate field from {@link proxyAddresses} for exactly that reason — while
-    // the two feeds shared one list, a union was the only merge that did not
-    // discard the proxy's addresses, and a union can never drop anything.
+    // The node's ranked addresses from broker discovery. Each snapshot replaces
+    // this list so withdrawn addresses disappear. Proxy-only addresses stay in
+    // their own list and are projected after the broker's ranking.
     brokerAddresses: string[]
     // Addresses known only to the proxy `node/*` feed (`Node.Addresses`), which
     // discovers independently of the broker. Projected behind the broker's order
     // by {@link nodeAddresses}, and the only address list a proxy-only node has.
     proxyAddresses: string[]
-    // The node's canonical LAN address. Both discovery sources now stamp it with
-    // the backend's shared `netpick.Primary` result: the broker's
-    // `AvailableNode.ipAddress` and the proxy `node/*` `ip` field. Used directly
-    // for the display IP and the node-info poll target — PAIR UI no longer ranks
-    // addresses itself. The broker value is preferred on merge; a proxy-only node
-    // carries the proxy's value. Empty only until a node's first event arrives.
+    // The service-ranked display address: prefer broker `ipAddress`, otherwise
+    // use proxy `ip`. The UI displays this value without ranking addresses.
     reachableAddress: string
-    gpus: ModularGpu[]
-    cpu: ModularCpu | null
-    memory: ModularMemory | null
-    // Node-level list of inference-ready hardware ids from /v1/node-info, mapped
-    // straight to SystemTopology.inferenceHardwareIds. undefined = the backend
-    // does not report readiness yet (UI shows all GPUs). See the routing
-    // limitations in docs/services-parity.md.
-    inferenceHardwareIds?: string[]
     // The node's unified model list, enriched by the broker daemon from the
     // peer's engine-manager `/v1/models` (models-http) and carried on
     // `AvailableNode.models`. It replaces the retired per-engine proxy
@@ -182,7 +177,7 @@ function setEngine(
 /**
  * A node's primary reachable service port: a live engine's promoted proxy port
  * when one is up (the endpoint peers route inference to), else the node-info
- * HTTP port. Display-only — never dialed directly for inference.
+ * port. Display-only — never dialed directly for inference.
  */
 function primaryServicePort(node: ModularNode): number {
     for (const engine of PROXY_ENGINES) {
@@ -452,19 +447,16 @@ function mergeAddresses(existing: string[], next: string[]): string[] {
 /**
  * Every address a node is currently known to answer at: the broker's ranked
  * order first, then whatever only the proxy feed reported. The single effective
- * list — poll order, `NodeItem.allIpAddresses`, and `AvailableNode.ipAddresses`
- * all derive from it, so none of them can outlive a broker re-rank.
+ * list supplies `NodeItem.allIpAddresses` and `AvailableNode.ipAddresses`, so
+ * neither can outlive a broker re-rank.
  */
 function nodeAddresses(node: ModularNode): string[] {
     return mergeAddresses(node.brokerAddresses, node.proxyAddresses)
 }
 
 /**
- * The node's primary IP for display and node-info polling. Both discovery
- * sources now stamp `ModularNode.reachableAddress` with the backend's canonical
- * `netpick.Primary` LAN address (the broker's `AvailableNode.ipAddress` and the
- * proxy `node/*` `ip` field), so there is no local heuristic to fall
- * back to; `host` only covers a node that somehow carries no canonical address.
+ * Prefer the service-ranked display address. `host` supplies an address when
+ * the node's current feeds have not reported a canonical one.
  */
 function primaryNodeAddress(node: ModularNode): string {
     return node.reachableAddress || node.host
@@ -559,18 +551,13 @@ function sameInferenceHardwareIds(left?: string[], right?: string[]): boolean {
     return sameStringList(left, right)
 }
 
-function sameTelemetry(
-    node: ModularNode,
-    gpus: ModularGpu[],
-    cpu: ModularCpu | null,
-    memory: ModularMemory | null,
-    inferenceHardwareIds: string[] | undefined
-): boolean {
+// Sample time is compared separately: unchanged hardware still refreshes metrics.
+function sameHardwareValues(left: NodeHardware, right: NodeHardware): boolean {
     return (
-        sameGpuList(node.gpus, gpus) &&
-        sameCpu(node.cpu, cpu) &&
-        sameMemory(node.memory, memory) &&
-        sameInferenceHardwareIds(node.inferenceHardwareIds, inferenceHardwareIds)
+        sameGpuList(left.gpus, right.gpus) &&
+        sameCpu(left.cpu, right.cpu) &&
+        sameMemory(left.memory, right.memory) &&
+        sameInferenceHardwareIds(left.inferenceHardwareIds, right.inferenceHardwareIds)
     )
 }
 
@@ -595,7 +582,7 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
     const ipAddress = primaryNodeAddress(node)
     const addresses = nodeAddresses(node)
     // `NodeItem.port` is the node's primary reachable service port: a live
-    // engine's promoted proxy port when one is up, otherwise the node-info HTTP
+    // engine's promoted proxy port when one is up, otherwise the node-info
     // port. This keeps the value meaningful regardless of which discovery source
     // produced the node (a proxy reports the promoted proxy port, the broker
     // reports the node-info port).
@@ -643,7 +630,7 @@ function toMetrics(node: ModularNode): NodeItemMetrics {
             ? (node.memory.usedBytes / node.memory.totalBytes) * 100
             : 0
     const current = {
-        timestamp: Date.now(),
+        timestamp: node.telemetryTimestamp ?? Date.now(),
         cpuUtilization: node.cpu?.utilizationPercent ?? 0,
         memoryUsage,
         gpuUtilization: node.gpus.map((gpu, index) => ({
@@ -756,6 +743,27 @@ function identityVerificationValue(
     return value === 'local' || value === 'pinned' || value === 'unverified' ? value : undefined
 }
 
+function nodeHardwareValue(
+    value: JsonValue | undefined,
+    hostUuid: string,
+    verification: NodeIdentityVerification | undefined
+): NodeHardware | null {
+    const info = objectValue(value)
+    if (!info) return null
+    // Unverified previews belong to the discovery record, regardless of the
+    // responder's claimed UUID. Hardware never changes identity or trust.
+    if (verification !== 'unverified' && stringValue(info.hostUuid) !== hostUuid) return null
+    return {
+        gpus: gpuArrayValue(info.GPUs),
+        cpu: cpuValue(info.cpu),
+        memory: memoryValue(info.memory),
+        inferenceHardwareIds: optionalStringArrayValue(info.inference_hardware_ids),
+        telemetryTimestamp: booleanValue(info.telemetryValid)
+            ? Date.now() - Math.max(0, numberValue(info.msSince))
+            : undefined
+    }
+}
+
 function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
@@ -773,6 +781,7 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const brokerAddresses = ipAddresses.length > 0 ? ipAddresses : ipAddress ? [ipAddress] : []
     const discoveryRecordId = stringValue(obj.discoveryRecordId)
     const identityVerification = identityVerificationValue(obj.identityVerification)
+    const hardware = nodeHardwareValue(obj.info, hostUuid, identityVerification)
     return {
         id: identityVerification === 'unverified' ? discoveryRecordId : hostUuid,
         ...(discoveryRecordId ? { discoveryRecordId } : {}),
@@ -789,13 +798,14 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         proxyAddresses: [],
         // Broker `AvailableNode.ipAddress` is the head of the node's own ranked
         // candidate list — one canonical address shared across broker /
-        // cluster-manager / errors / workload-manager, so the display IP and the
-        // node-info poll target agree. The backend owns the ranking and the
+        // cluster-manager / errors / workload-manager. The backend owns ranking and
         // failover across the rest of the list; PAIR never re-ranks.
         reachableAddress: ipAddress,
-        gpus: [],
-        cpu: null,
-        memory: null,
+        gpus: hardware?.gpus ?? [],
+        cpu: hardware?.cpu ?? null,
+        memory: hardware?.memory ?? null,
+        inferenceHardwareIds: hardware?.inferenceHardwareIds,
+        telemetryTimestamp: hardware?.telemetryTimestamp,
         // Broker `AvailableNode.models`: the node's model list, enriched by its
         // daemon from the peer's engine-manager `/v1/models` (models-http). This
         // is the remote-node model source now that the proxy `models=` TXT is
@@ -855,10 +865,11 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         left.nodeInfoPort === right.nodeInfoPort &&
         left.nodeInfoUp === right.nodeInfoUp &&
         // Order matters for the broker's list and only for it: that order is the
-        // node's own ranking of where to reach it, and it drives the poll order.
+        // node's own ranking of where to reach it.
         sameStringList(left.brokerAddresses, right.brokerAddresses) &&
         sameStringSet(left.proxyAddresses, right.proxyAddresses) &&
-        sameTelemetry(left, right.gpus, right.cpu, right.memory, right.inferenceHardwareIds) &&
+        sameHardwareValues(left, right) &&
+        left.telemetryTimestamp === right.telemetryTimestamp &&
         sameStringList(left.models, right.models) &&
         sameModelsByEngine(left.modelsByEngine, right.modelsByEngine) &&
         // A residency-only change (a model loaded/evicted with the installed set
@@ -1163,69 +1174,20 @@ class ModularBridgeState {
         })
     }
 
-    getNodeIdentityVerification(nodeId: string): NodeIdentityVerification | undefined {
-        return this.nodes.get(nodeId)?.identityVerification
-    }
-
-    getNodeInfoPollTargets(): { id: string; hosts: string[]; port: number }[] {
-        const targets: { id: string; hosts: string[]; port: number }[] = []
-        for (const node of Array.from(this.nodes.values())) {
-            if (!node.nodeInfoUp || node.nodeInfoPort <= 0) continue
-            // This machine appears in its own discovery snapshot, but its own
-            // node-info is on this machine: loopback reaches it without depending
-            // on the host's inbound path. Loopback alone, with no failover — the
-            // addresses it advertises are longer routes to the listener loopback
-            // just reached, so asking them after loopback fails only spends
-            // connections.
-            if (node.id === this.selfId) {
-                targets.push({
-                    id: node.id,
-                    hosts: [MODULAR_NODE_INFO_SELF_HOST],
-                    port: node.nodeInfoPort
-                })
-                continue
-            }
-            // Lead with the canonical display address, then retain the node's
-            // published alternatives. For verified rows, the poller requires a
-            // matching response host UUID and otherwise tries the next address.
-            // Unverified rows permit hardware previews without trusting UUID claims.
-            const hosts = mergeAddresses([primaryNodeAddress(node)], nodeAddresses(node))
-            if (hosts.length === 0) continue
-            targets.push({ id: node.id, hosts, port: node.nodeInfoPort })
-        }
-        return targets
-    }
-
-    mergeNodeInfoResponse(nodeId: string, response: JsonValue): void {
+    private applyNodeHardware(nodeId: string, response: JsonValue): void {
         const node = this.nodes.get(nodeId)
         if (!node) return
 
-        const obj = objectValue(response)
-        if (!obj) return
-
-        // Outside unverified previews, require a matching response host UUID.
-        // An unverified row is keyed by its discovery record ID, so its public
-        // UUID claim need not match that key. Only hardware fields are merged;
-        // the response cannot change the row's broker-owned identity or trust.
-        const reportedUuid = stringValue(obj.hostUuid)
-        if (node.identityVerification !== 'unverified' && reportedUuid !== nodeId) return
-
-        const gpus = gpuArrayValue(obj.GPUs)
-        const cpu = cpuValue(obj.cpu)
-        const memory = memoryValue(obj.memory)
-        const inferenceHardwareIds = optionalStringArrayValue(obj.inference_hardware_ids)
-        if (node.nodeInfoUp && sameTelemetry(node, gpus, cpu, memory, inferenceHardwareIds)) {
-            emitBridgePush('metrics:update', toMetrics(node))
+        const hardware = nodeHardwareValue(response, nodeId, node.identityVerification)
+        if (!hardware) return
+        const next = { ...node, ...hardware }
+        if (sameHardwareValues(node, hardware)) {
+            this.nodes.set(nodeId, next)
+            emitBridgePush('metrics:update', toMetrics(next))
             return
         }
 
-        this.upsertNode({
-            ...node,
-            gpus,
-            cpu,
-            memory,
-            inferenceHardwareIds
-        })
+        this.upsertNode(next)
     }
 
     getErrors(): ServiceError[] {
@@ -2352,7 +2314,10 @@ class ModularBridgeState {
         if (notification.method === 'discovery:node-info') {
             const snapshot = objectValue(notification.params)
             if (!snapshot) return
-            const id = stringValue(snapshot.hostUuid)
+            const verification = identityVerificationValue(snapshot.identityVerification)
+            const id = stringValue(
+                verification === 'unverified' ? snapshot.discoveryRecordId : snapshot.hostUuid
+            )
             const node = this.nodes.get(id)
             const info = objectValue(snapshot.info)
             if (!node || !info) {
@@ -2363,16 +2328,12 @@ class ModularBridgeState {
                 // A shared host UUID cannot attach another record's snapshot.
                 return
             }
-            if (
-                node.identityVerification !==
-                    identityVerificationValue(snapshot.identityVerification) ||
-                node.identityVerification === 'unverified'
-            ) {
-                // Match the row's current verification state. Unverified rows
-                // cannot consume the broker's authenticated hardware stream.
+            if (node.identityVerification !== verification) {
+                // Match the row's current verification state so a preview cannot
+                // overwrite a verified host's hardware.
                 return
             }
-            this.mergeNodeInfoResponse(id, info)
+            this.applyNodeHardware(id, info)
             return
         }
         if (notification.method !== 'discovery:nodes-changed') return
@@ -2407,8 +2368,7 @@ class ModularBridgeState {
             return
         }
 
-        // A proxy source still reports the node; drop only the node-info snapshot
-        // (the broker is the sole node-info / telemetry source now).
+        // Proxy presence keeps the row, while broker-owned hardware is withdrawn.
         const next: ModularNode = {
             ...existing,
             sources: remainingSources,
@@ -2423,6 +2383,8 @@ class ModularBridgeState {
             gpus: [],
             cpu: null,
             memory: null,
+            inferenceHardwareIds: undefined,
+            telemetryTimestamp: undefined,
             lastSeen: Date.now()
         }
         // The spread copied broker-owned provenance. Remove it when the broker
@@ -2524,9 +2486,8 @@ class ModularBridgeState {
         if (!existing || !source) return next
 
         if (source === 'broker') {
-            // node-info discovery snapshot (now also carries manual nodes). Keep
-            // the live per-engine proxy data we already merged; refresh identity,
-            // addresses, and node-info from the snapshot.
+            // Broker snapshots own identity, ranked addresses, and hardware.
+            // Preserve the live engine presence reported separately by proxies.
             return {
                 ...next,
                 sources: mergeSources(existing.sources, 'broker'),
@@ -2536,7 +2497,7 @@ class ModularBridgeState {
                 name: next.name || existing.name,
                 // The snapshot is the broker's whole list, so it replaces the
                 // previous one (carried by the spread): an address the node has
-                // re-ranked away must stop being polled and projected, which a
+                // re-ranked away must stop being projected, which a
                 // union could never express. The proxy feed's own contribution
                 // survives untouched and is projected behind this list.
                 proxyAddresses: existing.proxyAddresses,
@@ -2544,10 +2505,6 @@ class ModularBridgeState {
                 // a prior value only if a snapshot ever lacks ipAddress. The proxy
                 // supplies one too now, but the broker's wins on merge.
                 reachableAddress: next.reachableAddress || existing.reachableAddress,
-                gpus: existing.gpus,
-                cpu: existing.cpu,
-                memory: existing.memory,
-                inferenceHardwareIds: existing.inferenceHardwareIds,
                 engines: existing.engines
             }
         }
@@ -2583,6 +2540,7 @@ class ModularBridgeState {
             cpu: existing.cpu,
             memory: existing.memory,
             inferenceHardwareIds: existing.inferenceHardwareIds,
+            telemetryTimestamp: existing.telemetryTimestamp,
             // A proxy event carries no model list (models-http); keep the
             // broker-enriched `AvailableNode.models` (+ per-engine attribution and
             // loaded set) we already merged.

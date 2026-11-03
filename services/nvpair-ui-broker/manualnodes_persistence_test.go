@@ -138,7 +138,7 @@ func TestManualNodeRelay_RemovesByNodeKey(t *testing.T) {
 	b := &Broker{
 		codec:                 NewCodec(clientBroker),
 		manualNodesConfigPath: path,
-		manualNodeKeys:        map[string]string{"lab": "node-uuid"},
+		manualNodeStatuses:    map[string]manualNodeStatusEntry{"lab": {key: "node-uuid"}},
 	}
 	b.setManualNodes(worker)
 	id := json.RawMessage("2")

@@ -75,9 +75,11 @@ They do not imply a WebSocket connection. Browser clients are not supported.
   Broker records also carry `discoveryRecordId` and `identityVerification` (`local`,
   `pinned`, or `unverified`). The bridge retains these provenance fields through
   proxy updates and clears them when the broker withdraws the record; public
-  hardware readings cannot change them. Verified rows require a matching
-  response `hostUuid` before accepting public hardware readings, including
-  local rows. Unverified previews may omit that field.
+  hardware readings cannot change them. Broker snapshots carry optional full
+  hardware in `info`, and live `discovery:node-info` updates refresh the same
+  record. Electron matches record ID, verification, and verified host identity
+  before projecting GPU, CPU, memory, and VRAM fields. Workers collect local
+  IPC measurements, pinned peer measurements, and sanitized unverified previews.
 - `onNodesChanged(callback)` reports discovery changes.
 
 ### `pairApi.engines`

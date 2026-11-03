@@ -6,9 +6,21 @@ SPDX-License-Identifier: Apache-2.0
 # Microservice: Node Info (`nvpair-node-info`)
 
 ## 1. Purpose
-The per-node hardware reporter. It detects this host's GPU, CPU, and physical-memory inventory at startup, samples live utilization on a one-second tick, and serves the merged result as one JSON document at `GET /v1/node-info` on TCP `14318`. It also publishes private inventory snapshots to its owning broker. Public HTTP supplies frontend displays; services use authenticated remote reads or locally owned IPC measurements.
+The per-node hardware reporter. It detects this host's GPU, CPU, and physical-memory inventory at startup, samples live utilization on a one-second tick, and serves the merged result as one JSON document at `GET /v1/node-info` on TCP `14318`. It also publishes private inventory snapshots to its owning broker. Workers collect public HTTP previews for unverified display rows and use authenticated remote reads or locally owned IPC for service measurements. Desktop and TUI receive all hardware through their local broker.
 
-It exists as a separate binary because the readout is inherently platform-specific and privileged-adjacent — DXGI COM calls and PDH performance counters on Windows, `/proc` plus `nvidia-smi` on Linux, `ioreg` plus Mach counters on macOS, `ghw` for CPU identity everywhere — and because its consumers are heterogeneous: remote scanner and manual-node workers read protected inventory over pinned mTLS, the local scanner receives owned IPC snapshots through the broker, and desktop and TUI poll public HTTP for display. It keeps the current sample, local registry metadata, and address observations in memory and makes no routing decision. Its accepted GPU samples reach scheduler through scanner or manual-node workers and the broker. It also reports which of this host's own addresses served remote requests, which scanner uses as reachability evidence.
+Hardware collection uses different operating-system APIs on Windows, Linux, and
+macOS, so it runs in a separate worker. Remote scanner and manual-node workers
+read authenticated inventory over pinned mTLS. The local scanner receives
+private IPC snapshots through the broker. Workers also read public HTTP for
+unverified display previews.
+
+Node-info keeps the current sample, local service metadata, and observed
+addresses in memory. It makes no routing decisions. Local IPC measurements and
+authenticated peer measurements supply GPU samples to the scheduler through
+scanner or manual-node workers and the broker.
+
+Node-info also reports which local addresses have served remote requests.
+Scanner uses these observations to help choose reachable addresses.
 
 ## 2. Scope
 **In scope**
@@ -31,10 +43,10 @@ It exists as a separate binary because the readout is inherently platform-specif
 - Persisting telemetry history, aggregating across nodes, or raising alerts — consumers do that; this service reports only the current sample.
 
 ## 3. Key Use Cases
-- **Local enrichment**: startup and two-second `nodeinfo:info-updated` snapshots travel through the broker as `discovery:local-node-info`. Scanner attaches them to its owned registry record, without a loopback HTTP service read.
-- **Peer enrichment**: a remote scanner authenticates the node-info endpoint over exact-pin mTLS before promoting an announcement. Protected metadata supplies the peer's name, addresses, service ports, and hardware. Failed authentication never triggers public HTTP fallback.
-- **Desktop telemetry poll**: Electron polls public HTTP every 2000 ms with a 1500 ms per-attempt timeout, existing address failover, and failure backoff capped at 30 s. It updates hardware display fields only, independently of verified broker snapshots. It reads this host over loopback. Public responses cannot change identity, trust, addresses, service ports, or models.
-- **Terminal telemetry poll**: TUI polls the open node detail screen over public HTTP at the same cadence and timeout. It retains its response-size limit and refuses redirects. Both clients require a matching response `hostUuid` for verified rows, including the local row; a missing or different UUID is rejected. An unverified row's display preview may omit `hostUuid` and never turns the response's UUID into verified identity.
+- **Local enrichment**: startup and two-second `nodeinfo:info-updated` snapshots travel through the broker as `discovery:local-node-info`. Scanner attaches them to its owned local registry record.
+- **Peer enrichment**: a remote scanner authenticates the node-info endpoint over exact-pin mTLS before promoting an announcement. Protected metadata supplies the peer's name, addresses, service ports, and hardware. Accepted peer inventory requires current pins and matching response identities.
+- **Hardware displays**: desktop and TUI consume optional `AvailableNode.info` in broker discovery snapshots and live `discovery:node-info` updates. Workers supply owned local IPC measurements, pinned peer measurements, and display previews.
+- **Unverified hardware previews**: scanner and manual-node workers collect public HTTP hardware for eligible unverified discovery/configuration records. Public response identity and registry fields are stripped before broker delivery. Previews are confined to display fields. The public listener serves previews in every membership state.
 - **Scheduler GPU pressure**: scanner uses owned IPC locally and pinned mTLS remotely; manual-node hardware also requires pinned mTLS. They supply maximum GPU utilization with validity and elapsed age through the broker. Unknown or stale data follows the scheduler's existing freshness and pressure rules, and never becomes freshly idle through a failed read or replay.
 - **Observed local addresses**: a non-loopback request records the real local address it reached. Every 30 s the service sends the current set as `nodeinfo:observed-addresses`; broker relays it to scanner. This is reachability evidence, including public requests, and does not authenticate the requester.
 - **Manual node identification**: the manual worker probes `14318`, or the configured node-info port, over pinned mTLS every ten seconds. Matching response host/principal and certificate identities allow the broker to join that source to the same verified host. Explicit engine routes remain independent of hardware authentication.
@@ -49,7 +61,7 @@ It exists as a separate binary because the readout is inherently platform-specif
 - **Edge case — clustered read (`--cluster-dir` only)**: a pinned peer with matching owned metadata gets `200`; an unpinned client gets `403`. Shared TLS self-trust remains supported, while local service measurements use IPC.
 
 ## 4. Open Questions / Risks
-- **Public LAN inventory**: public HTTP intentionally exposes hardware measurements for desktop and TUI, including while clustered. Those responses cannot authenticate the endpoint or supply service decisions. Broker supplies `--cluster-dir` so pinned mTLS is independently available on the same port.
+- **Public LAN inventory**: public HTTP intentionally exposes hardware measurements for worker-collected unpaired previews, including while clustered. Desktop and TUI receive those previews through the broker. Public responses cannot authenticate the endpoint or supply service decisions. Broker supplies `--cluster-dir` so pinned mTLS is independently available on the same port.
 - **Risk — one-shot hardware detection**: `detectGPUs`, `detectCPU`, and `detectMemoryTotal` run once in `main`, so the CPU and memory readout is fixed for the process lifetime and a Windows or Linux adapter added, removed, or driver-installed after startup never appears. macOS is the exception: its collector re-enumerates IORegistry every tick and `mergeGPUInventory` adds adapters the startup pass did not see.
 - **Risk — latched telemetry unavailability**: Linux latches `nvidiaUnavailable` on the first `nvidia-smi` failure and never retries; Windows adds PDH counters only inside `startStatsCollector`. A driver or counter set that becomes available later is not picked up for the process lifetime. macOS retries `ioreg` on every tick instead.
 - **Risk — a stopped collector keeps serving its last GPU numbers**: on every platform a failed GPU pass retains the last usable sample, so a host whose `nvidia-smi` latched, whose PDH query broke, or whose IORegistry read started failing keeps reporting the old VRAM and utilization figures indefinitely. `msSince` growing is the only signal. The scheduler path honors it; a consumer that renders `utilization_percent` without checking `msSince` shows a frozen number.
@@ -59,7 +71,10 @@ It exists as a separate binary because the readout is inherently platform-specif
 - **Risk — macOS VRAM used without a total**: an adapter that exposes neither `VRAM,totalMB` nor a dedicated used counter still reports `Alloc system memory` as `vram_used_bytes`, so a response can carry a used figure with no `vram_bytes` to divide it by. A consumer rendering a VRAM percentage has to treat the absent total as "no percentage" rather than zero.
 - **Registry metadata is initially unavailable**: the broker supplies complete local metadata over IPC and resends it after worker restart. Protected reads return `503` while it is absent or disagrees with current identity. Public display and owned local measurements remain independent.
 - **Risk — fatal listener errors**: a bind failure or a non-`ErrServerClosed` serve error calls `log.Fatalf`, terminating the process. Recovery is the broker's supervisor restart, not in-process.
-- **`inference_hardware_ids` (open — needs a producer if the filter is ever to engage)**: the desktop's merge reads an optional `inference_hardware_ids` string array from the response, but no field with that JSON tag exists in `NodeInfoResponse` or anywhere under `services/`, so nothing produces it today. This is a forward-compatibility hook rather than a broken read: the consumer preserves the absent-versus-empty distinction deliberately — absent means "no readiness reported, show every GPU" and `[]` means "no inference-ready hardware" — so the unproduced field degrades to showing all GPUs. The filter is display-only and never influences routing, which stays owned by `nvpair-proxy` and `nvpair-job-scheduler`. Specifying and producing the field here is what would make it engage; until then the response schema in §7.1 is complete as written.
+- **Inference readiness**: this service reports hardware inventory and usage.
+  Desktop displays all reported GPUs because the service supplies no per-adapter
+  `inference_hardware_ids` readiness list. Routing is owned by `nvpair-proxy`
+  and `nvpair-job-scheduler`.
 - **Firewall rule surface (open — needs an installer audit)**: `nvpair-setup.nsi` grants this binary an inbound UDP 5353 mDNS rule (`NVPAIR mDNS Node Info`) in addition to the TCP rule it needs. The process opens no multicast socket — discovery belongs to the node-scanner daemon — so that rule widens the binary's inbound surface for no functional reason.
 - **Risk — peer-observed addresses are evidence, not proof of identity**: an address is recorded once a request from a non-loopback peer is read, with no check of who the peer is. It says only that some machine reached this host there. The 5-minute TTL bounds how long an address the host stops answering on keeps being reported.
 - **Future — per-adapter identity on the wire**: `statsKey` (Windows LUID, Linux GPU UUID, macOS IORegistry entry ID) is `json:"-"` and unexported, so consumers cannot stably key a specific adapter across responses; they match by array position.
@@ -172,7 +187,9 @@ Outbound, the service sends these notifications to its owning parent:
 | `nodeinfo:observed-addresses` | `{ addresses: string[] }` | every 30 s, unconditionally, including an empty list |
 | `nodeinfo:info-updated` | `{info: NodeInfoResponse}` | startup and every two seconds |
 
-Local snapshots have the public hardware shape and omit protected `peer` metadata. Broker forwards them privately to scanner; they are not frontend HTTP readings.
+Local snapshots carry hardware fields with owned-worker provenance over private
+broker/scanner IPC. Registry metadata is supplied separately through
+`nodeinfo:set-peer-metadata` and the protected inventory response.
 
 ### 7.1 Response schema
 `buildResponse` copies the static `[]GPUInfo` detected at startup, folds in any adapters the snapshot's own `GPUInventory` carries (`mergeGPUInventory` enriches a matching `statsKey` in place and appends an unseen one), and overlays the latest snapshot by `statsKey`. The resulting typed snapshot is encoded at the HTTP and IPC boundaries. Field semantics:
@@ -197,7 +214,11 @@ Local snapshots have the public hardware shape and omit protected `peer` metadat
 | `clusterUuid` | `*string` | yes — absent means the node does not know | `mesh.NodeUUID()` when cluster-gated, else the parent's `nodeinfo:set-cluster-identity` push |
 | `peer` | `*noderec.PeerMetadata` | yes — protected response only | owned local registry snapshot: `{name, addresses, services}`, with service keys mapped to ports |
 
-`GPUInfo.statsKey` (Windows adapter LUID, Linux GPU UUID, macOS IORegistry entry ID) and `GPUInfo.usesSystemMemoryUsage` are unexported and tagged `json:"-"`: the first joins the static record to the snapshot map, the second marks an adapter whose used bytes come from the system memory sample, and neither reaches the wire. An absent field means "unknown". A genuinely idle GPU also drops `utilization_percent`, and for display the two cases render identically. `telemetryValid` distinguishes a valid node-wide GPU sample whose highest utilization is 0 % from a missing reading. Consumers ignore `msSince` while validity is false. `clusterUuid` preserves three wire states: absent means unknown, empty claims unclustered, and a nonempty value claims that node principal. Public claims cannot change verified membership.
+`GPUInfo.statsKey` (Windows adapter LUID, Linux GPU UUID, macOS IORegistry entry ID) and `GPUInfo.usesSystemMemoryUsage` are unexported and tagged `json:"-"`: the first joins the static record to the snapshot map, the second marks an adapter whose used bytes come from the system memory sample, and neither reaches the wire.
+
+Absent CPU or memory objects indicate unavailable measurements. Scalar fields use `omitempty`, so an omitted scalar can mean zero usage or an unavailable measurement. `telemetryValid` and `msSince` describe the node-wide GPU sample, independently of those scalar omissions; they do not establish CPU or system-memory freshness. Consumers ignore `msSince` while validity is false.
+
+`clusterUuid` preserves three wire states: absent means unknown, empty claims unclustered, and a nonempty value claims that node principal. Public claims cannot change verified membership.
 
 ### 7.2 Per-OS hardware detection
 - **Windows GPU** (`gpu_windows.go`): `CreateDXGIFactory1` → `IDXGIFactory1::EnumAdapters1` → `IDXGIAdapter1::GetDesc1`, walked by hand-rolled COM vtable calls until `DXGI_ERROR_NOT_FOUND`. DXGI is the sole source because it is vendor-agnostic and returns name and VRAM in one struct; `Win32_VideoController.AdapterRAM` is explicitly rejected as a 32-bit field that is wrong for every modern dGPU. Adapters flagged `DXGI_ADAPTER_FLAG_SOFTWARE` are skipped, as are names matching `remote display`, `microsoft basic display`, or `virtual display adapter`, and any adapter whose LUID is absent from `HKLM\SOFTWARE\Microsoft\DirectX\*\AdapterLuid` (the gate is skipped entirely when that key is unreadable or empty). `statsKey` is `luidKey(low, high)` = `luid_0x%08x_0x%08x_phys_0`.
@@ -226,10 +247,17 @@ The cluster principal is resolved separately by deployment mode. With `--cluster
 Three mutually-exclusive listener layouts, decided at startup from the flags:
 
 1. **Plaintext standalone default**: one public HTTP listener on `--port`, with no cluster directory or operator cert.
-2. **Bring-your-own TLS**: `--cert` + `--key` build a `tls.Config` pinned to `MinVersion: TLS 1.2` on `--tls-port`; `--client-ca` additionally loads a trust bundle and sets `RequireAndVerifyClientCert`, so an untrusted client is dropped at handshake. `validate()` rejects `--cert` without `--key`, `--key` without `--cert`, and `--client-ca` without both. The plaintext listener is dropped unless `--accept-http` is passed; the two bind separate ports so clients migrate independently.
+2. **Bring-your-own TLS**: `--cert` + `--key` build a `tls.Config` pinned to `MinVersion: TLS 1.2` on `--tls-port`; `--client-ca` additionally loads a trust bundle and sets `RequireAndVerifyClientCert`, so an untrusted client is dropped at handshake. `validate()` rejects `--cert` without `--key`, `--key` without `--cert`, and `--client-ca` without both. The plaintext listener is enabled only with `--accept-http`; the two listeners bind separate ports.
 3. **Public HTTP and cluster mTLS (broker topology)**: `--cluster-dir` selects one split listener on `--port`, avoiding a second advertised port and the `--tls-port` collision with `nvpair-errors`. TLS connections go to `Mesh.ServerTLSConfig()` and the protected inventory handler; plain connections go to the independent public handler. Operator certificates do not replace the cluster pins.
 
-Under (3), protected requests refresh membership and require an authenticated client whose certificate matches its current exact pin, or the existing shared self-trust rule. The handler rechecks authorization after collecting the response, including on reused TLS connections, and returns `503` until owned metadata matches its current identity and contains a name, addresses, and a valid `ni` port. Departure disables this protected surface even when the keypair remains. The server leaf is chosen per handshake; the two-second mesh watcher follows changes without depending on an HTTP request. The separate public handler remains available before joining, while clustered, and after leaving. Local service measurements use owned IPC rather than the self-trust network path.
+Under (3), protected requests require current membership and an authenticated
+client matching its exact pin or the shared self-trust rule. The handler rechecks
+authorization after gathering the response, including on reused TLS connections.
+It returns `503` until owned metadata matches the current identity and includes a
+name, addresses, and a valid `ni` port. Departure revokes protected inventory
+access. The server leaf is selected per handshake, and a two-second mesh watcher
+tracks membership changes. The public handler serves every membership state.
+Owned IPC supplies local service measurements.
 
 Every listener sets `ReadHeaderTimeout: 5 * time.Second` and the same `ConnState` hook (§7.6). Both cluster-mode sub-listeners use `clustertrust.PeerListenerIdleTimeout` (105 s), longer than the calling pool's 90 s idle timeout so the client reaps its idle connection first.
 
@@ -243,12 +271,12 @@ A multi-homed host cannot tell from its own side which of its addresses a given 
 
 ### 7.7 Versioning
 - The route is version-prefixed (`/v1/node-info`); a breaking shape change takes a new prefix.
-- Response fields grow additively. Every optional field is `omitempty` — `telemetryValid` and `msSince` are deliberately not, because their zero values are meaningful — and consumers decode into their own mirrored structs (`noderec.GPUInfo`/`CPUInfo`/`MemoryInfo`, `nvpair-manual-nodes`, the desktop's parser), so an unknown field is ignored rather than fatal. `GPUs` keeps its capitalized tag; renaming it would break every consumer at once.
+- Response fields grow additively. Every optional field is `omitempty` — `telemetryValid` and `msSince` are deliberately not, because their zero values are meaningful — and workers decode shared `noderec.NodeInfo` hardware types, so an unknown field is ignored rather than fatal. `GPUs` keeps its capitalized tag; renaming it would break consumers.
 - The binary stamps `main.Version` from `services/versions.json` at build time and prints it with `--version`.
 
 ## 8. Dependencies
 - **Upstream**: `nvpair-ui-broker` owns the process and stdio, supplies node identity and the cluster directory, pushes owned registry metadata, reads local snapshots and address observations, and registers the `ni` service port with scanner.
-- **Downstream**: remote scanner and manual-node workers use protected mTLS inventory; desktop and TUI use public HTTP display inventory; the local scanner receives snapshots through the broker. Scheduler receives accepted GPU samples indirectly. This worker makes no outbound service calls.
+- **Downstream**: remote scanner and manual-node workers use protected mTLS inventory and separate public HTTP previews; the local scanner receives snapshots through the broker. Desktop and TUI receive broker hardware snapshots and pushes. Scheduler receives accepted GPU samples indirectly, never public previews. This worker makes no outbound service calls.
 - **External**: `github.com/jaypipes/ghw` (CPU, non-macOS memory, fallback GPU); `github.com/shirou/gopsutil/v4` (macOS CPU times and memory, purego rather than cgo); `howett.net/plist` (IORegistry decoding); `golang.org/x/sys/windows` (DXGI, PDH, kernel32, registry); the `nvidia-smi` binary on Linux when present and the stock `/usr/sbin/ioreg` on macOS; first-party `nvpair-shared/applog`, `nvpair-shared/nodeid`, `nvpair-shared/noderec`, `nvpair-shared/clustertrust`, and `nvpair-shared/splitlisten`. No third-party runtime services, no network egress.
 
 ## 9. Data Ownership
@@ -271,7 +299,7 @@ A multi-homed host cannot tell from its own side which of its addresses a given 
 - `nvidia-smi`, when present, is on `PATH` and returns within 3 s; a wedged driver is bounded by the timeout, not waited out.
 - `/usr/sbin/ioreg` exists on every supported macOS release, runs unprivileged, and returns within 3 s; its `IOAccelerator` `PerformanceStatistics` keys are undocumented and may be renamed by a macOS release.
 - With a cluster directory, live membership supplies the cluster principal. Standalone without that directory, the parent's identity push is unknown until first supplied. Public claims never override established identity or trust.
-- Consumers treat an absent measurement field as unknown and never as zero, and ignore `msSince` while `telemetryValid` is `false`. An unverified frontend preview may accept a response containing only `{"GPUs":[],"telemetryValid":false,"msSince":0}`. A verified frontend row additionally requires its matching `hostUuid`; protected service readers also require the authenticated identity and peer metadata described above.
+- An absent CPU or memory object means its measurements are unavailable. Scalar measurement fields use `omitempty`, so zero usage and an unavailable scalar share the same wire representation. GPU utilization uses `telemetryValid` to distinguish a usable sample, including 0%, from no sample. `msSince` measures that GPU sample's age and is ignored while validity is false; neither field establishes CPU or system-memory freshness. An unverified worker preview may accept a response containing only `{"GPUs":[],"telemetryValid":false,"msSince":0}`. Protected service readers require the authenticated identities and peer metadata described above. Broker clients match each hardware update to the current discovery record and verification state.
 - Discovery is somebody else's job: the record advertising this port is published by the node-scanner daemon, and this process never touches mDNS.
 
 ## 12. Failure Modes and Mitigations
@@ -285,7 +313,7 @@ A multi-homed host cannot tell from its own side which of its addresses a given 
 - **Unpinned peer reads protected inventory**: the TLS handler returns `403` unless the client has a current matching pin. Public HTTP hardware remains available and omits registry metadata.
 - **Owned metadata is absent or inconsistent**: protected inventory returns `503` until broker metadata agrees with the current host and cluster principal. Public display and private local snapshots remain available.
 - **Malformed cluster-identity push in standalone mode**: the payload is dropped with a warning. An absent field stays unknown; public responses do not authorize service membership changes.
-- **Address reuse or wrong host answers a poll**: remote service readers reject certificate or response-identity mismatches and never retry public HTTP. Frontend public reads remain hardware display data, and a verified row rejects a missing or mismatched response `hostUuid` while trying its remaining addresses. An unverified preview cannot promote a claim.
+- **Address reuse or wrong host answers a poll**: protected service readers reject certificate or response-identity mismatches and never use public HTTP as substitute proof. Public worker previews remain attached to an unverified discovery/configuration record. A preview cannot promote its response identity or supply a verified row's hardware.
 - **Port already bound**: the process cannot serve. → `log.Fatalf` with the port in the message; the broker's supervisor restarts it and the failure is visible in the shared stderr stream.
 
 ## 13. Observability
@@ -302,7 +330,7 @@ The worker publishes the current hardware response privately at startup and ever
 
 An approved remote scanner treats mDNS addresses and `ni` port as connection candidates and sends `GET https://192.168.1.10:14318/v1/node-info` over pinned mTLS. The handler checks current client authorization, gathers hardware, checks authorization again, and adds matching owned metadata. The reader verifies the actual server certificate and both response identities before promoting the peer or caching its measurements. Failed authentication cannot replace an established peer or trigger an HTTP fallback.
 
-Desktop and TUI independently use public `http://192.168.1.10:14318/v1/node-info` for hardware display, including while clustered. Those responses omit `peer` and cannot modify service identity, trust, routing, or scheduling. On shutdown, stdin EOF cancels the worker, stops sampling, and unwinds both servers under the graceful-shutdown timeout.
+For an unpaired discovery, scanner reads public `http://192.168.1.10:14318/v1/node-info` for display only, including while the serving node is clustered. It strips identity and registry claims and sends hardware under that discovery's record ID. Broker retains the latest source sample and serves it to desktop and TUI through discovery snapshots and live updates. On shutdown, stdin EOF cancels node-info, stops sampling, and unwinds both servers under the graceful-shutdown timeout.
 
 ## 15. Process model, CLI, and build wiring
 

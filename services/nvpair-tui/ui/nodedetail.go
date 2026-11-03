@@ -75,10 +75,6 @@ type nodeDetail struct {
 	// selection, which does not fit alongside two other tables.
 	catalog *catalogBrowser
 
-	// telemetry is the node's own hardware readout, polled directly over HTTP
-	// because the broker does not carry it. telemetryOK records whether the last
-	// poll succeeded, so an unreachable node reads as unavailable rather than as
-	// a machine with no hardware.
 	// pending is a destructive action waiting for confirmation. Deleting a model
 	// throws away gigabytes that have to be downloaded again; uninstalling an
 	// engine keeps its models but still costs a reinstall. Both keys sit among
@@ -110,17 +106,8 @@ type nodeDetail struct {
 	// not necessarily the same row.
 	settingsEngine string
 
-	telemetry   nodeTelemetry
-	telemetryOK bool
-	// telemetryGen identifies this screen's polling chain. Bubble Tea cannot
-	// cancel a pending tick, so a chain is retired by no longer matching it.
-	telemetryGen int
-	// telemetryRunning is whether a chain is in flight. A node with no known
-	// address has nothing to poll and so no chain; one can start later.
-	telemetryRunning bool
-	// telemetryAddress is the address that answered the last poll, empty once
-	// a poll fails.
-	telemetryAddress string
+	// refreshGen retires remote engine ticks from previous detail screens.
+	refreshGen int
 	// enginesStale marks the engine list as last-known rather than current,
 	// because the most recent read of it failed. Held as state rather than
 	// announced, since the read repeats on a timer.
@@ -206,21 +193,21 @@ var (
 	detailDeleteKey     = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete"))
 )
 
-// telemetryChains numbers polling chains so a screen only continues its own.
+// detailRefreshes numbers engine polling chains so a screen continues its own.
 // Package-level rather than per-screen because each detail screen is a new value
 // and the point is to differ from every previous one.
-var telemetryChains int
+var detailRefreshes int
 
 func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	ti := textinput.New()
-	telemetryChains++
+	detailRefreshes++
 	d := &nodeDetail{
-		client:       client,
-		node:         node,
-		engineTable:  newTable(detailEngineColumns(defaultTableWidth, !node.self)),
-		modelTable:   newTable(detailModelColumns(defaultTableWidth)),
-		input:        ti,
-		telemetryGen: telemetryChains,
+		client:      client,
+		node:        node,
+		engineTable: newTable(detailEngineColumns(defaultTableWidth, !node.self)),
+		modelTable:  newTable(detailModelColumns(defaultTableWidth)),
+		input:       ti,
+		refreshGen:  detailRefreshes,
 	}
 	if node.self {
 		d.proxy = newProxyTracker()
@@ -233,24 +220,7 @@ func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 		LoadedByEngine: node.loadedByEngine,
 	}
 	d.refreshModels()
-	d.adoptProbedTelemetry()
 	return d
-}
-
-// adoptProbedTelemetry shows the manual-node worker's hardware reading for a
-// node this screen does not poll itself.
-func (d *nodeDetail) adoptProbedTelemetry() {
-	if !d.node.nodeInfoTLS {
-		return
-	}
-	was := d.hardwareHeight()
-	d.telemetryOK = d.node.probedTelemetry != nil
-	if d.telemetryOK {
-		d.telemetry = *d.node.probedTelemetry
-	}
-	if d.hardwareHeight() != was {
-		d.sizeEngineTable()
-	}
 }
 
 // detailEngineColumns is the engine table's layout.
@@ -296,50 +266,29 @@ func (d *nodeDetail) nodeArg() string {
 }
 
 func (d *nodeDetail) Init() tea.Cmd {
-	// The telemetry chain is started by this first poll, not by a tick: each
-	// reading schedules the next one when it lands, so there is exactly one
-	// chain and it cannot outrun a slow node.
-	cmds := []tea.Cmd{d.enginesCmd(), d.modelsCmd(), d.telemetryCmd()}
+	cmds := []tea.Cmd{d.enginesCmd(), d.modelsCmd()}
 	if d.proxy != nil {
 		cmds = append(cmds, d.proxy.init(d.client))
 	}
 	if d.remote() {
-		cmds = append(cmds, detailEnginesTickCmd(d.telemetryGen))
+		cmds = append(cmds, detailEnginesTickCmd(d.refreshGen))
 	}
 	return tea.Batch(cmds...)
 }
 
 // remoteEngineRefresh is how often an open remote detail re-reads the peer's
-// engines. Slower than the telemetry poll because each read crosses the cluster
-// to another machine, and engine lifecycle changes in seconds, not milliseconds.
+// engines. Each read crosses the cluster to another machine, and engine
+// lifecycle changes in seconds, not milliseconds.
 const remoteEngineRefresh = 5 * time.Second
 
 // detailEnginesTickMsg re-reads a remote node's engines. gen scopes it to one
-// screen, exactly as the telemetry chain does.
+// screen, so reopening the same node cannot extend a previous screen's chain.
 type detailEnginesTickMsg struct{ gen int }
 
 func detailEnginesTickCmd(gen int) tea.Cmd {
 	return tea.Tick(remoteEngineRefresh, func(time.Time) tea.Msg {
 		return detailEnginesTickMsg{gen: gen}
 	})
-}
-
-func (d *nodeDetail) telemetryCmd() tea.Cmd {
-	if d.node.nodeInfoTLS {
-		// Not polled from here; see nodeRow.nodeInfoTLS. A plain-HTTP poll to
-		// a TLS listener only ever fails, and it was made anyway.
-		d.telemetryRunning = false
-		return nil
-	}
-	cmd := pollTelemetryCmd(d.node.key, d.telemetryGen,
-		preferAddress(telemetryHosts(d.node), d.telemetryAddress), d.node.port, telemetryIdentity(d.node))
-	// Whether a chain is running, so a node whose address is not known yet can
-	// have one started later. Nothing schedules a tick when there is nothing to
-	// poll, and the reply is what continues the chain — so without this a manual
-	// entry opened before its first probe landed showed "unavailable" forever,
-	// even once discovery supplied an address.
-	d.telemetryRunning = cmd != nil
-	return cmd
 }
 
 func (d *nodeDetail) enginesCmd() tea.Cmd {
@@ -404,21 +353,26 @@ func (d *nodeDetail) own(cmd tea.Cmd) tea.Cmd {
 // "Online" and "Member" here until the screen was reopened.
 func (d *nodeDetail) followNode(row nodeRow, found bool) {
 	was := d.node.membership
+	hardwareHeight := d.hardwareHeight()
 	if found {
-		d.node.name = row.name
-		d.node.presence = row.presence
-		d.node.membership = row.membership
-		// A hand-added node's node-info port and TLS setting arrive with the
-		// worker's first probe, which can land after the screen opened.
-		if d.node.port == 0 {
-			d.node.port = row.port
+		// Manual association can arrive after opening the detail, and its key
+		// can change after authentication. Keep the full merged row so later
+		// updates follow that same entry through promotion or proof withdrawal.
+		d.node = row
+		if d.remote() {
+			d.models = modelsResult{
+				Models: row.models, ModelsByEngine: row.modelsByEngine,
+				LoadedByEngine: row.loadedByEngine,
+			}
+			d.refreshModels()
 		}
-		d.node.nodeInfoTLS = row.nodeInfoTLS
-		d.node.probedTelemetry = row.probedTelemetry
-		d.adoptProbedTelemetry()
 	} else {
 		d.node.presence = presenceOffline
 		d.node.membership = membershipNone
+		d.node.info = nil
+	}
+	if d.hardwareHeight() != hardwareHeight {
+		d.sizeEngineTable()
 	}
 	// Leaving the cluster puts the engines out of reach, so the list read while
 	// it was a member offers controls that can no longer do anything. It goes,
@@ -441,9 +395,8 @@ func (d *nodeDetail) followNode(row nodeRow, found bool) {
 // from here once the call fails, which is why this is decided before the call
 // rather than read out of its error.
 //
-// Hardware telemetry is a separate matter: that endpoint needs no pairing, so
-// an unpaired node can report its GPU and memory while its engines stay out of
-// reach. Anything saying "not answering" has to survive that combination.
+// The broker can independently supply public hardware previews for unpaired
+// nodes, while their engine controls remain out of reach.
 func (d *nodeDetail) enginesQueryable() bool {
 	return !d.remote() || d.node.membership == membershipMember
 }
@@ -514,13 +467,10 @@ const detailChromeRows = 4
 // hardwareHeight is the rows the hardware block occupies, so the model table can
 // be sized without rendering it first.
 func (d *nodeDetail) hardwareHeight() int {
-	if !d.telemetryOK {
-		return 1
-	}
 	// Must agree with hardwareBlock, including its cap — a height that ignored
 	// the cap would over-reserve, and one that ignored the truncation line would
 	// under-reserve by exactly the row that says devices were dropped.
-	lines := clampWidth(len(d.telemetry.summary()), 1)
+	lines := clampWidth(len(d.hardwareLines()), 1)
 	if max := d.hardwareBudget(); lines > max {
 		return max
 	}
@@ -694,39 +644,6 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 
-	case nodeTelemetryMsg:
-		// Scoped to this screen's own chain, exactly as the tick is. This reply
-		// schedules the next poll, so accepting a superseded one would leave two
-		// chains running against the same node.
-		if msg.nodeKey != d.node.key || msg.gen != d.telemetryGen {
-			return nil, true
-		}
-		// A chain started before the worker reported TLS ends here, rather than
-		// overwriting the worker's reading with its own failure every poll.
-		if d.node.nodeInfoTLS {
-			d.telemetryRunning = false
-			return nil, true
-		}
-		// A failed poll is expected for an unreachable node and is recorded
-		// rather than reported: the panel says telemetry is unavailable, and no
-		// error toast fires every two seconds.
-		was := d.hardwareHeight()
-		d.telemetryOK = msg.err == nil
-		d.telemetryAddress = msg.address
-		if msg.err == nil {
-			d.telemetry = msg.telemetry
-		}
-		// The hardware block's height changes what the engine table may take.
-		// The models table needs no such nudge — View measures the hardware
-		// block directly every frame.
-		if d.hardwareHeight() != was {
-			d.sizeEngineTable()
-		}
-		// Schedule the next poll now that this one is done, so the interval is
-		// the gap between polls rather than the gap between their starts and a
-		// slow node cannot accumulate overlapping requests.
-		return telemetryTickCmd(d.node.key, d.telemetryGen), true
-
 	case detailEnginesTickMsg:
 		// A peer's engine state has no push: engine:state-changed carries a
 		// local snapshot with no node on it, so it cannot be attributed to
@@ -734,26 +651,10 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		// way an open remote detail reflects an engine starting or stopping
 		// over there; without it the screen showed whatever was true when it
 		// was opened, including right after an action taken from this screen.
-		if msg.gen != d.telemetryGen || !d.remote() {
+		if msg.gen != d.refreshGen || !d.remote() {
 			return nil, true
 		}
-		return tea.Batch(d.enginesCmd(), detailEnginesTickCmd(d.telemetryGen)), true
-
-	case nodeTelemetryTickMsg:
-		// Only this screen's own chain continues. A tick from a previous visit
-		// to the same node is dropped rather than extended, so re-opening a
-		// detail screen cannot leave two chains polling in parallel.
-		if msg.nodeKey != d.node.key || msg.gen != d.telemetryGen {
-			return nil, true
-		}
-		// Only the poll. The next tick is scheduled when this one comes back —
-		// see nodeTelemetryMsg — because a poll can take longer than the
-		// interval: it tries each of the node's addresses in turn, so a
-		// multi-homed peer with an unreachable address already exceeds two
-		// seconds. Scheduling the next tick alongside the poll rather than after
-		// it started a new one regardless, so those polls accumulated for as
-		// long as the screen stayed open.
-		return d.telemetryCmd(), true
+		return tea.Batch(d.enginesCmd(), detailEnginesTickCmd(d.refreshGen)), true
 
 	case NotificationMsg:
 		return d.handleNotification(msg.Msg), true
@@ -818,47 +719,6 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		// idle eviction alike. Re-reading is cheaper than merging the delta.
 		if !d.remote() {
 			return d.modelsCmd()
-		}
-
-	case "discovery:nodes-changed":
-		// This is where a peer's model inventory lives: the broker enriches the
-		// discovery snapshot with each node's per-engine models, and there is no
-		// per-node models RPC to ask instead. The detail seeded itself from the
-		// snapshot it was opened with and then never looked again, so a model
-		// pulled or deleted on that peer — including by an action taken from
-		// this very screen — did not appear until the operator backed out and
-		// came back in.
-		if !d.remote() {
-			return nil
-		}
-		var nodes []availableNode
-		decodeOrLog(msg.Method, msg.Params, &nodes)
-		for _, n := range nodes {
-			if n.HostUUID != d.node.key && n.ID != d.node.key {
-				continue
-			}
-			d.node.models = n.Models
-			d.node.modelsByEngine = n.ModelsByEngine
-			d.node.loadedByEngine = n.LoadedByEngine
-			d.models = modelsResult{
-				Models:         n.Models,
-				ModelsByEngine: n.ModelsByEngine,
-				LoadedByEngine: n.LoadedByEngine,
-			}
-			d.refreshModels()
-
-			// Adopt an address learned since the screen opened, and start
-			// polling if there was nothing to poll before. A manual entry is
-			// routinely opened before discovery has resolved it.
-			d.node.address = n.IPAddress
-			d.node.addresses = candidateAddresses(n)
-			if n.Port != 0 {
-				d.node.port = n.Port
-			}
-			if !d.telemetryRunning {
-				return d.telemetryCmd()
-			}
-			break
 		}
 
 	case "engine:install-progress":
@@ -1907,13 +1767,13 @@ func (d *nodeDetail) View() string {
 
 // hardwareBlock renders the node's own GPU, CPU, and memory readings.
 func (d *nodeDetail) hardwareBlock() string {
-	if !d.telemetryOK {
+	if d.node.info == nil {
 		if d.node.presence != presenceOnline {
 			return footerStyle.Render("  hardware: unavailable (node is not reachable)")
 		}
 		return footerStyle.Render("  hardware: unavailable")
 	}
-	lines := d.telemetry.summary()
+	lines := d.hardwareLines()
 	if len(lines) == 0 {
 		return footerStyle.Render("  hardware: no GPU, CPU, or memory reported")
 	}
@@ -1929,6 +1789,15 @@ func (d *nodeDetail) hardwareBlock() string {
 			footerStyle.Render(fmt.Sprintf("  ...and %d more device(s)", hidden)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// hardwareLines includes time spent in this client without mutating the source
+// snapshot. Rebuilding the view must not make an older sample appear fresh.
+func (d *nodeDetail) hardwareLines() []string {
+	if d.node.info == nil {
+		return nil
+	}
+	return hardwareSummary(d.node.info.Aged(time.Since(d.node.infoReceivedAt)))
 }
 
 // hardwareBudget is the most rows the hardware block may take.

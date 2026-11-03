@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -38,7 +39,7 @@ func toDirectoryNode(raw RawNode) (noderec.DirectoryNode, bool) {
 		svcs[k] = noderec.ServiceStatus{Port: port}
 	}
 	return noderec.DirectoryNode{
-		DiscoveryRecordID:    nodeDiscoveryRecordID(raw),
+		DiscoveryRecordID:    discoveryRecordID(raw, rec.Services[noderec.ServiceNodeInfo], ips),
 		IdentityVerification: noderec.IdentityUnverified,
 		HostUUID:             rec.HostUUID,
 		Name:                 raw.ID,
@@ -56,9 +57,13 @@ func toDirectoryNode(raw RawNode) (noderec.DirectoryNode, bool) {
 // Address ordering and UUID/principal claims do not change that identity.
 func nodeDiscoveryRecordID(raw RawNode) string {
 	rec := noderec.ParseTXT(raw.TXT)
-	addresses := append([]string(nil), netpick.Candidates(raw.TXT, raw.Addresses)...)
+	return discoveryRecordID(raw, rec.Services[noderec.ServiceNodeInfo], netpick.Candidates(raw.TXT, raw.Addresses))
+}
+
+func discoveryRecordID(raw RawNode, nodeInfoPort int, addresses []string) string {
+	addresses = slices.Clone(addresses)
 	sort.Strings(addresses)
-	fields := []string{raw.ID, raw.Host, strconv.Itoa(rec.Services[noderec.ServiceNodeInfo])}
+	fields := []string{raw.ID, raw.Host, strconv.Itoa(nodeInfoPort)}
 	fields = append(fields, addresses...)
 	return fmt.Sprintf("observation:%x", sha256.Sum256([]byte(fmt.Sprintf("%q", fields))))
 }
@@ -229,14 +234,5 @@ func (d *directory) applyModels(hostUUID, ip string, emPort int, models []string
 // (order-insensitive). A nil and an empty map compare equal (both mean "no
 // per-engine attribution").
 func sameByEngine(a, b map[string][]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok || !sameStringSet(av, bv) {
-			return false
-		}
-	}
-	return true
+	return maps.EqualFunc(a, b, sameStringSet)
 }

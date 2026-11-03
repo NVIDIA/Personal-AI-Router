@@ -63,8 +63,8 @@ Each node is probed for both inference engines: Ollama on its default `:11434` (
 
 ### `node/updated`
 
-Emitted when a periodic probe detects a change, and for every authenticated
-hardware sample even when values are unchanged. `telemetryValid` and
+Emitted when a periodic probe detects a change, and for every accepted
+authenticated sample or display preview even when values are unchanged. `telemetryValid` and
 `msSince` preserve node-info's distinction between an idle 0% sample and missing
 telemetry so the broker can feed manual nodes into the same scheduler cache.
 Cached status replies and initial discovery notifications add elapsed time to
@@ -73,6 +73,13 @@ bound to the local identity/admission and peer pin/admission. Pin changes,
 departure, or identity replacement withdraw that proof and all hardware fields;
 configured engine endpoints remain independently available. In-flight probes
 cannot update an entry removed and re-added under the same ID.
+
+Optional `preview` contains a separate sanitized `noderec.NodeInfo` public
+hardware reading. It has its own receipt time and sample age and never changes
+`node_info_up`, verified identities, service measurements, reachability, outage
+counts, routing, or scheduling. Broker maps it into `AvailableNode.info` for the
+unverified manual record and delivers hardware through its normal snapshot and
+push path. Public response identity and registry claims are stripped.
 
 ### `node/removed`
 
@@ -102,14 +109,14 @@ is not parsed, because ports are appended to it.
 |---|---|---|
 | `address` | Yes | IP address or hostname of the node, with no port |
 | `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`) |
-| `tls_port` | No | Override the node-info port (default `14318`). Hardware reads always require pinned mTLS. Echoed back as `tls_enabled` |
-| `mtls` | No | Configuration hint echoed as `mtls_required` when `tls_port` is set. Hardware probes always use mTLS with current cluster pins |
+| `tls_port` | No | Override the node-info port (default `14318`). Service hardware always requires pinned mTLS; this hint disables public previews. Echoed back as `tls_enabled` |
+| `mtls` | No | Configuration hint echoed as `mtls_required` when `tls_port` is set. Service hardware uses current cluster pins, and this hint disables public previews |
 
 Response: the initial node status object.
 
 ### `node/remove`
 
-Remove a previously added manual node.
+Remove a manual entry.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"node/remove","params":{"id":"my-server"}}
@@ -148,13 +155,22 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 - **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
 
 A node can have any combination of these, or none if the target is unreachable.
-Hardware reads require exact current cluster pins and matching `hostUuid` and
-`clusterUuid` in the response. They use pooled mTLS clients after identifying
-the peer, close each connection after the response, refuse redirects, and never
-fall back to public HTTP or operator CAs.
+Service hardware reads require exact current cluster pins and matching `hostUuid`
+and `clusterUuid` in the response. They use pooled mTLS clients after identifying
+the peer, close each connection after the response, and refuse redirects.
+Public HTTP responses and operator CA validation cannot authorize service hardware.
 Unverified configurations report `identityVerification: "unverified"` and supply
 no service measurements. Explicitly configured engine routes remain available.
-Desktop and TUI may independently read public HTTP for hardware display.
+
+A separate two-second preview loop uses up to four concurrent public HTTP reads,
+each with a 1.5-second deadline, a 64 KiB limit, and no redirects. It runs only for
+unverified entries without `tls_port` or `mtls` hints that have never authenticated
+during the current tracked entry's lifetime. Authentication clears previews and
+prevents later trust withdrawal or an mTLS outage from downgrading to public
+display data. Failed preview reads retain the last good preview with its original
+age and retry on the next cycle. Queued reads and completed responses are checked
+against the current entry, endpoint, and eligibility before they are used.
+Desktop and TUI receive hardware exclusively through broker snapshots and pushes.
 
 The three engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
 

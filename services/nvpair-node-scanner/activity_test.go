@@ -25,7 +25,7 @@ func TestFreshActivity_KeepsANodeNoProbeCanReach(t *testing.T) {
 	f.discover(t)
 	d, n := f.daemon, f.raw
 	f.server.Close()
-	delete(d.lastInfoAt, "busy-node")
+	delete(d.nodeInfoStatus, "busy-node")
 
 	require.False(t, d.reachable(n), "precondition: a node with no listener must fail the probe when nothing vouches for it")
 
@@ -101,8 +101,7 @@ func TestSelfActivity_IsDropped(t *testing.T) {
 // report vouch for the node the moment it was rediscovered.
 func TestForget_ClearsActivity(t *testing.T) {
 	d := activityDaemon()
-	d.lastInfoAt = make(map[string]time.Time)
-	d.nodeInfoDown = make(map[string]bool)
+	d.nodeInfoStatus = make(map[string]peerInfoStatus)
 
 	d.noteActivity("node", 0)
 	d.forget("node")

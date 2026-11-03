@@ -88,10 +88,10 @@ func portFromURL(t *testing.T, raw string) int {
 // behavior uses newDiscoveryPeerFixture.
 func newRefreshTestDaemon() *daemon {
 	return &daemon{
-		reg:        newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
-		dir:        newDirectory(),
-		modelsHTTP: &http.Client{Timeout: modelsFetchTimeout},
-		lastInfoAt: make(map[string]time.Time),
+		reg:            newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
+		dir:            newDirectory(),
+		modelsHTTP:     &http.Client{Timeout: modelsFetchTimeout},
+		nodeInfoStatus: make(map[string]peerInfoStatus),
 	}
 }
 
@@ -404,8 +404,8 @@ func TestRefreshModels_ConcurrentAuthenticatedPeers(t *testing.T) {
 	second := newDiscoveryPeerFixture(t, "peer-2")
 	second.attach(t, first.daemon)
 	entered, release := make(chan struct{}, 2), make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
 	for _, f := range []*discoveryPeerFixture{first, second} {
 		f.info.Peer.Services[noderec.ServiceEngineManager] = portFromURL(t, f.server.URL)
 		f.daemon.refreshTelemetryOnce(context.Background())
@@ -429,7 +429,7 @@ func TestRefreshModels_ConcurrentAuthenticatedPeers(t *testing.T) {
 			require.FailNow(t, "models did not refresh peers concurrently")
 		}
 	}
-	releaseOnce.Do(func() { close(release) })
+	unblock()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):

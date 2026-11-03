@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -321,8 +323,10 @@ func TestNodeAdd_RespondsWithInitialStatusAndDiscoversProbeResult(t *testing.T) 
 	assert.Equal(t, "lab", initial.ID, "initial status (%v)", initial)
 	assert.Equal(t, "node.local", initial.Address, "initial status (%v)", initial)
 	assert.Equal(t, 11434, initial.OllamaPort, "default ports not set (%v)", initial)
+	assert.Equal(t, 1234, initial.LMStudioPort)
 	assert.Equal(t, 14318, initial.NodeInfoPort, "default ports not set (%v)", initial)
 	assert.False(t, initial.OllamaUp, "initial status should be unprobed (%v)", initial)
+	assert.False(t, initial.LMStudioUp)
 	assert.False(t, initial.NodeInfoUp, "initial status should be unprobed (%v)", initial)
 
 	if discovered.Method == "" {
@@ -597,8 +601,7 @@ func TestProbeNode_DiscardsResultsAfterIdentityOrEntryChanges(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newManualPeerFixture(t)
 			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-			var releaseOnce sync.Once
-			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			unblock := sync.OnceFunc(func() { close(release) })
 			t.Cleanup(unblock)
 			f.beforeResponse = func() { close(entered); <-release }
 			go func() { f.manager.probeNode(f.entry); close(done) }()
@@ -648,8 +651,7 @@ func TestProbeNode_DiscardsInFlightHardwareAfterPeerReadmission(t *testing.T) {
 	// is unchanged. Inspect the emitted update before cached reads reconcile trust.
 	f := newManualPeerFixture(t)
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	unblock := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(unblock)
 	f.beforeResponse = func() { close(entered); <-release }
 	go func() { f.manager.probeNode(f.entry); close(done) }()
@@ -971,4 +973,438 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 	data = append(data, '\n')
 	_, err = conn.Write(data)
 	require.NoError(t, err, "write request")
+}
+
+func manualPreviewEntry(t *testing.T, server *httptest.Server) (ManualEntry, ManualNodeStatus) {
+	t.Helper()
+	host, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+	portNumber, err := strconv.Atoi(port)
+	require.NoError(t, err)
+	entry := ManualEntry{Address: host, Name: "preview-host"}
+	return entry, ManualNodeStatus{
+		ID: nodeID(entry), Name: entry.Name, Address: host,
+		IdentityVerification: noderec.IdentityUnverified,
+		NodeInfoPort:         portNumber,
+	}
+}
+
+// A hardware preview is useful even while the node's services are unavailable.
+// A successful public read must update only display data, without verifying the
+// entry, supplying service measurements, or hiding an ongoing service outage.
+func TestManagerPreviewAll_UpdatesDisplayWithoutChangingServiceState(t *testing.T) {
+	public := sampleInfo().NodeInfo
+	public.HostUUID = "forged-peer"
+	principal := "forged-principal"
+	public.ClusterUUID = &principal
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/node-info", r.URL.Path)
+		assert.NoError(t, json.NewEncoder(w).Encode(public))
+	}))
+	t.Cleanup(server.Close)
+	entry, status := manualPreviewEntry(t, server)
+	m, frames, _ := newTestManager()
+	m.nodes[status.ID] = &trackedNode{entry: entry, status: status, consecutiveFails: 2}
+
+	m.previewAll(context.Background())
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, frames, methodIs("node/updated")))
+	require.NotNil(t, updated.Preview)
+	assert.Equal(t, public.GPUs, updated.Preview.GPUs)
+	assert.Equal(t, public.CPU, updated.Preview.CPU)
+	assert.Equal(t, public.Memory, updated.Preview.Memory)
+
+	// A public response can supply hardware details, but none of its identity
+	// or service metadata is allowed to become an authenticated observation.
+	assert.Empty(t, updated.Preview.HostUUID)
+	assert.Nil(t, updated.Preview.ClusterUUID)
+	assert.Nil(t, updated.Preview.Peer)
+	assert.Equal(t, noderec.IdentityUnverified, updated.IdentityVerification)
+	assert.Empty(t, updated.HostUUID)
+	assert.Empty(t, updated.DiscoveryRecordID)
+
+	assert.Empty(t, updated.GPUs)
+	assert.Nil(t, updated.CPU)
+	assert.Nil(t, updated.Memory)
+	assert.False(t, updated.TelemetryValid)
+
+	// Preview success must not turn a service outage into a healthy status or
+	// reset the independent service probe-failure counter.
+	assert.False(t, updated.NodeInfoUp)
+	assert.False(t, updated.OllamaUp)
+	assert.False(t, updated.LMStudioUp)
+	assert.Equal(t, 2, m.nodes[status.ID].consecutiveFails)
+}
+
+// Five manual entries need previews, but only four reads may run at once.
+// Hold the first responses open to check the limit, then release them and verify
+// that the remaining entry is read rather than skipped from the batch.
+func TestManagerPreviewAll_LimitsConcurrentReadsWithoutSkippingEntries(t *testing.T) {
+	const readerLimit = 4
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	releaseReads := sync.OnceFunc(func() { close(release) })
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(sampleInfo().NodeInfo))
+	}))
+	t.Cleanup(server.Close)
+	baseEntry, baseStatus := manualPreviewEntry(t, server)
+	m, _, _ := newTestManager()
+	for i := range 5 {
+		entry, status := baseEntry, baseStatus
+		entry.Name = fmt.Sprintf("preview-%d", i)
+		status.ID, status.Name = nodeID(entry), entry.Name
+		m.nodes[status.ID] = &trackedNode{entry: entry, status: status}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.previewAll(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		releaseReads()
+		<-done
+	})
+
+	for range readerLimit {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("four manual preview requests did not start")
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("a fifth manual preview request started while all four readers were busy")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseReads()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manual preview batch did not finish after responses were released")
+	}
+
+	assert.Equal(t, int32(5), reads.Load())
+}
+
+// A failed public read must preserve the last display sample with its original
+// age. The next batch retries immediately, and a successful retry replaces that
+// preview without changing the independent service probe-failure counter.
+func TestManagerPreviewAll_PreservesCachedPreviewUntilRetrySucceeds(t *testing.T) {
+	var available atomic.Bool
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reads.Add(1)
+		if !available.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(noderec.NodeInfo{
+			GPUs: []GPUInfo{{Name: "new preview GPU"}}, TelemetryValid: true, MSSince: 137,
+		}))
+	}))
+	t.Cleanup(server.Close)
+	entry, status := manualPreviewEntry(t, server)
+	preview := sampleInfo().NodeInfo
+	status.Preview = &preview
+	observedAt := time.Now()
+	m, frames, _ := newTestManager()
+	m.nodes[status.ID] = &trackedNode{
+		entry: entry, status: status, previewObservedAt: observedAt, consecutiveFails: 2,
+	}
+
+	m.previewAll(context.Background())
+
+	afterFailure := m.nodes[status.ID].statusAt(observedAt.Add(5 * time.Second))
+	require.NotNil(t, afterFailure.Preview)
+	assert.Equal(t, preview.GPUs, afterFailure.Preview.GPUs)
+	assert.Equal(t, int64(5137), afterFailure.Preview.MSSince)
+	assert.Equal(t, 2, m.nodes[status.ID].consecutiveFails)
+
+	select {
+	case frame := <-frames.frames:
+		t.Fatalf("failed preview read emitted a status update: %s", frame)
+	default:
+	}
+
+	available.Store(true)
+	m.previewAll(context.Background())
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, frames, methodIs("node/updated")))
+	require.NotNil(t, updated.Preview)
+	assert.Equal(t, []GPUInfo{{Name: "new preview GPU"}}, updated.Preview.GPUs)
+	assert.Equal(t, int32(2), reads.Load())
+
+	assert.Equal(t, 2, m.nodes[status.ID].consecutiveFails)
+}
+
+// An entry may be unverified because it has never authenticated or because its
+// earlier trust was withdrawn. Only the former may use public previews; explicit
+// TLS or mTLS settings also prevent plaintext collection.
+func TestManagerPreviewAll_ReadsPublicHardwareOnlyForEligibleEntries(t *testing.T) {
+	test := func(name string, tlsPort int, mtls bool, verification noderec.IdentityVerification, everAuthenticated bool, wantReads int32) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			var reads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reads.Add(1)
+				assert.NoError(t, json.NewEncoder(w).Encode(sampleInfo().NodeInfo))
+			}))
+			t.Cleanup(server.Close)
+			entry, status := manualPreviewEntry(t, server)
+			entry.TLSPort, entry.MTLS = tlsPort, mtls
+			status.IdentityVerification = verification
+			m, _, _ := newTestManager()
+			m.nodes[status.ID] = &trackedNode{entry: entry, status: status, everAuthenticated: everAuthenticated}
+
+			m.previewAll(context.Background())
+
+			assert.Equal(t, wantReads, reads.Load())
+		})
+	}
+
+	test("unpaired entry permits a display preview", 0, false, noderec.IdentityUnverified, false, 1)
+	test("explicit TLS port prevents plaintext preview", 14318, false, noderec.IdentityUnverified, false, 0)
+	test("explicit mutual TLS hint prevents plaintext preview", 0, true, noderec.IdentityUnverified, false, 0)
+	test("verified peer does not use public hardware", 0, false, noderec.IdentityPinned, false, 0)
+	test("withdrawn or failed peer does not fall back to public hardware", 0, false, noderec.IdentityUnverified, true, 0)
+}
+
+// A target can become obsolete while waiting for a free reader. It must be
+// checked before HTTP starts, so a queued preview cannot contact a replacement
+// entry or a peer that has already authenticated.
+func TestManagerPreview_SkipsTargetsRetiredBeforeRead(t *testing.T) {
+	test := func(name string, retire func(*Manager, string)) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			var reads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reads.Add(1)
+				assert.NoError(t, json.NewEncoder(w).Encode(sampleInfo().NodeInfo))
+			}))
+			t.Cleanup(server.Close)
+			entry, status := manualPreviewEntry(t, server)
+			m, _, _ := newTestManager()
+			tracked := &trackedNode{entry: entry, status: status}
+			m.nodes[status.ID] = tracked
+			target := previewTarget{id: status.ID, entry: entry, port: status.NodeInfoPort, tracked: tracked}
+
+			retire(m, status.ID)
+			m.refreshPreview(context.Background(), target)
+
+			assert.Zero(t, reads.Load())
+		})
+	}
+
+	test("removed entry", func(m *Manager, id string) { delete(m.nodes, id) })
+	test("replacement with the same configuration", func(m *Manager, id string) {
+		old := m.nodes[id]
+		m.nodes[id] = &trackedNode{entry: old.entry, status: old.status}
+	})
+	test("authenticated entry", func(m *Manager, id string) { m.nodes[id].status.IdentityVerification = noderec.IdentityPinned })
+}
+
+// newBlockedPreviewServer owns the response gate and releases it before closing
+// the server, including when a test fails before it can unblock the request.
+func newBlockedPreviewServer(t *testing.T, info noderec.NodeInfo) (server *httptest.Server, waitForRequest, release func()) {
+	t.Helper()
+	started, released := make(chan struct{}), make(chan struct{})
+	release = sync.OnceFunc(func() { close(released) })
+	markStarted := sync.OnceFunc(func() { close(started) })
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		markStarted()
+		select {
+		case <-released:
+		case <-r.Context().Done():
+			return
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(info))
+	}))
+	t.Cleanup(func() {
+		release()
+		server.Close()
+	})
+	waitForRequest = func() {
+		t.Helper()
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("public hardware request did not reach the server")
+		}
+	}
+	return server, waitForRequest, release
+}
+
+// Complete an HTTP response while status processing is locked. Both the emitted
+// preview and later status reads must include that wait in the sample's age.
+func TestManagerPreviewAll_PreservesAgeWhileWaitingForStatusLock(t *testing.T) {
+	server, waitForRequest, unblock := newBlockedPreviewServer(t, noderec.NodeInfo{TelemetryValid: true, MSSince: 137})
+	entry, status := manualPreviewEntry(t, server)
+	m, frames, _ := newTestManager()
+	m.nodes[status.ID] = &trackedNode{entry: entry, status: status}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.previewAll(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		unblock()
+		<-done
+	})
+	waitForRequest()
+
+	m.mu.Lock()
+	releasedAt := time.Now()
+	unblock()
+	// Let HTTP complete while publication is blocked. Use the actual interval
+	// below so a slow test runner does not depend on an arbitrary upper bound.
+	time.Sleep(100 * time.Millisecond)
+	beforeUnlock := time.Now()
+	m.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("preview refresh did not finish after status processing resumed")
+	}
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, frames, methodIs("node/updated")))
+	require.NotNil(t, updated.Preview)
+	// Request and cache durations are rounded to milliseconds separately.
+	assert.GreaterOrEqual(t, updated.Preview.MSSince, int64(137)+beforeUnlock.Sub(releasedAt).Milliseconds()-1)
+
+	later := m.listNodes()
+	require.Len(t, later, 1)
+	require.NotNil(t, later[0].Preview)
+	assert.GreaterOrEqual(t, later[0].Preview.MSSince, updated.Preview.MSSince)
+}
+
+// Hold the HTTP response until the manual entry is removed, replaced, or
+// authenticated. Its late hardware must be discarded, including when a new
+// entry has the same ID and address as the one that started the request.
+func TestManagerPreviewAll_DiscardsResultsAfterEntryOrVerificationChanges(t *testing.T) {
+	test := func(name string, change func(*Manager, string)) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			server, waitForRequest, unblock := newBlockedPreviewServer(t, sampleInfo().NodeInfo)
+			entry, status := manualPreviewEntry(t, server)
+			m, frames, _ := newTestManager()
+			m.nodes[status.ID] = &trackedNode{entry: entry, status: status}
+			done := make(chan struct{})
+			go func() {
+				m.previewAll(context.Background())
+				close(done)
+			}()
+			waitForRequest()
+
+			m.mu.Lock()
+			change(m, status.ID)
+			m.mu.Unlock()
+			unblock()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("preview refresh did not finish")
+			}
+
+			select {
+			case frame := <-frames.frames:
+				t.Fatalf("retired preview emitted a frame: %s", frame)
+			default:
+			}
+
+			if node := m.nodes[status.ID]; node != nil {
+				assert.Nil(t, node.status.Preview)
+			}
+		})
+	}
+
+	test("removed entry", func(m *Manager, id string) { delete(m.nodes, id) })
+	test("replacement with the same configuration", func(m *Manager, id string) {
+		old := m.nodes[id]
+		m.nodes[id] = &trackedNode{entry: old.entry, status: old.status}
+	})
+	test("changed address", func(m *Manager, id string) { m.nodes[id].entry.Address = "192.0.2.50" })
+	test("promoted peer", func(m *Manager, id string) { m.nodes[id].status.IdentityVerification = noderec.IdentityPinned })
+}
+
+// Status replies must include elapsed preview age without modifying the cached
+// sample. Otherwise, repeated reads would count the same elapsed time more than
+// once and make the reported sample age grow too quickly.
+func TestTrackedNodeStatusAt_AddsPreviewAgeWithoutChangingCachedSample(t *testing.T) {
+	start := time.Now()
+	preview := sampleInfo().NodeInfo
+	node := &trackedNode{
+		status:            ManualNodeStatus{Preview: &preview},
+		previewObservedAt: start,
+	}
+
+	status := node.statusAt(start.Add(5 * time.Second))
+
+	require.NotNil(t, status.Preview)
+	assert.Equal(t, int64(5137), status.Preview.MSSince)
+
+	assert.Equal(t, int64(137), node.status.Preview.MSSince)
+}
+
+func TestProbeNode_ReplacesPublicPreviewWithAuthenticatedHardware(t *testing.T) {
+	f := newManualPeerFixture(t)
+	preview := sampleInfo().NodeInfo
+	f.manager.nodes[nodeID(f.entry)].status.Preview = &preview
+
+	f.manager.probeNode(f.entry)
+
+	status := f.manager.listNodes()
+	require.Len(t, status, 1)
+	require.Equal(t, noderec.IdentityPinned, status[0].IdentityVerification)
+	assert.Nil(t, status[0].Preview)
+
+	assert.Equal(t, f.info.GPUs, status[0].GPUs)
+}
+
+// A saved hardware preview does not establish current service availability.
+// Failed service probes must preserve the display preview while advancing the
+// outage counter and reporting the failure when its threshold is reached.
+func TestProbeNode_RetainsDisplayPreviewWithoutTreatingItAsReachability(t *testing.T) {
+	m, frames, _ := newTestManager()
+	entry := ManualEntry{Address: "node.local", Name: "preview-only"}
+	preview := sampleInfo().NodeInfo
+	m.nodes[nodeID(entry)] = &trackedNode{
+		entry: entry,
+		status: ManualNodeStatus{
+			ID: nodeID(entry), IdentityVerification: noderec.IdentityUnverified,
+			Address: entry.Address, Preview: &preview,
+		},
+		previewObservedAt: time.Now(),
+		consecutiveFails:  2,
+	}
+
+	m.probeNode(entry)
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, frames, methodIs("node/updated")))
+	require.NotNil(t, updated.Preview)
+	assert.Equal(t, preview.GPUs, updated.Preview.GPUs)
+
+	assert.Empty(t, updated.GPUs)
+	assert.Empty(t, updated.HostUUID)
+	assert.False(t, updated.NodeInfoUp)
+	assert.False(t, updated.TelemetryValid)
+
+	// Cached display hardware does not cancel a service outage. This third
+	// failed service probe must still reach the outage-reporting threshold.
+	assert.Equal(t, 3, m.nodes[nodeID(entry)].consecutiveFails)
+	readCaptureUntil(t, frames, methodIs("errors:report"))
 }

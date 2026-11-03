@@ -33,6 +33,14 @@ import (
 	"nvpair-shared/noderec"
 )
 
+// refreshTelemetryOnce waits for a complete sampling pass in synchronous tests.
+func (d *daemon) refreshTelemetryOnce(ctx context.Context) {
+	sem := make(chan struct{}, telemetryRefreshConcurrency)
+	var workers sync.WaitGroup
+	d.dispatchTelemetry(ctx, time.Now(), sem, &workers)
+	workers.Wait()
+}
+
 func TestDiscovery_CandidateAliasesYieldBusyOriginToVerifiedTelemetry(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
@@ -46,12 +54,12 @@ func TestDiscovery_CandidateAliasesYieldBusyOriginToVerifiedTelemetry(t *testing
 	// ahead of the verified peer's next scheduling sample.
 	release, acquired := f.daemon.nodeInfoOrigins.acquire(context.Background(), f.server.URL)
 	require.True(t, acquired)
-	var releaseOnce sync.Once
+	release = sync.OnceFunc(release)
 	ctx, cancel := context.WithCancel(context.Background())
 	authDone := make(chan struct{})
 	t.Cleanup(func() {
 		cancel()
-		releaseOnce.Do(release)
+		release()
 		<-authDone
 	})
 	for i := range 4 {
@@ -84,7 +92,7 @@ func TestDiscovery_CandidateAliasesYieldBusyOriginToVerifiedTelemetry(t *testing
 
 	var output bytes.Buffer
 	f.daemon.codec = NewCodec(&output)
-	releaseOnce.Do(release)
+	release()
 	f.daemon.refreshTelemetryOnce(ctx)
 
 	message, err := NewCodec(&output).Read()
@@ -116,7 +124,7 @@ func newSelfTestDaemon(hostUUID, ip string) *daemon {
 		instance:       "myhost",
 		dir:            newDirectory(),
 		modelsHTTP:     &http.Client{Timeout: modelsFetchTimeout},
-		lastInfoAt:     make(map[string]time.Time),
+		nodeInfoStatus: make(map[string]peerInfoStatus),
 		lastActivityAt: make(map[string]time.Time),
 		authWake:       make(chan struct{}, 1),
 		modelsWake:     make(chan struct{}, 1),
@@ -311,7 +319,7 @@ func TestReachable_RejectsAdvertisementsClaimingTheLocalHost(t *testing.T) {
 	// would otherwise make that UUID reachable, without any network probe.
 	const selfUUID = "self-uuid"
 	d := newSelfTestDaemon(selfUUID, "192.0.2.1")
-	d.lastInfoAt[selfUUID] = time.Now()
+	d.nodeInfoStatus[selfUUID] = peerInfoStatus{lastAcceptedAt: time.Now()}
 	self := RawNode{
 		TXT: []string{"uuid=" + selfUUID, "ip=192.0.2.1"},
 	}
@@ -839,13 +847,13 @@ func TestDiscovery_DiscardsResultsInvalidatedDuringRead(t *testing.T) {
 func (f *discoveryPeerFixture) invalidateDuringRead(t *testing.T, invalidate func(*testing.T, *discoveryPeerFixture), read func()) {
 	t.Helper()
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
+	unblock := sync.OnceFunc(func() { close(release) })
 	f.respond = func(http.ResponseWriter, *http.Request) bool {
 		close(entered)
 		<-release
 		return false
 	}
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); <-done })
+	t.Cleanup(func() { unblock(); <-done })
 	go func() {
 		defer close(done)
 		read()
@@ -856,7 +864,7 @@ func (f *discoveryPeerFixture) invalidateDuringRead(t *testing.T, invalidate fun
 		require.FailNow(t, "inventory request did not reach the server")
 	}
 	invalidate(t, f)
-	releaseOnce.Do(func() { close(release) })
+	unblock()
 	<-done
 }
 
@@ -948,8 +956,8 @@ func TestDiscovery_DiscardsModelResponseAfterSavedCertificateReplacement(t *test
 	client.Transport = heldModelResponseTransport{RoundTripper: client.Transport, closed: closed, release: release}
 	changed := make(chan bool, 1)
 	done := make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); <-done })
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(func() { unblock(); <-done })
 	go func() {
 		defer close(done)
 		changed <- f.daemon.refreshNodeModels(target)
@@ -969,7 +977,7 @@ func TestDiscovery_DiscardsModelResponseAfterSavedCertificateReplacement(t *test
 	require.Empty(t, before.Models)
 	var output bytes.Buffer
 	f.daemon.codec = NewCodec(&output)
-	releaseOnce.Do(func() { close(release) })
+	unblock()
 	<-done
 	assert.False(t, <-changed, "model response from the replaced certificate must not update the new peer")
 	after, ok := f.daemon.dir.get("peer-uuid")
@@ -1042,8 +1050,8 @@ func TestDiscovery_DiscardsModelsAfterSecondaryAddressChanges(t *testing.T) {
 			client.Transport = heldModelResponseTransport{RoundTripper: client.Transport, closed: closed, release: release}
 			changed := make(chan bool, 1)
 			done := make(chan struct{})
-			var releaseOnce sync.Once
-			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); <-done })
+			unblock := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(func() { unblock(); <-done })
 			go func() {
 				defer close(done)
 				changed <- f.daemon.refreshNodeModels(original)
@@ -1064,7 +1072,7 @@ func TestDiscovery_DiscardsModelsAfterSecondaryAddressChanges(t *testing.T) {
 			var output bytes.Buffer
 			f.daemon.codec = NewCodec(&output)
 
-			releaseOnce.Do(func() { close(release) })
+			unblock()
 			<-done
 
 			assert.Equal(t, wantAccepted, <-changed)
@@ -1167,7 +1175,7 @@ func TestDiscovery_PeerActivityDoesNotKeepSpoofedDiscoveryReachable(t *testing.T
 	assert.False(t, f.daemon.reachable(spoof), "verified activity must not keep a spoofed discovery reachable")
 	f.server.Close()
 	f.daemon.infoMu.Lock()
-	f.daemon.lastInfoAt["peer-uuid"] = time.Now().Add(-reachableInfoFreshness - time.Second)
+	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-reachableInfoFreshness - time.Second)}
 	f.daemon.infoMu.Unlock()
 	assert.True(t, f.daemon.reachable(f.raw), "recent inference activity must keep the verified peer reachable")
 	clustertrusttest.RemovePeerPin(t, f.selfDir, "peer-uuid")
@@ -1198,7 +1206,7 @@ func TestDiscovery_RequiresReauthenticationBeforeReadmittedPeerTelemetry(t *test
 	f.discover(t)
 	before, present := f.daemon.dir.get("peer-uuid")
 	require.True(t, present)
-	acceptedAt := f.daemon.lastInfoAt["peer-uuid"]
+	acceptedAt := f.daemon.nodeInfoStatus["peer-uuid"].lastAcceptedAt
 	var output bytes.Buffer
 	f.daemon.codec = NewCodec(&output)
 
@@ -1209,7 +1217,7 @@ func TestDiscovery_RequiresReauthenticationBeforeReadmittedPeerTelemetry(t *test
 	after, present := f.daemon.dir.get("peer-uuid")
 	require.True(t, present)
 	assert.Equal(t, before, after)
-	assert.Equal(t, acceptedAt, f.daemon.lastInfoAt["peer-uuid"])
+	assert.Equal(t, acceptedAt, f.daemon.nodeInfoStatus["peer-uuid"].lastAcceptedAt)
 	assert.Empty(t, output.Bytes())
 
 	f.daemon.reloadTrust()
@@ -1246,9 +1254,9 @@ func TestDiscovery_SlowAuthenticationDoesNotBlockVerifiedPeerTelemetry(t *testin
 	writePinFromCert(t, f.selfDir, "slow-peer", filepath.Join(slow.peerDir, "node.crt"))
 	writePinFromCert(t, slow.peerDir, "self-uuid", filepath.Join(f.selfDir, "node.crt"))
 	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
+	markEntered := sync.OnceFunc(func() { close(entered) })
 	slow.respond = func(http.ResponseWriter, *http.Request) bool {
-		once.Do(func() { close(entered) })
+		markEntered()
 		<-release
 		return false
 	}
@@ -1432,7 +1440,7 @@ func TestDiscovery_TelemetryRequestsStayWithinConcurrencyLimitAcrossRefreshes(t 
 	}
 	entered := make(chan struct{}, len(fixtures))
 	release := make(chan struct{})
-	var releaseOnce sync.Once
+	unblock := sync.OnceFunc(func() { close(release) })
 	for _, f := range fixtures {
 		f.respond = func(w http.ResponseWriter, r *http.Request) bool {
 			entered <- struct{}{}
@@ -1447,7 +1455,7 @@ func TestDiscovery_TelemetryRequestsStayWithinConcurrencyLimitAcrossRefreshes(t 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { d.runTelemetryLoop(ctx, 5*time.Millisecond); close(done) }()
-	t.Cleanup(func() { cancel(); releaseOnce.Do(func() { close(release) }); <-done })
+	t.Cleanup(func() { cancel(); unblock(); <-done })
 	for range telemetryRefreshConcurrency {
 		select {
 		case <-entered:
@@ -1460,7 +1468,7 @@ func TestDiscovery_TelemetryRequestsStayWithinConcurrencyLimitAcrossRefreshes(t 
 		require.FailNow(t, "later refreshes exceeded the limit on simultaneous telemetry requests")
 	case <-time.After(50 * time.Millisecond):
 	}
-	releaseOnce.Do(func() { close(release) })
+	unblock()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -1472,7 +1480,7 @@ func TestDiscovery_RemovesUnavailablePeerAfterItsDiscoveryExpires(t *testing.T) 
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
 	f.server.Close()
-	delete(f.daemon.lastInfoAt, "peer-uuid")
+	delete(f.daemon.nodeInfoStatus, "peer-uuid")
 	f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: f.raw})
 	_, present := f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
@@ -1490,7 +1498,7 @@ func TestDiscovery_RemovesExpiredDiscoveryAfterUUIDClaimChanges(t *testing.T) {
 			self, ok := f.daemon.dir.get(selfUUID)
 			require.True(t, ok, "local record must exist")
 			f.server.Close()
-			delete(f.daemon.lastInfoAt, "peer-uuid")
+			delete(f.daemon.nodeInfoStatus, "peer-uuid")
 			updatedTXT := make([]string, 0, len(f.raw.TXT))
 			for _, field := range f.raw.TXT {
 				if !strings.HasPrefix(field, "uuid=") {
@@ -1544,11 +1552,13 @@ func TestDiscovery_RetainedPeerExpiresAfterAvailabilityEvidenceEnds(t *testing.T
 	_, present := f.daemon.dir.get("peer-uuid")
 	require.True(t, present, "reachable peer must survive announcement expiry")
 	f.server.Close()
-	f.daemon.lastInfoAt["peer-uuid"] = time.Now().Add(-15 * time.Second)
+	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-15 * time.Second)}
 	refresh()
 	_, present = f.daemon.dir.get("peer-uuid")
 	require.True(t, present, "temporary node-info failure must retain the peer")
-	f.daemon.lastInfoAt["peer-uuid"] = time.Now().Add(-2 * time.Minute)
+	status := f.daemon.nodeInfoStatus["peer-uuid"]
+	status.lastAcceptedAt = time.Now().Add(-2 * time.Minute)
+	f.daemon.nodeInfoStatus["peer-uuid"] = status
 	f.daemon.noteActivity("peer-uuid", 0)
 	refresh()
 	_, present = f.daemon.dir.get("peer-uuid")
@@ -1559,7 +1569,7 @@ func TestDiscovery_RetainedPeerExpiresAfterAvailabilityEvidenceEnds(t *testing.T
 	refresh()
 	_, present = f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
-	assert.Empty(t, f.daemon.lastInfoAt)
+	assert.Empty(t, f.daemon.nodeInfoStatus)
 	var message Message
 	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output.Bytes()), &message))
 	var removed noderec.NodeEvent
@@ -1575,7 +1585,7 @@ func TestDiscovery_FailedRefreshKeepsPeersWithActiveDiscoveries(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
 	f.server.Close()
-	f.daemon.lastInfoAt["peer-uuid"] = time.Now().Add(-2 * time.Minute)
+	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-2 * time.Minute)}
 	f.daemon.refreshTelemetryOnce(context.Background())
 	node, present := f.daemon.dir.get("peer-uuid")
 	require.True(t, present)
@@ -1693,7 +1703,7 @@ func TestDiscovery_FailedAnnouncementUpdateStillAllowsRemovalOfUnavailablePeer(t
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
 	f.server.Close()
-	delete(f.daemon.lastInfoAt, "peer-uuid")
+	delete(f.daemon.nodeInfoStatus, "peer-uuid")
 	updated := f.raw
 	updated.TXT = append(append([]string(nil), f.raw.TXT...), "er=14319")
 	f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: updated})

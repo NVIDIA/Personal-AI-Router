@@ -16,6 +16,7 @@
 package relay
 
 import (
+	"slices"
 	"sort"
 	"sync"
 
@@ -73,15 +74,7 @@ func (c *RegistrationCache) Snapshot() []noderec.RegisterParams {
 }
 
 func registerEqual(a, b noderec.RegisterParams) bool {
-	if a.Service != b.Service || a.Port != b.Port || len(a.TXT) != len(b.TXT) {
-		return false
-	}
-	for i := range a.TXT {
-		if a.TXT[i] != b.TXT[i] {
-			return false
-		}
-	}
-	return true
+	return a.Service == b.Service && a.Port == b.Port && slices.Equal(a.TXT, b.TXT)
 }
 
 // Subscriber is a client interested in directory changes: a service filter and a

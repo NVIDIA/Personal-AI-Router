@@ -108,7 +108,7 @@ describe('UUID node keying', () => {
         expect(state.isRemoteEngineRunning('uuid-merge-2', 'lm-studio')).toBe(false)
     })
 
-    it('skips a /v1/node-info response whose hostUuid disagrees with the polled node', () => {
+    it('rejects broker hardware whose hostUuid disagrees with the verified node', () => {
         const state = getModularBridgeState()
         state.handleNotification({
             source: 'broker',
@@ -117,6 +117,8 @@ describe('UUID node keying', () => {
                 nodes: [
                     {
                         hostUuid: 'uuid-ni-1',
+                        discoveryRecordId: 'peer:uuid-ni-1',
+                        identityVerification: 'pinned',
                         name: 'ni-host-1',
                         ipAddress: '192.0.2.50',
                         port: 14318
@@ -125,25 +127,51 @@ describe('UUID node keying', () => {
             }
         })
 
-        // The polled address resolved to a different machine: its telemetry must
-        // not be attributed to this node.
-        state.mergeNodeInfoResponse('uuid-ni-1', {
-            hostUuid: 'uuid-someone-else',
-            GPUs: [
-                { name: 'NVIDIA A', vram_bytes: 1000, vram_used_bytes: 10, utilization_percent: 5 }
-            ],
-            cpu: { name: 'CPU-A', cores: 8, utilization_percent: 3 }
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:node-info',
+            params: {
+                hostUuid: 'uuid-ni-1',
+                discoveryRecordId: 'peer:uuid-ni-1',
+                identityVerification: 'pinned',
+                info: {
+                    hostUuid: 'uuid-someone-else',
+                    GPUs: [
+                        {
+                            name: 'NVIDIA A',
+                            vram_bytes: 1000,
+                            vram_used_bytes: 10,
+                            utilization_percent: 5
+                        }
+                    ],
+                    cpu: { name: 'CPU-A', cores: 8, utilization_percent: 3 }
+                }
+            }
         })
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.gpus).toHaveLength(0)
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.cpu.model).toBe('')
 
         // A matching hostUuid is attributed normally.
-        state.mergeNodeInfoResponse('uuid-ni-1', {
-            hostUuid: 'uuid-ni-1',
-            GPUs: [
-                { name: 'NVIDIA A', vram_bytes: 1000, vram_used_bytes: 10, utilization_percent: 5 }
-            ],
-            cpu: { name: 'CPU-A', cores: 8, utilization_percent: 3 }
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:node-info',
+            params: {
+                hostUuid: 'uuid-ni-1',
+                discoveryRecordId: 'peer:uuid-ni-1',
+                identityVerification: 'pinned',
+                info: {
+                    hostUuid: 'uuid-ni-1',
+                    GPUs: [
+                        {
+                            name: 'NVIDIA A',
+                            vram_bytes: 1000,
+                            vram_used_bytes: 10,
+                            utilization_percent: 5
+                        }
+                    ],
+                    cpu: { name: 'CPU-A', cores: 8, utilization_percent: 3 }
+                }
+            }
         })
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.gpus).toHaveLength(1)
         expect(state.getNodesInitial().nodes['uuid-ni-1'].topology.cpu.model).toBe('CPU-A')
@@ -167,12 +195,27 @@ describe('UUID node keying', () => {
                     }
                 ]
             })
-            state.mergeNodeInfoResponse(hostUuid, {
-                hostUuid,
-                GPUs: [{ name: 'Verified host GPU' }]
+            state.handleNotification({
+                source: 'broker',
+                method: 'discovery:node-info',
+                params: {
+                    hostUuid,
+                    discoveryRecordId: `${verification}:${hostUuid}`,
+                    identityVerification: verification,
+                    info: { hostUuid, GPUs: [{ name: 'Verified host GPU' }] }
+                }
             })
 
-            state.mergeNodeInfoResponse(hostUuid, { GPUs: [{ name: 'Unidentified GPU' }] })
+            state.handleNotification({
+                source: 'broker',
+                method: 'discovery:node-info',
+                params: {
+                    hostUuid,
+                    discoveryRecordId: `${verification}:${hostUuid}`,
+                    identityVerification: verification,
+                    info: { GPUs: [{ name: 'Unidentified GPU' }] }
+                }
+            })
 
             expect(
                 state.getNodesInitial().nodes[hostUuid].topology.gpus.map(gpu => gpu.name)
@@ -181,33 +224,6 @@ describe('UUID node keying', () => {
     }
     rejectMissingIdentity('preserves local hardware when a response omits hostUuid', 'local')
     rejectMissingIdentity('preserves pinned hardware when a response omits hostUuid', 'pinned')
-
-    it('gives the node-info poller every published address in ranked order', () => {
-        const state = getModularBridgeState()
-        state.handleNotification({
-            source: 'broker',
-            method: 'discovery:nodes-changed',
-            params: {
-                nodes: [
-                    {
-                        hostUuid: 'uuid-ni-failover',
-                        name: 'ni-failover-host',
-                        ipAddress: '192.0.2.80',
-                        ipAddresses: ['192.0.2.80', '10.20.30.40'],
-                        port: 14318
-                    }
-                ]
-            }
-        })
-
-        expect(
-            state.getNodeInfoPollTargets().find(target => target.id === 'uuid-ni-failover')
-        ).toEqual({
-            id: 'uuid-ni-failover',
-            hosts: ['192.0.2.80', '10.20.30.40'],
-            port: 14318
-        })
-    })
 
     it('seedWorkloads keeps a live upsert and only fills in unseen baseline jobs', () => {
         const state = getModularBridgeState()

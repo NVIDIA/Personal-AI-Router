@@ -29,7 +29,9 @@
 package noderec
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"sort"
@@ -455,6 +457,27 @@ type NodeInfo struct {
 	Peer *PeerMetadata `json:"peer,omitempty"`
 }
 
+// DecodeNodeInfo reads a complete hardware response bounded to 64 KiB.
+// Callers remain responsible for authenticating or stripping its identity.
+func DecodeNodeInfo(reader io.Reader) (NodeInfo, error) {
+	const maxBytes = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return NodeInfo{}, err
+	}
+	if len(body) > maxBytes {
+		return NodeInfo{}, fmt.Errorf("node-info response exceeds %d bytes", maxBytes)
+	}
+	var info *NodeInfo
+	if err := json.Unmarshal(body, &info); err != nil {
+		return NodeInfo{}, err
+	}
+	if info == nil {
+		return NodeInfo{}, fmt.Errorf("node-info response is null")
+	}
+	return *info, nil
+}
+
 // Aged returns a copy whose sample age includes time spent in a queue or cache.
 // It preserves validity and clamps age to avoid negative values or overflow.
 func (info NodeInfo) Aged(elapsed time.Duration) NodeInfo {
@@ -485,8 +508,10 @@ type LocalNodeInfoParams struct {
 	Info NodeInfo `json:"info"`
 }
 
-// NodeInfoEvent carries hardware from an owned worker or authenticated peer.
-// Record identity is assigned by the scanner, never taken from public HTTP.
+// NodeInfoEvent carries owned local hardware, authenticated peer hardware, or a
+// display-only public preview. Record identity and verification come from the
+// scanner, never from public HTTP. Unverified previews use the discovery record
+// ID and cannot supply canonical identity, registry metadata, or scheduling data.
 type NodeInfoEvent struct {
 	DiscoveryRecordID    string               `json:"discoveryRecordId"`
 	HostUUID             string               `json:"hostUuid"`
@@ -667,12 +692,8 @@ func (n DirectoryNode) CandidateIPs() []string {
 // AddressTXT returns the ip= (and, for a multi-homed node, ips=) TXT strings for
 // this node's published addresses.
 //
-// It exists so every consumer that re-projects a directory node onto a TXT-shaped
-// value — the broker's enriched node, both inference proxies, the cluster
-// resolver — emits the same keys in the same order. Each of them built this by
-// hand before, and each of them collapsed the address list to one entry while
-// doing it, which is what left a caller with a single unreachable address and
-// nothing else to try.
+// Consumers projecting a directory record onto TXT share this representation
+// so service boundaries preserve the ranked addresses needed for failover.
 func (n DirectoryNode) AddressTXT() []string {
 	ips := n.CandidateIPs()
 	if len(ips) == 0 {

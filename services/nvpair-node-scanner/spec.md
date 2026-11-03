@@ -11,8 +11,9 @@ The Node Scanner (Scanner for short) discovers computers on the local network an
 identities, services, hardware, and models. It announces this computer, the host,
 as one node, even when several services run on it. The broker distributes node
 records and verified telemetry (hardware measurements) to services such as
-proxies and scheduler. Desktop and the text interface (TUI) use those node
-records and may read public hardware measurements separately for display.
+proxies and scheduler. Desktop and the text interface (TUI) receive hardware
+through broker snapshots and pushes, including display-only public previews
+collected by workers for unverified records.
 
 ## 2. Scope
 
@@ -22,8 +23,8 @@ records and may read public hardware measurements separately for display.
   a maintained list of local services (`_nvpair-node._tcp`).
 - Discovery, address selection, a node directory that clients can query, and
   notifications when records change.
-- Public hardware details over HTTP for frontend display, and authenticated
-  details for services using approved peer nodes in the cluster.
+- Public hardware previews collected over HTTP for unverified display records,
+  and authenticated details for services using approved peer nodes in the cluster.
 - GPU, CPU, memory, and model enrichment: gathering extra details to add to a
   discovered node's directory record, including models loaded by each engine.
   These details are sent to broker clients, not broadcast in mDNS announcements.
@@ -40,8 +41,7 @@ records and may read public hardware measurements separately for display.
   operations, owned by `nvpair-engine-manager`.
 - Sending inference requests and choosing where to run them, owned by proxies
   and scheduler.
-- Frontend network reads or cryptography, and a separate system for signing
-  node details.
+- Frontend rendering and interaction, owned by desktop and TUI.
 
 ## 3. Key Use Cases
 
@@ -49,15 +49,17 @@ records and may read public hardware measurements separately for display.
   announces the host's identity, addresses in preferred order, and service ports
   as one node.
 - **Discover an unpaired node**: Scanner records its mDNS announcement as an
-  unverified discovery. Desktop and TUI can read public hardware details for that
-  row without adding those measurements to the service directory or caches.
+  unverified discovery and separately collects public hardware for that row.
+  Broker delivers the preview to that unverified display record. Verified
+  directory records and scheduling use owned or authenticated measurements.
 - **Discover a cluster peer**: Scanner verifies its node-info server against the
   saved certificate, then updates its directory record and fetches its model list
   using mTLS (mutual TLS), an encrypted connection where both nodes present
   certificates. Each checks the other's certificate against its saved pin.
-- **Show live hardware usage**: desktop and TUI read public node-info for their
-  hardware displays. Services read authenticated peer measurements, with a
-  smaller GPU-usage message sent through the broker to scheduler.
+- **Show live hardware usage**: desktop and TUI use broker hardware snapshots
+  and live updates. Owned IPC supplies local measurements, pinned mTLS supplies
+  approved peer measurements, and public previews remain unverified display
+  data. Only accepted local or pinned GPU usage reaches scheduler.
 - **Recover after a network change**: Scanner tries other known addresses and
   refreshes inventory without depending on receiving every network announcement.
 - **Follow cluster changes**: Scanner reloads identity and pins when nodes join
@@ -65,9 +67,9 @@ records and may read public hardware measurements separately for display.
 
 ## 4. Open Questions / Risks
 
-- **Public inventory for frontend display**: public HTTP remains a supported
-  interface, including while clustered. It keeps desktop and TUI hardware
-  displays available without giving either client cluster keys. HTTP does not
+- **Public inventory for frontend display**: public HTTP supports worker-collected
+  previews of unverified records in every membership state. Desktop and TUI
+  receive those previews through the broker. HTTP does not
   verify who supplied the measurements, so those values are display data only.
   Scheduling, trust, routing, and other service decisions must use authenticated
   remote data or measurements received from a locally owned worker.
@@ -83,11 +85,17 @@ records and may read public hardware measurements separately for display.
 
 **Functional**
 
-- Scanner owns the host's network announcement. Other workers register services with
-  Scanner through the broker instead of announcing separate discovery records.
-- The public HTTP node-info endpoint remains available for frontend hardware
-  displays, including while clustered. Its data cannot enter scheduling caches,
-  verified peer records, routing inputs, trust decisions, or other service logic.
+- Scanner owns the host's network announcement. Other workers register their
+  service ports with Scanner through the broker.
+- The public HTTP node-info endpoint serves unpaired hardware
+  previews, including while clustered. Scanner collects these on a separate
+  bounded two-second loop with at most four public HTTP requests in flight
+  across all nodes and their addresses. Each address sweep has a 1.5-second
+  total deadline. Reads have a 64 KiB response limit, refuse redirects, support
+  address failover, and back off after failures for at most 30 seconds.
+  Previews cannot enter scheduling caches, verified peer records, routing inputs,
+  trust decisions, or authenticated liveness evidence.
+  In-flight results are discarded if the discovery record or endpoint changes.
 - Scanner uses mDNS identity, name, addresses, and ports to decide where to try
   connecting. Finding a pin for an advertised identity selects the certificate
   to check against, but does not prove who sent the announcement.
@@ -140,7 +148,7 @@ records and may read public hardware measurements separately for display.
 
 **Inputs**: broker JSON-RPC requests over stdio (standard input/output) or `--ipc`,
 mDNS announcements, local identity and pins (read only), authenticated peer
-node-info responses, local hardware snapshots from owned worker IPC, model lists,
+node-info responses, public display-only previews, local hardware snapshots from owned worker IPC, model lists,
 and notifications of inference responses. The broker supplies local service
 ports and addresses that peers have successfully used, resending registrations
 after Scanner restarts.
@@ -150,11 +158,11 @@ notifications, node-info snapshots (measurements available at the time of a read
 smaller scheduling messages, and a startup `ready` notification. stdout carries
 JSON-RPC messages written one at a time, and operational logs go to stderr.
 
-Directory records carry `discoveryRecordId` and `identityVerification` in addition to
-the existing identity, address, service, inventory, model, and `lastSeen` fields.
+Directory records carry `discoveryRecordId`, `identityVerification`, identity,
+address, service, inventory, model, and `lastSeen` fields.
 `identityVerification` is `local`, `pinned`, or `unverified`. These fields record
 provenance: where the data came from and how the node's identity was verified.
-Scanner assigns them, rather than copying them from a remote response.
+Scanner owns and assigns these provenance fields.
 
 `discoveryRecordId` identifies the record being tracked; `hostUuid` identifies
 the host that record describes. For an unverified discovery, `hostUuid` is only
@@ -219,16 +227,20 @@ Notifications (Scanner → caller):
 | `discovery:node-discovered` | `{node: DirectoryNode}`, a new record |
 | `discovery:node-updated` | `{node: DirectoryNode}`, changed identity or inventory |
 | `discovery:node-removed` | `{node: DirectoryNode}`, a record removed or replaced |
-| `discovery:node-info` | `{discoveryRecordId, hostUuid, clusterUuid?, identityVerification, info}`, a full hardware snapshot from pinned mTLS or owned local IPC |
+| `discovery:node-info` | `{discoveryRecordId, hostUuid, clusterUuid?, identityVerification, info}`, full hardware from pinned mTLS or owned IPC, or an unverified display-only preview |
 | `discovery:node-telemetry` | `{hostUuid, gpuUtilizationPercent, telemetryValid, msSince}`, GPU-usage data for scheduling |
 
-`discovery:node-info` sends a complete hardware snapshot for service consumers.
+`discovery:node-info` sends a complete hardware snapshot through the broker.
 `info` includes GPU usage and video memory (VRAM), CPU, system memory, sample
 validity, and age. Its `identityVerification` is `pinned` for an authenticated
-remote source or `local` for an owned worker. Public HTTP display readings do
-not enter this notification path or its caches.
+remote source or `local` for an owned worker. Public previews use `unverified`
+and the current discovery record ID. Their `info.hostUuid`, `info.clusterUuid`,
+and `info.peer` claims are stripped. The broker retains observations separately
+by source and record, ages them on snapshot reads and replay, and exposes them
+as optional `AvailableNode.info`. Only local and pinned measurements enter
+service and scheduling inputs.
 Directory events report record changes, while snapshots report regular hardware
-measurements. `lastSeen` remains the time the record last changed.
+measurements. `lastSeen` records the time the record last changed.
 
 `ready` is sent before network discovery starts. It reports worker startup,
 not successful advertising, peer authentication, or availability of other
@@ -239,18 +251,19 @@ cancellation. Malformed JSON-RPC frames are logged without ending the read loop.
 Hardware sizes are in bytes and utilization is in percent. `telemetryValid`
 and `msSince` describe the source GPU sample, not the age of the directory
 record. When validity is false, clients ignore the age. Optional CPU, memory,
-and usage fields keep their existing behavior when unavailable or omitted.
+and usage fields may be absent when measurements are unavailable.
 
 Remote scheduling measurements are sent only for verified peers. The broker
 checks that the sample still belongs to the approved peer before caching or
 forwarding it to scheduler. Local samples must come from owned worker IPC.
 Manually configured remote nodes meet the same pin and response-identity checks;
 explicit engine configuration does not authorize using public hardware data.
-Without an accepted sample, existing unavailable/stale telemetry behavior applies.
+Measurements without an accepted source sample are unavailable; cached samples
+retain their elapsed age under the scheduler's freshness rules.
 
 ### 7.1 Discovery records and trust
 
-The mDNS TXT record format stays at version 1: `uuid` (host UUID), optional
+The version 1 mDNS TXT record contains `uuid` (host UUID), optional
 `cluster-uuid` (the certificate principal, the node identity named in its
 certificate), addresses in preferred order, and registered service ports.
 Node-info reports the same certificate identity as `clusterUuid`. It identifies
@@ -267,9 +280,9 @@ The service instance name comes from the hostname. It can help distinguish
 discovery records, but cannot establish a verified host's identity. Different
 hosts may use the same name.
 
-Scanner assigns each unverified record a discovery record ID instead of identifying
-it solely by its claimed host UUID. The canonical peer record, the main verified
-record for an approved node, links its identity to its exact saved certificate.
+Scanner assigns each unverified record an independent discovery record ID.
+The canonical peer record for an approved node links its identity to its exact
+saved certificate.
 Scanner checks a discovery claiming to be a known host against that link, even
 when the announced certificate identity is missing or different. An announcement
 cannot change which certificate belongs to a node or replace its verified
@@ -295,29 +308,27 @@ same port:
 
 | Reader | Transport | Use of the response |
 |---|---|---|
-| Desktop or TUI hardware display | Public, unencrypted HTTP, including while clustered | Unverified hardware details for display only |
-| Service reading an approved remote peer | Existing certificate-pinned mTLS | Authoritative peer metadata and telemetry |
+| Scanner or manual worker collecting an unpaired preview | Public, unencrypted HTTP, including while clustered | Unverified hardware details for broker-delivered display only |
+| Service reading an approved remote peer | Certificate-pinned mTLS | Authoritative peer metadata and telemetry |
 | This host's services | Private broker/worker IPC | Locally owned inventory and scheduling measurements |
 
-Public HTTP is an ongoing frontend display interface. It is independent of the
-authenticated service path, and this specification does not require moving
-desktop or TUI hardware polling into the broker. Discovery and pairing use the
-addresses and service ports supplied by mDNS and do not require hardware previews.
+Workers collect public hardware previews for unverified records. Desktop and
+TUI receive hardware through broker snapshots and pushes. Discovery and pairing
+use the addresses and service ports supplied by mDNS.
 The split listener keeps public HTTP available while live membership gates the
 peer node inventory handler. Neither plaintext HTTP nor TLS without a
 matching peer pin can supply authenticated remote data to services.
 
-Local hardware reads use private IPC to keep a consistent source rule for service
-measurements: local data comes from an owned worker, and remote data requires
-pinned mTLS. IPC ties local measurements to the node-info process started by the
-broker, rather than whichever process answers a local HTTP port. This avoids a
-special exception allowing services to read hardware over HTTP only on loopback.
+Local hardware comes from the node-info process started by the broker through
+private worker IPC. Approved remote measurements require pinned mTLS. These
+channels establish the source of each service observation.
 
 Node-info publishes `nodeinfo:info-updated {info}` over its owned
 stdio channel at startup and every two seconds. The broker forwards those
 snapshots as `discovery:local-node-info`, adding elapsed time to sample age when
-forwarding or replaying cached data. The public listener remains available to
-frontend displays. A discovered record must not be treated as local merely because
+forwarding or replaying cached data. Scanner emits full local hardware back to
+the broker for client delivery. The public listener serves
+unverified previews. A discovered record must not be treated as local merely because
 its advertised address points to this computer, including a loopback address such
 as `127.0.0.1` or `::1`.
 
@@ -335,7 +346,7 @@ Among successful alternatives, it chooses the first in the record's order.
 Unverified candidates cannot replace a verified peer's remembered address or
 supply addresses used as evidence to choose this host's own address.
 
-The peer node inventory response includes the existing hardware fields and a `peer`
+The peer node inventory response includes hardware fields and a `peer`
 object containing the serving host's name, addresses in preferred order, and
 registered service ports. These details come from its own local Scanner registry,
 the list of services registered on that host:
@@ -356,7 +367,7 @@ The broker sends the local snapshot to node-info over stdio using
 registration changes and resends it on restart. Peer node inventory is served
 only when the snapshot agrees with the current cluster identity. Until
 setup is complete, or while identity is changing, it returns `503`, while public
-hardware inventory remains available.
+hardware inventory is available independently.
 
 Peer node-info responses must fit within 65,536 bytes; Scanner rejects larger
 responses. This limit applies to the authenticated service interface.
@@ -372,7 +383,7 @@ its own registry and unencrypted HTTP over loopback. It adds the combined model
 list, `modelsByEngine`, and `loadedByEngine` to the directory, retaining the last
 successfully read data during temporary failures. Local publication uses retained
 models without waiting for HTTP while holding the local identity lock. A local
-registration or newly authenticated peer schedules the existing model sweep
+registration or newly authenticated peer schedules the model sweep
 without waiting for its next periodic run.
 
 Scanner compares model lists without depending on their order. A present engine entry
@@ -387,25 +398,25 @@ target cannot restore old data, even if the network request succeeded.
 
 ### 7.3 Frontend display and service decisions
 
-Desktop's `node-info-poller.ts` reads node-info over HTTP. TUI's
-`nodetelemetry.go` also uses HTTP for node detail screens. These display reads
-remain supported for local, paired, unpaired, and manually configured nodes.
-They preserve GPU, VRAM, CPU, and memory displays without frontend certificate
-handling or a required switch to broker-delivered hardware snapshots.
+Desktop and TUI obtain GPU, VRAM, CPU, and memory through optional `info` in
+broker `discovery:get-nodes` / `discovery:nodes-changed` snapshots and live
+`discovery:node-info` updates. Workers own collection and authentication for
+local, paired, unpaired, and manual records. Scheduling snapshots carry service
+state, and hardware displays use the full client payload.
 
 Scanner sends its directory changes directly to the broker. `discovery:subscribe`
 is a broker method, not a Scanner method. Subscribed workers receive all records
 matching their requested services in `discovery:nodes`; subscribed desktop and
-TUI clients receive full snapshots in `discovery:nodes-changed`. Consumers
-replace their previous set with each snapshot rather than treating it as a list
-of individual changes.
+TUI clients receive full snapshots in `discovery:nodes-changed`. Each snapshot
+replaces the consumer's complete set of records.
 
-Both clients continue to receive node identity, trust state, service addresses,
-and model records from the broker. HTTP measurements may update hardware display
-fields only. Reported identity or membership fields are unverified claims and
-cannot change the broker's trusted records or be sent back as authoritative
-service input. A node's identity can be verified while its HTTP display readings
-remain unverified.
+Both clients receive node identity, trust state, service addresses, and model
+records from the broker. Hardware updates must match the current record ID and
+verification. Local and pinned records use owned IPC or authenticated peer
+measurements; unverified records may carry public previews. A preview updates
+hardware display fields only and cannot promote identity or supply service input.
+The broker retains each source's receipt time, adds elapsed age on query/replay,
+and withdraws hardware when its source, proof, or endpoint is replaced.
 
 Removing an unverified discovery, including when it is replaced by a verified
 record, does not mean the verified peer departed. Removing a manual configuration
@@ -413,8 +424,8 @@ cannot remove an independently verified peer record. Membership or pin removal
 still clears the affected verification, regardless of other discovery or manual
 records that remain.
 
-Scanner, manual-node workers, broker caches, scheduler, proxies, and other
-services must not use public node-info responses for their decisions. Remote
+Scanner, manual-node workers, broker, scheduler, proxies, and other services
+must not use public node-info responses for authoritative decisions. Remote
 node-info reads use pinned mTLS; local measurements use owned worker IPC. A
 manually entered address can be a connection candidate, but hardware data must
 still authenticate before it is used by services. Public HTTP measurements
@@ -422,20 +433,19 @@ cannot be used to select engines, change routing, prove peer availability or
 membership, or populate scheduling caches.
 
 An authenticated read failure leaves service data unavailable or aging according
-to the existing freshness rules. It never causes a service to fall back to public
-HTTP, even if a frontend can still display a public response from that node.
+to its freshness rules. Subsequent accepted service measurements require current
+pinned mTLS. Public previews serve unverified display records separately.
 
-### 7.4 Contract evolution
+### 7.4 Contract ownership
 
 Changes to snapshot notifications and identity-verification fields are coordinated
 across shared Go types, broker forwarding and caches, proxies that read the
-directory, desktop bridge, and TUI. Discovery method names and the mDNS record
-format remain stable. Operator TLS settings cannot replace exact certificate-pin
-checks for an approved peer.
+directory, desktop bridge, and TUI. Operator TLS settings cannot replace exact
+certificate-pin checks for an approved peer.
 
-The TXT schema describes the advertised fields and their meanings. The new
-discovery record IDs and verification fields belong to the JSON-RPC contract;
-they do not change the meaning of `uuid=` or require a different TXT format.
+Discovery record IDs and verification fields belong to the JSON-RPC contract.
+The version 1 TXT schema describes advertised identity claims, address candidates,
+and service ports (§7.1).
 
 ## 8. Dependencies
 
@@ -456,9 +466,8 @@ they do not change the meaning of `uuid=` or require a different TXT format.
 - **Source of truth**: local registry for this host's advertised services,
   cluster-manager for membership/pins, node-info for hardware samples, and
   engine-manager for model lists. Scanner builds its directory from these sources.
-- **Storage**: Scanner reads existing identity/trust state. It adds no persistent
-  discovery database, pin writes, or cryptographic identity files. It uses existing
-  node-ID resolution, which may create `node-id.json` before cluster-manager
+- **Storage**: Scanner reads identity/trust state and keeps discoveries in memory.
+  Node-ID resolution may create `node-id.json` before cluster-manager
   supplies an identity. When the local UUID changes, Scanner retires the old local
   record so clients do not retain both identities.
 
@@ -476,14 +485,13 @@ they do not change the meaning of `uuid=` or require a different TXT format.
   Scanner reconsiders local addresses periodically and after network changes. The
   broker's observed-address list, addresses that peers have reached on this host,
   replaces the previous list so withdrawn observations stop influencing selection.
-- **Security**: services use existing pin-based mTLS in Go. Verifying one
+- **Security**: services use pin-based mTLS in Go. Verifying one
   connection does not verify unrelated unencrypted data or every address in an
   announcement. Scanner rechecks the approved node identity and exact pin before
   accepting a response.
-- **Transport**: one registered node-info port supports public frontend display
+- **Transport**: one registered node-info port supports public worker previews
   and peer node inventory over pinned mTLS. Public HTTP data is for display only;
-  service logic uses pinned remote reads or private local IPC. No additional advertised
-  port or frontend key handling is required.
+  service logic uses pinned remote reads or private local IPC.
 
 ## 11. Assumptions
 
@@ -506,9 +514,9 @@ they do not change the meaning of `uuid=` or require a different TXT format.
 | Response arriving after a trust change | The response is discarded before records are updated or telemetry is sent |
 | Unverified UUID/name/address collision | Discovery and configuration records remain separate and cannot overwrite local or verified data |
 | Worker restart | The broker resends local registrations/details, remote records are authenticated again, and cached sample age is preserved |
-| Peer node inventory or local worker unavailable | Service measurements become unavailable/stale, no fallback to public HTTP |
-| Public HTTP read fails | Frontend measurements become unavailable/stale, authenticated service reads remain independent |
-| Public HTTP data enters a service cache | The data is rejected based on source, including public data attributed to manual nodes |
+| Peer node inventory or local worker unavailable | Service measurements become unavailable or retain their elapsed age until the next accepted source sample |
+| Public HTTP read fails | The last accepted preview retains its original sample age, or hardware stays unavailable if no preview exists; authenticated service reads remain independent |
+| Public HTTP data enters a verified or scheduling cache | The data is rejected based on source, including public data attributed to manual nodes |
 | Local network advertising unavailable | Scanner logs the failure and continues browsing and maintaining the local record |
 | Temporary failure to read saved peer pins | A failed read does not count as removal of every peer pin |
 
@@ -556,14 +564,17 @@ sequenceDiagram
         B-->>Q: Verified GPU usage
     else Unpaired node
         S-->>B: Unverified discovery record
+        S->>P: GET public hardware preview over HTTP
+        P-->>S: Unauthenticated hardware
+        S-->>B: Sanitized preview under discovery record ID
     end
-    B-->>U: Node identity, trust and service addresses
-    U->>P: GET public node-info over HTTP
-    P-->>U: Hardware measurements for display only
+    U->>B: Subscribe to discovery
+    B-->>U: Initial node snapshot with hardware
+    B-->>U: Full hardware updates matched to current record
 ```
 
-The diagram shows separate display and service paths. HTTP display readings
-never flow into scheduler or verified peer records. Models refresh every 15 seconds;
+The diagram shows worker-owned collection and broker-delivered client hardware.
+Public previews never flow into scheduler or verified peer records. Models refresh every 15 seconds;
 peer metadata, hardware, and measurements share the two-second sampling loop,
 independently of mDNS changes. The broker forwards trust changes to Scanner and clears affected
 verification and service samples when membership or pins change.

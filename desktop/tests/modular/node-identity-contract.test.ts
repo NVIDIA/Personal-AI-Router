@@ -171,11 +171,20 @@ describe('node identity contract', () => {
             ]
         })
 
-        state.mergeNodeInfoResponse(candidateRecordId, {
-            hostUuid: 'different-public-claim',
-            GPUs: [{ name: 'Display GPU' }],
-            peer: { name: 'forged-name' },
-            identityVerification: 'pinned'
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:node-info',
+            params: {
+                hostUuid,
+                discoveryRecordId: candidateRecordId,
+                identityVerification: 'unverified',
+                info: {
+                    hostUuid: 'different-public-claim',
+                    GPUs: [{ name: 'Display GPU' }],
+                    peer: { name: 'forged-name' },
+                    identityVerification: 'pinned'
+                }
+            }
         })
 
         expect(state.getAvailableNodes().map(node => node.id)).toEqual(
@@ -190,8 +199,14 @@ describe('node identity contract', () => {
         )
         expect(state.getNodesInitial().nodes[candidateRecordId].topology.gpus).toHaveLength(1)
 
-        state.mergeNodeInfoResponse(candidateRecordId, {
-            GPUs: [{ name: 'UUID-less preview GPU' }]
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:node-info',
+            params: {
+                discoveryRecordId: candidateRecordId,
+                identityVerification: 'unverified',
+                info: { GPUs: [{ name: 'UUID-less preview GPU' }] }
+            }
         })
 
         expect(
@@ -305,11 +320,20 @@ describe('node identity contract', () => {
         expect(state.getAvailableNodes().map(node => node.id)).toEqual(
             expect.arrayContaining([hostUuid, discoveryRecordId])
         )
-        state.mergeNodeInfoResponse(discoveryRecordId, {
-            hostUuid,
-            discoveryRecordId: 'peer:identity-contract-host',
-            identityVerification: 'pinned',
-            GPUs: [{ name: 'Display GPU' }]
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:node-info',
+            params: {
+                hostUuid,
+                discoveryRecordId,
+                identityVerification: 'unverified',
+                info: {
+                    hostUuid,
+                    discoveryRecordId: 'peer:identity-contract-host',
+                    identityVerification: 'pinned',
+                    GPUs: [{ name: 'Display GPU' }]
+                }
+            }
         })
 
         expect(state.getAvailableNodes().find(node => node.id === discoveryRecordId)).toMatchObject(

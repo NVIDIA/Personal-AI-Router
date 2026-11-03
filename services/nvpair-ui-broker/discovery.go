@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -43,22 +44,21 @@ type EnrichedNode struct {
 	// For unverified manual entries it is "manual:" + the entry ID, matching the
 	// configured engine route's key. The store uses DiscoveryRecordID for both
 	// kinds of unverified record so they stay separate from verified hosts.
-	HostUUID  string      `json:"-"`
-	Host      string      `json:"host"`
-	Port      int         `json:"port"`
-	Addresses []string    `json:"addresses"`
-	TXT       []string    `json:"txt"`
-	GPUs      []GPUInfo   `json:"gpus"`
-	CPU       *CPUInfo    `json:"cpu,omitempty"`
-	Memory    *MemoryInfo `json:"memory,omitempty"`
-	// Trusted carries the cluster-pin annotation from the daemon
-	// directory through to the client AvailableNode. Absent on the legacy
-	// node/* feed (defaults false).
+	HostUUID  string   `json:"-"`
+	Host      string   `json:"host"`
+	Port      int      `json:"port"`
+	Addresses []string `json:"addresses"`
+	TXT       []string `json:"txt"`
+	// Info is separate from service inventory so public previews cannot supply
+	// scheduling measurements. infoReceivedAt preserves age across client reads.
+	Info           *noderec.NodeInfo `json:"-"`
+	infoReceivedAt time.Time
+	// Trusted carries the scanner's current trust annotation into AvailableNode.
 	Trusted bool `json:"trusted,omitempty"`
 	// Clustered reports whether the node advertises a cluster-uuid (it belongs to
 	// some cluster), independent of whether we are paired with it (Trusted). Lets
 	// a client suppress an invite that would be rejected by an already-clustered
-	// peer. Absent on the legacy node/* feed (defaults false).
+	// peer.
 	Clustered bool `json:"clustered,omitempty"`
 	// Models is the node's model list, enriched by the daemon from the peer's
 	// engine-manager /v1/models endpoint (models-http).
@@ -102,9 +102,6 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		Port:                 port,
 		Addresses:            addrs,
 		TXT:                  txt,
-		GPUs:                 n.GPUs,
-		CPU:                  n.CPU,
-		Memory:               n.Memory,
 		Trusted:              n.Trusted,
 		Clustered:            n.Clustered(),
 		Models:               n.Models,
@@ -136,7 +133,7 @@ const (
 
 // storedNode keeps a verified host by UUID or an unverified discovery by its
 // separate record ID. It keeps each source's last full EnrichedNode payload
-// (including GPU / CPU / memory the wire doesn't expose) so a record can be
+// (including its latest hardware observation) so a record can be
 // re-projected from the surviving source when the other is removed. lastSeen is
 // bumped on every discovered/updated event, giving clients a freshness signal.
 type storedNode struct {
@@ -145,45 +142,54 @@ type storedNode struct {
 	lastSeen time.Time
 }
 
-// AcceptInfo reports whether hardware belongs to the scanner's current verified
-// record. A candidate with the same claimed UUID cannot supply its measurements.
-func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	sn, ok := s.nodes[value.HostUUID]
+// AcceptInfo caches and returns hardware only under its current scanner record.
+// Public previews are sanitized for both storage and forwarding and stay under
+// discovery record IDs, separate from verified host keys.
+// receivedAt precedes broker processing, so lock waits count toward sample age.
+func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent, receivedAt time.Time) (noderec.NodeInfoEvent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := value.HostUUID
+	if value.IdentityVerification == noderec.IdentityUnverified {
+		key = value.DiscoveryRecordID
+	}
+	sn, ok := s.nodes[key]
 	if !ok || sn.scanner == nil {
-		return false
+		return noderec.NodeInfoEvent{}, false
 	}
 	node := sn.scanner
-	if node.DiscoveryRecordID != value.DiscoveryRecordID || node.IdentityVerification != value.IdentityVerification || value.Info.HostUUID != value.HostUUID {
-		return false
+	if node.DiscoveryRecordID != value.DiscoveryRecordID || node.IdentityVerification != value.IdentityVerification || node.HostUUID != value.HostUUID {
+		return noderec.NodeInfoEvent{}, false
 	}
-	if value.IdentityVerification != noderec.IdentityLocal {
+	if value.IdentityVerification == noderec.IdentityUnverified {
+		// Identity and registry metadata from public HTTP are never retained.
+		value.Info.HostUUID, value.Info.ClusterUUID, value.Info.Peer = "", nil, nil
+	} else if value.Info.HostUUID != value.HostUUID {
+		return noderec.NodeInfoEvent{}, false
+	} else if value.IdentityVerification != noderec.IdentityLocal {
 		if value.IdentityVerification != noderec.IdentityPinned || !node.Trusted {
 			// Remote hardware needs both proved identity and current trust.
-			return false
+			return noderec.NodeInfoEvent{}, false
 		}
 		if value.ClusterUUID != value.HostUUID {
 			// The event's authenticated principal must identify this same host.
-			return false
+			return noderec.NodeInfoEvent{}, false
 		}
 		if value.Info.ClusterUUID == nil || *value.Info.ClusterUUID != value.ClusterUUID {
 			// The hardware body must name that principal too; a missing or
 			// conflicting identity cannot supply verified measurements.
-			return false
+			return noderec.NodeInfoEvent{}, false
 		}
 	}
-	return true
+	node.Info = &value.Info
+	node.infoReceivedAt = receivedAt
+	return value, true
 }
 
 func (s *discoveryStore) verifiedSource(hostUUID string, source nodeSource) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	sn := s.nodes[hostUUID]
-	node := sn.scanner
-	if source == sourceManual {
-		node = sn.manual
-	}
+	node := s.nodes[hostUUID].source(source)
 	if node == nil {
 		return false
 	}
@@ -193,10 +199,9 @@ func (s *discoveryStore) verifiedSource(hostUUID string, source nodeSource) bool
 	return node.IdentityVerification == noderec.IdentityPinned && node.Trusted
 }
 
-// projected returns the EnrichedNode a consumer sees. When both sources claim
-// the node the scanner (mDNS) view wins — it's the authoritative discovery
-// record and carries trusted/clusterUuid and per-engine models — falling back
-// to the manual probe when only that source is present.
+// projected returns the authoritative directory record. Scanner supplies identity,
+// addresses, and models when both sources describe a host. Display hardware may
+// come from the manual source when both records have matching verification.
 func (sn storedNode) projected() EnrichedNode {
 	if sn.scanner != nil {
 		return *sn.scanner
@@ -217,21 +222,20 @@ func (sn *storedNode) setSource(source nodeSource, n *EnrichedNode) {
 	}
 }
 
-// hasSource reports whether the given source currently claims this record.
-func (sn storedNode) hasSource(source nodeSource) bool {
+func (sn storedNode) source(source nodeSource) *EnrichedNode {
 	switch source {
 	case sourceScanner:
-		return sn.scanner != nil
+		return sn.scanner
 	case sourceManual:
-		return sn.manual != nil
+		return sn.manual
 	}
-	return false
+	return nil
 }
 
 // discoveryStore is the broker's live view of network-discovered nodes.
 // It's the single source of truth that "discovery:get-nodes" reads from.
-// Scanner, manual-worker, trust, and restart updates are serialized by the
-// broker's discoveryMu; RPC readers use the store's own read lock.
+// The broker's discoveryMu serializes worker updates, trust changes, and snapshot
+// replies. The store's own lock protects access to its records.
 //
 // onChange, when non-nil, is invoked after every Upsert and Remove
 // AFTER the write lock has been released. It's the broker's hook for
@@ -256,10 +260,7 @@ func (s *discoveryStore) sourceNodes(source nodeSource) []EnrichedNode {
 	defer s.mu.RUnlock()
 	var nodes []EnrichedNode
 	for _, stored := range s.nodes {
-		node := stored.scanner
-		if source == sourceManual {
-			node = stored.manual
-		}
+		node := stored.source(source)
 		if node != nil {
 			nodes = append(nodes, *node)
 		}
@@ -270,11 +271,7 @@ func (s *discoveryStore) sourceNodes(source nodeSource) []EnrichedNode {
 func (s *discoveryStore) sourceNode(key string, source nodeSource) (EnrichedNode, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	stored := s.nodes[key]
-	node := stored.scanner
-	if source == sourceManual {
-		node = stored.manual
-	}
+	node := s.nodes[key].source(source)
 	if node == nil {
 		return EnrichedNode{}, false
 	}
@@ -305,6 +302,14 @@ func (s *discoveryStore) Upsert(n EnrichedNode, source nodeSource) {
 	cp := n
 	s.mu.Lock()
 	sn := s.nodes[key]
+	if source == sourceScanner && cp.Info == nil && sn.scanner != nil {
+		previous := sn.scanner
+		if previous.DiscoveryRecordID == n.DiscoveryRecordID && previous.IdentityVerification == n.IdentityVerification &&
+			previous.HostUUID == n.HostUUID && previous.Trusted == n.Trusted && previous.Port == n.Port &&
+			slices.Equal(previous.Addresses, n.Addresses) && slices.Equal(previous.TXT, n.TXT) {
+			cp.Info, cp.infoReceivedAt = previous.Info, previous.infoReceivedAt
+		}
+	}
 	sn.setSource(source, &cp)
 	sn.lastSeen = time.Now()
 	s.nodes[key] = sn
@@ -329,7 +334,7 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 	}
 	s.mu.Lock()
 	sn, existed := s.nodes[key]
-	if !existed || !sn.hasSource(source) {
+	if !existed || sn.source(source) == nil {
 		s.mu.Unlock()
 		slog.Debug("remove for a node this source doesn't own", "key", key)
 		return false
@@ -350,11 +355,9 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 	return gone
 }
 
-// Snapshot returns the narrow wire-format view used by
-// discovery:get-nodes and discovery:nodes-changed, sorted by id for
-// stable rendering. The rich EnrichedNode payload stays in the store
-// for future RPCs; only the fields the external schema requires are
-// projected out here.
+// Snapshot returns the client view used by discovery:get-nodes and
+// discovery:nodes-changed, including the latest hardware with its current age.
+// Records are sorted by id for stable rendering.
 func (s *discoveryStore) Snapshot() []AvailableNode {
 	return s.snapshot(false)
 }
@@ -383,7 +386,7 @@ func (s *discoveryStore) snapshot(scheduling bool) []AvailableNode {
 				continue
 			}
 		}
-		out = append(out, sn.toAvailable())
+		out = append(out, sn.toAvailable(!scheduling))
 	}
 	s.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool {
@@ -404,7 +407,7 @@ func (s *discoveryStore) snapshot(scheduling bool) []AvailableNode {
 // rather than collapsed to a single preferred IP. The node ranked them from
 // evidence no observer has, and a client that must connect needs somewhere to go
 // when the first address turns out to be a link only one other machine can reach.
-func (sn storedNode) toAvailable() AvailableNode {
+func (sn storedNode) toAvailable(includeHardware bool) AvailableNode {
 	n := sn.projected()
 	candidates := netpick.Candidates(n.TXT, n.Addresses)
 	var primary string
@@ -415,6 +418,10 @@ func (sn storedNode) toAvailable() AvailableNode {
 	// payload honest about which nodes are actually multi-homed.
 	if len(candidates) < 2 {
 		candidates = nil
+	}
+	var info *noderec.NodeInfo
+	if includeHardware {
+		info = sn.hardwareSnapshot(time.Now())
 	}
 	return AvailableNode{
 		DiscoveryRecordID:    n.DiscoveryRecordID,
@@ -431,7 +438,27 @@ func (sn storedNode) toAvailable() AvailableNode {
 		Models:               n.Models,
 		ModelsByEngine:       n.ModelsByEngine,
 		LoadedByEngine:       n.LoadedByEngine,
+		Info:                 info,
 	}
+}
+
+// hardwareSnapshot prefers scanner hardware. A manual source fills a scanner
+// gap only under the same current pinned proof, preserving its own receipt time.
+func (sn storedNode) hardwareSnapshot(now time.Time) *noderec.NodeInfo {
+	source := sn.scanner
+	if source == nil {
+		source = sn.manual
+	} else if source.Info == nil && sn.manual != nil &&
+		source.IdentityVerification == noderec.IdentityPinned && sn.manual.IdentityVerification == noderec.IdentityPinned &&
+		source.Trusted && sn.manual.Trusted && source.HostUUID == sn.manual.HostUUID &&
+		source.DiscoveryRecordID != "" && source.DiscoveryRecordID == sn.manual.DiscoveryRecordID {
+		source = sn.manual
+	}
+	if source == nil || source.Info == nil {
+		return nil
+	}
+	info := source.Info.Aged(now.Sub(source.infoReceivedAt))
+	return &info
 }
 
 // scannerProcess is the broker's handle on its child nvpair-node-scanner. It speaks
@@ -629,15 +656,10 @@ func (s *scannerProcess) pushObservedAddresses(addrs []string) {
 	}
 }
 
-// reportNodeActivity queues a peer's liveness report for the scanner, which
-// counts it as proof the peer is alive and skips the liveness probe that would
-// otherwise evict it.
-//
-// This never blocks and never waits for a reply. Reports arrive once per node
-// per couple of seconds for as long as inference is streaming, so anything that
-// waited here would be paid on the goroutine reading the proxy's pipe — the same
-// one carrying workload events. A dropped report costs nothing: it only means
-// the scanner falls back to probing a node that is very likely to answer.
+// reportNodeActivity queues authenticated inference activity as scanner liveness
+// evidence without waiting for scanner I/O on the proxy's reader goroutine.
+// Dropped reports leave existing inventory and activity timestamps intact;
+// repeated streaming updates can supply a later report.
 func (s *scannerProcess) reportNodeActivity(hostUUID string, observedAt time.Time) {
 	select {
 	case s.activity <- nodeActivityReport{hostUUID: hostUUID, observedAt: observedAt}:
@@ -697,12 +719,10 @@ func (s *scannerProcess) pushUnregister(svc noderec.ServiceKey) {
 	}
 }
 
-// handleNotify routes the scanner's notifications, running on the peer's
-// read-pump goroutine. Post-cutover the scanner speaks only the promoted
-// daemon's discovery:node-* stream (the legacy node/* stream is gone); those
-// events fold into both the client-facing store and the relay directory. ready
-// is logged. Responses to broker-issued Calls are demuxed by the peer itself and
-// never reach here; any other notification is ignored.
+// handleNotify processes scanner discovery and hardware notifications on the
+// peer's read-pump goroutine. Directory events update the client-facing store and
+// relay directory. Hardware updates are cached and forwarded only while their
+// source record is current. The peer handles responses to broker-issued calls.
 func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 	receivedAt := time.Now()
 	if s.stateMu != nil {
@@ -789,12 +809,13 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 		if json.Unmarshal(params, &value) != nil || s.store == nil || !s.currentRecord(value.HostUUID, value.DiscoveryRecordID, value.IdentityVerification) {
 			return
 		}
-		if !s.store.AcceptInfo(value) {
+		accepted, ok := s.store.AcceptInfo(value, receivedAt)
+		if !ok {
 			return
 		}
 		if s.onNodeInfo != nil {
-			value.Info = value.Info.Aged(time.Since(receivedAt))
-			s.onNodeInfo(value)
+			accepted.Info = accepted.Info.Aged(time.Since(receivedAt))
+			s.onNodeInfo(accepted)
 		}
 	case "ready":
 		slog.Info("scanner reported ready", "params", string(params))
