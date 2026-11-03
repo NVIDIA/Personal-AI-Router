@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -167,30 +169,94 @@ func newModelScopeHandler(client *http.Client, endpoint string) http.Handler {
 						http.Error(w, "invalid ModelScope download request", http.StatusBadGateway)
 						return
 					}
-					for _, header := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
+					for _, header := range []string{"If-None-Match", "If-Modified-Since"} {
 						if value := r.Header.Get(header); value != "" {
 							req.Header.Set(header, value)
 						}
 					}
+					req.Header.Set("Accept-Encoding", "identity")
 					resp, err := client.Do(req)
 					if err != nil {
 						http.Error(w, "ModelScope download request failed", http.StatusBadGateway)
 						return
 					}
 					defer resp.Body.Close()
-					for _, header := range []string{"Content-Length", "Content-Type", "ETag", "Accept-Ranges", "Content-Range", "Last-Modified"} {
-						if value := resp.Header.Get(header); value != "" {
-							w.Header().Set(header, value)
-						}
-					}
-					w.WriteHeader(resp.StatusCode)
-					if _, err := io.Copy(w, resp.Body); err != nil {
-						panic(http.ErrAbortHandler)
-					}
+					serveModelScopeDownload(w, r, resp, file)
 					return
 				}
 			}
 		}
 		http.NotFound(w, r)
 	})
+}
+
+func serveModelScopeDownload(w http.ResponseWriter, r *http.Request, resp *http.Response, file modelScopeFile) {
+	// A resumed suffix cannot authenticate bytes already in the engine's cache.
+	// Always return a complete, checked file so a failed checksum cannot later
+	// become a successful download by resuming only its withheld final byte.
+	w.Header().Set("Accept-Ranges", "none")
+	copyHeaders := func(headers ...string) {
+		for _, header := range headers {
+			if value := resp.Header.Get(header); value != "" {
+				w.Header().Set(header, value)
+			}
+		}
+	}
+	if resp.StatusCode == http.StatusNotModified && (r.Header.Get("If-None-Match") != "" || r.Header.Get("If-Modified-Since") != "") {
+		copyHeaders("ETag", "Last-Modified")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode <= 599 {
+		// Provider error pages are neither model bytes nor a trusted size source.
+		http.Error(w, fmt.Sprintf("ModelScope download returned HTTP %d", resp.StatusCode), resp.StatusCode)
+		return
+	}
+	valid := resp.Header.Get("Content-Encoding") == "" || resp.Header.Get("Content-Encoding") == "identity"
+	if !valid || resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Range") != "" || (resp.ContentLength >= 0 && resp.ContentLength != file.Size) {
+		http.Error(w, "invalid ModelScope download response", http.StatusBadGateway)
+		return
+	}
+	copyHeaders("Content-Type", "ETag", "Last-Modified")
+	w.Header().Set("Content-Length", strconv.FormatInt(file.Size, 10))
+	w.WriteHeader(resp.StatusCode)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if err := copyModelScopeDownload(w, r.Context(), resp.Body, file.Size, file.SHA256); err != nil {
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func copyModelScopeDownload(w io.Writer, ctx context.Context, body io.Reader, size int64, checksum string) error {
+	digest := sha256.New()
+	destination := io.MultiWriter(w, digest)
+	// Hold the final byte until both EOF and integrity are confirmed. Otherwise
+	// a client could accept Content-Length bytes before a checksum failure aborts
+	// the connection. Memory stays constant even for multi-gigabyte model files.
+	var last [1]byte
+	if size > 0 {
+		if _, err := io.CopyN(destination, body, size-1); err != nil {
+			return err
+		}
+		if _, err := io.ReadFull(body, last[:]); err != nil {
+			return err
+		}
+		_, _ = digest.Write(last[:])
+	}
+	var extra [1]byte
+	if _, err := io.ReadFull(body, extra[:]); err != io.EOF {
+		return fmt.Errorf("ModelScope download does not match its expected size")
+	}
+	if !strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), checksum) {
+		return fmt.Errorf("ModelScope download checksum mismatch")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if size > 0 {
+		_, err := w.Write(last[:])
+		return err
+	}
+	return nil
 }

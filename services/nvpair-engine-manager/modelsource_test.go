@@ -80,7 +80,8 @@ func TestModelSource_PersistsSelectionWithoutStartingStoppedEngine(t *testing.T)
 	assert.Equal(t, "modelscope", saved.Platforms[runtime.GOOS+"/"+runtime.GOARCH].Runtime.ModelSource)
 }
 
-func TestModelSource_LaunchesWithSelectedEndpoint(t *testing.T) {
+func TestModelSource_OverridesLaunchEndpointOnlyForModelScope(t *testing.T) {
+	t.Setenv("MODEL_ENDPOINT", "https://inherited-mirror.invalid")
 	for _, source := range []string{"huggingface", "modelscope"} {
 		t.Run(source, func(t *testing.T) {
 			executor, _ := llamaSourceExecutor(t)
@@ -104,9 +105,29 @@ func TestModelSource_LaunchesWithSelectedEndpoint(t *testing.T) {
 				assert.Equal(t, executor.modelScopeURL, environment["MODEL_ENDPOINT"])
 				require.NotNil(t, executor.modelScope)
 			} else {
-				assert.Equal(t, "https://huggingface.co", environment["MODEL_ENDPOINT"])
+				assert.Equal(t, "https://unselected.invalid", environment["MODEL_ENDPOINT"])
 				assert.Nil(t, executor.modelScope)
 			}
 		})
 	}
+}
+
+func TestModelSource_PreservesInheritedHuggingFaceEndpoint(t *testing.T) {
+	t.Setenv("MODEL_ENDPOINT", "https://inherited-mirror.invalid")
+	executor, _ := llamaSourceExecutor(t)
+	t.Cleanup(executor.StopAll)
+	state, err := executor.state("llamacpp")
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "environment.json")
+	state.plat.Runtime.Env["PAIR_TEST_ENV_FILE"] = path
+	state.plat.Runtime.ModelSource = "huggingface"
+
+	require.NoError(t, executor.Start(context.Background(), "llamacpp"))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var environment map[string]string
+	require.NoError(t, json.Unmarshal(data, &environment))
+	assert.Equal(t, "https://inherited-mirror.invalid", environment["MODEL_ENDPOINT"])
+	assert.Nil(t, executor.modelScope)
 }

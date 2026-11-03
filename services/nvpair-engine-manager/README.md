@@ -24,9 +24,15 @@ the router. `LLAMA_CACHE` points at the manifest's `models_dir`, `~/.llamacpp`,
 which no removal this service performs will delete.
 The llama.cpp `modelSource` setting selects Hugging Face (default) or ModelScope
 for both its catalogue and downloads. The manager translates ModelScope metadata
-through a loopback-only adapter and sets the router's `MODEL_ENDPOINT`; llama.cpp
-still owns GGUF selection, caching, progress and cancellation. ModelScope serves
-public, ungated models without forwarding Hugging Face credentials.
+through a loopback-only adapter and sets the router's `MODEL_ENDPOINT` only for
+ModelScope; Hugging Face preserves existing endpoint and mirror settings.
+llama.cpp still owns GGUF selection, caching, progress and cancellation.
+ModelScope serves public, ungated models without forwarding Hugging Face
+credentials. The adapter requires its listener's exact Host and a random private
+path token. Downloads are bounded by the accepted file metadata and verified
+against its SHA-256. The adapter advertises `Accept-Ranges: none` and returns
+complete files, so interrupted downloads restart from zero and cached partial
+data cannot bypass verification.
 Repositories that reach ModelScope's 3,000-entry file-list limit are excluded
 rather than offered with incomplete GGUF shard metadata.
 Readiness requires `/props` to report `role:"router"`, so model-selection

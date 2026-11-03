@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -68,14 +70,15 @@ func TestModelScopeMetadata_PreservesSnapshotAfterBranchChanges(t *testing.T) {
 	assert.Equal(t, int64(100), files[0].Size)
 }
 
-func TestModelScopeDownload_PreservesRangesWithoutForwardingCredentials(t *testing.T) {
+func TestModelScopeDownload_IgnoresRangesWithoutForwardingCredentials(t *testing.T) {
+	digest := sha256.Sum256([]byte("0123456789"))
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Empty(t, r.Header.Get("Authorization"))
 		assert.Empty(t, r.Header.Get("Cookie"))
-		assert.Equal(t, "bytes=10-19", r.Header.Get("Range"))
-		w.Header().Set("Content-Range", "bytes 10-19/100")
+		assert.Empty(t, r.Header.Get("Range"))
+		assert.Empty(t, r.Header.Get("If-Range"))
 		w.Header().Set("ETag", "model-etag")
-		w.WriteHeader(http.StatusPartialContent)
+		w.Header().Set("Accept-Ranges", "bytes")
 		_, err := fmt.Fprint(w, "0123456789")
 		assert.NoError(t, err)
 	}))
@@ -84,7 +87,7 @@ func TestModelScopeDownload_PreservesRangesWithoutForwardingCredentials(t *testi
 		assert.Empty(t, r.Header.Get("Authorization"))
 		assert.Empty(t, r.Header.Get("Cookie"))
 		if strings.HasSuffix(r.URL.Path, "/files") {
-			_, err := fmt.Fprintf(w, `{"Success":true,"Data":{"Files":[{"Path":"nested/model-Q4_K_M.gguf","Type":"blob","Revision":%q,"Sha256":%q,"Size":100}]}}`, modelScopeTestRevision, modelScopeTestSHA256)
+			_, err := fmt.Fprintf(w, `{"Success":true,"Data":{"Files":[{"Path":"nested/model-Q4_K_M.gguf","Type":"blob","Revision":%q,"Sha256":%q,"Size":10}]}}`, modelScopeTestRevision, hex.EncodeToString(digest[:]))
 			assert.NoError(t, err)
 			return
 		}
@@ -97,13 +100,15 @@ func TestModelScopeDownload_PreservesRangesWithoutForwardingCredentials(t *testi
 	commit := modelScopeTestCommit(t, handler)
 	request := httptest.NewRequest(http.MethodGet, "/owner/repo/resolve/"+commit+"/nested/model-Q4_K_M.gguf", nil)
 	request.Header.Set("Range", "bytes=10-19")
+	request.Header.Set("If-Range", "model-etag")
 	request.Header.Set("Authorization", "Bearer hf-test-secret")
 	request.Header.Set("Cookie", "session=test-secret")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
-	assert.Equal(t, http.StatusPartialContent, response.Code)
-	assert.Equal(t, "bytes 10-19/100", response.Header().Get("Content-Range"))
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Empty(t, response.Header().Get("Content-Range"))
+	assert.Equal(t, "none", response.Header().Get("Accept-Ranges"))
 	assert.Equal(t, "model-etag", response.Header().Get("ETag"))
 	assert.Equal(t, "0123456789", response.Body.String())
 }

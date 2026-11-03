@@ -240,13 +240,11 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
-	if engine == "llamacpp" {
-		endpoint := "https://huggingface.co"
-		if modelSource(rt) == "modelscope" {
-			endpoint, err = e.modelScopeEndpoint()
-			if err != nil {
-				return err
-			}
+	modelScopeEndpoint := ""
+	if engine == "llamacpp" && modelSource(rt) == "modelscope" {
+		modelScopeEndpoint, err = e.modelScopeEndpoint()
+		if err != nil {
+			return err
 		}
 		if launch.Env == nil {
 			launch.Env = map[string]string{}
@@ -256,12 +254,13 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 				delete(launch.Env, key)
 			}
 		}
-		launch.Env["MODEL_ENDPOINT"] = endpoint
+		launch.Env["MODEL_ENDPOINT"] = modelScopeEndpoint
 	}
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()
 	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+		line = redactModelScopeEndpoint(line, modelScopeEndpoint)
 		_, _ = diagnostics.Write([]byte(line + "\n"))
 		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
 		// out of exported engine logs; report exit/readiness failures separately.

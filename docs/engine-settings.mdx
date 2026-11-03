@@ -29,10 +29,15 @@ browser and search. Public GGUF repositories use the same `owner/repository:quan
 names, with `Q4_K_M` offered in the browser. Repository availability can differ
 between sources. Downloaded files stay in llama.cpp's existing cache.
 
-PAIR manages llama.cpp's `MODEL_ENDPOINT` from this selection. Set the source
-with the dropdown rather than an environment assignment. ModelScope downloads
-do not forward Hugging Face credentials; private or gated ModelScope models are
-not supported.
+PAIR sets llama.cpp's `MODEL_ENDPOINT` only for ModelScope. Hugging Face keeps
+existing endpoint settings, including custom mirrors. ModelScope downloads do
+not forward Hugging Face credentials; private or gated ModelScope models are
+not supported. An engine adopted from another application keeps this setting
+read-only until it is stopped in that application.
+
+ModelScope downloads verify the complete file's size and SHA-256 before reporting
+success. Interrupted downloads restart from the beginning so cached partial
+data cannot bypass verification.
 
 ## Argument Notation
 

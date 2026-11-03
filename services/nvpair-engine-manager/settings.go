@@ -251,7 +251,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	fail := func(message string) settings.Preview { result.Errors["launchText"] = message; return result }
 	if request.Engine == "llamacpp" {
 		if result.Settings.ModelSource == "" {
-			result.Settings.ModelSource = "huggingface"
+			result.Settings.ModelSource = modelSource(st.plat.Runtime)
 		}
 		if result.Settings.ModelSource != "huggingface" && result.Settings.ModelSource != "modelscope" {
 			result.Errors["modelSource"] = "Select Hugging Face or ModelScope."
