@@ -299,7 +299,10 @@ func TestStopAll_StopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	// Model a control CLI that launches a detached daemon and returns before
 	// that daemon becomes ready. The daemon deliberately answers 503 until its
 	// stop CLI runs, which keeps Start inside waitReady.
+	readinessRequested := make(chan struct{})
+	noteReadiness := sync.OnceFunc(func() { close(readinessRequested) })
 	daemon := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		noteReadiness()
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})}
 	t.Cleanup(func() { _ = daemon.Close() })
@@ -344,6 +347,12 @@ func TestStopAll_StopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	go func() { started <- ex.Start(context.Background(), "fake") }()
 	require.NoError(t, <-daemonStarted, "detached command daemon")
 	require.True(t, portServing(port), "detached command daemon did not start serving")
+	// A readiness request proves the start CLI has returned, not merely written its marker.
+	select {
+	case <-readinessRequested:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "start CLI did not return to the readiness check")
+	}
 
 	ex.StopAll()
 

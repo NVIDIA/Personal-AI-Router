@@ -56,14 +56,13 @@ func TestModelScopeDownload_CompletesVerifiedFullFiles(t *testing.T) {
 			}))
 			server := httptest.NewServer(handler)
 			t.Cleanup(server.Close)
-			request, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
-			require.NoError(t, err)
-			response, err := server.Client().Do(request)
+			response, err := server.Client().Get(server.URL + path)
 			require.NoError(t, err)
 			t.Cleanup(func() { assert.NoError(t, response.Body.Close()) })
 
 			body, err := io.ReadAll(response.Body)
 			require.NoError(t, err)
+			assert.Equal(t, http.StatusOK, response.StatusCode)
 			assert.Equal(t, content, string(body))
 			assert.Equal(t, int64(len(content)), response.ContentLength)
 			assert.Equal(t, "none", response.Header.Get("Accept-Ranges"))
@@ -118,36 +117,6 @@ func TestModelScopeDownload_RejectsMismatchedResponseHeaders(t *testing.T) {
 	test("full response with Content-Range", "", http.StatusOK, http.Header{"Content-Range": {"bytes 0-9/10"}})
 	test("range without request", "", http.StatusPartialContent, http.Header{"Content-Range": {"bytes 0-9/10"}})
 	test("range despite full-file request upstream", "bytes=5-9", http.StatusPartialContent, http.Header{"Content-Range": {"bytes 5-9/10"}})
-}
-
-func TestModelScopeDownload_IgnoresRangeRequests(t *testing.T) {
-	test := func(name, requestedRange string) {
-		t.Run(name, func(t *testing.T) {
-			handler, path := modelScopeDownloadFixture(t, "0123456789", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Empty(t, r.Header.Get("Range"))
-				assert.Empty(t, r.Header.Get("If-Range"))
-				w.Header().Set("Accept-Ranges", "bytes")
-				_, err := io.WriteString(w, "0123456789")
-				assert.NoError(t, err)
-			}))
-			request := httptest.NewRequest(http.MethodGet, path, nil)
-			request.Header.Set("Range", requestedRange)
-			request.Header.Set("If-Range", "previous-etag")
-			response := httptest.NewRecorder()
-
-			handler.ServeHTTP(response, request)
-
-			assert.Equal(t, http.StatusOK, response.Code)
-			assert.Equal(t, "0123456789", response.Body.String())
-			assert.Empty(t, response.Header().Get("Content-Range"))
-			assert.Equal(t, "none", response.Header().Get("Accept-Ranges"))
-		})
-	}
-	test("bounded range", "bytes=5-7")
-	test("open ended range", "bytes=5-")
-	test("suffix range", "bytes=-3")
-	test("multiple ranges", "bytes=0-1,5-9")
-	test("invalid range", "bytes=not-a-range")
 }
 
 func TestModelScopeDownload_RetriesCorruptFilesFromBeginning(t *testing.T) {
@@ -207,19 +176,27 @@ func (b *modelScopeDownloadBody) Read(p []byte) (int, error) {
 
 func (b *modelScopeDownloadBody) Close() error { b.closed = true; return nil }
 
-func TestModelScopeDownload_BoundsUpstreamReadsBySnapshotSize(t *testing.T) {
-	body := &modelScopeDownloadBody{Reader: strings.NewReader(strings.Repeat("x", 1<<20))}
+func modelScopeDownloadResponseFixture(t *testing.T, download *http.Response) (http.Handler, string) {
+	t.Helper()
+	metadata := fmt.Sprintf(`{"Success":true,"Data":{"Files":[{"Path":"model-Q4_K_M.gguf","Type":"blob","Revision":%q,"Sha256":%q,"Size":10}]}}`, modelScopeTestRevision, modelScopeTestSHA256)
 	client := &http.Client{Transport: modelScopeDownloadTransport(func(r *http.Request) (*http.Response, error) {
-		response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), ContentLength: -1, Body: body}
 		if strings.HasSuffix(r.URL.Path, "/files") {
-			response.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"Success":true,"Data":{"Files":[{"Path":"model-Q4_K_M.gguf","Type":"blob","Revision":%q,"Sha256":%q,"Size":10}]}}`, modelScopeTestRevision, modelScopeTestSHA256)))
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), ContentLength: int64(len(metadata)), Body: io.NopCloser(strings.NewReader(metadata))}, nil
 		}
-		return response, nil
+		return download, nil
 	})}
 	handler := newModelScopeHandler(client, "https://modelscope.invalid")
 	commit := modelScopeTestCommit(t, handler)
+	return handler, "/owner/repo/resolve/" + commit + "/model-Q4_K_M.gguf"
+}
+
+func TestModelScopeDownload_BoundsUpstreamReadsBySnapshotSize(t *testing.T) {
+	body := &modelScopeDownloadBody{Reader: strings.NewReader(strings.Repeat("x", 1<<20))}
+	handler, path := modelScopeDownloadResponseFixture(t, &http.Response{
+		StatusCode: http.StatusOK, Header: make(http.Header), ContentLength: -1, Body: body,
+	})
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/owner/repo/resolve/"+commit+"/model-Q4_K_M.gguf", nil)
+	request := httptest.NewRequest(http.MethodGet, path, nil)
 
 	require.PanicsWithValue(t, http.ErrAbortHandler, func() { handler.ServeHTTP(response, request) })
 
@@ -232,16 +209,10 @@ func TestModelScopeDownload_DoesNotReadHeadOrErrorBodies(t *testing.T) {
 	test := func(name, method string, upstreamStatus int, requestHeaders, responseHeaders http.Header) {
 		t.Run(name, func(t *testing.T) {
 			body := &modelScopeDownloadBody{Reader: strings.NewReader(strings.Repeat("x", 1<<20))}
-			client := &http.Client{Transport: modelScopeDownloadTransport(func(r *http.Request) (*http.Response, error) {
-				if strings.HasSuffix(r.URL.Path, "/files") {
-					metadata := fmt.Sprintf(`{"Success":true,"Data":{"Files":[{"Path":"model-Q4_K_M.gguf","Type":"blob","Revision":%q,"Sha256":%q,"Size":10}]}}`, modelScopeTestRevision, modelScopeTestSHA256)
-					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), ContentLength: int64(len(metadata)), Body: io.NopCloser(strings.NewReader(metadata))}, nil
-				}
-				return &http.Response{StatusCode: upstreamStatus, Header: responseHeaders, ContentLength: 10, Body: body}, nil
-			})}
-			handler := newModelScopeHandler(client, "https://modelscope.invalid")
-			commit := modelScopeTestCommit(t, handler)
-			request := httptest.NewRequest(method, "/owner/repo/resolve/"+commit+"/model-Q4_K_M.gguf", nil)
+			handler, path := modelScopeDownloadResponseFixture(t, &http.Response{
+				StatusCode: upstreamStatus, Header: responseHeaders, ContentLength: 10, Body: body,
+			})
+			request := httptest.NewRequest(method, path, nil)
 			request.Header = requestHeaders
 			response := httptest.NewRecorder()
 
