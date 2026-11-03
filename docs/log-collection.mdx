@@ -34,7 +34,7 @@ It does not require Node.js, so it runs on a machine that only builds the servic
 > [Designing the gathering step](#designing-the-gathering-step) at the end of this
 > document.
 
-## What It Reads, and What It Writes
+## What It Reads and What It Writes
 
 The script reads only the log itself: `nvpair.jsonl`, its rotated
 `nvpair.1.jsonl`, or an exported `nvpair-logs-*.txt`. It touches nothing else in
@@ -115,8 +115,8 @@ when it produces a copy. That ordering follows from three things.
 
 There is one implementation instead of one for each process. Replacing
 identifiers while logging would mean the same rules in Go for the 12 services and
-again in TypeScript for the desktop logger, because JSON-RPC traffic the Go side
-cannot rewrite feeds the desktop log file, which is functional data. Two
+again in TypeScript for the desktop logger. JSON-RPC traffic feeds the desktop log
+file, and the Go side cannot rewrite that traffic because it is functional data. Two
 implementations of the same rules drift, and nodes on different app versions would
 then produce different tokens for the same address.
 
@@ -201,7 +201,7 @@ apply a fix and repeat the run.
 On status 1 the source logs are untouched, so the fix is to correct detection and
 run again over the same copies. Keep them until the run succeeds.
 
-## Collecting from More Than One Node
+## Collecting from More than One Node
 
 Until retrieval exists, staging is manual. Copy each node's log onto one machine
 and run the sanitizer there, once, over all of them.
@@ -261,7 +261,7 @@ snapshot survive into the sanitized file as useful context.
 
 **Fallback — raw JSONL.** A bare `nvpair.jsonl` has no header, so the script
 cannot identify the producer and the output falls back to `source-1.jsonl`,
-`source-2.jsonl`. The script still fully sanitizes the logs and tokens still
+`source-2.jsonl`, and so on. The script still fully sanitizes the logs and tokens still
 reconcile. You cannot tell which file came from which machine, which defeats much
 of the point of gathering them.
 
@@ -283,8 +283,8 @@ Copy each log **exactly as it is on disk**:
   warns when it cannot learn a host name. Treat that warning as a failed
   collection.
 - **Keep rotation order.** `nvpair.1.jsonl` is older than `nvpair.jsonl`, and the
-  script must read it first. Passing the directory handles this. If listing files
-  explicitly, preserve that order.
+  script must read it first. Passing the directory handles this. If you list
+  files explicitly, preserve that order.
 - **Never write to the source log.** A node's log must keep accumulating so you
   can collect the same node again later.
 
@@ -312,7 +312,7 @@ The script trusts host names only when they come from a structured field, either
 the bundle metadata or an object that also yielded a UUID or an address. No shape
 test separates a host name from a model name or a JSON-RPC method name, so
 accepting one from free text alone would corrupt unrelated text. A full exported
-bundle always carries those structured fields. A hand-trimmed fragment may not,
+bundle always carries those structured fields. A hand-trimmed fragment might not,
 and the run warns when it cannot learn a host name.
 
 The script leaves certificate fingerprints as they are. It recognizes them only

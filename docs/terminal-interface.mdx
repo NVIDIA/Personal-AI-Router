@@ -39,7 +39,7 @@ An installed PAIR puts `nvpair` on your `PATH` as a small wrapper that runs
 **Do not count on `nvpair` existing on a headless machine.** Only the Debian
 package writes the wrapper at install time. On Windows and macOS the desktop
 application writes it when it starts, so on a machine where you never open the
-desktop application — the case this interface exists for — it may never appear.
+desktop application (the case this interface exists for), it might never appear.
 On macOS it is also skipped when `/usr/local/bin` is not writable. Run
 `nvpair-tui` directly when `nvpair` is not found, and do the same for a source
 build, which has no wrapper at all. Refer to
@@ -67,24 +67,24 @@ cd <directory containing nvpair-tui>
 | --- | --- |
 | `--broker-path <path>` | Use a service binary that is not beside `nvpair-tui` |
 | `--log-level <level>` | Verbosity of the terminal interface's own logging: `debug`, `info`, `warn`, or `error`. PAIR also reads this from `NVPAIR_LOG_LEVEL` |
-| `--appearance <mode>` | `auto`, `light`, or `dark`. See below |
+| `--appearance <mode>` | `auto`, `light`, or `dark`. Refer to [If the Colors Are Hard to Read](#if-the-colors-are-hard-to-read) |
 | `--version` | Print the version and exit |
 
 While the interface is running, its own log lines appear on the **Logs** tab
 beside the service logs, so nothing is written over the display. Before it
 starts and after it exits, they go to stderr.
 
-### If the Colours Are Hard to Read
+### If the Colors Are Hard to Read
 
-PAIR picks its colours from your terminal's background. It detects that by
+PAIR picks its colors from your terminal's background. It detects that by
 asking the terminal and reading the reply, which works in most terminals,
-including over SSH — the question and the answer travel the connection like
-anything else.
+including over SSH, because the question and the answer travel the connection
+like anything else.
 
 Two cases cannot be detected. Inside `tmux` or `screen` the question is not
 asked at all, because one session can be attached to several terminals at once
 and there is no single background to report. A terminal that does not implement
-the query simply never answers. Both fall back to assuming a dark background,
+the query never answers. Both fall back to assuming a dark background,
 which on a light theme gives washed-out text.
 
 Tell it instead:
@@ -104,7 +104,7 @@ with it.
 Press `q` to quit. Quitting shuts the services down cleanly rather than leaving
 them running.
 
-### Keep It Running After You Disconnect
+### Keep It Running after You Disconnect
 
 Quitting stops the services, and losing an SSH connection ends the program the
 same way. A node you reach over SSH therefore stops serving requests when your
@@ -129,11 +129,11 @@ provides.
 
 The top line shows `NVPAIR` and the service state on the right:
 `starting service...`, `service ready v<version>`, or `service disconnected`.
-The second line is the numbered tab bar; when anything has gone wrong, the count
+The second line is the numbered tab bar. When anything has gone wrong, the count
 appears on the **Errors** tab's own label. The footer shows the keys available
 where you are, starting with the ones that always work. When a newer release of
 PAIR exists, a notice sits between the tab bar and the content on every tab
-until you dismiss it — see [Update Notices](#update-notices).
+until you dismiss it. Refer to [Update Notices](#update-notices).
 
 If you see `starting...`, the interface is waiting for the terminal size. If the
 header stays on `starting service...`, the service tree did not come up, and the
@@ -153,13 +153,13 @@ header stays on `starting service...`, the service tree did not come up, and the
 
 Within a table, `j` / `k` (or `↓` / `↑`) move the selection, `f` / `b` page, and
 `home` / `end` jump to the first and last row. `h` / `l` and `←` / `→` move between
-panes rather than between tabs. Where a tab binds one of those letters to its own
-verb — on the Nodes list `d` declines a pending pairing request and `f` finds a
-machine by address, and on a node's detail screen `d` deletes a model in the
-Models pane while `u` uninstalls an engine in the Engines pane — that verb wins
-where it applies, and the paging key works elsewhere. The
-Service tab's settings list is not a table; it moves with `j` / `k` or the
-arrows. On the Nodes list `l` leaves the cluster rather than moving right, so
+panes rather than between tabs. Some tabs bind one of those letters to their own
+verb. On the Nodes list, `d` declines a pending pairing request and `f` finds a
+machine by address. On a node's detail screen, `d` deletes a model in the Models
+pane and `u` uninstalls an engine in the Engines pane. Where a verb applies, it
+wins, and the paging key works elsewhere. The Service tab's settings list is not
+a table. It moves with `j` / `k` or the arrows. On the Nodes list, `l` leaves the
+cluster rather than moving right, so
 it is armed and asks you to confirm.
 
 While you are typing into a field, such as a PIN, an address, a port, or a model
@@ -170,9 +170,9 @@ keys while a field is open, so it always reflects what actually works.
 Anything that destroys something asks first. Removing a machine from the
 cluster, leaving the cluster, deleting a model, uninstalling an engine, and
 resetting all data each arm on the first press and act only when you then press
-`y`; any other key cancels. The prompt names what will happen and stays on
+`y`. Any other key cancels. The prompt names what happens next and stays on
 screen until you answer it. Forgetting a machine you added with `f` does not
-ask, because nothing is lost: you can find it again.
+ask, because nothing is lost. You can find it again.
 
 The terminal needs to be at least 40 by 12. Below that PAIR says so and waits
 for you to resize rather than drawing something unreadable. Near that minimum
@@ -186,11 +186,11 @@ are.
 | --- | --- | --- |
 | 1 | **Nodes** | Every machine PAIR knows about, whether reachable, and its cluster standing. `enter` opens one machine's engines, models, and hardware |
 | 2 | **Jobs** | The endpoints your clients connect to, and inference work as it runs. `t` sends a minute of test traffic |
-| 3 | **Service** | Uptime and version, an `ok` / `DOWN` / `?` row per worker, settings, and a data reset |
+| 3 | **Service** | Uptime and version, an `ok` / `DOWN` / `?` row for each worker, settings, and a data reset |
 | 4 | **Errors** | Active service errors by severity, age, node, and message |
 | 5 | **Logs** | Service log output, with a filter and save-to-file |
 
-The **Errors** tab shows its own count in the tab bar — `Errors (2)` — so you can
+The **Errors** tab shows its own count in the tab bar, such as `Errors (2)`, so you can
 see there is something to look at from any other tab.
 
 ## Pair This Machine with Another
@@ -211,13 +211,13 @@ Everything below is on the **Nodes** tab (1).
 This is the easier path, because there is no address to type. Prefer it whenever
 PAIR has already discovered the machine you want.
 
-The PIN stays on screen until the pairing is answered, then tells you the outcome
-— joined, declined, or expired. A machine that is already a member, or that
-belongs to another cluster, cannot be invited: PAIR says so instead of sending an
+The PIN stays on screen until the pairing is answered, then tells you the outcome:
+joined, declined, or expired. A machine that is already a member, or that
+belongs to another cluster, cannot be invited. PAIR says so instead of sending an
 invite that would be refused.
 
 **To pair with a machine by address**, press `n`, type the other machine's
-host — or `host:port` if it is not on the default pairing port — and press
+host (or `host:port` if it is not on the default pairing port), and press
 `enter`. Use this when discovery has not found the machine, for example on a
 network that filters multicast.
 
@@ -228,11 +228,11 @@ network that filters multicast.
 3. Type the PIN displayed on the other machine and press `enter`.
 
 Press `d` instead to decline. After pairing, the peer's `CLUSTER` column reads
-`Member`. If the PIN was wrong, the status line says so and you will need a
-fresh invite — a PIN can only be used once.
+`Member`. If the PIN was wrong, the status line says so, and you need a fresh
+invite because a PIN can only be used once.
 
 If more than one request arrives, they wait their turn and the prompt says how
-many are waiting. A machine can only be in one cluster, so once you accept one,
+many are waiting. A machine can only be in one cluster, so after you accept one,
 the rest are declined and their senders are told.
 
 ![The terminal interface Nodes tab with a discovered machine selected and the pairing PIN on the status line.](assets/onboarding/terminal-interface/02-tui-pairing.png)
@@ -249,8 +249,8 @@ the rest are declined and their senders are told.
 | `l` | Leave the cluster (asks you to confirm) |
 | `/` | Filter the list by name or address; `esc` clears it |
 
-Cancel an invite with `c` if you read the PIN to the wrong person, or simply
-change your mind. That invalidates the PIN straight away, so it can no longer be
+Cancel an invite with `c` if you read the PIN to the wrong person, or change
+your mind. That invalidates the PIN straight away, so it can no longer be
 used to join, and tells the other machine to drop its prompt. An invite you
 leave alone expires on its own, but until it does it stays answerable.
 
@@ -293,7 +293,7 @@ still changes that peer's proxy port.
 
 A port is a request rather than a promise. If a running engine already holds
 the port you asked for, PAIR binds elsewhere and tells you which port it ended
-up on — so a change you did not get is never reported as one you did.
+up on, so a change you did not get is never reported as one you did.
 
 ### Startup Arguments
 
@@ -306,23 +306,23 @@ OLLAMA_KEEP_ALIVE=5m OLLAMA_ORIGINS="https://example.com" --flag "two words"
 
 Environment assignments come first, then arguments. Quoting works the way it
 does in a shell for single and double quotes, but nothing is expanded: `$HOME`,
-`~` and `%USERPROFILE%` are passed through as text, and pipes, redirects and
+`~`, and `%USERPROFILE%` are passed through as text, and pipes, redirects, and
 command substitution are rejected rather than interpreted. The engine's own
 executable and its start subcommand are not editable.
 
 Press `enter` to check and save. PAIR validates before it saves anything, so a
-mistake comes back as a message rather than an engine that will not start. If
+mistake comes back as a message rather than an engine that does not start. If
 the change requires restarting the engine, it says so and waits for `y`.
 
 The port fields and the arguments are saved together, so a port written into
 the arguments and the port in the field cannot drift apart. Editing the field
-rewrites the argument; editing the argument moves the field. If the two
+rewrites the argument, and editing the argument moves the field. If the two
 disagree in a way PAIR cannot settle, it names both numbers and asks you to
 make them agree.
 
 This works on a peer as well as on this machine. Whether a particular engine
-accepts the change is the engine's own answer: one PAIR did not start — one
-that was already running when PAIR found it — reports that it cannot be
+accepts the change is the engine's own answer. An engine PAIR did not start (one
+that was already running when PAIR found it) reports that it cannot be
 configured, and says why.
 
 **Models** — the models each engine holds, and which are loaded into memory:
@@ -367,8 +367,8 @@ machine you were last looking at.
 
 A node can serve a request only when it is online, a compatible engine is
 running, and the requested model is present on that node. To route across several
-machines, download the same model on each — the Nodes tab's `MODELS` column, and
-each machine's model list, are how you check.
+machines, download the same model on each. The Nodes tab's `MODELS` column and
+each machine's model list are how you check.
 
 ## Check Routing and Health
 
@@ -382,32 +382,32 @@ see routing actually happening. An active job that has not been placed yet reads
 
 ![The terminal interface Jobs tab with the Ollama, LM Studio, and llama.cpp endpoints on top, and jobs listed by model, engine, state, the machine each arrived at, and the machine that ran it.](assets/onboarding/terminal-interface/03-tui-workloads.png)
 
-Routing is not something you set. PAIR chooses a node per request from pending
+Routing is not something you set. PAIR chooses a node for each request from pending
 work and GPU pressure, so the proxies always run in automatic mode.
 
 ### Generate Some Traffic
 
 If you have no client sending work yet, press `t` on the **Jobs** tab to run the
-same sixty-second test the desktop application's **Test** button runs. It sends
+same 60-second test the desktop application's **Test** button runs. It sends
 synthetic requests to your local endpoints, and the jobs appear in the table
-below as they are placed — including on peers, if the cluster has any.
+below as they are placed, including on peers if the cluster has any.
 
 A progress line shows how many requests have gone out and how long is left.
-Press `t` again to stop early; requests already sent still finish. Nothing is
-sent after sixty seconds.
+Press `t` again to stop early. Requests already sent still finish. Nothing is
+sent after 60 seconds.
 
 It needs at least one engine running with a model installed. If nothing is
 available, the tab says so rather than starting.
 
 The test is local to the machine you run it on. Running it here does not start
-one anywhere else, and a peer running one does not show up as progress here —
+one anywhere else, and a peer running one does not show up as progress here,
 only as jobs.
 
 The **Service** tab (3) reports whether each worker is up. Worker status is
 best-effort: `DOWN` means a worker reported a crash. The error reporting worker
-is the one that collects those reports, so it cannot report its own — its row
+is the one that collects those reports, so it cannot report its own. Its row
 says so. If the service itself is not answering, every row reads `?` rather than
-`ok`: a worker is only known good because the crash stream said nothing about
+`ok`. A worker is only known good because the crash stream said nothing about
 it, and that stream comes through the service.
 
 ## Update Notices
@@ -417,25 +417,25 @@ bar naming the new version, the one you are running, and where to get it. It
 checks shortly after startup and every six hours, the same cadence the desktop
 application uses.
 
-The notice is on every tab, not just **Service**, and stays until you press
+The notice is on every tab, not only **Service**, and stays until you press
 `ctrl+x` to dismiss it. Dismissing it clears it everywhere. A release newer than
 the one you dismissed brings it back, since that is not the version you
 acknowledged. On a narrow terminal the line shortens rather than pushing the
 dismiss key off the screen.
 
 It only tells you. It does not download or install anything, because the
-terminal interface is not a single program — it runs a broker and ten
-workers from the directory beside it, and swapping some of them for a newer set
-while they are serving inference is how you get a client talking to workers that
-no longer understand it. Install the release the way you installed this one.
+terminal interface is not a single program. It runs a broker and 10 workers from
+the directory beside it. Swapping some of them for a newer set while they are
+serving inference is how you get a client talking to workers that no longer
+understand it. Install the release the way you installed this one.
 
-If you installed PAIR as the desktop application, you do not need to: the
-terminal interface ships inside the application and its updater replaces this
+If you installed PAIR as the desktop application, you do not need to. The
+terminal interface ships inside the application, and its updater replaces this
 binary along with everything else, so `nvpair` picks up the new version the next
 time you run it.
 
-Nothing is reported when the check cannot reach the network — an unreachable
-feed is not news. To stop it checking at all, set `NVPAIR_NO_UPDATE_CHECK=1`
+Nothing is reported when the check cannot reach the network, because an
+unreachable feed is not news. To stop it checking at all, set `NVPAIR_NO_UPDATE_CHECK=1`
 before starting `nvpair`. A copy you build yourself with `go build` never
 checks. One built with `services/build.sh` or `services/build.bat` does, because
 those scripts record the release number in it.
@@ -444,21 +444,21 @@ those scripts record the release number in it.
 
 On **Errors** (4), press `c` to clear the selected entry. The tab label carries
 the count, so you do not have to go looking. The line under the table describes
-whichever entry you have selected — which engine and operation it came from, the
+whichever entry you have selected, which engine and operation it came from, the
 model if there was one, and what the service suggests doing about it.
 
 Errors are shared across the cluster, but clearing one only works on the machine
-that reported it — the `NODE` column tells you which that is. Select an entry
+that reported it. The `NODE` column tells you which that is. Select an entry
 from another machine and `c` is withdrawn from the footer, with a line naming the
 node to clear it from. Clearing there removes it everywhere.
 
 On **Logs** (5), scroll with `j` / `k` and the page keys. Press `/` to filter to
 lines containing a string, `c` to clear the filter, and `t` to toggle tailing
-the newest line — scrolling up releases follow on its own. This is the first place
+the newest line. Scrolling up releases follow on its own. This is the first place
 to look when something has not started.
 
 Press `s` to write the log buffer to a timestamped file in your home directory.
-The whole buffer is saved, not just what the filter shows.
+The whole buffer is saved, not only what the filter shows.
 
 Set how much detail the services log on the **Service** tab, not here.
 
@@ -466,21 +466,21 @@ Set how much detail the services log on the **Service** tab, not here.
 
 On **Service** (3), move with `j` / `k` and press `enter`. The cluster name opens
 as a text field, with `enter` to save and `esc` to cancel. Ports are not changed
-here — they belong to a machine, so they live on its detail screen.
+here. They belong to a machine, so they live on its detail screen.
 
 **Cluster name** is a label for your own benefit and is stored on the machine you
 set it on. It is not shared with the rest of the cluster, so setting it here does
 not rename anything on your peers — set it on each machine you want it to show
-on. Nothing operational depends on it; the cluster's real identity is an id you
+on. Nothing operational depends on it. The cluster's real identity is an ID you
 never have to type.
 
-**Service log level** opens a picker showing all four levels — debug, info,
-warn, and error — with the one currently in force highlighted. Move with `←` /
+**Service log level** opens a picker showing all four levels (debug, info,
+warn, and error), with the one currently in force highlighted. Move with `←` /
 `→` (or `h` / `l`), press `enter` to apply, and `esc` to leave it alone. The
-level applies to every service, not just one.
+level applies to every service, not only one.
 
 Ports and startup arguments are not changed here. They live on the engine they
-belong to, on that machine's node detail screen — press `enter` on a machine on
+belong to, on that machine's node detail screen. Press `enter` on a machine on
 the **Nodes** tab. Refer to
 [Ports](getting-started.mdx#7-connecting-your-agents-and-port-information)
 for how PAIR arranges ports.
@@ -493,7 +493,7 @@ services are still running, and the services are then stopped before the files
 are deleted, so nothing rewrites them on the way out. If an engine PAIR
 installed cannot be removed, the reset stops before deleting anything, names the
 engine on the status line, and leaves you in the interface to try again. You
-will need to pair again afterwards.
+need to pair again afterward.
 
 ## What the Terminal Interface Cannot Do
 
@@ -502,14 +502,14 @@ It is an operations tool, not a full replacement for the desktop application:
 - It has no built-in way to send an inference request of your own. Use `curl`
   or another client against the endpoint port, as in
   [Getting Started](getting-started.mdx#6-run-your-first-inference). The
-  synthetic test traffic on the **Jobs** tab is not a substitute: you do not
-  choose the prompt and you never see the reply.
-- It cannot install PAIR updates. It tells you when a release is available;
-  installing one is the same job it was before.
+  synthetic test traffic on the **Jobs** tab is not a substitute. You do not
+  choose the prompt, and you never see the reply.
+- It cannot install PAIR updates. It tells you when a release is available.
+  Installing one is the same job it was before.
 - It does not survive losing your connection. Use a terminal multiplexer, as
   above.
 
-## See Also
+## Other References
 
 These documents cover related topics:
 
