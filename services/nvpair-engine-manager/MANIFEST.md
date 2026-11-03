@@ -340,10 +340,8 @@ placeholder before the action runs:
 A manifest-level **`advertised_models`** (`"list"`, the default, or `"loaded"`)
 chooses what the node tells its peers and its own proxy it can serve. The proxy
 sends a request to any node advertising the model, so an engine that serves one
-model per process and cannot switch on request sets `"loaded"` and advertises only
-`loaded_models`, even when its `list_models` offers many models it could be
-switched to. An engine behind a `front` switches models on request, so it
-advertises its whole `list_models`. With `"loaded"`,
+model per process sets `"loaded"` and advertises only `loaded_models`, even when
+its `list_models` offers many models it could be switched to. With `"loaded"`,
 `list_models` is not queried for `engine:models`, and a `loaded_models` action is
 required.
 
@@ -351,32 +349,6 @@ An **`hf_pull`** action (`{"tool": "hf", "dir": "{models_dir}/hub"}`, only as
 `pull_model`) downloads a Hugging Face repository with the named tool, looked up
 in the directory that holds the engine binary, and reports byte progress taken
 from the cache directory. It needs no running engine.
-
-A runtime **`front`** (`{"backend_port_offset": 10000}`) puts a PAIR-owned
-HTTP gateway on the engine's public port and runs the engine itself on a loopback
-port at that offset (8001 becomes 18001). Clients, the proxy and probes keep using
-the public port; the gateway forwards every request unchanged, streams responses
-as they arrive, stops the engine's work when the client leaves, and answers 503
-until the engine is ready. The launch a user sees and edits keeps the public
-port: only the spawned process is repointed. `idle_timeout_s` (default 300 for
-vLLM, 0 never) unloads the engine after that long with no inference request:
-its process is stopped and its GPU memory freed, while the gateway, and the
-engine's ON state, stay. Only requests that change something count as activity
-(not GET, HEAD or OPTIONS, which is what health checks, monitors and the model
-list use), and a request still running keeps the engine loaded. While unloaded
-the gateway answers `/health` with 200 and `engine:status` reports `idle: true`.
-A request that needs the model (POST under `/v1/` and a few other inference paths)
-loads it again and is answered after the load; other requests get 503. Requests
-that arrive together share one load. The fixed offset lets a stale engine
-left by a crashed run be found and reclaimed. It requires a process-mode runtime
-whose `editable_launch` has a flag control for `{server.port}`, and only
-`vllm.json` declares one.
-
-A **`front_idle`** action (`"get"` or `"set"`) reads or changes the idle limit of
-an engine with a front, in seconds with 0 for never; a change applies at once and
-is saved in the override file. With a front, Start and a restore bring the
-engine up idle, with nothing loaded, and applying launch settings or loading a
-model loads it at once.
 
 A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
 serves a single model per process and so cannot unload it while running. A

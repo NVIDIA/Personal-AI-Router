@@ -3,6 +3,7 @@
   "engine": "vllm",
   "display_name": "vLLM",
   "manifest_version": 1,
+  "advertised_models": "loaded",
   "install": { "mode": "user" },
   "models_dir": "~/.cache/huggingface",
   "uninstall": { "remove": ["{install_dir}"] },
@@ -16,7 +17,6 @@
       ]
     },
     "args": ["serve", "--model", "Qwen/Qwen3.5-4B", "--host", "{host}", "--port", "{port}"],
-    "front": { "backend_port_offset": 10000, "idle_timeout_s": 300 },
     "auto_launch": { "kind": "hf_context", "context_tokens": 65536 },
     "env": { "HF_HOME": "{models_dir}", "VLLM_USE_FLASHINFER_SAMPLER": "0" },
     "bind": "127.0.0.1",
@@ -79,20 +79,12 @@
       "description": "Serve a different model (params: {\"model\": \"<Hugging Face id>\"}). vLLM serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored.",
       "launch_model": { "flag": "--model" }
     },
-    "get_idle_timeout": {
-      "description": "Read how many seconds vLLM may sit idle before its model is unloaded (0 means never).",
-      "front_idle": "get"
-    },
-    "set_idle_timeout": {
-      "description": "Set how many seconds vLLM may sit idle before its model is unloaded (params: {\"seconds\": 0 to 86400}, 0 means never). Applies at once and is kept across restarts.",
-      "front_idle": "set"
-    },
     "unload_model": {
       "description": "Eject the model vLLM is serving (params: {\"model\": \"<id>\"}). vLLM cannot drop its model and keep running, so this stops the engine, which frees all of its GPU memory. Load starts it again.",
       "stop_engine": true
     },
     "delete_model": {
-      "description": "Delete a downloaded model from the Hugging Face cache (params: {\"model\": \"<org/name>\"}). The model vLLM has loaded is refused (eject it first). Deleting the model an ejected or stopped vLLM is set to serve leaves it with no model selected, and it will not start until a model is loaded.",
+      "description": "Delete a downloaded model from the Hugging Face cache (params: {\"model\": \"<org/name>\"}). The model a running vLLM is serving is refused (eject it first). Deleting the model a stopped vLLM is set to serve leaves it with no model selected, and it will not start until a model is loaded.",
       "hf_cache": { "dir": "{models_dir}/hub", "delete": true }
     },
     "pull_model": {
@@ -100,8 +92,8 @@
       "hf_pull": { "tool": "hf", "dir": "{models_dir}/hub" }
     },
     "loaded_models": {
-      "description": "List the model this vLLM server has loaded (it serves exactly one). The gateway's plain model list also names every downloaded model, so this asks for only the resident one.",
-      "http": { "method": "GET", "path": "/v1/models?resident=1" },
+      "description": "List the model this vLLM server is serving (it serves exactly one). This is what peers and the proxy are told it can answer for.",
+      "http": { "method": "GET", "path": "/v1/models" },
       "result": { "array": "data", "field": "id" }
     }
   }

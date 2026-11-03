@@ -338,10 +338,8 @@ func removeUnreferencedHFBlobs(hubDir string, candidates []string) int64 {
 }
 
 // unselectModel takes the model flag out of a stopped engine's saved launch
-// arguments, and returns a function that puts it back. An engine whose process
-// is serving the model is refused. One ejected behind its gateway is on with no
-// process and nothing loaded, so it is stopped first: with no model selected it
-// could not load anything again.
+// arguments, and returns a function that puts it back. A running engine is
+// serving the model, so it is refused.
 func (e *Executor) unselectModel(engine, id string) (reselect func(), err error) {
 	st, err := e.state(engine)
 	if err != nil {
@@ -351,17 +349,6 @@ func (e *Executor) unselectModel(engine, id string) (reselect func(), err error)
 	state, err := e.LaunchSettings(engine)
 	if err != nil {
 		return nil, err
-	}
-	if state.Running {
-		if status, _ := e.Status(engine); !status.Idle {
-			return nil, refused
-		}
-		if err := e.Stop(engine); err != nil {
-			return nil, fmt.Errorf("delete: stop %s before removing its model: %w", engine, err)
-		}
-		if state, err = e.LaunchSettings(engine); err != nil {
-			return nil, err
-		}
 	}
 	flag := modelLaunchFlag(st.manifest)
 	if state.Running || flag == "" || !state.Editable {

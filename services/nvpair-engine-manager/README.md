@@ -47,12 +47,12 @@ through the vLLM-Metal plugin). There is no native Windows path, so on Windows
 `engine:get-installed` leaves vLLM out and PAIR does not offer it. The
 macOS install builds a managed Python 3.12 venv with a sha256-pinned `uv` and
 installs the pinned vLLM core and vLLM-Metal wheels, each checked against a
-digest, so no compiler is needed. The engine's PAIR gateway listens on `8001`
-and runs `vllm serve` behind it on loopback `18001` (see below); the proxy facade
-owns `8000`. vLLM serves **one model per process** and has no load, unload, pull
-or delete API of its own, so the manifest provides them as manager actions:
-`load_model`, `unload_model`, `pull_model`, `delete_model` and the idle-limit
-actions, described below.
+digest, so no compiler is needed. `vllm serve` listens on loopback `8001`, and
+the proxy facade owns `8000`. vLLM serves **one model per process** and has no
+load, unload, pull or delete API of its own, so the manifest provides them as
+manager actions: `load_model`, `unload_model`, `pull_model` and `delete_model`,
+described below. PAIR passes requests straight to vLLM and does not load or
+unload models on its own: a model is loaded with Load and released with Eject.
 
 The default launch serves `Qwen/Qwen3.5-4B` through `--model <hugging-face-id>`.
 The model thinks before it answers, and with no `--reasoning-parser` in the launch
@@ -91,12 +91,9 @@ repository, takes a few seconds, and is done once per model and vLLM while the
 service runs. The chosen parser appears in the log
 (`vLLM tool-call parser chosen from the model's chat template`).
 When no parser reads the model's format (Nemotron Nano v2's `<TOOLCALL>`, or a
-template with no tool support), nothing is added, and the gateway removes `tools`
-from chat requests that leave `tool_choice` unset or `"auto"`, so the model
-answers in plain text instead of failing with HTTP 400. The response carries
-`X-PAIR-Tool-Calls: removed: …`. A request with `tool_choice: "required"` or a
-named function is forwarded unchanged and gets vLLM's own error. A parser named
-in the launch arguments is always used as given.
+template with no tool support), nothing is added, and a request that asks for
+tool calls gets vLLM's own error (HTTP 400). A parser named in the launch
+arguments is always used as given.
 The environment sets `VLLM_USE_FLASHINFER_SAMPLER=0`. vLLM's FlashInfer sampler
 compiles GPU kernels on first start, and that build cannot handle the spaces in
 PAIR's app-data folder (`Nvidia Corporation/Personal AI Router`), so the
@@ -109,80 +106,17 @@ Readiness polls `/health` for up to eight minutes while weights load.
 The model list is the Hugging Face cache (`~/.cache/huggingface/hub`), not what
 vLLM happens to be serving: `list_models` is an `hf_cache` action listing the
 complete, text-model-shaped downloads (see `MANIFEST.md`), and it works while
-vLLM is stopped. Peers and the proxy are told about all of them, and a request
-for a model that is not loaded switches vLLM to it (see below), as Ollama and
-llama.cpp load a model on demand. `engine:models` still reports which one is
-resident in `loadedByEngine`. `load_model` switches the served model on demand
-too: it writes `--model <id>` into the saved launch arguments and restarts vLLM
-on it, restoring the previous model if the new one does not start (for example it
-does not fit in GPU memory).
+vLLM is stopped. Peers and the proxy, though, are only told about the model being
+served (`advertised_models: loaded`, read from vLLM's `GET /v1/models`), because
+the proxy routes a request to any node advertising its model and vLLM cannot
+answer for the others. A stopped vLLM advertises nothing. `load_model` switches
+the served model: it writes `--model <id>` into the saved launch arguments and
+restarts vLLM on it, restoring the previous model if the new one does not start
+(for example it does not fit in GPU memory).
 
-vLLM is reached through a PAIR gateway (`front`): the public port (8001) is the
-gateway, and the `vllm serve` process listens on a loopback port 10000 higher
-(18001). Every request is forwarded unchanged and responses stream through, so
-clients see no difference; the cost measured on Qwen2.5-0.5B was about 2 ms per
-request. If the engine is not up, the gateway answers 503. A vLLM left running
-on the internal port by a crashed run is stopped and replaced on the next start.
+`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 
-Start brings vLLM up idle, with nothing loaded, like Ollama and llama.cpp start a
-server: it takes about a second, the engine is ON and answers health checks, and
-the model loads on the first request or a Load. The same is true after PAIR
-restarts, when an engine that was ON is restored. A launch that cannot work, such
-as a port already in use, is still refused at Start. Applying launch settings and
-switching the model load it straight away, so a bad setting is found then and
-rolled back.
-
-After 5 minutes with no inference request (`front.idle_timeout_s`, 0 to never)
-the manager stops the `vllm serve` process, which frees the GPU, but keeps the
-gateway and the engine ON: `engine:status` reports `idle: true`, `/health` still
-answers 200, and `engine:models` still advertises every cached model with
-nothing loaded. Health checks, monitors and the model list do not count as
-activity, and a request still running keeps the engine loaded. The limit is read
-and changed with the `get_idle_timeout` and `set_idle_timeout` actions (seconds,
-0 never); a change applies at once and is saved in the engine's override file.
-Eject
-(`unload_model`) does the same on demand. `load_model` of the model it is set to
-serve loads it again.
-
-A request that names a different downloaded model than the one vLLM serves
-(the JSON `model` field of a POST under `/v1/` or the other inference paths
-below) switches vLLM to it and is then answered by it. The gateway reads only as
-far as that field, at most the first 32 MiB of the body, and forwards the body
-unchanged. Requests already running on
-the current model finish first, and nothing new is started on it meanwhile, so
-none is cut off. The gateway then unloads the model, saves `--model <id>` into the
-launch arguments (the settings show what is running), loads the new model behind
-the same gateway, and forwards the held request. Requests that arrive together
-share one switch, and a request for yet another model waits for it. A name that
-is not a downloaded model, such as an alias given with `--served-model-name`, is
-left to vLLM to answer, and nothing changes. A switch that fails is not
-rolled back: the request gets a 503 naming the model and the reason, and vLLM is
-left unloaded but ON, so the next request loads whichever model it names. A switch
-is a full restart, so the proxy's 120 s limit is the ceiling for a very large model.
-The gateway's `GET /v1/models`, which the proxy builds its own model list from,
-names every downloaded model, not just the loaded one: it adds them to the
-engine's answer while vLLM is up and answers with them while it is unloaded.
-`GET /v1/models?resident=1` returns only the model actually resident, which is
-what the `loaded_models` action uses.
-
-A request that needs the model (a POST under `/v1/`, or to `/tokenize`,
-`/detokenize`, `/pooling`, `/score`, `/rerank` or `/classify`) and arrives while it
-is unloaded loads it and is then answered, as Ollama and llama.cpp do: the gateway
-holds the connection, starts the engine behind itself, and forwards the request
-once it is ready, so the first request waits for the load (about 25 s for an 8B
-model). Requests that arrive together share one start, a client that gives up
-does not abandon the load, and the proxy's 120 s limit is the ceiling for a very
-large model. While it is unloaded and while it loads, the engine stays marked
-running and idle, goes on advertising every cached model, and the gateway
-answers `GET /v1/models` with them, so the proxy, which routes by
-the advertised models and builds its own list from that call, keeps sending the
-request here instead of refusing it. A load that fails answers 503 saying so, and leaves the engine idle,
-not stopped, so the next request tries again. Reads such as `/health` and
-`/v1/models` never load the model.
-
-`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops its process, which frees all of its GPU memory, while the gateway and the engine stay ON (an engine with no gateway is stopped) and the saved model choice is kept; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
-
-`delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model a vLLM process is serving is refused. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments (an ejected engine is stopped first), and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one.
+`delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model a running vLLM is serving is refused. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one.
 
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not

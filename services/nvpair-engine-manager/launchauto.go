@@ -368,7 +368,7 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 // parser is the one the installed vLLM provides for the model's own tool-call
 // format (see detectToolParser), so no list of model families is kept here. A
 // flag the user already supplied is left as given. When no parser fits, nothing
-// is added, and the gateway takes tools out of the requests vLLM would reject.
+// is added, and vLLM answers requests that ask for tool calls with its own error.
 func planToolCalling(args []string, hubDir, bin string) (extra []string, parser string) {
 	model, ok := launchFlagValue(args, "--model")
 	if !ok || model == "" {
@@ -388,11 +388,11 @@ func planToolCalling(args []string, hubDir, bin string) (extra []string, parser 
 	}
 	parser, matched, err := detectToolParser(bin, snapshot)
 	if err != nil {
-		slog.Warn("could not work out the model's tool-call format; requests with tools are answered without them", "model", model, "err", err)
+		slog.Warn("could not work out the model's tool-call format; vLLM will refuse requests that ask for tool calls", "model", model, "err", err)
 		return nil, ""
 	}
 	if parser == "" {
-		slog.Info("no vLLM tool-call parser reads this model's tool calls; requests with tools are answered without them", "model", model)
+		slog.Info("no vLLM tool-call parser reads this model's tool calls; vLLM will refuse requests that ask for tool calls", "model", model)
 		return nil, ""
 	}
 	slog.Info("vLLM tool-call parser chosen from the model's chat template", "model", model, "parser", parser, "matched", matched)
@@ -401,11 +401,4 @@ func planToolCalling(args []string, hubDir, bin string) (extra []string, parser 
 		extra = append(extra, "--enable-auto-tool-choice")
 	}
 	return extra, parser
-}
-
-// parsesToolCalls reports whether a vLLM launch can answer tool_choice "auto".
-func parsesToolCalls(args []string) bool {
-	_, hasParser := launchFlagValue(args, "--tool-call-parser")
-	_, hasEnable := launchFlagValue(args, "--enable-auto-tool-choice")
-	return hasParser && hasEnable
 }

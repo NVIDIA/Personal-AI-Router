@@ -296,24 +296,6 @@ func TestPlanToolCalling_KeepsTheParserTheUserChose(t *testing.T) {
 	}
 }
 
-func TestParsesToolCalls_NeedsBothFlags(t *testing.T) {
-	cases := map[string]struct {
-		args []string
-		want bool
-	}{
-		"both flags":       {[]string{"--model", "m", "--tool-call-parser", "hermes", "--enable-auto-tool-choice"}, true},
-		"equals form":      {[]string{"--tool-call-parser=hermes", "--enable-auto-tool-choice"}, true},
-		"parser only":      {[]string{"--tool-call-parser", "hermes"}, false},
-		"enable flag only": {[]string{"--enable-auto-tool-choice"}, false},
-		"neither":          {[]string{"--model", "m"}, false},
-	}
-	for name, c := range cases {
-		if got := parsesToolCalls(c.args); got != c.want {
-			t.Errorf("%s: got %v, want %v", name, got, c.want)
-		}
-	}
-}
-
 func TestParseGPUMemory_ReadsADiscreteGPUAndFallsBackOnUnifiedMemory(t *testing.T) {
 	system := func() (int64, int64, bool) { return 128 * gib, 100 * gib, true }
 	for _, tc := range []struct {

@@ -107,9 +107,9 @@ Arguments you add to the launch text, such as your own `--max-model-len` or
 also turns on tool calling, which agent clients require: it checks how the
 model's chat template writes a tool call and picks the vLLM parser that reads
 that format (for example `hermes` for Qwen3, `qwen3_coder` for Qwen3.5 and
-Granite 4.2). For a model no vLLM parser can read, such as Nemotron Nano v2, chat
-requests that offer tools are answered in plain text, without the tools, instead
-of failing. To choose a parser yourself, add `--tool-call-parser <name>` to the
+Granite 4.2). For a model no vLLM parser can read, such as Nemotron Nano v2,
+tool calling stays off and vLLM answers a request that asks for tool calls with an
+error. To choose a parser yourself, add `--tool-call-parser <name>` to the
 launch text.
 
 Changing the server-port field updates the port in the command. Editing the

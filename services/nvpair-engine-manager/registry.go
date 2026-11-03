@@ -156,9 +156,6 @@ type Runtime struct {
 	// a non-nil empty slice keeps only fixed and managed arguments. Use
 	// omitzero to omit nil while preserving explicit empty arrays in JSON.
 	LaunchArgs []string `json:"launch_args,omitzero"`
-	// Front, when set, puts a PAIR gateway on the engine's public port and runs the
-	// engine on a derived loopback port behind it. See front.go.
-	Front *Front `json:"front,omitempty"`
 	// AutoLaunch lets the manager add startup arguments that depend on the model
 	// being served and the machine, at every start. Arguments the user saved
 	// always win, and nothing added here is written back to saved settings.
@@ -298,9 +295,6 @@ type Action struct {
 	// and keep running, but stopping it frees all of its GPU memory. Only
 	// unload_model may set it.
 	StopEngine bool `json:"stop_engine,omitempty"`
-	// FrontIdle reads ("get") or sets ("set") how long an engine behind a gateway
-	// may sit idle before it is unloaded.
-	FrontIdle string `json:"front_idle,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -827,26 +821,6 @@ const (
 )
 
 func (p *Platform) validate(key string) error {
-	if front := p.Runtime.Front; front != nil {
-		if front.IdleTimeoutS < 0 || front.IdleTimeoutS > 86400 {
-			return fmt.Errorf("platform %q: front.idle_timeout_s must be between 0 and 86400", key)
-		}
-		if front.BackendPortOffset < 1 || front.BackendPortOffset > 60000 {
-			return fmt.Errorf("platform %q: front.backend_port_offset must be between 1 and 60000", key)
-		}
-		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
-			return fmt.Errorf("platform %q: front requires a process-mode runtime with editable_launch", key)
-		}
-		hasPort := false
-		for _, control := range p.Runtime.EditableLaunch.Controls {
-			if _, ok := frontBackendValue(control.Value, 1); ok && len(control.Flags) > 0 && strings.Contains(control.Value, "{server.port}") {
-				hasPort = true
-			}
-		}
-		if !hasPort {
-			return fmt.Errorf("platform %q: front needs a flag-based launch control for {server.port}", key)
-		}
-	}
 	if auto := p.Runtime.AutoLaunch; auto != nil {
 		if auto.Kind != autoLaunchHFContext || auto.ContextTokens < 1024 {
 			return fmt.Errorf("platform %q: auto_launch needs kind %q and context_tokens of at least 1024", key, autoLaunchHFContext)
@@ -1035,14 +1009,8 @@ func (a *Action) validate(name string) error {
 	if a.StopEngine {
 		kinds++
 	}
-	if a.FrontIdle != "" {
-		kinds++
-		if a.FrontIdle != "get" && a.FrontIdle != "set" {
-			return fmt.Errorf("action %q: front_idle must be \"get\" or \"set\"", name)
-		}
-	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, stop_engine, or front_idle is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine is required", name)
 	}
 	if a.StopEngine && name != "unload_model" {
 		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)

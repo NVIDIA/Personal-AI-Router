@@ -184,13 +184,6 @@ func main() {
 	if addr == "" {
 		addr = strings.TrimPrefix(os.Getenv("OLLAMA_HOST"), "http://")
 	}
-	// --listen host:port overrides the address for tests of an engine that is told
-	// where to listen by a flag, as vLLM is.
-	for i := 1; i+1 < len(os.Args); i++ {
-		if os.Args[i] == "--listen" {
-			addr = os.Args[i+1]
-		}
-	}
 	if addr == "" {
 		addr = "127.0.0.1:0"
 	}
@@ -207,25 +200,9 @@ func main() {
 		time.Sleep(delay)
 	}
 
-	served := ""
-	for i := 1; i+1 < len(os.Args); i++ {
-		if os.Args[i] == "--model" {
-			served = os.Args[i+1]
-		}
-	}
-	if failModel := os.Getenv("FAKE_FAIL_MODEL"); failModel != "" && failModel == served {
-		log.Fatalf("cannot load model %s", served)
-	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	})
-	// Inference answers carry served_by, the model the process was launched with,
-	// so a test can tell which model served a request. /v1/slow takes a while.
-	mux.HandleFunc("/v1/slow", func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(700 * time.Millisecond)
-		_ = json.NewEncoder(w).Encode(map[string]string{"served_by": served})
 	})
 	// Ollama-shape model API (stateful).
 	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
@@ -357,17 +334,11 @@ func main() {
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		b := decodeBody(r)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"model": bstr(b, "model"), "served_by": served, "object": "chat.completion",
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": bstr(b, "model"), "object": "chat.completion",
 			"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}}})
 	})
 	mux.HandleFunc("/api/error", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
-	})
-	// /slow?ms=N answers after N milliseconds, as a long generation does.
-	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
-		ms, _ := strconv.Atoi(r.URL.Query().Get("ms"))
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/exit", func(w http.ResponseWriter, r *http.Request) {
 		os.Exit(1) // simulate an unexpected engine crash
