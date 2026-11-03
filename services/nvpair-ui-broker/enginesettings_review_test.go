@@ -22,16 +22,16 @@ import (
 func TestSettingsRebind_AddressesOnlyRequestedFacade(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
+			// Keep the target distinct from the ports the harness records.
+			port, releaseTargetPort := reserveSettingsPort(t)
+
 			h := newSettingsHarness(t)
 			p := h.b.getProxy()
 			before := make(map[string]int, len(engineProxyProfiles))
 			for _, candidate := range engineProxyProfiles {
 				_, before[candidate.Name] = p.Status(candidate.Name)
 			}
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			require.NoError(t, err)
-			port := ln.Addr().(*net.TCPAddr).Port
-			_ = ln.Close()
+			releaseTargetPort()
 			require.NoError(t, h.b.rebindSettingsProxy(profile.Name, port))
 			before[profile.Name] = port
 			for engine, want := range before {

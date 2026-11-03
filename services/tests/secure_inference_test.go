@@ -243,12 +243,13 @@ func TestClusterInference_RequiresPinnedMutualTLS(t *testing.T) {
 	clusterB := filepath.Join(baseB, "cluster")
 	clusterC := filepath.Join(baseC, "cluster")
 
-	cmBPort := freePort(t)
-	cmA := startCM(t, baseA, freePort(t))
+	cmPorts := freePorts(t, 3)
+	cmBPort := cmPorts[1]
+	cmA := startCM(t, baseA, cmPorts[0])
 	defer cmA.stop()
 	cmB := startCM(t, baseB, cmBPort)
 	defer cmB.stop()
-	cmC := startCM(t, baseC, freePort(t))
+	cmC := startCM(t, baseC, cmPorts[2])
 	defer cmC.stop()
 
 	aInfo := decodeResult[cmNodeID](t, cmA.call("cluster:get-node-id", nil))

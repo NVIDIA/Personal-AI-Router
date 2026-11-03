@@ -14,6 +14,7 @@
 export const MODULAR_CLUSTER_MANAGER_PORT = 14321
 
 export const MODULAR_NODE_INFO_PATH = '/v1/node-info'
+export const MODULAR_OPENAI_API_BASE_PATH = '/v1'
 
 // Log levels accepted by every backend binary's shared `applog` package
 // (`--log-level` flag / `log/set-level` JSON-RPC). Order is least→most severe.
