@@ -254,13 +254,7 @@ func TestManualTelemetry_ReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 	first.GPUs = []GPUInfo{{UtilizationPercent: 25}}
 	first.TelemetryValid = true
 	first.MSSince = 100
-	b.upsertManualNode(first)
-
-	b.manualMu.Lock()
-	entry := b.manualNodeStatuses["first"]
-	entry.receivedAt = time.Now().Add(-2 * time.Second)
-	b.manualNodeStatuses["first"] = entry
-	b.manualMu.Unlock()
+	b.upsertManualNodeAt(first, time.Now().Add(-2*time.Second))
 
 	second := manualStatus("second", "10.0.0.2", "node-a")
 	second.GPUs = []GPUInfo{{UtilizationPercent: 80}}

@@ -5,7 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-node-scanner
 
-**The consolidated discovery daemon.** Promoted from a plain node-info browser: it is now the single place this host advertises itself on and discovers the LAN through. Every other service registers its port with this daemon instead of advertising its own mDNS service, and consumers query/subscribe to it instead of browsing themselves.
+**The node discovery daemon.** It advertises this host on the LAN, discovers
+connection candidates, and maintains the node directory. The broker registers
+local service ports with its registry, and consumers query or subscribe to its
+directory through the broker.
 
 Concretely, the daemon:
 
@@ -18,8 +21,9 @@ Concretely, the daemon:
   report matching host and certificate UUIDs and complete peer metadata.
   The authenticated name, addresses, ports, and hardware form a distinct
   `pinned` peer record, replacing only that successful discovery. Failed
-  candidates stay separate and `unverified`. Public HTTP is never a scanner
-  measurement source, and operator CAs cannot substitute for cluster pins.
+  candidates stay separate and `unverified`. Public HTTP previews never supply
+  verified inventory or scheduling measurements, and operator CAs cannot
+  substitute for cluster pins.
   Node-info responses are limited to 64 KiB.
   Verified record IDs are opaque and change with the local certificate or
   admission and the peer's exact pin or admission. Host UUIDs remain stable.
@@ -44,6 +48,14 @@ Concretely, the daemon:
   compact scheduling telemetry and a full authenticated hardware snapshot.
   Both outputs use the same sample with its elapsed age. Local IPC also updates
   changed hardware inventory.
+- **Collects unpaired hardware previews** on a separate two-second loop with
+  at most four public HTTP requests in flight across all nodes and addresses,
+  and failure backoff capped at 30 seconds. Public HTTP reads have
+  a 1.5-second total deadline, a 64 KiB body limit, no redirects, and address
+  failover. Sanitized hardware is emitted as `discovery:node-info` under the
+  current unverified discovery record ID. It never updates directory identity,
+  verified hardware, liveness, models, or scheduling. The broker delivers
+  previews to desktop and TUI through node snapshots and hardware updates.
 - **Follows live trust:** a pin addition schedules authentication. Pin removal,
   replacement, or local departure removes the verified row and its scanner
   caches and drops affected idle connections. Requests recheck the current pin
@@ -59,11 +71,15 @@ Concretely, the daemon:
   A peer retained after its last discovery expires is still checked during
   the sampling loop. A minute without authenticated inventory or inference
   activity removes its scanner record and caches, preserving membership and pins.
-- **A scan that loses everything is treated as our own fault:** when more than one node is known and a scan returns *none* of them, no node is penalized for it — for up to six consecutive scans (~30s), after which they count normally. Independent machines do not leave the network in the same five-second window, but a process too starved to drain its multicast socket within `scanTimeout` hears silence from all of them at once; without this, one saturated machine dropped its entire cluster, idle peers included, in a single reconcile. The suppression needs two or more known nodes to engage: losing a lone peer looks the same whether it left or we stopped listening, so that case falls through to the ordinary threshold.
+- **Allows grace for empty scans:** with multiple known nodes, up to six
+  consecutive empty scans receive a shared grace period of about 30 seconds.
+  Later empty scans count toward each record's miss threshold. This allows for
+  local multicast receive delays under load. A single known peer follows the
+  ordinary miss threshold.
 - **Separates pending authentication from telemetry:** candidates have their own
   bounded workers and retry state. Slow candidates cannot occupy verified-peer
   telemetry workers or replace their polling targets. Authentication and
-  telemetry failures use the existing capped backoff. Requests retain deadlines,
+  telemetry failures use capped backoff. Requests have deadlines,
   response-size limits, address failover, and one connection per node-info
   origin. Requests never follow redirects to another endpoint or transport.
 
@@ -108,11 +124,10 @@ nothing to answer and the caller must not wait:
 - `log/set-level` (above).
 - `discovery:local-node-info` `{info}` — hardware received by the broker from its
   own node-info worker. Scanner attaches it only to the matching local registry
-  record, updates inventory, and emits compact scheduling telemetry. It never
-  polls public node-info for local service data. A browsed UUID or loopback
+  record, updates inventory, and emits compact scheduling telemetry. Owned
+  subprocess IPC establishes the measurement source. A browsed UUID or loopback
   address cannot enter this private path. Registration changes retain the owned
-  inventory; worker silence leaves scheduling samples aging rather than
-  generating fresh zero-usage samples.
+  inventory; samples retain their elapsed age during worker silence.
 
 ### Notifications (daemon → caller)
 
@@ -130,10 +145,14 @@ principal claims; address order does not affect the ID.
 - `discovery:node-removed` — a node aged out (identity + last-known fields)
 - `discovery:node-telemetry` — compact maximum-GPU utilization, validity, and
   sample age for broker-internal scheduling
-- `discovery:node-info` — a full authenticated hardware snapshot with its
-  discovery record ID and identity verification, forwarded through the broker
+- `discovery:node-info` — a full local or pinned hardware snapshot, or an
+  unverified display-only preview, with its discovery record ID and verification.
+  The broker retains the latest source observation for `AvailableNode.info`
+  snapshots and forwards live updates. Preview identity and registry claims are
+  stripped and cannot change verified service state.
 
-A one-shot `ready` notification is sent on startup carrying the daemon version. The broker replays its service registrations on every scanner spawn, so a restarted daemon is repopulated without needing to compare an epoch.
+A one-shot `ready` notification carries the daemon version at startup. The
+broker repopulates the service registry on every scanner spawn.
 
 ## Shutdown
 

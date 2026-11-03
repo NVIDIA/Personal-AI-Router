@@ -149,15 +149,12 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance string) (
 		clustertrust.ClusterUUIDTXTKey + "=" + c.peerUUID}
 	adv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
 	require.NoError(t, err, "register stub peer")
-	var stopped sync.Once
-	stop := func() {
-		stopped.Do(func() {
-			adv.Shutdown()
-			if err := srv.Close(); err != nil {
-				t.Errorf("close stub peer: %v", err)
-			}
-		})
-	}
+	stop := sync.OnceFunc(func() {
+		adv.Shutdown()
+		if err := srv.Close(); err != nil {
+			t.Errorf("close stub peer: %v", err)
+		}
+	})
 	t.Cleanup(stop)
 	t.Logf("stub cluster peer advertising %s (ni=%d, wl=%d, cluster-uuid=%s)", nodeRecordService, port, port, c.peerUUID)
 	return received, stop

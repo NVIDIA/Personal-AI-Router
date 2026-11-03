@@ -179,34 +179,28 @@ func TestPeerMetadata_RelaysAndReplaysOnlyTheOwnedRegistry(t *testing.T) {
 
 type blockedMetadataWriter struct {
 	net.Conn
-	started chan struct{}
-	once    sync.Once
+	onWrite func()
 }
 
 func (w *blockedMetadataWriter) Write(data []byte) (int, error) {
-	w.once.Do(func() { close(w.started) })
+	w.onWrite()
 	return w.Conn.Write(data)
 }
 
 type heldMetadataWriter struct {
-	frames      chan []byte
-	started     chan struct{}
-	release     chan struct{}
-	once        sync.Once
-	releaseOnce sync.Once
+	frames     chan []byte
+	startWrite func()
+	release    func()
 }
 
 func (w *heldMetadataWriter) Write(data []byte) (int, error) {
-	w.once.Do(func() {
-		close(w.started)
-		<-w.release
-	})
+	w.startWrite()
 	w.frames <- append([]byte(nil), data...)
 	return len(data), nil
 }
 
 func (w *heldMetadataWriter) Close() error {
-	w.releaseOnce.Do(func() { close(w.release) })
+	w.release()
 	return nil
 }
 
@@ -225,8 +219,14 @@ func TestPeerMetadata_CoalescesUpdatesWhileWorkerIsBlocked(t *testing.T) {
 	// snapshot, rather than accumulating one sender and write per update.
 	const updates = 20
 	b := &Broker{nodeID: "owned-host"}
+	started, released := make(chan struct{}), make(chan struct{})
 	writer := &heldMetadataWriter{
-		frames: make(chan []byte, updates+2), started: make(chan struct{}), release: make(chan struct{}),
+		frames: make(chan []byte, updates+2),
+		startWrite: sync.OnceFunc(func() {
+			close(started)
+			<-released
+		}),
+		release: sync.OnceFunc(func() { close(released) }),
 	}
 	t.Cleanup(func() { require.NoError(t, writer.Close()) })
 	b.setNodeInfo(&nodeInfoProcess{stdin: writer})
@@ -241,7 +241,7 @@ func TestPeerMetadata_CoalescesUpdatesWhileWorkerIsBlocked(t *testing.T) {
 	// The first frame is already encoded when this barrier closes. Keep its
 	// write blocked while the registry advances to the latest pending snapshot.
 	select {
-	case <-writer.started:
+	case <-started:
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "metadata write did not start")
 	}
@@ -298,12 +298,13 @@ func TestPeerMetadata_ReplaysLatestSnapshotAfterBlockedWorkerIsReplaced(t *testi
 		assert.NoError(t, client.Close())
 		assert.NoError(t, server.Close())
 	})
-	writer := &blockedMetadataWriter{Conn: client, started: make(chan struct{})}
+	started := make(chan struct{})
+	writer := &blockedMetadataWriter{Conn: client, onWrite: sync.OnceFunc(func() { close(started) })}
 	b.setNodeInfo(&nodeInfoProcess{stdin: writer})
 	node := noderec.DirectoryNode{HostUUID: "owned-host", IdentityVerification: noderec.IdentityLocal, Name: "initial"}
 	b.updateLocalPeerMetadata(node)
 	select {
-	case <-writer.started:
+	case <-started:
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "metadata write did not start")
 	}
@@ -334,12 +335,13 @@ func TestPeerMetadata_ClosingWorkerPipeReleasesSender(t *testing.T) {
 		assert.NoError(t, client.Close())
 		assert.NoError(t, server.Close())
 	})
-	writer := &blockedMetadataWriter{Conn: client, started: make(chan struct{})}
+	started := make(chan struct{})
+	writer := &blockedMetadataWriter{Conn: client, onWrite: sync.OnceFunc(func() { close(started) })}
 	b.setNodeInfo(&nodeInfoProcess{stdin: writer})
 	node := noderec.DirectoryNode{HostUUID: "owned-host", IdentityVerification: noderec.IdentityLocal, Name: "initial"}
 	b.updateLocalPeerMetadata(node)
 	select {
-	case <-writer.started:
+	case <-started:
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "metadata write did not start")
 	}

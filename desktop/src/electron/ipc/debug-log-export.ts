@@ -105,8 +105,7 @@ function buildDebugLogBundle(): string {
         selfId: state.getSelfId(),
         nodesInitial: state.getNodesInitial(),
         availableNodes: state.getAvailableNodes(),
-        engineInitialState: state.getEngineInitialState(),
-        nodeInfoPollTargets: state.getNodeInfoPollTargets()
+        engineInitialState: state.getEngineInitialState()
     }
 
     return [

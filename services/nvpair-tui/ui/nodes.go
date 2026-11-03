@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-shared/noderec"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -594,9 +595,34 @@ func (v *nodesView) handleNotification(msg *rpc.Message) tea.Cmd {
 	switch msg.Method {
 	case "discovery:nodes-changed":
 		var nodes []availableNode
-		decodeOrLog(msg.Method, msg.Params, &nodes)
+		if !decodeOrLog(msg.Method, msg.Params, &nodes) {
+			return nil
+		}
+		receivedAt := time.Now()
+		for i := range nodes {
+			nodes[i].infoReceivedAt = receivedAt
+		}
 		v.feeds.discovered = nodes
 		v.rebuild()
+
+	case noderec.NotifyNodeInfo:
+		var value noderec.NodeInfoEvent
+		if !decodeOrLog(msg.Method, msg.Params, &value) {
+			return nil
+		}
+		for i := range v.feeds.discovered {
+			node := &v.feeds.discovered[i]
+			if node.DiscoveryRecordID != value.DiscoveryRecordID || node.IdentityVerification != value.IdentityVerification {
+				continue
+			}
+			if node.IdentityVerification != noderec.IdentityUnverified && (node.HostUUID != value.HostUUID || value.Info.HostUUID != node.HostUUID) {
+				continue
+			}
+			node.Info = &value.Info
+			node.infoReceivedAt = time.Now()
+			v.rebuild()
+			break
+		}
 
 	case "nodes:changed":
 		var r struct {
@@ -1465,8 +1491,21 @@ func (v *nodesView) followDetail() {
 	if v.detail == nil {
 		return
 	}
+	// Keep learned handles across discovery/list ordering differences only while
+	// the manual list still contains them. A removed entry must not linger in an
+	// open detail just because discovery continues to report the same host.
+	var manualIDs []string
+	for _, id := range v.detail.node.manualIDs {
+		if slices.ContainsFunc(v.feeds.manual, func(m manualNode) bool { return m.ID == id }) {
+			manualIDs = append(manualIDs, id)
+		}
+	}
+	v.detail.node.manualIDs = manualIDs
 	for _, n := range v.all {
 		if n.key == v.detail.node.key {
+			if len(n.manualIDs) == 0 {
+				n.manualIDs = manualIDs
+			}
 			v.detail.followNode(n, true)
 			return
 		}

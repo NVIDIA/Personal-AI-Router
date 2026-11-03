@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-node-info
 
-A Go service that exposes this machine's hardware inventory (GPUs, CPU, physical memory) over a small HTTP API at `/v1/node-info`. It advertises nothing over mDNS itself — its parent (the broker) registers its `ni` port with the `nvpair-node-scanner` discovery daemon, which folds it into this node's single `_nvpair-node` record.
+A Go service that reports this machine's GPUs, CPU, and physical memory through
+`/v1/node-info` and private broker/worker IPC. The broker registers its `ni` port
+with the scanner's local service registry.
 
 ## Communication
 
@@ -14,19 +16,21 @@ Two surfaces:
 - **HTTP(S)** — serves inventory at `/v1/node-info`. With `--cluster-dir`, public HTTP and pinned mTLS share `:14318`. Without it, the default is public HTTP on `:14318`; operator-supplied certificates enable a separate HTTPS listener on `:14319`, with optional CA-based client authentication.
 - **stdio JSON-RPC 2.0** — newline-delimited, used for local inventory snapshots, registry metadata, lifecycle/control, and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
 
-It does **not** advertise itself over mDNS. Discovery is centralized in the
-`nvpair-node-scanner` daemon: the broker registers this service's `ni` port on
-the node's one `_nvpair-node` record. Remote services read inventory over pinned
-mTLS; the owned local scanner receives private IPC snapshots. Desktop and TUI
-continue to read public HTTP hardware data for display only.
+The scanner advertises `ni` in the node's `_nvpair-node` record. Remote services
+read authenticated inventory over pinned mTLS; the owned local scanner receives
+private IPC snapshots. Scanner and manual-node workers collect public HTTP
+previews for eligible unverified records. Desktop and TUI receive hardware
+through broker snapshots and pushes. Public HTTP serves previews in every
+membership state.
 
 ### Private inventory IPC
 
 `nodeinfo:info-updated {info}` publishes the hardware response at startup and
 every two seconds over stdout. The broker relays it as
 `discovery:local-node-info {info}` to its owned scanner for local inventory and
-scheduling. Local service measurements work before joining and after leaving a
-cluster, without a loopback HTTP read. Public HTTP hardware displays are unchanged.
+scheduling. These owned local measurements work in every membership state.
+Scanner emits full local hardware back to the broker for client snapshots and
+live updates as well as compact scheduling measurements.
 The broker adds cache and queue time to `info.msSince` on forwarding or replay;
 invalid samples remain invalid.
 
@@ -71,7 +75,7 @@ The cert flags follow a bring-your-own contract, validated at startup:
 
 With operator-supplied `--cert`/`--key` and no `--cluster-dir`, the HTTP listener
 is dropped unless `--accept-http` is passed. Both listeners share the public
-inventory handler, but bind separate ports so clients can migrate independently.
+inventory handler on separate ports.
 
 `--cluster-dir` replaces both with one split listener on the primary port. Its
 public HTTP handler is independent of membership. Its mTLS handler verifies the
@@ -117,10 +121,10 @@ Field notes:
 
 - Dynamic fields (`vram_used_bytes`, `utilization_percent`, `cpu.utilization_percent`, `memory.used_bytes`) are populated by the Windows, Linux, and macOS per-tick stats collectors.
 - `telemetryValid` and `msSince` describe the node-wide GPU utilization snapshot. `telemetryValid` is `true` after the collector has produced a usable GPU sample; `msSince` is that sample's age in milliseconds at response time. A failed collection retains the last usable sample and lets its age increase. Before the first usable sample, and on platforms without dynamic GPU telemetry, the response reports `telemetryValid:false` and `msSince:0`; consumers must ignore the age while validity is false.
-- `clusterUuid` is the cluster principal this node currently holds. It has three distinct states on the wire: **absent** means unknown, **present and empty** means this node belongs to no cluster, and a value is that principal. A consumer must not read absent as unclustered — that is how a node too old to report the field answers, and also how this node answers before its parent has told it anything, so acting on it would clear a correct annotation elsewhere in the fleet.
+- `clusterUuid` has three wire states: **absent** means unknown, **present and empty** claims unclustered, and a nonempty value claims that node principal. Public preview collectors strip this field before forwarding display hardware.
 - With `--cluster-dir`, including under the broker, `clusterUuid` comes from live trust-store membership. Without a cluster directory, a parent may push it over stdin using `nodeinfo:set-cluster-identity`; the field stays absent until that first push. These are separate deployment modes.
 - `clusterUuid` is an identity claim. Public HTTP cannot establish membership or change a verified node's identity; service consumers require the protected response and a matching exact certificate pin.
-- All dynamic fields and the `cpu` / `memory` objects use `omitempty`: a value the service couldn't read is dropped from the JSON entirely rather than reported as a misleading literal zero. A genuinely idle CPU renders the same as "unknown" — that ambiguity is intentional and benign.
+- Dynamic scalar fields and the `cpu` / `memory` objects use `omitempty`. An absent object means its measurements are unavailable. Scalar zero values are also omitted, so a consumer cannot distinguish zero usage from an unavailable scalar measurement. GPU utilization has separate validity and sample-age fields; these do not describe CPU or system-memory freshness.
 - `vram_bytes` is reported through DXGI on Windows, `nvidia-smi` on Linux, and IORegistry on macOS. On a unified-memory NVIDIA GPU such as DGX Spark, Linux uses total physical system memory for `vram_bytes` and the independently sampled system-memory usage for `vram_used_bytes`. On Apple Silicon, `vram_bytes` is total physical unified memory and `vram_used_bytes` is the GPU driver's mapped allocation (`Alloc system memory`), not whole-system RAM usage or the momentarily active subset.
 
 ### Peer node inventory on the same port
@@ -137,7 +141,7 @@ The serving node must still be a member, and the client's presented certificate
 must match its exact current pin. Revoked or replaced pins return `403`, including
 on reused TLS connections and when trust changes during response collection.
 Departure disables peer node inventory even if the keypair remains.
-Public HTTP remains available and omits `peer` in every membership state.
+Public HTTP serves hardware previews and omits `peer` in every membership state.
 
 ## Discovery
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,294 @@ import (
 	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/noderec"
 )
+
+// An unverified discovery can claim the same UUID as a paired peer. Its preview
+// must stay under its own record, with public identity metadata stripped, while
+// the paired peer's hardware and scheduling eligibility remain unchanged.
+func TestDiscoveryStore_KeepsPublicPreviewSeparateFromVerifiedHardware(t *testing.T) {
+	store := newDiscoveryStore()
+	principal := "peer"
+	store.Upsert(EnrichedNode{
+		HostUUID: "peer", ID: "paired", DiscoveryRecordID: "pin:peer",
+		IdentityVerification: noderec.IdentityPinned, Trusted: true,
+	}, sourceScanner)
+	store.Upsert(EnrichedNode{
+		HostUUID: "peer", ID: "unpaired", DiscoveryRecordID: "observation:other",
+		IdentityVerification: noderec.IdentityUnverified,
+	}, sourceScanner)
+	_, ok := store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "peer", ClusterUUID: principal, DiscoveryRecordID: "pin:peer", IdentityVerification: noderec.IdentityPinned,
+		Info: noderec.NodeInfo{HostUUID: "peer", ClusterUUID: &principal, GPUs: []GPUInfo{{Name: "paired GPU"}}},
+	}, time.Now())
+	require.True(t, ok)
+	accepted, ok := store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "peer", DiscoveryRecordID: "observation:other", IdentityVerification: noderec.IdentityUnverified,
+		Info: noderec.NodeInfo{
+			HostUUID: "peer", ClusterUUID: &principal, Peer: &noderec.PeerMetadata{Name: "forged"},
+			GPUs: []GPUInfo{{Name: "preview GPU"}},
+		},
+	}, time.Now())
+	require.True(t, ok)
+
+	nodes := store.Snapshot()
+
+	require.Len(t, nodes, 2)
+
+	require.NotNil(t, nodes[0].Info)
+	assert.Equal(t, "paired", nodes[0].ID)
+	assert.Equal(t, []GPUInfo{{Name: "paired GPU"}}, nodes[0].Info.GPUs)
+	assert.True(t, nodes[0].Trusted)
+
+	require.NotNil(t, nodes[1].Info)
+	assert.Equal(t, "unpaired", nodes[1].ID)
+	assert.Equal(t, []GPUInfo{{Name: "preview GPU"}}, nodes[1].Info.GPUs)
+	assert.False(t, nodes[1].Trusted)
+
+	// Keep the display measurements, but strip the public response's identity
+	// and service metadata so it cannot impersonate the authenticated peer.
+	assert.Empty(t, nodes[1].Info.HostUUID)
+	assert.Nil(t, nodes[1].Info.ClusterUUID)
+	assert.Nil(t, nodes[1].Info.Peer)
+	assert.Equal(t, *nodes[1].Info, accepted.Info, "storage and forwarding must use the same sanitized hardware")
+
+	scheduling := store.SchedulingSnapshot()
+	require.Len(t, scheduling, 1)
+	assert.Equal(t, "paired", scheduling[0].ID)
+	assert.Nil(t, scheduling[0].Info)
+}
+
+// Forwarding adds broker processing time to the returned event. That adjustment
+// must not also change the observation retained for later discovery queries.
+func TestDiscoveryStore_ForwardedHardwareKeepsIndependentSampleAge(t *testing.T) {
+	store := newDiscoveryStore()
+	store.Upsert(EnrichedNode{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+	}, sourceScanner)
+	receivedAt := time.Now()
+	accepted, ok := store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+		Info: noderec.NodeInfo{HostUUID: "self", TelemetryValid: true, MSSince: 137},
+	}, receivedAt)
+	require.True(t, ok)
+
+	accepted.Info = accepted.Info.Aged(5 * time.Second)
+	beforeRead := time.Now()
+	nodes := store.Snapshot()
+	afterRead := time.Now()
+
+	require.Len(t, nodes, 1)
+	require.NotNil(t, nodes[0].Info)
+	assert.Equal(t, int64(5137), accepted.Info.MSSince)
+	assert.GreaterOrEqual(t, nodes[0].Info.MSSince, int64(137)+beforeRead.Sub(receivedAt).Milliseconds())
+	assert.LessOrEqual(t, nodes[0].Info.MSSince, int64(137)+afterRead.Sub(receivedAt).Milliseconds())
+}
+
+// A model update carries no new hardware sample. Updating the directory must
+// preserve the cached hardware and its original receipt time, so old utilization
+// cannot appear fresh just because the model list changed.
+func TestDiscoveryStore_PreservesHardwareAgeAcrossModelUpdates(t *testing.T) {
+	store := newDiscoveryStore()
+	observedAt := time.Now().Add(-3 * time.Second)
+	info := noderec.NodeInfo{HostUUID: "self", GPUs: []GPUInfo{{Name: "GPU"}}, TelemetryValid: true, MSSince: 137}
+	node := EnrichedNode{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+	}
+	store.Upsert(node, sourceScanner)
+	_, ok := store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+		Info: info,
+	}, observedAt)
+	require.True(t, ok)
+
+	node.Models = []string{"new model"}
+
+	store.Upsert(node, sourceScanner)
+
+	beforeRead := time.Now()
+	snapshot := store.Snapshot()
+	afterRead := time.Now()
+	require.Len(t, snapshot, 1)
+	require.NotNil(t, snapshot[0].Info)
+	assert.Equal(t, []string{"new model"}, snapshot[0].Models)
+	assert.Equal(t, []GPUInfo{{Name: "GPU"}}, snapshot[0].Info.GPUs)
+
+	// Bound the age by the actual snapshot operation, so a slow test runner
+	// cannot fail an otherwise correct result through an arbitrary time limit.
+	assert.GreaterOrEqual(t, snapshot[0].Info.MSSince, int64(137)+beforeRead.Sub(observedAt).Milliseconds())
+	assert.LessOrEqual(t, snapshot[0].Info.MSSince, int64(137)+afterRead.Sub(observedAt).Milliseconds())
+}
+
+// Cached hardware belongs to a particular authenticated record and endpoint.
+// Each case changes that record without supplying a new sample; the earlier
+// hardware must be discarded even though the node is still listed.
+func TestDiscoveryStore_ClearsCachedHardwareWhenRecordChanges(t *testing.T) {
+	test := func(name string, change func(*EnrichedNode)) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			store := newDiscoveryStore()
+			info := noderec.NodeInfo{HostUUID: "peer"}
+			node := EnrichedNode{
+				HostUUID: "peer", DiscoveryRecordID: "pin:peer", IdentityVerification: noderec.IdentityPinned,
+				Trusted: true, Port: 14318, Addresses: []string{"192.0.2.20"},
+				Info: &info, infoReceivedAt: time.Now(),
+			}
+			store.Upsert(node, sourceScanner)
+			node.Info = nil
+			change(&node)
+
+			store.Upsert(node, sourceScanner)
+
+			snapshot := store.Snapshot()
+			require.Len(t, snapshot, 1)
+			assert.Nil(t, snapshot[0].Info)
+		})
+	}
+
+	test("verified record ID changes", func(node *EnrichedNode) { node.DiscoveryRecordID = "replacement:peer" })
+	test("trust is withdrawn", func(node *EnrichedNode) { node.Trusted = false })
+	test("node-info port changes", func(node *EnrichedNode) { node.Port = 14328 })
+	test("candidate address changes", func(node *EnrichedNode) { node.Addresses = []string{"192.0.2.30"} })
+	test("secondary address changes", func(node *EnrichedNode) { node.Addresses = []string{"192.0.2.20", "192.0.2.30"} })
+	test("advertised target details change", func(node *EnrichedNode) { node.TXT = []string{"ni=14328"} })
+}
+
+// A verified manual observation can fill missing scanner hardware without
+// replacing scanner identity, addresses, or models. Its age must still include
+// the time since the manual observation arrived, rather than when it was chosen.
+func TestDiscoveryStore_FillsMissingScannerHardwareFromMatchingManualRecord(t *testing.T) {
+	store := newDiscoveryStore()
+	store.Upsert(EnrichedNode{
+		ID: "scanner", HostUUID: "peer", DiscoveryRecordID: "pin:peer",
+		IdentityVerification: noderec.IdentityPinned, Trusted: true,
+		Addresses: []string{"192.0.2.20"}, Port: 14318, Models: []string{"scanner model"},
+	}, sourceScanner)
+	observedAt := time.Now().Add(-3 * time.Second)
+	store.Upsert(manualToEnriched(manualNodeStatus{
+		ID: "configured", HostUUID: "peer", DiscoveryRecordID: "pin:peer",
+		IdentityVerification: noderec.IdentityPinned, Address: "192.0.2.30", NodeInfoPort: 14418,
+		OllamaModels: []string{"manual model"},
+		GPUs:         []GPUInfo{{Name: "manual GPU"}}, TelemetryValid: true, MSSince: 137,
+	}, observedAt), sourceManual)
+
+	beforeRead := time.Now()
+	nodes := store.Snapshot()
+	afterRead := time.Now()
+
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "scanner", nodes[0].ID)
+	assert.Equal(t, "peer", nodes[0].HostUUID)
+	assert.Equal(t, "192.0.2.20", nodes[0].IPAddress)
+	assert.Equal(t, 14318, nodes[0].Port)
+	assert.Equal(t, []string{"scanner model"}, nodes[0].Models)
+
+	require.NotNil(t, nodes[0].Info)
+	assert.Equal(t, []GPUInfo{{Name: "manual GPU"}}, nodes[0].Info.GPUs)
+	assert.GreaterOrEqual(t, nodes[0].Info.MSSince, int64(137)+beforeRead.Sub(observedAt).Milliseconds())
+	assert.LessOrEqual(t, nodes[0].Info.MSSince, int64(137)+afterRead.Sub(observedAt).Milliseconds())
+
+	// Display fallback must not supply the scheduler with full hardware.
+	scheduling := store.SchedulingSnapshot()
+	require.Len(t, scheduling, 1)
+	assert.Equal(t, []string{"scanner model"}, scheduling[0].Models)
+	assert.Nil(t, scheduling[0].Info)
+}
+
+// A matching claimed host alone cannot authorize the hardware fallback. Both
+// sources must have current trust and the same nonempty pinned verification ID.
+func TestDiscoveryStore_RejectsManualHardwareWithoutMatchingVerification(t *testing.T) {
+	test := func(name string, change func(scanner, manual *EnrichedNode)) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			store := newDiscoveryStore()
+			scanner := EnrichedNode{
+				ID: "scanner", HostUUID: "peer", DiscoveryRecordID: "pin:peer",
+				IdentityVerification: noderec.IdentityPinned, Trusted: true,
+			}
+			manual := manualToEnriched(manualNodeStatus{
+				ID: "configured", HostUUID: "peer", DiscoveryRecordID: "pin:peer",
+				IdentityVerification: noderec.IdentityPinned, GPUs: []GPUInfo{{Name: "manual GPU"}},
+			}, time.Now())
+			change(&scanner, &manual)
+			store.Upsert(scanner, sourceScanner)
+			store.Upsert(manual, sourceManual)
+
+			nodes := store.Snapshot()
+
+			// Unverified sources have independent keys and may appear separately.
+			// Only the scanner record's display is under test here.
+			var scannerNode *AvailableNode
+			for i := range nodes {
+				if nodes[i].ID == "scanner" {
+					scannerNode = &nodes[i]
+				}
+			}
+			require.NotNil(t, scannerNode)
+			assert.Nil(t, scannerNode.Info)
+		})
+	}
+
+	test("different verification IDs", func(scanner, manual *EnrichedNode) { manual.DiscoveryRecordID = "pin:other" })
+	test("missing verification IDs", func(scanner, manual *EnrichedNode) {
+		scanner.DiscoveryRecordID, manual.DiscoveryRecordID = "", ""
+	})
+	test("scanner trust withdrawn", func(scanner, manual *EnrichedNode) { scanner.Trusted = false })
+	test("manual trust withdrawn", func(scanner, manual *EnrichedNode) { manual.Trusted = false })
+	test("local scanner record", func(scanner, manual *EnrichedNode) { scanner.IdentityVerification = noderec.IdentityLocal })
+	test("unverified scanner record", func(scanner, manual *EnrichedNode) { scanner.IdentityVerification = noderec.IdentityUnverified })
+	test("unverified manual record", func(scanner, manual *EnrichedNode) { manual.IdentityVerification = noderec.IdentityUnverified })
+}
+
+// Scanner and manual entries can independently describe the same verified host.
+// Removing scanner must expose the surviving manual sample without resetting
+// its age or making that older observation appear newly collected.
+func TestDiscoveryStore_PreservesManualHardwareAgeAfterScannerRemoval(t *testing.T) {
+	store := newDiscoveryStore()
+	scannerInfo := noderec.NodeInfo{HostUUID: "peer", GPUs: []GPUInfo{{Name: "scanner GPU"}}}
+	store.Upsert(EnrichedNode{
+		HostUUID: "peer", DiscoveryRecordID: "scanner-proof", IdentityVerification: noderec.IdentityPinned, Trusted: true,
+		Info: &scannerInfo, infoReceivedAt: time.Now(),
+	}, sourceScanner)
+	observedAt := time.Now().Add(-3 * time.Second)
+	store.Upsert(manualToEnriched(manualNodeStatus{
+		ID: "configured", HostUUID: "peer", DiscoveryRecordID: "manual-proof", IdentityVerification: noderec.IdentityPinned,
+		GPUs: []GPUInfo{{Name: "manual GPU"}}, TelemetryValid: true, MSSince: 137,
+	}, observedAt), sourceManual)
+	beforeRemoval := store.Snapshot()
+	require.Len(t, beforeRemoval, 1)
+	require.NotNil(t, beforeRemoval[0].Info)
+	assert.Equal(t, []GPUInfo{{Name: "scanner GPU"}}, beforeRemoval[0].Info.GPUs)
+
+	store.Remove("peer", sourceScanner)
+
+	beforeRead := time.Now()
+	snapshot := store.Snapshot()
+	afterRead := time.Now()
+	require.Len(t, snapshot, 1)
+	require.NotNil(t, snapshot[0].Info)
+	assert.Equal(t, []GPUInfo{{Name: "manual GPU"}}, snapshot[0].Info.GPUs)
+
+	assert.GreaterOrEqual(t, snapshot[0].Info.MSSince, int64(137)+beforeRead.Sub(observedAt).Milliseconds())
+	assert.LessOrEqual(t, snapshot[0].Info.MSSince, int64(137)+afterRead.Sub(observedAt).Milliseconds())
+}
+
+// Explicit manual configuration can authorize an engine route without verified
+// hardware. Keep that target in scheduling snapshots, but omit its public
+// preview so display measurements cannot become scheduling evidence.
+func TestDiscoveryStore_KeepsManualRouteWithoutPreviewHardwareInScheduling(t *testing.T) {
+	store := newDiscoveryStore()
+	preview := noderec.NodeInfo{GPUs: []GPUInfo{{Name: "preview GPU"}}, TelemetryValid: true}
+	store.Upsert(manualToEnriched(manualNodeStatus{ID: "configured", Preview: &preview}, time.Now()), sourceManual)
+
+	nodes := store.Snapshot()
+	require.Len(t, nodes, 1)
+	require.NotNil(t, nodes[0].Info)
+	assert.Equal(t, []GPUInfo{{Name: "preview GPU"}}, nodes[0].Info.GPUs)
+
+	scheduling := store.SchedulingSnapshot()
+	require.Len(t, scheduling, 1)
+	assert.Equal(t, "manual:configured", scheduling[0].DiscoveryRecordID)
+	assert.Nil(t, scheduling[0].Info)
+}
 
 func TestScannerTelemetry_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
 	store := newDiscoveryStore()
@@ -33,21 +322,27 @@ func TestScannerTelemetry_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
 	assert.GreaterOrEqual(t, received.MSSince, int64(137)+wait.Milliseconds())
 }
 
-func TestScannerNodeInfo_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
+// Waiting for the hardware cache must age both the forwarded event and later
+// snapshots. Acceptance cannot restart the age clock after that wait.
+func TestScannerNodeInfo_IncludesCacheLockWaitInSampleAge(t *testing.T) {
 	store := newDiscoveryStore()
 	store.Upsert(EnrichedNode{HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal}, sourceScanner)
-	var stateMu sync.Mutex
 	var received []noderec.NodeInfoEvent
 	scanner := &scannerProcess{
-		store: store, stateMu: &stateMu,
+		store:      store,
 		onNodeInfo: func(value noderec.NodeInfoEvent) { received = append(received, value) },
 	}
-	wait := holdDiscoveryNotification(t, &stateMu, func() {
+	wait := holdDiscoveryNotification(t, &store.mu, func() {
 		scanner.handleNotify(noderec.NotifyNodeInfo, json.RawMessage(`{"hostUuid":"self","discoveryRecordId":"local:self","identityVerification":"local","info":{"hostUuid":"self","telemetryValid":true,"msSince":137}}`))
 	})
 
 	require.Len(t, received, 1)
 	assert.GreaterOrEqual(t, received[0].Info.MSSince, int64(137)+wait.Milliseconds())
+
+	nodes := store.Snapshot()
+	require.Len(t, nodes, 1)
+	require.NotNil(t, nodes[0].Info)
+	assert.GreaterOrEqual(t, nodes[0].Info.MSSince, received[0].Info.MSSince)
 }
 
 func TestScannerNodeInfo_RejectsSnapshotsForReplacedRecord(t *testing.T) {
@@ -298,9 +593,9 @@ func TestManualToEnriched_UnverifiedHostClaimsKeepTheirConfigurationKey(t *testi
 	withUUID := manualToEnriched(manualNodeStatus{
 		ID:       manualID,
 		HostUUID: "real-uuid",
-	})
+	}, time.Now())
 	require.Equal(t, storeKey, withUUID.storeKey(), "store key")
-	noUUID := manualToEnriched(manualNodeStatus{ID: manualID})
+	noUUID := manualToEnriched(manualNodeStatus{ID: manualID}, time.Now())
 	require.Equal(t, storeKey, noUUID.storeKey(), "store key")
 }
 
@@ -422,7 +717,6 @@ func TestDiscoveryStore_CarriesEveryModelListFromTheScanner(t *testing.T) {
 
 func newManualTestBroker() *Broker {
 	return &Broker{
-		manualNodeKeys:     make(map[string]string),
 		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
 		store:              newDiscoveryStore(),
 		telemetry:          newTelemetryCache(),

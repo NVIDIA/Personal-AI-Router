@@ -75,9 +75,9 @@ func TestManualNodeRelay_DistinguishesEntryIDsFromNodeKeys(t *testing.T) {
 			broker := &Broker{
 				codec:                 NewCodec(clientBroker),
 				manualNodesConfigPath: path,
-				manualNodeKeys: map[string]string{
-					entryID:         prefixedEntryID,
-					prefixedEntryID: prefixedNodeID,
+				manualNodeStatuses: map[string]manualNodeStatusEntry{
+					entryID:         {key: prefixedEntryID},
+					prefixedEntryID: {key: prefixedNodeID},
 				},
 			}
 			broker.setManualNodes(worker)
@@ -122,7 +122,7 @@ func TestManualNodeRelay_LeavesUnknownNodeKeysUnchanged(t *testing.T) {
 	broker := &Broker{
 		codec:                 NewCodec(&clientMessages),
 		manualNodesConfigPath: path,
-		manualNodeKeys:        map[string]string{entryID: "manual:lab"},
+		manualNodeStatuses:    map[string]manualNodeStatusEntry{entryID: {key: "manual:lab"}},
 	}
 	broker.setManualNodes(&rpcWorker{peer: NewPeer(NewCodec(&workerRequests))})
 	id := json.RawMessage("1")
@@ -187,11 +187,11 @@ func TestManualAliasForKey_ResolvesOnlyNodeKeys(t *testing.T) {
 	const prefixedEntryID = "manual:lab"
 	const prefixedNodeID = "manual:manual:lab"
 	broker := &Broker{
-		manualNodeKeys: map[string]string{
-			"second":        hostUUID,
-			"first":         hostUUID,
-			entryID:         prefixedEntryID,
-			prefixedEntryID: prefixedNodeID,
+		manualNodeStatuses: map[string]manualNodeStatusEntry{
+			"second":        {key: hostUUID},
+			"first":         {key: hostUUID},
+			entryID:         {key: prefixedEntryID},
+			prefixedEntryID: {key: prefixedNodeID},
 		},
 	}
 	test := func(name, key, wantID string) {
@@ -206,6 +206,33 @@ func TestManualAliasForKey_ResolvesOnlyNodeKeys(t *testing.T) {
 	test("unknown node key", "missing", "")
 }
 
+// A manual entry can have a display preview before its identity is verified.
+// Project that hardware into Info without trusting the public responder's
+// claimed host identity.
+func TestManualToEnriched_SeparatesPublicPreviewFromServiceMeasurements(t *testing.T) {
+	claimedPrincipal := "claimed-host"
+	preview := noderec.NodeInfo{
+		HostUUID: "claimed-host", ClusterUUID: &claimedPrincipal, Peer: &noderec.PeerMetadata{Name: "claimed name"},
+		GPUs: []GPUInfo{{Name: "preview GPU"}}, CPU: &CPUInfo{Name: "preview CPU"},
+		Memory: &MemoryInfo{TotalBytes: 16384}, TelemetryValid: true,
+	}
+
+	node := manualToEnriched(manualNodeStatus{ID: "configured", Preview: &preview}, time.Now())
+
+	assert.Equal(t, "manual:configured", node.DiscoveryRecordID)
+	assert.Equal(t, noderec.IdentityUnverified, node.IdentityVerification)
+	assert.False(t, node.Trusted)
+
+	require.NotNil(t, node.Info)
+	assert.Equal(t, []GPUInfo{{Name: "preview GPU"}}, node.Info.GPUs)
+	assert.Equal(t, &CPUInfo{Name: "preview CPU"}, node.Info.CPU)
+	assert.Equal(t, &MemoryInfo{TotalBytes: 16384}, node.Info.Memory)
+
+	assert.Empty(t, node.Info.HostUUID)
+	assert.Nil(t, node.Info.ClusterUUID)
+	assert.Nil(t, node.Info.Peer)
+}
+
 func TestManualToEnriched_ExcludesUnverifiedHardwareFromServiceRecords(t *testing.T) {
 	const modelName = "explicit-engine-model"
 	status := manualNodeStatus{
@@ -218,23 +245,20 @@ func TestManualToEnriched_ExcludesUnverifiedHardwareFromServiceRecords(t *testin
 		OllamaModels:         []string{modelName},
 	}
 
-	node := manualToEnriched(status)
+	node := manualToEnriched(status, time.Now())
 
-	assert.Empty(t, node.GPUs)
-	assert.Nil(t, node.CPU)
-	assert.Nil(t, node.Memory)
+	assert.Nil(t, node.Info)
 	assert.Equal(t, "manual:configured", node.HostUUID)
 	assert.Equal(t, []string{modelName}, node.Models)
 }
 
 type observedProxyWriter struct {
 	net.Conn
-	writing chan struct{}
-	once    sync.Once
+	onWrite func()
 }
 
 func (w *observedProxyWriter) Write(data []byte) (int, error) {
-	w.once.Do(func() { close(w.writing) })
+	w.onWrite()
 	return w.Conn.Write(data)
 }
 
@@ -249,7 +273,8 @@ func TestManualProxyBridge_DoesNotBlockDiscovery(t *testing.T) {
 				assert.NoError(t, proxySide.Close())
 			})
 			require.NoError(t, proxySide.SetDeadline(time.Now().Add(5*time.Second)))
-			writer := &observedProxyWriter{Conn: brokerSide, writing: make(chan struct{})}
+			writing := make(chan struct{})
+			writer := &observedProxyWriter{Conn: brokerSide, onWrite: sync.OnceFunc(func() { close(writing) })}
 			proxy := &proxyProcess{peer: NewPeer(NewCodec(writer))}
 			go proxy.peer.Serve(nil, nil)
 			b := newManualTestBroker()
@@ -263,7 +288,7 @@ func TestManualProxyBridge_DoesNotBlockDiscovery(t *testing.T) {
 				close(added)
 			}()
 			select {
-			case <-writer.writing:
+			case <-writing:
 			case <-time.After(2 * time.Second):
 				require.FailNow(t, "manual target was not sent to the proxy")
 			}

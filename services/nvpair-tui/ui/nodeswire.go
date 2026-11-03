@@ -3,7 +3,11 @@
 
 package ui
 
-import "nvpair-shared/noderec"
+import (
+	"time"
+
+	"nvpair-shared/noderec"
+)
 
 // The wire shapes behind the Nodes tab. One machine is described by three
 // different services, so their payloads are collected here and folded into the
@@ -21,8 +25,8 @@ type availableNode struct {
 	// IPAddresses is every address the node published, in its own ranked order
 	// with IPAddress first. A multi-homed node has no single address every peer
 	// can reach — a direct-connect link only works from the machine on its far
-	// end — so a client that dials the node must walk this list rather than
-	// treating IPAddress as the only answer. Omitted when there is just one.
+	// end. Workers own failover for hardware collection, while the TUI retains
+	// these addresses for filtering and display. Omitted when there is just one.
 	IPAddresses []string `json:"ipAddresses"`
 	Port        int      `json:"port"`
 	// LastSeen is when the scanner last WROTE this record — not when anything
@@ -52,6 +56,21 @@ type availableNode struct {
 	ModelsByEngine     map[string][]string `json:"modelsByEngine"`
 	LoadedByEngine     map[string][]string `json:"loadedByEngine"`
 	DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
+	// Info is the broker's latest hardware snapshot for this exact record.
+	// Unverified previews remain display data and cannot establish identity.
+	Info *noderec.NodeInfo `json:"info,omitempty"`
+	// Captured when a snapshot or hardware update arrives, never during a UI tick.
+	infoReceivedAt time.Time
+}
+
+func (n availableNode) nodeKey() string {
+	if n.IdentityVerification == noderec.IdentityUnverified {
+		return n.DiscoveryRecordID
+	}
+	if n.HostUUID != "" {
+		return n.HostUUID
+	}
+	return "name:" + n.Name
 }
 
 // clusterIdentity is this node's principal, from cluster:get-node-id.
@@ -92,21 +111,11 @@ type manualNode struct {
 	Address              string                       `json:"address"`
 	// HostUUID comes from authenticated node-info and can join a verified
 	// manual entry to the same host discovered by IP.
-	HostUUID   string `json:"hostUuid"`
-	OllamaUp   bool   `json:"ollama_up"`
-	LMStudioUp bool   `json:"lmstudio_up"`
-	NodeInfoUp bool   `json:"node_info_up"`
-	// NodeInfoPort is the attempted node-info port. TLSEnabled echoes the
-	// configured TLS port hint; service hardware probes always use mTLS.
-	NodeInfoPort int  `json:"node_info_port"`
-	TLSEnabled   bool `json:"tls_enabled"`
-	// Authenticated hardware readings are available from the manual worker.
-	// The TUI holds no cluster certificate and uses these for manual TLS
-	// configurations rather than polling their TLS endpoints itself.
-	GPUs           []noderec.GPUInfo   `json:"gpus"`
-	CPU            *noderec.CPUInfo    `json:"cpu"`
-	Memory         *noderec.MemoryInfo `json:"memory"`
-	TelemetryValid bool                `json:"telemetryValid"`
+	HostUUID     string `json:"hostUuid"`
+	OllamaUp     bool   `json:"ollama_up"`
+	LMStudioUp   bool   `json:"lmstudio_up"`
+	NodeInfoUp   bool   `json:"node_info_up"`
+	NodeInfoPort int    `json:"node_info_port"`
 }
 
 // answered reports whether any service on the host responded to the worker's

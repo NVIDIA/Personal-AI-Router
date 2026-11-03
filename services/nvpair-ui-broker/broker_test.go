@@ -21,6 +21,49 @@ import (
 	"nvpair-ui-broker/workloadstore"
 )
 
+// A client may subscribe after local hardware has already been collected. Its
+// initial snapshot must include that cached hardware, after the subscription
+// acknowledgment, so the client can render it without waiting for a new sample.
+func TestBrokerDiscoverySubscribe_IncludesCachedLocalHardware(t *testing.T) {
+	var output bytes.Buffer
+	broker := &Broker{codec: NewCodec(&output), store: newDiscoveryStore()}
+	broker.store.Upsert(EnrichedNode{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+	}, sourceScanner)
+	info := noderec.NodeInfo{
+		HostUUID: "self", GPUs: []GPUInfo{{Name: "local GPU"}},
+		CPU: &CPUInfo{Name: "local CPU", Cores: 8}, Memory: &MemoryInfo{TotalBytes: 16384},
+	}
+	_, ok := broker.store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+		Info: info,
+	}, time.Now())
+	require.True(t, ok)
+	requestID := json.RawMessage(`1`)
+
+	broker.handleMessage(&Message{JSONRPC: "2.0", ID: &requestID, Method: "discovery:subscribe"})
+
+	codec := NewCodec(&output)
+	response, err := codec.Read()
+	require.NoError(t, err)
+	require.NotNil(t, response.ID)
+	assert.Equal(t, requestID, *response.ID)
+	assert.Nil(t, response.Error)
+	var subscription SubscriptionResult
+	require.NoError(t, json.Unmarshal(response.Result, &subscription))
+	assert.True(t, subscription.Subscribed)
+
+	baseline, err := codec.Read()
+	require.NoError(t, err)
+	assert.Equal(t, "discovery:nodes-changed", baseline.Method)
+
+	var nodes []AvailableNode
+	require.NoError(t, json.Unmarshal(baseline.Params, &nodes))
+	require.Len(t, nodes, 1)
+	require.NotNil(t, nodes[0].Info)
+	assert.Equal(t, info, *nodes[0].Info)
+}
+
 func TestLocalNodeInfo_PreservesAgeAcrossDiscoveryLockWait(t *testing.T) {
 	broker := &Broker{nodeID: "self"}
 	handler := broker.nodeInfoNotificationHandler(0)
@@ -56,7 +99,7 @@ func TestManualTelemetry_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
 
 // Hold a received notification behind discovery processing, as happens while a
 // manual update waits for proxy replies. This wait must contribute to sample age.
-func holdDiscoveryNotification(t *testing.T, mu *sync.Mutex, notify func()) time.Duration {
+func holdDiscoveryNotification(t *testing.T, mu sync.Locker, notify func()) time.Duration {
 	t.Helper()
 	const minimumWait = 50 * time.Millisecond
 	mu.Lock()
@@ -128,7 +171,7 @@ func TestFanDiscoveryToScheduler_ExcludesUnverifiedDiscoveries(t *testing.T) {
 	broker.store.Upsert(manualToEnriched(manualNodeStatus{
 		ID:      manualID,
 		Address: "192.0.2.30",
-	}), sourceManual)
+	}, time.Now()), sourceManual)
 	// net.Pipe writes wait for a reader, so fanout must run alongside the read
 	// below. The completion channel lets us join the writer before pipe cleanup.
 	done := make(chan struct{})
@@ -180,7 +223,8 @@ func TestClusterTrustChange_DiscardsVerifiedRecordsAndMeasurements(t *testing.T)
 		IdentityVerification: noderec.IdentityPinned,
 		Info:                 noderec.NodeInfo{HostUUID: "peer", ClusterUUID: &principal},
 	}
-	require.True(t, broker.store.AcceptInfo(value))
+	_, infoAccepted := broker.store.AcceptInfo(value, time.Now())
+	require.True(t, infoAccepted)
 
 	clustertrusttest.RemovePeerPin(t, broker.clusterDir, "peer")
 	broker.applyClusterTrustChange()
@@ -191,7 +235,8 @@ func TestClusterTrustChange_DiscardsVerifiedRecordsAndMeasurements(t *testing.T)
 	assert.Empty(t, broker.manualAliasForKey("peer"))
 	assert.Equal(t, "configured", broker.manualAliasForKey("manual:configured"))
 	assert.Equal(t, []noderec.DirectoryNode{candidate}, broker.relayDir.Snapshot(""))
-	assert.False(t, broker.store.AcceptInfo(value))
+	_, infoAccepted = broker.store.AcceptInfo(value, time.Now())
+	assert.False(t, infoAccepted)
 }
 
 func TestClusterTrustChange_PreservesProofsForUnchangedPins(t *testing.T) {

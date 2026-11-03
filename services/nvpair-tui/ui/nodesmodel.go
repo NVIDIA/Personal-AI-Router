@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"time"
 
 	"nvpair-shared/noderec"
 )
@@ -107,8 +108,8 @@ type nodeRow struct {
 	name                 string
 	address              string
 	// addresses is every address the node published, ranked by the node itself
-	// with address first. Anything that dials the node walks this rather than
-	// assuming the first one is reachable from here.
+	// with address first, retained for filtering and display. Workers own
+	// connection attempts and hardware address failover.
 	addresses []string
 	port      int
 
@@ -120,11 +121,9 @@ type nodeRow struct {
 	// merged into this row: the same machine can be added twice, once by
 	// hostname and once by IP. Empty unless the node was added by hand.
 	manualIDs []string
-	// nodeInfoTLS marks a manual TLS configuration. The TUI uses the worker's
-	// verified reading for this endpoint because the TUI does not hold the
-	// cluster certificate needed for a TLS request.
-	nodeInfoTLS     bool
-	probedTelemetry *nodeTelemetry
+	// Hardware comes from the broker for every source, including manual entries.
+	info           *noderec.NodeInfo
+	infoReceivedAt time.Time
 
 	models             []string
 	modelsByEngine     map[string][]string
@@ -165,14 +164,7 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 	}
 
 	for _, d := range in.discovered {
-		key := d.HostUUID
-		if d.IdentityVerification == noderec.IdentityUnverified {
-			key = d.DiscoveryRecordID
-		}
-		if key == "" {
-			key = "name:" + d.Name
-		}
-		row := get(key)
+		row := get(d.nodeKey())
 		row.identityVerification = d.IdentityVerification
 		row.name = d.Name
 		row.address = d.IPAddress
@@ -182,6 +174,8 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 		row.modelsByEngine = d.ModelsByEngine
 		row.loadedByEngine = d.LoadedByEngine
 		row.downloadedByEngine = d.DownloadedByEngine
+		row.info = d.Info
+		row.infoReceivedAt = d.infoReceivedAt
 		row.presence = discoveredPresence(d)
 		switch {
 		case d.Trusted && d.IdentityVerification != noderec.IdentityUnverified:
@@ -229,15 +223,6 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 		// not already given a port to.
 		if row.port == 0 {
 			row.port = m.NodeInfoPort
-		}
-		if m.TLSEnabled {
-			row.nodeInfoTLS = true
-			if m.IdentityVerification == noderec.IdentityPinned && m.NodeInfoUp {
-				row.probedTelemetry = &nodeTelemetry{
-					GPUs: m.GPUs, CPU: m.CPU, Memory: m.Memory,
-					TelemetryValid: m.TelemetryValid,
-				}
-			}
 		}
 		// A probe is direct evidence and outranks discovery silence: a node on
 		// a network that filters multicast is reachable but never announced.
@@ -327,14 +312,6 @@ func matchManual(byKey map[string]*nodeRow, m manualNode) *nodeRow {
 	return byKey["manual:"+m.ID]
 }
 
-// hasHostIdentity reports whether a row key is a machine's own UUID, rather
-// than a stand-in for a node that has not reported one: a discovered node
-// keyed by name, or a manual entry keyed by its id. mergeNodes builds both
-// stand-ins; everything else it keys by UUID.
-func hasHostIdentity(key string) bool {
-	return !strings.HasPrefix(key, "name:") && !strings.HasPrefix(key, "manual:")
-}
-
 // normalizeHost reduces an address to a comparable host: trimmed, lowercased,
 // and without a port.
 func normalizeHost(address string) string {
@@ -361,8 +338,8 @@ func normalizeHost(address string) string {
 // not disagree about whether a machine is up. Its rule is
 // `anyEngineUp(node) || node.nodeInfoUp`, where nodeInfoUp begins as
 // `Boolean(ipAddress) && port > 0` from the same snapshot and goes false only
-// when the broker drops the node. Its own /v1/node-info poll never demotes a
-// node — a failed poll keeps the last metrics and backs off.
+// when the broker drops the node. Hardware refreshes are independently owned by
+// the services, and their failure does not demote a node in either client.
 func discoveredPresence(n availableNode) nodePresence {
 	if n.IPAddress == "" || n.Port <= 0 {
 		return presenceOffline

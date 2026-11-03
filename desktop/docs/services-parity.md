@@ -20,7 +20,7 @@ history.
 | -------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                                                                                                               |
 | Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                                                                                                          |
-| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                                                                                                          |
+| Node telemetry             | Broker snapshots and pushes    | Workers supply owned local measurements, pinned peer measurements, and unverified previews to desktop and TUI                                 |
 | Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                                                                                                             |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                                                                                                                   |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                                                                                                                 |
@@ -83,13 +83,14 @@ broker. The bridge:
 at startup and resolved as soon as the broker is ready, so self is identified by
 the same UUID key rather than a hostname guess.
 
-The broker's `discovery:node-info` stream supplies full hardware snapshots for
-local and pinned records, matched to each row's current discovery record ID and
-verification. Electron also polls public HTTP `/v1/node-info` for CPU, memory,
-GPU, and VRAM displays, including unverified previews. Both paths update hardware
-fields only. A public response for a verified row must include its matching
-`hostUuid`; unverified previews may omit it. Public readings never change
-identity, trust, service addresses, models, routing, or scheduling inputs.
+The broker supplies full hardware in optional `AvailableNode.info` snapshots and
+live `discovery:node-info` updates, matched to each row's current discovery record
+ID and verification. This covers local IPC measurements, pinned peer readings,
+and sanitized public previews for unverified discoveries or manual entries.
+Public previews update hardware display fields only and never change identity,
+trust, service addresses, models, liveness, routing, or scheduling. Broker caches
+preserve the original sample's age and withdraw hardware when its source,
+endpoint, or proof is invalidated.
 
 The contract does not report a remote node's operating system. The local node's
 OS is known from the running process; remote nodes fall back to a placeholder
@@ -137,7 +138,7 @@ LAN-reachable. Each node's proxy exposes two personalities on one listener: a
 loopback-only plaintext path for local clients, and a LAN ingress gated by
 cluster mTLS that forwards trusted-peer requests to the loopback engine. Because
 the engine port is private, discovery advertises the **promoted proxy port** for
-`ol`/`lm`/`lc`, and the peer's real engine port is knowable only from
+`ol`/`lm`/`lc`/`vl`, and the peer's real engine port is knowable only from
 authoritative `engine:remote-get-installed` facts.
 
 Personal AI Router consequences (all reflection, no security implementation):
@@ -542,7 +543,6 @@ provide an equivalent client-facing contract:
 
 | Responsibility                                              | Location                                         |
 | ----------------------------------------------------------- | ------------------------------------------------ |
-| Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                            |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
 | Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |
@@ -551,12 +551,6 @@ provide an equivalent client-facing contract:
 
 These are current integration boundaries. Do not add compatibility shims or
 duplicate backend services around them.
-
-The last row is a display-side collapse, not a directory decision. The scanner
-treats a matching address, hostname, and `lastSeen` gap as grounds to ask the
-machine who it is, and evicts only on a node-info identity mismatch; the bridge
-has no such proof and hides the row on the suspicion alone. It must never be
-extended into anything a consumer reads as an eviction.
 
 ## Unused backend methods
 

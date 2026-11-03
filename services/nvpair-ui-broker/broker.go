@@ -64,8 +64,8 @@ type VersionResult struct {
 // AvailableNode is the per-node wire format used both as the array
 // element of the discovery:get-nodes response and as each element of
 // the discovery:nodes-changed notification payload. It is intentionally
-// narrower than the rich EnrichedNode the broker holds internally —
-// only the fields the external schema requires. JSON keys are
+// narrower than the internal EnrichedNode and includes the latest hardware
+// observation with its sample age. JSON keys are
 // camelCase here because the external consumer's schema demands it;
 // the rest of the NVPAIR codebase uses snake_case, so this is the
 // deliberate camelCase island at the broker's outer boundary.
@@ -124,6 +124,9 @@ type AvailableNode struct {
 	// inventory was read and is empty; a missing key means it was not read.
 	// Omitted when no engine reports one.
 	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
+	// Info is the latest hardware observation for this record. Unverified
+	// records carry display-only public previews, never scheduling evidence.
+	Info *noderec.NodeInfo `json:"info,omitempty"`
 }
 
 // GetNodesResult is the response to "discovery:get-nodes". Wrapped in an
@@ -346,20 +349,12 @@ type Broker struct {
 	engineRelayMu    sync.Mutex
 	engineRelaySubID int
 
-	// manualMu guards manualNodeKeys, mapping each manual node's id to the
-	// discovery-store key it currently occupies — its authenticated hostUuid,
-	// or its independent manual configuration key. Tracked
-	// per manual id so the broker can (a) re-key the store entry when a manual
-	// node's node-info first reveals its stable UUID, and (b) evict the right
-	// key on removal or a manual-nodes crash — since the store key is no longer
-	// the manual id once the UUID is known. Several manual aliases (distinct
-	// names/addresses for one machine) can map to the same key; the store/proxy
-	// manual claim is dropped only once the last alias for a key is gone, and
-	// when an alias that a key was currently projecting from leaves, a surviving
-	// alias is reprojected from manualNodeStatuses (its last-seen payload) so the
-	// removed alias's address/models don't linger until the next accepted probe.
+	// manualMu guards manualNodeStatuses, indexed by manual entry ID. Each entry
+	// retains its discovery-store key, status, and original receipt time.
+	// Multiple aliases can share a verified host key. Removing or rekeying an
+	// alias reprojects that key from a surviving alias, preserving its sample age;
+	// only the final alias releases the manual store/proxy claim.
 	manualMu           sync.Mutex
-	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
 	manualPersistMu    sync.Mutex
 	manualMutationMu   sync.Mutex
@@ -450,7 +445,6 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		telemetry:             newTelemetryCache(),
 		relayDir:              relay.NewDirectory(),
 		regCache:              relay.NewRegistrationCache(),
-		manualNodeKeys:        make(map[string]string),
 		manualNodeStatuses:    make(map[string]manualNodeStatusEntry),
 		workloads:             workloadstore.New(),
 		ollamaPortReady:       make(chan struct{}),
@@ -1671,13 +1665,12 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 
 // upsertManualNodeAt retains worker receipt time across discovery processing.
 func (b *Broker) upsertManualNodeAt(s manualNodeStatus, receivedAt time.Time) {
-	en := manualToEnriched(s)
+	en := manualToEnriched(s, receivedAt)
 	key := en.storeKey()
 
 	b.manualMu.Lock()
-	oldKey, existed := b.manualNodeKeys[s.ID]
-	b.manualNodeKeys[s.ID] = key
-	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
+	previous, existed := b.manualNodeStatuses[s.ID]
+	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{key: key, status: s, receivedAt: receivedAt}
 	b.manualMu.Unlock()
 
 	// Discard the old measurement before the replacement record becomes visible
@@ -1696,10 +1689,10 @@ func (b *Broker) upsertManualNodeAt(s manualNodeStatus, receivedAt time.Time) {
 	// pulled back out. No-op for a proxy the broker doesn't supervise.
 	b.bridgeManualNode(s, key)
 
-	if existed && oldKey != key {
-		// This alias moved off oldKey: refresh oldKey from a surviving alias, or
+	if existed && previous.key != key {
+		// This alias changed keys: refresh its old key from a surviving alias, or
 		// release its store/proxy claim if this was its last owner.
-		b.reprojectOrRelease(oldKey)
+		b.reprojectOrRelease(previous.key)
 	}
 }
 
@@ -1710,14 +1703,13 @@ func (b *Broker) upsertManualNodeAt(s manualNodeStatus, receivedAt time.Time) {
 // Only the final alias's removal drops the store/proxy claim.
 func (b *Broker) removeManualNode(id string) {
 	b.manualMu.Lock()
-	key, ok := b.manualNodeKeys[id]
-	delete(b.manualNodeKeys, id)
+	entry, ok := b.manualNodeStatuses[id]
 	delete(b.manualNodeStatuses, id)
 	b.manualMu.Unlock()
 	if !ok {
 		return
 	}
-	b.reprojectOrRelease(key)
+	b.reprojectOrRelease(entry.key)
 }
 
 // reprojectOrRelease refreshes or drops a key's manual claim after an alias
@@ -1730,7 +1722,7 @@ func (b *Broker) reprojectOrRelease(key string) {
 		return
 	}
 	b.manualMu.Lock()
-	survivor, ok := b.survivingAliasLocked(key)
+	_, survivor, ok := b.survivingAliasLocked(key)
 	b.manualMu.Unlock()
 	if ok {
 		if b.clusterDir != "" && survivor.status.IdentityVerification == noderec.IdentityPinned {
@@ -1741,7 +1733,7 @@ func (b *Broker) reprojectOrRelease(key string) {
 				return
 			}
 		}
-		b.store.Upsert(manualToEnriched(survivor.status), sourceManual)
+		b.store.Upsert(manualToEnriched(survivor.status, survivor.receivedAt), sourceManual)
 		b.bridgeManualNode(survivor.status, key)
 		if survivor.status.IdentityVerification == noderec.IdentityPinned {
 			b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
@@ -1757,20 +1749,20 @@ func (b *Broker) reprojectOrRelease(key string) {
 	}
 }
 
-// survivingAliasLocked returns the last-seen status of a manual alias still
+// survivingAliasLocked returns the ID and last-seen status of a manual alias still
 // resolving to key, picking the lexicographically smallest alias id for a stable
 // choice. Callers must hold manualMu.
-func (b *Broker) survivingAliasLocked(key string) (manualNodeStatusEntry, bool) {
+func (b *Broker) survivingAliasLocked(key string) (string, manualNodeStatusEntry, bool) {
 	best := ""
-	for id, k := range b.manualNodeKeys {
-		if k == key && (best == "" || id < best) {
+	for id, entry := range b.manualNodeStatuses {
+		if entry.key == key && (best == "" || id < best) {
 			best = id
 		}
 	}
 	if best == "" {
-		return manualNodeStatusEntry{}, false
+		return "", manualNodeStatusEntry{}, false
 	}
-	return b.manualNodeStatuses[best], true
+	return best, b.manualNodeStatuses[best], true
 }
 
 // clearManualNodesState is the manual-nodes supervisor's clearHandle: on a
@@ -1783,12 +1775,12 @@ func (b *Broker) clearManualNodesState() {
 	b.manualGeneration++
 	b.setManualNodes(nil)
 	b.manualMu.Lock()
-	keys := b.manualNodeKeys
-	b.manualNodeKeys = make(map[string]string)
+	entries := b.manualNodeStatuses
 	b.manualNodeStatuses = make(map[string]manualNodeStatusEntry)
 	b.manualMu.Unlock()
-	seen := make(map[string]bool, len(keys))
-	for _, key := range keys {
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		key := entry.key
 		// Aliases can share a key; drop each unique claim once.
 		if seen[key] {
 			continue
@@ -3376,11 +3368,17 @@ func (b *Broker) handleMessage(msg *Message) {
 		}
 
 	case "discovery:get-nodes":
+		b.discoveryMu.Lock()
+		defer b.discoveryMu.Unlock()
 		if err := b.codec.Respond(msg.ID, GetNodesResult{Nodes: b.store.Snapshot()}); err != nil {
 			log.Printf("failed to respond to discovery:get-nodes: %v", err)
 		}
 
 	case "discovery:subscribe":
+		// Serialize the baseline with hardware pushes so an older snapshot
+		// cannot follow a newer sample and overwrite it in the client.
+		b.discoveryMu.Lock()
+		defer b.discoveryMu.Unlock()
 		b.subMu.Lock()
 		wasSubscribed := b.subscribed
 		b.subscribed = true

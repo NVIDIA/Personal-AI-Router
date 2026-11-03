@@ -89,18 +89,13 @@ type daemon struct {
 	// localInfo is supplied only by the owned worker IPC path, under selfMu.
 	localInfo *noderec.NodeInfo
 
-	// infoMu guards peer read timestamps and outage state.
-	infoMu sync.Mutex
-	// lastInfoAt records accepted node-info reads for authenticated peer liveness.
-	lastInfoAt map[string]time.Time
+	// infoMu guards accepted-read timestamps and outage transitions per peer.
+	infoMu         sync.Mutex
+	nodeInfoStatus map[string]peerInfoStatus
 	// localModels preserves owned inventory when publication rebuilds the local
 	// record, including after its UUID changes. Guarded by peerMu. Remote models
 	// stay in the directory.
 	localModels modelInventory
-	// nodeInfoDown holds the nodes whose last node-info enrichment failed, so
-	// the outage is reported when it starts and when it ends rather than once
-	// per sweep. Guarded by infoMu; the directory retains the last accepted inventory.
-	nodeInfoDown map[string]bool
 
 	// activityMu guards lastActivityAt, when each peer was last seen returning
 	// inference response bytes to one of this node's proxies (keyed by hostUuid,
@@ -121,6 +116,10 @@ type daemon struct {
 	// telemetryRetries owns one active telemetry attempt per node and suppresses
 	// repeated remote attempts after failures at the same node-info target.
 	telemetryRetries telemetryRetryGate
+	// Public hardware previews have independent permits, retry timing, and address
+	// memory so unauthenticated endpoints cannot delay verified telemetry.
+	previewRetries telemetryRetryGate
+	previewHosts   hostMemory
 
 	// observedMu guards observed, this host's own addresses that remote peers
 	// have actually connected to. nvpair-node-info sees those connections and the
@@ -129,6 +128,11 @@ type daemon struct {
 	// address works from somewhere other than this machine.
 	observedMu sync.Mutex
 	observed   map[string]bool
+}
+
+type peerInfoStatus struct {
+	lastAcceptedAt time.Time
+	down           bool
 }
 
 // nodeInfoFetchTimeout bounds authenticated node-info requests after origin queuing.
@@ -330,8 +334,7 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 		nodeInfoClients: newNodeInfoClients(mesh),
 		candidates:      make(map[string]*discoveryCandidate),
 		authWake:        make(chan struct{}, 1),
-		lastInfoAt:      make(map[string]time.Time),
-		nodeInfoDown:    make(map[string]bool),
+		nodeInfoStatus:  make(map[string]peerInfoStatus),
 		lastActivityAt:  make(map[string]time.Time),
 	}
 	// Track connection candidates independently of identity claims. Promoted
@@ -376,6 +379,7 @@ func (d *daemon) run(ctx context.Context) {
 	go d.refreshPeersLoop(ctx)
 	go d.authenticateCandidatesLoop(ctx)
 	go d.refreshTelemetryLoop(ctx)
+	go d.refreshHardwarePreviewsLoop(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -542,12 +546,8 @@ func (d *daemon) readPeerInfo(ctx context.Context, node noderec.DirectoryNode) (
 		if resp.StatusCode != http.StatusOK || resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
 			return peerInfoSample{}, false
 		}
-		var info NodeInfoResponse
-		body, err := io.ReadAll(io.LimitReader(resp.Body, nodeInfoResponseDrainLimit+1))
-		if err != nil || len(body) > nodeInfoResponseDrainLimit {
-			return peerInfoSample{}, false
-		}
-		if err := json.Unmarshal(body, &info); err != nil {
+		info, err := noderec.DecodeNodeInfo(resp.Body)
+		if err != nil {
 			return peerInfoSample{}, false
 		}
 		if info.HostUUID != principal || info.ClusterUUID == nil || *info.ClusterUUID != principal || !validPeerMetadata(info.Peer) {
@@ -610,10 +610,12 @@ func (d *daemon) currentPeerResult(target noderec.DirectoryNode, sample peerInfo
 func (d *daemon) recordPeerInfoSuccess(uuid string) {
 	d.infoMu.Lock()
 	defer d.infoMu.Unlock()
-	if d.lastInfoAt == nil {
-		d.lastInfoAt = make(map[string]time.Time)
+	if d.nodeInfoStatus == nil {
+		d.nodeInfoStatus = make(map[string]peerInfoStatus)
 	}
-	d.lastInfoAt[uuid] = time.Now()
+	status := d.nodeInfoStatus[uuid]
+	status.lastAcceptedAt = time.Now()
+	d.nodeInfoStatus[uuid] = status
 }
 
 // publishPeerInfo stores authenticated inventory and emits directory changes.
@@ -634,6 +636,7 @@ func (d *daemon) publishPeerInfo(candidateID string, sample peerInfoSample) {
 	d.recordPeerInfoSuccess(info.HostUUID)
 	removed, discovered, changed := d.dir.promote(candidateID, node)
 	if removed.DiscoveryRecordID != "" {
+		d.forgetHardwarePreview(removed.DiscoveryRecordID)
 		d.emit(noderec.NotifyNodeRemoved, removed)
 	}
 	if changed {
@@ -699,6 +702,7 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		candidate := d.candidates[node.DiscoveryRecordID]
 		delete(d.candidates, node.DiscoveryRecordID)
 		d.authRetries.forget(node.DiscoveryRecordID)
+		d.forgetHardwarePreview(node.DiscoveryRecordID)
 		if d.dir.remove(node.DiscoveryRecordID) {
 			d.emit(noderec.NotifyNodeRemoved, node)
 		}
@@ -1139,7 +1143,7 @@ func (d *daemon) peerReachable(uuid string) bool {
 		return false
 	}
 	d.infoMu.Lock()
-	at := d.lastInfoAt[node.HostUUID]
+	at := d.nodeInfoStatus[node.HostUUID].lastAcceptedAt
 	d.infoMu.Unlock()
 	if !at.IsZero() && time.Since(at) < reachableInfoFreshness {
 		return true
@@ -1154,15 +1158,13 @@ func (d *daemon) peerReachable(uuid string) bool {
 // leave the last accepted inventory in place while scheduling measurements age.
 func (d *daemon) noteNodeInfo(hostUUID, endpoint string, ok bool) {
 	d.infoMu.Lock()
-	was := d.nodeInfoDown[hostUUID]
-	if ok {
-		delete(d.nodeInfoDown, hostUUID)
-	} else {
-		if d.nodeInfoDown == nil {
-			d.nodeInfoDown = make(map[string]bool)
-		}
-		d.nodeInfoDown[hostUUID] = true
+	status := d.nodeInfoStatus[hostUUID]
+	was := status.down
+	status.down = !ok
+	if d.nodeInfoStatus == nil {
+		d.nodeInfoStatus = make(map[string]peerInfoStatus)
 	}
+	d.nodeInfoStatus[hostUUID] = status
 	d.infoMu.Unlock()
 
 	switch {
@@ -1311,16 +1313,6 @@ func (d *daemon) runTelemetryLoop(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// refreshTelemetryOnce synchronously dispatches one telemetry pass. Production
-// uses runTelemetryLoop's persistent semaphore and workers; this wrapper keeps
-// focused callers and tests able to wait for the pass they requested.
-func (d *daemon) refreshTelemetryOnce(ctx context.Context) {
-	sem := make(chan struct{}, telemetryRefreshConcurrency)
-	var workers sync.WaitGroup
-	d.dispatchTelemetry(ctx, time.Now(), sem, &workers)
-	workers.Wait()
-}
-
 // dispatchTelemetry starts every due node without waiting for requests already
 // in flight. sem and workers belong to the enclosing loop so work remains
 // bounded and drainable across ticks.
@@ -1335,10 +1327,7 @@ func (d *daemon) dispatchTelemetry(
 		self = d.reg.record().HostUUID
 	}
 	for _, n := range d.dir.snapshot(noderec.ServiceNodeInfo) {
-		ni, ok := n.Services[noderec.ServiceNodeInfo]
-		if !ok {
-			continue
-		}
+		ni := n.Services[noderec.ServiceNodeInfo]
 		if n.HostUUID == self || n.IdentityVerification != noderec.IdentityPinned {
 			continue // local telemetry arrives through discovery:local-node-info
 		}
@@ -1413,7 +1402,7 @@ func (d *daemon) expireRetainedPeer(target noderec.DirectoryNode) {
 		return
 	}
 	d.infoMu.Lock()
-	at := d.lastInfoAt[peer.HostUUID]
+	at := d.nodeInfoStatus[peer.HostUUID].lastAcceptedAt
 	d.infoMu.Unlock()
 	if time.Since(at) < retainedPeerGrace {
 		return
@@ -1510,8 +1499,7 @@ func (d *daemon) forget(hostUUID string) {
 	}
 	d.enrichHosts.forget(hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager})
 	d.infoMu.Lock()
-	delete(d.lastInfoAt, hostUUID)
-	delete(d.nodeInfoDown, hostUUID)
+	delete(d.nodeInfoStatus, hostUUID)
 	d.infoMu.Unlock()
 	d.activityMu.Lock()
 	delete(d.lastActivityAt, hostUUID)

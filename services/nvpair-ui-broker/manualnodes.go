@@ -44,10 +44,9 @@ type manualNodeStatus struct {
 	Memory               *MemoryInfo                  `json:"memory"`
 	TelemetryValid       bool                         `json:"telemetryValid"`
 	MSSince              int64                        `json:"msSince"`
-	// HostUUID is the remote's stable per-host identity, learned from its
-	// node-info /v1/node-info. It lets a manual node key by the same permanent
-	// identity as mDNS-discovered nodes (and dedup with itself when the same
-	// machine is also discovered). Empty until the node-info probe succeeds.
+	Preview              *noderec.NodeInfo            `json:"preview,omitempty"`
+	// HostUUID is the authenticated remote identity shared with its scanner
+	// record. It stays empty until a pinned hardware probe succeeds.
 	HostUUID string `json:"hostUuid,omitempty"`
 }
 
@@ -58,10 +57,12 @@ func (s manualNodeStatus) withoutVerification() manualNodeStatus {
 	s.DiscoveryRecordID, s.HostUUID = "", ""
 	s.GPUs, s.CPU, s.Memory = nil, nil, nil
 	s.TelemetryValid, s.MSSince = false, 0
+	s.Preview = nil
 	return s
 }
 
 type manualNodeStatusEntry struct {
+	key        string
 	status     manualNodeStatus
 	receivedAt time.Time
 }
@@ -213,13 +214,8 @@ func (b *Broker) replayPersistedManualNodes(worker *rpcWorker) {
 func (b *Broker) manualAliasForKey(key string) string {
 	b.manualMu.Lock()
 	defer b.manualMu.Unlock()
-	best := ""
-	for alias, nodeKey := range b.manualNodeKeys {
-		if nodeKey == key && (best == "" || alias < best) {
-			best = alias
-		}
-	}
-	return best
+	id, _, _ := b.survivingAliasLocked(key)
+	return id
 }
 
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {
@@ -240,11 +236,12 @@ func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeT
 // manualToEnriched projects a manual node's status onto the EnrichedNode
 // the discovery store holds, so manual nodes share the single
 // discovery:get-nodes / discovery:nodes-changed snapshot with mDNS nodes.
-// Port is the node-info HTTPS port the prober attempted (mirroring the SRV
-// port the scanner records for mDNS nodes); the user-entered address
+// Port is the node-info HTTPS port the prober attempted; scanner uses the
+// advertised ni port for discovered nodes. The user-entered address
 // becomes the node's host/address so the snapshot's ipAddress projection
 // can resolve it when the address is an IP literal.
-func manualToEnriched(s manualNodeStatus) EnrichedNode {
+// receivedAt stays unchanged when a cached status is projected again.
+func manualToEnriched(s manualNodeStatus, receivedAt time.Time) EnrichedNode {
 	// Only a pinned response may join a canonical host. The explicit manual
 	// engine target otherwise uses a separate key shared with its proxy route.
 	// Treat the worker's ID as opaque: an unnamed "1.2.3.4" entry already has
@@ -267,11 +264,22 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 	}
 	if s.IdentityVerification == noderec.IdentityPinned {
 		en.DiscoveryRecordID = s.DiscoveryRecordID
-		en.GPUs, en.CPU, en.Memory = s.GPUs, s.CPU, s.Memory
 		en.Trusted = true
 		en.Clustered = true
+		principal := s.HostUUID
+		en.Info = &noderec.NodeInfo{
+			HostUUID: s.HostUUID, ClusterUUID: &principal,
+			GPUs: s.GPUs, CPU: s.CPU, Memory: s.Memory,
+			TelemetryValid: s.TelemetryValid, MSSince: s.MSSince,
+		}
+		en.infoReceivedAt = receivedAt
 	} else {
 		en.IdentityVerification = noderec.IdentityUnverified
+		if s.Preview != nil {
+			preview := *s.Preview
+			preview.HostUUID, preview.ClusterUUID, preview.Peer = "", nil, nil
+			en.Info, en.infoReceivedAt = &preview, receivedAt
+		}
 	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}

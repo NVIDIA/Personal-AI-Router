@@ -12,10 +12,8 @@ import { useConnectionStore } from '@/ui/stores/connection.store'
  * Discovered LAN peers that can be invited: everything the broker has discovered
  * minus current cluster members minus self.
  *
- * This is the single source for both the Add Node modal and the cluster settings
- * "Available Nodes to Add" list, so the two can never disagree (the modal used
- * to filter against the overview node store, which is membership-scoped, leaving
- * it perpetually empty).
+ * The Add Node modal and cluster settings share this filter so invite
+ * eligibility uses the same discovery and membership data in both places.
  */
 export function useInvitablePeers(): AvailableNode[] {
     const discoveredNodes = useDiscoveredNodesStore(useShallow(state => state.nodes))

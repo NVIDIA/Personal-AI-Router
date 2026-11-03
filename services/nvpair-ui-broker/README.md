@@ -60,8 +60,14 @@ Unverified discoveries retain independent `discoveryRecordId` keys throughout
 the store and relay. They cannot overwrite a verified host, clear its telemetry,
 fail its workloads, or enter the scheduler's node universe. Explicit manual
 engine targets keep their own operational keys until authenticated. The broker
-forwards scanner `discovery:node-info` hardware snapshots only when
-their record identity matches the current verified scanner record.
+forwards scanner `discovery:node-info` hardware snapshots when their identity
+and verification match the current scanner record.
+
+When scanner and manual records describe the same verified host, scanner supplies
+identity, addresses, models, and hardware. If its hardware is missing, display
+snapshots may use manual hardware with matching trust and verification. The
+sample keeps its original age; scheduling telemetry still uses its own source
+selection.
 
 ### Supervision & recovery
 
@@ -85,7 +91,8 @@ Local scanner directory events marked `identityVerification:local` supply
 complete registry metadata replaces the prior snapshot when names, addresses,
 membership, or registrations change, and is replayed after node-info restarts.
 Remote discovery claims cannot populate this metadata. These links are internal
-worker IPC; desktop and TUI continue using public HTTP for hardware displays.
+worker IPC. Scanner emits full local hardware back to the broker, which exposes
+it to desktop and TUI in discovery snapshots and live hardware updates.
 
 Verified record IDs bind scanner and manual proofs to current pins and local
 membership. Trust changes withdraw affected records, full hardware snapshots,
@@ -120,7 +127,7 @@ Logs go to **stderr** (shared `applog` format, same as every other NVPAIR binary
 
 On startup — **before** emitting `app:ready` — the broker spawns the scanner and (when available) node-info, `nvpair-proxy`, the workload-manager, and the cluster-manager as child processes over stdio. The proxy is spawned up front but doesn't gate `app:ready` — each of its facades announces its listen port asynchronously (see below). None of the auxiliary workers gate `app:ready`.
 
-**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by verified host identity or independent discovery record identity. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`lc` from the engine poller) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
+**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by verified host identity or independent discovery record identity. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. Raw directory-change notifications are not forwarded as-is. Scanner polls healthy verified node-info endpoints over pinned mTLS on a staggered two-second cadence, backs failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations for internal scheduling plus full `discovery:node-info` client hardware updates. A separate bounded scanner loop collects public previews for unverified records. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`lc`/`vl` from the engine poller) with the daemon over the same link, so the daemon advertises them all in one `_nvpair-node` record.
 
 **`nvpair-node-info`** serves public display HTTP and peer node inventory over
 pinned mTLS on its registered `ni` port. The broker passes its cluster directory and host UUID,
@@ -133,7 +140,7 @@ Ollama (`GET /`), LM Studio (`GET /v1/models`), llama.cpp (`GET /health`), and v
 at their configured backend ports and reconciles this node's engine registration
 with the scanner daemon:
 
-- engine **up** and facade **ready** → register `ol` / `lm` / `lc` at the
+- engine **up** and facade **ready** → register `ol` / `lm` / `lc` / `vl` at the
   promoted facade port, never the private backend port;
 - engine **down** → unregister it.
 
@@ -178,7 +185,12 @@ forwarded to that engine's facade and the response relayed straight back, and
 every facade notification is re-emitted to subscribed clients under the same
 component namespace.
 
-Client namespaces are unchanged by the process collapse, but the wire inside is not. Because one process holds every facade, a message on that link carries the engine it concerns: the client's `ollama-proxy:` prefix comes off and a bare `ollama:` facade address goes on. The two are not interchangeable — `ollama-proxy:` is how a client addresses the component, `ollama:` is how a message addresses a facade inside the process — so the relay is a translation between them rather than a strip. Process-scoped methods (`log/set-level`, the scheduler's `node/set-priority`) carry no address, and `facade/enable` names its engine in the payload because it runs before that facade exists.
+Client requests use component namespaces such as `ollama-proxy:`. The broker
+translates that prefix into the `ollama:` facade address on the proxy process's
+worker link. Each worker-link message carries the engine it concerns.
+Process-scoped methods (`log/set-level`, the scheduler's `node/set-priority`)
+carry no address, and `facade/enable` names its engine in the payload because it
+runs before that facade exists.
 
 Two classes of proxy notification are **not** re-emitted under any
 `<engine>-proxy:` namespace, because neither is a proxy control-plane event:
@@ -266,10 +278,32 @@ not establish authenticated endpoint ownership.
 A few semantics worth knowing:
 
 - **Always the full snapshot, never a diff.** Replace your local list on every event.
+- **Hardware baseline.** Optional `info` carries the full latest hardware for
+  that record, with source validity and elapsed sample age. Local data comes
+  from owned IPC, paired data from pinned mTLS, and unverified previews from
+  separate worker HTTP reads. Missing `info` clears previous hardware. Live
+  `discovery:node-info` updates follow the same record/provenance contract.
 - **A baseline is emitted on subscribe.** The first `discovery:nodes-changed` after a fresh `discovery:subscribe` carries the current snapshot (possibly an empty array), sent right after the subscribe response. Every later event corresponds to a real store mutation. (`discovery:get-nodes` remains available for an on-demand snapshot at any time.)
-- **Fires on `lastSeen`-only changes too.** A periodic re-discovery that produces an otherwise byte-identical record still bumps `lastSeen`, which is a genuine freshness signal worth surfacing.
+- **`lastSeen` is a record-change time.** It is not a hardware sample timestamp
+  or an independent liveness verdict. Hardware validity and age live in `info`.
 - **Empty array is a valid payload.** If every previously-known node ages out, you'll get a `discovery:nodes-changed` with `"params": []`.
 - **Best-effort delivery.** The broker tries the notification once per mutation; transient write errors are logged but not retried.
+
+#### `discovery:node-info`
+
+Full hardware updates carry `{discoveryRecordId, hostUuid, clusterUuid?,
+identityVerification, info}`. Clients apply them only to the matching current
+record and verification. Local and pinned records also require matching hardware
+host identity. Unverified previews are keyed by discovery record ID and have
+their response `info.hostUuid`, `info.clusterUuid`, and `info.peer` stripped.
+They cannot change a row's identity, trust, endpoints, models, routing, or
+scheduling. Manual hardware uses the same client contract.
+
+The broker retains source observations and receipt times so fresh subscribers
+and on-demand queries see the latest accepted hardware. Reads and replay add
+elapsed cache time without reducing sample age. Source removal, proof changes,
+worker replacement, and endpoint replacement withdraw the affected hardware.
+The full `info` payload is omitted from internal scheduling snapshots.
 
 #### `ollama-proxy:<event>`
 
@@ -369,20 +403,27 @@ Field-by-field:
 | Field | Type | Source |
 |---|---|---|
 | `id` | string | the node's mDNS instance name (its hostname) from the `_nvpair-node` record |
+| `hostUuid` | string | verified host identity for local/pinned rows, or an advertised claim for unverified discoveries |
+| `discoveryRecordId` | string | opaque source record identity, independent of an unverified UUID claim |
+| `identityVerification` | string | `local`, `pinned`, or `unverified` |
 | `name` | string | Currently mirrors `id`; will diverge once a node can advertise a human-readable name. |
 | `ipAddress` | string | the node's authoritative `ip=` (else the best-ranked advertised address); empty string when none is usable. |
 | `port` | number | the node's `ni` (node-info) port from its `_nvpair-node` TXT, typically `14318`. |
 | `lastSeen` | number | **Unix seconds**. Updated on every `discovery:node-discovered` / `discovery:node-updated` event the broker receives from the daemon; not refreshed by `discovery:get-nodes` itself (a pure read). |
-| `trusted` | bool | whether this node is a paired cluster peer (the daemon holds a pin for its `cluster-uuid`); false for non-cluster/unknown nodes. |
+| `trusted` | bool | whether the pinned peer's authenticated record still has current approval; an advertised UUID or saved pin alone cannot establish this |
 | `clustered` | bool | whether this node belongs to some cluster (it advertises a `cluster-uuid`), independent of whether we're paired with it (`trusted`). A client uses it to suppress a cluster invite that an already-clustered peer would reject. Omitted (false) for standalone/unknown nodes. |
 | `models` | string[] | the node's available model names, enriched by the daemon from the node's engine-manager `em` endpoint (`GET /v1/models`). Omitted when the node advertises no engine-manager or no engine is running. |
 | `modelsByEngine` | object | the same models attributed to the engine that serves each (keyed by engine name, e.g. `ollama` / `lmstudio`). Additive alongside the flat `models` union. A present engine key with `[]` means its inventory was successfully queried and is empty; a missing key means it was not running/queryable. Omitted when no engine inventory was successfully reported. |
 | `loadedByEngine` | object | the models currently **loaded in memory** for each engine (normally a subset of `modelsByEngine`), keyed by engine name. Enriched from the peer's `loadedByEngine`. An engine key with an empty list means "running, nothing loaded"; a missing key means loaded state wasn't reported. Omitted when no engine reports loaded state. |
 | `downloadedByEngine` | object | every model an engine can load, for an engine that advertises only the model it is serving (vLLM, whose `modelsByEngine` entry is just that served name). Reported even while the engine is stopped, so a remote model manager keeps its Load and Delete rows; its `loadedByEngine` entry names models the same way. An engine key with an empty list means the inventory was read and is empty; a missing key means it was not read. Omitted when no engine reports one. |
+| `info` | object, optional | full `noderec.NodeInfo` hardware snapshot, including `GPUs`, optional `cpu`/`memory`, `telemetryValid`, and `msSince`; unverified previews are sanitized display data |
 
 A node that the scanner reports as removed is deleted from the snapshot; `lastSeen` is not preserved for removed nodes. The response is wrapped in `{nodes: [...]}` (rather than a bare array) so we can grow summary fields later without breaking clients. An empty list is a normal early-startup state, not an error.
 
-The broker also stores the scanner's richer per-node payload internally (`host`, all `addresses`, `txt`, `gpus`, `cpu`, `memory`); that data isn't currently exposed but will back future RPCs without re-querying the scanner.
+The broker stores source records and hardware observations internally. Queries
+read those observations without making another network request. Scanner data
+takes precedence over a manual source for the same verified host; removing one
+source preserves a surviving independent observation.
 
 #### `discovery:subscribe`
 
@@ -493,7 +534,7 @@ Automatic conflict resolution still exists, but only for a port the user did not
 
 #### `lmstudio-proxy:get-status` / `lmstudio-proxy:subscribe` / `lmstudio-proxy:unsubscribe` / `lmstudio-proxy:<method>` (generic relay)
 
-The LM Studio counterpart of the `ollama-proxy:*` surface runs the supervised `lmstudio-proxy` on compatibility port `:1234` and tracks the managed LM Studio backend on `:1235`. With managed port ownership enabled (the default), the broker identifies and moves an existing LM Studio server through engine-manager before allowing the proxy to claim `1234`; unknown owners are left untouched and force a warned proxy fallback. Disabling managed ownership preserves explicit custom backend and proxy ports. `lmstudio-proxy:get-status` reports the actual bound port; `lmstudio-proxy:subscribe` / `lmstudio-proxy:unsubscribe` opt into / out of its `lmstudio-proxy:<event>` stream; `lmstudio-proxy:set-port` uses the settings operation described above; and other `lmstudio-proxy:<method>` requests are relayed with the prefix translated (`nodes/list`, `node/select`, `node/add-manual`, `node/remove-manual`, ...). `lmstudio-proxy:shutdown` is refused because the broker owns lifecycle ordering. Workload and error events feed the shared streams exactly as Ollama's do.
+The LM Studio counterpart of the `ollama-proxy:*` surface uses the LM Studio facade in the supervised `nvpair-proxy` process on compatibility port `:1234` and tracks the managed LM Studio engine on `:1235`. With managed port ownership enabled (the default), the broker identifies and moves an existing LM Studio server through engine-manager before allowing the proxy to claim `1234`; unknown owners are left untouched and force a warned proxy fallback. Disabling managed ownership preserves explicit custom engine and proxy ports. `lmstudio-proxy:get-status` reports the actual bound port; `lmstudio-proxy:subscribe` / `lmstudio-proxy:unsubscribe` opt into / out of its `lmstudio-proxy:<event>` stream; `lmstudio-proxy:set-port` uses the settings operation described above; and other `lmstudio-proxy:<method>` requests are relayed with the prefix translated (`nodes/list`, `node/select`, `node/add-manual`, `node/remove-manual`, ...). `lmstudio-proxy:shutdown` is refused because the broker owns lifecycle ordering. Workload and error events feed the shared streams exactly as Ollama's do.
 
 The same broker-local status, subscription, and port-setting methods apply to `llamacpp-proxy:*` and `vllm-proxy:*`. llama.cpp port changes use the same validation, journal, and application path; remaining methods use the generic facade relay, with `llamacpp-proxy:shutdown` refused.
 
@@ -593,7 +634,7 @@ Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, tls_port?, mtls
 
 Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. The broker persists successful `node/add` operations to `configs/manual-nodes.json` in the per-user data directory and replays them into a replacement `nvpair-manual-nodes` worker after startup. Successful `node/remove` operations update the same durable list. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
 
-**Manual → proxy bridge.** When the broker supervises both `nvpair-manual-nodes` and a proxy, it also bridges a manual node whose engine is reachable into that proxy via `node/add-manual` (host/port from the node's per-engine status), so inference can route to it through `ollama-proxy:node/select` / `lmstudio-proxy:node/select` just like a relay-discovered node. This is per-engine: a node whose `ollama_*` status is up is bridged into `ollama-proxy` (host/port from `ollama_port`), and one whose `lmstudio_*` status is up into `lmstudio-proxy` (from `lmstudio_port`) — a node running both is bridged into both. Manual nodes are by definition the ones that never appear via the daemon's `_nvpair-node` discovery, so this explicit add is what makes them routable. The bridge tracks reachability: an engine that goes down (or a node that is removed, or whose prober crashes) is pulled back out with `node/remove-manual`. A proxy that isn't supervised → that leg is a no-op; manual nodes still appear in the discovery snapshot as before.
+**Manual → proxy bridge.** When the broker supervises both `nvpair-manual-nodes` and a proxy, it bridges a manual node whose engine is reachable into that proxy via `node/add-manual` (host/port from the node's per-engine status). This is per-engine: a node whose `ollama_*` status is up is bridged into `ollama-proxy` (host/port from `ollama_port`), and one whose `lmstudio_*` status is up into `lmstudio-proxy` (from `lmstudio_port`) — a node running both is bridged into both. Manual configuration provides an engine route independently of mDNS discovery. The bridge tracks reachability: an engine that goes down (or a node that is removed, or whose prober crashes) is pulled back out with `node/remove-manual`. Manual nodes appear in discovery snapshots independently of proxy supervision; bridge updates apply to supervised proxies.
 
 Each engine has one ordered bridge sender outside the discovery lock. It keeps the latest desired target per key, coalescing intermediate status updates while the proxy is slow. Withdrawals follow any in-flight add, and a later status update retries a failed add or removal. A replacement proxy receives the current targets after its facades are enabled; a canceled configuration is not replayed. Manual bridge calls therefore do not hold the discovery lock while waiting for a proxy.
 
@@ -673,20 +714,20 @@ Attach to a pre-existing endpoint:
 ./nvpair-ui-broker --ipc /tmp/nvpair-ui-broker.sock
 ```
 
-## What this version intentionally does NOT do (yet)
+## Integration and configuration boundaries
 
 - **Engine-advertise control surface.** Engine registration is auto-driven only:
   the broker tracks local Ollama, LM Studio, llama.cpp, and vLLM and registers `ol`,
   `lm`, `lc`, or `vl` with the daemon while each is up. There's no manual-advertise
   RPC (custom service, port, name, or TXT), and no way to advertise anything
   other than the detected engines.
-- **node-info control surface.** The broker passes node-info its cluster directory
+- **Node-info integration.** The broker passes node-info its cluster directory
   and host UUID, relays hardware snapshots from stdout, and sends registry
   metadata and log-level updates over stdin. Membership comes from the live trust
-  store. The broker registers the fixed `ni` port and
-  exposes no client RPC to query or reconfigure node-info, or to supply operator
-  TLS flags or a custom port.
-- **Manual-node persistence across restarts.** `nvpair-manual-nodes` remains an in-memory worker; the broker owns `configs/manual-nodes.json`, clears stale live projections when the worker exits, and replays the durable entries into its replacement.
+  store. Clients read hardware through discovery queries and subscriptions. The
+  broker registers the fixed `ni` port with the scanner and supplies the shared
+  cluster trust configuration to node-info.
+- **Manual-node persistence across restarts.** `nvpair-manual-nodes` keeps live state in memory; the broker owns `configs/manual-nodes.json`, clears stale live projections when the worker exits, and replays the durable entries into its replacement.
 - **Per-event push semantics.** `discovery:nodes-changed` always carries the full current snapshot, not a delta. For small N this is fine and lets the client treat the payload as authoritative without state reconciliation. `errors:update` is likewise a full snapshot.
 - **Hardware provenance.** Scanner reads verified remote inventory over exact-pin
   mTLS and local inventory over private worker IPC. The
@@ -694,5 +735,5 @@ Attach to a pre-existing endpoint:
   authentication requirements for hardware used by services.
 - **Per-worker log-level granularity.** `log/set-level` fans the broker's single level out to every running child, but there's no way to set a different level per worker — it's one level for the whole process tree.
 - **AuthN / AuthZ.** Transport security relies on the parent's pipe / socket ACL. There is no per-message token.
-- **HTTP / WebSocket transport.** JSON-RPC over stdio or pipe only — no web bridge yet. Likely lives in a separate component if/when added.
+- **Client transport.** The broker speaks newline-delimited JSON-RPC over stdio, a Unix domain socket, or a Windows named pipe.
 - **Automatic workload baseline on subscribe.** `workloads:subscribe` starts only the live stream; clients explicitly request `workloads:get-initial` after subscribing and merge overlapping records. The broker persists bounded terminal history, while active state is rebuilt from live workload reconciliation rather than treated as durable across a full process-tree restart.

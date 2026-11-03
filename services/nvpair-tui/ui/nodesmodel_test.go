@@ -217,31 +217,23 @@ func TestMergeManualProbe_BeatsDiscoverySilence(t *testing.T) {
 	assert.Equal(t, nodePresence(presenceOffline), findRow(t, rows, "dead").presence)
 }
 
-// TestMergeUsesEveryFactTheManualWorkerReports is the regression guard for the
-// merged table reading the manual-node worker's reply too narrowly.
-//
-// It decoded only Ollama and node-info liveness and an address, so a host
-// running only LM Studio read Offline, a hostname typed by hand could not be
-// joined to the same machine discovered by IP, and the node-info port and TLS
-// setting the probe found were dropped.
-func TestMerge_UsesEveryFactTheManualWorkerReports(t *testing.T) {
-	const manualID = "m1"
-	const hostUUID = "u1"
-	const lmName = "lms-only"
-	const tlsName = "tls-box"
-	const tlsPort = 14319
+func TestMergeNodes_UsesManualEngineReachabilityWithoutHardware(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
 		manual: []manualNode{{
-			ID:         manualID,
-			Name:       lmName,
+			ID:         "manual-entry",
+			Name:       "lms-only",
 			Address:    "10.0.0.7",
 			LMStudioUp: true,
 		}},
 	})
-	assert.Equal(t, nodePresence(presenceOnline), findRow(t, rows, lmName).presence, "a host answering only on LM Studio must read online")
+	assert.Equal(t, presenceOnline, findRow(t, rows, "lms-only").presence)
+}
 
+func TestMergeNodes_JoinsManualEntriesByVerifiedIdentity(t *testing.T) {
+	const manualID = "m1"
+	const hostUUID = "u1"
 	// Typed as a hostname, discovered by IP: only the UUID ties them together.
-	rows = mergeNodes(nodeFeeds{
+	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{{
 			HostUUID:  hostUUID,
 			Name:      "gpu-box",
@@ -258,27 +250,6 @@ func TestMerge_UsesEveryFactTheManualWorkerReports(t *testing.T) {
 	})
 	require.Len(t, rows, 1, "the manual entry must be joined by its UUID")
 	assert.Equal(t, []string{manualID}, rows[0].manualIDs, "the joined row must retain its manual handle")
-
-	// A hand-added node reached on a non-default node-info port, over TLS.
-	rows = mergeNodes(nodeFeeds{
-		manual: []manualNode{{
-			IdentityVerification: noderec.IdentityPinned,
-			ID:                   "m2",
-			Name:                 tlsName,
-			Address:              "10.0.0.9",
-			NodeInfoUp:           true,
-			NodeInfoPort:         tlsPort,
-			TLSEnabled:           true,
-			TelemetryValid:       true,
-			GPUs:                 []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}},
-		}},
-	})
-	tls := findRow(t, rows, tlsName)
-	assert.Equal(t, tlsPort, tls.port, "node-info port must match the probe")
-	assert.True(t, tls.nodeInfoTLS, "TLS node-info must be carried with the worker's reading")
-	if assert.NotNil(t, tls.probedTelemetry, "worker's reading must be carried") {
-		assert.Len(t, tls.probedTelemetry.GPUs, 1)
-	}
 }
 
 // TestMerge_KeepsEveryManualEntryForOneMachine checks a machine added twice, by
@@ -337,37 +308,6 @@ func TestAReusedAddress_DoesNotMergeTwoMachines(t *testing.T) {
 	})
 	require.Len(t, rows, 2, "an address alone cannot join a configured target to another record")
 	assert.Empty(t, findRow(t, rows, peerName).manualIDs)
-}
-
-// Withdrawing a manual node's identity proof must remove its old hardware from
-// an open detail screen without starting an HTTP poll against its TLS endpoint.
-func TestOpenDetail_HidesManualHardwareAfterProofWithdrawal(t *testing.T) {
-	v := newNodesView(nil)
-	v.SetSize(100, 30)
-	manual := manualNode{
-		ID: "tls-node", Name: "tls-box", Address: "10.0.0.9",
-		HostUUID: "peer", IdentityVerification: noderec.IdentityPinned,
-		OllamaUp: true, NodeInfoUp: true, NodeInfoPort: 14319, TLSEnabled: true,
-		TelemetryValid: true,
-		GPUs:           []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}},
-	}
-	v.Update(manualNodesMsg{nodes: []manualNode{manual}})
-	v.openDetail()
-	require.NotNil(t, v.detail)
-	require.Contains(t, v.View(), "GPU 0", "the authenticated hardware must be visible before proof withdrawal")
-	assert.Nil(t, v.detail.telemetryCmd(), "the detail screen must not poll a TLS node-info endpoint over plain HTTP")
-
-	// The engine still answers, but node-info can no longer prove its identity.
-	manual.IdentityVerification = noderec.IdentityUnverified
-	manual.HostUUID = ""
-	manual.NodeInfoUp = false
-	manual.TelemetryValid = false
-	manual.GPUs = nil
-	v.Update(manualNodesMsg{nodes: []manualNode{manual}})
-
-	assert.Equal(t, presenceOnline, v.detail.node.presence, "the engine still answers after node-info proof is withdrawn")
-	assert.NotContains(t, v.View(), "GPU 0", "the old authenticated hardware must leave the open screen")
-	assert.Nil(t, v.detail.telemetryCmd(), "proof withdrawal must not start a plaintext poll against the configured TLS endpoint")
 }
 
 // TestMembershipGovernsInvitability is the guard for re-inviting a node that

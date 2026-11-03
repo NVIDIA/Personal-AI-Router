@@ -81,9 +81,8 @@ const (
 	updateFeedMaxBytes = 1 << 20
 )
 
-// updateClient refuses redirects for the same reason the telemetry poller does:
-// a redirect could point this at an arbitrary host, and a release feed has no
-// legitimate reason to issue one.
+// updateClient refuses redirects because a redirect could point this at an
+// arbitrary host, and a release feed has no legitimate reason to issue one.
 var updateClient = &http.Client{
 	Timeout: updateCheckTimeout,
 	CheckRedirect: func(*http.Request, []*http.Request) error {

@@ -178,22 +178,26 @@ Not every surface is gated, and the exceptions are deliberate:
 | Workload replication, error synchronization | Mutual TLS |
 | Cluster membership | Mutual TLS, after pairing |
 | Pairing itself | Plaintext, authenticated by the PIN |
-| Host and GPU hardware displays | Plaintext HTTP, **not** authenticated |
+| Unpaired hardware previews, read by workers | Plaintext HTTP, **not** authenticated |
 | Peer node inventory and registry metadata | Pinned mutual TLS on the node-info port |
 
 Pairing is plaintext because no trust exists yet at that point. The six-digit PIN
 is what authenticates the exchange that establishes the pinned certificates.
 
-Public hardware displays remain available over unauthenticated HTTP, including
+Public hardware displays are available over unauthenticated HTTP, including
 while clustered. Any machine that can reach this endpoint can read the node's
 hardware inventory and utilization. Do not run PAIR on a network where that is
 unacceptable.
 
+Desktop and TUI receive all hardware through their local broker. Public HTTP is
+used by workers for display-only previews before a node is paired. Paired
+hardware uses authenticated inventory, and local hardware uses owned worker IPC.
+
 The same node-info port also serves peer node inventory over pinned mutual
 TLS. This response includes the serving host's local registry metadata. It requires
 current membership, the client's exact approved certificate, and registry
-metadata matching the serving identity. Public HTTP continues to return the
-hardware display response independently of this peer node inventory handler.
+metadata matching the serving identity. The public HTTP hardware display response
+is independent of this peer node inventory handler.
 
 ### Two Personalities on One Port
 
@@ -249,8 +253,8 @@ Each of these listens on its own port. Refer to the [port map](#port-map) below.
 
 Local service inventory and scheduling samples arrive from the owned node-info
 worker over private stdio IPC, through the broker to scanner. IPC ties these
-measurements to the worker the broker started, rather than whichever process
-answers a local HTTP port. This works before joining and after leaving a cluster.
+measurements to the worker the broker started. These measurements are available
+before joining and after leaving a cluster.
 The broker retains the latest snapshot for scanner restart replay and adds
 cache/queue time to its sample age so replay cannot make an old sample appear
 fresh. Scanner's owned local registry supplies node-info's peer metadata over the
@@ -266,15 +270,15 @@ record. Candidate authentication has separate worker permits from verified
 telemetry polling. Scanner rechecks live pins before accepting results, including
 results returned over reused connections.
 
-Electron polls every discovered node's `/v1/node-info` directly because that
-detail is richer than the broker's control surface exposes. Healthy nodes are
-sampled every two seconds; consecutive failures back off to 4, 8, 16, then 30
-seconds and reset on success. This is the one place Electron makes service-data
-HTTP calls of its own. Separately, the backend scanner reads each verified peer's
-complete node-info response over pinned mTLS with the same healthy cadence and
-capped failure backoff. Each accepted response updates inventory and supplies
-compact maximum-GPU telemetry, which the broker relays to the job scheduler.
-Routing never depends on renderer metrics.
+Desktop and TUI receive hardware snapshots and updates from their local broker.
+Workers collect local measurements over private IPC, paired peer measurements
+over pinned mTLS, and public HTTP previews for eligible unverified discoveries
+and manual entries.
+
+The broker preserves each sample's age when returning cached hardware and clears
+measurements when their record or authentication is no longer valid. Public
+previews update display fields only. They cannot establish identity or affect
+routing, node reachability, or scheduling.
 
 Scanner and manual-node node-info decoding reads at most 1 MiB, and their model
 inventory decoding reads at most 16 MiB. A JSON value that extends past its limit
@@ -623,17 +627,15 @@ of being crammed into TXT.
 
 ### Node Identity
 
-PAIR identifies every node by a stable UUID, never by its hostname.
+PAIR keys the owned local node and authenticated peers by stable host UUID.
+That UUID correlates cluster membership, workload attribution, error reports,
+scheduling telemetry, and verified proxy routes. Hostnames are display names,
+so renaming a host or sharing a hostname does not merge distinct hosts.
 
-An mDNS instance name defaults to the hostname, so two machines that share one
-would silently merge into a single node. Every service therefore advertises a
-per-host UUID, and the directory is keyed by it.
-
-That UUID is the correlation key across the entire system: discovery entries,
-cluster membership, workload attribution, error reports, telemetry, and proxy
-routing all resolve against it. Hostnames are display only. A machine can be
-renamed without becoming a different node, and a duplicated hostname does not
-collapse two machines into one.
+Unverified announcements have independent discovery record IDs. Their claimed
+UUIDs cannot select a local or authenticated peer's record. A manual engine
+configuration also keeps its own key until its hardware endpoint authenticates.
+Public hardware previews remain attached to these unverified display records.
 
 The UUID reuses the cluster manager's persisted identity when that exists, so one
 host presents the same UUID everywhere. If the cluster manager has never run, the

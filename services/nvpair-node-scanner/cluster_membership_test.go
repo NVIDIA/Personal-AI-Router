@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,13 +18,13 @@ import (
 func newMembershipTestDaemon(clusterDir string) *daemon {
 	mesh := clustertrust.Open(clusterDir)
 	return &daemon{
-		mesh:          mesh,
-		modelsClients: clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
-		clusterDir:    clusterDir,
-		baseDir:       filepath.Dir(clusterDir),
-		reg:           newRegistry("host-uuid", "", selfAddrs("127.0.0.1")),
-		dir:           newDirectory(),
-		lastInfoAt:    make(map[string]time.Time),
+		mesh:           mesh,
+		modelsClients:  clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
+		clusterDir:     clusterDir,
+		baseDir:        filepath.Dir(clusterDir),
+		reg:            newRegistry("host-uuid", "", selfAddrs("127.0.0.1")),
+		dir:            newDirectory(),
+		nodeInfoStatus: make(map[string]peerInfoStatus),
 		// codec/responder nil: emit is nil-safe; reloadIdentity skips re-advertise.
 	}
 }
