@@ -31,6 +31,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/engines"
+	"nvpair-shared/errors"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -811,11 +812,18 @@ func (p *Proxy) emitWorkload(method string, w Workload) {
 // rewrite) and its resolved URL. peerUUID is set for a remote cluster peer:
 // the request is dialed over cluster mTLS to the peer's promoted proxy (https),
 // pinned to that peer's exact server cert. Empty peerUUID means a plain-HTTP
-// dial — the local backend (self) or an explicit manual node.
+// dial — the local backend (self) or an explicit manual node. external marks
+// the manual-bypass class on an Unmanaged facade (a user-configured external
+// endpoint), and key carries that endpoint's configured credential when it
+// has one; both exist so the dial path can apply the external credential
+// policy and probe-failure tracking, which deliberately do not apply to the
+// ollama-class manual bypass.
 type candidate struct {
 	id       string
 	url      *url.URL
 	peerUUID string
+	external bool
+	key      string
 }
 
 // candidateTransport returns the reverse-proxy / model-list transport for a
@@ -968,6 +976,13 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 		upstream.Header.Del("Content-Length")
 		if upstream.Header.Get("Accept") == "" {
 			upstream.Header.Set("Accept", "application/json")
+		}
+		if cand.external && cand.key != "" {
+			// The endpoint's own credential, set only after FanoutHeaders
+			// stripped the caller's — that ordering is the whole credential
+			// policy for the external class: neither the client's secret nor
+			// any other endpoint's key reaches this request.
+			upstream.Header.Set("Authorization", "Bearer "+cand.key)
 		}
 
 		// A cluster-peer candidate is queried over mTLS to its promoted proxy;
@@ -1707,6 +1722,18 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				req.URL.Scheme = cand.url.Scheme
 				req.URL.Host = cand.url.Host
 				req.Host = cand.url.Host
+				if cand.external {
+					// External endpoint: the caller's Authorization is the
+					// client's own and is never forwarded, so a credential
+					// meant for one provider cannot reach another host.
+					// Only the endpoint's configured key may travel, and
+					// only to the candidate it belongs to. Managed-engine
+					// manual nodes keep credential pass-through.
+					req.Header.Del("Authorization")
+					if cand.key != "" {
+						req.Header.Set("Authorization", "Bearer "+cand.key)
+					}
+				}
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
@@ -1774,6 +1801,34 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 						return retrySignal{}
 					}
 					return errTargetGone
+				}
+				// Authorization refusals are probe failures for an external
+				// endpoint: a wrong key answers identically on every try, so
+				// replaying it buys nothing. The response itself still
+				// commits and reaches the client (the client-error rule, and
+				// "the key was refused" is exactly what the user needs to
+				// see); what the streak costs is the endpoint. At the third
+				// consecutive miss it drops out of the routing set and the
+				// condition surfaces through the errors pipeline, the same
+				// shape facade.go uses for upstream-unreachable. Removal
+				// happens only after the commit claim, so the disconnect
+				// watcher cannot mistake the removal for the target going
+				// away mid-attempt.
+				if cand.external {
+					switch resp.StatusCode {
+					case http.StatusUnauthorized, http.StatusForbidden:
+						if f.discovery.recordProbeMiss(cand.id) {
+							f.discovery.RemoveManual(cand.id)
+							_ = f.notify("errors:report", errors.ServiceError{
+								ID:       probeFailedID(f.profile, cand.id),
+								Message:  fmt.Sprintf("Custom endpoint %q refused the configured API key %d times in a row (HTTP %d); routing to it is disabled until a successful probe re-adds it", cand.url.Host, probeFailThreshold, resp.StatusCode),
+								Severity: "warning",
+								Action:   "none",
+							})
+						}
+					default:
+						f.discovery.recordProbeSuccess(cand.id)
+					}
 				}
 				// The peeked byte goes back only once the commit is ours, so a
 				// lost claim leaves the body untouched for ReverseProxy to close.
@@ -2010,6 +2065,8 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			return
 		}
 		peerUUID := ""
+		external := false
+		key := ""
 		switch {
 		case isSelfTarget(u, selfPort) || isAnyAliasSelfTarget(u, aliasBoundAddresses):
 			// Our own advertised endpoint (ol now points at this proxy). Serve
@@ -2034,6 +2091,18 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			// the relayed value can only ever disagree by being stale.
 			u.Scheme = "https"
 			peerUUID = n.ClusterUUID
+		case f.discovery.IsManual(n.ID) && f.profile.Unmanaged:
+			// A configured external endpoint behind an Unmanaged facade:
+			// the manual-bypass dial class. Key and scheme travel with the
+			// candidate so the request path can inject the endpoint
+			// credential and dial https where asked. A user-entered endpoint
+			// is not a PAIR node, so it is never dialed over the mesh, and
+			// its https dial gets system-root TLS, not a pin.
+			external = true
+			key = n.APIKey
+			if n.Scheme == "https" {
+				u.Scheme = "https"
+			}
 		case f.discovery.IsManual(n.ID):
 			// An explicit user-added manual node: dialed plain to the address
 			// the user supplied (a deliberate, separately-labeled bypass).
@@ -2059,6 +2128,8 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			id:       n.ID,
 			url:      u,
 			peerUUID: peerUUID,
+			external: external,
+			key:      key,
 		})
 	}
 
@@ -2438,6 +2509,14 @@ func upstreamUnreachableID(p engineProfile, nodeID string) string {
 	return p.ComponentName() + ":upstream-unreachable:" + nodeID
 }
 
+// probeFailedID is the canonical ServiceError id for an external endpoint
+// that kept refusing our credentials. Kept as a single function so the
+// report and any future clear can't drift (nvpair-errors matches by literal
+// id).
+func probeFailedID(p engineProfile, nodeID string) string {
+	return p.ComponentName() + ":probe-failed:" + nodeID
+}
+
 // PriorityList returns a copy of the current scheduler-supplied priority order.
 func (p *Proxy) PriorityList() []string {
 	p.priorityMu.RLock()
@@ -2683,7 +2762,26 @@ func (p *Proxy) handleMessage(msg *Message) {
 		if !ok {
 			return
 		}
-		nodes := f.discovery.Nodes()
+		// Outward projection: this reply is a machine list. Two class rules
+		// at the wire boundary. First, it must not carry the per-candidate
+		// credential, the same rule the node/* notifications already follow
+		// (see Node.redacted). Second, on an Unmanaged facade the manual
+		// overlay holds Custom endpoint projections rather than machines —
+		// the same class the dial path separates in resolveCandidates'
+		// manual-bypass case — and consumers of this reply treat every
+		// entry as an invitable machine: projected, an endpoint surfaced
+		// in Add Node as a "node" whose Invite would attempt pairing
+		// against a facade port. Those entries stay internal bookkeeping.
+		// The dial path resolves candidates from the stored nodes, so
+		// filtering the reply cannot disturb routing.
+		stored := f.discovery.Nodes()
+		nodes := make([]Node, 0, len(stored))
+		for _, n := range stored {
+			if f.discovery.IsManual(n.ID) && f.profile.Unmanaged {
+				continue
+			}
+			nodes = append(nodes, n.redacted())
+		}
 		if err := p.codec.Respond(msg.ID, NodesResult{Nodes: nodes}); err != nil {
 			log.Printf("failed to respond to nodes/list: %v", err)
 		}
@@ -2792,10 +2890,23 @@ func (p *Proxy) handleMessage(msg *Message) {
 		}
 		if added {
 			log.Printf("manual node added: %s (%s:%d)", node.ID, node.Addresses[0], node.Port)
-			_ = f.notify("node/discovered", node.withPrimaryIP())
 		} else {
 			log.Printf("manual node updated: %s (%s:%d)", node.ID, node.Addresses[0], node.Port)
-			_ = f.notify("node/updated", node.withPrimaryIP())
+		}
+		// The event projection follows the same class rule as nodes/list.
+		// Everything arriving on this method is manual by definition, so
+		// the check is the profile alone: on an Unmanaged facade these
+		// entries are endpoint projections, and the node/* stream is a
+		// machine list its consumers invite and poll against. The update
+		// branch is a real case — a re-probe re-issues an endpoint after
+		// a flap — so the silence must cover it too. Routing reads the
+		// stored set, so the quiet wire cannot starve the endpoint.
+		if !f.profile.Unmanaged {
+			if added {
+				_ = f.notify("node/discovered", node.withPrimaryIP().redacted())
+			} else {
+				_ = f.notify("node/updated", node.withPrimaryIP().redacted())
+			}
 		}
 
 	case "node/remove-manual":
@@ -2817,7 +2928,11 @@ func (p *Proxy) handleMessage(msg *Message) {
 			if f.clearSelectionOf(params.ID) {
 				_ = f.notify("node/selection-changed", SelectedResult{ID: ""})
 			}
-			_ = f.notify("node/removed", Node{ID: params.ID})
+			// Same class rule as node/add-manual: an Unmanaged facade's
+			// manual entries are endpoint retracts, not machine departures.
+			if !f.profile.Unmanaged {
+				_ = f.notify("node/removed", Node{ID: params.ID})
+			}
 		}
 
 	case "node/set-local-backend":
@@ -2825,11 +2940,24 @@ func (p *Proxy) handleMessage(msg *Message) {
 		if !ok {
 			return
 		}
-		var b localBackend
-		if err := json.Unmarshal(msg.Params, &b); err != nil {
-			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"engine\",\"host\",\"port\",\"healthy\"}")
+		// Two payload classes, permanent rather than transitional: a managed
+		// engine names its one loopback backend (engine/host/port/healthy);
+		// Custom names the whole set of user-configured endpoints this node
+		// owns. A present "backends" key is the set class even when empty
+		// ("[]" clears the set). Keys ride this stdio hop only and are never
+		// logged.
+		var params struct {
+			Engine   string          `json:"engine"`
+			Host     string          `json:"host"`
+			Port     int             `json:"port"`
+			Healthy  bool            `json:"healthy"`
+			Backends *[]backendEntry `json:"backends"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"engine\",\"host\",\"port\",\"healthy\"} or {\"backends\":[…]}")
 			return
 		}
+		b := localBackend{Engine: params.Engine, Host: params.Host, Port: params.Port, Healthy: params.Healthy}
 		// The address decides which facade this applies to, so a payload naming
 		// a different engine is a caller bug, not a preference. Accepting it
 		// would point one engine's ingress and self-candidate at the other
@@ -2838,6 +2966,23 @@ func (p *Proxy) handleMessage(msg *Message) {
 		if b.Engine != "" && b.Engine != engine {
 			p.codec.RespondError(msg.ID, -32602, fmt.Sprintf(
 				"params name engine %q but the request is addressed to %q", b.Engine, engine))
+			return
+		}
+		if params.Backends != nil {
+			if !f.profile.Unmanaged {
+				p.codec.RespondError(msg.ID, -32602,
+					fmt.Sprintf("engine %q fronts a local loopback backend, not an endpoint set", engine))
+				return
+			}
+			set := *params.Backends
+			if err := f.setLocalBackends(set); err != nil {
+				p.codec.RespondError(msg.ID, -32602, err.Error())
+				return
+			}
+			slog.Info("local backends replaced", "engine", f.profile.Name, "count", len(set))
+			if err := p.codec.Respond(msg.ID, map[string]bool{"ok": true}); err != nil {
+				log.Printf("failed to respond to node/set-local-backend: %v", err)
+			}
 			return
 		}
 		if err := f.setLocalBackend(b); err != nil {
