@@ -9,6 +9,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -291,4 +292,30 @@ func TestModelOpResult_ReportsAStoppedLoadAsStopped(t *testing.T) {
 	d.update(engineOpMsg{what: "load org/m", engine: "vllm", stopped: true})
 	assert.Contains(t, d.status.render(), "was stopped before it finished")
 	assert.NotContains(t, d.status.render(), "failed")
+}
+
+// TestModelCmd_UnmanagedEngineRefusesModelOps keeps Custom endpoints out of
+// the model-operation plumbing on both paths. The local path already has no
+// Custom wire; the remote path builds its request from the operation alone,
+// so nothing there would stop a model operation being relayed to a peer for
+// an engine that has no model verbs on either end. The nil client is the
+// proof: without a refusal the remote case builds a call and dials it, which
+// panics here and on a real screen surfaces as a model operation that always
+// fails, half a relay chain away.
+func TestModelCmd_UnmanagedEngineRefusesModelOps(t *testing.T) {
+	for _, op := range []string{"load", "unload", "delete", "pull"} {
+		act := modelActions[op]
+		for _, node := range []string{"", "peer-uuid"} {
+			cmd := modelCmd(nil, node, engines.NameCustom, act, "served-model")
+			require.NotNil(t, cmd, "%s on %q: a refusal still answers the keypress", op, node)
+			var msg tea.Msg
+			require.NotPanics(t, func() { msg = cmd() },
+				"%s at %q: the refusal must answer without dialing", op, node)
+			opMsg, ok := msg.(engineOpMsg)
+			require.True(t, ok, "%s at %q: want engineOpMsg, got %T", op, node, msg)
+			require.Error(t, opMsg.err, "%s: an unmanaged engine must refuse model operations", op)
+			assert.Contains(t, opMsg.err.Error(), "manage their own models",
+				"%s at %q: the operator needs to know Custom endpoints have no loadable models, not that an engine lacks a wire", op, node)
+		}
+	}
 }
