@@ -89,8 +89,8 @@ reads the model's `config.json` from the Hugging Face cache, at the revision
 vLLM loads (`--revision`, or `main` through `refs/main`, the way
 `huggingface_hub` resolves it; another cached revision is never read in its
 place), and the free GPU
-memory (`nvidia-smi`; on a unified-memory machine such as DGX Spark, where it
-reports `[N/A]`, the total and available system memory from `/proc/meminfo`),
+memory (`nvidia-smi`, or the installed runtime when native telemetry is missing;
+system RAM is used only after confirming that the selected device shares it),
 then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
 model with a larger window is capped there, and a smaller one is shrunk to what
 fits), a YaRN `--hf-overrides` when the model's own window is below 64K (for
@@ -166,20 +166,7 @@ vLLM platform. This covers CUDA/ROCm, Intel XPU, Apple Metal, CPU, and
 out-of-tree backends that expose vLLM's memory API. Shared-memory platforms keep
 3 GiB for runtime startup in addition to the normal 1 GiB free margin. If neither
 provider can measure free memory, PAIR does not invent a limit and leaves memory
-sizing to vLLM. On Apple Metal, a checkpoint whose weights are Metal-compatible
-but which declares an FP8 KV cache is launched with a dense KV cache matching its
-`bfloat16` or `float16` model dtype, because vLLM Metal stores paged KV data in
-the model dtype and rejects FP8 KV cache storage. An explicit launch option
-always wins. NVIDIA ModelOpt FP8 weight checkpoints are rejected before launch:
-vLLM Metal cannot load that tensor layout, so macOS needs a BF16, FP16, or
-MLX-compatible quantized checkpoint instead.
-
-The vLLM Add-model catalog and search results exclude
-`nvidia/Llama-3.1-8B-Instruct-FP8` for macOS targets because this checkpoint's
-ModelOpt FP8 weights cannot be loaded by the pinned Metal engine. The same model
-remains available on Linux, including DGX Spark. This is an exact-model exclusion,
-not a general FP8 filter; other catalog entries are unchanged. The load-time
-compatibility check still applies to models already downloaded on a Mac.
+sizing to vLLM.
 
 Readiness polls `/health` for up to eight minutes while weights load.
 

@@ -357,7 +357,7 @@ func TestDeleteHFModel_RefusesTheBundledDefaultModel(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	base := t.TempDir()
 	// The bundled manifest runs `hf` from the vLLM virtualenv.
-	venvBin := filepath.Join(base, "vllm", "venv", "bin")
+	venvBin := filepath.Join(home, ".nvpair", "engine-bin", "vllm", "venv", "bin")
 	require.NoError(t, os.MkdirAll(venvBin, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(venvBin, "hf"), []byte(fakeHFCacheRm), 0o755))
 	e := NewExecutor(reg, NewReporter(nil), func(string, any) {}, base)

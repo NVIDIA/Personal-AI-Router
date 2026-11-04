@@ -52,6 +52,20 @@ func TestDetectDeviceMemory_FallsBackToTheSelectedVLLMBackend(t *testing.T) {
 	}
 }
 
+func TestDetectDeviceMemory_UsesVRAMWhenNvidiaSMIReportsNA(t *testing.T) {
+	withDeviceMemoryProviders(t,
+		func() (int64, int64, bool) { return gpuMemoryFromQuery("[N/A], [N/A]\n") },
+		func(string) (deviceMemoryProbe, error) {
+			return deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib, Shared: false}, nil
+		},
+	)
+
+	total, free, ok := detectDeviceMemory("vllm")
+	if !ok || total != 16*gib || free != 4*gib {
+		t.Fatalf("got total=%d free=%d ok=%v, want the discrete device's VRAM", total, free, ok)
+	}
+}
+
 func TestDetectDeviceMemory_ReservesStartupHeadroomOnSharedMemory(t *testing.T) {
 	withDeviceMemoryProviders(t,
 		func() (int64, int64, bool) { return 0, 0, false },

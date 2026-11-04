@@ -49,6 +49,10 @@ extensibility story for an open-source product.
   and must not be started or adopted because its `/models` contract does not
   expose router residency state.
 - Per-engine stdout/stderr log capture and structured operational error records, surfaced via the errors pipeline.
+- vLLM memory sizing uses native device telemetry or the installed runtime.
+  Missing telemetry never implies shared memory: only verified integrated
+  CUDA/ROCm or XPU devices, Apple Silicon Metal, or an explicit CPU engine use
+  system RAM. Shared-memory readings reserve 3 GiB for runtime startup.
 - A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). An engine with `advertised_models: "loaded"` (vLLM) advertises only its served model in `modelsByEngine` and reports its `list_models` inventory as `downloadedByEngine`, read even while it is stopped; its `loadedByEngine` names models the way that inventory does. A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls these lists and pushes `engine:models-changed` when one changes (explicit load/unload, JIT auto-load, TTL/idle eviction, a pull or a delete).
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
 

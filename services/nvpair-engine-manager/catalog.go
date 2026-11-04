@@ -384,7 +384,7 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 			source = hfModelsAPI + "?filter=safetensors&search=" + url.QueryEscape(query)
 		}
 		return CatalogResult{
-			Models:     vllmModelsForTarget(models, platform),
+			Models:     models,
 			Source:     source,
 			Platform:   platform,
 			Arch:       arch,

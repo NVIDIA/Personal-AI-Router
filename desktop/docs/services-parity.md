@@ -223,9 +223,7 @@ not running. The engine-manager cancels the start in flight. Its safety net is t
 engine's readiness window (vLLM 8 minutes, Ollama 10), so a slow start is never
 shown as stopped while it is still loading. Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
-never remove. On macOS the manager rejects NVIDIA ModelOpt FP8 weight
-checkpoints before launch because vLLM-Metal cannot load that tensor layout;
-the NVIDIA Linux path remains unchanged.
+never remove.
 
 Current limits are explicit: the manual-node worker does not probe vLLM, the
 Inference Demo does not use it, and the icon is a placeholder lettermark rather

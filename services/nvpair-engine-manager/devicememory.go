@@ -27,7 +27,7 @@ type deviceMemoryProbe struct {
 	Shared bool  `json:"shared"`
 }
 
-var nativeDeviceMemory = nvidiaSMIMemory
+var nativeDeviceMemory = func() (int64, int64, bool) { return nvidiaSMIMemory(nil) }
 var probeVLLMDeviceMemory = runVLLMDeviceMemoryProbe
 
 func detectDeviceMemory(bin string) (total, free int64, ok bool) {
