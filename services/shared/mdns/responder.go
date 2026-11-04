@@ -275,11 +275,9 @@ func (r *Responder) Run(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		r.announceLoop(ctx)
-	}()
+	})
 
 	go r.watchAddrs(ctx)
 

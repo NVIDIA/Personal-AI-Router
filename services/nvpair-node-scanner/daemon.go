@@ -1554,22 +1554,20 @@ func (d *daemon) dispatchTelemetry(
 			continue
 		}
 
-		workers.Add(1)
-		go func(hostUUID string, hosts []string, port int, token uint64, backoff bool) {
-			defer workers.Done()
+		workers.Go(func() {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				d.telemetryRetries.finish(hostUUID, token, true, time.Now())
+				d.telemetryRetries.finish(n.HostUUID, retryToken, true, time.Now())
 				return
 			}
-			ok := d.refreshNodeTelemetryCandidates(ctx, hostUUID, hosts, port)
-			if !backoff || ctx.Err() != nil {
+			ok := d.refreshNodeTelemetryCandidates(ctx, n.HostUUID, hosts, ni.Port)
+			if n.HostUUID == self || ctx.Err() != nil {
 				ok = true
 			}
-			d.telemetryRetries.finish(hostUUID, token, ok, time.Now())
-		}(n.HostUUID, hosts, ni.Port, retryToken, n.HostUUID != self)
+			d.telemetryRetries.finish(n.HostUUID, retryToken, ok, time.Now())
+		})
 	}
 }
 
@@ -1682,14 +1680,12 @@ func (d *daemon) refreshClusterIdentityOnce() {
 		if !ok || n.IP == "" || n.HostUUID == self {
 			continue
 		}
-		wg.Add(1)
 		sem <- struct{}{}
 		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID string, hosts []string, port int) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
-			d.refreshNodeClusterIdentityCandidates(hostUUID, hosts, port)
-		}(n.HostUUID, hosts, ni.Port)
+			d.refreshNodeClusterIdentityCandidates(n.HostUUID, hosts, ni.Port)
+		})
 	}
 	wg.Wait()
 }
@@ -1765,14 +1761,12 @@ func (d *daemon) refreshModelsOnce() {
 		if !ok || n.IP == "" {
 			continue
 		}
-		wg.Add(1)
 		sem <- struct{}{}
 		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID, guardIP string, hosts []string, port int, clusterUUID string) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
-			d.refreshNodeModelsCandidates(hostUUID, guardIP, hosts, port, clusterUUID)
-		}(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+			d.refreshNodeModelsCandidates(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+		})
 	}
 	wg.Wait()
 }

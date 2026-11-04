@@ -619,11 +619,9 @@ func (c *catalogService) fetchLlamaCPP(ctx context.Context) ([]CatalogModel, err
 	errs := make([]error, len(llamaCPPPublishers))
 	var wg sync.WaitGroup
 	for i, publisher := range llamaCPPPublishers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			batches[i], errs[i] = c.fetchHF(ctx, llamaCPPListing("author", publisher))
-		}()
+		})
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {

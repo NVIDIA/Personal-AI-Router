@@ -47,9 +47,7 @@ func ServePreflight(w http.ResponseWriter, r *http.Request, targets []Target) {
 	querySlots := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	for i, target := range targets {
-		wg.Add(1)
-		go func(i int, target Target) {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case querySlots <- struct{}{}:
 				defer func() { <-querySlots }()
@@ -79,7 +77,7 @@ func ServePreflight(w http.ResponseWriter, r *http.Request, targets []Target) {
 			// drop silence without dropping a refusal.
 			unavailable[i] = resp.StatusCode >= 500
 			denied[i] = !unavailable[i] && (resp.StatusCode < 200 || resp.StatusCode >= 300)
-		}(i, target)
+		})
 	}
 	wg.Wait()
 	for _, rejected := range denied {

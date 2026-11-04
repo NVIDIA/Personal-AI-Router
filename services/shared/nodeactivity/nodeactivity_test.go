@@ -81,15 +81,13 @@ func TestConcurrentDue_LetsExactlyOneThrough(t *testing.T) {
 	var mu sync.Mutex
 	allowed := 0
 	for i := 0; i < 64; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if r.Due("node-a") {
 				mu.Lock()
 				allowed++
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, 1, allowed)

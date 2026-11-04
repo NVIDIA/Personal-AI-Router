@@ -979,10 +979,8 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 			client.Transport = p.candidateTransport(cand)
 		}
 
-		wg.Add(1)
-		go func(i int, cand candidate, req *http.Request, client *http.Client) {
-			defer wg.Done()
-			resp, err := client.Do(req)
+		wg.Go(func() {
+			resp, err := client.Do(upstream)
 			if err != nil {
 				f.targets.Forget(cand.id)
 				results[i] = modelListResult{unavailable: true, err: err}
@@ -1055,7 +1053,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 				items = append(items, modelListItem{key: key, digest: identity.Digest, raw: raw})
 			}
 			results[i] = modelListResult{items: items, ok: true, headers: responseHeaders}
-		}(i, cand, upstream, client)
+		})
 	}
 	wg.Wait()
 

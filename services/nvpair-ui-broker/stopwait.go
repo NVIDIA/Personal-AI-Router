@@ -287,13 +287,11 @@ func (b *Broker) stopWorkers() {
 	joins := make([]teardownStep, len(b.startedWorkers))
 	var wg sync.WaitGroup
 	for i, sup := range b.startedWorkers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			at := time.Now()
 			sup.Stop()
 			joins[i] = teardownStep{name: sup.name, took: time.Since(at)}
-		}()
+		})
 	}
 	wg.Wait()
 

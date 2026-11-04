@@ -224,11 +224,9 @@ func (ps *PeerSync) pushAll(ctx context.Context) {
 
 	var wg sync.WaitGroup
 	for id, t := range targets {
-		wg.Add(1)
-		go func(id string, t peerTarget) {
-			defer wg.Done()
+		wg.Go(func() {
 			ps.post(ctx, id, t, body)
-		}(id, t)
+		})
 	}
 	wg.Wait()
 }

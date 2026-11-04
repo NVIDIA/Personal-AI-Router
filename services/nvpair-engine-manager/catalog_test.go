@@ -108,12 +108,10 @@ func TestLmStudioCatalog_CoalescesConcurrentCallers(t *testing.T) {
 	errs := make([]error, callers)
 	counts := make([]int, callers)
 	for i := range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			models, _, err := c.lmStudio.get(context.Background())
 			errs[i], counts[i] = err, len(models)
-		}()
+		})
 	}
 
 	// Let the callers pile up behind the one in flight, then answer.

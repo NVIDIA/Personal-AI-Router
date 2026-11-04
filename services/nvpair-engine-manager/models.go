@@ -96,9 +96,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		if listSpec == nil && loadedSpec == nil {
 			continue
 		}
-		wg.Add(1)
-		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
-			defer wg.Done()
+		wg.Go(func() {
 			st, err := e.Status(name)
 			if err != nil || !st.Running {
 				return
@@ -126,7 +124,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 					slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
 				}
 			}
-		}(i, name, listSpec, loadedSpec)
+		})
 	}
 	wg.Wait()
 
