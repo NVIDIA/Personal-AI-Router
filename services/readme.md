@@ -12,14 +12,16 @@ node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
 discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
-llama.cpp, any combination, or none, and its model inventory is fetched over
-HTTP from its engine-manager rather than crammed into mDNS TXT records, which
-are too small to carry it.
+llama.cpp, any combination, none, or only Custom endpoints — user-configured
+external OpenAI-compatible servers it proxies — and its model inventory is
+fetched over HTTP from its engine-manager rather than crammed into mDNS TXT
+records, which are too small to carry it.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
 OpenAI-compatible — so an unmodified client on that machine can reach any capable
-node in the cluster. Routing is automatic: the proxy picks a node that is online,
-has a compatible engine running, and holds the requested model.
+node in the cluster. Routing is automatic: the proxy picks a node that is online
+and can serve the requested model — from a running engine or, for Custom,
+through a healthy configured endpoint.
 
 Standalone, the Ollama proxy defaults to `http://localhost:11435`; under the
 broker it serves the Ollama-compatible `http://localhost:11434` when that port is
@@ -34,6 +36,13 @@ router runs on `8081`; a safe fallback is reported when the facade port is
 occupied. The desktop and TUI expose its managed lifecycle, downloads,
 inventory, and load/unload actions. `--proxy-engines` can still restrict the
 facades a standalone broker or TUI starts.
+
+The fourth facade, Custom, fronts user-configured endpoints instead of a local
+engine: external OpenAI-compatible servers added by URL with an explicit port,
+exposed on `http://localhost:8000`. There is nothing to install, start, or
+adopt — the endpoint set is configuration held by the broker, health is probed
+through each endpoint's `/v1/models`, and a failing probe takes an endpoint out
+of routing and advertisement until it recovers.
 
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the
@@ -51,7 +60,7 @@ This tree builds twelve Go binaries. `nvpair-ui-broker` is the parent service an
 | `nvpair-proxy` | The engine HTTP reverse proxy: one process hosting a facade per enabled engine, each enabled over `facade/enable` after spawn. Serves each engine's own dialect (Ollama-native and OpenAI-compatible), routes only to advertised model owners, and applies owner failover and scheduler priorities. |
 | `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
 | `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
-| `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
+| `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS, and acts as the probe cache for the broker's Custom endpoint configuration; probes each on a 10 s cycle. |
 | `nvpair-workload-manager` | Cluster-wide workload relay. |
 | `nvpair-errors` | Service-errors datastore + cross-node sync. |
 | `nvpair-engine-manager` | Config-driven control plane for local inference engines, model inventory, and trusted remote engine operations. |

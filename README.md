@@ -38,7 +38,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama, LM Studio, and llama.cpp |
+| **Inference engines** | Ollama, LM Studio, llama.cpp; plus Custom — external services that speak the OpenAI API |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -47,7 +47,9 @@ load. Whether a particular engine and model work on a particular machine is
 between that engine and that machine, so check the engine's own documentation
 before assuming a node can serve a model. A node only becomes a candidate for a
 request once it is actually running a compatible engine, and PAIR prefers the
-nodes it already knows hold the model.
+nodes it already knows hold the model. Custom is not software PAIR installs: it
+routes to a service you already run that speaks the OpenAI API, configured per
+node with a host, an explicit port, and an optional API key.
 
 ## Quick start
 
@@ -284,6 +286,8 @@ feedback and contributions will help shape priorities.
 ### Engines and integrations
 
 - [x] llama.cpp support.
+- [x] Custom endpoints: route to external services that speak the OpenAI API,
+  including vLLM-class servers.
 - [ ] vLLM support.
 - [ ] EXO support.
 - [ ] ComfyUI integration.

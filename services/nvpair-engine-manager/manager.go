@@ -62,6 +62,7 @@ type setPortParam struct {
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
 	settingsRelay settingsRelay
+	customRelay   customRelay
 	codec         *Codec
 	exec          *Executor
 	peers         *peerDirectory
@@ -99,6 +100,8 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 	}
 	m.settingsRelay.send = codec.Notify
 	exec.settingsParent = m.settingsRelay.call
+	m.customRelay.send = codec.Notify
+	exec.customParent = m.customRelay.call
 	return m
 }
 
@@ -162,6 +165,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	if m.handleSettingsMessage(ctx, msg) {
 		return
 	}
+	if m.handleCustomMessage(ctx, msg) {
+		return
+	}
 	if msg.Method == applog.SetLevelMethod {
 		resolved, err := applog.HandleSetLevelParams(msg.Params)
 		if msg.IsRequest() {
@@ -189,6 +195,20 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 				slog.Warn("one or more enabled engines could not be restored", "err", err)
 			}
 		}()
+		return
+	}
+
+	// Custom's inventory arrives the same way: a broker-pushed notification
+	// on the local stdio link. It needs an explicit branch — below, unknown
+	// notifications fall through to the silent "ignoring" path, which would
+	// make every custom push vanish without an error anywhere.
+	if msg.Method == customSetModelsMethod && msg.IsNotification() {
+		var payload customSetModelsPayload
+		if err := json.Unmarshal(msg.Params, &payload); err != nil {
+			slog.Warn("ignoring custom:set-models with unreadable payload")
+			return
+		}
+		m.exec.SetCustomModels(payload.Models)
 		return
 	}
 

@@ -46,9 +46,13 @@ flowchart TB
   primary, and membership is symmetric. A node belongs to at most one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node: Ollama, LM Studio, or
-  llama.cpp. A node can run any combination, and a node with no running engine
-  is not eligible to serve.
+- An **engine** is an inference server a node can route to: Ollama, LM Studio,
+  or llama.cpp installed on the machine, or a **Custom** endpoint — an external
+  OpenAI-compatible server the operator configured and a node fronts (see
+  [Custom endpoints](#custom-endpoints)). The first three are installed and
+  started by PAIR; a Custom endpoint is not. A node can use any combination,
+  and a node that runs no engine and fronts no healthy Custom endpoint is not
+  eligible to serve.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
   model on two nodes is two independent copies and that duplication is what makes
   the two nodes interchangeable for a request.
@@ -103,6 +107,7 @@ the layers that are checked:
 | Layer | How it is Checked |
 | --- | --- |
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
+| Custom endpoints | The prober queries each endpoint's `/v1/models`. There is no process to supervise; a failing probe takes the endpoint out of advertisement, so peers stop routing to it. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
 | The broker | A `ping` request clients can call, which the terminal interface's **Service** tab uses. |
 | Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
@@ -174,7 +179,7 @@ Not every surface is gated, and the exceptions are deliberate:
 | --- | --- |
 | Proxy, local clients | Plaintext HTTP, loopback only |
 | Proxy, cluster ingress | Mutual TLS |
-| Model inventory, remote engine control | Mutual TLS |
+| Model inventory, remote engine control, Custom endpoint relay | Mutual TLS |
 | Workload replication, error synchronization | Mutual TLS |
 | Cluster membership | Mutual TLS, after pairing |
 | Pairing itself | Plaintext, authenticated by the PIN |
@@ -221,8 +226,11 @@ reach PAIR:
   inference proxy.** Plaintext requests from other machines are rejected, and TLS
   requests require a certificate trusted as a current member.
 - **A peer request is served, not re-routed.** The mTLS ingress forwards straight
-  to that node's own engine and never re-enters candidate selection, so a peer
-  cannot chain a request onward through a third node.
+  to that node's own engine — or, for a Custom model, to one of the external
+  endpoints that node has configured — and never re-enters candidate selection,
+  so a peer cannot chain a request onward through a third node. The hop that
+  leaves the cluster is the owner's own forward to the endpoint, and it is the
+  one hop that carries the endpoint's API key.
 
 The second point is why the routing decision belongs to the machine the request
 originates on. To give a workstation the whole cluster, make it a node. After it
@@ -377,7 +385,11 @@ A request whose model cannot be parsed keeps the ordinary non-model ordering.
 Model listings are not routed at all. The proxy fans a `GET` of `/v1/models`,
 Ollama's `/api/tags`, or llama.cpp's `/models` out to every candidate for that
 engine concurrently and merges the replies. That is why the answer is the
-cluster's inventory for that engine rather than one node's.
+cluster's inventory for that engine rather than one node's. Custom models enter
+the same inventory by a shorter path: each node publishes its endpoints'
+declared models into its own engine-manager inventory under the `custom`
+engine, so a peer's enrichment fetch — and its routing table — sees them
+without ever learning an endpoint address or key.
 
 #### Failover and Inventory Freshness
 
@@ -437,8 +449,9 @@ sits one place lower in the order.
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**All engines are counted as one pool.** Ollama, LM Studio, and llama.cpp load is
-summed, and maximum GPU pressure applies node-wide. This is conservative on a
+**All engines are counted as one pool.** Ollama, LM Studio, llama.cpp, and
+Custom endpoint load is summed, and maximum GPU pressure applies node-wide.
+This is conservative on a
 typical single-GPU machine and can underuse a multi-GPU node where the engines
 occupy different devices.
 
@@ -531,6 +544,47 @@ the Ollama desktop application and it takes `11434` for itself, so PAIR cannot,
 and requests reach that local Ollama without ever being routed. A `llama-server`
 you start yourself on `8080` does the same to the llama.cpp facade.
 
+### Custom endpoints
+
+The fourth engine kind is not an installation. **Custom** is a class of
+user-configured endpoints: external servers that speak the OpenAI chat API — a
+vLLM or llama.cpp router on another machine, a colleague's workstation — added
+by URL with an explicit port (never inferred) and an optional API key. Nothing
+is installed, started, adopted, or relocated, so none of the machinery above
+applies; the endpoints are configuration, held by the broker in
+`configs/custom-endpoints.json` under the owning account, and probed by the
+same optional worker that tracks manually added nodes. An endpoint whose host
+and port is one of this node's own facade addresses is refused when added —
+routing to yourself is a loop, not a route.
+
+Editing them happens on the node that owns them: locally through the desktop
+application, or remotely by a trusted cluster member over the same pinned mTLS
+control channel that carries remote engine control. The terminal interface
+lists them on a node's detail screen and changes nothing.
+
+What Custom shares with the managed engines is the routing plumbing:
+
+- The proxy fronts it with a fourth facade, on port `8000` by default — the
+  customary OpenAI-compatible port — and yields to whatever already holds it
+  rather than taking over. A request naming a model listed under `custom`
+  resolves to one of this node's own endpoints, or to a cluster peer whose
+  advertised inventory serves the model, dialed over the pinned mTLS ingress.
+  An unpinned peer finds no route, and a model an inventory still names but no
+  live endpoint serves gets the actionable `502` without anyone being dialed.
+- Advertised capability follows routability, not configuration: the `cu=` key
+  appears in the mDNS record only while the facade is up with at least one
+  endpoint answering, so peers never route toward a facade that would refuse
+  them. There is no on/off switch — removing the endpoint, or its probe
+  failing, is the off.
+- The API key exists to make the last hop work and goes nowhere else. It is
+  injected on the owning node on the way out to the endpoint, and never
+  appears in a log, an event payload, telemetry, or a model listing; read
+  surfaces report only that a key is configured. A caller's own
+  `Authorization` header is stripped and never reaches an endpoint.
+- Model operations stop at the boundary. PAIR does not download to, load,
+  eject, or delete on a Custom endpoint, because the models there are the
+  endpoint operator's deployments, not PAIR's catalog.
+
 ### Port Map
 
 A default installation listens on these ports:
@@ -540,6 +594,7 @@ A default installation listens on these ports:
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
 | `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
+| `8000` | OpenAI-compatible Custom proxy (user-configured external endpoints, no local engine behind it) |
 | `14318` | Node hardware and telemetry |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
@@ -568,8 +623,9 @@ browsing themselves.
 The scanner advertises one `_nvpair-node._tcp` multicast DNS (mDNS) record for
 each host, and that record carries two kinds of content:
 
-- The ports its sibling services registered: node-info, engine proxies, errors,
-  workloads, cluster manager, and engine manager
+- The ports its sibling services registered: node-info, engine proxies —
+  including the Custom facade, advertised as `cu=` only while Custom is
+  actually routable — errors, workloads, cluster manager, and engine manager
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
   reach it, with `ip=` for the address the node ranks first and `ips=` for the
   whole ranked list
@@ -582,7 +638,9 @@ that answered.
 One consolidated record instead of one for each service is a deliberate
 constraint. mDNS TXT records are small, so per-service records would not hold the
 payload. Bulky facts like the model list are fetched over HTTP afterwards instead
-of being crammed into TXT.
+of being crammed into TXT. Custom adds a fourth short port key and nothing
+longer: endpoint model sets travel through engine-manager's HTTP inventory,
+and credentials travel nowhere the record could be read.
 
 ### Node Identity
 
@@ -724,7 +782,10 @@ The important boundaries are:
    designed to use pinned certificates and mutual TLS after pairing. This does
    not protect every local or discovery endpoint.
 7. **Third-party boundary.** Engines, models, catalogs, and update mechanisms
-   have their own network behavior and terms.
+   have their own network behavior and terms. Custom endpoints join that
+   boundary by definition: a request routed to one leaves PAIR's trust circle
+   along with the endpoint's own key, carried on that last hop only. A custom
+   endpoint is a server somebody else runs, and PAIR treats it as such.
 
 Refer to [SECURITY.md](../SECURITY.md) for deployment assumptions and reporting.
 
