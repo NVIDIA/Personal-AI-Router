@@ -197,17 +197,10 @@ func (m *Monitor) loop(ctx context.Context, events <-chan struct{}) {
 			m.closeSubs()
 			return
 		case <-events:
-			// (Re)arm the debounce window. Stop-and-drain before Reset is
-			// the safe pattern for a timer that may have already fired.
+			// Restart the debounce window after each event.
 			if timer == nil {
 				timer = time.NewTimer(m.debounce)
 			} else {
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
 				timer.Reset(m.debounce)
 			}
 			timerC = timer.C
