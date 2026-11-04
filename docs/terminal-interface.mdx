@@ -348,14 +348,20 @@ press `r` to try again.
 
 llama.cpp's catalog opens on popular GGUF models from a few well-known
 publishers, but it can download any GGUF model on Hugging Face, so there `/`
-searches all of Hugging Face instead of filtering the list. Press `c` to go back
-to the starting list.
+searches all of Hugging Face instead of filtering the list. Colibri's catalog
+starts with the models of Colibri's own setup list, such as DeepSeek V4 Flash
+and Kimi K3, followed by every public Hugging Face repository tagged
+`colibri`. `/` searches within that tag and that list. Press `c` to go back to
+the starting list.
 
 Press `n` instead if you already know exactly what you want and would rather type
 it. Each engine names models its own way: an Ollama tag such as `llama3.2`, a
 Hugging Face repository for LM Studio, and a repository with its quantization
-for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`. Either way,
-downloading needs a running engine, and progress appears on the status line.
+for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`, and a whole
+repository for Colibri, such as `Justvugg/Qwen3-Coder-30B-A3B-colibri-int4`.
+Downloading needs a running engine, except for Colibri, which writes its model
+store directly; progress appears on the status line. Colibri has no eject: it
+serves one model at a time, and loading another restarts it.
 
 Restart and uninstall need PAIR to own the engine process, so they only apply
 to the machine you are sitting on. They are hidden on a peer rather than

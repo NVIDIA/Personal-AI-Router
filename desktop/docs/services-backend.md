@@ -257,11 +257,12 @@ reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
 good metrics and never marks a node offline.
 
 The model catalogue is backend-owned. `nvpair-engine-manager` serves the curated
-Ollama, LM Studio, and llama.cpp lists over `engine:catalog`, filtered for the
+Ollama, LM Studio, llama.cpp, and Colibri lists over `engine:catalog`, filtered for the
 operating system and CPU a model will install on; Electron relays the call and
 maps rows for the renderer, which then sends pull-ready model IDs back through
-the engine manager. llama.cpp's source is also searchable: the relay passes the
-model hub's query through, and the engine manager searches Hugging Face with it.
+the engine manager. llama.cpp's and Colibri's sources are also searchable: the
+relay passes the model hub's query through, and the engine manager searches
+Hugging Face with it (GGUF repositories, or the `colibri` tag).
 The Ollama reply is a single multi-megabyte frame, so every hop on its path
 shares `jsonrpc.WorkerFrameBytes`.
 
