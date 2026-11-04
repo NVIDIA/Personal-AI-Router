@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 
 
 `scripts/inference-dispatcher` is a standalone HTTP client for exercising
-Ollama, LM Studio, and llama.cpp-compatible servers. It deliberately has no
+Ollama, LM Studio, llama.cpp-compatible, and Colibri servers. It deliberately has no
 knowledge of NVIDIA PAIR, its broker, Electron, JSON-RPC, discovery, or
 proxy implementation.
 Pointing it at a compatible proxy is indistinguishable from pointing it at a
@@ -25,6 +25,7 @@ The executable uses only the Go standard library.
 ./scripts/inference-dispatcher.sh --count 5 --mode parallel          # five concurrent prompts
 ./scripts/inference-dispatcher.sh --backend lmstudio                 # LM Studio's OpenAI-compatible API
 ./scripts/inference-dispatcher.sh --backend llamacpp                 # llama.cpp's OpenAI-compatible API
+./scripts/inference-dispatcher.sh --backend colibri                  # Colibri's OpenAI-compatible API
 ./scripts/inference-dispatcher.sh --list-models                      # live inventory as JSON
 ./scripts/inference-dispatcher.sh --help
 ```
@@ -83,7 +84,7 @@ Pass the file with `--config path/to/config.json` or
 `INFERENCE_DISPATCHER_*` environment equivalent.
 
 The client always connects to `127.0.0.1`. The default ports are `11434` for
-Ollama, `1234` for LM Studio, and `8080` for llama.cpp. These are the ports the
+Ollama, `1234` for LM Studio, `8080` for llama.cpp, and `8000` for Colibri. These are the ports the
 router's proxies claim, so requests enter the cluster router rather than a
 single engine. Use `--port` to select another local port.
 
@@ -96,6 +97,8 @@ single engine. Use `--port` to select another local port.
 - LM Studio inference: `POST /v1/chat/completions`
 - llama.cpp inventory: `GET /v1/models`
 - llama.cpp inference: `POST /v1/chat/completions`
+- Colibri inventory: `GET /v1/models`
+- Colibri inference: `POST /v1/chat/completions`
 
 `/v1/models` is queried first because the LM Studio proxy answers it by fanning
 out across the cluster, while `/api/v1/models` is forwarded to a single node.

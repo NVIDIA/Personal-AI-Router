@@ -149,7 +149,7 @@ The existing engine-manager suite also exercises the JSON-RPC stdio path.
 
 ## Networking adapter coverage
 
-The bundled engines are Ollama, LM Studio, and llama.cpp. The shared parser
+The bundled engines are Ollama, LM Studio, llama.cpp, and Colibri. The shared parser
 contains no engine name checks. Their mandatory networking declarations and all
 platform variants are pinned by TestBundledNetworkingControls; adding an engine
 requires extending that inventory and reviewing its networking alternatives.

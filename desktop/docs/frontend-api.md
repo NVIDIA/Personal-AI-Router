@@ -99,11 +99,14 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
-`EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
-`searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
-live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
-query performs an explicit bounded search across public Hugging Face GGUF
-repositories; other calls return the populated engine catalog. llama.cpp pull
+`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and
+`colibri`. `searchHub(engineType, query?)` serves Ollama's locked local catalog
+and cached live Hugging Face catalogs for LM Studio, llama.cpp, and Colibri. A
+non-empty llama.cpp query performs an explicit bounded search across public
+Hugging Face GGUF repositories, and a non-empty Colibri query searches within
+the `colibri` tag; other calls return the populated engine catalog. Colibri pull
+IDs are `owner/repository` ids; load switches the served model by restarting
+the engine, and there is no unload. llama.cpp pull
 IDs are exact `owner/repository:quantization` values; load, unload, and delete
 all use that same exact id.
 
@@ -205,8 +208,10 @@ Commands return no state. Renderer stores update from
 - the node-local Inference Demo (`inferenceDemo.getState()` / `start()` / `stop()`
   and the `demo:state` push). `start()` rejects if a demo is already running on
   this node or if no Ollama, LM Studio, or llama.cpp proxy exposed a
-  text-generation model; callers show that as an ordinary error banner. Demo
-  state is not synchronized across nodes.
+  text-generation model; callers show that as an ordinary error banner. Colibri
+  is deliberately not driven by the demo, because a server that holds one model
+  per process cannot absorb its burst of concurrent agents. Demo state is not
+  synchronized across nodes.
 
 `demo:state` is a main-to-renderer broadcast rather than a service push, so it is
 typed in `IpcPushChannelMap` (`shared/types/ipc-channels.ts`) instead of the

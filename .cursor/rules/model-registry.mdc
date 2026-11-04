@@ -1,5 +1,5 @@
 ---
-description: Backend-owned engine model catalogue (Ollama committed list + LM Studio and llama.cpp Hugging Face catalogs)
+description: Backend-owned engine model catalogue (Ollama committed list + LM Studio, llama.cpp and Colibri Hugging Face catalogs)
 alwaysApply: true
 ---
 <!--
@@ -14,7 +14,7 @@ SPDX-License-Identifier: Apache-2.0
   It lives in the backend because both front ends need it: the desktop app's
   Add Model modal and the terminal interface's model browser. There is **no
   shared GGUF registry** — each enabled engine has exactly one curated source,
-  and only llama.cpp's can be searched.
+  and only llama.cpp's and Colibri's can be searched.
 - **Ollama**: a **locked, committed list**, not a live scrape.
   `services/nvpair-engine-manager/catalog/ollama-models.json` (wire shape
   `{ scrapedAt, source, count, models: [...] }`) is compiled in with `go:embed`,
@@ -45,8 +45,23 @@ SPDX-License-Identifier: Apache-2.0
   exact `owner/repository:Q4_K_M` pull id; other quantizations are not listed.
   The reply says `searchable: true`; other sources ignore a query and return
   their whole list. **Never log the user's search text.**
-- The LM Studio list, the llama.cpp list, and each llama.cpp query share one
-  cache: 6-hour TTL, a coalescing guard so concurrent callers share one request,
+- **Colibri**: a **live fetch** of every open Hugging Face repository tagged
+  `colibri` (`filter=colibri&full=true`, top 200 by downloads). It is
+  **searchable** within the tag. Only repositories with a root `config.json`
+  are kept, only when the hub's parse of that `config.json` (`config=true`)
+  names a `model_type` the Colibri manifest's `model_types` lists, and the
+  ports' builds (tags `speedycolibri` and `peng`, or a `speedy-colibri` id)
+  and non-text-generation pipelines are dropped. Each
+  result is the `owner/repo` id, which `pull_model` (an `hf_snapshot`)
+  downloads whole into `~/colibri-models/<owner>/<repo>`. Ahead of the tagged
+  repositories come the models the Colibri manifest's `catalog` lists by
+  repository (Colibri v2.1.0's own `coli setup` list, with vendors' untagged
+  checkpoints such as DeepSeek V4 Flash and Kimi K3), each fetched for its live
+  downloads and date and dropped if it is now gated. The list lives in the
+  manifest, not in Go, and so do its download rules (pinned `revision`,
+  `exclude` patterns, `after_download` Python steps).
+- The LM Studio list, the llama.cpp list, the Colibri list, and each search
+  query share one cache: 6-hour TTL, a coalescing guard so concurrent callers share one request,
   and a failure backoff so a dead upstream is not re-dialled on every call.
 - All sources normalize to `CatalogModel`, which the desktop maps to the shared
   `EngineHubModel` (`desktop/src/shared/types/engine-api.ts`).
@@ -68,7 +83,7 @@ SPDX-License-Identifier: Apache-2.0
 - The desktop relays through
   `desktop/src/electron/service-bridge/model-catalog.ts`, which exposes
   `getEngineHubModels(engineType, query?)` and `warmEngineHubs()` (warms the
-  LM Studio and llama.cpp catalogs — Ollama needs none). The `engine:search-hub`
+  LM Studio, llama.cpp and Colibri catalogs — Ollama needs none). The `engine:search-hub`
   handler in `empty-handlers.ts` calls the former; the `overview:ready` handler
   in `window.ipc.ts` calls the latter. Warm on renderer-ready, **not** on
   service connect: a catalog fetch started before the window has painted
@@ -77,8 +92,9 @@ SPDX-License-Identifier: Apache-2.0
 - Both front ends fetch an engine's full catalog once (cached per-engine) and
   filter **locally** as the user types. The desktop renderer
   (`src/ui/components/ModelHub/`) sorts client-side by Updated / Name / Size;
-  for llama.cpp, Enter/Search sends an explicit query and merges the response
-  with matching listed rows. The terminal interface's browser sends `/` as a
+  for a source whose `engineHub.searchable` capability is set (llama.cpp and
+  Colibri), Enter/Search sends an explicit query and merges the response with
+  matching listed rows. The terminal interface's browser sends `/` as a
   query for a searchable source and shows its results. Pulling goes through the
   engine manager (`engine:pull-model` → `pull_model`); the catalogue only
   produces the pull-ready id.
