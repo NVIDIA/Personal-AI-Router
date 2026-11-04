@@ -227,10 +227,7 @@ type hfSibling struct {
 type catalogService struct {
 	client *http.Client
 
-	ollamaOnce sync.Once
-	ollama     []CatalogModel
-	ollamaMeta ollamaLibraryFile
-	ollamaErr  error
+	ollamaCatalog func() (CatalogResult, error)
 
 	lmStudio *listingCache
 	llamaCPP *listingCache
@@ -282,6 +279,7 @@ func newCatalogService() *catalogService {
 	// upstream (or a captive portal) move the request somewhere else.
 	c := &catalogService{
 		client:        newEngineHTTPClient(catalogHTTPTimeout),
+		ollamaCatalog: sync.OnceValues(loadOllamaCatalog),
 		llamaSearches: map[string]*listingCache{},
 	}
 	c.lmStudio = &listingCache{label: "lm studio catalog", fetch: c.fetchLmStudio}
@@ -296,19 +294,14 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 	platform, arch = catalogTarget(platform, arch)
 	switch normalizeCatalogEngine(engine) {
 	case "ollama":
-		models, meta, err := c.ollamaCatalog()
+		result, err := c.ollamaCatalog()
 		if err != nil {
 			return CatalogResult{}, err
 		}
-		return CatalogResult{
-			Models:   models,
-			Source:   meta.Source,
-			Platform: platform,
-			Arch:     arch,
-			// The committed Ollama list carries no machine-locked entries, so
-			// nothing is dropped and the caller's target does not change it.
-			FetchedAt: meta.ScrapedAt,
-		}, nil
+		// The committed Ollama list carries no machine-locked entries, so
+		// nothing is dropped and the caller's target does not change it.
+		result.Platform, result.Arch = platform, arch
+		return result, nil
 	case "lmstudio":
 		models, fetchedAt, err := c.lmStudio.get(ctx)
 		if err != nil {
@@ -407,25 +400,23 @@ func normalizeCatalogEngine(engine string) string {
 	}
 }
 
-// ollamaCatalog parses the embedded list once and serves it thereafter.
-func (c *catalogService) ollamaCatalog() ([]CatalogModel, ollamaLibraryFile, error) {
-	c.ollamaOnce.Do(func() {
-		raw, err := catalogFS.ReadFile(ollamaCatalogPath)
-		if err != nil {
-			c.ollamaErr = fmt.Errorf("read embedded ollama catalog: %w", err)
-			return
-		}
-		var file ollamaLibraryFile
-		if err := json.Unmarshal(raw, &file); err != nil {
-			c.ollamaErr = fmt.Errorf("parse embedded ollama catalog: %w", err)
-			return
-		}
-		c.ollamaMeta = file
-		c.ollama = normalizeOllamaRows(file.Models)
-		slog.Info("ollama model catalog loaded",
-			"models", len(c.ollama), "scrapedAt", file.ScrapedAt)
-	})
-	return c.ollama, c.ollamaMeta, c.ollamaErr
+func loadOllamaCatalog() (CatalogResult, error) {
+	raw, err := catalogFS.ReadFile(ollamaCatalogPath)
+	if err != nil {
+		return CatalogResult{}, fmt.Errorf("read embedded ollama catalog: %w", err)
+	}
+	var file ollamaLibraryFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return CatalogResult{}, fmt.Errorf("parse embedded ollama catalog: %w", err)
+	}
+	models := normalizeOllamaRows(file.Models)
+	slog.Info("ollama model catalog loaded",
+		"models", len(models), "scrapedAt", file.ScrapedAt)
+	return CatalogResult{
+		Models:    models,
+		Source:    file.Source,
+		FetchedAt: file.ScrapedAt,
+	}, nil
 }
 
 // normalizeOllamaRows converts committed rows into the shared shape, dropping

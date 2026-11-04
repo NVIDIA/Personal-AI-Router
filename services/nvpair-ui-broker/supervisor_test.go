@@ -71,9 +71,9 @@ func TestOnSpawned_DoesNotBlockStop(t *testing.T) {
 	sup := newSupervisor("blocking-replay", noRestartPolicy(), func() (supervisedHandle, error) {
 		return newFakeHandle(), nil
 	})
-	var once sync.Once
+	notifyEntered := sync.OnceFunc(func() { close(entered) })
 	sup.onSpawned = func() {
-		once.Do(func() { close(entered) })
+		notifyEntered()
 		<-release
 	}
 	require.NoError(t, sup.Start(), "Start")

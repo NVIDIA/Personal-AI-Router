@@ -140,8 +140,7 @@ func TestManager_SnapshotCannotResurrectRemovedWorkload(t *testing.T) {
 
 	paused := make(chan struct{})
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseSnapshot := func() { releaseOnce.Do(func() { close(release) }) }
+	releaseSnapshot := sync.OnceFunc(func() { close(release) })
 	defer releaseSnapshot()
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(&snapshotPauseHandler{paused: paused, release: release}))

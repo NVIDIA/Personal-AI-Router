@@ -45,18 +45,21 @@ func TestOllamaCatalog_LoadsFromEmbeddedFile(t *testing.T) {
 	}
 }
 
-// TestOllamaCatalogIsServedFromCache checks the embedded list is parsed once
-// rather than on every request: it is several thousand entries.
-func TestOllamaCatalog_IsServedFromCache(t *testing.T) {
+// The embedded list has several thousand entries, so requests for different
+// targets must reuse it while keeping their own target metadata.
+func TestOllamaCatalog_ReusesModelsAcrossRequestTargets(t *testing.T) {
 	c := newCatalogService()
-	first, _, err := c.ollamaCatalog()
+	first, err := c.Catalog(context.Background(), "ollama", "linux", "amd64", "")
 	require.NoError(t, err, "first load")
-	second, _, err := c.ollamaCatalog()
+	second, err := c.Catalog(context.Background(), "ollama", "darwin", "arm64", "")
 	require.NoError(t, err, "second load")
-	require.Len(t, second, len(first), "repeat load produced a different list")
-	if len(first) > 0 {
-		assert.Same(t, &first[0], &second[0], "catalog re-parsed instead of being reused")
-	}
+	assert.Equal(t, "linux", first.Platform)
+	assert.Equal(t, "amd64", first.Arch)
+	assert.Equal(t, "darwin", second.Platform)
+	assert.Equal(t, "arm64", second.Arch)
+	require.NotEmpty(t, first.Models)
+	require.Len(t, second.Models, len(first.Models), "repeat load produced a different list")
+	assert.Same(t, &first.Models[0], &second.Models[0], "catalog re-parsed instead of being reused")
 }
 
 // TestOllamaCatalogFitsInAFrame is the guard for the failure that made this

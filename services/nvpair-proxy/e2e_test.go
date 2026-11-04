@@ -34,32 +34,28 @@ import (
 // tests in this package, and moving the whole file behind a build tag —  the
 // obvious alternative — would take the only end-to-end test of the shipped
 // artifact out of the CI gate entirely, in the change that replaces that
-// artifact. A sync.Once pays the cost once, only when an e2e case runs.
-var (
-	proxyBinOnce sync.Once
-	proxyBinPath string
-	proxyBinErr  error
-)
+// artifact. OnceValues pays the cost once, only when an e2e case runs.
+var buildProxyBinary = sync.OnceValues(func() (string, error) {
+	tmp, err := os.MkdirTemp("", "nvpair-proxy-e2e-*")
+	if err != nil {
+		return "", err
+	}
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	path := filepath.Join(tmp, "nvpair-proxy"+suffix)
+	if out, err := exec.Command("go", "build", "-o", path, ".").CombinedOutput(); err != nil {
+		return path, fmt.Errorf("build nvpair-proxy: %w\n%s", err, out)
+	}
+	return path, nil
+})
 
 func proxyBinary(t *testing.T) string {
 	t.Helper()
-	proxyBinOnce.Do(func() {
-		tmp, err := os.MkdirTemp("", "nvpair-proxy-e2e-*")
-		if err != nil {
-			proxyBinErr = err
-			return
-		}
-		suffix := ""
-		if runtime.GOOS == "windows" {
-			suffix = ".exe"
-		}
-		proxyBinPath = filepath.Join(tmp, "nvpair-proxy"+suffix)
-		if out, err := exec.Command("go", "build", "-o", proxyBinPath, ".").CombinedOutput(); err != nil {
-			proxyBinErr = fmt.Errorf("build nvpair-proxy: %w\n%s", err, out)
-		}
-	})
-	require.NoError(t, proxyBinErr)
-	return proxyBinPath
+	path, err := buildProxyBinary()
+	require.NoError(t, err)
+	return path
 }
 
 type e2eFrame struct {

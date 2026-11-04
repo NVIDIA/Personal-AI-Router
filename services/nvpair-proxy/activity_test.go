@@ -64,8 +64,7 @@ func TestStreamedBytes_ReportNodeActivity(t *testing.T) {
 func TestNodeActivity_IsNotReportedWithoutUpstreamBytes(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		release := make(chan struct{})
-		var releaseOnce sync.Once
-		doRelease := func() { releaseOnce.Do(func() { close(release) }) }
+		doRelease := sync.OnceFunc(func() { close(release) })
 
 		received := make(chan struct{}, 1)
 		silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
