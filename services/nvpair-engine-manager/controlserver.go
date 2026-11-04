@@ -60,6 +60,7 @@ func (s *controlServer) requirePinCaller(h pinnedPeerHandler) http.HandlerFunc {
 func (s *controlServer) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	s.settingsRoutes(mux)
+	s.customRoutes(mux)
 	mux.HandleFunc(controlEnginesPath, s.requirePin(s.handleEngines))
 	mux.HandleFunc(controlInstallPath, s.requirePin(s.handleInstall))
 	mux.HandleFunc(controlPullPath, s.requirePin(s.handlePull))

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"nvpair-shared/engines"
 	settings "nvpair-shared/enginesettings"
 )
 
@@ -33,6 +34,18 @@ func (b *Broker) handleSettingsPortRPC(msg *Message, proxyEngine string) {
 	}
 	if proxyEngine != "" {
 		p.Engine = proxyEngine
+	}
+	// An unmanaged engine kind has no engine-side process, so "move the
+	// engine's port" addresses nothing — and acting on it could relocate an
+	// unrelated process onto the endpoint's own port. Only the facade port
+	// (the proxyEngine path above) is configurable for a custom endpoint.
+	// Gated here rather than in the settings worker because a stale client
+	// (an older TUI enumerating the engine set) sends this shape by design.
+	if proxyEngine == "" {
+		if e, known := engines.ByName(p.Engine); known && e.Unmanaged {
+			_ = b.codec.RespondError(msg.ID, -32602, p.Engine+" is an unmanaged engine kind: only its proxy port is configurable")
+			return
+		}
 	}
 	if b.rejectOllamaHostAliasPort(msg, p.Port, p.Engine) {
 		return

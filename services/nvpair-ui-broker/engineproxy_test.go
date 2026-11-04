@@ -43,6 +43,10 @@ func TestEngineHealthProbe_UsesEngineSpecificEndpoint(t *testing.T) {
 	test("ollama", "/")
 	test("lmstudio", "/v1/models")
 	test("llamacpp", "/health")
+	// Custom fronts OpenAI-compatible servers, which answer liveness on the
+	// model list. The empty default (a GET of the root) is Ollama's
+	// convention and would read every custom endpoint as down.
+	test("custom", "/v1/models")
 }
 
 // proxyport.go and lmstudioport.go restate ports and error-ID prefixes the
@@ -61,6 +65,12 @@ func TestBrokerConstants_MatchCanonicalEngineTable(t *testing.T) {
 	}
 	test("ollama", managedOllamaFacadePort, managedOllamaBackendStart, portOwnershipBlockedID)
 	test("lmstudio", managedLMStudioFacadePort, managedLMStudioBackendStart, lmstudioPortOwnershipBlockedID)
+	// Literal 8002/0 (not restated constants): custom ships no broker-side
+	// port constant, so the shared table's values are asserted directly.
+	// The wire prefix is pinned here as a literal because it is a cross-
+	// process name; its absence would make peer addressing of the custom
+	// facade silently unresolvable.
+	test("custom", 8002, 0, "custom-proxy:port-ownership-blocked")
 	assert.Equal(t, ollamaProxyProfile.ComponentName()+":port-bumped", proxyPortBumpedID, "bumped error id")
 }
 
@@ -78,6 +88,11 @@ func TestEngineOwnership_AssignsManagedAndExternalListeners(t *testing.T) {
 	test("ollama", adoptedEngine)
 	test("lmstudio", managedEngine)
 	test("llamacpp", managedEngine)
+	// The broker has no authority over whatever listens behind a custom
+	// endpoint's URL, and custom never takes the planner path that reads
+	// Ownership. Pinned anyway: a flip to managedEngine would read as
+	// "relocatable", which is exactly the claim the custom kind denies.
+	test("custom", adoptedEngine)
 }
 
 // The two engines' port choreography diverges on exactly one input, and this is
@@ -127,7 +142,8 @@ func TestParseProxyEngines_ValidatesSelectedEngineNames(t *testing.T) {
 			require.Equal(t, append([]string{}, want...), append([]string{}, got...))
 		})
 	}
-	test("default set", "ollama,lmstudio,llamacpp,vllm", []string{"ollama", "lmstudio", "llamacpp", "vllm"}, false)
+	test("default set", "ollama,lmstudio,llamacpp,vllm,custom", []string{"ollama", "lmstudio", "llamacpp", "vllm", "custom"}, false)
+	test("legacy three-name csv", "ollama,lmstudio,llamacpp", []string{"ollama", "lmstudio", "llamacpp"}, false)
 	test("single engine", "lmstudio", []string{"lmstudio"}, false)
 	test("whitespace and blanks are tolerated", " ollama , , lmstudio ", []string{"ollama", "lmstudio"}, false)
 	test("duplicates collapse", "ollama,ollama", []string{"ollama"}, false)

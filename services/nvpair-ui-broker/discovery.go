@@ -130,11 +130,20 @@ func (n EnrichedNode) storeKey() string {
 // once the manual node learns its real UUID, so the store tracks per-source
 // ownership and only forgets a record when no source claims it — a manual
 // remove (or a manual-nodes crash) must not evict a still-live scanner node.
+// A Custom endpoint is the third feed: its derived key never collides with a
+// host-keyed scanner/manual record, but it shares the slot machinery so a
+// host that is both advertised and configured keeps one record, with the
+// richer feed winning the projection. A custom-only record never projects:
+// the discovery wire lists machines, and an endpoint is not one. Its slot
+// stays in the store as internal routing state — the bridge's claim book-
+// keeping, the advertised model union, and the ingress backend set all read
+// it directly, never through Snapshot.
 type nodeSource int
 
 const (
 	sourceScanner nodeSource = iota
 	sourceManual
+	sourceCustom
 )
 
 // storedNode keeps a verified host by UUID or an unverified discovery by its
@@ -145,6 +154,7 @@ const (
 type storedNode struct {
 	scanner  *EnrichedNode
 	manual   *EnrichedNode
+	custom   *EnrichedNode
 	lastSeen time.Time
 }
 
@@ -219,16 +229,23 @@ func (s *discoveryStore) verifiedSource(hostUUID string, source nodeSource) bool
 
 // projected returns the authoritative directory record. Scanner supplies identity,
 // addresses, and models when both sources describe a host. Display hardware may
-// come from the manual source when both records have matching verification.
+// come from the manual source when both records have matching verification. A
+// Custom endpoint is the least authoritative view of a shared host: a configured
+// external URL describes one endpoint, not a machine.
 func (sn storedNode) projected() EnrichedNode {
 	if sn.scanner != nil {
 		return *sn.scanner
 	}
-	return *sn.manual
+	if sn.manual != nil {
+		return *sn.manual
+	}
+	return *sn.custom
 }
 
 // claimed reports whether any source still owns this record.
-func (sn storedNode) claimed() bool { return sn.scanner != nil || sn.manual != nil }
+func (sn storedNode) claimed() bool {
+	return sn.scanner != nil || sn.manual != nil || sn.custom != nil
+}
 
 // setSource records (source == nil clears) one source's payload.
 func (sn *storedNode) setSource(source nodeSource, n *EnrichedNode) {
@@ -237,6 +254,8 @@ func (sn *storedNode) setSource(source nodeSource, n *EnrichedNode) {
 		sn.scanner = n
 	case sourceManual:
 		sn.manual = n
+	case sourceCustom:
+		sn.custom = n
 	}
 }
 
@@ -246,6 +265,8 @@ func (sn storedNode) source(source nodeSource) *EnrichedNode {
 		return sn.scanner
 	case sourceManual:
 		return sn.manual
+	case sourceCustom:
+		return sn.custom
 	}
 	return nil
 }
@@ -374,9 +395,76 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 	return gone
 }
 
+// hasClaim reports whether source currently holds a claim on key. The custom
+// bridge reads it before retracting a routing candidate: no claim means no
+// candidate was ever issued under that key, so there is nothing to retract
+// and the broker↔proxy wire stays quiet.
+func (s *discoveryStore) hasClaim(key string, source nodeSource) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sn, ok := s.nodes[key]
+	return ok && sn.source(source) != nil
+}
+
+// customModelUnion returns the de-duplicated, sorted union of the models
+// reported by every Custom-slot record in the store. Sort is load-bearing,
+// not cosmetic: the advertise runner's change gate keys on the joined set, so
+// a mere iteration-order shuffle must not repaint the broker↔engine-manager
+// wire.
+func (s *discoveryStore) customModelUnion() []string {
+	s.mu.RLock()
+	seen := make(map[string]bool)
+	var out []string
+	for _, sn := range s.nodes {
+		if sn.custom == nil {
+			continue
+		}
+		for _, m := range sn.custom.Models {
+			if m != "" && !seen[m] {
+				seen[m] = true
+				out = append(out, m)
+			}
+		}
+	}
+	s.mu.RUnlock()
+	slices.Sort(out)
+	return out
+}
+
+// customSlots copies out the per-endpoint Custom records: endpoint key to the
+// models reported when the endpoint was bridged. Unlike customModelUnion this
+// keeps per-endpoint attribution — the ingress backend set must say which
+// endpoint serves which model, and the per-entry model list is a routing
+// contract, not a display hint. Iteration order is deliberately left to the
+// caller (the set builder sorts), because callers that page through the map
+// need keys, not a flattened union.
+func (s *discoveryStore) customSlots() map[string][]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]string, len(s.nodes))
+	for key, sn := range s.nodes {
+		if sn.custom == nil {
+			continue
+		}
+		out[key] = append([]string(nil), sn.custom.Models...)
+	}
+	return out
+}
+
 // Snapshot returns the client view used by discovery:get-nodes and
 // discovery:nodes-changed, including the latest hardware with its current age.
 // Records are sorted by id for stable rendering.
+//
+// Custom-only records are deliberately not projected. Every consumer of
+// this wire — the desktop's Add Node list, the TUI node views, and the
+// scheduler's node universe — reads an entry as a machine it can invite,
+// poll, or attribute work to, and a Custom endpoint is one configured
+// URL, not a host. (A loopback endpoint once surfaced in Add Node as
+// "CUSTOM:HTTP://…", inviting nothing but a failed pairing attempt.) The
+// record itself stays in the store: the bridge keys its routing claim on
+// it, and the advertise and ingress planes read the custom slots
+// directly, never through this method. A record shared with a scanner or
+// manual feed still projects, from the richer payload as usual.
 func (s *discoveryStore) Snapshot() []AvailableNode {
 	return s.snapshot(false)
 }
@@ -392,6 +480,11 @@ func (s *discoveryStore) snapshot(scheduling bool) []AvailableNode {
 	s.mu.RLock()
 	out := make([]AvailableNode, 0, len(s.nodes))
 	for _, sn := range s.nodes {
+		// A Custom endpoint is not a machine: a record no scanner or manual feed
+		// also claims never reaches a client, in either snapshot.
+		if sn.custom != nil && sn.scanner == nil && sn.manual == nil {
+			continue
+		}
 		// Explicit manual configurations independently authorize engine routing.
 		if scheduling && sn.manual == nil {
 			verification := sn.scanner.IdentityVerification

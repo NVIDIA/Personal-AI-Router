@@ -284,6 +284,7 @@ func TestIsHostname_RejectsNonHosts(t *testing.T) {
 	assert.False(t, isHostname("engine:status"))                        // JSON-RPC method
 	assert.False(t, isHostname("ollama"))                               // engine name
 	assert.False(t, isHostname("lmstudio"))                             // engine name
+	assert.False(t, isHostname("custom"))                               // engine name
 	assert.False(t, isHostname("127.0.0.1"))                            // address
 	assert.False(t, isHostname("11111111-2222-4333-8444-555555555555")) // uuid
 	assert.False(t, isHostname("C:\\Users\\bob"))                       // path
@@ -598,6 +599,17 @@ func TestModelNames_AreReplacedOnlyWhenRequested(t *testing.T) {
 	}
 }
 
+// The engine keys of a modelsByEngine map arrive both as map keys and — in
+// hand-written fixtures and older logs — as bare strings. An engine key must
+// never become a model entity, so every engine id sits on the non-model list.
+func TestIsModelName_RejectsEngineNames(t *testing.T) {
+	assert.False(t, isModelName("ollama"))
+	assert.False(t, isModelName("lmstudio"))
+	assert.False(t, isModelName("custom"), "custom must not be swept as a model name")
+	assert.True(t, isModelName("qwen3.6:27b"))
+	assert.True(t, isModelName("mtplx/mtplx-flash-next"))
+}
+
 // A key-driven rule describes what a value means and must not fire on the key
 // text. In "models":[{"model":"x"}] the key "model" arrives under the path
 // "models", and was previously read as a model named "model".
@@ -618,6 +630,28 @@ func TestKeyText_IsNotTreatedAsAValue(t *testing.T) {
 	assert.NotNil(t, findEntity(res.entities, "Lab One"), "cluster label value was not learned")
 	// Structural keys must survive so the record still parses.
 	assert.Contains(t, res.output, `"models"`, "the models key was rewritten")
+}
+
+// The collector reads log text only, chosen by an allow-list of file names.
+// custom-endpoints.json will sit beside the logs in the app-data directory and
+// carries API keys, so this pins the reason it stays out of a bundle today —
+// the allow-list — rather than trusting a future exclusion list.
+func TestLogFileDiscovery_NeverReadsCredentialFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "custom-endpoints.json"),
+		[]byte(`{"endpoints":[{"id":"mtplx","base_url":"http://10.0.0.9:8000","api_key":"sk-MUST-NOT-BE-COLLECTED"}]}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, activeLogName), []byte("{}\n"), 0o600))
+
+	rotation, bundles, err := logFilesInDir(dir)
+	require.NoError(t, err, "log discovery")
+
+	assert.Equal(t, []string{filepath.Join(dir, activeLogName)}, rotation,
+		"only the log rotation pair is read")
+	assert.Empty(t, bundles, "no exported bundles present")
+	for _, path := range append(append([]string{}, rotation...), bundles...) {
+		assert.NotEqual(t, "custom-endpoints.json", filepath.Base(path),
+			"credential files must stay out of the bundle")
+	}
 }
 
 func keysOf(m map[string]any) []string {
