@@ -24,10 +24,9 @@ func watchChanges(ctx context.Context, onEvent func()) {
 		return
 	}
 
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		_ = unix.Close(fd)
-	}()
+	})
 
 	buf := make([]byte, 4096)
 	for {

@@ -281,10 +281,9 @@ func (r *Responder) Run(ctx context.Context) error {
 
 	go r.watchAddrs(ctx)
 
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		_ = udpConn.Close()
-	}()
+	})
 
 	buf := make([]byte, 65536)
 	for {

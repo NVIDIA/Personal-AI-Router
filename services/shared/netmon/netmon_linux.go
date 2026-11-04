@@ -35,10 +35,9 @@ func watchChanges(ctx context.Context, onEvent func()) {
 	}
 
 	// Close on cancellation to unblock the blocking Read below.
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		_ = unix.Close(fd)
-	}()
+	})
 
 	buf := make([]byte, 65536)
 	for {
