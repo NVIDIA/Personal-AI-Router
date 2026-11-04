@@ -296,8 +296,7 @@ func TestPlanToolCalling_KeepsTheParserTheUserChose(t *testing.T) {
 	}
 }
 
-func TestGPUMemoryFromQuery_ReadsFirstGPUAndFallsBackOnUnifiedMemory(t *testing.T) {
-	withSystemMemory(t, "MemTotal: 134217728 kB\nMemAvailable: 104857600 kB\n")
+func TestGPUMemoryFromQuery_ReadsFirstGPUAndRejectsUnavailableValues(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		out         string
@@ -306,8 +305,10 @@ func TestGPUMemoryFromQuery_ReadsFirstGPUAndFallsBackOnUnifiedMemory(t *testing.
 	}{
 		{"discrete GPU, in MiB", "49140, 48600\n", 49140 << 20, 48600 << 20, true},
 		{"first GPU of several", "24576, 20000\n49140, 48600\n", 24576 << 20, 20000 << 20, true},
-		{"DGX Spark reports N/A", "[N/A], [N/A]\n", 128 * gib, 97 * gib, true},
-		{"not supported", "[Not Supported], [Not Supported]\n", 128 * gib, 97 * gib, true},
+		{"missing GPU memory", "[N/A], [N/A]\n", 0, 0, false},
+		{"not supported", "[Not Supported], [Not Supported]\n", 0, 0, false},
+		{"negative free memory", "24576, -1\n", 0, 0, false},
+		{"free memory greater than total", "24576, 65536\n", 0, 0, false},
 		{"malformed", "error\n", 0, 0, false},
 		{"empty", "", 0, 0, false},
 	} {
@@ -317,18 +318,5 @@ func TestGPUMemoryFromQuery_ReadsFirstGPUAndFallsBackOnUnifiedMemory(t *testing.
 				t.Fatalf("gpuMemoryFromQuery(%q) = %d, %d, %v; want %d, %d, %v", tc.out, total, free, ok, tc.total, tc.free, tc.ok)
 			}
 		})
-	}
-}
-
-func TestUnifiedMemory_ReadsTotalAndAvailableLessStartupHeadroom(t *testing.T) {
-	text := "MemTotal:       130567000 kB\nMemFree:         2000000 kB\nMemAvailable:   104000000 kB\nBuffers:          100 kB\n"
-	withSystemMemory(t, text)
-	total, available, ok := unifiedMemory()
-	if !ok || total != 130567000*1024 || available != 104000000*1024-3*gib {
-		t.Fatalf("unifiedMemory = %d, %d, %v", total, available, ok)
-	}
-	withSystemMemory(t, "MemTotal: 100 kB\n")
-	if _, _, ok := unifiedMemory(); ok {
-		t.Fatal("a reading without MemAvailable must not count as known")
 	}
 }

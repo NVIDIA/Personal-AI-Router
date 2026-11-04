@@ -65,8 +65,8 @@ Edit the `--model` argument, or use `load_model`, to serve another model. Only
 The context window and GPU share are chosen automatically at every start
 (`auto_launch`, kind `hf_context`), not pinned in the saved launch. The manager
 reads the model's `config.json` from the Hugging Face cache and the free GPU
-memory (`nvidia-smi`; on a unified-memory machine such as DGX Spark, where it
-reports `[N/A]`, the total and available system memory from `/proc/meminfo`),
+memory (`nvidia-smi`, or the installed runtime when native telemetry is missing;
+system RAM is used only after confirming that the selected GPU shares it),
 then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
 model with a larger window is capped there, and a smaller one is shrunk to what
 fits), a YaRN `--hf-overrides` when the model's own window is below 64K (for
@@ -110,8 +110,16 @@ backend normally.
 
 Before choosing a context window and `--gpu-memory-utilization`, PAIR reads
 device memory from `nvidia-smi` when available and otherwise asks the installed
-vLLM platform. This covers CUDA/ROCm, Intel XPU, Apple Metal, CPU, and
-out-of-tree backends that expose vLLM's memory API. Shared-memory platforms keep
+vLLM platform. Missing values such as `[N/A]` and impossible values such as free
+memory exceeding total memory require this probe; they never establish unified memory.
+The runtime verifies CUDA/ROCm's `is_integrated` or XPU's `is_integrated_gpu`
+hardware property before using available system RAM, bounded by the device's
+memory limit. Apple Silicon is identified by macOS, arm64 and available Metal
+support; CPU engines explicitly use system RAM. Matching GPU and system RAM
+capacities are never used as proof. Other devices use their own memory APIs or
+report memory sizing as unavailable. This covers CUDA/ROCm, Intel XPU, Apple
+Metal, CPU, and out-of-tree engines that expose vLLM's memory API. Shared-memory
+platforms keep
 3 GiB for runtime startup in addition to the normal 1 GiB free margin. If neither
 provider can measure free memory, PAIR does not invent a limit and leaves memory
 sizing to vLLM. On Apple Metal, a checkpoint whose weights are Metal-compatible

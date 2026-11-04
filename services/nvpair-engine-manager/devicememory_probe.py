@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import platform
+import sys
 
 import psutil
 import torch
@@ -17,30 +19,34 @@ def system_reading(total):
     }
 
 
-def shares_system_memory(total):
-    system_total = int(psutil.virtual_memory().total)
-    return abs(total - system_total) <= max(1 << 30, system_total // 20)
-
-
 if torch.cuda.is_available():
-    free, total = torch.cuda.mem_get_info(0)
-    total = int(total)
-    reading = {"total": total, "free": int(free), "shared": shares_system_memory(total)}
+    properties = torch.cuda.get_device_properties(0)
+    if getattr(properties, "is_integrated", False):
+        reading = system_reading(int(properties.total_memory))
+    else:
+        free, total = torch.cuda.mem_get_info(0)
+        reading = {"total": int(total), "free": int(free), "shared": False}
 elif hasattr(torch, "xpu") and torch.xpu.is_available():
-    free, total = torch.xpu.mem_get_info(0)
-    total = int(total)
-    reading = {"total": total, "free": int(free), "shared": shares_system_memory(total)}
+    properties = torch.xpu.get_device_properties(0)
+    if getattr(properties, "is_integrated_gpu", False):
+        reading = system_reading(int(properties.total_memory))
+    else:
+        free, total = torch.xpu.mem_get_info(0)
+        reading = {"total": int(total), "free": int(free), "shared": False}
 else:
     total = int(current_platform.get_device_total_memory(0))
+    apple_silicon = (
+        sys.platform == "darwin"
+        and platform.machine() == "arm64"
+        and torch.backends.mps.is_available()
+    )
     available = getattr(current_platform, "get_device_available_memory", None)
     if callable(available):
         free = int(available(0))
-        reading = {"total": total, "free": free, "shared": shares_system_memory(total)}
-    elif current_platform.is_cpu():
+        reading = {"total": total, "free": free, "shared": apple_silicon or current_platform.is_cpu()}
+    elif current_platform.is_cpu() or apple_silicon:
         reading = system_reading(total)
     else:
-        if not shares_system_memory(total):
-            raise RuntimeError("the selected vLLM backend does not report free memory")
-        reading = system_reading(total)
+        raise RuntimeError("the selected vLLM backend does not report free memory")
 
 print(json.dumps(reading))

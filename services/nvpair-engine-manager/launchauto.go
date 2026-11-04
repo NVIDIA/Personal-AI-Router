@@ -40,10 +40,6 @@ const (
 // a share sized from the reading before the launch would be refused at startup.
 const unifiedMemoryHeadroom = 3 * gib
 
-// meminfoPath is where the system memory figures come from. It is a variable so
-// tests can supply a machine.
-var meminfoPath = "/proc/meminfo"
-
 // deviceMemory reports total and free bytes on device 0. It is a variable so
 // tests can supply a machine.
 var deviceMemory = detectDeviceMemory
@@ -58,64 +54,20 @@ func nvidiaSMIMemory() (total, free int64, ok bool) {
 	return gpuMemoryFromQuery(string(out))
 }
 
-// gpuMemoryFromQuery reads the output of the nvidia-smi memory query. A GPU
-// with unified memory, such as the GB10 in a DGX Spark, has no memory of its
-// own and reports "[N/A]" for both figures; its memory is the system's, so the
-// figures come from there instead.
+// gpuMemoryFromQuery accepts device memory readings, never inferred host RAM.
+// Missing values require the runtime probe, which can verify device topology.
 func gpuMemoryFromQuery(out string) (total, free int64, ok bool) {
 	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
 	parts := strings.Split(line, ",")
 	if len(parts) != 2 {
 		return 0, 0, false
 	}
-	if memoryNotReported(parts[0]) && memoryNotReported(parts[1]) {
-		return unifiedMemory()
-	}
 	t, errT := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 	f, errF := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-	if errT != nil || errF != nil || t <= 0 {
+	if errT != nil || errF != nil || t <= 0 || f < 0 || f > t {
 		return 0, 0, false
 	}
 	return t * 1024 * 1024, f * 1024 * 1024, true
-}
-
-func memoryNotReported(field string) bool {
-	v := strings.ToLower(strings.Trim(strings.TrimSpace(field), "[]"))
-	return v == "n/a" || v == "not supported"
-}
-
-// unifiedMemory reports the system's total memory and what is left of it for a
-// GPU that shares it, less the headroom vLLM's own startup uses.
-func unifiedMemory() (total, free int64, ok bool) {
-	raw, err := os.ReadFile(meminfoPath)
-	if err != nil {
-		return 0, 0, false
-	}
-	var available int64
-	for _, line := range strings.Split(string(raw), "\n") {
-		name, rest, found := strings.Cut(line, ":")
-		if !found {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			continue
-		}
-		kib, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil {
-			continue
-		}
-		switch name {
-		case "MemTotal":
-			total = kib * 1024
-		case "MemAvailable":
-			available = kib * 1024
-		}
-	}
-	if total <= 0 || available <= 0 {
-		return 0, 0, false
-	}
-	return total, max(available-unifiedMemoryHeadroom, 0), true
 }
 
 // applyAutoLaunch appends the arguments the manifest's auto_launch asks for.
