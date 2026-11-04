@@ -49,6 +49,35 @@ PAIR discovers peers on the local network. If **Add node** or
 - Confirm the systems are on the same local network.
 - Allow PAIR through host firewalls on each system.
 - Retry with the peer's IP address in **Add node**.
+- On macOS, confirm PAIR has the **Local Network** permission, described next.
+
+### macOS: Allow Local Network Access
+
+On macOS 14 and later, the system gates every app's traffic to the local network
+behind a **Local Network** permission. An app that lacks it is denied quietly:
+peers never appear, pairing never starts, and the log fills with
+`sendto: no route to host` lines even though the rest of the network is fine.
+To fix that:
+
+1. Open **System Settings > Privacy & Security > Local Network**.
+2. Find **NVIDIA PAIR** and turn its switch on. If it looks already on, turn it
+   off and then back on.
+3. Quit PAIR completely and reopen it. The permission takes effect when the
+   background services start, so waiting inside the window is not enough.
+
+The officially distributed app asks for this permission the first time you run
+it. A copy you built yourself is unsigned, and macOS can deny such copies
+without ever showing the prompt, or even listing the app in that panel. If your
+own build stays invisible this way, start it from Terminal once instead of
+opening it normally:
+
+```bash
+"/Applications/NVIDIA PAIR.app/Contents/MacOS/NVIDIA PAIR"
+```
+
+Traffic from a copy started this way is judged against Terminal's own local
+network access, which is open by default. Quit that copy before launching the
+app the usual way again.
 
 ## Pairing Fails or Stalls
 
