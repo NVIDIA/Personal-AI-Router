@@ -77,6 +77,11 @@ func TestBundledVLLMManifest(t *testing.T) {
 		if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext || rt.AutoLaunch.ContextTokens != 65536 {
 			t.Errorf("%s: vllm must size its context and GPU share automatically for a 64K window, got %+v", key, rt.AutoLaunch)
 		}
+		// vLLM's default of 256 concurrent requests does not fit a hybrid model
+		// such as the default Qwen3.5-4B on a 16 GiB GPU.
+		if rt.AutoLaunch != nil && rt.AutoLaunch.MaxNumSeqs != 32 {
+			t.Errorf("%s: vllm must run at most 32 requests at a time, got %d", key, rt.AutoLaunch.MaxNumSeqs)
+		}
 		for _, pinned := range []string{"--gpu-memory-utilization", "--max-model-len"} {
 			if slices.Contains(rt.Args, pinned) {
 				t.Errorf("%s: %s must not be pinned in the default launch", key, pinned)

@@ -113,15 +113,22 @@ func parseMeminfo(text string) (total, available int64, ok bool) {
 // applyAutoLaunch appends the arguments the manifest's auto_launch asks for.
 // It runs after the user's launch has been validated and never changes an
 // argument the user supplied, so anything set in the engine settings wins.
-func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir string) launchCommand {
+//
+// lookup, when not nil, supplies a model that is not in the cache yet, so a first
+// start that downloads it is sized for it too.
+func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir string, lookup hfModelLookup) launchCommand {
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
 	}
 	hub := filepath.Join(expandPath(modelsDir), "hub")
-	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens))
+	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), lookup)
 	if tools, parser := planToolCalling(command.Args, hub, command.Bin); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
+	}
+	if seqs := planMaxNumSeqs(command.Args, rt.AutoLaunch.MaxNumSeqs); len(seqs) > 0 {
+		extra = append(extra, seqs...)
+		note = strings.TrimPrefix(note+"; at most "+seqs[1]+" requests at a time", "; ")
 	}
 	if len(extra) == 0 {
 		return command
@@ -131,21 +138,42 @@ func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir
 	return command
 }
 
+// planMaxNumSeqs returns --max-num-seqs with the manifest's limit, unless the
+// limit is 0 or the user already set the flag. It does not depend on the model,
+// so it applies to every launch, sharded ones included.
+func planMaxNumSeqs(args []string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	if _, set := launchFlagValue(args, "--max-num-seqs"); set {
+		return nil
+	}
+	return []string{"--max-num-seqs", strconv.Itoa(limit)}
+}
+
 // launchFlagValue returns the value of a flag in either "--flag value" or
-// "--flag=value" form, and whether the flag is present at all.
-func launchFlagValue(args []string, flag string) (string, bool) {
-	for i, arg := range args {
-		if arg == flag {
+// "--flag=value" form, and whether the flag is present at all. When the flag
+// is repeated, the last value wins, as it does for vLLM's argument parser.
+// Arguments after a "--" terminator are not options, so they are not read.
+func launchFlagValue(args []string, flag string) (value string, found bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			return value, found
+		case arg == flag:
+			value, found = "", true
 			if i+1 < len(args) {
-				return args[i+1], true
+				value = args[i+1]
+				i++ // its value
 			}
-			return "", true
-		}
-		if value, ok := strings.CutPrefix(arg, flag+"="); ok {
-			return value, true
+		default:
+			if v, ok := strings.CutPrefix(arg, flag+"="); ok {
+				value, found = v, true
+			}
 		}
 	}
-	return "", false
+	return value, found
 }
 
 type hfModelConfig struct {
@@ -183,6 +211,30 @@ func (c hfModelConfig) ropeExtended() bool {
 		}
 	}
 	return false
+}
+
+// text is the language model's part of the config: text_config for a
+// vision-language model, the config itself otherwise.
+func (c hfModelConfig) text() hfModelConfig {
+	if c.TextConfig != nil {
+		return *c.TextConfig
+	}
+	return c
+}
+
+// kvShape returns what KV cache sizing needs from a text config, and whether
+// all of it is there.
+func (c hfModelConfig) kvShape() (native, layers, kvHeads, headDim int64, ok bool) {
+	native, layers = c.MaxPositionEmbeddings, c.NumHiddenLayers
+	kvHeads = c.NumKeyValueHeads
+	if kvHeads == 0 {
+		kvHeads = c.NumAttentionHeads
+	}
+	headDim = c.HeadDim
+	if headDim == 0 && c.NumAttentionHeads > 0 {
+		headDim = c.HiddenSize / c.NumAttentionHeads
+	}
+	return native, layers, kvHeads, headDim, native > 0 && layers > 0 && kvHeads > 0 && headDim > 0
 }
 
 func (c hfModelConfig) dtypeBytes() int64 {
@@ -236,7 +288,11 @@ func findHFSnapshot(hubDir, id string) (dir string, cfg hfModelConfig, size int6
 //
 // A flag the user already set is never touched. Tensor or pipeline parallel
 // launches are left alone entirely: sizing them needs more than GPU 0.
-func planHFContext(args []string, hubDir string, target int64) (extra []string, note string) {
+//
+// A model that is not in the cache yet is sized from lookup, when given, since
+// vLLM downloads it on this start. Without its size and config, only the memory
+// share is bounded.
+func planHFContext(args []string, hubDir string, target int64, lookup hfModelLookup) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
 	}
@@ -256,33 +312,29 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 	}
 
 	total, free, haveGPU := gpuMemory()
-	cfg, weights, cached := readHFModel(hubDir, model)
-	if !cached {
-		// Not downloaded yet, so its size and limits are unknown. Only the memory
-		// share can be bounded sensibly.
+	cfg, weights, known := readHFModel(hubDir, model)
+	source := ""
+	if !known && lookup != nil {
+		if cfg, weights, known = lookup(model); known {
+			source = "model not in cache, sized from Hugging Face"
+		}
+	}
+	if !known {
+		// Not downloaded yet and the lookup could not answer, so its size and
+		// limits are unknown. Give it what is free, less the margin left for the
+		// desktop and other engines, under the same ceiling as a sized launch.
+		// vLLM's own default would claim memory that is already in use.
 		if haveGPU && !userUtil && !userKV {
-			util := math.Floor(math.Min(0.5, float64(free-freeMargin)/float64(total))*100) / 100
+			util := math.Floor(math.Min(maxAutoUtil, float64(free-freeMargin)/float64(total))*100) / 100
 			if util >= minAutoUtil {
-				return []string{"--gpu-memory-utilization", fmt.Sprintf("%.2f", util)}, "model not in cache"
+				return []string{"--gpu-memory-utilization", fmt.Sprintf("%.2f", util)}, "model not in cache and not looked up"
 			}
 		}
 		return nil, ""
 	}
-	text := cfg
-	if cfg.TextConfig != nil {
-		text = *cfg.TextConfig
-	}
-	native := text.MaxPositionEmbeddings
-	layers := text.NumHiddenLayers
-	kvHeads := text.NumKeyValueHeads
-	if kvHeads == 0 {
-		kvHeads = text.NumAttentionHeads
-	}
-	headDim := text.HeadDim
-	if headDim == 0 && text.NumAttentionHeads > 0 {
-		headDim = text.HiddenSize / text.NumAttentionHeads
-	}
-	if native == 0 || layers == 0 || kvHeads == 0 || headDim == 0 {
+	text := cfg.text()
+	native, layers, kvHeads, headDim, ok := text.kvShape()
+	if !ok {
 		return nil, ""
 	}
 	perToken := 2 * layers * kvHeads * headDim * text.dtypeBytes()
@@ -359,7 +411,11 @@ func planHFContext(args []string, hubDir string, target int64) (extra []string, 
 	if len(extra) == 0 {
 		return nil, ""
 	}
-	return extra, fmt.Sprintf("native window %d, target %d, weights %.1f GiB, GPU free %.1f GiB", native, target, float64(weights)/float64(gib), float64(free)/float64(gib))
+	note = fmt.Sprintf("native window %d, target %d, weights %.1f GiB, GPU free %.1f GiB", native, target, float64(weights)/float64(gib), float64(free)/float64(gib))
+	if source != "" {
+		note = source + "; " + note
+	}
+	return extra, note
 }
 
 // planToolCalling returns the arguments that let clients send tool_choice

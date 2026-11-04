@@ -354,13 +354,18 @@ A **`stop_engine`** action (only as `unload_model`) stops the engine, for one th
 serves a single model per process and so cannot unload it while running. A
 `launch_model` action on a stopped engine saves the choice and starts it.
 
-A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536}`)
+A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536, "max_num_seqs": 32}`)
 lets the manager add start-time arguments that depend on the model and the
 machine. For `hf_context` it reads the served model's `config.json` from the
 Hugging Face cache and the free GPU memory, then appends `--max-model-len`
 (the target, the model's own limit when it cannot be extended, or what fits),
 `--hf-overrides` with YaRN rope scaling when the target exceeds the model's
 native window, and `--gpu-memory-utilization` sized to weights plus KV cache.
+A model that is not in the cache yet, which vLLM downloads during the start, is
+sized the same way from its `config.json` and file sizes on Hugging Face; when
+that lookup cannot answer, the share is the free GPU memory less a 1 GiB margin.
+The optional `max_num_seqs` adds `--max-num-seqs`, the most requests the engine
+runs at once (0 or absent leaves the engine's default).
 Arguments the user saved always win and nothing added is written back to saved
 settings, so a model switch is re-sized for the new model. It also adds
 `--enable-auto-tool-choice` and a `--tool-call-parser` found from the model's own

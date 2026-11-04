@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -98,7 +99,23 @@ func hasSuffixAny(s string, suffixes []string) bool {
 func (e *Executor) hfRepoFiles(ctx context.Context, id string) ([]hfSibling, error) {
 	ctx, cancel := context.WithTimeout(ctx, catalogHTTPTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hfAPIBase+"/"+id+"?blobs=true", nil)
+	body, err := e.hfGet(ctx, hfAPIBase+"/"+id+"?blobs=true", maxCatalogBody)
+	if err != nil {
+		return nil, err
+	}
+	var repo struct {
+		Siblings []hfSibling `json:"siblings"`
+	}
+	if err := json.Unmarshal(body, &repo); err != nil {
+		return nil, fmt.Errorf("decode the Hugging Face reply: %w", err)
+	}
+	return repo.Siblings, nil
+}
+
+// hfGet fetches a Hugging Face URL, with HF_TOKEN when set, and returns at most
+// limit bytes of the body. Errors say what the user can do about them.
+func (e *Executor) hfGet(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -125,13 +142,69 @@ func (e *Executor) hfRepoFiles(ctx context.Context, id string) ([]hfSibling, err
 	default:
 		return nil, fmt.Errorf("Hugging Face returned %s", resp.Status)
 	}
-	var repo struct {
-		Siblings []hfSibling `json:"siblings"`
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// hfFileBase serves repository files. A variable so tests can point it at a
+// local server.
+var hfFileBase = "https://huggingface.co"
+
+const (
+	// hfLookupTimeout bounds the model lookup a first start makes, so an
+	// unreachable Hugging Face delays the start by at most this much.
+	hfLookupTimeout = 10 * time.Second
+	// maxHFConfigBody is far above any model's config.json.
+	maxHFConfigBody = 1 << 20
+)
+
+// hfModelLookup supplies the config and download size of a model that is not in
+// the cache, and whether both were found.
+type hfModelLookup func(id string) (cfg hfModelConfig, size int64, ok bool)
+
+// lookupHFModel asks Hugging Face for a model's config.json and the size of the
+// files a download fetches, so a start that is about to download the model can
+// size its launch the same way as for a cached one. It reports false, and the
+// start falls back to sizing from free GPU memory, when offline, when the model is
+// gated without a token, or when the config lacks what sizing needs.
+func (e *Executor) lookupHFModel(ctx context.Context, id string) (hfModelConfig, int64, bool) {
+	var cfg hfModelConfig
+	if !hfModelIDRe.MatchString(id) || hfOffline() {
+		return cfg, 0, false
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCatalogBody)).Decode(&repo); err != nil {
-		return nil, fmt.Errorf("decode the Hugging Face reply: %w", err)
+	ctx, cancel := context.WithTimeout(ctx, hfLookupTimeout)
+	defer cancel()
+	siblings, err := e.hfRepoFiles(ctx, id)
+	if err != nil {
+		slog.Info("model size lookup failed; the first start is sized from free GPU memory", "model", id, "err", err)
+		return cfg, 0, false
 	}
-	return repo.Siblings, nil
+	_, size, err := selectHFFiles(siblings)
+	if err != nil {
+		slog.Info("model size lookup found no loadable weights", "model", id, "err", err)
+		return cfg, 0, false
+	}
+	raw, err := e.hfGet(ctx, hfFileBase+"/"+id+"/resolve/main/config.json", maxHFConfigBody)
+	if err == nil {
+		err = json.Unmarshal(raw, &cfg)
+	}
+	if err != nil {
+		slog.Info("model config lookup failed; the first start is sized from free GPU memory", "model", id, "err", err)
+		return cfg, 0, false
+	}
+	if _, _, _, _, ok := cfg.text().kvShape(); !ok {
+		return cfg, 0, false
+	}
+	return cfg, size, true
+}
+
+// hfOffline reports whether HF_HUB_OFFLINE asks Hugging Face tools not to use
+// the network.
+func hfOffline() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("HF_HUB_OFFLINE"))) {
+	case "1", "on", "yes", "true":
+		return true
+	}
+	return false
 }
 
 // hfBlobBytes totals what is in a repository's blobs directory, which holds

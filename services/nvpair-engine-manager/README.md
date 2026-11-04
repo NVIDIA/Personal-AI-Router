@@ -74,8 +74,13 @@ example Qwen3-8B, which stops at 40,960), and a `--gpu-memory-utilization` just
 large enough for the weights, that KV cache and overhead, instead of vLLM's
 92% default. A model with its own rope scaling is never overridden. Anything
 the user saves in the launch arguments wins, and a tensor- or pipeline-parallel
-launch is left untouched. A model that is not yet downloaded gets only a capped
-memory share. The added arguments appear in the engine-manager log
+launch is left untouched. A model that is not yet downloaded, such as the
+default on a fresh install, is sized the same way from its `config.json` and
+file sizes on Hugging Face (a 10-second lookup that honours `HF_TOKEN` and
+`HF_HUB_OFFLINE`); if the lookup cannot answer, it gets the free GPU memory less
+1 GiB. Every start also adds `--max-num-seqs 32`: vLLM's default of 256
+concurrent requests does not fit a hybrid model such as Qwen3.5-4B on a 16 GB
+GPU, and a desktop does not need it. The added arguments appear in the engine-manager log
 (`engine launch adjusted for the model and GPU`) and not in the saved settings,
 so switching models re-sizes for the new one.
 It also enables tool calling, which agent clients need on every request

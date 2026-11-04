@@ -99,10 +99,13 @@ vLLM always serves one model: its launch arguments name that model with
 `--model <Hugging Face id>`, and changing it restarts the engine. At every start
 PAIR sizes the rest for that model: a 64K context (`--max-model-len`, shrunk if
 the free GPU memory cannot hold it), YaRN rope scaling when the model's own window
-is smaller (for example Qwen3-8B's 40,960 tokens), and a GPU memory share just large
-enough for the weights and that context, so other engines can run alongside it.
-Arguments you add to the launch text, such as your own `--max-model-len` or
-`--gpu-memory-utilization`, take precedence, and a launch with
+is smaller (for example Qwen3-8B's 40,960 tokens), a GPU memory share just large
+enough for the weights and that context, so other engines can run alongside it,
+and a limit of 32 requests at a time (`--max-num-seqs`). A model that is not
+downloaded yet, such as the default on a fresh install, is sized from its details
+on Hugging Face before vLLM downloads it. Arguments you add to the launch text,
+such as your own `--max-model-len`, `--gpu-memory-utilization` or
+`--max-num-seqs`, take precedence, and a launch with
 `--tensor-parallel-size` or `--pipeline-parallel-size` is left as written. PAIR
 also turns on tool calling, which agent clients require: it checks how the
 model's chat template writes a tool call and picks the vLLM parser that reads

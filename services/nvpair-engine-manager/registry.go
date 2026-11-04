@@ -207,6 +207,11 @@ type AutoLaunch struct {
 	// support less are extended where that is safe; models that support more are
 	// capped here so the KV cache stays affordable.
 	ContextTokens int `json:"context_tokens"`
+	// MaxNumSeqs caps how many requests the engine runs at once
+	// (--max-num-seqs). vLLM's default of 256 suits a server; on a desktop GPU a
+	// hybrid model such as Qwen3.5 cannot fit one state block per sequence for
+	// 256 of them and refuses to start. 0 leaves the engine's default.
+	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
 }
 
 const autoLaunchHFContext = "hf_context"
@@ -824,6 +829,9 @@ func (p *Platform) validate(key string) error {
 	if auto := p.Runtime.AutoLaunch; auto != nil {
 		if auto.Kind != autoLaunchHFContext || auto.ContextTokens < 1024 {
 			return fmt.Errorf("platform %q: auto_launch needs kind %q and context_tokens of at least 1024", key, autoLaunchHFContext)
+		}
+		if auto.MaxNumSeqs < 0 {
+			return fmt.Errorf("platform %q: auto_launch max_num_seqs must not be negative", key)
 		}
 		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
 			return fmt.Errorf("platform %q: auto_launch requires a process-mode runtime with editable_launch", key)

@@ -677,3 +677,11 @@ func TestLMStudioInstall_UsesSafeBootstrapCommands(t *testing.T) {
 		assert.Equal(t, []string{"bash", "{download}"}, p.Install.Run, " (%v)", key)
 	}
 }
+
+func TestValidate_RejectsANegativeAutoLaunchRequestLimit(t *testing.T) {
+	m := validManifest()
+	platform := m.Platforms["linux/amd64"]
+	platform.Runtime.AutoLaunch = &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536, MaxNumSeqs: -1}
+	m.Platforms["linux/amd64"] = platform
+	require.ErrorContains(t, m.Validate(), "max_num_seqs", "a negative request limit was accepted")
+}
