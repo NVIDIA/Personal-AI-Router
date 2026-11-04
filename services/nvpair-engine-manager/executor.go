@@ -116,6 +116,7 @@ func (st *engineState) unlockOperation() {
 type Executor struct {
 	settingsHub      settings.Hub
 	settingsParent   func(context.Context, string, settings.Request, string) (json.RawMessage, error)
+	customParent     func(context.Context, string, json.RawMessage, string) (json.RawMessage, error)
 	reg              *Registry
 	reporter         *Reporter
 	emit             func(method string, params any)
@@ -174,6 +175,11 @@ type Executor struct {
 	engines       map[string]*engineState
 	modelScope    *http.Server
 	modelScopeURL string
+
+	// custom holds the broker-pushed Custom endpoint inventory
+	// (custom:set-models), merged into every ModelsResult without a
+	// manifest sweep. See custommodels.go.
+	custom customModels
 }
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {

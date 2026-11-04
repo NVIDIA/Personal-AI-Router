@@ -180,23 +180,46 @@ func TestLlamaCPP_SendsTheModelAlone(t *testing.T) {
 	test("pull", "pull", "pull_model")
 }
 
-// TestDownloadPromptUsesTheEnginesSpelling is the regression guard for an
-// Ollama example offered for every engine. "llama3.2" is not a name LM Studio
-// or llama.cpp can download, and llama.cpp's needs a quantization after a colon.
+// TestDownloadPrompt_UsesTheEnginesSpelling is the regression guard for an
+// Ollama example offered for every managed engine. "llama3.2" is not a name
+// LM Studio or llama.cpp can download, and llama.cpp's needs a quantization
+// after a colon.
+//
+// Unmanaged engines are the opposite failure: a Custom endpoint serves models
+// its operator deployed, so an example there would advertise a model hub that
+// does not and must not exist. Managed engines need the example; an unmanaged
+// engine must have neither the example nor a prompt that pretends otherwise.
 func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 	for _, e := range engines.All() {
-		assert.Contains(t, downloadExamples, e.Name, "every engine needs a download example")
+		if e.Unmanaged {
+			assert.NotContains(t, downloadExamples, e.Name,
+				"%s is unmanaged: a download example would advertise a model hub that must not exist", e.Name)
+			continue
+		}
+		assert.Contains(t, downloadExamples, e.Name, "every managed engine needs a download example")
 	}
 	assert.Contains(t, downloadPrompt(engines.NameLlamaCPP, "llama.cpp"), ":Q4_K_M", "llama.cpp prompt must show the quantization suffix")
+	assert.Equal(t, "model name for Custom", downloadPrompt(engines.NameCustom, "Custom"),
+		"the Custom prompt carries no example")
 	assert.Equal(t, "model name for No Such Engine", downloadPrompt("nosuchengine", "No Such Engine"))
 }
 
-// TestEveryEngineHasAModelWire is what makes adding an engine a matter of
-// adding its entry: an engine in the shared table without a spelling for every
-// model operation fails here, rather than being sent another engine's action
-// names at runtime.
+// TestEveryEngine_HasAModelWire is what makes adding a managed engine a
+// matter of adding its entry: one in the shared table without a spelling for
+// every model operation fails here, rather than being sent another engine's
+// action names at runtime. Unmanaged engines fail the other way: a Custom
+// endpoint has no model that PAIR could load, eject, delete, or download, so
+// giving it a wire would put a live but meaningless verb on the operator's
+// keyboard.
 func TestEveryEngine_HasAModelWire(t *testing.T) {
 	for _, e := range engines.All() {
+		if e.Unmanaged {
+			for op := range modelActions {
+				_, err := modelActionWire(e.Name, op, "m")
+				assert.Error(t, err, "%s is unmanaged: it must not be given a model wire", e.Name)
+			}
+			continue
+		}
 		for op := range modelActions {
 			_, err := modelActionWire(e.Name, op, "m")
 			require.NoError(t, err, "%s must have a local wire for %s", e.Name, op)

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-manual-nodes
 
-A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
+A Go service for managing manually configured nodes and Custom endpoints on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events. Also probes user-added Custom endpoints — external OpenAI-compatible servers tracked by base URL plus an optional API key — on the same cycle; their configuration lives in `nvpair-ui-broker`, and this service is the probe cache for it.
 
 Node-info responses, including public previews, must fit within a 64 KiB
 complete-body limit. Ollama and LM Studio model-list JSON decoding reads at most
@@ -98,6 +98,14 @@ push path. Public response identity and registry claims are stripped.
 
 Emitted when a node is explicitly removed via `node/remove`.
 
+### `custom/updated`
+
+Emitted when a Custom endpoint's probe result changes: the health flag flips or the model set changes. The params are a `CustomEndpointStatus` (`id`, `baseUrl`, optional `name`, `healthy`, `models`), and they never carry the endpoint's API key. A single model-list `GET` per cycle decides health: a parseable `200` model list — even an empty one — is healthy; transport failures, non-`200` answers (401/403 included), and unparseable bodies are misses. Routability survives blips: `healthy` flips to false only after `probeFailThreshold` (3) consecutive misses, and recovery is immediate on the first success.
+
+### `custom/removed`
+
+Emitted when a Custom endpoint is explicitly removed via `custom/remove`.
+
 ### `errors:report` / `errors:clear`
 
 Emitted so the supervising broker can forward them into the `nvpair-errors` pipeline. A node whose probes fail `probeFailThreshold` consecutive times (3 probes, so roughly 30 s of unreachability) reports under the id `manual-nodes:probe-failed:<node-id>`; a subsequent successful probe clears the same id.
@@ -143,6 +151,24 @@ Returns all currently tracked manual nodes with their latest probe status.
 {"jsonrpc":"2.0","id":3,"method":"nodes/list"}
 ```
 
+### `custom/add`
+
+Add (or replace) a Custom endpoint. Params mirror `nvpair-ui-broker`'s persisted `custom-endpoints.json` rows, marshalled verbatim on live adds and on replay after a worker respawn:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"custom/add","params":{"baseUrl":"http://10.9.8.7:8000","apiKey":"sk-…"}}
+```
+
+`baseUrl` is a canonical origin already composed by the broker (scheme + host + port + path); it is never parsed or defaulted here. The tracking id is `id` when present, else `custom:<baseUrl>`. When `apiKey` is set, each probe carries it as `Authorization: Bearer …`; the key never appears in a response or an event. The worker answers with the unprobed status immediately, then emits `custom/updated` once the first probe lands.
+
+### `custom/remove`
+
+Drop a Custom endpoint by its tracking id. Answers `{"removed": true|false}`; a real removal emits `custom/removed` first.
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"custom/remove","params":{"id":"custom:http://10.9.8.7:8000"}}
+```
+
 ### `shutdown`
 
 Gracefully shuts down the manager.
@@ -166,6 +192,9 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 - **Ollama** on port 11434: health check (`GET /`) and model list (`GET /api/tags`)
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
 - **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
+- **Custom endpoints** at their own configured origin: one `GET` of the model list (`{baseUrl}/v1/models`), with `Authorization: Bearer` injected only when the endpoint carries an API key. Unlike the LM Studio leg, an unparseable model list counts against the failure threshold — a Custom endpoint is defined by answering `/v1/models`, so "reachable but unreadable" is not good enough to stay routable.
+
+Endpoints share the same ticker and cadence as nodes and are probed after the node legs of each cycle.
 
 A node can have any combination of these, or none if the target is unreachable.
 Service hardware reads require exact current cluster pins and matching `hostUuid`

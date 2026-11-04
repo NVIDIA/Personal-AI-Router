@@ -7,17 +7,20 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 1. Purpose
 
-`nvpair-manual-nodes` owns the set of user-entered peer node addresses on networks where mDNS discovery is unavailable, filtered, or incomplete. A client hands it a bare host (`node/add`), and it becomes the authority for whether that host is currently reachable and what it serves: it probes each entered address for an Ollama engine, an LM Studio engine, and an `nvpair-node-info` telemetry endpoint every ten seconds, and reports the aggregate as a `ManualNodeStatus` on `node/discovered` / `node/updated` / `node/removed`. Its purpose is to make an address the user asserts routable — the supervising `nvpair-ui-broker` merges its events into the same discovery snapshot `nvpair-node-scanner` feeds, bridges reachable manual nodes into the matching Ollama or LM Studio facade of `nvpair-proxy`, and feeds their GPU telemetry to `nvpair-job-scheduler`, so for those two engines a manual node is routable and schedulable like a discovered one. It does not cover llama.cpp: a manual-only node is never a llama.cpp target (§4).
+`nvpair-manual-nodes` owns the set of user-entered peer node addresses on networks where mDNS discovery is unavailable, filtered, or incomplete. A client hands it a bare host (`node/add`), and it becomes the authority for whether that host is currently reachable and what it serves: it probes each entered address for an Ollama engine, an LM Studio engine, and an `nvpair-node-info` telemetry endpoint every ten seconds, and reports the aggregate as a `ManualNodeStatus` on `node/discovered` / `node/updated` / `node/removed`. It also tracks user-added Custom endpoints: a `custom/add` hands it a canonical base URL plus an optional API key, and each endpoint's probe outcome is reported as a `CustomEndpointStatus` on `custom/updated` / `custom/removed`. Its purpose is to make an address the user asserts routable — the supervising `nvpair-ui-broker` merges its events into the same discovery snapshot `nvpair-node-scanner` feeds, bridges reachable manual nodes into the matching Ollama or LM Studio facade of `nvpair-proxy`, and feeds their GPU telemetry to `nvpair-job-scheduler`, so for those two engines a manual node is routable and schedulable like a discovered one. It does not cover llama.cpp: a manual-only node is never a llama.cpp target (§4).
 
 This worker provides address-based discovery through outbound probes. It keeps
 current entries and probe results in memory. The supervising broker owns the
-durable entry list and replays it after a restart (§7.6, §9).
+durable entry list and replays it after a restart (§7.6, §9). The broker owns
+the durable Custom endpoint list the same way and replays it down onto a freshly
+spawned prober; here each endpoint is only a probe-cache entry.
 
 ## 2. Scope
 
 **In scope**
 
 - Accept, track, and drop user-entered node addresses (`node/add`, `node/remove`, `nodes/list`).
+- Accept, track, and drop user-added Custom endpoints (`custom/add`, `custom/remove`), re-probe their model lists on the same ten-second cycle, and re-probe them on demand for a waiting reader (`custom/probe`).
 - Probe each tracked address on a fixed ten-second cycle for Ollama, LM Studio, and `nvpair-node-info`.
 - Derive per-engine model inventories and node-info telemetry (GPU, CPU, memory, GPU sample validity and age, `hostUuid`) from those probes.
 - Emit changed engine status and every accepted hardware snapshot, plus sustained-unreachability `errors:report` / `errors:clear`.
@@ -28,6 +31,7 @@ durable entry list and replays it after a restart (§7.6, §9).
 **Out of scope**
 
 - Durable storage of the entry list — `nvpair-ui-broker` persists and replays `manual-nodes.json` (§7.6); this worker holds only current probe state.
+- Durable storage of Custom endpoint configuration — the same ownership as manual nodes: `nvpair-ui-broker` owns `custom-endpoints.json` and replays it onto this worker (§7.6), and the prober caches endpoints only in order to probe them.
 - mDNS browsing and advertisement — `nvpair-node-scanner`.
 - Merging manual and discovered nodes into one snapshot, the per-engine proxy bridge, and the scheduler telemetry feed — `nvpair-ui-broker`.
 - Inference routing and node ranking — `nvpair-proxy` and `nvpair-job-scheduler`.
@@ -46,6 +50,10 @@ durable entry list and replays it after a restart (§7.6, §9).
   paired measurements. A preview cannot establish identity or service availability.
 - **Remove a node**: `node/remove` with `{"id": "lab"}` deletes the tracked entry, emits `node/removed` with just the id, and fires a defensive `errors:clear` for that node's probe-failed id.
 - **List for a UI**: `nvpair-tui`'s Nodes tab re-lists `nodes/list` every 10 s and merges the hand-added entries into its one node table, so their reachability stays current.
+- **Probe an endpoint**: a client sends `custom/add` with `{"baseUrl": "http://10.9.8.7:8000", "apiKey": "sk-…"}`. The worker upserts the endpoint and answers immediately with an unprobed `CustomEndpointStatus`, then probes on a goroutine and emits `custom/updated` when health or the model set changed. `Authorization: Bearer` is attached to the probe only when the entry carries a key, and the key never comes back in any response or event.
+- **Track endpoint health**: each cycle re-probes every tracked endpoint after the node legs. A blip does not drop routability; `healthy` flips to false only at `probeFailThreshold` consecutive misses, and recovery is immediate on the first success.
+- **Read fresh on demand**: `custom/probe` with `{"id": "..."}` re-probes just that endpoint; with `{}` (no id) it re-probes every tracked endpoint. The cycle runs on its own goroutine and the reply waits for it, so the `{"endpoints": [...]}` answer is the state after a fresh probe rather than a cache echo. An id that matches nothing tracked is not an error — the reply is just an empty list. Change-gated `custom/updated` events still fire during the cycle; the response is for a reader waiting on the answer rather than subscribed to events.
+- **Edge case — re-add is the edit path**: `custom/add` under an existing key replaces the tracked endpoint and re-probes from scratch (the replacement starts unprobed, so stale probe results never launder a changed endpoint). There is no on/off state to toggle; removing the entry is the only way to turn an endpoint off. When `nvpair-ui-broker` edits an endpoint onto a *different* address, that arrives here as `custom/remove` of the old key followed by `custom/add` of the new one — both paths discard the old endpoint's probe history.
 - **Edge case — probe still in flight when removed**: `node/remove` between `node/add` and its initial probe completing wins. The probe goroutine re-reads the map, finds the id gone, and returns without emitting `node/discovered`; `probeNode` likewise drops its result if the id vanished mid-probe.
 - **Edge case — node-info blip while an engine stays up**: clear the failed measurement and its verification. The explicitly configured engine remains independently routable when it answers. Scheduling measurements require authenticated hardware.
 - **Edge case — engine reachable, model list unparseable**: LM Studio answering `200` with a body that fails to decode is still reported `lmstudio_up: true` with no models. Ollama answering `200` on `/` but failing `/api/tags` is `ollama_up: true` with no models.
@@ -63,6 +71,7 @@ durable entry list and replays it after a restart (§7.6, §9).
 - **Risk — IP-literal entries cannot self-heal**: an entry added by raw IP is dead once the device is reassigned an address; only a hostname entry re-resolves (engine keep-alives are disabled so each engine probe re-resolves). The probe-failed message says so, but nothing re-discovers the node.
 - **Risk — no address validation**: any non-empty string is accepted as an address. A typo is indistinguishable from a powered-off node until the 30-second failure threshold reports it.
 - **Configuration hints**: `tls_port` selects the node-info port and `mtls` is echoed as a configuration hint. Service hardware reads always require pinned mTLS, including when both hints are absent. Either hint disables public previews. Neither hint changes the independently configured plain HTTP engine routes.
+- **No probe-failed error for endpoints (open — decision pending downstream)**: sustained endpoint unreachability flips `healthy` and clears the model set, but the prober emits no `errors:report` for a Custom endpoint. The `nvpair-proxy` custom facade already surfaces inference-time credential refusals under `custom-proxy:probe-failed:<id>`, and a second emitter would double-report the same episode; whether periodic-probe failures should also surface (with an `errors:clear` path) is unresolved.
 - **Firewall inventory divergence (open — needs reconciliation)**: the Windows NSIS installer adds an inbound rule `"NVPAIR Manual Nodes"` for a binary that opens no listening socket, while `MODULAR_RUNTIME_BINARIES` marks it `needsFirewallAccess: false` and the macOS privileged helper grants it no rule. The inbound rule is unnecessary.
 - **Future — engine port discovery**: if `nvpair-engine-manager` ever reports remote engine ports, the hardcoded `11434` / `1234` probes should be replaced by the reported values rather than extended with more entry-level hints.
 
@@ -85,12 +94,19 @@ durable entry list and replays it after a restart (§7.6, §9).
 - Emit `errors:clear` for a removed node's probe-failed id unconditionally on `node/remove`.
 - Return `{"removed": false}` for `node/remove` of an unknown id, without emitting `node/removed`.
 - Answer `nodes/list` with every tracked entry's latest status.
+- Accept `custom/add` with a required `baseUrl` and optional `id`, `name`, `apiKey`; reject an absent or empty `baseUrl` with `-32602` and add nothing.
+- Key each endpoint by `key()`: the caller's `id` when non-empty, else `"custom:" + baseUrl` — the same identity function `nvpair-ui-broker` uses, so no translation happens at the process boundary.
+- Respond to `custom/add` before probing, with an unprobed status.
+- Probe every tracked endpoint every `probeInterval` (10 s) after the node legs, with one model-list `GET` and the same `probeTimeout` (3 s).
+- Emit `custom/updated` only on a health flip or a model-set change, and never carry `apiKey` in a response or an event.
+- Answer `custom/probe` from one fresh probe cycle over the addressed scope — one named endpoint, or every tracked endpoint when the params carry no id: run the cycle off the read loop, then reply `{"endpoints": [...]}` with the post-cycle state in key order. An entry replaced or removed mid-flight drops out of the reply instead of answering with the previous endpoint's verdict.
+- Return `{"removed": false}` for `custom/remove` of an unknown key, without emitting `custom/removed`.
 - Handle `log/set-level` as both a request and a notification, and `shutdown` as a request.
 
 **Non-functional**
 
 - Open no listening socket; all network activity is outbound probe traffic.
-- Never block the read loop on a probe: the initial probe after `node/add` runs on its own goroutine.
+- Never block the read loop on a probe: the initial probe after `node/add` or `custom/add` and the `custom/probe` snapshot cycle run on their own goroutines.
 - Guard all entry state with a single `sync.RWMutex`; hold no lock across an HTTP request.
 - Serialize JSON-RPC writes so frames never interleave (`nvpair-shared/jsonrpc` `Codec` holds a write mutex).
 - Require TLS 1.2 or better on every TLS probe.
@@ -98,9 +114,9 @@ durable entry list and replays it after a restart (§7.6, §9).
 
 ## 6. Inputs and Outputs
 
-**Inputs** — newline-delimited JSON-RPC 2.0 frames on `stdin`, or on the `--ipc` Unix socket / Windows named pipe. Requests are `node/add`, `node/remove`, `nodes/list`, `shutdown`, and `log/set-level`; `log/set-level` is also accepted as a notification. Every other inbound notification is logged and dropped. HTTP responses from probed hosts are the second input class: an Ollama root and `/api/tags`, an LM Studio `/v1/models`, and an `nvpair-node-info` `/v1/node-info`.
+**Inputs** — newline-delimited JSON-RPC 2.0 frames on `stdin`, or on the `--ipc` Unix socket / Windows named pipe. Requests are `node/add`, `node/remove`, `nodes/list`, `custom/add`, `custom/probe`, `custom/remove`, `shutdown`, and `log/set-level`; `log/set-level` is also accepted as a notification. Every other inbound notification is logged and dropped. HTTP responses from probed hosts are the second input class: an Ollama root and `/api/tags`, an LM Studio `/v1/models`, an `nvpair-node-info` `/v1/node-info`, and a Custom endpoint's model list (whose request may carry the endpoint's API key as an `Authorization` header — outbound only).
 
-**Outputs** — JSON-RPC responses and notifications on the same transport. Notifications are `ready`, `node/discovered`, `node/updated`, `node/removed`, `errors:report`, and `errors:clear`. Human-readable logs go to `stderr` (the supervising broker inherits the child's `stderr` into its own).
+**Outputs** — JSON-RPC responses and notifications on the same transport. Notifications are `ready`, `node/discovered`, `node/updated`, `node/removed`, `custom/updated`, `custom/removed`, `errors:report`, and `errors:clear`. Human-readable logs go to `stderr` (the supervising broker inherits the child's `stderr` into its own).
 
 `ManualEntry` — the `node/add` params:
 
@@ -175,6 +191,29 @@ Example emitted frame (`node/discovered`, an unnamed entry whose LM Studio is ab
 {"jsonrpc":"2.0","method":"node/discovered","params":{"identityVerification":"unverified","id":"manual:10.0.1.50","address":"10.0.1.50","ollama_up":true,"ollama_port":11434,"ollama_models":["llama3.2:latest"],"lmstudio_up":false,"lmstudio_port":1234,"node_info_up":false,"node_info_port":14318,"telemetryValid":false,"msSince":0}}
 ```
 
+`CustomEntry` — the `custom/add` params, byte-identical to `nvpair-ui-broker`'s persisted `custom-endpoints.json` rows (the broker marshals that struct verbatim, on live adds and on replay alike):
+
+```json
+{
+  "id": "gpu-box",
+  "name": "Garage Box",
+  "baseUrl": "http://10.9.8.7:8000",
+  "apiKey": "sk-the-endpoint-credential"
+}
+```
+
+`CustomEndpointStatus` — the `custom/add` result and the params of `custom/updated` / `custom/removed`. It has no `apiKey` field: health and the model list are the entire payload. `healthy` and `baseUrl` are always present; `name` and `models` are `omitempty`.
+
+```json
+{
+  "id": "gpu-box",
+  "name": "Garage Box",
+  "baseUrl": "http://10.9.8.7:8000",
+  "healthy": true,
+  "models": ["mtplx-7b"]
+}
+```
+
 ## 7. API / Interface Contract
 
 One interface: newline-delimited JSON-RPC 2.0 over `stdin`/`stdout`, or over the `--ipc` endpoint. Outbound, three probe clients speak plain HTTP or HTTPS to the entered host. There is no inbound network interface.
@@ -186,10 +225,13 @@ One interface: newline-delimited JSON-RPC 2.0 over `stdin`/`stdout`, or over the
 | `node/add` | `ManualEntry` — `address` (required), `name`, `tls_port`, `mtls` | `ManualNodeStatus` (unprobed) |
 | `node/remove` | `{ "id": string }` | `{ "removed": boolean }` |
 | `nodes/list` | none | `{ "nodes": ManualNodeStatus[] }` |
+| `custom/add` | `CustomEntry` — `baseUrl` (required), `id`, `name`, `apiKey` | `CustomEndpointStatus` (unprobed) |
+| `custom/remove` | `{ "id": string }` | `{ "removed": boolean }` |
+| `custom/probe` | `{ "id": string }` (no id: every tracked endpoint) | `{ "endpoints": CustomEndpointStatus[] }` (one fresh probe cycle over the addressed scope, then the post-cycle state in key order) |
 | `shutdown` | none | `null` |
 | `log/set-level` | `{ "level": "debug"\|"info"\|"warn"\|"error" }` | `{ "level": string }` |
 
-Notifications emitted: `ready` with `{ "version": string }` (once, before the probe loop starts); `node/discovered` with a full `ManualNodeStatus` (once per entry, after its initial probe); `node/updated` with a full `ManualNodeStatus` (on changed state or every accepted hardware sample); `node/removed` with a `ManualNodeStatus` carrying only `id`, plus `address`, `ollama_up`, `ollama_port`, `lmstudio_up`, `lmstudio_port`, `node_info_up`, `node_info_port`, `telemetryValid`, and `msSince` at their zero values; `errors:report` with an `nvpair-shared/errors` `ServiceError`; and `errors:clear` with a `ClearParams` (`{ "id": string }`).
+Notifications emitted: `ready` with `{ "version": string }` (once, before the probe loop starts); `node/discovered` with a full `ManualNodeStatus` (once per entry, after its initial probe); `node/updated` with a full `ManualNodeStatus` (on changed state or every accepted hardware sample); `node/removed` with a `ManualNodeStatus` carrying only `id`, plus `address`, `ollama_up`, `ollama_port`, `lmstudio_up`, `lmstudio_port`, `node_info_up`, `node_info_port`, `telemetryValid`, and `msSince` at their zero values; `custom/updated` with a full `CustomEndpointStatus` (on a health flip or a model-set change); `custom/removed` with a `CustomEndpointStatus` carrying only `id` (`baseUrl` empty, `healthy` false); `errors:report` with an `nvpair-shared/errors` `ServiceError`; and `errors:clear` with a `ClearParams` (`{ "id": string }`).
 
 ### 7.1 Address entry, identity, and idempotency
 
@@ -208,6 +250,8 @@ that extends past this limit follows the existing model-parse failure path.
 Hardware decoding requires the complete response body to fit within 64 KiB.
 
 `node_info_port` is `14318` unless `tls_port > 0` overrides it. Service hardware reads always use pinned mTLS. Engine legs remain explicitly configured plain HTTP. `reachable` is `ollama_up || lmstudio_up || node_info_up`, independent of public previews. Publish changed status and every accepted hardware snapshot so stable values do not stop refreshing the scheduling cache.
+
+Custom endpoints ride the same tick, probed sequentially after the node legs. Each is one `GET` of the model-list path: `{baseUrl}/v1/models`, or `{baseUrl}/models` when the base already ends at `/v1` (a pasted relay prefix). `Authorization: Bearer <apiKey>` is attached only when the entry carries a key; an `https` base uses the shared plain probe client, so the server is verified against the system trust store and this node's cluster client certificate is never presented — an endpoint is a third-party server, not a cluster peer, and pinning is a later-phase concern. A `200` whose body is a parseable OpenAI envelope is healthy — even with an empty `data` list, which is healthy but not routable. Everything else is a probe miss: transport failure, any non-`200` (401 and 403 refusals included), and an unparseable body. That is stricter than the LM Studio tolerance above, deliberately: a Custom endpoint is defined by answering `/v1/models`, so unreadable means unknown, not up. Health flips to unhealthy (and stale models are cleared) only at `probeFailThreshold` consecutive misses; recovery is a single success. `custom/updated` fires on a health flip or a model-set change and nothing else. An on-demand `custom/probe` runs this same probe over the addressed scope — one endpoint, or every tracked one — before replying, and shares the tracked entry's blip accounting with the scheduled cycle rather than bypassing it.
 
 ### 7.3 Probe transport and authenticated identity
 
@@ -275,9 +319,11 @@ time is added to the GPU age already reported by the worker.
 
 This worker persists nothing. The broker owns a JSON array of `{ id, address, name?, tls_port?, mtls? }` at `configs/manual-nodes.json` beneath its shared application-data directory (§9). It persists successful add/remove operations atomically through a temporary file and rename, and replays entries as `node/add` whenever the worker starts. Entries without an address are skipped; unreadable or malformed configuration is reported rather than silently overwritten. The broker serializes configuration mutations and replay. It restores configuration, not cached proof or measurements, so each new worker must authenticate hardware again.
 
+The Custom endpoint list is held the same way by the same owner: `configs/custom-endpoints.json` (rows of `{ id?, name?, baseUrl, apiKey? }`, 0600, atomic temp file plus rename) belongs to `nvpair-ui-broker`, which replays each row as `custom/add` onto every fresh prober. In the broker, persistence decides an add's success; the forward of the probe nudge is advisory, so a worker that is down delays probing rather than losing the endpoint.
+
 ### 7.7 Error codes
 
-`-32602` for `node/add` params that are not a `ManualEntry` object, for a missing or empty `address`, for `node/remove` params that are not an object, and for an unparseable `log/set-level` level. `-32601` for any other method. Notification frames get no error response. `-32000 "manual-nodes not available"` is `nvpair-ui-broker`'s code when no manual-nodes worker is supervised; this worker never emits it.
+`-32602` for `node/add` params that are not a `ManualEntry` object, for a missing or empty `address`, for `node/remove` params that are not an object, for `custom/add` params that are not a `CustomEntry` object or whose `baseUrl` is empty, for `custom/remove` params that are not an object (an unknown or empty `id` answers `{"removed": false}` rather than an error), for `custom/probe` params that are not an object (an absent or unknown `id` is valid and answers `{"endpoints": [...]}` rather than an error), and for an unparseable `log/set-level` level. `-32601` for any other method. Notification frames get no error response. `-32000 "manual-nodes not available"` is `nvpair-ui-broker`'s code when no manual-nodes worker is supervised; this worker never emits it.
 
 ### 7.8 Versioning
 
@@ -291,8 +337,8 @@ This worker persists nothing. The broker owns a JSON array of `{ id, address, na
 
 ## 9. Data Ownership
 
-- **Owned**: the in-memory `map[string]*trackedNode` — each entry's `ManualEntry`, its latest `ManualNodeStatus`, separate service/preview receipt times, its authenticated-identity history, and its `consecutiveFails` counter. Nothing durable.
-- **Source of truth**: authoritative for *current* manual-node reachability, per-engine model lists, and authenticated node-info telemetry while the process lives. The broker owns the durable entry list and the user chooses its contents. Remote `hostUuid` is accepted only when it matches the certificate and current pin.
+- **Owned**: the in-memory `map[string]*trackedNode` — each entry's `ManualEntry`, its latest `ManualNodeStatus`, separate service/preview receipt times, its authenticated-identity history, and its `consecutiveFails` counter — and the in-memory `map[string]*trackedCustom` (each Custom endpoint's `CustomEntry`, health flag, model list, and consecutive-miss count). Nothing durable.
+- **Source of truth**: authoritative for *current* manual-node reachability, per-engine model lists, and authenticated node-info telemetry while the process lives. The broker owns the durable entry list and the user chooses its contents. Remote `hostUuid` is accepted only when it matches the certificate and current pin. For Custom endpoints this worker is only a probe cache — `nvpair-ui-broker`'s `custom-endpoints.json` (0600) is the authoritative config, replayed down onto a freshly spawned prober — and the endpoint API key exists only in that file and in in-memory request plumbing (plus the local broker↔worker stdio link), never in a status event, a log line, or a frame that crosses a network.
 - **Storage**: none written by this binary. Broker owns `configs/manual-nodes.json` under the shared per-user PAIR data root, or its configured manual-node file. `services/shared/appdir` resolves the default application-data directory; this worker reads only the supplied cluster directory and keeps configurations and probe results in memory.
 
 ## 10. Design Constraints
@@ -326,7 +372,7 @@ This worker persists nothing. The broker owns a JSON array of `{ id, address, na
 
 ## 13. Observability
 
-- **Logging**: `applog.Init("nvpair-manual-nodes", …)` installs a level-gated `slog` handler on `stderr` and bridges the stdlib `log` package into it; the supervising broker inherits that `stderr`. Info covers startup transport choice, each add and remove, and every state change (`node_id`, `addr`, `ollama_up`, `node_info_up`, model count, GPU count). Debug covers each individual probe with address, port, scheme, status or error, and `duration_ms`, plus stable no-change probes. `--log-level` sets the initial level (default `$NVPAIR_LOG_LEVEL`, else info); `log/set-level` changes it at runtime. Certificate and key contents, and all probe response bodies, are never logged.
+- **Logging**: `applog.Init("nvpair-manual-nodes", …)` installs a level-gated `slog` handler on `stderr` and bridges the stdlib `log` package into it; the supervising broker inherits that `stderr`. Info covers startup transport choice, each add and remove, and every state change (`node_id`, `addr`, `ollama_up`, `node_info_up`, model count, GPU count), including Custom endpoint changes (keyed by `endpoint`, with the health flag and model count). Debug covers each individual probe with address, port, scheme, status or error, and `duration_ms`, plus stable no-change probes (including Custom probes). `--log-level` sets the initial level (default `$NVPAIR_LOG_LEVEL`, else info); `log/set-level` changes it at runtime. Certificate and key contents — endpoint API keys included — and all probe response bodies, are never logged.
 - **Metrics**: none. There is no metrics endpoint, no counters, and no histograms — this binary opens no listener of any kind. Probe latency exists only as the `duration_ms` field on debug log lines.
 - **Alerts**: none in-process. The operator-visible signal is the `errors:report` under `manual-nodes:probe-failed:<node-id>`, which reaches the UI through `nvpair-ui-broker` and `nvpair-errors`.
 
@@ -357,6 +403,6 @@ The host is then powered off. The first cycle that finds nothing emits `node/upd
 
 Startup order: parse flags, print version and exit if asked, `applog.Init`, `clustertrust.Open(--cluster-dir)` (a live view, so a cluster joined later is picked up without a restart), open the transport, install the `SIGINT`/`SIGTERM` handler, construct the `Manager`, emit `ready`, start the probe loop, and enter the read loop.
 
-The process is always a child. `nvpair-ui-broker` spawns the binary named by its `--manual-nodes-path` flag, which the desktop application always passes, and otherwise looks for `nvpair-manual-nodes` in its own working directory. It spawns it through `startRPCWorker` with `--log-level <current>` plus `--cluster-dir <dir>` when the broker resolved one, wires `stdin`/`stdout` pipes, and inherits the child's `stderr`. It is registered as an optional worker under a restart policy, so a crash respawns it and triggers `clearManualNodesState`. The broker's `Stop` closes `stdin`; the child observes EOF, returns from `readLoop`, cancels its context to stop the probe loop, closes the transport, and exits `0`. A `shutdown` request and a caught signal follow the same cancellation path. Electron never launches this worker directly — only the broker does.
+The process is always a child. `nvpair-ui-broker` spawns the binary named by its `--manual-nodes-path` flag, which the desktop application always passes, and otherwise looks for `nvpair-manual-nodes` in its own working directory. It spawns it through `startRPCWorker` with `--log-level <current>` plus `--cluster-dir <dir>` when the broker resolved one, wires `stdin`/`stdout` pipes, and inherits the child's `stderr`. After each (re)spawn the broker replays the persisted Custom endpoints as `custom/add` requests, so a respawned prober resumes against the full configured set without waiting for a client. It is registered as an optional worker under a restart policy, so a crash respawns it and triggers `clearManualNodesState`. The broker's `Stop` closes `stdin`; the child observes EOF, returns from `readLoop`, cancels its context to stop the probe loop, closes the transport, and exits `0`. A `shutdown` request and a caught signal follow the same cancellation path. Electron never launches this worker directly — only the broker does.
 
 Build and staging: `services/build.sh` (`build_subbinary 4 nvpair-manual-nodes`) and `services/build.bat` (`[4/13]`) read the version from `services/versions.json` with `jq` and run `go build -ldflags "-X main.Version=$V_MNODES"`, then copy the binary into `services/build/bin/`. `services/installer_build.sh` stages it into the tarball's `bin/`, and `services/installer/nvpair-setup.nsi` installs, firewall-registers, taskkills, and deletes `nvpair-manual-nodes.exe`. For the desktop app, `npm run build:modular-binaries` produces `desktop/cli-bin/`, where `MODULAR_RUNTIME_BINARIES` declares it `processName: 'manual-nodes'`, `launchOwner: 'broker'`, `optional: true`, `args: []`, and `needsFirewallAccess: false` — it is client-only and needs no firewall rule.

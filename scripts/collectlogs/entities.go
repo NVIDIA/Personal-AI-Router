@@ -57,10 +57,12 @@ var (
 )
 
 // Values that are never a hostname even when they arrive under a hostname key.
+// The engine names are here because they ride hostname-ish keys in
+// modelsByEngine-style maps and in free-text proxy messages.
 var notHostnames = map[string]bool{
 	"": true, "localhost": true, "unknown": true, "ollama": true,
 	"lmstudio": true, "stdout": true, "stderr": true, "broker": true,
-	"true": true, "false": true, "null": true,
+	"custom": true, "true": true, "false": true, "null": true,
 }
 
 // Keys whose value locates the installation. The install root is replaced while
@@ -572,7 +574,7 @@ func isModelName(s string) bool {
 		return false
 	}
 	switch strings.ToLower(s) {
-	case "ollama", "lmstudio", "true", "false", "null", "unknown":
+	case "ollama", "lmstudio", "custom", "true", "false", "null", "unknown":
 		return false
 	}
 	return true
