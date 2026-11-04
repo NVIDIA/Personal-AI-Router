@@ -20,8 +20,8 @@ enum HelperConstants {
     static let teamIdentifier = "6KR3T733EC"
     static let appBundleIdentifier = "com.nvidia.nvpair"
 
-    /// Basenames `codesign` assigns as the signing identifier of the two loose
-    /// helper Mach-O files (codesign defaults the identifier to the file name).
+    /// Required signing identifiers of the two loose helper Mach-O files.
+    /// Set these explicitly when signing: codesign's default can strip suffixes.
     static let ctlIdentifier = "nvpair-helper-ctl"
     static let daemonIdentifier = "com.nvidia.nvpair.helper"
 

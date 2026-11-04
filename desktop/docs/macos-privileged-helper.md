@@ -144,6 +144,95 @@ any non-zero `socketfilterfw` exit.
 - macOS packaging requires `swiftc`; build environments should verify it with
   `xcrun --find swiftc`.
 
+The daemon embeds `native/PrivilegedHelper/Info.plist` in `__TEXT,__info_plist`
+in both architectures. Its `CFBundleIdentifier` supplies the signing identifier
+even when a signing service re-signs the enclosing app recursively. Without it,
+the filename-derived default can strip `.helper` and produce `com.nvidia.nvpair`.
+The control tool must continue using the enclosing app's `Bundle.main` for
+ServiceManagement; it does not embed a helper-specific Info.plist.
+
+On macOS, check the built daemon's identifier through standalone and recursive
+ad hoc signing of disposable copies:
+
+```bash
+npm run build:helper:mac
+npm run test:helper-signing:mac
+```
+
+This regression test checks identifier stability in every architecture, not
+Developer ID trust. It does not run or register the copied daemon.
+
+### Required release validation
+
+The signing identifiers of the loose helper executables are part of the XPC
+authentication contract:
+
+| Executable | Required signing identifier |
+| --- | --- |
+| `Contents/MacOS/com.nvidia.nvpair.helper` | `com.nvidia.nvpair.helper` |
+| `Contents/MacOS/nvpair-helper-ctl` | `nvpair-helper-ctl` |
+| Host application | `com.nvidia.nvpair` |
+
+The release signer must assign each helper its own identifier, retain hardened
+runtime and NVIDIA's Developer ID Application signature, and sign the enclosing
+app after signing its nested executables. It must not overwrite the daemon's
+identifier with the host app's identifier during a later signing pass.
+Pass `--identifier com.nvidia.nvpair.helper` when signing the daemon and
+`--identifier nvpair-helper-ctl` when signing the control tool (or the signing
+service's equivalent). Do not rely on filename-derived defaults: `codesign`
+can strip `.helper` from the daemon's filename and produce the app's identifier.
+An explicit identifier in an earlier signature is insufficient if a later
+signing pass derives a new default.
+
+After the **final** app signing pass, before notarization or creating release
+archives, the signed release pipeline must run this command from `desktop/`
+and fail the build if it exits nonzero:
+
+```bash
+npm run verify:helper-signatures:mac -- "/path/to/NVIDIA PAIR.app"
+```
+
+The command compiles a temporary validator with the same `HelperProtocol.swift`
+used by both helpers. It verifies each helper and the app against their complete
+pinned requirements with `codesign --verify --strict --all-architectures`.
+It does not register the helper, modify signatures, or change firewall rules.
+Unsigned public builds are expected to fail this release check.
+
+Release maintainers must integrate this check into the signing pipeline after
+the final signing pass; adding the validator to the source tree does not wire
+it into release signing. The public build remains unsigned. Run the check again
+against the app extracted from each final DMG and ZIP before publishing.
+General app signature verification
+alone is insufficient: a valid NVIDIA signature can still have an identifier
+that the XPC peer rejects, as reported in
+[issue #175](https://github.com/NVIDIA/Personal-AI-Router/issues/175).
+
+### Signed-build acceptance checks
+
+Use a signed release candidate on a test Mac, including an upgrade from the
+affected release. Install in `/Applications`, launch PAIR as the normal user,
+and approve its background helper if prompted. Do not re-sign the installed
+app or alter the pinned requirements to make these checks pass.
+
+1. Run the release validation command above against the installed app.
+2. Run `"/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" status`.
+   Require `registration: "enabled"`, `reachable: true`, and a `daemonVersion`
+   matching `ctlVersion` and the app version. The command's exit status alone
+   does not prove reachability.
+3. Run `"/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" configure-firewall`.
+   This changes firewall rules; require exit zero and JSON `ok: true`.
+   Check each of the seven networked binaries listed above with
+   `/usr/libexec/ApplicationFirewall/socketfilterfw --getappblocked <binary-path>`.
+4. Confirm normal app setup writes `macHelperSetupComplete: true` in the
+   app's user-data `configs/ui-config.json`. Do not set the flag manually.
+5. Fully quit and reopen PAIR twice. Confirm the flag remains true, the helper
+   stays reachable, and no helper-authorization dialog returns. Repeat after
+   a reboot. Closing only the window leaves PAIR running in the tray.
+
+Record the app/build version, macOS version, architecture, command results,
+and whether this was a clean install or an upgrade. A running launchd job or
+the Service page's Running state is not evidence of helper XPC reachability.
+
 ## Uninstall
 
 `scripts/build/macos/uninstall.sh` (shipped at
