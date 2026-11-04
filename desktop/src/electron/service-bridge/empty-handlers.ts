@@ -5,10 +5,12 @@ import type { WsInvokeChannel, WsInvokeRequest, WsInvokeResponse } from '@/share
 import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
+import type { CustomEndpointInfo, CustomProxyPortState } from '@/shared/types/custom-endpoints'
 import type { ServiceError } from '@/shared/types/errors'
 import {
     MODEL_SWITCH_TIMEOUT_MS,
     MODULAR_CLUSTER_MANAGER_PORT,
+    MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
@@ -97,6 +99,12 @@ function reportLoadStoppedElsewhere(
             modelName: payload.model
         }
     )
+}
+
+/** Anything that is not a dialable number reads as 0, so every caller checks
+ *  the range instead of trusting the shape a reply arrived with. */
+function numberValue(value: JsonValue | undefined): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 /** Relay a `cluster:*` / `nodes:*` request to nvpair-cluster-manager via the broker. */
@@ -764,6 +772,249 @@ async function handleNodeRemoveMember(
     }
 }
 
+/**
+ * Rebuild one `custom/list` / `custom/refresh` / `custom/add` reply entry
+ * from known fields only. Anything unaccounted for — most importantly an
+ * `apiKey` a malformed reply might smuggle — cannot cross the bridge into
+ * the renderer. An entry without both `id` and `baseUrl` is malformed and
+ * dropped rather than shown half-configured. `healthy: null` means "no
+ * verdict" and parses to absence; `models` crosses only as the string
+ * entries of an array (an empty array stays empty — the cards render
+ * "checked, nothing known" differently from "never checked").
+ */
+function parseCustomEndpointEntry(value: JsonValue | undefined): CustomEndpointInfo | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const id = stringValue(obj.id)
+    const baseUrl = stringValue(obj.baseUrl)
+    if (!id || !baseUrl) return null
+    const entry: CustomEndpointInfo = { id, baseUrl, keySet: booleanValue(obj.keySet) }
+    const name = obj.name
+    if (typeof name === 'string' && name) entry.name = name
+    const healthy = obj.healthy
+    if (typeof healthy === 'boolean') entry.healthy = healthy
+    const lastChecked = obj.lastChecked
+    if (typeof lastChecked === 'string' && lastChecked) entry.lastChecked = lastChecked
+    if (Array.isArray(obj.models)) {
+        entry.models = obj.models.filter((model): model is string => typeof model === 'string')
+    }
+    return entry
+}
+
+/**
+ * Resolve which node answers a custom request. A nodeId equal to this node's
+ * own id is the per-node editor addressing *itself* (the Custom section keys
+ * itself by nodeId), so the request runs the unchanged local path with the
+ * addressing stripped — a self-targeted edit must never dial anyone. Any
+ * other nodeId addresses a paired peer: the params keep the nodeId and the
+ * broker forks the whole call into the pinned control-channel relay. Unlike
+ * the local path, a peer-addressed request never swallows failure into an
+ * empty list — an unknown peer's configuration is not "no endpoints" — so
+ * the editor goes read-only with the peer's reason instead of offering to
+ * edit a configuration nobody read.
+ */
+function customRequestNodeId(nodeId?: string): string | undefined {
+    const selfId = getModularBridgeState().getSelfId()
+    return selfId && nodeId && nodeId !== selfId ? nodeId : undefined
+}
+
+async function handleCustomList(
+    payload?: WsInvokeRequest<'custom:list'>
+): Promise<CustomEndpointInfo[]> {
+    const supervisor = getModularSupervisor()
+    const target = customRequestNodeId(payload?.nodeId)
+    const reply = target
+        ? await supervisor.callProcess(
+              'broker',
+              'custom/list',
+              { nodeId: target },
+              MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS
+          )
+        : await supervisor.callProcess('broker', 'custom/list').catch(() => undefined)
+    return customSnapshotEntries(target, reply)
+}
+
+/**
+ * Turn a `custom/list` or `custom/refresh` reply into renderer entries. Both
+ * reads answer with the enriched snapshot array and share one failure
+ * contract: only the local path may read an unreachable broker as "nothing
+ * configured" — with the broker down there is nothing configured to list and
+ * nothing to route to, and an empty view beats an error dialog at every
+ * entry point that reads this snapshot. A peer-addressed read never swallows
+ * failure: an unknown peer's configuration is not "no endpoints".
+ */
+function customSnapshotEntries(
+    target: string | undefined,
+    reply: JsonValue | undefined
+): CustomEndpointInfo[] {
+    if (!Array.isArray(reply)) {
+        if (target) {
+            throw new Error('custom endpoints unavailable: the device returned no endpoint list')
+        }
+        return []
+    }
+    const entries: CustomEndpointInfo[] = []
+    for (const value of reply) {
+        const entry = parseCustomEndpointEntry(value)
+        if (entry) entries.push(entry)
+    }
+    return entries
+}
+
+async function handleCustomRefresh(
+    payload?: WsInvokeRequest<'custom:refresh'>
+): Promise<CustomEndpointInfo[]> {
+    const supervisor = getModularSupervisor()
+    const target = customRequestNodeId(payload?.nodeId)
+    // The scope is the entry id; an absent id refreshes every tracked
+    // endpoint. `nodeId` stays addressing: the broker's peer fork reads it
+    // to pick the target, and the target's own broker never sees it in the
+    // request body.
+    const scope: JsonObject = {}
+    if (payload?.id) scope.id = payload.id
+    const reply = target
+        ? await supervisor.callProcess(
+              'broker',
+              'custom/refresh',
+              { ...scope, nodeId: target },
+              MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS
+          )
+        : await supervisor.callProcess('broker', 'custom/refresh', scope).catch(() => undefined)
+    return customSnapshotEntries(target, reply)
+}
+
+async function handleCustomAdd(
+    payload?: WsInvokeRequest<'custom:add'>
+): Promise<CustomEndpointInfo> {
+    if (!payload) throw new Error('custom:add requires an endpoint url and port')
+    const supervisor = getModularSupervisor()
+    // Forward the form fields verbatim (no key masking, no port guessing): the
+    // owning broker composes the canonical baseUrl from url + port and rejects
+    // a disagreement or a missing port — that rejection must surface so the
+    // form can show it instead of storing a half-understood endpoint.
+    const params: JsonObject = { url: payload.url, port: payload.port }
+    if (payload.name) params.name = payload.name
+    if (payload.apiKey) params.apiKey = payload.apiKey
+    // Edit provenance: replaceId names the entry being edited (without it the
+    // owning broker would fork a second entry for the same address) and
+    // keyAction:"clear" removes the stored credential. A blank key field means
+    // "keep what is stored", so neither key field is sent for it.
+    if (payload.replaceId) params.replaceId = payload.replaceId
+    if (payload.keyAction) params.keyAction = payload.keyAction
+    const target = customRequestNodeId(payload.nodeId)
+    // `nodeId` is addressing, not configuration: it travels only when a peer
+    // is addressed (engine-manager resolves the peer from it and rebuilds the
+    // HTTP body without it), and never for a local or self-addressed add.
+    if (target) params.nodeId = target
+    const reply = target
+        ? await supervisor.callProcess(
+              'broker',
+              'custom/add',
+              params,
+              MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS
+          )
+        : await supervisor.callProcess('broker', 'custom/add', params)
+    const entry = parseCustomEndpointEntry(reply)
+    if (!entry) throw new Error('custom:add did not report the stored endpoint')
+    return entry
+}
+
+async function handleCustomRemove(
+    payload?: WsInvokeRequest<'custom:remove'>
+): Promise<{ removed: boolean }> {
+    if (!payload) return { removed: false }
+    const supervisor = getModularSupervisor()
+    const params: JsonObject = { id: payload.id }
+    const target = customRequestNodeId(payload.nodeId)
+    if (target) params.nodeId = target
+    // Idempotent by contract: the owning broker answers `{removed:false}` for
+    // an id it never configured, so a retry converges quietly — on a peer too,
+    // whose stored config is authoritative for exactly that answer.
+    const reply = target
+        ? await supervisor.callProcess(
+              'broker',
+              'custom/remove',
+              params,
+              MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS
+          )
+        : await supervisor.callProcess('broker', 'custom/remove', params)
+    const result = objectValue(reply)
+    return { removed: booleanValue(result?.removed) }
+}
+
+/**
+ * One `custom/get-port` or `custom/set-port` reply → the renderer's shape,
+ * rebuilt from known fields only — the same rule that keeps an API key out of a
+ * list reply. A port outside 1-65535, a body that is not that shape, and a call
+ * that never answered all mean the node reported no proxy port. Locally that is
+ * `null`, which renders no field: there is no meaningful "no proxy port" to
+ * show, and defaulting to this node's own 8000 would describe a different
+ * machine. For a peer it refuses instead — an unknown peer's proxy port is not
+ * "no proxy port", any more than an unknown peer's configuration is "no
+ * endpoints".
+ */
+function parseCustomProxyPortState(
+    target: string | undefined,
+    reply: JsonValue | undefined
+): CustomProxyPortState | null {
+    const state = objectValue(reply)
+    const port = numberValue(state?.port)
+    if (!state || port < 1 || port > 65535) {
+        if (target) {
+            throw new Error('custom proxy port unavailable: the device returned no proxy port')
+        }
+        return null
+    }
+    return { port, running: booleanValue(state.running) }
+}
+
+/**
+ * The Custom facade's listen port, answered by the node the payload addresses.
+ * `nodeId` stays addressing, exactly as it does for the endpoint reads: a
+ * self-addressed read runs the unchanged local wire, and a peer is handed the
+ * nodeId so its broker forks the call onto the pinned control channel — which
+ * is why both port reads carry the relay budget rather than the short default.
+ */
+async function handleCustomGetPort(
+    payload?: WsInvokeRequest<'custom:get-port'>
+): Promise<CustomProxyPortState | null> {
+    const supervisor = getModularSupervisor()
+    const target = customRequestNodeId(payload?.nodeId)
+    const reply = target
+        ? await supervisor.callProcess(
+              'broker',
+              'custom/get-port',
+              { nodeId: target },
+              MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS
+          )
+        : await supervisor.callProcess('broker', 'custom/get-port').catch(() => undefined)
+    return parseCustomProxyPortState(target, reply)
+}
+
+async function handleCustomSetPort(
+    payload?: WsInvokeRequest<'custom:set-port'>
+): Promise<CustomProxyPortState> {
+    if (!payload) throw new Error('custom:set-port requires the port to move to')
+    const supervisor = getModularSupervisor()
+    const params: JsonObject = { port: payload.port }
+    const target = customRequestNodeId(payload.nodeId)
+    if (target) params.nodeId = target
+    // A refusal is the answer, not a handled failure: the owning node names the
+    // port and who holds it, and the person who typed it across the network
+    // needs the same sentence the person on that node would read.
+    const reply = target
+        ? await supervisor.callProcess(
+              'broker',
+              'custom/set-port',
+              params,
+              MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS
+          )
+        : await supervisor.callProcess('broker', 'custom/set-port', params)
+    const state = parseCustomProxyPortState(undefined, reply)
+    if (!state) throw new Error('custom:set-port did not report the proxy port')
+    return state
+}
+
 const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'app:get-initial': async () => ({
         connected: getModularSupervisor().ready,
@@ -813,6 +1064,13 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
         payload
             ? getEngineHubModels(payload.engineType, payload.query)
             : { models: [], searchable: false },
+
+    'custom:list': payload => handleCustomList(payload),
+    'custom:refresh': payload => handleCustomRefresh(payload),
+    'custom:add': payload => handleCustomAdd(payload),
+    'custom:remove': payload => handleCustomRemove(payload),
+    'custom:get-port': payload => handleCustomGetPort(payload),
+    'custom:set-port': payload => handleCustomSetPort(payload),
 
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),
