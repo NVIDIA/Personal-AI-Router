@@ -134,13 +134,29 @@ func completeHFSnapshot(path string) (int64, bool) {
 		}
 		files[entry.Name()] = info.Size()
 	}
-	if _, ok := files["config.json"]; !ok || !hasAny(files, hfTokenizerFiles) {
+	// vLLM loads Mistral-format consolidated weights in preference to the
+	// Hugging Face-format shards whenever a snapshot has any, with their own
+	// index, params.json and the Mistral tokenizer (tekken.json or
+	// tokenizer.model.v*). Completeness is judged on what vLLM will load.
+	mistralFormat := false
+	for name := range files {
+		if isConsolidatedWeights(name) {
+			mistralFormat = true
+		}
+	}
+	index := "model.safetensors.index.json"
+	if mistralFormat {
+		index = "consolidated.safetensors.index.json"
+		if !hasAny(files, []string{"config.json", "params.json"}) || (!hasMistralTokenizer(files) && !hasAny(files, hfTokenizerFiles)) {
+			return 0, false
+		}
+	} else if _, ok := files["config.json"]; !ok || !hasAny(files, hfTokenizerFiles) {
 		return 0, false
 	}
 
 	var weights []string
 	for name := range files {
-		if strings.HasSuffix(name, ".safetensors") {
+		if strings.HasSuffix(name, ".safetensors") && isConsolidatedWeights(name) == mistralFormat {
 			weights = append(weights, name)
 		}
 	}
@@ -152,7 +168,7 @@ func completeHFSnapshot(path string) (int64, bool) {
 			}
 		}
 	}
-	if len(weights) == 0 || !hfWeightsComplete(path, files, weights) {
+	if len(weights) == 0 || !hfWeightsComplete(path, files, weights, index) {
 		return 0, false
 	}
 
@@ -167,9 +183,9 @@ func completeHFSnapshot(path string) (int64, bool) {
 // lists every shard; without one, only shard names like
 // model-00003-of-00004.safetensors say how many there should be, and several
 // unnumbered weight files cannot be told apart from an interrupted download.
-func hfWeightsComplete(snapshot string, files map[string]int64, weights []string) bool {
-	if _, ok := files["model.safetensors.index.json"]; ok {
-		raw, err := os.ReadFile(filepath.Join(snapshot, "model.safetensors.index.json"))
+func hfWeightsComplete(snapshot string, files map[string]int64, weights []string, index string) bool {
+	if _, ok := files[index]; ok {
+		raw, err := os.ReadFile(filepath.Join(snapshot, index))
 		if err != nil {
 			return false
 		}
@@ -215,6 +231,17 @@ func hfWeightsComplete(snapshot string, files map[string]int64, weights []string
 		}
 	}
 	return true
+}
+
+// hasMistralTokenizer reports whether a snapshot has the tokenizer vLLM uses
+// for a Mistral-format model: tekken.json or a tokenizer.model.v* file.
+func hasMistralTokenizer(files map[string]int64) bool {
+	for name := range files {
+		if name == "tekken.json" || strings.HasPrefix(name, "tokenizer.model.v") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAny(files map[string]int64, names []string) bool {

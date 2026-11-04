@@ -125,12 +125,17 @@ restarts vLLM on it, restoring the previous model if the new one does not start
 
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not
-GGUF, ONNX, pickle copies of weights that also exist as safetensors, or a
-duplicate consolidated file, or `original/` checkpoints), and runs the `hf` tool
+GGUF, ONNX, pickle copies of weights that also exist as safetensors, or
+`original/` checkpoints), and runs the `hf` tool
 that ships beside `vllm` in the engine's virtualenv to download them into the hub
 cache. Like the other engines' pulls (one Ollama tag, one llama.cpp
 quantization), it downloads what the engine loads, not the whole repository: the
-same set vLLM fetches when it downloads a model itself. Other formats in the
+same set vLLM fetches when it downloads a model itself. A Mistral repository
+ships each model in two formats of the same size; vLLM's default
+`load_format auto` loads Mistral's own `consolidated*.safetensors` with
+`params.json` and `tekken.json` whenever a repository has them, so only those
+weights are downloaded and the Hugging Face-format `model-*.safetensors` are
+skipped. The cache listing judges such a model complete on those files. Other formats in the
 repository are not fetched; a full `hf download` adds them to the same cache
 without downloading the rest again. Progress is the
 share of those bytes that has landed in the cache, a download that makes no

@@ -20,12 +20,12 @@ import (
 
 func TestSelectHFFiles(t *testing.T) {
 	file := func(name string, size int64) hfSibling { return hfSibling{RFilename: name, Size: size} }
-	t.Run("safetensors repo skips pickle weights and consolidated copies", func(t *testing.T) {
+	t.Run("safetensors repo skips pickle weights and other formats", func(t *testing.T) {
 		files, total, err := selectHFFiles([]hfSibling{
 			file("config.json", 10), file("tokenizer.json", 20),
 			file("model-00001-of-00002.safetensors", 1000), file("model-00002-of-00002.safetensors", 1000),
 			file("model.safetensors.index.json", 5),
-			file("consolidated.safetensors", 2000), file("pytorch_model.bin", 2000),
+			file("pytorch_model.bin", 2000),
 			file("original/params.json", 5), file("model.gguf", 3000), file("-rf", 1), file("../escape", 1),
 		})
 		if err != nil {
@@ -53,6 +53,52 @@ func TestSelectHFFiles(t *testing.T) {
 			t.Fatal("expected an error: nothing vLLM can load")
 		}
 	})
+}
+
+func TestSelectHFFiles_DownloadsTheMistralFormatWeightsVLLMLoads(t *testing.T) {
+	// Mistral's repositories carry each model twice, in Mistral's own format and
+	// in Hugging Face's. vLLM's load_format auto loads consolidated*.safetensors
+	// whenever a repository has any, so those are the weights to download.
+	file := func(name string, size int64) hfSibling { return hfSibling{RFilename: name, Size: size} }
+	mistralSmall := []hfSibling{ // as mistralai/Mistral-Small-3.2-24B-Instruct-2506
+		file("config.json", 1), file("params.json", 1), file("tekken.json", 2), file("tokenizer_config.json", 1),
+		file("consolidated.safetensors", 48),
+		file("model-00001-of-00002.safetensors", 24), file("model-00002-of-00002.safetensors", 24),
+		file("model.safetensors.index.json", 1),
+	}
+	ministral := []hfSibling{ // as mistralai/Ministral-3-3B-Instruct-2512
+		file("config.json", 1), file("params.json", 1), file("tekken.json", 2), file("tokenizer.json", 1),
+		file("consolidated.safetensors", 5), file("model.safetensors", 5),
+	}
+	shardedConsolidated := []hfSibling{
+		file("params.json", 1), file("tekken.json", 2),
+		file("consolidated-00001-of-00002.safetensors", 24), file("consolidated-00002-of-00002.safetensors", 24),
+		file("consolidated.safetensors.index.json", 1),
+		file("model-00001-of-00002.safetensors", 24), file("model-00002-of-00002.safetensors", 24),
+	}
+	for _, tc := range []struct {
+		name      string
+		siblings  []hfSibling
+		want      []string
+		wantTotal int64
+	}{
+		{"consolidated beside sharded Hugging Face weights", mistralSmall,
+			[]string{"config.json", "params.json", "tekken.json", "tokenizer_config.json", "consolidated.safetensors", "model.safetensors.index.json"}, 54},
+		{"consolidated beside a single Hugging Face file", ministral,
+			[]string{"config.json", "params.json", "tekken.json", "tokenizer.json", "consolidated.safetensors"}, 10},
+		{"sharded consolidated weights with their index", shardedConsolidated,
+			[]string{"params.json", "tekken.json", "consolidated-00001-of-00002.safetensors", "consolidated-00002-of-00002.safetensors", "consolidated.safetensors.index.json"}, 52},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files, total, err := selectHFFiles(tc.siblings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(files, tc.want) || total != tc.wantTotal {
+				t.Fatalf("files = %v total = %d; want %v total %d", files, total, tc.want, tc.wantTotal)
+			}
+		})
+	}
 }
 
 // hfPullFixture builds an executor whose engine binary sits beside a fake `hf`

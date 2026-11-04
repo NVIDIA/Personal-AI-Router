@@ -43,19 +43,28 @@ var hfDroppedSuffixes = []string{".gguf", ".onnx", ".h5", ".msgpack", ".ot", ".t
 // hfAlternateWeights are dropped when the repo also has safetensors.
 var hfAlternateWeights = []string{".bin", ".pt", ".pth"}
 
-// selectHFFiles chooses the repository files to download and their total size.
-// A repo with safetensors does not also need its pickle weights, nor the
-// consolidated copy some publishers add beside the sharded one. File names that
-// could be read as an option or escape the cache are refused.
+// isConsolidatedWeights reports whether a file holds weights in Mistral's own
+// format, consolidated*.safetensors. vLLM matches that pattern on the file name.
+func isConsolidatedWeights(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	return strings.HasPrefix(base, "consolidated") && strings.HasSuffix(base, ".safetensors")
+}
+
+// selectHFFiles chooses the repository files to download and their total size:
+// the weights vLLM will load, plus config and tokenizer files. A repo with
+// safetensors does not also need its pickle weights. A repo that also ships
+// Mistral-format consolidated*.safetensors is loaded from those (vLLM's
+// load_format auto prefers them, with params.json and the Mistral tokenizer), so
+// its Hugging Face-format shards are not downloaded. File names that could be
+// read as an option or escape the cache are refused.
 func selectHFFiles(siblings []hfSibling) (files []string, total int64, err error) {
-	hasSafetensors, hasSharded := false, false
+	hasSafetensors, mistralFormat := false, false
 	for _, f := range siblings {
-		name := strings.ToLower(f.RFilename)
-		if strings.HasSuffix(name, ".safetensors") {
+		if strings.HasSuffix(strings.ToLower(f.RFilename), ".safetensors") {
 			hasSafetensors = true
-			if !strings.HasPrefix(filepath.Base(name), "consolidated") {
-				hasSharded = true
-			}
+		}
+		if isConsolidatedWeights(f.RFilename) {
+			mistralFormat = true
 		}
 	}
 	hasWeights := false
@@ -71,7 +80,7 @@ func selectHFFiles(siblings []hfSibling) (files []string, total int64, err error
 		if hasSafetensors && hasSuffixAny(lower, hfAlternateWeights) {
 			continue
 		}
-		if hasSharded && strings.HasSuffix(lower, ".safetensors") && strings.HasPrefix(filepath.Base(lower), "consolidated") {
+		if mistralFormat && strings.HasSuffix(lower, ".safetensors") && !isConsolidatedWeights(name) {
 			continue
 		}
 		if strings.HasSuffix(lower, ".safetensors") || hasSuffixAny(lower, hfAlternateWeights) {

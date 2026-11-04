@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -379,5 +380,51 @@ func TestRemoveUnreferencedHFBlobs(t *testing.T) {
 	}
 	if _, err := os.Stat(store("bb22")); err == nil {
 		t.Error("the shared file must go with its last user")
+	}
+}
+
+func TestScanHFCache_JudgesAMistralFormatModelOnTheWeightsVLLMLoads(t *testing.T) {
+	index := func(shards ...string) string {
+		m := map[string]string{}
+		for i, shard := range shards {
+			m[fmt.Sprintf("layer.%d", i)] = shard
+		}
+		raw, _ := json.Marshal(map[string]any{"weight_map": m})
+		return string(raw)
+	}
+	for _, tc := range []struct {
+		name     string
+		files    map[string]string
+		complete bool
+	}{
+		{"consolidated weights with params.json and tekken.json",
+			map[string]string{"params.json": "{}", "tekken.json": "{}", "consolidated.safetensors": "w"}, true},
+		{"Mistral 7B v0.3 style tokenizer.model.v3",
+			map[string]string{"config.json": "{}", "tokenizer.model.v3": "t", "consolidated.safetensors": "w"}, true},
+		{"sharded consolidated weights all present",
+			map[string]string{"params.json": "{}", "tekken.json": "{}",
+				"consolidated.safetensors.index.json":     index("consolidated-00001-of-00002.safetensors", "consolidated-00002-of-00002.safetensors"),
+				"consolidated-00001-of-00002.safetensors": "w", "consolidated-00002-of-00002.safetensors": "w"}, true},
+		{"sharded consolidated weights with one missing",
+			map[string]string{"params.json": "{}", "tekken.json": "{}",
+				"consolidated.safetensors.index.json":     index("consolidated-00001-of-00002.safetensors", "consolidated-00002-of-00002.safetensors"),
+				"consolidated-00001-of-00002.safetensors": "w"}, false},
+		{"Hugging Face shards complete, consolidated copy still downloading",
+			map[string]string{"config.json": "{}", "tokenizer.json": "{}",
+				"model.safetensors.index.json":     index("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),
+				"model-00001-of-00002.safetensors": "w", "model-00002-of-00002.safetensors": "w",
+				"consolidated.safetensors.index.json":     index("consolidated-00001-of-00002.safetensors", "consolidated-00002-of-00002.safetensors"),
+				"consolidated-00001-of-00002.safetensors": "w"}, false},
+		{"no tokenizer at all",
+			map[string]string{"params.json": "{}", "consolidated.safetensors": "w"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			writeHFRepo(t, cache, "mistralai/M", tc.files)
+			got := slices.Contains(scannedIDs(t, cache), "mistralai/M")
+			if got != tc.complete {
+				t.Fatalf("listed as complete = %v, want %v", got, tc.complete)
+			}
+		})
 	}
 }
