@@ -11,12 +11,14 @@ import { useConnectionStore } from '@/ui/stores/connection.store'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import {
     EnabledEngineTypes,
+    MANIFEST_ENGINE_TYPES,
     EngineDefaultLinks,
     EngineDisplayNames
 } from '@/shared/constants/engines'
 import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
 import { BackendRow } from '@/ui/components/BackendRow/BackendRow'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
+import { CustomEndpointSection } from '@/ui/components/CustomEndpoints/CustomEndpointSection'
 
 /**
  * Inline engine editor for a single node, rendered inside the overview node
@@ -76,12 +78,19 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
     void engineFingerprint
     void modelsFingerprint
 
-    // One row per enabled engine, in order; an engine the node cannot run,
+    // Manifest engines only: Custom is a configured facade with no install
+    // state, model pull, or start/stop switch, so a BackendRow for it would
+    // spin forever and offer controls that cannot work. Its own editor is the
+    // Custom section below, addressed to whichever node this card describes:
+    // for a peer it reads and edits that peer's configuration over the
+    // pinned control channel, and goes read-only when the peer is offline or
+    // predates custom-endpoint management. An engine the node cannot run,
     // such as vLLM on Windows, gets no row.
     const statusStore = useEngineStatusStore.getState()
     const allBackends: { backend: BackendInfo; statusKnown: boolean }[] = getEnginesForNode(
         nodeId,
-        statusStore.statusByNode
+        statusStore.statusByNode,
+        MANIFEST_ENGINE_TYPES
     ).map(status => {
         const type = status.engineType
         // Distinguish "the service reported this engine" from "we synthesized
@@ -126,6 +135,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                     statusKnown={statusKnown}
                 />
             ))}
+            {isDisconnected ? null : <CustomEndpointSection nodeId={nodeId} />}
         </Stack>
     )
 }

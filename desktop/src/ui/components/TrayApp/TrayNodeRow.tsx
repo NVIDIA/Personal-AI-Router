@@ -11,7 +11,7 @@ import type { NodeItem } from '@/shared/types/nodes'
 import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { engineStatusesToListRows, getEnginesForNode } from '@/ui/utils/get-engines-for-node'
-import { EnabledEngineTypes } from '@/shared/constants/engines'
+import { EnabledEngineTypes, MANIFEST_ENGINE_TYPES } from '@/shared/constants/engines'
 import { getGpuColor } from '@/ui/utils/colors'
 import { CHART_COLORS } from '@/ui/constants/colors'
 import GpuRadialChartSvg from '@/ui/components/GpuRadialChartSvg'
@@ -33,7 +33,9 @@ function TrayNodeRow({ node, activeWorkloads }: { node: NodeItem; activeWorkload
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
     const engineRows = useMemo(
         () =>
-            engineStatusesToListRows(getEnginesForNode(node.id, statusByNode, EnabledEngineTypes)),
+            engineStatusesToListRows(
+                getEnginesForNode(node.id, statusByNode, MANIFEST_ENGINE_TYPES)
+            ),
         [node.id, statusByNode]
     )
     // Treat only inference-ready GPUs as "has GPU" per the backend readiness

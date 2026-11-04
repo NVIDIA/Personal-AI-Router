@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { EnabledEngineTypes, EngineDisplayNames } from '@/shared/constants/engines'
+import {
+    EnabledEngineTypes,
+    MANIFEST_ENGINE_TYPES,
+    EngineDisplayNames
+} from '@/shared/constants/engines'
 import { EngineType } from '@/shared/types/engines'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
@@ -24,10 +28,14 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
         ).join('|')
     )
     void lifecyclePendingFingerprint
+    // Wait for a service report before showing an engine control. Manifest
+    // engines only: Custom is a configured facade with no install state and no
+    // start/stop switch, so it gets no toggle row (its editor is the Custom
+    // endpoints section), and an engine the node cannot run, such as vLLM on
+    // Windows, is left out.
     const allBackends = useMemo(
         () =>
-            getEnginesForNode(nodeId, statusByNode)
-                // Wait for a service report before showing an engine control.
+            getEnginesForNode(nodeId, statusByNode, MANIFEST_ENGINE_TYPES)
                 .filter(status => status.processStatus !== 'initializing')
                 .map(status => ({
                     type: status.engineType,

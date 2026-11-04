@@ -65,6 +65,43 @@ describe('redactSensitiveLogText', () => {
         expect(out).toContain('[redacted]')
     })
 
+    it('redacts a Custom endpoint key from a nodes/list result', () => {
+        const frame = JSON.stringify({
+            jsonrpc: '2.0',
+            id: 3,
+            result: {
+                nodes: [
+                    { id: 'custom-1', host: 'vllm.internal', port: 8000, apiKey: 'sk-abc123def456' },
+                    { id: 'custom-2', host: 'mtplx.home', port: 8000, api_key: 'sk-xyz789' }
+                ]
+            }
+        })
+
+        const out = redactSensitiveLogText(frame)
+
+        expect(out).not.toContain('sk-abc123def456')
+        expect(out).not.toContain('sk-xyz789')
+        // Routing context is exactly what a support log is for; it survives.
+        expect(out).toContain('vllm.internal')
+        expect(out).toContain('mtplx.home')
+    })
+
+    it('keeps keySet visible while redacting the key itself', () => {
+        const out = redactSensitiveLogText(
+            JSON.stringify({ nodes: [{ id: 'custom-1', keySet: true, apiKey: 'sk-live-secret' }] })
+        )
+
+        expect(out).toContain('keySet')
+        expect(out).not.toContain('sk-live-secret')
+    })
+
+    it('redacts an endpoint key in output that is not valid JSON', () => {
+        const out = redactSensitiveLogText('custom-proxy reply {"nodes":[{"apiKey":"sk-live')
+
+        expect(out).not.toContain('sk-live')
+        expect(out).toContain('[redacted]')
+    })
+
     it('passes through unrelated output untouched', () => {
         const line = JSON.stringify({ jsonrpc: '2.0', method: 'app:ready' })
 

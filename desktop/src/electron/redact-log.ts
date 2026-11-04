@@ -10,10 +10,13 @@
  * `cluster:invite-received` / `cluster:invite-expired`. Engine settings carry
  * the user's launch command and environment on `launchText`, `launch_args`,
  * and `launch_env` — a hand-written command line that can name private paths
- * or credentials. Those frames travel the broker's stdout, which the
- * supervisor mirrors into the in-memory service log, the on-disk
- * `nvpair.jsonl`, and the user-shareable debug-log export. None of them may
- * survive into any of those.
+ * or credentials. A Custom endpoint's API key travels the same channel on
+ * `apiKey` / `api_key`: `nvpair-proxy` strips it from its outward replies,
+ * and this list is the second layer that keeps the key out of the logs even
+ * when an older worker or broker replays it verbatim. Those frames travel
+ * the broker's stdout, which the supervisor mirrors into the in-memory
+ * service log, the on-disk `nvpair.jsonl`, and the user-shareable debug-log
+ * export. None of them may survive into any of those.
  *
  * The key names are deliberately specific. A worker-spawn diagnostic logs its
  * own `bin` and `args`, which are PAIR's binaries and flags and are exactly
@@ -23,7 +26,7 @@
 const REDACTED = '[redacted]'
 
 /** JSON keys whose values never belong in a log sink. */
-const SENSITIVE_KEYS = new Set(['pin', 'launchText', 'launch_args', 'launch_env'])
+const SENSITIVE_KEYS = new Set(['pin', 'launchText', 'launch_args', 'launch_env', 'apiKey', 'api_key'])
 
 /** Quoted key forms, so a line with none of them is returned untouched. */
 const SENSITIVE_KEY_HINTS = [...SENSITIVE_KEYS].map(key => `"${key}"`)

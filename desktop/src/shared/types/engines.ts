@@ -12,13 +12,16 @@ import {
 } from '@/shared/constants/engines'
 
 /**
- * Canonical engine identifier — a closed literal union of every engine PAIR
- * ships. This codebase has no concept of "custom" or "user-registered"
- * engines: every engine is built in to the binary and listed in the
- * `EngineTypes` const tuple. Always prefer this type over `string` for
- * engine identifiers so the compiler flags typos like `'olllama'` or stale
- * literal values. Strings arriving from service bridge payloads or config JSON
- * must be narrowed via `isEngineType()` at the boundary.
+ * Canonical engine identifier — a closed literal union of every engine kind
+ * PAIR ships. The manifest-backed engines (`ollama`, `lm-studio`,
+ * `llama-cpp`) are installed binaries PAIR can run; `custom` is the fourth
+ * kind: user-configured external OpenAI-API-compatible endpoints fronted by
+ * the custom-proxy facade, never an installed binary. Either way the set is
+ * closed and listed in the `EngineTypes` const tuple. Always prefer this type
+ * over `string` for engine identifiers so the compiler flags typos like
+ * `'olllama'` or stale literal values. Strings arriving from service bridge
+ * payloads or config JSON must be narrowed via `isEngineType()` at the
+ * boundary.
  */
 export type EngineType = (typeof EngineTypes)[number]
 

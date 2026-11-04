@@ -155,7 +155,7 @@ interface ModularNode extends NodeHardware {
     // fallback path (a peer that sends no per-engine attribution).
     models: string[]
     // Per-engine attribution of the enriched model list, keyed by engine-manager
-    // engine name ("ollama", "lmstudio", "llamacpp"), carried on
+    // engine name ("ollama", "lmstudio", "llamacpp", "custom"), carried on
     // `AvailableNode.modelsByEngine`.
     // When present it is authoritative — {@link toEngineModels} attributes each
     // model to the engine that actually serves it, so a dual-engine node no
@@ -194,7 +194,8 @@ function emptyEngines(): Record<ProxyEngine, EnginePresence> {
         ollama: emptyPresence(),
         'lm-studio': emptyPresence(),
         'llama-cpp': emptyPresence(),
-        vllm: emptyPresence()
+        vllm: emptyPresence(),
+        custom: emptyPresence()
     }
 }
 
@@ -954,7 +955,8 @@ class ModularBridgeState {
         ollama: 0,
         'lm-studio': 0,
         'llama-cpp': 0,
-        vllm: 0
+        vllm: 0,
+        custom: 0
     }
     private selfId: string | null = null
     /**
