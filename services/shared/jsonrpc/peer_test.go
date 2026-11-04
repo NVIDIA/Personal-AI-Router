@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -124,35 +125,39 @@ func TestPeer_DeliversNotificationsInOrder(t *testing.T) {
 }
 
 func TestPeerCall_ReturnsWhenContextIsCancelled(t *testing.T) {
-	a, b := pipePeers(t)
-	go b.Serve(func(*Message) {}, nil) // never responds
-	go a.Serve(nil, nil)
+	synctest.Test(t, func(t *testing.T) {
+		a, b := pipePeers(t)
+		go b.Serve(func(*Message) {}, nil) // never responds
+		go a.Serve(nil, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
-	_, _, err := a.Call(ctx, "hang", nil)
-	assert.ErrorIs(t, err, context.Canceled, "want context.Canceled")
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+		_, _, err := a.Call(ctx, "hang", nil)
+		assert.ErrorIs(t, err, context.Canceled, "want context.Canceled")
+	})
 }
 
 func TestPeerClose_UnblocksPendingCalls(t *testing.T) {
-	c1, c2 := net.Pipe()
-	a := NewPeer(NewCodec(c1))
-	b := NewPeer(NewCodec(c2))
-	go b.Serve(func(*Message) {}, nil) // never responds
-	go a.Serve(nil, nil)
+	synctest.Test(t, func(t *testing.T) {
+		c1, c2 := net.Pipe()
+		a := NewPeer(NewCodec(c1))
+		b := NewPeer(NewCodec(c2))
+		go b.Serve(func(*Message) {}, nil) // never responds
+		go a.Serve(nil, nil)
 
-	errc := make(chan error, 1)
-	go func() { _, _, e := a.Call(context.Background(), "hang", nil); errc <- e }()
-	time.Sleep(50 * time.Millisecond)
-	_ = c1.Close() // a's read pump errors -> a.Close() -> pending Call wakes
-	_ = c2.Close()
+		errc := make(chan error, 1)
+		go func() { _, _, e := a.Call(context.Background(), "hang", nil); errc <- e }()
+		time.Sleep(50 * time.Millisecond)
+		_ = c1.Close() // a's read pump errors -> a.Close() -> pending Call wakes
+		_ = c2.Close()
 
-	select {
-	case e := <-errc:
-		assert.Equal(t, ErrPeerClosed, e)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "pending Call was not woken on close")
-	}
+		select {
+		case e := <-errc:
+			assert.Equal(t, ErrPeerClosed, e)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "pending Call was not woken on close")
+		}
+	})
 }
 
 func TestPeerCallAfterClose_FailsFast(t *testing.T) {
