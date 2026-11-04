@@ -25,8 +25,11 @@ const (
 	defaultLMStudioPort = 1234
 	// llama.cpp's OpenAI-compatible proxy facade uses its stock router port.
 	defaultLlamaCPPPort = 8080
-	defaultErrorLog     = "inference_errors.txt"
-	maxPromptsPerBatch  = 100
+	// Colibri's proxy facade claims its stock server port; PAIR's managed
+	// Colibri runs behind it on 8001.
+	defaultColibriPort = 8000
+	defaultErrorLog    = "inference_errors.txt"
+	maxPromptsPerBatch = 100
 )
 
 var defaultTopics = []string{
@@ -291,7 +294,7 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	fs.SetOutput(stderr)
 	var parsedConfigPath string
 	fs.StringVar(&parsedConfigPath, "config", configPath, "JSON configuration file")
-	fs.StringVar(&cfg.Backend, "backend", cfg.Backend, "backend: ollama, lmstudio, or llamacpp")
+	fs.StringVar(&cfg.Backend, "backend", cfg.Backend, "backend: ollama, lmstudio, llamacpp, or colibri")
 	fs.StringVar(&cfg.Backend, "provider", cfg.Backend, "alias for --backend")
 	fs.IntVar(&cfg.Port, "port", cfg.Port, "server port (backend default when omitted)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name; omitted or auto selects an available model")
@@ -358,8 +361,8 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 }
 
 func validateConfig(cfg Config) error {
-	if cfg.Backend != "ollama" && cfg.Backend != "lmstudio" && cfg.Backend != "llamacpp" {
-		return errors.New("--backend must be ollama, lmstudio, or llamacpp")
+	if cfg.Backend != "ollama" && cfg.Backend != "lmstudio" && cfg.Backend != "llamacpp" && cfg.Backend != "colibri" {
+		return errors.New("--backend must be ollama, lmstudio, llamacpp, or colibri")
 	}
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return errors.New("--port must be between 1 and 65535")
@@ -421,6 +424,8 @@ func effectivePort(cfg Config) int {
 		return defaultLMStudioPort
 	case "llamacpp":
 		return defaultLlamaCPPPort
+	case "colibri":
+		return defaultColibriPort
 	default:
 		return defaultOllamaPort
 	}

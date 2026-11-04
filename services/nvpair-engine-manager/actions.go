@@ -31,6 +31,11 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, action)
 	}
+	// A snapshot download is bounded by its progress watchdog, not by the
+	// action timeout below, which a large model would outlast.
+	if act.HFSnapshot != nil {
+		return e.PullModelStream(ctx, engine, modelFromParams(params), params)
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err
@@ -100,6 +105,14 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	// it to be up.
 	if act.RemovePath != nil {
 		return e.runRemovePathAction(ctx, st, act, params)
+	}
+	// Store actions work on the files alone, so like CLI actions they are not
+	// gated on the engine running.
+	if act.ScanDir != nil {
+		return e.runScanDirAction(st, act)
+	}
+	if act.LaunchModel != nil {
+		return e.runLaunchModelAction(st, engine, act, params)
 	}
 	if len(act.Cmd) > 0 {
 		return e.runCmdAction(ctx, st, act, port, params)
@@ -199,6 +212,14 @@ func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act
 			}
 		}
 	}
+	// In a store with a declared layout a model is one directory holding the
+	// marker, so a delete may name only such a directory — not the store, and
+	// not an owner folder holding several models.
+	marker, depth, layout := st.manifest.modelStoreLayout()
+	checkModel := layout && act.ModelResolution == ""
+	if model, named := vars["model"]; checkModel && named && !validModelID(model, depth) {
+		return nil, fmt.Errorf("delete_model: %q is not a valid model name", model)
+	}
 	root, err := resolvePlaceholders(act.RemovePath.Root, vars)
 	if err != nil {
 		return nil, err
@@ -234,6 +255,9 @@ func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act
 		return nil, err
 	}
 	target = expandPath(target)
+	if _, named := vars["model"]; checkModel && named && !hasMarker(target, marker) {
+		return nil, fmt.Errorf("delete_model: %q is not a downloaded model", vars["model"])
+	}
 	if err := safeRemoveUnderRoot(root, target); err != nil {
 		return nil, err
 	}

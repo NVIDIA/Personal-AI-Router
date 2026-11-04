@@ -1,0 +1,111 @@
+{
+  "$schema": "../manifest.schema.json",
+  "engine": "colibri",
+  "display_name": "Colibri",
+  "manifest_version": 1,
+  "install": { "mode": "user" },
+  "models_dir": "~/colibri-models",
+  "uninstall": { "remove": ["{install_dir}"] },
+  "runtime": {
+    "editable_launch": {
+      "fixed_args": ["serve"],
+      "controls": [
+        { "flags": ["--host"], "value": "{server.host}" },
+        { "flags": ["--port"], "value": "{server.port}" }
+      ]
+    },
+    "args": ["serve", "--host", "{host}", "--port", "{port}"],
+    "env": { "COLI_MODEL": "{models_dir}/{model}", "COLI_MODEL_ID": "{model}" },
+    "bind": "127.0.0.1",
+    "port": 8001,
+    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 600, "json_match": { "field": "status", "value": "ok" } },
+    "stop": { "signal": "term", "grace_s": 15 },
+    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }
+  },
+  "platforms": {
+    "windows/amd64": {
+      "detect": ["{install_dir}\\coli.cmd"],
+      "install": {
+        "artifacts": [
+          { "name": "base", "url": "https://github.com/JustVugg/colibri/releases/download/v2.1.0/colibri-v2.1.0-windows-x86_64.zip", "sha256": "195ee0be129d563789f1ade2383e023bde5519230d6fb508516e63767ee85465" },
+          { "name": "cuda", "url": "https://github.com/JustVugg/colibri/releases/download/v2.1.0/colibri-v2.1.0-windows-x86_64-cuda.zip", "sha256": "69fb93c20f671533eea8d2c18c5c1f6bd1db12dd79c9e570068b9950db58f3fe" }
+        ],
+        "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "& { $ErrorActionPreference = 'Continue'; $check = 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; $found = $false; foreach ($launcher in @('py', 'python', 'python3')) { if (Get-Command $launcher -CommandType Application -ErrorAction SilentlyContinue) { if ($launcher -eq 'py') { & $launcher -3 -c $check 2>$null | Out-Null } else { & $launcher -c $check 2>$null | Out-Null }; if ($LASTEXITCODE -eq 0) { $found = $true; break } } }; if (-not $found) { [Console]::Error.WriteLine('Colibri needs Python 3.10 or newer. Install it from https://www.python.org/downloads/ with Add python.exe to PATH ticked, then install Colibri again.'); exit 1 }; $ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:NVPAIR_INSTALL_DOWNLOAD_BASE -DestinationPath $env:NVPAIR_INSTALL_DIR -Force; Expand-Archive -LiteralPath $env:NVPAIR_INSTALL_DOWNLOAD_CUDA -DestinationPath $env:NVPAIR_INSTALL_DIR -Force }"]
+      },
+      "runtime": { "bin": "{install_dir}\\coli.cmd" }
+    },
+    "linux/amd64": {
+      "detect": ["{install_dir}/coli"],
+      "install": {
+        "fetch": { "url": "https://github.com/JustVugg/colibri/releases/download/v2.1.0/colibri-v2.1.0-linux-x86_64.tar.gz", "sha256": "d54b4c57c12417fc9e784b649249ac1aa3480eec44ece2777d4cbc639a25e66a" },
+        "run": ["sh", "-c", "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null || { echo 'Colibri needs Python 3.10 or newer as python3 on PATH; install it, then install Colibri again.' >&2; exit 1; }; tar -xzf \"$1\" -C \"$2\" && chmod +x \"$2/coli\"", "colibri-install", "{download}", "{install_dir}"]
+      },
+      "runtime": { "bin": "{install_dir}/coli" }
+    },
+    "darwin/arm64": {
+      "detect": ["{install_dir}/coli"],
+      "install": {
+        "fetch": { "url": "https://github.com/JustVugg/colibri/releases/download/v2.1.0/colibri-v2.1.0-macos-arm64.tar.gz", "sha256": "58320c9d92f84873820ced439c5dfe30afec64ebfc5ae7255ed8f34414d9e202" },
+        "run": ["sh", "-c", "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null || { echo 'Colibri needs Python 3.10 or newer as python3 on PATH; install it, then install Colibri again.' >&2; exit 1; }; tar -xzf \"$1\" -C \"$2\" && chmod +x \"$2/coli\"", "colibri-install", "{download}", "{install_dir}"]
+      },
+      "runtime": { "bin": "{install_dir}/coli", "env": { "COLI_METAL": "1" } }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List the models downloaded into the Colibri model store.",
+      "scan_dir": { "root": "{models_dir}", "marker": "config.json", "depth": 2 },
+      "result": { "array": "models", "field": "name" }
+    },
+    "loaded_models": {
+      "description": "List the model the running server serves (Colibri serves one model per process).",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "pull_model": {
+      "description": "Download a Colibri model container from Hugging Face (params: {\"model\": \"<owner/repository>\"}).",
+      "hf_snapshot": { "dest": "{models_dir}/{model}" }
+    },
+    "load_model": {
+      "description": "Serve a downloaded model: saves it as the launch model and restarts a running server onto it (params: {\"model\": \"<owner/repository>\"}).",
+      "launch_model": { "path": "{models_dir}/{model}", "marker": "config.json" },
+      "restart_after": true
+    },
+    "delete_model": {
+      "description": "Delete a downloaded model from the store (params: {\"model\": \"<owner/repository>\"}).",
+      "remove_path": { "root": "{models_dir}", "path": "{models_dir}/{model}" }
+    }
+  },
+  "catalog": [
+    { "repo": "Kreuzzelg/qwen36-35b-a3b-colibri-i4-gs64", "name": "Qwen3.6-35B-A3B", "parameters": "35B", "size_gb": 23.1 },
+    { "repo": "Justvugg/Qwen3-Coder-30B-A3B-colibri-int4", "name": "Qwen3-Coder-30B-A3B", "parameters": "30B", "size_gb": 19.4 },
+    { "repo": "puwaer/DeepSeek-V4-Flash-0731-reap-150b", "name": "DeepSeek V4 Flash REAP 150B", "parameters": "150B", "size_gb": 84.7 },
+    { "repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "name": "DeepSeek V4 Flash", "parameters": "284B", "size_gb": 166.9 },
+    {
+      "repo": "Qwen/Qwen3.8-Flash-Next-FP8", "name": "Qwen3.8-Flash-Next", "parameters": "125B", "size_gb": 185.6,
+      "revision": "bcd9f01ddc9cff2316eb84281bebcd5b058bddce"
+    },
+    {
+      "repo": "XiaomiMiMo/MiMo-V2.6-Flash-MOPD", "name": "MiMo-V2.6 Flash", "parameters": "309B", "size_gb": 171.8,
+      "exclude": ["dflash/*", "audio_tokenizer/*", "model_mtp.safetensors"]
+    },
+    { "repo": "mastouri/GLM-5.2-colibri-int4-g64-with-int8-mtp", "name": "GLM-5.2", "parameters": "744B", "size_gb": 429.3 },
+    { "repo": "Justvugg/GLM-5.3-colibri-int4-g64", "name": "GLM-5.3", "parameters": "744B", "size_gb": 419.3 },
+    {
+      "repo": "XiaomiMiMo/MiMo-V2.6-Pro-MOPD", "name": "MiMo-V2.6 Pro", "parameters": "1.02T", "size_gb": 563.6,
+      "exclude": ["dflash/*", "audio_tokenizer/*", "model_mtp.safetensors"]
+    },
+    { "repo": "nbeerbower/Inkling-colibri-int4", "name": "Inkling", "parameters": "975B", "size_gb": 514.1 },
+    {
+      "repo": "moonshotai/Kimi-K3", "name": "Kimi K3", "parameters": "2.8T", "size_gb": 1561.0,
+      "after_download": [{ "python": "tools/k3_tokenizer.py", "creates": "tokenizer.json" }]
+    }
+  ],
+  "model_types": [
+    "glm5_next", "glm5_next_text", "glm_moe_dsa", "glm5_moe", "glm", "mistral_large4",
+    "inkling_mm_model", "inkling", "kimi_k3", "kimi_linear", "olmoe", "qwen3_5_moe",
+    "qwen3_5_moe_text", "qwen3_5", "qwen3_5_text", "qwen3_moe", "qwen3", "flint",
+    "muse_spark", "lfm3", "lfm3_vl", "qwen4_exp", "qwen4_exp_text", "deepseek_v4",
+    "deepseek_v41", "deepseek_v41_text", "mimo_v2"
+  ]
+}

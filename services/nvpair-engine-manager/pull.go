@@ -122,6 +122,15 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		params, _ = json.Marshal(map[string]string{"name": model, "model": model})
 	}
 
+	// A snapshot download writes the store itself: no engine involvement, so
+	// it neither needs the engine running nor goes through the action timeout.
+	if act.HFSnapshot != nil {
+		if model == "" {
+			model = modelFromParams(params)
+		}
+		return e.pullHFSnapshot(ctx, st, engine, model, act)
+	}
+
 	// CLI action (e.g. lms get): no structured line progress; emit a start
 	// marker and return the final result via the existing runner.
 	if len(act.Cmd) > 0 {

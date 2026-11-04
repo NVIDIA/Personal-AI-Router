@@ -50,9 +50,11 @@ func waitsForEngineReadiness(path, engine string) bool {
 		return true
 	}
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
-	// peer replies only after the post-delete restart is ready.
+	// peer replies only after the post-delete restart is ready. Colibri's
+	// load_model does too: it switches models by restarting onto the new one,
+	// so the peer replies only once that model has loaded.
 	if path == controlLoadPath {
-		return engine == "ollama"
+		return engine == "ollama" || engine == "colibri"
 	}
 	return path == controlStartPath || path == controlDeletePath
 }

@@ -23,7 +23,7 @@ func TestOllama_IsPreparedFirst(t *testing.T) {
 }
 
 func TestEngineNames_ReturnsCanonicalOrder(t *testing.T) {
-	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp"}, Names())
+	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp", "colibri"}, Names())
 }
 
 // There are two proxy identities: ComponentName per facade, ProxyComponent per
