@@ -47,7 +47,7 @@ export const ModelHubModal = ({
                     >
                         <ModelHubContent
                             engine={engine}
-                            multiple={false}
+                            multiple={true}
                             onSubmit={onSubmit}
                             downloadedModels={downloadedModels}
                             onOpenCustomModel={onOpenCustomModel}

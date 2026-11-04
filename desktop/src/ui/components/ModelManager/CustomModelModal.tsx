@@ -107,15 +107,12 @@ export function CustomModelModal({ open, onOpenChange, backend, nodeId }: Custom
         try {
             const results = await searchEngineHub('llama-cpp', query)
             setHfResults(results)
-            if (results.length > 0 && !selectedHfRepo) {
-                setSelectedHfRepo(results[0].name)
-            }
         } catch (err) {
             setErrorMsg(getErrorString(err))
         } finally {
             setHfSearching(false)
         }
-    }, [hfSearchQuery, selectedHfRepo])
+    }, [hfSearchQuery])
 
     const handleSubmit = useCallback(() => {
         setErrorMsg(null)
@@ -144,6 +141,14 @@ export function CustomModelModal({ open, onOpenChange, backend, nodeId }: Custom
             const repo = selectedHfRepo.trim()
             if (!repo) {
                 setErrorMsg('Please select or enter a Hugging Face repository.')
+                return
+            }
+
+            const cleanRepo = repo.replace(/^hf\.co\//, '').replace(/:[A-Za-z0-9_]+$/i, '')
+            if (backend.type === 'ollama' && cleanRepo.length > 80) {
+                setErrorMsg(
+                    `Repository name (${cleanRepo.length} chars) exceeds Ollama's 80-character limit. Please choose a model with a shorter name, or use llama.cpp or LM Studio.`
+                )
                 return
             }
 
@@ -306,7 +311,11 @@ export function CustomModelModal({ open, onOpenChange, backend, nodeId }: Custom
                                             placeholder="e.g. deepseek, llama 3.2, qwen, mistral"
                                             disabled={hfSearching}
                                             onKeyDown={e => {
-                                                if (e.key === 'Enter') void handleHfSearch()
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault()
+                                                    e.stopPropagation()
+                                                    void handleHfSearch()
+                                                }
                                             }}
                                         />
                                     </FormField>
@@ -332,7 +341,13 @@ export function CustomModelModal({ open, onOpenChange, backend, nodeId }: Custom
                                             Search results (click to select):
                                         </Text>
                                         {hfResults.map(entry => {
-                                            const isSelected = selectedHfRepo === entry.name
+                                            const cleanRepo = entry.name.replace(
+                                                /:[A-Za-z0-9_]+$/i,
+                                                ''
+                                            )
+                                            const isSelected =
+                                                selectedHfRepo === cleanRepo ||
+                                                selectedHfRepo === entry.name
                                             return (
                                                 <Flex
                                                     key={entry.id}
@@ -344,7 +359,7 @@ export function CustomModelModal({ open, onOpenChange, backend, nodeId }: Custom
                                                             ? 'bg-[var(--color-background-brand-subtle)] text-[var(--color-text-brand)]'
                                                             : 'hover:bg-white/5'
                                                     }`}
-                                                    onClick={() => setSelectedHfRepo(entry.name)}
+                                                    onClick={() => setSelectedHfRepo(cleanRepo)}
                                                 >
                                                     <Stack gap="0" className="min-w-0">
                                                         <Text
@@ -408,10 +423,24 @@ export function CustomModelModal({ open, onOpenChange, backend, nodeId }: Custom
                                 </FormField>
 
                                 {pullTargetPreview && (
-                                    <Text kind="body/regular/xs" className="text-subtle-color">
-                                        Will pull:{' '}
-                                        <span className="font-mono">{pullTargetPreview}</span>
-                                    </Text>
+                                    <Stack gap="1">
+                                        <Text kind="body/regular/xs" className="text-subtle-color">
+                                            Will pull:{' '}
+                                            <span className="font-mono">{pullTargetPreview}</span>
+                                        </Text>
+                                        {backend.type === 'ollama' &&
+                                            selectedHfRepo
+                                                .replace(/^hf\.co\//, '')
+                                                .replace(/:[A-Za-z0-9_]+$/i, '').length > 80 && (
+                                                <Text
+                                                    kind="body/regular/xs"
+                                                    className="text-[var(--color-feedback-danger)]"
+                                                >
+                                                    Repository name exceeds Ollama&apos;s
+                                                    80-character limit.
+                                                </Text>
+                                            )}
+                                    </Stack>
                                 )}
                             </Stack>
                         )}
@@ -434,7 +463,11 @@ export function CustomModelModal({ open, onOpenChange, backend, nodeId }: Custom
                                         }
                                         disabled={submitting}
                                         onKeyDown={e => {
-                                            if (e.key === 'Enter' && canSubmit) handleSubmit()
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault()
+                                                e.stopPropagation()
+                                                if (canSubmit) handleSubmit()
+                                            }
                                         }}
                                     />
                                 </FormField>

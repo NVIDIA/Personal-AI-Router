@@ -180,12 +180,13 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             for (const entry of entries) {
                 if (entry.name) {
                     let targetModel = entry.name
-                    if (
-                        backendType === 'ollama' &&
-                        entry.name.includes('/') &&
-                        !entry.name.startsWith('hf.co/')
-                    ) {
-                        targetModel = `hf.co/${entry.name}`
+                    if (backendType === 'ollama' && entry.name.includes('/')) {
+                        let repoPart = entry.name.replace(/^hf\.co\//, '')
+                        const cleanRepo = repoPart.replace(/:[A-Za-z0-9_]+$/i, '')
+                        if (repoPart.length > 80 && cleanRepo.length <= 80) {
+                            repoPart = cleanRepo
+                        }
+                        targetModel = `hf.co/${repoPart}`
                     }
                     window.pairApi.engines.pullModel(backendType, nodeId, targetModel)
                 }
