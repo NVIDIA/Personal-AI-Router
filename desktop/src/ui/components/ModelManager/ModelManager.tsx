@@ -18,13 +18,35 @@ import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
 import ModelRow from './ModelRow'
 import { IncomingSyncPullRow } from './IncomingSyncPullRow'
 import { TransientModelStatusRow } from './TransientModelStatusRow'
+import { ModelTokensModal } from './ModelTokensModal'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
 import type { ModelEntry } from '@/ui/types/model-hub'
+
+function parseModelTokens(raw: string | null): Record<string, number> {
+    if (!raw) return {}
+    try {
+        const parsed = JSON.parse(raw)
+        if (typeof parsed !== 'object' || parsed === null) return {}
+        const result: Record<string, number> = {}
+        for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === 'number') {
+                result[key] = value
+            }
+        }
+        return result
+    } catch {
+        return {}
+    }
+}
 
 export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId: string }) {
     const [openModelHubModal, setOpenModelHubModal] = useState(false)
     const [openCustomModelModal, setOpenCustomModelModal] = useState(false)
     const [modelPendingDelete, setModelPendingDelete] = useState<string | null>(null)
+    const [modelPendingTokens, setModelPendingTokens] = useState<string | null>(null)
+    const [modelTokensMap, setModelTokensMap] = useState<Record<string, number>>(() =>
+        parseModelTokens(localStorage.getItem('pair_model_tokens'))
+    )
     const models = (backend.models ?? []).sort((a, b) =>
         formatModelDisplayName(a.name, backend.type).localeCompare(
             formatModelDisplayName(b.name, backend.type)
@@ -118,11 +140,21 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     const handleAction = useCallback(
         (modelName: string, action: string) => {
             switch (action) {
-                case 'load':
-                    window.pairApi.engines.loadModel(backendType, nodeId, modelName)
+                case 'load': {
+                    const configuredTokens = modelTokensMap[`${backendType}:${modelName}`]
+                    window.pairApi.engines.loadModel(
+                        backendType,
+                        nodeId,
+                        modelName,
+                        configuredTokens
+                    )
                     break
+                }
                 case 'eject':
                     window.pairApi.engines.unloadModel(backendType, nodeId, modelName)
+                    break
+                case 'tokens':
+                    setModelPendingTokens(modelName)
                     break
                 case 'delete':
                     if (confirmBeforeDelete) {
@@ -133,7 +165,24 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     break
             }
         },
-        [backendType, confirmBeforeDelete, nodeId]
+        [backendType, confirmBeforeDelete, modelTokensMap, nodeId]
+    )
+
+    const handleApplyTokens = useCallback(
+        (tokens: number) => {
+            if (!modelPendingTokens) return
+            const key = `${backendType}:${modelPendingTokens}`
+            const next = { ...modelTokensMap, [key]: tokens }
+            setModelTokensMap(next)
+            try {
+                localStorage.setItem('pair_model_tokens', JSON.stringify(next))
+            } catch {
+                // ignore
+            }
+            window.pairApi.engines.loadModel(backendType, nodeId, modelPendingTokens, tokens)
+            setModelPendingTokens(null)
+        },
+        [backendType, modelPendingTokens, modelTokensMap, nodeId]
     )
 
     // `ConfirmModal` closes (`onOpenChange(false)`) before it calls `onConfirm`,
@@ -262,12 +311,28 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                     displayName={displayName}
                                     onAction={handleAction}
                                     onExpiryChange={handleExpiryChange}
+                                    tokens={modelTokensMap[`${backendType}:${model.name}`] ?? 2048}
+                                    onTokensClick={setModelPendingTokens}
                                 />
                             ))}
                         </Stack>
                     )}
                 </>
             )}
+
+            <ModelTokensModal
+                open={modelPendingTokens !== null}
+                onOpenChange={open => {
+                    if (!open) setModelPendingTokens(null)
+                }}
+                modelName={modelPendingTokens ? displayName(modelPendingTokens) : ''}
+                initialTokens={
+                    modelPendingTokens
+                        ? (modelTokensMap[`${backendType}:${modelPendingTokens}`] ?? 2048)
+                        : 2048
+                }
+                onApply={handleApplyTokens}
+            />
 
             <ConfirmModal
                 open={modelPendingDelete !== null}

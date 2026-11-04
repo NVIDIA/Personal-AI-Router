@@ -283,13 +283,17 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // See docs/services-parity.md#models.
             if (payload.model) {
                 if (payload.engineType === 'ollama') {
+                    const runParams: JsonObject = { model: payload.model, stream: false }
+                    if (typeof payload.numCtx === 'number' && payload.numCtx > 0) {
+                        runParams.options = { num_ctx: payload.numCtx }
+                    }
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',
                         {
                             engine,
                             action: 'run_model',
-                            params: { model: payload.model, stream: false }
+                            params: runParams
                         },
                         failAction('load model', {
                             nodeId: payload.nodeId,

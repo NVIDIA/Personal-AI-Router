@@ -56,8 +56,8 @@ export interface IEngineApi {
     pullModel(engineType: EngineType, nodeId: string, model: string): void
     /** Cancel an in-progress model download on a node. */
     cancelPull(engineType: EngineType, nodeId: string, model: string): void
-    /** Load a model into memory on a node. */
-    loadModel(engineType: EngineType, nodeId: string, model: string): void
+    /** Load a model into memory on a node with optional context token size. */
+    loadModel(engineType: EngineType, nodeId: string, model: string, numCtx?: number): void
     /** Unload a model from memory on a node. */
     unloadModel(engineType: EngineType, nodeId: string, model: string): void
     /** Delete a downloaded model from a node. */
@@ -108,8 +108,8 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
         cancelPull: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'cancelPull', engineType, nodeId, model }),
-        loadModel: (engineType, nodeId, model) =>
-            fireCommand(transport, { command: 'loadModel', engineType, nodeId, model }),
+        loadModel: (engineType, nodeId, model, numCtx) =>
+            fireCommand(transport, { command: 'loadModel', engineType, nodeId, model, numCtx }),
         unloadModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'unloadModel', engineType, nodeId, model }),
         deleteModel: (engineType, nodeId, model) =>

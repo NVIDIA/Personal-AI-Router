@@ -77,6 +77,7 @@ export interface EngineCommandPayload {
     model?: string
     expiry?: string
     filePath?: string
+    numCtx?: number
 }
 
 /** Canonical engine state snapshot sent on connect/reconnect. */
