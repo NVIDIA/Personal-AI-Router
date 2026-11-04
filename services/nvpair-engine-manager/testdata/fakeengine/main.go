@@ -71,6 +71,9 @@ func bstr(m map[string]any, k string) string {
 }
 
 func main() {
+	if os.Getenv("PAIR_FAKE_PYTHON") == "1" {
+		os.Exit(fakePython(os.Args[1:]))
+	}
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
 		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST"} {
@@ -350,4 +353,37 @@ func main() {
 	if err := http.Serve(ln, mux); err != nil {
 		log.Fatalf("fake-engine serve: %v", err)
 	}
+}
+
+// fakePython stands in for Python 3 in the after-download tests (with
+// PAIR_FAKE_PYTHON=1). "-c <code>" answers the version probe; "<script> <dir>"
+// follows the script's lines: "create <file>" writes that file in dir, and
+// "fail <message>" exits non-zero with the message.
+func fakePython(args []string) int {
+	if len(args) >= 1 && args[0] == "-c" {
+		return 0
+	}
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "fake python: want <script> <dir>, got", args)
+		return 2
+	}
+	script, err := os.ReadFile(args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake python:", err)
+		return 2
+	}
+	for _, line := range strings.Split(string(script), "\n") {
+		verb, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
+		switch verb {
+		case "create":
+			if err := os.WriteFile(args[1]+string(os.PathSeparator)+rest, []byte("{}"), 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, "fake python:", err)
+				return 2
+			}
+		case "fail":
+			fmt.Fprintln(os.Stderr, rest)
+			return 1
+		}
+	}
+	return 0
 }

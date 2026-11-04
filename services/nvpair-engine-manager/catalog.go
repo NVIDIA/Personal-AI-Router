@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -160,10 +161,10 @@ const (
 	llamaCPPQuantization = "Q4_K_M"
 	// llamaCPPLimit is the page size for each publisher and for each search.
 	llamaCPPLimit = 50
-	// llamaCPPSearchCacheLimit bounds how many distinct queries are kept, oldest
-	// use evicted first. Each is a short list, but the set of possible queries
-	// is not bounded at all.
-	llamaCPPSearchCacheLimit = 20
+	// catalogSearchCacheLimit bounds how many distinct queries are kept across
+	// the searchable sources, oldest use evicted first. Each is a short list,
+	// but the set of possible queries is not bounded at all.
+	catalogSearchCacheLimit = 20
 	// maxCatalogQuery bounds a query passed upstream, in characters. A longer
 	// one is refused rather than shortened, which would search for something
 	// the operator did not type.
@@ -173,6 +174,20 @@ const (
 // llamaCPPPublishers are the Hugging Face accounts whose GGUF repos make up the
 // llama.cpp browse list: llama.cpp's own org and two widely used quantizers.
 var llamaCPPPublishers = []string{"ggml-org", "bartowski", "unsloth"}
+
+// The Colibri catalogue: every open Hugging Face repository tagged colibri, the
+// tag Colibri's converted model containers are published under. A repository
+// id is the pull-ready name: hf_snapshot downloads it whole.
+const (
+	colibriTag = "colibri"
+	// colibriLimit is one page of the listing, sorted by downloads. The whole
+	// tag holds a few dozen repositories today; anything past the page is still
+	// one search or download-by-name away.
+	colibriLimit = 200
+	// colibriMarker is the file every Colibri model directory carries at its
+	// root, and so the file a repository must have to be offered.
+	colibriMarker = "config.json"
+)
 
 // ollamaLibraryFile is the committed list's on-disk shape.
 type ollamaLibraryFile struct {
@@ -216,6 +231,15 @@ type hfModelRow struct {
 	Gated       json.RawMessage `json:"gated"`
 	PipelineTag string          `json:"pipeline_tag"`
 	Siblings    []hfSibling     `json:"siblings"`
+	// Config is the part of the root config.json the hub parses, returned
+	// when the listing asks for config=true.
+	Config *hfModelConfig `json:"config"`
+}
+
+// hfModelConfig is the field of a repository's config.json an engine that
+// picks its code by model_type is matched on.
+type hfModelConfig struct {
+	ModelType string `json:"model_type"`
 }
 
 // hfSibling is one file in a Hugging Face repo.
@@ -232,12 +256,20 @@ type catalogService struct {
 
 	lmStudio *listingCache
 	llamaCPP *listingCache
+	colibri  *listingCache
+	// colibriListed is the current state of the models Colibri's manifest
+	// lists by repository; listed returns an engine's entries (nil lists none).
+	colibriListed *listingCache
+	listed        func(engine string) []CatalogEntry
+	// modelTypes returns the config.json model_types an engine runs (nil runs
+	// every one), which a tagged repository must declare to be offered.
+	modelTypes func(engine string) []string
 
-	// searchMu guards the llama.cpp searches, kept by lowercased query with
-	// searchOrder from least to most recently used.
-	searchMu      sync.Mutex
-	llamaSearches map[string]*listingCache
-	searchOrder   []string
+	// searchMu guards the searches of every searchable source, kept by engine
+	// and lowercased query, with searchOrder from least to most recently used.
+	searchMu    sync.Mutex
+	searches    map[string]*listingCache
+	searchOrder []string
 
 	// baseURL overrides the listing endpoint in tests. Empty means the real one;
 	// the caching and coalescing around the fetch is the part worth testing, and
@@ -281,10 +313,12 @@ func newCatalogService() *catalogService {
 	c := &catalogService{
 		client:        newEngineHTTPClient(catalogHTTPTimeout),
 		ollamaCatalog: sync.OnceValues(loadOllamaCatalog),
-		llamaSearches: map[string]*listingCache{},
+		searches:      map[string]*listingCache{},
 	}
 	c.lmStudio = &listingCache{label: "lm studio catalog", fetch: c.fetchLmStudio}
 	c.llamaCPP = &listingCache{label: "llama.cpp catalog", fetch: c.fetchLlamaCPP}
+	c.colibri = &listingCache{label: "colibri catalog", fetch: c.fetchColibri}
+	c.colibriListed = &listingCache{label: "colibri listed models", fetch: c.fetchColibriListed, emptyOK: true}
 	return c
 }
 
@@ -331,6 +365,30 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		return CatalogResult{
 			// GGUF has no machine-locked quantizations, so nothing is filtered
 			// for the target.
+			Models:     models,
+			Source:     source,
+			Platform:   platform,
+			Arch:       arch,
+			FetchedAt:  fetchedAt.UTC().Format(time.RFC3339),
+			Searchable: true,
+			Query:      query,
+		}, nil
+	case "colibri":
+		query, err := catalogQuery(query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		models, fetchedAt, err := c.colibriCatalog(ctx, query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		source := hfModelsAPI + "?filter=" + colibriTag
+		if query != "" {
+			source += "&search=" + url.QueryEscape(query)
+		}
+		return CatalogResult{
+			// Colibri's builds run on every platform it ships for, so nothing is
+			// filtered for the target.
 			Models:     models,
 			Source:     source,
 			Platform:   platform,
@@ -396,6 +454,8 @@ func normalizeCatalogEngine(engine string) string {
 		return "lmstudio"
 	case "llama-cpp", "llama.cpp", "llamacpp":
 		return "llamacpp"
+	case "colibri", "colibrì":
+		return "colibri"
 	default:
 		return e
 	}
@@ -568,26 +628,207 @@ func (c *catalogService) llamaCPPCatalog(ctx context.Context, query string) ([]C
 	return c.llamaCPPSearch(query).get(ctx)
 }
 
-// llamaCPPSearch is the cache for one query, created on first use. Queries
-// differing only in case share one.
+// llamaCPPSearch is the cache for one llama.cpp query.
 func (c *catalogService) llamaCPPSearch(query string) *listingCache {
-	key := strings.ToLower(query)
+	return c.searchCache("llamacpp", "llama.cpp search", query, func(ctx context.Context) ([]CatalogModel, error) {
+		rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
+		if err != nil {
+			return nil, err
+		}
+		return normalizeLlamaCPPRows(rows), nil
+	})
+}
+
+// colibriCatalog serves the browse list, or the results of a query: the models
+// Colibri's manifest lists first, then the colibri-tagged repositories. A
+// listed repository that is also tagged appears once, as listed. The listed
+// models are a garnish on the tagged list, so failing to read them leaves the
+// tagged list standing.
+func (c *catalogService) colibriCatalog(ctx context.Context, query string) ([]CatalogModel, time.Time, error) {
+	var tagged []CatalogModel
+	var fetchedAt time.Time
+	var err error
+	if query == "" {
+		tagged, fetchedAt, err = c.colibri.get(ctx)
+	} else {
+		tagged, fetchedAt, err = c.colibriSearch(query).get(ctx)
+	}
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	listed, _, err := c.colibriListed.get(ctx)
+	if err != nil {
+		slog.Warn("colibri listed models unavailable; serving the tagged ones", "err", err)
+		listed = nil
+	}
+	return mergeListedModels(listed, tagged, query), fetchedAt, nil
+}
+
+// mergeListedModels puts the listed models a query matches ahead of the tagged
+// ones, dropping a tagged copy of a listed repository. Matching mirrors what a
+// Hugging Face search matches: a substring of the repository id, here also of
+// the display name, ignoring case. A tagged hit on a listed repository brings
+// in the listed entry, since the search found it.
+func mergeListedModels(listed, tagged []CatalogModel, query string) []CatalogModel {
+	q := strings.ToLower(query)
+	byID := make(map[string]bool, len(listed))
+	for _, m := range listed {
+		byID[m.ID] = true
+	}
+	hits := make(map[string]bool, len(tagged))
+	for _, m := range tagged {
+		hits[m.ID] = true
+	}
+	out := make([]CatalogModel, 0, len(listed)+len(tagged))
+	for _, m := range listed {
+		if q == "" || hits[m.ID] || strings.Contains(strings.ToLower(m.ID), q) || strings.Contains(strings.ToLower(m.Name), q) {
+			out = append(out, m)
+		}
+	}
+	for _, m := range tagged {
+		if !byID[m.ID] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// fetchColibriListed reads the current state of each model Colibri's manifest
+// lists: its downloads, likes and last change, and whether it is still open.
+// A repository that cannot be read, or has since been made private or gated, is
+// left out rather than failing the rest.
+func (c *catalogService) fetchColibriListed(ctx context.Context) ([]CatalogModel, error) {
+	var entries []CatalogEntry
+	if c.listed != nil {
+		entries = c.listed("colibri")
+	}
+	models := make([]CatalogModel, len(entries))
+	found := make([]bool, len(entries))
+	var wg sync.WaitGroup
+	for i, entry := range entries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			row, err := c.fetchHFRepo(ctx, entry.Repo)
+			if err != nil {
+				slog.Debug("listed model unavailable", "engine", "colibri", "model", entry.Repo, "err", err)
+				return
+			}
+			models[i], found[i] = listedModel(entry, row)
+		}()
+	}
+	wg.Wait()
+	out := make([]CatalogModel, 0, len(entries))
+	for i := range entries {
+		if found[i] {
+			out = append(out, models[i])
+		}
+	}
+	return out, nil
+}
+
+// fetchHFRepo reads one repository's listing fields.
+func (c *catalogService) fetchHFRepo(ctx context.Context, repo string) (hfModelRow, error) {
+	ctx, cancel := context.WithTimeout(ctx, catalogHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint()+"/"+repo, nil)
+	if err != nil {
+		return hfModelRow{}, fmt.Errorf("build model catalog request: %w", withoutURL(err))
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "PAIR/1.0")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return hfModelRow{}, fmt.Errorf("model catalog request failed: %w", withoutURL(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return hfModelRow{}, fmt.Errorf("model catalog returned %s", resp.Status)
+	}
+	var row hfModelRow
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCatalogBody)).Decode(&row); err != nil {
+		return hfModelRow{}, fmt.Errorf("decode model catalog: %w", err)
+	}
+	return row, nil
+}
+
+// listedModel is a manifest entry as a catalog model, with the repository's
+// live fields. It is not one when the repository is private or gated, the same
+// rule the tagged list applies, or when it reports no usable date.
+func listedModel(entry CatalogEntry, row hfModelRow) (CatalogModel, bool) {
+	if row.Private || string(bytes.TrimSpace(row.Gated)) != "false" {
+		return CatalogModel{}, false
+	}
+	updated := row.LastModified
+	if updated == "" {
+		updated = row.CreatedAt
+	}
+	if _, err := time.Parse(time.RFC3339, updated); err != nil {
+		return CatalogModel{}, false
+	}
+	tags := row.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	return CatalogModel{
+		ID:            entry.Repo,
+		Name:          entry.Name,
+		Author:        entry.Repo[:strings.Index(entry.Repo, "/")],
+		URL:           "https://huggingface.co/" + entry.Repo,
+		Size:          uint64(math.Round(entry.SizeGB * 1e9)),
+		Downloads:     max(row.Downloads, 0),
+		Likes:         max(row.Likes, 0),
+		UpdatedAt:     updated,
+		Tags:          tags,
+		ParameterSize: entry.Parameters,
+	}, true
+}
+
+// colibriSearch is the cache for one Colibri query.
+func (c *catalogService) colibriSearch(query string) *listingCache {
+	return c.searchCache("colibri", "colibri search", query, func(ctx context.Context) ([]CatalogModel, error) {
+		rows, err := c.fetchHF(ctx, colibriListing("search", query))
+		if err != nil {
+			return nil, err
+		}
+		return normalizeColibriRows(rows, c.servesModelType("colibri")), nil
+	})
+}
+
+// fetchColibri reads the colibri-tagged repositories, most downloaded first.
+func (c *catalogService) fetchColibri(ctx context.Context) ([]CatalogModel, error) {
+	rows, err := c.fetchHF(ctx, colibriListing("", ""))
+	if err != nil {
+		return nil, err
+	}
+	return normalizeColibriRows(rows, c.servesModelType("colibri")), nil
+}
+
+// servesModelType is the test an engine's manifest holds a tagged repository's
+// model_type to, or nil when the manifest declares no model_types.
+func (c *catalogService) servesModelType(engine string) func(string) bool {
+	if c.modelTypes == nil {
+		return nil
+	}
+	served := c.modelTypes(engine)
+	if len(served) == 0 {
+		return nil
+	}
+	m := &Manifest{ModelTypes: served}
+	return m.servesModelType
+}
+
+// searchCache is the cache for one query of one searchable source, created on
+// first use. Queries differing only in case share one. The searches of every
+// source share one bound, evicting the least recently used.
+func (c *catalogService) searchCache(engine, label, query string, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
+	key := engine + "\n" + strings.ToLower(query)
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
-	search, ok := c.llamaSearches[key]
+	search, ok := c.searches[key]
 	if !ok {
-		search = &listingCache{
-			label:   "llama.cpp search",
-			emptyOK: true,
-			fetch: func(ctx context.Context) ([]CatalogModel, error) {
-				rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
-				if err != nil {
-					return nil, err
-				}
-				return normalizeLlamaCPPRows(rows), nil
-			},
-		}
-		c.llamaSearches[key] = search
+		search = &listingCache{label: label, emptyOK: true, fetch: fetch}
+		c.searches[key] = search
 	}
 	for i, k := range c.searchOrder {
 		if k == key {
@@ -596,8 +837,8 @@ func (c *catalogService) llamaCPPSearch(query string) *listingCache {
 		}
 	}
 	c.searchOrder = append(c.searchOrder, key)
-	for len(c.searchOrder) > llamaCPPSearchCacheLimit {
-		delete(c.llamaSearches, c.searchOrder[0])
+	for len(c.searchOrder) > catalogSearchCacheLimit {
+		delete(c.searches, c.searchOrder[0])
 		c.searchOrder = c.searchOrder[1:]
 	}
 	return search
@@ -647,6 +888,121 @@ func llamaCPPListing(field, value string) url.Values {
 	q.Set("limit", fmt.Sprint(llamaCPPLimit))
 	q.Set("full", "true")
 	return q
+}
+
+// colibriListing is the colibri-tagged listing, optionally narrowed by one
+// field. It asks for the full entry, whose file list shows whether a repository
+// is a complete model container, and for its parsed config.json, whose
+// model_type says which engine code it needs.
+func colibriListing(field, value string) url.Values {
+	q := url.Values{}
+	if field != "" {
+		q.Set(field, value)
+	}
+	q.Set("filter", colibriTag)
+	q.Set("sort", "downloads")
+	q.Set("direction", "-1")
+	q.Set("limit", fmt.Sprint(colibriLimit))
+	q.Set("full", "true")
+	q.Set("config", "true")
+	return q
+}
+
+// normalizeColibriRows converts listing entries into Colibri downloads,
+// dropping the ones Colibri cannot fetch or serve, de-duplicating, and putting
+// the most-downloaded first. serves is the engine's model_type test.
+func normalizeColibriRows(rows []hfModelRow, serves func(string) bool) []CatalogModel {
+	seen := make(map[string]int, len(rows))
+	out := make([]CatalogModel, 0, len(rows))
+	for _, r := range rows {
+		model, ok := colibriModel(r, serves)
+		if !ok {
+			continue
+		}
+		if idx, dup := seen[model.ID]; dup {
+			out[idx] = model
+			continue
+		}
+		seen[model.ID] = len(out)
+		out = append(out, model)
+	}
+	slices.SortStableFunc(out, func(a, b CatalogModel) int {
+		return cmp.Compare(b.Downloads, a.Downloads)
+	})
+	return out
+}
+
+// speedyColibriPattern matches the repositories of the "speedy colibri" fork,
+// whose nvfp4/mxfp4 containers the upstream engine PAIR installs does not read.
+var speedyColibriPattern = regexp.MustCompile(`(?i)speedy-?colibri`)
+
+// colibriForkTags mark containers built for a port of Colibri rather than for
+// Colibri itself: SpeedyColibri (Rust, nvfp4/mxfp4) and peng (zstd-packed
+// tensors). They carry the colibri tag for its expert-streaming lineage, and
+// the engine PAIR installs reads neither.
+var colibriForkTags = []string{"speedycolibri", "peng"}
+
+// colibriModel turns one listing entry into a download, or reports that it is
+// not one. The tag alone is not enough: a gated or private repository fails to
+// download without credentials, one without a root config.json is not a model
+// container (or not yet a complete one), one whose pipeline says it is not a
+// chat or completion model is nothing the OpenAI endpoint can serve, and one
+// whose config.json model_type the engine has no code for never starts.
+func colibriModel(r hfModelRow, serves func(string) bool) (CatalogModel, bool) {
+	repo := strings.TrimSpace(r.ID)
+	if repo == "" {
+		repo = strings.TrimSpace(r.ModelID)
+	}
+	if !hfRepoPattern.MatchString(repo) {
+		return CatalogModel{}, false
+	}
+	if r.Private || string(bytes.TrimSpace(r.Gated)) != "false" {
+		return CatalogModel{}, false
+	}
+	if !hasTag(r.Tags, colibriTag) || speedyColibriPattern.MatchString(repo) {
+		return CatalogModel{}, false
+	}
+	for _, fork := range colibriForkTags {
+		if hasTag(r.Tags, fork) {
+			return CatalogModel{}, false
+		}
+	}
+	if serves != nil && (r.Config == nil || !serves(r.Config.ModelType)) {
+		return CatalogModel{}, false
+	}
+	if pipeline := strings.ToLower(strings.TrimSpace(r.PipelineTag)); pipeline != "" && !generativePipelines[pipeline] {
+		return CatalogModel{}, false
+	}
+	if !hasRootSibling(r.Siblings, colibriMarker) {
+		return CatalogModel{}, false
+	}
+	updated := r.LastModified
+	if updated == "" {
+		updated = r.CreatedAt
+	}
+	if _, err := time.Parse(time.RFC3339, updated); err != nil {
+		return CatalogModel{}, false
+	}
+	return CatalogModel{
+		ID:        repo,
+		Name:      repo,
+		Author:    repo[:strings.Index(repo, "/")],
+		URL:       "https://huggingface.co/" + repo,
+		Downloads: max(r.Downloads, 0),
+		Likes:     max(r.Likes, 0),
+		UpdatedAt: updated,
+		Tags:      r.Tags,
+	}, true
+}
+
+// hasRootSibling reports a file directly at a repository's root.
+func hasRootSibling(files []hfSibling, name string) bool {
+	for _, f := range files {
+		if f.RFilename == name {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchHF reads one page of the Hugging Face model listing.
@@ -744,10 +1100,6 @@ func isMLX(id string, tags []string) bool {
 
 // The shapes a llama.cpp download depends on.
 var (
-	// llamaCPPRepoPattern is a repo id safe to pass to llama.cpp: owner/name,
-	// each starting with a letter or digit, nothing that could read as a path
-	// or a flag.
-	llamaCPPRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	// llamaCPPQuantFile matches the offered quantization in a GGUF file name.
 	llamaCPPQuantFile = regexp.MustCompile(`(?i)` + llamaCPPQuantization + `[.-]`)
 	// splitGGUFPattern matches a shard of a model split across files.
@@ -797,7 +1149,7 @@ func llamaCPPModel(r hfModelRow) (CatalogModel, bool) {
 	if repo == "" {
 		repo = strings.TrimSpace(r.ModelID)
 	}
-	if !llamaCPPRepoPattern.MatchString(repo) {
+	if !hfRepoPattern.MatchString(repo) {
 		return CatalogModel{}, false
 	}
 	// Only an explicit false is open. A gated repo reports how it is gated, and

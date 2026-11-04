@@ -4,11 +4,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -213,6 +215,7 @@ func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {
 	test("canonical llama.cpp", "llamacpp", "llamacpp")
 	test("hyphenated llama.cpp", "llama-cpp", "llamacpp")
 	test("dotted llama.cpp", "llama.cpp", "llamacpp")
+	test("capitalized Colibri", "Colibri", "colibri")
 	test("other engine preserved", "vllm", "vllm")
 }
 
@@ -553,15 +556,17 @@ func TestSearchAtTheLengthLimit_IsAnswered(t *testing.T) {
 	assert.Len(t, requests(), 1, "a query at the limit must make one request")
 }
 
-// TestLlamaCPPSearchesAreBounded checks the per-query caches are evicted least
-// recently used first, since the set of possible queries is unbounded.
-func TestLlamaCPPSearch_BoundsConcurrentQueries(t *testing.T) {
+// TestCatalogSearch_BoundsQueriesAcrossSources checks the per-query caches are
+// evicted least recently used first, since the set of possible queries is
+// unbounded, and that the sources share the bound without sharing entries.
+func TestCatalogSearch_BoundsQueriesAcrossSources(t *testing.T) {
 	c := newCatalogService()
 	first := c.llamaCPPSearch("first")
-	for i := range llamaCPPSearchCacheLimit {
+	require.NotSame(t, first, c.colibriSearch("first"), "one query of two sources shares a cache")
+	for i := range catalogSearchCacheLimit {
 		c.llamaCPPSearch(fmt.Sprint("query ", i))
 	}
-	assert.Len(t, c.llamaSearches, llamaCPPSearchCacheLimit)
+	assert.Len(t, c.searches, catalogSearchCacheLimit)
 	assert.NotSame(t, first, c.llamaCPPSearch("first"), "the least recently used search was not evicted")
 }
 
@@ -577,4 +582,260 @@ func TestQuery_IsIgnoredByASourceThatCannotSearch(t *testing.T) {
 	assert.False(t, queried.Searchable)
 	assert.Empty(t, queried.Query)
 	assert.Len(t, queried.Models, len(all.Models))
+}
+
+// colibriRow is an open, complete Colibri model container.
+func colibriRow(id string, downloads int) hfModelRow {
+	return hfModelRow{
+		ID:           id,
+		Downloads:    downloads,
+		LastModified: "2026-10-02T12:00:00.000Z",
+		Tags:         []string{"colibri", "moe", "int4"},
+		Gated:        json.RawMessage("false"),
+		PipelineTag:  "text-generation",
+		Siblings:     []hfSibling{{RFilename: "config.json"}, {RFilename: "model-00000.safetensors"}},
+	}
+}
+
+// TestNormalizeColibriRowsKeepsOnlyServable checks the Colibri list offers
+// only open, complete containers the upstream engine can serve, most
+// downloaded first, each under its pull-ready repository id.
+func TestNormalizeColibriRowsKeepsOnlyServable(t *testing.T) {
+	gated := colibriRow("o/gated", 9)
+	gated.Gated = json.RawMessage(`"manual"`)
+	private := colibriRow("o/private", 9)
+	private.Private = true
+	untagged := colibriRow("o/untagged", 9)
+	untagged.Tags = []string{"moe"}
+	noConfig := colibriRow("o/no-config", 9)
+	noConfig.Siblings = []hfSibling{{RFilename: "sub/config.json"}}
+	image := colibriRow("o/image", 9)
+	image.PipelineTag = "text-to-image"
+	unknownPipeline := colibriRow("o/no-pipeline", 3)
+	unknownPipeline.PipelineTag = ""
+	speedyTag := colibriRow("o/fork", 9)
+	speedyTag.Tags = append(speedyTag.Tags, "speedycolibri")
+	badDate := colibriRow("o/bad-date", 9)
+	badDate.LastModified = "yesterday"
+
+	got := normalizeColibriRows([]hfModelRow{
+		colibriRow("o/small", 1),
+		gated, private, untagged, noConfig, image, speedyTag, badDate,
+		colibriRow("o/GLM-5.2-speedy-colibri-nvfp4", 9),
+		colibriRow("../escape", 9),
+		unknownPipeline,
+		colibriRow("o/big", 50),
+		colibriRow("o/small", 2), // a duplicate replaces the earlier entry
+	}, nil)
+	var ids []string
+	for _, m := range got {
+		ids = append(ids, m.ID)
+		if m.Name != m.ID || m.URL != "https://huggingface.co/"+m.ID || m.Author != "o" {
+			t.Errorf("%+v is not pull-ready", m)
+		}
+	}
+	if want := []string{"o/big", "o/no-pipeline", "o/small"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("colibri catalog = %v, want %v", ids, want)
+	}
+}
+
+// TestColibriCatalogAndSearch checks the browse list asks for the colibri tag
+// in full, that a query searches within the tag, and that each query is cached
+// on its own.
+func TestColibriCatalogAndSearch(t *testing.T) {
+	var mu sync.Mutex
+	var requests []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		mu.Lock()
+		requests = append(requests, q)
+		mu.Unlock()
+		rows := []hfModelRow{colibriRow("Justvugg/GLM-5.3-colibri-int4-g64", 10)}
+		if s := q.Get("search"); s != "" {
+			rows = []hfModelRow{colibriRow("found/"+strings.ReplaceAll(s, " ", "-"), 1)}
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.baseURL = srv.URL
+
+	res, err := c.Catalog(context.Background(), "colibri", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Searchable || len(res.Models) != 1 || res.Models[0].Name != "Justvugg/GLM-5.3-colibri-int4-g64" {
+		t.Fatalf("browse = %+v", res)
+	}
+	for range 2 {
+		res, err = c.Catalog(context.Background(), "colibri", "", "", " qwen ")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if res.Query != "qwen" || len(res.Models) != 1 || res.Models[0].ID != "found/qwen" {
+		t.Fatalf("search = %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("%d upstream requests, want one browse and one cached search", len(requests))
+	}
+	for _, q := range requests {
+		if q.Get("filter") != "colibri" || q.Get("full") != "true" || q.Get("config") != "true" || q.Get("sort") != "downloads" {
+			t.Errorf("listing asked for %v, want colibri repos in full by downloads", q)
+		}
+	}
+	if requests[1].Get("search") != "qwen" {
+		t.Errorf("search sent %v", requests[1])
+	}
+}
+
+// listedHub is a Hugging Face stand-in for the listed-model tests: the colibri
+// listing (or a search of it) at the endpoint itself, and one repository's
+// fields at endpoint/<owner>/<name>.
+func listedHub(t *testing.T, tagged []hfModelRow, repos map[string]hfModelRow) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if repo := strings.TrimPrefix(r.URL.Path, "/"); repo != "" {
+			row, ok := repos[repo]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(row)
+			return
+		}
+		rows := tagged
+		if s := r.URL.Query().Get("search"); s != "" {
+			rows = nil
+			for _, row := range tagged {
+				if strings.Contains(strings.ToLower(row.ID), strings.ToLower(s)) {
+					rows = append(rows, row)
+				}
+			}
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestColibriCatalogListsManifestModelsFirst checks the models Colibri's
+// manifest lists by repository lead the browse list under their manifest names
+// and sizes, with the repository's live downloads and date; that a listed
+// repository the tag also finds appears once; and that one since gated, or
+// gone, is left out without failing the rest.
+func TestColibriCatalogListsManifestModelsFirst(t *testing.T) {
+	official := colibriRow("vendor/Big-Model", 7)
+	official.Tags = []string{"text-generation"}
+	alsoTagged := colibriRow("o/tagged-official", 3)
+	gated := colibriRow("vendor/Gated", 1)
+	gated.Gated = json.RawMessage(`"manual"`)
+	srv := listedHub(t,
+		[]hfModelRow{colibriRow("o/popular", 99), alsoTagged},
+		map[string]hfModelRow{"vendor/Big-Model": official, "o/tagged-official": alsoTagged, "vendor/Gated": gated})
+	c := newCatalogService()
+	c.baseURL = srv.URL
+	c.listed = func(engine string) []CatalogEntry {
+		if engine != "colibri" {
+			t.Errorf("listed asked for %q", engine)
+		}
+		return []CatalogEntry{
+			{Repo: "vendor/Big-Model", Name: "Big Model", Parameters: "284B", SizeGB: 166.9},
+			{Repo: "o/tagged-official", Name: "Tagged Official", SizeGB: 19.4},
+			{Repo: "vendor/Gated", Name: "Gated"},
+			{Repo: "vendor/Gone", Name: "Gone"},
+		}
+	}
+
+	res, err := c.Catalog(context.Background(), "colibri", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range res.Models {
+		ids = append(ids, m.ID)
+	}
+	if strings.Join(ids, ",") != "vendor/Big-Model,o/tagged-official,o/popular" {
+		t.Fatalf("browse order = %v", ids)
+	}
+	big := res.Models[0]
+	if big.Name != "Big Model" || big.Author != "vendor" || big.Size != 166_900_000_000 || big.ParameterSize != "284B" ||
+		big.Downloads != 7 || big.UpdatedAt != official.LastModified || big.URL != "https://huggingface.co/vendor/Big-Model" {
+		t.Fatalf("listed model = %+v", big)
+	}
+	if res.Models[1].Name != "Tagged Official" {
+		t.Errorf("a tagged listed repository kept its tag-search shape: %+v", res.Models[1])
+	}
+}
+
+// TestColibriSearchFindsListedModels checks a query matches listed models by
+// repository id or display name, beside what the tag search returns.
+func TestColibriSearchFindsListedModels(t *testing.T) {
+	srv := listedHub(t,
+		[]hfModelRow{colibriRow("o/kimi-colibri", 5), colibriRow("o/other", 4)},
+		map[string]hfModelRow{"moonshotai/K3": colibriRow("moonshotai/K3", 2), "vendor/DeepSeek-V4": colibriRow("vendor/DeepSeek-V4", 1)})
+	c := newCatalogService()
+	c.baseURL = srv.URL
+	c.listed = func(string) []CatalogEntry {
+		return []CatalogEntry{{Repo: "moonshotai/K3", Name: "Kimi K3"}, {Repo: "vendor/DeepSeek-V4", Name: "DeepSeek V4 Flash"}}
+	}
+
+	res, err := c.Catalog(context.Background(), "colibri", "", "", "KIMI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range res.Models {
+		ids = append(ids, m.ID)
+	}
+	if strings.Join(ids, ",") != "moonshotai/K3,o/kimi-colibri" {
+		t.Fatalf("search for kimi = %v, want the listed Kimi K3 (by name) then the tag hit", ids)
+	}
+}
+
+// TestColibriCatalogWithoutListedModels checks a listed model that cannot be
+// read leaves the tagged list intact.
+func TestColibriCatalogWithoutListedModels(t *testing.T) {
+	srv := listedHub(t, []hfModelRow{colibriRow("o/popular", 99)}, nil)
+	c := newCatalogService()
+	c.baseURL = srv.URL
+	c.listed = func(string) []CatalogEntry { return []CatalogEntry{{Repo: "vendor/Gone", Name: "Gone"}} }
+
+	res, err := c.Catalog(context.Background(), "colibri", "", "", "")
+	if err != nil || len(res.Models) != 1 || res.Models[0].ID != "o/popular" {
+		t.Fatalf("catalog = %+v, %v", res, err)
+	}
+}
+
+// TestNormalizeColibriRowsKeepsOnlyRunnableModels checks a tagged repository is
+// offered only when its config.json model_type is one Colibri runs, and never
+// when it is built for a port of Colibri (SpeedyColibri, peng).
+func TestNormalizeColibriRowsKeepsOnlyRunnableModels(t *testing.T) {
+	typed := func(id, modelType string) hfModelRow {
+		r := colibriRow(id, 1)
+		r.Config = &hfModelConfig{ModelType: modelType}
+		return r
+	}
+	peng := typed("o/mimo-peng", "mimo_v2")
+	peng.Tags = append(peng.Tags, "peng")
+	untyped := colibriRow("o/untyped", 1)
+	serves := (&Manifest{ModelTypes: []string{"glm_moe_dsa", "mimo_v2"}}).servesModelType
+
+	got := normalizeColibriRows([]hfModelRow{
+		typed("o/glm", "glm_moe_dsa"), typed("o/upper", "GLM_MOE_DSA"), typed("o/hy3", "hy_v3"),
+		typed("o/laguna", "laguna"), peng, untyped,
+	}, serves)
+	var ids []string
+	for _, m := range got {
+		ids = append(ids, m.ID)
+	}
+	if strings.Join(ids, ",") != "o/glm,o/upper" {
+		t.Fatalf("runnable = %v, want only the glm_moe_dsa repositories", ids)
+	}
+
+	if got := normalizeColibriRows([]hfModelRow{untyped}, nil); len(got) != 1 {
+		t.Errorf("with no model_types declared, an untyped repository was dropped: %v", got)
+	}
 }

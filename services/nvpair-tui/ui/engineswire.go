@@ -133,6 +133,15 @@ var modelWires = map[string]modelWire{
 		"delete": modelOnly("delete_model"),
 		"pull":   modelOnly("pull_model"),
 	},
+	// Colibri serves one model per process. Loading a model restarts the
+	// server onto it; there is nothing to eject short of stopping the engine,
+	// so unload is declared and refused rather than missing.
+	engines.NameColibri: {
+		"load":   modelOnly("load_model"),
+		"unload": nil,
+		"delete": modelOnly("delete_model"),
+		"pull":   modelOnly("pull_model"),
+	},
 }
 
 // downloadExamples show what a download name looks like for each engine. The
@@ -142,6 +151,7 @@ var downloadExamples = map[string]string{
 	engines.NameOllama:   "llama3.2",
 	engines.NameLMStudio: "lmstudio-community/Qwen3-8B-GGUF",
 	engines.NameLlamaCPP: "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+	engines.NameColibri:  "Justvugg/Qwen3-Coder-30B-A3B-colibri-int4",
 }
 
 // downloadPrompt is the placeholder for the download-by-name field, with an
@@ -179,6 +189,9 @@ func modelActionWire(engine, op, model string) (map[string]any, error) {
 	build, ok := wire[op]
 	if !ok {
 		return nil, fmt.Errorf("unknown model operation %q", op)
+	}
+	if build == nil {
+		return nil, fmt.Errorf("%s cannot %s a model", engine, modelActions[op].what)
 	}
 	action, params := build(model)
 	return map[string]any{"engine": engine, "action": action, "params": params}, nil

@@ -24,8 +24,8 @@ func (command launchCommand) text() (string, error) {
 
 func TestResolvedLaunch_MatchesBundledEngines(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
-	vars := map[string]string{"host": "127.0.0.1", "port": "12345", "cli": "/test path/lms", "install_dir": "/test path", "models_dir": "/test models"}
-	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
+	vars := map[string]string{"host": "127.0.0.1", "port": "12345", "cli": "/test path/lms", "install_dir": "/test path", "models_dir": "/test models", "model": "o/r"}
+	for _, engine := range []string{"ollama", "lmstudio", "llamacpp", "colibri"} {
 		manifest, ok := reg.Get(engine)
 		require.True(t, ok, "missing bundled engine (%v)", engine)
 		// Exercise every platform even when running on Windows or macOS, so
@@ -44,6 +44,16 @@ func TestResolvedLaunch_MatchesBundledEngines(t *testing.T) {
 				} else if engine == "lmstudio" {
 					launch, err = resolveCommandLaunch(platform.Runtime.Start[0], vars)
 					want = []string{"/test path/lms", "server", "start", "--port", "12345", "--bind", "127.0.0.1"}
+				} else if engine == "colibri" {
+					var bin string
+					bin, err = resolvePlaceholders(platform.Runtime.Bin, vars)
+					if err == nil {
+						launch, err = resolveProcessLaunch(platform.Runtime, bin, vars)
+					}
+					want = []string{"COLI_MODEL=/test models/o/r", "COLI_MODEL_ID=o/r", bin, "serve", "--host", "127.0.0.1", "--port", "12345"}
+					if strings.HasPrefix(platformKey, "darwin/") {
+						want = append([]string{"COLI_METAL=1"}, want...)
+					}
 				} else {
 					var bin string
 					bin, err = resolvePlaceholders(platform.Runtime.Bin, vars)

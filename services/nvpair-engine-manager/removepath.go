@@ -215,6 +215,12 @@ func safeRemoveUnderRoot(root, target string) error {
 	if !pathWithinRoot(evalRoot, evalTarget) {
 		return fmt.Errorf("remove_path: %q escapes allowed root %q", evalTarget, evalRoot)
 	}
+	// The root bounds what may be removed; it is never itself the target. An
+	// empty model param resolves "{models_dir}/{model}" to the store, and
+	// removing it would take every model at once.
+	if filepath.Clean(evalTarget) == filepath.Clean(evalRoot) {
+		return fmt.Errorf("remove_path: refusing to remove the allowed root %q itself", evalRoot)
+	}
 	if _, err := os.Stat(evalTarget); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("remove_path: %q does not exist", evalTarget)

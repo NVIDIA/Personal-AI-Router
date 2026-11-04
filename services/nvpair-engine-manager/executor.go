@@ -124,6 +124,13 @@ type Executor struct {
 	// tick. Buffered depth 1: a coalesced signal is enough.
 	loadedPoke chan struct{}
 
+	// hfBaseURL overrides the Hugging Face hub for hf_snapshot pulls in tests.
+	// Empty means the real one.
+	hfBaseURL string
+	// snapshotPulls holds the destination of every hf_snapshot pull in
+	// flight, so two pulls of one model cannot write the same files.
+	snapshotPulls sync.Map
+
 	reservedPort atomic.Int32
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
 	shuttingDown atomic.Bool
@@ -217,6 +224,26 @@ func (e *Executor) notify(method string, params any) {
 	if e.emit != nil {
 		e.emit(method, params)
 	}
+}
+
+// catalogEntries returns the models an engine's manifest lists by repository,
+// for the engine catalogue.
+func (e *Executor) catalogEntries(engine string) []CatalogEntry {
+	m, ok := e.reg.Get(engine)
+	if !ok {
+		return nil
+	}
+	return m.Catalog
+}
+
+// servedModelTypes returns the config.json model_types an engine's manifest
+// says it runs, for the engine catalogue.
+func (e *Executor) servedModelTypes(engine string) []string {
+	m, ok := e.reg.Get(engine)
+	if !ok {
+		return nil
+	}
+	return m.ModelTypes
 }
 
 // state returns (lazily creating) the per-engine state for a known

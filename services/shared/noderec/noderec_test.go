@@ -122,6 +122,7 @@ func TestServiceTransport_RequiresMutualTLSForClusteredPeerServices(t *testing.T
 	test("Ollama", ServiceOllama, TransportPlain, false, false)
 	test("LM Studio", ServiceLMStudio, TransportPlain, false, false)
 	test("llama.cpp", ServiceLlamaCPP, TransportPlain, false, false)
+	test("Colibri", ServiceColibri, TransportPlain, false, false)
 	test("engine manager", ServiceEngineManager, TransportPlain, false, false)
 	test("errors", ServiceErrors, TransportMTLSWhenClustered, true, false)
 	test("workloads", ServiceWorkload, TransportMTLSWhenClustered, true, false)
