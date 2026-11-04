@@ -86,6 +86,17 @@ is a genuine limitation, not a safety margin (§5.6).
 - The process-wide reservation map that makes concurrent dispatch spread.
 - The persisted per-engine port a user chose through `set-port`.
 
+**The outward node wire is a machine list.** `nodes/list` and the `node/*`
+notifications name machines: what a caller reads to decide what it can invite,
+pair with and health-poll. On an Unmanaged facade the manual overlay holds
+Custom endpoint projections rather than machines, so those entries stay
+internal routing bookkeeping — withheld from the reply, and emitting no
+`node/discovered`, `node/updated` or `node/removed`. Machine peers keep
+flowing, the managed engines keep announcing their manual nodes (where a
+manual entry is a machine), and the dial path keeps resolving candidates from
+the stored set, so a quiet wire cannot starve an endpoint of routing. Endpoint
+health and served models reach clients through the broker's `custom:list`.
+
 **Out of scope**
 
 - Deciding node rank (scheduler), membership or pinning (cluster-manager),
