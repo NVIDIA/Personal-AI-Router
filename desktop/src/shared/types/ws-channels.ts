@@ -31,6 +31,10 @@ import type {
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
 import type {
+    CustomEndpointInfo,
+    CustomProxyPortState
+} from '@/shared/types/custom-endpoints'
+import type {
     EngineSettingsTarget,
     EngineSettingsRequest,
     EngineSettingsSnapshot,
@@ -105,6 +109,50 @@ export interface WsInvokeChannelMap {
     'engine:search-hub': {
         request: { engineType: EngineType; query?: string }
         response: EngineHubSearchResponse
+    }
+
+    // Custom endpoints — user-configured external OpenAI-API-compatible
+    // endpoints. The addressed node's broker is the configuration's source
+    // of truth: `custom/list|refresh|add|remove` answer locally when no
+    // nodeId is present (or it names this node), and the broker relays the
+    // whole call over the pinned control channel when the optional `nodeId`
+    // names a paired peer — rejecting with "device is offline or does not
+    // support custom endpoint management" when it cannot be served. `nodeId`
+    // is transport addressing, not configuration, and is stripped for local
+    // calls. An API key rides only the add request (local IPC, or that
+    // control channel) and never returns on a response. `custom:refresh`
+    // runs a fresh probe cycle on the addressed node before snapshotting
+    // (absent `id` refreshes every tracked endpoint); its reply carries the
+    // same enriched entries as `custom:list` — a nullable `healthy` verdict
+    // and served `models`. `replaceId` on an add edits the named entry in
+    // place, and `keyAction:"clear"` removes its stored key.
+    'custom:list': { request: { nodeId?: string }; response: CustomEndpointInfo[] }
+    'custom:refresh': { request: { id?: string; nodeId?: string }; response: CustomEndpointInfo[] }
+    'custom:add': {
+        request: {
+            url: string
+            port: number
+            name?: string
+            apiKey?: string
+            replaceId?: string
+            keyAction?: 'clear'
+            nodeId?: string
+        }
+        response: CustomEndpointInfo
+    }
+    'custom:remove': { request: { id: string; nodeId?: string }; response: { removed: boolean } }
+    // The Custom facade's own port: one per node, shared by every custom
+    // endpoint configured there, answered by the same addressed node over the
+    // same relay. `running: false` says the number is planned rather than
+    // listened on, and a null `custom:get-port` response means the addressed
+    // node reported no proxy port at all — an older version, or no Custom
+    // proxy on that node. A set never picks a winner: it refuses a port another
+    // proxy or engine holds, or one of that node's own endpoints forwards to,
+    // because a facade cannot route to something it sits on.
+    'custom:get-port': { request: { nodeId?: string }; response: CustomProxyPortState | null }
+    'custom:set-port': {
+        request: { port: number; nodeId?: string }
+        response: CustomProxyPortState
     }
 
     // Errors

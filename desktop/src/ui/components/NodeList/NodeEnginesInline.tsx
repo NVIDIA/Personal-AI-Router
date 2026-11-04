@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { EnabledEngineTypes, EngineDisplayNames } from '@/shared/constants/engines'
+import { MANIFEST_ENGINE_TYPES, EngineDisplayNames } from '@/shared/constants/engines'
 import { EngineType } from '@/shared/types/engines'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
@@ -29,12 +29,12 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
     })
     void lifecyclePendingFingerprint
     const selfEngines = useMemo(
-        () => getEnginesForNode(nodeId ?? '', statusByNode, EnabledEngineTypes),
+        () => getEnginesForNode(nodeId ?? '', statusByNode, MANIFEST_ENGINE_TYPES),
         [nodeId, statusByNode]
     )
 
     const allBackends = useMemo(() => {
-        return EnabledEngineTypes.flatMap(type => {
+        return MANIFEST_ENGINE_TYPES.flatMap(type => {
             const backend = selfEngines.find(b => b.engineType === type)
 
             // Show every engine the node has actually reported — not just ones
