@@ -110,7 +110,7 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 		return e.runRemovePathAction(ctx, st, act, params)
 	}
 	if act.HFCache != nil {
-		return e.runHFCacheAction(st, engine, act, params)
+		return e.runHFCacheAction(ctx, st, engine, act, params)
 	}
 	if len(act.Cmd) > 0 {
 		return e.runCmdAction(ctx, st, act, port, params)

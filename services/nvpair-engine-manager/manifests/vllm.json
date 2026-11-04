@@ -85,7 +85,7 @@
     },
     "delete_model": {
       "description": "Delete a downloaded model from the Hugging Face cache (params: {\"model\": \"<org/name>\"}). The model a running vLLM is serving is refused (eject it first). Deleting the model a stopped vLLM is set to serve leaves it with no model selected, and it will not start until a model is loaded.",
-      "hf_cache": { "dir": "{models_dir}/hub", "delete": true }
+      "hf_cache": { "dir": "{models_dir}/hub", "delete": true, "tool": "hf" }
     },
     "pull_model": {
       "description": "Download the files vLLM loads from a Hugging Face model into the shared cache (params: {\"model\": \"<org/name>\"}): weights in one format, config and tokenizer. Other formats in the repository, such as GGUF or original/ checkpoints, are not fetched. Needs no running engine. Once downloaded it appears in list_models and can be served with load_model.",

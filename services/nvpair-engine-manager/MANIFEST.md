@@ -264,7 +264,12 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   weight files with no index) and links whose blob is gone are left out. This is
   a check on file layout, not on whether the engine supports the architecture.
   A missing directory is an empty cache. Does **not** require the engine to be
-  running.
+  running. With `"delete": true` and `"tool": "hf"` (only as `delete_model`),
+  the action instead removes the model named by `{"model": "<org/name>"}` by
+  running `<tool> cache rm model/<org/name> --cache-dir <dir> --yes`, the tool
+  being looked up beside the engine binary as for `hf_pull`. The Hugging Face
+  tool keeps shared-store files another repository still links to and takes the
+  store's locks; the manager adds the served-model checks around it.
 - **`launch_model`** — switch the model an engine serves, for an engine with no
   load call because the model is a launch argument (vLLM). `launch_model.flag`
   names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
@@ -460,7 +465,7 @@ is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),
 an action sets none or more than one of
 `http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`, an `hf_cache` action omits
-`dir`, a `launch_model` flag is not a flag or a platform lacks
+`dir` or sets only one of `delete` and `tool`, a `launch_model` flag is not a flag or a platform lacks
 `editable_launch` or `ready`, `advertised_models` is unknown or `"loaded"`
 without a `loaded_models` action, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without

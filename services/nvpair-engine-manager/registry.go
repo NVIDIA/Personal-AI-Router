@@ -364,8 +364,11 @@ type ActionHFCache struct {
 	Dir string `json:"dir"`
 	// Delete turns the action into the removal of one model, named by the
 	// caller's {"model": "<org/name>"} param, from that cache. Only a
-	// delete_model action may set it.
+	// delete_model action may set it, and it needs Tool.
 	Delete bool `json:"delete,omitempty"`
+	// Tool is the file name of the Hugging Face CLI that performs a delete
+	// (`hf cache rm`), looked up beside the engine binary as for hf_pull.
+	Tool string `json:"tool,omitempty"`
 }
 
 // ActionHFPull downloads a model repository. Tool is the file name of the
@@ -1040,6 +1043,9 @@ func (a *Action) validate(name string) error {
 	}
 	if hasHFCache && a.HFCache.Delete && name != "delete_model" {
 		return fmt.Errorf("action %q: hf_cache.delete belongs to delete_model", name)
+	}
+	if hasHFCache && a.HFCache.Delete != (strings.TrimSpace(a.HFCache.Tool) != "") {
+		return fmt.Errorf("action %q: hf_cache.delete and hf_cache.tool go together", name)
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {

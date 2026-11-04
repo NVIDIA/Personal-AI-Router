@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -40,13 +41,13 @@ var hfShardRe = regexp.MustCompile(`-(\d+)-of-(\d+)\.(?:safetensors|bin)$`)
 
 // runHFCacheAction lists the models in act.HFCache.Dir. It needs no running
 // engine, so the list is available while the engine is stopped.
-func (e *Executor) runHFCacheAction(st *engineState, engine string, act Action, params json.RawMessage) (json.RawMessage, error) {
+func (e *Executor) runHFCacheAction(ctx context.Context, st *engineState, engine string, act Action, params json.RawMessage) (json.RawMessage, error) {
 	dir, err := resolvePlaceholders(act.HFCache.Dir, st.pathVars())
 	if err != nil {
 		return nil, err
 	}
 	if act.HFCache.Delete {
-		return e.deleteHFModel(engine, expandPath(dir), params)
+		return e.deleteHFModel(ctx, st, engine, expandPath(dir), act.HFCache.Tool, params)
 	}
 	models, err := scanHFCache(expandPath(dir))
 	if err != nil {
@@ -253,13 +254,16 @@ func hasAny(files map[string]int64, names []string) bool {
 	return false
 }
 
-// deleteHFModel removes one model's repository folder from the hub cache, and
-// its download locks. The model an engine process is serving is refused, since
-// the engine would download it again on its next start. The model a stopped or
-// ejected engine is set to serve is deleted and taken out of its launch
-// arguments, so the engine has no model selected and will not start until one
-// is loaded.
-func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) (json.RawMessage, error) {
+// deleteHFModel removes one model from the hub cache with the engine's own
+// Hugging Face tool (`hf cache rm`), so the cache's owner decides which files go:
+// it keeps any file in the cache-wide shared store that another model, dataset or
+// Space still links to, and takes the store's locks while it does. The model an
+// engine process is serving is refused, since the engine would download it
+// again on its next start. The model a stopped or ejected engine is set to serve
+// is deleted and taken out of its launch arguments, so the engine has no model
+// selected and will not start until one is loaded; if the removal fails, that
+// selection is put back.
+func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, hubDir, toolName string, params json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Model string `json:"model"`
 	}
@@ -267,6 +271,10 @@ func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) 
 		return nil, fmt.Errorf("delete: params.model must be a Hugging Face model id such as org/name")
 	}
 	id := strings.TrimSpace(p.Model)
+	tool, err := hfToolPath(st, toolName)
+	if err != nil {
+		return nil, fmt.Errorf("delete %s: %w", id, err)
+	}
 	served, err := e.servedModel(engine)
 	if err != nil {
 		return nil, fmt.Errorf("delete: cannot tell which model %s is set to serve, so nothing was deleted: %w", engine, err)
@@ -285,83 +293,31 @@ func (e *Executor) deleteHFModel(engine, hubDir string, params json.RawMessage) 
 			return nil, err
 		}
 	}
-	// Recent Hugging Face tooling keeps large files in one store shared by every
-	// repo, hub/blobs/<xx>/<hash>, and leaves symlinks in each repo's own blobs
-	// directory. Removing the repo alone would leave the weights behind, using the
-	// disk the delete was meant to free.
-	shared := sharedHFBlobs(hubDir, repo)
-	freed := hfBlobBytes(repo)
-	if err := os.RemoveAll(repo); err != nil {
+	cmd := exec.CommandContext(ctx, tool, "cache", "rm", "model/"+id, "--cache-dir", hubDir, "--yes")
+	cmd.Env = append(os.Environ(), "HF_HUB_DISABLE_TELEMETRY=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
 		reselect()
-		return nil, fmt.Errorf("delete %s: %w", id, err)
+		return nil, fmt.Errorf("delete %s: %s failed: %w: %s", id, toolName, err, lastLines(string(out), hfErrorTail))
 	}
-	_ = os.RemoveAll(filepath.Join(hubDir, ".locks", name))
-	freed += removeUnreferencedHFBlobs(hubDir, shared)
-	return json.Marshal(map[string]any{"deleted": id, "freed": freed})
+	if _, err := os.Stat(repo); err == nil {
+		reselect()
+		return nil, fmt.Errorf("delete %s: %s finished but the model is still in the cache", id, toolName)
+	}
+	return json.Marshal(map[string]any{"deleted": id})
 }
 
-// hfBlobTarget resolves one symlink in a repo's blobs directory to the file it
-// names, and reports whether that file is inside the shared store under
-// hubDir/blobs. Anything else, including a link that points elsewhere, is left alone.
-func hfBlobTarget(hubDir, link string) (string, bool) {
-	dest, err := os.Readlink(link)
-	if err != nil {
-		return "", false
-	}
-	if !filepath.IsAbs(dest) {
-		dest = filepath.Join(filepath.Dir(link), dest)
-	}
-	dest = filepath.Clean(dest)
-	rel, err := filepath.Rel(filepath.Join(hubDir, "blobs"), dest)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	return dest, true
-}
-
-// sharedHFBlobs lists the shared-store files a repo's blobs directory links to.
-func sharedHFBlobs(hubDir, repo string) []string {
-	entries, err := os.ReadDir(filepath.Join(repo, "blobs"))
-	if err != nil {
-		return nil
-	}
-	var targets []string
-	for _, entry := range entries {
-		if target, ok := hfBlobTarget(hubDir, filepath.Join(repo, "blobs", entry.Name())); ok {
-			targets = append(targets, target)
+// lastLines returns up to n trailing non-empty lines of out, joined with "; ".
+func lastLines(out string, n int) string {
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
 		}
 	}
-	return targets
-}
-
-// removeUnreferencedHFBlobs deletes the given shared-store files that no
-// remaining repo links to, with their .refs and .lock sidecars, and returns the
-// bytes freed. A file another model still uses stays.
-func removeUnreferencedHFBlobs(hubDir string, candidates []string) int64 {
-	if len(candidates) == 0 {
-		return 0
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
 	}
-	inUse := map[string]bool{}
-	repos, _ := filepath.Glob(filepath.Join(hubDir, "models--*", "blobs", "*"))
-	for _, link := range repos {
-		if target, ok := hfBlobTarget(hubDir, link); ok {
-			inUse[target] = true
-		}
-	}
-	var freed int64
-	for _, target := range candidates {
-		if inUse[target] {
-			continue
-		}
-		if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() {
-			freed += info.Size()
-		}
-		for _, path := range []string{target, target + ".refs", target + ".lock"} {
-			_ = os.Remove(path)
-		}
-		_ = os.Remove(filepath.Dir(target)) // only succeeds when empty
-	}
-	return freed
+	return strings.Join(lines, "; ")
 }
 
 // unselectModel takes the model flag out of a stopped engine's saved launch

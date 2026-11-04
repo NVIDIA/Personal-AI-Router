@@ -162,7 +162,7 @@ func TestHFCacheActionResultFeedsTheModelListExtractor(t *testing.T) {
 	writeHFRepo(t, cache, "Qwen/Qwen3-8B", llmFiles(map[string]string{"model.safetensors": "w"}))
 
 	e := &Executor{}
-	raw, err := e.runHFCacheAction(&engineState{}, "vllm", Action{HFCache: &ActionHFCache{Dir: cache}}, nil)
+	raw, err := e.runHFCacheAction(context.Background(), &engineState{}, "vllm", Action{HFCache: &ActionHFCache{Dir: cache}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,28 +189,68 @@ func TestHFCacheActionValidation(t *testing.T) {
 }
 
 func TestHFCacheDeleteActionValidation(t *testing.T) {
-	del := &ActionHFCache{Dir: "{models_dir}/hub", Delete: true}
-	if err := (&Action{HFCache: del}).validate("delete_model"); err != nil {
-		t.Errorf("a delete_model hf_cache delete was rejected: %v", err)
-	}
-	if err := (&Action{HFCache: del}).validate("list_models"); err == nil {
-		t.Error("hf_cache.delete is only for delete_model")
+	for _, tc := range []struct {
+		name   string
+		action string
+		cache  ActionHFCache
+		valid  bool
+	}{
+		{"delete_model with the tool", "delete_model", ActionHFCache{Dir: "{models_dir}/hub", Delete: true, Tool: "hf"}, true},
+		{"delete outside delete_model", "list_models", ActionHFCache{Dir: "{models_dir}/hub", Delete: true, Tool: "hf"}, false},
+		{"delete without the tool that performs it", "delete_model", ActionHFCache{Dir: "{models_dir}/hub", Delete: true}, false},
+		{"a tool on a listing", "list_models", ActionHFCache{Dir: "{models_dir}/hub", Tool: "hf"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := tc.cache
+			if err := (&Action{HFCache: &cache}).validate(tc.action); (err == nil) != tc.valid {
+				t.Fatalf("validate = %v, want valid %v", err, tc.valid)
+			}
+		})
 	}
 }
 
-func TestDeleteHFModel(t *testing.T) {
+// fakeHFCacheRm stands in for `hf cache rm model/<org/name> --cache-dir <dir> --yes`.
+// It records its arguments in <dir>/hf-calls and removes the model's folder, or
+// fails the way the real tool does when the model's files include one named
+// hf-rm-fails. Which shared files survive is the real tool's business, and is
+// checked against the real tool rather than here.
+const fakeHFCacheRm = `#!/bin/sh
+[ "$1 $2" = "cache rm" ] || { echo "unexpected: $*" >&2; exit 2; }
+dir=$5
+echo "$*" >> "$dir/hf-calls"
+repo="$dir/models--$(echo "${3#model/}" | sed 's#/#--#g')"
+if [ -n "$(find "$repo" -name hf-rm-fails)" ]; then echo "PermissionError: cannot remove $repo" >&2; exit 1; fi
+rm -rf "$repo"
+`
+
+// skipWithoutFakeHF skips a test that runs the fake hf tool, a shell script.
+func skipWithoutFakeHF(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake hf tool is a shell script; vLLM has no Windows install")
+	}
+}
+
+func hfCalls(t *testing.T, cache string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(cache, "hf-calls"))
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+}
+
+func TestDeleteHFModel_RemovesTheModelWithTheHuggingFaceTool(t *testing.T) {
+	skipWithoutFakeHF(t)
 	cache := t.TempDir()
 	e := switchModelExecutor(t, "--model")
 	if _, err := loadModel(t, e, "org/served"); err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	m, _ := e.reg.Get("fake")
-	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true}}
+	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true, Tool: "hf"}}
 	writeHFRepo(t, cache, "org/served", llmFiles(map[string]string{"model.safetensors": "w"}))
 	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "wwww"}))
-	if err := os.MkdirAll(filepath.Join(cache, ".locks", "models--org--other"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	del := func(model string) (json.RawMessage, error) {
 		return e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 	}
@@ -226,11 +266,6 @@ func TestDeleteHFModel(t *testing.T) {
 	if err != nil || !strings.Contains(string(res), `"deleted":"org/other"`) {
 		t.Fatalf("delete: %s %v", res, err)
 	}
-	for _, gone := range []string{"models--org--other", filepath.Join(".locks", "models--org--other")} {
-		if _, err := os.Stat(filepath.Join(cache, gone)); err == nil {
-			t.Fatalf("%s should have been removed", gone)
-		}
-	}
 	if ids := scannedIDs(t, cache); !slices.Equal(ids, []string{"org/served"}) {
 		t.Fatalf("remaining models = %v", ids)
 	}
@@ -240,19 +275,81 @@ func TestDeleteHFModel(t *testing.T) {
 			t.Errorf("deleting %q should fail", bad)
 		}
 	}
+	// Only the one allowed delete reached the tool, as a single model target.
+	want := []string{"cache rm model/org/other --cache-dir " + cache + " --yes"}
+	if calls := hfCalls(t, cache); !slices.Equal(calls, want) {
+		t.Fatalf("hf calls = %q, want %q", calls, want)
+	}
 }
 
-// A stopped engine's model can be deleted. The engine is then left with no model
-// selected, so it refuses to start rather than download one, until a model is
-// loaded.
-func TestDeleteHFModel_LeavesAStoppedEngineWithNoModelSelected(t *testing.T) {
+// When the tool fails, the model stays and a stopped engine keeps it selected,
+// so the failed delete changes nothing.
+func TestDeleteHFModel_KeepsTheSelectionWhenTheToolFails(t *testing.T) {
+	skipWithoutFakeHF(t)
 	cache := t.TempDir()
 	e := switchModelExecutor(t, "--model")
 	if _, err := loadModel(t, e, "org/served"); err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	m, _ := e.reg.Get("fake")
-	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true}}
+	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true, Tool: "hf"}}
+	writeHFRepo(t, cache, "org/served", llmFiles(map[string]string{"model.safetensors": "w", "hf-rm-fails": "x"}))
+	if err := e.Stop("fake"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	before := launchTextOf(t, e)
+
+	_, err := e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
+	if err == nil || !strings.Contains(err.Error(), "PermissionError") {
+		t.Fatalf("delete = %v, want the tool's error", err)
+	}
+	if ids := scannedIDs(t, cache); !slices.Equal(ids, []string{"org/served"}) {
+		t.Fatalf("remaining models = %v, want the model kept", ids)
+	}
+	if after := launchTextOf(t, e); after != before {
+		t.Fatalf("launch text = %q, want it restored to %q", after, before)
+	}
+}
+
+// Without the Hugging Face tool nothing is deleted and the selection is untouched.
+func TestDeleteHFModel_RefusesWithoutTheHuggingFaceTool(t *testing.T) {
+	cache := t.TempDir()
+	e := switchModelExecutor(t, "--model")
+	if _, err := loadModel(t, e, "org/served"); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	m, _ := e.reg.Get("fake")
+	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true, Tool: "no-such-hf"}}
+	writeHFRepo(t, cache, "org/served", llmFiles(map[string]string{"model.safetensors": "w"}))
+	if err := e.Stop("fake"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	before := launchTextOf(t, e)
+
+	_, err := e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
+	if err == nil || !strings.Contains(err.Error(), "was not found") {
+		t.Fatalf("delete = %v, want a missing-tool error", err)
+	}
+	if ids := scannedIDs(t, cache); !slices.Equal(ids, []string{"org/served"}) {
+		t.Fatalf("remaining models = %v", ids)
+	}
+	if after := launchTextOf(t, e); after != before {
+		t.Fatalf("launch text = %q, want it unchanged %q", after, before)
+	}
+}
+
+// A stopped engine's model can be deleted. The engine is then left with no model
+// selected, so it refuses to start rather than download one, until a model is
+// loaded.
+func TestDeleteHFModel_LeavesAStoppedEngineWithNoModelSelected(t *testing.T) {
+	skipWithoutFakeHF(t)
+	cache := t.TempDir()
+	e := switchModelExecutor(t, "--model")
+	if _, err := loadModel(t, e, "org/served"); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	m, _ := e.reg.Get("fake")
+	m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: cache, Delete: true, Tool: "hf"}}
 	writeHFRepo(t, cache, "org/served", llmFiles(map[string]string{"model.safetensors": "w"}))
 	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "w"}))
 	if err := e.Stop("fake"); err != nil {
@@ -296,7 +393,16 @@ func TestDeleteHFModelRefusesTheBundledDefaultModel(t *testing.T) {
 	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "w"}))
 
 	reg := loadWithOverrides(t, t.TempDir())
-	e := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	base := t.TempDir()
+	// The bundled manifest runs `hf` from the vLLM virtualenv.
+	venvBin := filepath.Join(base, "vllm", "venv", "bin")
+	if err := os.MkdirAll(venvBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(venvBin, "hf"), []byte(fakeHFCacheRm), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := NewExecutor(reg, NewReporter(nil), func(string, any) {}, base)
 	act := func(model string) error {
 		_, err := e.Action(context.Background(), "vllm", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 		return err
@@ -311,75 +417,6 @@ func TestDeleteHFModelRefusesTheBundledDefaultModel(t *testing.T) {
 	}
 	if err := act("org/other"); err != nil {
 		t.Fatalf("another model should be deletable: %v", err)
-	}
-}
-
-// Recent Hugging Face tooling stores big files once in hub/blobs/<xx>/<hash> and
-// links to them from each repo's own blobs directory. Deleting a repo has to
-// free those files unless another repo still links to them.
-func TestRemoveUnreferencedHFBlobs(t *testing.T) {
-	hub := t.TempDir()
-	write := func(path string, size int) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, make([]byte, size), 0o444); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store := func(hash string) string { return filepath.Join(hub, "blobs", hash[:2], hash) }
-	link := func(repo, name, target string) {
-		t.Helper()
-		dir := filepath.Join(hub, "models--"+repo, "blobs")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		rel, _ := filepath.Rel(dir, target)
-		if err := os.Symlink(rel, filepath.Join(dir, name)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, h := range []string{"aa11", "bb22"} {
-		write(store(h), 1000)
-		write(store(h)+".refs", 1)
-		write(store(h)+".lock", 0)
-	}
-	outside := filepath.Join(t.TempDir(), "precious")
-	write(outside, 5)
-	link("org--one", "w1", store("aa11")) // only "one" uses aa11
-	link("org--one", "w2", store("bb22")) // shared with "two"
-	link("org--two", "w2", store("bb22"))
-	link("org--one", "evil", outside) // not in the store, never touched
-
-	repoOne := filepath.Join(hub, "models--org--one")
-	targets := sharedHFBlobs(hub, repoOne)
-	if len(targets) != 2 {
-		t.Fatalf("shared targets = %v, want the two inside the store", targets)
-	}
-	if err := os.RemoveAll(repoOne); err != nil {
-		t.Fatal(err)
-	}
-	if freed := removeUnreferencedHFBlobs(hub, targets); freed != 1000 {
-		t.Fatalf("freed = %d, want only the file nobody else uses (1000)", freed)
-	}
-	for path, want := range map[string]bool{
-		store("aa11"): false, store("aa11") + ".refs": false, store("aa11") + ".lock": false,
-		store("bb22"): true, outside: true,
-	} {
-		if _, err := os.Stat(path); (err == nil) != want {
-			t.Errorf("%s exists = %v, want %v", path, err == nil, want)
-		}
-	}
-
-	repoTwo := filepath.Join(hub, "models--org--two")
-	targets = sharedHFBlobs(hub, repoTwo)
-	_ = os.RemoveAll(repoTwo)
-	if freed := removeUnreferencedHFBlobs(hub, targets); freed != 1000 {
-		t.Fatalf("freed = %d once the last user is gone, want 1000", freed)
-	}
-	if _, err := os.Stat(store("bb22")); err == nil {
-		t.Error("the shared file must go with its last user")
 	}
 }
 

@@ -232,6 +232,27 @@ func hfBlobBytes(repoDir string) int64 {
 	return total
 }
 
+// hfToolPath finds the engine's Hugging Face CLI, named by a manifest's
+// hf_pull or hf_cache action, in the directory that holds the engine binary (a
+// vLLM virtualenv ships `hf` beside `vllm`).
+func hfToolPath(st *engineState, name string) (string, error) {
+	st.mu.Lock()
+	binPath := st.binPath
+	st.mu.Unlock()
+	if binPath == "" {
+		bin, err := resolvePlaceholders(st.plat.Runtime.Bin, st.pathVars())
+		if err != nil {
+			return "", err
+		}
+		binPath = expandPath(bin)
+	}
+	tool := filepath.Join(filepath.Dir(binPath), name)
+	if _, err := os.Stat(tool); err != nil {
+		return "", fmt.Errorf("the Hugging Face tool %q was not found next to %s; install it with `pip install huggingface_hub` or reinstall the engine", name, binPath)
+	}
+	return tool, nil
+}
+
 // pullHFModel downloads a Hugging Face repository into the hub cache with the
 // engine's `hf` tool. Progress is the share of the repository's bytes that has
 // landed in the cache, which stays honest across resumed and parallel files.
@@ -248,19 +269,9 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 	}
 	hubDir = expandPath(hubDir)
 
-	st.mu.Lock()
-	binPath := st.binPath
-	st.mu.Unlock()
-	if binPath == "" {
-		bin, err := resolvePlaceholders(st.plat.Runtime.Bin, vars)
-		if err != nil {
-			return nil, err
-		}
-		binPath = expandPath(bin)
-	}
-	tool := filepath.Join(filepath.Dir(binPath), act.HFPull.Tool)
-	if _, err := os.Stat(tool); err != nil {
-		return nil, fmt.Errorf("pull %q: the Hugging Face tool %q was not found next to %s; install it with `pip install huggingface_hub` or reinstall the engine", id, act.HFPull.Tool, binPath)
+	tool, err := hfToolPath(st, act.HFPull.Tool)
+	if err != nil {
+		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}
 
 	e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: id})
