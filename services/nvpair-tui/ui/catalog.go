@@ -4,8 +4,9 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"nvpair-tui/rpc"
@@ -397,14 +398,14 @@ func catalogMatches(m catalogModel, needle string) bool {
 func (b *catalogBrowser) sortShown() {
 	switch b.sortBy {
 	case catalogSortName:
-		sort.SliceStable(b.shown, func(i, j int) bool {
-			return strings.ToLower(b.shown[i].Name) < strings.ToLower(b.shown[j].Name)
+		slices.SortStableFunc(b.shown, func(a, b catalogModel) int {
+			return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 		})
 	case catalogSortSize:
 		// Largest first, and models with no reported size sink rather than
 		// leading the list as if they were empty.
-		sort.SliceStable(b.shown, func(i, j int) bool {
-			return b.shown[i].Size > b.shown[j].Size
+		slices.SortStableFunc(b.shown, func(a, b catalogModel) int {
+			return cmp.Compare(b.Size, a.Size)
 		})
 	default:
 		// The backend's order is already the intended default.

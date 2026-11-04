@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -20,7 +21,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1984,7 +1985,9 @@ func (f *facade) resolveCandidates(model string) []candidate {
 	// iterates a map, whose order is randomized per call, which otherwise bounced
 	// back-to-back requests between nodes. The ID sort is also the
 	// fallback order for nodes the scheduler's priority list doesn't mention.
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	slices.SortFunc(nodes, func(a, b Node) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	byID := make(map[string]Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n

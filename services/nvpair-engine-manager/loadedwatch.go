@@ -5,7 +5,7 @@ package main
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -125,7 +125,7 @@ func changedEngines(prev, cur map[string][]string) []string {
 			changed = append(changed, name)
 		}
 	}
-	sort.Strings(changed)
+	slices.Sort(changed)
 	return changed
 }
 

@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1370,7 +1370,7 @@ func joinSettingsErrors(errs map[string]string) string {
 	for field := range errs {
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 	parts := make([]string, 0, len(fields))
 	for _, field := range fields {
 		parts = append(parts, errs[field])
@@ -1685,7 +1685,7 @@ func (d *nodeDetail) refreshModels() {
 	for name := range d.models.ModelsByEngine {
 		engines = append(engines, name)
 	}
-	sort.Strings(engines)
+	slices.Sort(engines)
 
 	d.modelRows = d.modelRows[:0]
 	for _, engine := range engines {
@@ -1697,7 +1697,7 @@ func (d *nodeDetail) refreshModels() {
 			loaded[m] = true
 		}
 		models := append([]string(nil), d.models.ModelsByEngine[engine]...)
-		sort.Strings(models)
+		slices.Sort(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows,
 				detailModelRow{engine: engine, model: m, loaded: loaded[m], loadKnown: known})
@@ -1712,7 +1712,7 @@ func (d *nodeDetail) refreshModels() {
 	// difference. Fall back to the flat union rather than regressing to nothing.
 	if len(d.modelRows) == 0 && len(d.models.Models) > 0 {
 		models := append([]string(nil), d.models.Models...)
-		sort.Strings(models)
+		slices.Sort(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows, detailModelRow{model: m})
 		}
@@ -2011,7 +2011,7 @@ func (d *nodeDetail) advertisedEngines() []string {
 		}
 		names = append(names, d.engineLabel(engine))
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

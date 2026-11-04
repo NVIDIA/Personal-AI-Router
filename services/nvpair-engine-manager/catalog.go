@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"embed"
 	"encoding/json"
@@ -16,7 +17,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -725,7 +726,9 @@ func normalizeHFRows(rows []hfModelRow) []CatalogModel {
 		seen[id] = len(out)
 		out = append(out, model)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Downloads > out[j].Downloads })
+	slices.SortStableFunc(out, func(a, b CatalogModel) int {
+		return cmp.Compare(b.Downloads, a.Downloads)
+	})
 	return out
 }
 
@@ -777,7 +780,9 @@ func normalizeLlamaCPPRows(rows []hfModelRow) []CatalogModel {
 		seen[model.ID] = len(out)
 		out = append(out, model)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Downloads > out[j].Downloads })
+	slices.SortStableFunc(out, func(a, b CatalogModel) int {
+		return cmp.Compare(b.Downloads, a.Downloads)
+	})
 	return out
 }
 

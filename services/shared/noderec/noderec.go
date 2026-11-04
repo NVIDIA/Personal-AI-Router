@@ -30,7 +30,7 @@ package noderec
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -269,7 +269,7 @@ func (r NodeRecord) TXT() []string {
 			extra = append(extra, string(s)+"="+strconv.Itoa(port))
 		}
 	}
-	sort.Strings(extra)
+	slices.Sort(extra)
 	txt = append(txt, extra...)
 	return txt
 }

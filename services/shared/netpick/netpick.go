@@ -31,8 +31,9 @@
 package netpick
 
 import (
+	"cmp"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 
 	"nvpair-shared/noderec"
@@ -125,11 +126,11 @@ func RankRemote(addrs []string) []string {
 			ranked = append(ranked, scored{addr: a, score: scoreIP(ip)})
 		}
 	}
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
-		}
-		return ranked[i].addr < ranked[j].addr
+	slices.SortStableFunc(ranked, func(a, b scored) int {
+		return cmp.Or(
+			cmp.Compare(b.score, a.score),
+			cmp.Compare(a.addr, b.addr),
+		)
 	})
 	out := make([]string, len(ranked))
 	for i, s := range ranked {

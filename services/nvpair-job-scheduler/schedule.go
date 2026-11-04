@@ -4,9 +4,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
-	"sort"
+	"slices"
 	"time"
 
 	"nvpair-shared/engines"
@@ -108,16 +109,12 @@ func (m *Manager) rankAt(now time.Time) ([]string, []NodeRank) {
 	}
 	m.mu.Unlock()
 
-	sort.Slice(ranks, func(i, j int) bool {
-		leftLoad := ranks[i].Pending + ranks[i].GPUPressure
-		rightLoad := ranks[j].Pending + ranks[j].GPUPressure
-		if leftLoad != rightLoad {
-			return leftLoad < rightLoad
-		}
-		if ranks[i].GPUPressure != ranks[j].GPUPressure {
-			return ranks[i].GPUPressure < ranks[j].GPUPressure
-		}
-		return ranks[i].ID < ranks[j].ID
+	slices.SortFunc(ranks, func(a, b NodeRank) int {
+		return cmp.Or(
+			cmp.Compare(a.Pending+a.GPUPressure, b.Pending+b.GPUPressure),
+			cmp.Compare(a.GPUPressure, b.GPUPressure),
+			cmp.Compare(a.ID, b.ID),
+		)
 	})
 	order := make([]string, len(ranks))
 	for i := range ranks {

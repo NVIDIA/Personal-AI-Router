@@ -6,7 +6,7 @@ package main
 import (
 	"fmt"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -76,7 +76,7 @@ func formatLaunchParts(environment map[string]string, args []string) (string, er
 	for key := range environment {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	tokens := make([]string, 0, len(keys)+1)
 	for _, key := range keys {
 		// Quote assignment values consistently, including simple values, so
