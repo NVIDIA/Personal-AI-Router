@@ -262,6 +262,11 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 void supervisor.pullModel(engine, payload.engineType, payload.model)
             }
             break
+        case 'cancelPull':
+            if (payload.model) {
+                void supervisor.cancelPull(engine, payload.engineType, payload.model)
+            }
+            break
         case 'deleteModel':
             if (payload.model) {
                 void supervisor.deleteModel(engine, payload.engineType, payload.model)
@@ -383,6 +388,11 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
         case 'pullModel':
             if (payload.model) {
                 void supervisor.pullModelRemote(nodeId, engine, payload.engineType, payload.model)
+            }
+            break
+        case 'cancelPull':
+            if (payload.model) {
+                void supervisor.cancelPullRemote(nodeId, engine, payload.engineType, payload.model)
             }
             break
         case 'uninstall':

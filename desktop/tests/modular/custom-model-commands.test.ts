@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
         importLocalModel: vi.fn(),
         pullModel: vi.fn(),
         pullModelRemote: vi.fn(),
+        cancelPull: vi.fn(),
+        cancelPullRemote: vi.fn(),
         reportError: vi.fn()
     }
 }))
@@ -76,6 +78,35 @@ describe('custom and local model commands', () => {
 
         expect(mocks.supervisor.refreshRemoteEngineStatus).toHaveBeenCalledOnce()
         expect(mocks.supervisor.refreshRemoteEngineStatus).toHaveBeenCalledWith('remote-peer-node')
+    })
+
+    it('dispatches cancelPull to supervisor.cancelPull on local node', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'cancelPull',
+            engineType: 'ollama',
+            nodeId: 'local-node',
+            model: 'llama3.2:1b'
+        })
+
+        expect(mocks.supervisor.cancelPull).toHaveBeenCalledOnce()
+        expect(mocks.supervisor.cancelPull).toHaveBeenCalledWith('ollama', 'ollama', 'llama3.2:1b')
+    })
+
+    it('dispatches cancelPull to supervisor.cancelPullRemote on remote node', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'cancelPull',
+            engineType: 'ollama',
+            nodeId: 'remote-peer-node',
+            model: 'llama3.2:1b'
+        })
+
+        expect(mocks.supervisor.cancelPullRemote).toHaveBeenCalledOnce()
+        expect(mocks.supervisor.cancelPullRemote).toHaveBeenCalledWith(
+            'remote-peer-node',
+            'ollama',
+            'ollama',
+            'llama3.2:1b'
+        )
     })
 
     it('refuses importLocalModel on remote node because files reside on host machine', async () => {

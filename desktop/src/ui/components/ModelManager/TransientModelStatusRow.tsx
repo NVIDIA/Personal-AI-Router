@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Flex, Text } from '@nvidia/foundations-react-core'
+import { Button, Flex, Text } from '@nvidia/foundations-react-core'
 import type { ModelItem } from '@/ui/types/engine-info'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import type { EngineProgress } from '@/shared/types/engines'
@@ -9,11 +9,13 @@ import type { EngineProgress } from '@/shared/types/engines'
 export function TransientModelStatusRow({
     transientModel,
     displayName,
-    pullProgress
+    pullProgress,
+    onCancel
 }: {
     transientModel: ModelItem
     displayName: (name: string) => string
     pullProgress: EngineProgress | undefined
+    onCancel?: () => void
 }) {
     return (
         <Flex align="center" justify="between" gap="2" className="mt-2 min-w-0">
@@ -37,6 +39,11 @@ export function TransientModelStatusRow({
                         }`}
                 </Text>
             </Flex>
+            {transientModel.status === 'pulling' && onCancel && (
+                <Button kind="secondary" size="small" onClick={onCancel}>
+                    Cancel
+                </Button>
+            )}
         </Flex>
     )
 }

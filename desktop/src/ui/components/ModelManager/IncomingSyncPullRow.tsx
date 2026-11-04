@@ -1,11 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Flex, Text } from '@nvidia/foundations-react-core'
+import { Button, Flex, Text } from '@nvidia/foundations-react-core'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
 
-export function IncomingSyncPullRow({ row }: { row: IncomingSyncRow }) {
+export function IncomingSyncPullRow({
+    row,
+    onCancel
+}: {
+    row: IncomingSyncRow
+    onCancel?: () => void
+}) {
     return (
         <Flex
             align="center"
@@ -33,6 +39,11 @@ export function IncomingSyncPullRow({ row }: { row: IncomingSyncRow }) {
                     </Text>
                 </Flex>
             </Flex>
+            {onCancel && (
+                <Button kind="secondary" size="small" onClick={onCancel}>
+                    Cancel
+                </Button>
+            )}
         </Flex>
     )
 }

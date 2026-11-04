@@ -199,6 +199,13 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         window.pairApi.engines.refreshModels(backendType, nodeId)
     }, [backendType, nodeId])
 
+    const handleCancelPull = useCallback(
+        (modelName: string) => {
+            window.pairApi.engines.cancelPull(backendType, nodeId, modelName)
+        },
+        [backendType, nodeId]
+    )
+
     return (
         <Stack gap="4">
             {transientModel && (
@@ -206,11 +213,20 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     transientModel={transientModel}
                     displayName={displayName}
                     pullProgress={transientPullProgress}
+                    onCancel={
+                        transientModel.status === 'pulling'
+                            ? () => handleCancelPull(transientModel.name)
+                            : undefined
+                    }
                 />
             )}
 
             {incomingSyncs.map(p => (
-                <IncomingSyncPullRow key={p.rawModel} row={p} />
+                <IncomingSyncPullRow
+                    key={p.rawModel}
+                    row={p}
+                    onCancel={() => handleCancelPull(p.rawModel)}
+                />
             ))}
 
             {!isBusy && (
