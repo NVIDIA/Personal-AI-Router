@@ -36,7 +36,7 @@ func TestPeerCall_ReturnsResult(t *testing.T) {
 	}, nil)
 	go a.Serve(nil, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	res, rpcErr, err := a.Call(ctx, "ping", json.RawMessage(`{"x":1}`))
 	require.NoError(t, err, "Call err")
@@ -57,7 +57,7 @@ func TestPeerCall_ReturnsRPCError(t *testing.T) {
 	}, nil)
 	go a.Serve(nil, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	_, rpcErr, err := a.Call(ctx, "nope", nil)
 	require.NoError(t, err, "transport err")
@@ -81,7 +81,7 @@ func TestPeer_HandlesInboundRequestsWhileCallIsPending(t *testing.T) {
 	go a.Serve(handler(a), nil)
 	go b.Serve(handler(b), nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	type res struct {
@@ -130,7 +130,7 @@ func TestPeerCall_ReturnsWhenContextIsCancelled(t *testing.T) {
 		go b.Serve(func(*Message) {}, nil) // never responds
 		go a.Serve(nil, nil)
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 		_, _, err := a.Call(ctx, "hang", nil)
 		assert.ErrorIs(t, err, context.Canceled, "want context.Canceled")
@@ -146,7 +146,7 @@ func TestPeerClose_UnblocksPendingCalls(t *testing.T) {
 		go a.Serve(nil, nil)
 
 		errc := make(chan error, 1)
-		go func() { _, _, e := a.Call(context.Background(), "hang", nil); errc <- e }()
+		go func() { _, _, e := a.Call(t.Context(), "hang", nil); errc <- e }()
 		time.Sleep(50 * time.Millisecond)
 		_ = c1.Close() // a's read pump errors -> a.Close() -> pending Call wakes
 		_ = c2.Close()
@@ -163,7 +163,7 @@ func TestPeerClose_UnblocksPendingCalls(t *testing.T) {
 func TestPeerCallAfterClose_FailsFast(t *testing.T) {
 	a, _ := pipePeers(t)
 	a.Close()
-	_, _, err := a.Call(context.Background(), "m", nil)
+	_, _, err := a.Call(t.Context(), "m", nil)
 	assert.ErrorIs(t, err, ErrPeerClosed, "want ErrPeerClosed after Close")
 }
 
