@@ -241,6 +241,19 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
         case 'toggle':
             void toggleLocalEngine(engine, payload.engineType)
             break
+        case 'refreshModels':
+            void supervisor.refreshEngineModels(engine, payload.engineType)
+            break
+        case 'importLocalModel':
+            if (payload.model && payload.filePath) {
+                void supervisor.importLocalModel(
+                    engine,
+                    payload.engineType,
+                    payload.model,
+                    payload.filePath
+                )
+            }
+            break
         case 'pullModel':
             // Pulls need UI feedback the backend doesn't emit (progress + failure),
             // so the supervisor owns the optimistic-progress + awaited-completion
@@ -358,6 +371,14 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
             break
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
+            break
+        case 'refreshModels':
+            void supervisor.refreshRemoteEngineStatus(nodeId)
+            break
+        case 'importLocalModel':
+            refuseRemote(
+                'Importing a local model file is only available on the local node where the file resides.'
+            )
             break
         case 'pullModel':
             if (payload.model) {

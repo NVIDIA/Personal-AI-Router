@@ -65,6 +65,8 @@ export type EngineCommandType =
     | 'unloadModel'
     | 'deleteModel'
     | 'setModelExpiry'
+    | 'refreshModels'
+    | 'importLocalModel'
 
 /** Payload for engine commands sent from the UI. */
 export interface EngineCommandPayload {
@@ -73,6 +75,7 @@ export interface EngineCommandPayload {
     nodeId: string
     model?: string
     expiry?: string
+    filePath?: string
 }
 
 /** Canonical engine state snapshot sent on connect/reconnect. */

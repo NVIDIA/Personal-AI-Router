@@ -66,7 +66,8 @@ const MODEL_COMMANDS: ReadonlySet<EngineCommandType> = new Set<EngineCommandType
     'pullModel',
     'loadModel',
     'unloadModel',
-    'deleteModel'
+    'deleteModel',
+    'importLocalModel'
 ])
 
 /**
@@ -280,7 +281,10 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                             const loaded = statuses.get(p.model) === 'loaded'
                             if (p.action === 'deleteModel' && !present) {
                                 toClear.push(key)
-                            } else if (p.action === 'pullModel' && present) {
+                            } else if (
+                                (p.action === 'pullModel' || p.action === 'importLocalModel') &&
+                                present
+                            ) {
                                 toClear.push(key)
                             } else if (p.action === 'loadModel' && loaded) {
                                 toClear.push(key)

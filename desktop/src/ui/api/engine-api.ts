@@ -62,6 +62,10 @@ export interface IEngineApi {
     deleteModel(engineType: EngineType, nodeId: string, model: string): void
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
+    /** Re-scan installed models on a node from its machine. */
+    refreshModels(engineType: EngineType, nodeId: string): void
+    /** Import a local model file (.gguf, etc.) from the machine into an engine. */
+    importLocalModel(engineType: EngineType, nodeId: string, model: string, filePath: string): void
     /** Load an engine catalog or explicitly search its upstream registry. */
     searchHub(engineType: EngineType, query?: string): Promise<EngineHubSearchResponse>
 
@@ -113,6 +117,16 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 nodeId,
                 model,
                 expiry
+            }),
+        refreshModels: (engineType, nodeId) =>
+            fireCommand(transport, { command: 'refreshModels', engineType, nodeId }),
+        importLocalModel: (engineType, nodeId, model, filePath) =>
+            fireCommand(transport, {
+                command: 'importLocalModel',
+                engineType,
+                nodeId,
+                model,
+                filePath
             }),
         searchHub: (engineType, query) =>
             transport.invoke(

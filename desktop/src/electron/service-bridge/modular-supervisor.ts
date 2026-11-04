@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { app } from 'electron'
 import {
@@ -1684,6 +1685,108 @@ class ModularSupervisor {
     }
 
     /**
+     * Import a local model file (.gguf, .bin, .safetensors) from the host machine into
+     * an engine's managed store or register it via the engine's model creation API.
+     */
+    async importLocalModel(
+        engine: string,
+        engineType: EngineType,
+        model: string,
+        filePath: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        if (state.isModelPullActive(engineType, model)) return
+
+        state.beginModelPull(engineType, model)
+        try {
+            if (!fs.existsSync(filePath)) {
+                throw new Error(`Model file not found on disk: ${filePath}`)
+            }
+
+            if (engineType === 'ollama') {
+                const proxyPort = state.getProxyPort('ollama') ?? 11434
+                const bridge = this.getLocalBridge('ollama')
+                const targetPort = bridge.running && bridge.port > 0 ? bridge.port : proxyPort
+                const url = `http://127.0.0.1:${targetPort}/api/create`
+
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model, from: filePath })
+                })
+
+                if (!response.ok) {
+                    const text = await response.text()
+                    let msg = `Ollama model creation failed with status ${response.status}`
+                    try {
+                        const parsed: JsonValue = JSON.parse(text)
+                        const errText = stringValue(objectValue(parsed)?.error).trim()
+                        if (errText) msg = errText
+                    } catch {
+                        if (text.trim().length > 0) msg = text
+                    }
+                    throw new Error(msg)
+                }
+
+                if (response.body) {
+                    const reader = response.body.getReader()
+                    let streamDone = false
+                    while (!streamDone) {
+                        const chunk = await reader.read()
+                        streamDone = chunk.done
+                    }
+                }
+
+                await this.refreshEngineModels(engine, engineType)
+            } else if (engineType === 'llama-cpp') {
+                const llamaDir = path.join(os.homedir(), '.llamacpp')
+                await fs.promises.mkdir(llamaDir, { recursive: true })
+                const ext = path.extname(filePath) || '.gguf'
+                const targetPath = path.join(llamaDir, `${model}${ext}`)
+
+                try {
+                    await fs.promises.link(filePath, targetPath)
+                } catch {
+                    try {
+                        await fs.promises.symlink(filePath, targetPath)
+                    } catch {
+                        await fs.promises.copyFile(filePath, targetPath)
+                    }
+                }
+
+                await this.refreshEngineModels(engine, engineType)
+            } else if (engineType === 'lm-studio') {
+                const lmsDir = path.join(os.homedir(), '.lmstudio', 'models', 'custom', model)
+                await fs.promises.mkdir(lmsDir, { recursive: true })
+                const fileName = path.basename(filePath)
+                const targetPath = path.join(lmsDir, fileName)
+
+                try {
+                    await fs.promises.link(filePath, targetPath)
+                } catch {
+                    try {
+                        await fs.promises.symlink(filePath, targetPath)
+                    } catch {
+                        await fs.promises.copyFile(filePath, targetPath)
+                    }
+                }
+
+                await this.refreshEngineModels(engine, engineType)
+            }
+        } catch (err) {
+            const message = getErrorString(err)
+            this.reportError(message, 'error', `engine-import:${engine}:${model}`, {
+                engineType,
+                operation: 'pull',
+                modelName: model,
+                action: 'retry'
+            })
+        } finally {
+            state.finishModelPull(engineType, model)
+        }
+    }
+
+    /**
      * Delete a downloaded model locally. Awaits the backend action, refreshes
      * `list_models`, and surfaces RPC failures so the optimistic spinner clears
      * on real completion instead of the safety-net timeout.
@@ -1953,7 +2056,7 @@ class ModularSupervisor {
      * it. Awaitable (so {@link pullModel} can land the new model in the list
      * before clearing its spinner) and never throws — a failed refresh just logs.
      */
-    private async refreshEngineModels(engine: string, engineType: EngineType): Promise<void> {
+    async refreshEngineModels(engine: string, engineType: EngineType): Promise<void> {
         if (this.stoppedModelEngines.has(engineType)) return
         const generation = this.beginModelRefresh(engineType)
         try {

@@ -10,6 +10,7 @@ import { ModelExpiry } from '@/shared/types/engines'
 
 import { ConfirmModal } from '@/ui/components/ConfirmModal'
 import { ModelHubModal } from '@/ui/components/ModelHub/ModelHubModal'
+import { CustomModelModal } from './CustomModelModal'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
@@ -22,6 +23,7 @@ import type { ModelEntry } from '@/ui/types/model-hub'
 
 export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId: string }) {
     const [openModelHubModal, setOpenModelHubModal] = useState(false)
+    const [openCustomModelModal, setOpenCustomModelModal] = useState(false)
     const [modelPendingDelete, setModelPendingDelete] = useState<string | null>(null)
     const models = (backend.models ?? []).sort((a, b) =>
         formatModelDisplayName(a.name, backend.type).localeCompare(
@@ -177,12 +179,24 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
             for (const entry of entries) {
                 if (entry.name) {
-                    window.pairApi.engines.pullModel(backendType, nodeId, entry.name)
+                    let targetModel = entry.name
+                    if (
+                        backendType === 'ollama' &&
+                        entry.name.includes('/') &&
+                        !entry.name.startsWith('hf.co/')
+                    ) {
+                        targetModel = `hf.co/${entry.name}`
+                    }
+                    window.pairApi.engines.pullModel(backendType, nodeId, targetModel)
                 }
             }
         },
         [backendType, nodeId]
     )
+
+    const handleRefreshModels = useCallback(() => {
+        window.pairApi.engines.refreshModels(backendType, nodeId)
+    }, [backendType, nodeId])
 
     return (
         <Stack gap="4">
@@ -251,7 +265,22 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             />
 
             {supportsSearch && (
-                <Flex justify="end">
+                <Flex justify="end" align="center" gap="2">
+                    <Button
+                        size="small"
+                        kind="secondary"
+                        onClick={handleRefreshModels}
+                        title="Scan machine for newly installed or external models"
+                    >
+                        Scan machine
+                    </Button>
+                    <Button
+                        size="small"
+                        kind="secondary"
+                        onClick={() => setOpenCustomModelModal(true)}
+                    >
+                        Add from machine
+                    </Button>
                     <Button
                         size="small"
                         kind="primary"
@@ -265,6 +294,16 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                         onOpenChange={setOpenModelHubModal}
                         onSubmit={handleDownload}
                         downloadedModels={models}
+                        onOpenCustomModel={() => {
+                            setOpenModelHubModal(false)
+                            setOpenCustomModelModal(true)
+                        }}
+                    />
+                    <CustomModelModal
+                        open={openCustomModelModal}
+                        onOpenChange={setOpenCustomModelModal}
+                        backend={backend}
+                        nodeId={nodeId}
                     />
                 </Flex>
             )}

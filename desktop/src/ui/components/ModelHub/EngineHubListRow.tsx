@@ -55,7 +55,18 @@ const EngineHubListRow = memo(function EngineHubListRow({
                     />
                 )}
                 <Stack>
-                    <Text kind="body/bold/sm">{displayName}</Text>
+                    <Flex align="center" gap="2" wrap="nowrap">
+                        <Text kind="body/bold/sm">{displayName}</Text>
+                        {model.url?.includes('huggingface.co') || model.id.includes('/') ? (
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 whitespace-nowrap">
+                                🤗 Hugging Face
+                            </span>
+                        ) : (
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 whitespace-nowrap">
+                                Catalog
+                            </span>
+                        )}
+                    </Flex>
                     <Flex align="center" wrap="wrap" gap="2">
                         {!!model.size && (
                             <Text kind="body/regular/sm" className="text-subtle-color">

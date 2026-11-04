@@ -12,13 +12,15 @@ export const ModelHubModal = ({
     engine,
     onOpenChange,
     onSubmit,
-    downloadedModels
+    downloadedModels,
+    onOpenCustomModel
 }: {
     engine: EngineType | null
     onOpenChange: (open: boolean) => void
     onSubmit: (models: ModelEntry[]) => void
     /** Already-installed models for this engine. Results matching these are hidden. */
     downloadedModels?: readonly ModelItem[]
+    onOpenCustomModel?: () => void
 }) => {
     return (
         <ModalRoot open={!!engine} onOpenChange={onOpenChange} hideCloseButton>
@@ -48,6 +50,7 @@ export const ModelHubModal = ({
                             multiple={false}
                             onSubmit={onSubmit}
                             downloadedModels={downloadedModels}
+                            onOpenCustomModel={onOpenCustomModel}
                         />
                     </Stack>
                 </ModalContent>
