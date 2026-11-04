@@ -102,7 +102,9 @@ export interface IpcChannelMap {
     /** Cancels future submissions only; in-flight work finishes naturally. */
     'demo:stop': { request: void; response: DemoState }
 
-    // -- Settings (Electron-only: ui-config first-run flag) --
+    // -- Settings (Electron-only preferences) --
+    'settings:get-hide-dock-icon': { request: void; response: boolean }
+    'settings:set-hide-dock-icon': { request: { enabled: boolean }; response: void }
     /** Whether first-run onboarding still needs to be completed or explicitly dismissed. */
     'settings:is-first-run': { request: void; response: boolean }
     /** Persist that first-run onboarding completed or was explicitly dismissed. */

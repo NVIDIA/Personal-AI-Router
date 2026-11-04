@@ -11,6 +11,7 @@ import {
 } from '@/shared/constants/modular-runtime'
 
 interface UiConfig {
+    hideDockIconInBackground: boolean
     /** When true, first-run onboarding has not been completed or explicitly dismissed. */
     firstRun: boolean
     /** Log level passed to every backend binary (`--log-level` at spawn + live `log/set-level`). Authoritative source for the modular log level. */
@@ -20,6 +21,7 @@ interface UiConfig {
 }
 
 const DEFAULTS: UiConfig = {
+    hideDockIconInBackground: false,
     firstRun: true,
     modularLogLevel: MODULAR_DEFAULT_LOG_LEVEL,
     macHelperSetupComplete: false
@@ -92,6 +94,15 @@ function save(): void {
 
 export function isFirstRun(): boolean {
     return config.firstRun
+}
+
+export function getHideDockIconInBackground(): boolean {
+    return config.hideDockIconInBackground === true
+}
+
+export function setHideDockIconInBackground(value: boolean): void {
+    config.hideDockIconInBackground = value
+    save()
 }
 
 /** Persist that first-run onboarding completed or was explicitly dismissed. */
