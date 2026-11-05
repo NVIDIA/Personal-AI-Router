@@ -30,10 +30,7 @@ import type {
     EngineStatePatch
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
-import type {
-    CustomEndpointInfo,
-    CustomProxyPortState
-} from '@/shared/types/custom-endpoints'
+import type { CustomEndpointInfo, CustomProxyPortState } from '@/shared/types/custom-endpoints'
 import type {
     EngineSettingsTarget,
     EngineSettingsRequest,

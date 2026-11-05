@@ -666,11 +666,9 @@ describe('custom endpoint service bridge', () => {
             await expect(
                 handleServiceBridgeInvoke('custom:set-port', { port: 8137 })
             ).resolves.toEqual({ port: 8137, running: true })
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'custom/set-port',
-                { port: 8137 }
-            )
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith('broker', 'custom/set-port', {
+                port: 8137
+            })
         })
 
         it('relays a peer port move with the nodeId and the relay timeout', async () => {
@@ -694,11 +692,9 @@ describe('custom endpoint service bridge', () => {
                 port: 8137,
                 nodeId: 'local-node'
             })
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'custom/set-port',
-                { port: 8137 }
-            )
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith('broker', 'custom/set-port', {
+                port: 8137
+            })
         })
 
         it('surfaces the peer refusal for a port move instead of pretending it applied', async () => {
