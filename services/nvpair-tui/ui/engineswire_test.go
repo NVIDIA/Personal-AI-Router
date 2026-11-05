@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
+	"nvpair-tui/rpc"
 )
 
 // wireOf builds a model operation's envelope, failing the test if the engine
@@ -247,4 +249,28 @@ func TestLifecycleRemoteCoverage_MatchesManager(t *testing.T) {
 	for _, name := range []string{"install", "start", "stop"} {
 		assert.False(t, engineOps[name].localOnly, "%s has a remote variant and should not be local-only", name)
 	}
+}
+
+// A vLLM Load that a Stop or Eject ended replies with stopped set. That is what
+// the user asked for, so it must not read as a failure, nor as a model loaded.
+func TestModelOpResult_ReportsAStoppedLoadAsStopped(t *testing.T) {
+	test := func(name, op, result string, want engineOpMsg) {
+		t.Run(name, func(t *testing.T) {
+			msg := classifyModelOpResult("load org/m", "vllm", op, &rpc.Message{Result: json.RawMessage(result)}, nil)
+			assert.Equal(t, want, msg)
+		})
+	}
+	test("a stopped Load", "load", `{"model":"org/m","restarted":false,"stopped":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm", stopped: true})
+	test("a Load that finished", "load", `{"model":"org/m","restarted":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+	test("another engine's Load result", "load", `{"ok":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+	test("only a Load can be stopped", "delete", `{"stopped":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+
+	d := localDetail()
+	d.update(engineOpMsg{what: "load org/m", engine: "vllm", stopped: true})
+	assert.Contains(t, d.status.render(), "was stopped before it finished")
+	assert.NotContains(t, d.status.render(), "failed")
 }

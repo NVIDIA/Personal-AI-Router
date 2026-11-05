@@ -117,6 +117,7 @@ func TestWithoutLaunchFlag_RemovesEveryFormOfTheFlag(t *testing.T) {
 type loadReply struct {
 	Model     string `json:"model"`
 	Restarted bool   `json:"restarted"`
+	Stopped   bool   `json:"stopped,omitempty"`
 }
 
 func decodeLoadReply(t *testing.T, raw json.RawMessage) loadReply {
@@ -400,16 +401,30 @@ func TestStop_CancelsAStartThatIsStillLoading(t *testing.T) {
 	}
 }
 
+// loadOutcome is a load_model call's result and error.
+type loadOutcome struct {
+	result json.RawMessage
+	err    error
+}
+
+// assertLoadStopped checks the reply to a Load that a Stop or Eject ended: the
+// user asked for it, so it is not an error, and it says the Load was stopped.
+func assertLoadStopped(t *testing.T, outcome loadOutcome) {
+	t.Helper()
+	require.NoError(t, outcome.err, "a Load the user stopped is not a failure")
+	assert.Equal(t, loadReply{Model: "org/slow", Stopped: true}, decodeLoadReply(t, outcome.result))
+}
+
 // Eject during a Load that is starting the engine stops it at once, puts the
 // previous model back without starting it, and leaves the engine off.
 func TestEject_DuringALoadStopsTheEngineAndKeepsThePreviousModel(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	slowStarts(t, e)
 	before := launchTextOf(t, e)
-	loaded := make(chan error, 1)
+	loaded := make(chan loadOutcome, 1)
 	go func() {
-		_, err := loadModel(t, e, "org/slow")
-		loaded <- err
+		result, err := loadModel(t, e, "org/slow")
+		loaded <- loadOutcome{result, err}
 	}()
 	waitForStartInFlight(t, e)
 
@@ -418,7 +433,7 @@ func TestEject_DuringALoadStopsTheEngineAndKeepsThePreviousModel(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Less(t, time.Since(began), 4*time.Second, "Eject waited out the Load")
-	assert.ErrorContains(t, <-loaded, "loading org/slow was stopped before it finished; the previous model is selected again")
+	assertLoadStopped(t, <-loaded)
 	assert.Equal(t, before, launchTextOf(t, e))
 	assert.False(t, mustStatus(t, e).Running, "a stopped Load must not start the previous model again")
 	enabled, known, err := e.desired.get("fake")
@@ -434,10 +449,10 @@ func TestEject_DuringALoadOfARunningEngineLeavesItStopped(t *testing.T) {
 	slowStarts(t, e)
 	require.NoError(t, e.Start(context.Background(), "fake"))
 	before := launchTextOf(t, e)
-	loaded := make(chan error, 1)
+	loaded := make(chan loadOutcome, 1)
 	go func() {
-		_, err := loadModel(t, e, "org/slow")
-		loaded <- err
+		result, err := loadModel(t, e, "org/slow")
+		loaded <- loadOutcome{result, err}
 	}()
 	waitForStartInFlight(t, e)
 
@@ -448,7 +463,7 @@ func TestEject_DuringALoadOfARunningEngineLeavesItStopped(t *testing.T) {
 	// Restarting the previous model first, only to stop it again, would hold
 	// the Eject for another 8-second start.
 	assert.Less(t, time.Since(began), 4*time.Second, "Eject waited for the previous model to start again")
-	assert.ErrorContains(t, <-loaded, "loading org/slow was stopped before it finished")
+	assertLoadStopped(t, <-loaded)
 	assert.Equal(t, before, launchTextOf(t, e))
 	assert.False(t, mustStatus(t, e).Running, "a stopped Load must not start the previous model again")
 }

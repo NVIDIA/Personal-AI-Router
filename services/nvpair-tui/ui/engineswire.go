@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -206,6 +207,10 @@ type engineOpMsg struct {
 	// running on the engine. Distinct from both success and failure: nothing
 	// went wrong, and nothing has finished either.
 	detached bool
+	// stopped marks a Load that a Stop or Eject ended before the model was
+	// served. The user asked for that, so it is not a failure, and the model
+	// did not load either.
+	stopped bool
 }
 
 // engineCmd issues a lifecycle request against a node. An empty node means this
@@ -252,9 +257,24 @@ func modelCmd(client *rpc.Client, node, engine string, act modelAction, model st
 		}
 		params = local
 	}
-	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
-		return classifyOpResult(what, engine, act.op, err)
+	return call(client, method, params, func(msg *rpc.Message, err error) tea.Msg {
+		return classifyModelOpResult(what, engine, act.op, msg, err)
 	})
+}
+
+// classifyModelOpResult is classifyOpResult for a model operation, which can
+// also have been stopped: vLLM's Load starts the engine, and a Stop or Eject
+// during it ends the Load with "stopped" in the reply.
+func classifyModelOpResult(what, engine, op string, msg *rpc.Message, err error) tea.Msg {
+	if err == nil && msg != nil && op == "load" {
+		var reply struct {
+			Stopped bool `json:"stopped"`
+		}
+		if json.Unmarshal(msg.Result, &reply) == nil && reply.Stopped {
+			return engineOpMsg{what: what, engine: engine, stopped: true}
+		}
+	}
+	return classifyOpResult(what, engine, op, err)
 }
 
 // longRunningOps are the operations whose real duration is set by how much data

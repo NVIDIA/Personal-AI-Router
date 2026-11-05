@@ -87,6 +87,11 @@ func (l *launchEdit) start(ctx context.Context) error {
 // is put back, and a running engine is started on it again, so a failed switch
 // does not leave the engine down or the settings pointing at a model that
 // failed.
+//
+// A Stop or Eject during the Load ends it without starting anything: the engine
+// stays stopped with the previous model selected. That is what the user asked
+// for, not a failure, so the reply succeeds with stopped set, and only a restore
+// that fails is an error.
 func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *ActionLaunchModel, params json.RawMessage) (json.RawMessage, error) {
 	var request struct {
 		Model string `json:"model"`
@@ -99,7 +104,7 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		return nil, fmt.Errorf("%q is not a valid model id (want a Hugging Face id such as org/name)", request.Model)
 	}
 
-	var restarted bool
+	var restarted, stopped bool
 	err := e.editLaunch(engine, func(edit *launchEdit) error {
 		current := edit.before
 		if !current.Editable {
@@ -126,18 +131,18 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		if err == nil {
 			return nil
 		}
-		stopped := e.stopWaiting(edit.st)
-		if !changed {
-			if stopped {
-				return fmt.Errorf("loading %s was stopped before it finished", model)
+		if e.stopWaiting(edit.st) {
+			stopped, restarted = true, false
+			if !changed {
+				return nil
 			}
-			return fmt.Errorf("starting %s failed: %w", model, err)
-		}
-		if stopped {
 			if restoreErr := edit.restore(ctx); restoreErr != nil {
-				return fmt.Errorf("loading %s was stopped, and restoring the previous model also failed: %v", model, restoreErr)
+				return fmt.Errorf("loading %s was stopped, and restoring the previous model failed: %w", model, restoreErr)
 			}
-			return fmt.Errorf("loading %s was stopped before it finished; the previous model is selected again", model)
+			return nil
+		}
+		if !changed {
+			return fmt.Errorf("starting %s failed: %w", model, err)
 		}
 		// The engine's own error carries a long log tail, so say what happened first.
 		if restoreErr := edit.restore(ctx); restoreErr != nil {
@@ -151,7 +156,8 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 	return json.Marshal(struct {
 		Model     string `json:"model"`
 		Restarted bool   `json:"restarted"`
-	}{model, restarted})
+		Stopped   bool   `json:"stopped,omitempty"`
+	}{model, restarted, stopped})
 }
 
 // withLaunchFlag returns launch text with flag set to value. Every existing

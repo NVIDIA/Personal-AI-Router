@@ -1909,7 +1909,8 @@ class ModularSupervisor {
      * message distinguishes the two cases exactly as the local path does. The
      * error is stamped with the *peer's* nodeId (not our selfId) plus
      * `engineType`/`modelName` so `pending-actions.store` clears the right row's
-     * spinner instead of leaving it to the safety-net timeout.
+     * spinner instead of leaving it to the safety-net timeout. Resolves with the
+     * peer's reply, or undefined once a failure has been reported.
      */
     async modelActionRemote(
         nodeId: string,
@@ -1917,7 +1918,7 @@ class ModularSupervisor {
         engineType: EngineType,
         model: string,
         command: 'loadModel' | 'unloadModel' | 'deleteModel'
-    ): Promise<void> {
+    ): Promise<JsonValue | undefined> {
         const method =
             command === 'loadModel'
                 ? 'engine:remote-load-model'
@@ -1925,13 +1926,14 @@ class ModularSupervisor {
                   ? 'engine:remote-unload-model'
                   : 'engine:remote-delete-model'
         try {
-            await this.callProcess(
+            const result = await this.callProcess(
                 'broker',
                 method,
                 { node: nodeId, engine, model },
                 PULL_TIMEOUT_MS
             )
             await this.refreshRemoteEngineStatus(nodeId)
+            return result
         } catch (err) {
             const verb =
                 command === 'loadModel' ? 'load' : command === 'unloadModel' ? 'unload' : 'delete'
@@ -1946,6 +1948,7 @@ class ModularSupervisor {
                 { nodeId, engineType, operation: verb, modelName: model }
             )
             if (restartFailed) await this.refreshRemoteEngineStatus(nodeId)
+            return undefined
         }
     }
 

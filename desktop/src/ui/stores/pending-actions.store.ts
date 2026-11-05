@@ -131,6 +131,20 @@ function modelKey(nodeId: string, engineType: EngineType, model: string): string
     return `${nodeId}:${engineType}:model:${model}`
 }
 
+/** The pending entries without the engine's model Loads on that node. */
+function withoutPendingLoads(
+    pending: Map<string, PendingAction>,
+    nodeId: string,
+    engineType: EngineType
+): Map<string, PendingAction> {
+    const prefix = `${nodeId}:${engineType}:model:`
+    const next = new Map(pending)
+    for (const [key, p] of pending) {
+        if (key.startsWith(prefix) && p.action === 'loadModel') next.delete(key)
+    }
+    return next
+}
+
 function settingsKey(nodeId: string, engineType: EngineType): string {
     return `${nodeId}:${engineType}:settings`
 }
@@ -188,11 +202,20 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
         const { command, engineType, nodeId, model } = payload
         const expiresAt = Date.now() + timeoutFor(command, engineType)
 
+        // On an engine whose Load starts it, a Stop or Eject ends a Load still in
+        // flight. The engine-manager replies that it was stopped, which clears
+        // nothing here, so the stop itself ends the pending Load.
+        const current =
+            (command === 'stop' || command === 'unloadModel') &&
+            EngineCapabilities[engineType]?.loadRestartsEngine
+                ? withoutPendingLoads(get().pending, nodeId, engineType)
+                : get().pending
+
         if (LIFECYCLE_COMMANDS.has(command)) {
             const baselineStatus = useEngineStatusStore
                 .getState()
                 .getStatus(nodeId, engineType).processStatus
-            const next = new Map(get().pending)
+            const next = new Map(current)
             next.set(lifecycleKey(nodeId, engineType), {
                 nodeId,
                 engineType,
@@ -205,7 +228,7 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
         }
 
         if (MODEL_COMMANDS.has(command) && model) {
-            const next = new Map(get().pending)
+            const next = new Map(current)
             next.set(modelKey(nodeId, engineType, model), {
                 nodeId,
                 engineType,
@@ -214,7 +237,9 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                 expiresAt
             })
             set({ pending: next })
+            return
         }
+        if (current !== get().pending) set({ pending: current })
     },
 
     getLifecyclePending: (nodeId, engineType) => {

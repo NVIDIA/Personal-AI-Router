@@ -157,6 +157,35 @@ describe('a vLLM Load is one pending action for the row and the engine', () => {
         expect(lifecyclePending('local-node', 'vllm')).toBe('stop')
     })
 
+    it('ends the Load when the user stops the engine or ejects', () => {
+        const modelPending = (nodeId: string, engineType: EngineType, model: string) =>
+            usePendingActionsStore.getState().getModelPending(nodeId, engineType, model)
+        const begin = usePendingActionsStore.getState().begin
+
+        // The engine-manager replies that a stopped Load was stopped, not that
+        // it failed, so no error clears the entry: the stop has to.
+        load('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        begin({ command: 'stop', engineType: 'vllm', nodeId: 'local-node' })
+        expect(modelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')).toBeUndefined()
+
+        load('remote-node', 'vllm', 'Qwen/Qwen3-8B')
+        begin({
+            command: 'unloadModel',
+            engineType: 'vllm',
+            nodeId: 'remote-node',
+            model: 'Qwen/Qwen2.5-0.5B-Instruct'
+        })
+        expect(modelPending('remote-node', 'vllm', 'Qwen/Qwen3-8B')).toBeUndefined()
+        expect(modelPending('remote-node', 'vllm', 'Qwen/Qwen2.5-0.5B-Instruct')).toBe(
+            'unloadModel'
+        )
+
+        // An engine whose Load does not start it keeps its Load.
+        load('local-node', 'ollama', 'llama3.2')
+        begin({ command: 'stop', engineType: 'ollama', nodeId: 'local-node' })
+        expect(modelPending('local-node', 'ollama', 'llama3.2')).toBe('loadModel')
+    })
+
     it('lets a lifecycle command already in flight win', () => {
         usePendingActionsStore
             .getState()

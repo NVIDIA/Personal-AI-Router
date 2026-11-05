@@ -629,6 +629,8 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 			d.status.error("%s failed: %s", what, msg.err)
 		case msg.detached:
 			d.status.info("%s is continuing in the background - watch for progress", what)
+		case msg.stopped:
+			d.status.info("%s was stopped before it finished", what)
 		default:
 			d.status.ok("%s requested", what)
 		}
