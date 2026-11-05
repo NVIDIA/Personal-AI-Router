@@ -30,7 +30,7 @@ function copyIconsPlugin() {
                 resolve(__dirname, 'out/resources/icons'),
                 resolve(__dirname, 'resources/icons')
             ]
-            // Only the flat logo.* files are needed at runtime (tray.ts / window.ts).
+            // Only the flat icon files are needed at runtime (tray.ts / window.ts).
             // Skip subdirectories such as linux/, which is consumed by electron-builder
             // at package time, not by the running app — copyFileSync on a dir throws.
             const files = readdirSync(src, { withFileTypes: true })
