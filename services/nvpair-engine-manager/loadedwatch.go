@@ -43,9 +43,9 @@ var residencyNeutralActions = map[string]bool{
 // engine:models-changed whenever one changes — covering explicit load/unload, LM
 // Studio JIT auto-load, TTL/idle auto-eviction, and a model pulled or deleted.
 // The engines themselves push nothing, so this internal poll is the only signal;
-// keeping it here means a push-driven consumer never has to poll. It runs until ctx is cancelled and is
-// pokeable (see Executor.pokeLoaded) for sub-tick latency after an explicit
-// action. The first sweep only seeds the baseline (no emit) so a consumer's
+// keeping it here means a push-driven consumer never has to poll. It runs until
+// ctx is cancelled and is pokeable (see Executor.pokeLoaded) for sub-tick
+// latency after an explicit action. The first sweep only seeds the baseline (no emit) so a consumer's
 // initial engine:models fetch isn't immediately shadowed by a redundant push.
 func (e *Executor) watchLoaded(ctx context.Context) {
 	interval := e.loadedPollInterval
