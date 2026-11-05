@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -170,12 +171,53 @@ func TestPullHFModel_DownloadsAndReportsSuccess(t *testing.T) {
 }
 
 func TestPullHFModel_ReportsTheToolsOwnMessageWhenTheDownloadFails(t *testing.T) {
-	e, _, _ := hfPullFixture(t, []hfSibling{{RFilename: "model.safetensors", Size: 10}}, http.StatusOK,
+	e, _, _ := hfPullFixture(t, oneFileRepo, http.StatusOK,
 		`echo "connection reset by peer" >&2; exit 1`)
 
 	_, err := e.PullModelStream(context.Background(), "vllm", "Qwen/Test", nil)
 
 	assert.ErrorContains(t, err, "connection reset by peer")
+}
+
+// oneFileRepo is the smallest repository vLLM can load: config, tokenizer and
+// one weights file.
+var oneFileRepo = []hfSibling{{RFilename: "config.json", Size: 2}, {RFilename: "tokenizer.json", Size: 2}, {RFilename: "model.safetensors", Size: 10}}
+
+// A repository whose files would not make a model vLLM can load is refused
+// before anything is downloaded. It used to download in full, be reported
+// incomplete, and stay in the cache where the model list does not show it.
+func TestPullHFModel_RefusesALayoutVLLMCannotLoadBeforeDownloading(t *testing.T) {
+	file := func(name string) hfSibling { return hfSibling{RFilename: name, Size: 10} }
+	test := func(name string, siblings []hfSibling, wantErr string) {
+		t.Run(name, func(t *testing.T) {
+			e, hub, _ := hfPullFixture(t, siblings, http.StatusOK, `touch "$(dirname "$0")/ran-anyway"; exit 0`)
+
+			_, err := e.PullModelStream(context.Background(), "vllm", "Qwen/Test", nil)
+
+			if wantErr == "" {
+				assert.NotContains(t, fmt.Sprint(err), "not one model")
+				assert.FileExists(t, filepath.Join(filepath.Dir(hub), "ran-anyway"), "the download ran")
+				return
+			}
+			assert.ErrorContains(t, err, wantErr)
+			assert.NoFileExists(t, filepath.Join(filepath.Dir(hub), "ran-anyway"), "nothing was downloaded")
+		})
+	}
+	test("two unnumbered weight files and no index",
+		[]hfSibling{file("config.json"), file("tokenizer.json"), file("model.safetensors"), file("adapter_model.safetensors")},
+		"2 weight files are not one model")
+	test("a shard missing from a numbered set",
+		[]hfSibling{file("config.json"), file("tokenizer.json"), file("model-00001-of-00003.safetensors"), file("model-00002-of-00003.safetensors")},
+		"not one model")
+	test("no tokenizer",
+		[]hfSibling{file("config.json"), file("model.safetensors")},
+		"lacks the config, tokenizer or weights")
+	test("several files with an index", // the index is checked after the download
+		[]hfSibling{file("config.json"), file("tokenizer.json"), file("a.safetensors"), file("b.safetensors"), file("model.safetensors.index.json")},
+		"")
+	test("a complete numbered set",
+		[]hfSibling{file("config.json"), file("tokenizer.json"), file("model-00001-of-00002.safetensors"), file("model-00002-of-00002.safetensors")},
+		"")
 }
 
 func TestPullHFModel_RefusesBadInputsBeforeDownloading(t *testing.T) {
@@ -195,7 +237,7 @@ func TestPullHFModel_RefusesBadInputsBeforeDownloading(t *testing.T) {
 }
 
 func TestPullHFModel_StopsPromptlyWhenCancelled(t *testing.T) {
-	e, _, _ := hfPullFixture(t, []hfSibling{{RFilename: "model.safetensors", Size: 10}}, http.StatusOK, "sleep 30")
+	e, _, _ := hfPullFixture(t, oneFileRepo, http.StatusOK, "sleep 30")
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	start := time.Now()

@@ -114,7 +114,10 @@ When you install an engine, consider the following:
   new model does not start, the previous one is restored. **Add model** browses
   and searches Hugging Face (open safetensors chat models) and downloads the one
   you pick into the same cache, with a progress bar, even while vLLM is stopped;
-  it then appears in the list. **Delete** removes a cached model from disk,
+  it then appears in the list. A repository whose files would not make a model
+  vLLM can load, such as several unnumbered weight files with no index, is
+  refused before anything is downloaded. While vLLM starts, which can take
+  minutes, it is shown as starting, however the start began. **Delete** removes a cached model from disk,
   except the one vLLM has loaded (eject it first); if vLLM cannot say which model
   it is serving, nothing is deleted. Deleting the model a stopped
   or ejected vLLM is set to serve leaves it with no model selected, and

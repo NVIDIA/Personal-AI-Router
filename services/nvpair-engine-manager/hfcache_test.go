@@ -540,3 +540,24 @@ func TestDeleteHFModel_RunsTheToolWithTheEnginesHuggingFaceSettings(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, "engine-token", string(token))
 }
+
+// A download that was interrupted and then finished by a retry leaves the old
+// .incomplete file beside the finished blob. The model is complete and listed;
+// it used to stay hidden, and so could not be deleted from the model list.
+func TestScanHFCache_ListsAModelFinishedAfterAnInterruptedDownload(t *testing.T) {
+	test := func(name string, finished bool, want []string) {
+		t.Run(name, func(t *testing.T) {
+			cache := t.TempDir()
+			repo := writeHFRepo(t, cache, "org/model", llmFiles(map[string]string{"model.safetensors": "w"}))
+			hash := "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
+			if finished {
+				require.NoError(t, os.WriteFile(filepath.Join(repo, "blobs", hash), []byte("w"), 0o644))
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(repo, "blobs", hash+".86b892a3.incomplete"), []byte("part"), 0o644))
+
+			assert.Equal(t, want, scannedIDs(t, cache))
+		})
+	}
+	test("the retry finished the file", true, []string{"org/model"})
+	test("the file is still downloading", false, []string{})
+}

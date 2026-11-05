@@ -450,6 +450,9 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}
 	files, _, err := selectHFFiles(siblings)
+	if err == nil {
+		err = checkHFLayout(files)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}

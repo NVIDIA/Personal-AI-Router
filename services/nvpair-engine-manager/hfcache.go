@@ -98,8 +98,12 @@ func scanHFCache(dir string) ([]hfCacheModel, error) {
 // a complete, servable model, and the size of the first such snapshot.
 func completeHFModel(repoPath string) (int64, bool) {
 	if blobs, err := os.ReadDir(filepath.Join(repoPath, "blobs")); err == nil {
+		finished := map[string]bool{}
 		for _, blob := range blobs {
-			if strings.HasSuffix(blob.Name(), ".incomplete") {
+			finished[blob.Name()] = true
+		}
+		for _, blob := range blobs {
+			if blobStillDownloading(blob.Name(), finished) {
 				return 0, false
 			}
 		}
@@ -117,6 +121,19 @@ func completeHFModel(repoPath string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// blobStillDownloading reports whether a blob is a download in progress. hf
+// writes a file as <hash>[.<tag>].incomplete and renames it to <hash> once it
+// is whole. A download that was interrupted and later finished by a retry
+// leaves the old .incomplete file beside the finished blob; that one is stale,
+// and counting it would hide a complete model for good.
+func blobStillDownloading(name string, blobs map[string]bool) bool {
+	if !strings.HasSuffix(name, ".incomplete") {
+		return false
+	}
+	hash, _, _ := strings.Cut(strings.TrimSuffix(name, ".incomplete"), ".")
+	return !blobs[hash]
 }
 
 // completeHFSnapshot reports whether the snapshot at path is a complete,
@@ -139,6 +156,24 @@ func completeHFSnapshot(path string) (disk, weightBytes int64, ok bool) {
 		}
 		files[entry.Name()] = info.Size()
 	}
+	weights, index, ok := hfSnapshotWeights(files)
+	if !ok || !hfWeightsComplete(path, files, weights, index) {
+		return 0, 0, false
+	}
+
+	for _, bytes := range files {
+		disk += bytes
+	}
+	for _, name := range weights {
+		weightBytes += files[name]
+	}
+	return disk, weightBytes, true
+}
+
+// hfSnapshotWeights finds, in a snapshot's top-level files, the weights vLLM
+// will load and the index that lists them. ok is false when the snapshot lacks
+// the config or tokenizer vLLM needs, or has no weights.
+func hfSnapshotWeights(files map[string]int64) (weights []string, index string, ok bool) {
 	// vLLM loads Mistral-format consolidated weights in preference to the
 	// Hugging Face-format shards whenever a snapshot has any, with their own
 	// index, params.json and the Mistral tokenizer (tekken.json or
@@ -149,17 +184,16 @@ func completeHFSnapshot(path string) (disk, weightBytes int64, ok bool) {
 			mistralFormat = true
 		}
 	}
-	index := "model.safetensors.index.json"
+	index = "model.safetensors.index.json"
 	if mistralFormat {
 		index = "consolidated.safetensors.index.json"
 		if !hasAny(files, []string{"config.json", "params.json"}) || (!hasMistralTokenizer(files) && !hasAny(files, hfTokenizerFiles)) {
-			return 0, 0, false
+			return nil, "", false
 		}
 	} else if _, ok := files["config.json"]; !ok || !hasAny(files, hfTokenizerFiles) {
-		return 0, 0, false
+		return nil, "", false
 	}
 
-	var weights []string
 	for name := range files {
 		if strings.HasSuffix(name, ".safetensors") && isConsolidatedWeights(name) == mistralFormat {
 			weights = append(weights, name)
@@ -173,17 +207,34 @@ func completeHFSnapshot(path string) (disk, weightBytes int64, ok bool) {
 			}
 		}
 	}
-	if len(weights) == 0 || !hfWeightsComplete(path, files, weights, index) {
-		return 0, 0, false
-	}
+	return weights, index, len(weights) > 0
+}
 
-	for _, bytes := range files {
-		disk += bytes
+// checkHFLayout refuses, before anything is downloaded, a repository whose
+// files would not make a complete model once they are: the rule
+// completeHFSnapshot applies to the cache, applied to the file names. Without
+// it, a repository with two unnumbered weight files and no index downloaded in
+// full and was then reported incomplete, and stayed in the cache unlisted. A
+// repository with an index is accepted here; the index is checked after the
+// download.
+func checkHFLayout(names []string) error {
+	files := map[string]int64{}
+	for _, name := range names {
+		if !strings.Contains(name, "/") {
+			files[name] = 0
+		}
 	}
-	for _, name := range weights {
-		weightBytes += files[name]
+	weights, index, ok := hfSnapshotWeights(files)
+	if !ok {
+		return errors.New("the repository lacks the config, tokenizer or weights vLLM needs to load it")
 	}
-	return disk, weightBytes, true
+	if _, hasIndex := files[index]; hasIndex {
+		return nil
+	}
+	if !hfWeightsComplete("", files, weights, index) {
+		return fmt.Errorf("the repository's %d weight files are not one model vLLM can load: there is no index listing them, and they are not numbered shards of one set", len(weights))
+	}
+	return nil
 }
 
 // hfWeightsComplete verifies the weight files are all present. An index file
