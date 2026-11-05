@@ -622,6 +622,25 @@ func TestDiscovery_FetchesModelsAfterAuthentication(t *testing.T) {
 	assert.Equal(t, response.LoadedByEngine, node.LoadedByEngine)
 }
 
+func TestDiscovery_ModelEndpointChangeSchedulesRefresh(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.info.Peer.Services[noderec.ServiceEngineManager] = 14322
+	f.discover(t)
+	require.Len(t, f.daemon.modelsWake, 1)
+	<-f.daemon.modelsWake
+	peer, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+
+	// Routine inventory samples leave the periodic model schedule alone.
+	require.True(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), peer.HostUUID, peer.CandidateIPs(), peer.Services[noderec.ServiceNodeInfo].Port))
+	require.Empty(t, f.daemon.modelsWake)
+	f.info.Peer.Services[noderec.ServiceEngineManager] = 14323
+
+	require.True(t, f.daemon.refreshNodeTelemetryCandidates(context.Background(), peer.HostUUID, peer.CandidateIPs(), peer.Services[noderec.ServiceNodeInfo].Port))
+
+	assert.Len(t, f.daemon.modelsWake, 1, "the new endpoint must be refreshed before the next periodic sweep")
+}
+
 func TestDiscovery_SpoofedClaimsCannotChangeVerifiedPeers(t *testing.T) {
 	// clusterUuid is the peer's node UUID from its cluster identity.
 	test := func(name, hostClaim, clusterUUIDClaim string) {

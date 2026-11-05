@@ -389,9 +389,12 @@ Scanner reads a peer's models using the verified engine-manager (`em`) service
 details and `GET /v1/models` over pinned mTLS. For the local host, Scanner uses
 its own registry and unencrypted HTTP over loopback. It adds the combined model
 list, `modelsByEngine`, and `loadedByEngine` to the directory, retaining the last
-successfully read data during temporary failures. Local publication uses retained
-models without waiting for HTTP while holding the local identity lock. A local
-registration or newly authenticated peer schedules the model sweep
+successfully read data during temporary failures at the same authenticated
+source. A change to the peer's proof, address list, or engine-manager port clears
+all three inventories. Removing engine-manager also clears them. A new or changed
+source schedules an immediate model sweep while engine-manager is present.
+Local publication uses retained models without waiting for HTTP while holding
+the local identity lock. A local registration also schedules the model sweep
 without waiting for its next periodic run.
 
 Scanner compares model lists without depending on their order. A present engine entry

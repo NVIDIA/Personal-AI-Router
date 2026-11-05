@@ -50,7 +50,7 @@ type daemon struct {
 	// modelsClients is the long-lived per-peer mTLS pool for LAN /v1/models
 	// fetches. A throwaway Transport every 15s paid a full handshake each time.
 	modelsClients *clustertrust.PeerClientPool
-	// modelsWake coalesces newly verified peers into the next model sweep.
+	// modelsWake coalesces registrations and changed model sources into a sweep.
 	modelsWake chan struct{}
 	// nodeInfoClients uses exact cluster pins, independently of public display HTTP.
 	nodeInfoClients *clustertrust.PeerClientPool
@@ -652,6 +652,8 @@ func (d *daemon) publishPeerInfo(candidateID string, sample peerInfoSample) {
 		GPUs: info.GPUs, CPU: info.CPU, Memory: info.Memory,
 	}
 	d.recordPeerInfoSuccess(info.HostUUID)
+	previous, present := d.dir.get(info.HostUUID)
+	refreshModels := node.HasService(noderec.ServiceEngineManager) && (!present || !sameModelSource(previous, node))
 	removed, discovered, changed := d.dir.promote(candidateID, node)
 	if removed.DiscoveryRecordID != "" {
 		d.forgetHardwarePreview(removed.DiscoveryRecordID)
@@ -665,7 +667,7 @@ func (d *daemon) publishPeerInfo(candidateID string, sample peerInfoSample) {
 		current, _ := d.dir.get(info.HostUUID)
 		d.emit(method, current)
 	}
-	if discovered {
+	if refreshModels {
 		select {
 		case d.modelsWake <- struct{}{}:
 		default:

@@ -664,8 +664,10 @@ Updates to a previously authenticated observation stay hidden while its exact
 proof remains current and its claimed host UUID is unchanged. Changed claims
 require authentication before updating the verified peer.
 
-Each enrichment keeps a last-good value, so one failed fetch dims nothing. A
-node's card does not blank out because a single poll timed out.
+Each enrichment keeps a last-good value during temporary failures at an unchanged
+source. A peer's model inventories are cleared when its authenticated proof,
+address list, or engine-manager port changes, or when engine-manager disappears.
+An available replacement endpoint triggers an immediate model refresh.
 
 `trusted` requires a completed peer read against the current exact pin. A pin
 addition schedules authentication; it never makes an announcement trusted.

@@ -30,9 +30,11 @@ Concretely, the daemon:
   authenticated association is current and its claimed host UUID is unchanged.
   Changed claims require authentication before updating the verified record.
 - **Refreshes models** every 15 seconds from verified endpoints, preserving
-  the last successful inventory during outages. A newly authenticated peer
-  schedules a model refresh immediately. Remote model lists use pinned
-  mTLS at the authenticated engine-manager port. Local models use the owned
+  the last successful inventory during outages while its authenticated proof,
+  addresses, and engine-manager port remain unchanged. A changed source clears
+  all model inventories and schedules an immediate refresh when engine-manager
+  is present. A newly authenticated peer also schedules a refresh. Remote model
+  lists use pinned mTLS at the authenticated engine-manager port. Local models use the owned
   engine-manager over loopback; local hardware comes from private worker IPC.
   Local registry publications use retained models and wake the model sweep,
   so an HTTP read cannot hold the lock needed by owned hardware notifications.

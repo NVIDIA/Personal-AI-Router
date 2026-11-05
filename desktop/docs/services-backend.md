@@ -229,6 +229,10 @@ unverified discovery into a local or verified node.
 
 Local model state comes from `nvpair-engine-manager`; remote model state comes
 from scanner enrichment of each peer's engine-manager `/v1/models` endpoint.
+Scanner clears a peer's model inventories when its authenticated proof or
+engine-manager endpoint changes or disappears. An available replacement endpoint
+triggers a refresh. Temporary failures at an unchanged source retain its last
+successful inventory.
 
 ### When the backend drops a node
 

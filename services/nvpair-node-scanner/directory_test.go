@@ -5,6 +5,8 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,7 +44,10 @@ func TestDirectory_IdenticalPeerRefreshPreservesModelsAndTimestamp(t *testing.T)
 		HostUUID: "peer-uuid", DiscoveryRecordID: "peer:peer-uuid",
 		IdentityVerification: noderec.IdentityPinned, ClusterUUID: "peer-uuid", Trusted: true,
 		Name: "peer", IP: "192.0.2.20", IPs: []string{"192.0.2.20"},
-		Services:       map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceNodeInfo: {Port: 14318}},
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceNodeInfo:      {Port: 14318},
+			noderec.ServiceEngineManager: {Port: 14322},
+		},
 		GPUs:           []GPUInfo{{Name: "GPU", UtilizationPercent: 61}},
 		CPU:            &CPUInfo{Name: "CPU"},
 		Memory:         &MemoryInfo{TotalBytes: 1024},
@@ -66,6 +71,57 @@ func TestDirectory_IdenticalPeerRefreshPreservesModelsAndTimestamp(t *testing.T)
 	got, present := dir.get(old.HostUUID)
 	require.True(t, present)
 	assert.Equal(t, old, got)
+}
+
+func TestDirectory_PeerRefreshClearsModelsWhenSourceChanges(t *testing.T) {
+	test := func(name string, changeSource func(*noderec.DirectoryNode)) {
+		t.Run(name, func(t *testing.T) {
+			dir := newDirectory()
+			old := noderec.DirectoryNode{
+				HostUUID: "peer-uuid", DiscoveryRecordID: "peer:original-proof",
+				IdentityVerification: noderec.IdentityPinned, ClusterUUID: "peer-uuid", Trusted: true,
+				IP: "192.0.2.20", IPs: []string{"192.0.2.20", "192.0.2.21"},
+				Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+					noderec.ServiceNodeInfo:      {Port: 14318},
+					noderec.ServiceEngineManager: {Port: 14322},
+				},
+				Models:         []string{"old-model"},
+				ModelsByEngine: map[string][]string{"ollama": {"old-model"}},
+				LoadedByEngine: map[string][]string{"ollama": {"old-model"}},
+			}
+			dir.upsert(old)
+			refreshed := old
+			refreshed.Services = maps.Clone(old.Services)
+			refreshed.IPs = slices.Clone(old.IPs)
+			refreshed.Models, refreshed.ModelsByEngine, refreshed.LoadedByEngine = nil, nil, nil
+			changeSource(&refreshed)
+
+			_, discovered, changed := dir.promote("", refreshed)
+
+			assert.False(t, discovered)
+			assert.True(t, changed)
+			current, present := dir.get(old.HostUUID)
+			require.True(t, present)
+			assert.Empty(t, current.Models)
+			assert.Empty(t, current.ModelsByEngine)
+			assert.Empty(t, current.LoadedByEngine)
+		})
+	}
+	test("engine-manager removed", func(node *noderec.DirectoryNode) {
+		delete(node.Services, noderec.ServiceEngineManager)
+	})
+	test("engine-manager port changed", func(node *noderec.DirectoryNode) {
+		node.Services[noderec.ServiceEngineManager] = noderec.ServiceStatus{Port: 14323}
+	})
+	test("primary address changed", func(node *noderec.DirectoryNode) {
+		node.IP, node.IPs[0] = "192.0.2.30", "192.0.2.30"
+	})
+	test("secondary address changed", func(node *noderec.DirectoryNode) {
+		node.IPs[1] = "192.0.2.31"
+	})
+	test("authenticated proof changed", func(node *noderec.DirectoryNode) {
+		node.DiscoveryRecordID = "peer:replacement-proof"
+	})
 }
 
 func TestToDirectoryNode_ProjectsClaimsWithoutGrantingTrust(t *testing.T) {

@@ -99,7 +99,7 @@ func directoryKey(n noderec.DirectoryNode) string {
 }
 
 // promote atomically replaces the authenticated discovery with its peer record.
-// Inventory refreshes preserve model fields written concurrently by their owner.
+// Model fields survive only while their authenticated source remains unchanged.
 func (d *directory) promote(candidateID string, n noderec.DirectoryNode) (removed noderec.DirectoryNode, discovered, changed bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -107,7 +107,9 @@ func (d *directory) promote(candidateID string, n noderec.DirectoryNode) (remove
 	delete(d.nodes, candidateID)
 	old, present := d.nodes[n.HostUUID]
 	if present {
-		n.Models, n.ModelsByEngine, n.LoadedByEngine = old.Models, old.ModelsByEngine, old.LoadedByEngine
+		if sameModelSource(old, n) {
+			n.Models, n.ModelsByEngine, n.LoadedByEngine = old.Models, old.ModelsByEngine, old.LoadedByEngine
+		}
 		n.LastSeen = old.LastSeen
 	}
 	changed = !present || !old.Equals(n)
@@ -116,6 +118,16 @@ func (d *directory) promote(candidateID string, n noderec.DirectoryNode) (remove
 	}
 	d.nodes[n.HostUUID] = n
 	return removed, !present, changed
+}
+
+// sameModelSource binds model inventory to the peer's proof and engine-manager
+// endpoint, including every address that a model fetch may use for failover.
+func sameModelSource(a, b noderec.DirectoryNode) bool {
+	port := a.Services[noderec.ServiceEngineManager].Port
+	return port > 0 && port == b.Services[noderec.ServiceEngineManager].Port &&
+		a.IdentityVerification == b.IdentityVerification &&
+		a.DiscoveryRecordID == b.DiscoveryRecordID && a.ClusterUUID == b.ClusterUUID &&
+		slices.Equal(a.CandidateIPs(), b.CandidateIPs())
 }
 
 // remove drops a canonical host or a discovery by its storage key.
