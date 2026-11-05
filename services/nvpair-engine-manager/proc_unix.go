@@ -80,11 +80,10 @@ func ssPID(port int) (int, bool) {
 		return 0, false
 	}
 	s := string(out)
-	idx := strings.Index(s, "pid=")
-	if idx < 0 {
+	_, rest, ok := strings.Cut(s, "pid=")
+	if !ok {
 		return 0, false
 	}
-	rest := s[idx+len("pid="):]
 	end := strings.IndexAny(rest, ",)")
 	if end < 0 {
 		return 0, false
