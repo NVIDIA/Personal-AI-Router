@@ -38,8 +38,11 @@ type EngineStatus struct {
 	DisplayName string `json:"display_name"`
 	Installed   bool   `json:"installed"`
 	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port,omitempty"`
+	// Starting is true while a start is launching the engine and waiting for
+	// it to become ready. Running is false until it is.
+	Starting bool `json:"starting,omitempty"`
+	Healthy  bool `json:"healthy"`
+	Port     int  `json:"port,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -60,11 +63,14 @@ type engineState struct {
 	// never takes opMu.
 	opMu sync.Mutex
 
-	mu         sync.Mutex
-	installed  bool
-	running    bool
-	healthy    bool
-	stopping   bool
+	mu        sync.Mutex
+	installed bool
+	running   bool
+	healthy   bool
+	stopping  bool
+	// starting is true while a start launches the engine and waits for it to
+	// become ready, after the checks that can refuse it.
+	starting   bool
 	adopted    bool  // started externally; we can't stop it
 	gen        int64 // bumped each start; gates stale health loops
 	port       int

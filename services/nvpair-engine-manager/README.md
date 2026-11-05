@@ -233,7 +233,11 @@ Requests (caller → service):
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-`EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
+`EngineStatus` = `{ engine, display_name, installed, running, starting?, healthy, port }`.
+`starting` is true while a start launches the engine and waits for it to be
+ready, whoever began it (a Start, install-then-start, a settings restart, a
+Load, or the restore at launch); `engine:state-changed` is pushed when it
+begins and ends. A start refused before launch never reports it.
 
 Notifications (service → caller): `engine:ready{version}`,
 `engine:state-changed{EngineStatus}`,

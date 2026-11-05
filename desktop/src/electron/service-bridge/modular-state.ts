@@ -81,8 +81,24 @@ interface EnginePresence {
 interface RemoteEngineFacts {
     installed: boolean
     running: boolean
+    starting: boolean
     healthy: boolean
     port: number
+}
+
+/**
+ * The process status an engine-manager `EngineStatus` reports. `starting` covers
+ * a start in flight whoever began it (install-then-start, a settings restart, a
+ * restore at launch, the terminal interface), which for vLLM can take minutes.
+ */
+function factsProcessStatus(facts: {
+    installed: boolean
+    running: boolean
+    starting: boolean
+}): EngineProcessStatus {
+    if (facts.running) return 'running'
+    if (facts.starting) return 'starting'
+    return facts.installed ? 'stopped' : 'not-installed'
 }
 
 interface ModularNode {
@@ -936,7 +952,7 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; port: number }
+        { installed: boolean; running: boolean; starting: boolean; port: number }
     >()
     /**
      * The engines `nvpair-engine-manager` lists for this host. It leaves out an
@@ -1414,6 +1430,7 @@ class ModularBridgeState {
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
+            starting: booleanValue(obj.starting),
             port: numberValue(obj.port)
         })
         // A fresh authoritative state is the resolution of whatever op was in
@@ -1772,11 +1789,7 @@ class ModularBridgeState {
             base = {
                 engineType: engine,
                 nodeId,
-                processStatus: facts.running
-                    ? 'running'
-                    : facts.installed
-                      ? 'stopped'
-                      : 'not-installed',
+                processStatus: factsProcessStatus(facts),
                 // Only the peer engine-manager's own port is a real engine port;
                 // the discovery presence port is the proxy, so never fall back to
                 // it for the engine port.
@@ -1828,6 +1841,7 @@ class ModularBridgeState {
             this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
                 installed: booleanValue(engineObj.installed),
                 running: booleanValue(engineObj.running),
+                starting: booleanValue(engineObj.starting),
                 healthy: booleanValue(engineObj.healthy),
                 port: numberValue(engineObj.port)
             })
@@ -1859,6 +1873,7 @@ class ModularBridgeState {
         this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
+            starting: booleanValue(obj.starting),
             healthy: booleanValue(obj.healthy),
             port: numberValue(obj.port)
         })
@@ -2146,11 +2161,7 @@ class ModularBridgeState {
             return {
                 engineType,
                 nodeId,
-                processStatus: facts.running
-                    ? 'running'
-                    : facts.installed
-                      ? 'stopped'
-                      : 'not-installed',
+                processStatus: factsProcessStatus(facts),
                 // The engine-manager reports the manifest's configured port for a
                 // pinned-port engine (for example managed llama.cpp on 8081 behind
                 // its 8080 proxy facade) whether it is running or merely installed,

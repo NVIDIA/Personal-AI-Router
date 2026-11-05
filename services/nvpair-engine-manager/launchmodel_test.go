@@ -467,3 +467,40 @@ func TestEject_DuringALoadOfARunningEngineLeavesItStopped(t *testing.T) {
 	assert.Equal(t, before, launchTextOf(t, e))
 	assert.False(t, mustStatus(t, e).Running, "a stopped Load must not start the previous model again")
 }
+
+// A start reports that it is starting for as long as it runs. A vLLM start
+// can download and load for minutes, and a client that only knew "not
+// running" showed the engine as off for all of that time.
+func TestStart_ReportsStartingUntilTheEngineIsReady(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	slowStarts(t, e)
+	assert.False(t, mustStatus(t, e).Starting, "a stopped engine is not starting")
+
+	started := make(chan error, 1)
+	go func() { started <- e.Start(context.Background(), "fake") }()
+	waitForStartInFlight(t, e)
+	require.Eventually(t, func() bool { return mustStatus(t, e).Starting }, 5*time.Second, 20*time.Millisecond,
+		"the engine is reported starting while it loads")
+	assert.False(t, mustStatus(t, e).Running)
+
+	require.NoError(t, <-started)
+	status := mustStatus(t, e)
+	assert.True(t, status.Running)
+	assert.False(t, status.Starting, "a running engine is no longer starting")
+}
+
+// A start that is stopped, or fails, is no longer reported as starting.
+func TestStart_StopsReportingStartingWhenTheStartEnds(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	slowStarts(t, e)
+	started := make(chan error, 1)
+	go func() { started <- e.Start(context.Background(), "fake") }()
+	waitForStartInFlight(t, e)
+	require.Eventually(t, func() bool { return mustStatus(t, e).Starting }, 5*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, e.Stop("fake"))
+	require.Error(t, <-started)
+	status := mustStatus(t, e)
+	assert.False(t, status.Starting)
+	assert.False(t, status.Running)
+}

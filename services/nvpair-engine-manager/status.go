@@ -130,6 +130,7 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		DisplayName: st.manifest.DisplayName,
 		Installed:   st.installed,
 		Running:     st.running,
+		Starting:    st.starting && !st.running,
 		Healthy:     st.healthy,
 		Port:        st.port,
 	}

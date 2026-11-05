@@ -202,12 +202,22 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		vars["cli"] = expandPath(rt.CLI)
 	}
 
+	// Report the start while it runs, which for vLLM can be minutes of
+	// downloading and loading, so every client shows the engine as starting
+	// rather than off, whoever started it.
 	st.mu.Lock()
 	st.port = port
 	st.stopping = false
+	st.starting = true
 	st.mu.Unlock()
+	e.emitState(engine)
 
-	if err := e.bringUp(ctx, st, engine, rt, port, vars); err != nil {
+	err := e.bringUp(ctx, st, engine, rt, port, vars)
+	st.mu.Lock()
+	st.starting = false
+	st.mu.Unlock()
+	if err != nil {
+		e.emitState(engine)
 		return err
 	}
 

@@ -104,4 +104,31 @@ describe('a local engine start', () => {
 
         expect(processStatus('vllm')).toBe('running')
     })
+
+    // A start this app did not send (install-then-start, a settings restart,
+    // a restore at launch, the terminal interface) has no pending op here. The
+    // engine-manager reports it as starting, so it is not shown as off.
+    it('shows a start the engine-manager reports, whoever began it', () => {
+        const report = (running: boolean, starting: boolean) =>
+            getModularBridgeState().applyEngineManagerStatus({
+                engine: 'vllm',
+                installed: true,
+                running,
+                starting,
+                healthy: running,
+                port: 8001
+            })
+
+        report(false, true)
+        expect(processStatus('vllm')).toBe('starting')
+
+        vi.advanceTimersByTime(20 * 60_000)
+        expect(processStatus('vllm')).toBe('starting')
+
+        report(true, false)
+        expect(processStatus('vllm')).toBe('running')
+
+        report(false, false)
+        expect(processStatus('vllm')).toBe('stopped')
+    })
 })
