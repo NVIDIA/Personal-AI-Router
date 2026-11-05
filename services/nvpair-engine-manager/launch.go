@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -108,9 +109,7 @@ func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (l
 	}
 	// Resolution must not change the caller's context (in particular {bin}).
 	resolvedVars := make(map[string]string, len(vars)+1)
-	for key, value := range vars {
-		resolvedVars[key] = value
-	}
+	maps.Copy(resolvedVars, vars)
 	resolvedVars["bin"] = binPath
 	args, err := resolveArgs(rt.Args, resolvedVars)
 	if err != nil {

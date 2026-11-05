@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -227,9 +228,7 @@ func TestAliasSelfTarget_TreatsLocalhostAsCanonicalIPv6Loopback(t *testing.T) {
 func TestIPv6AliasCandidate_PreservesAddressForSelfCheck(t *testing.T) {
 	localAddrsMu.RLock()
 	original := make(map[string]bool, len(localAddrs))
-	for address, local := range localAddrs {
-		original[address] = local
-	}
+	maps.Copy(original, localAddrs)
 	localAddrsMu.RUnlock()
 	t.Cleanup(func() { setLocalAddrs(original) })
 	setLocalAddrs(map[string]bool{"::1": true})

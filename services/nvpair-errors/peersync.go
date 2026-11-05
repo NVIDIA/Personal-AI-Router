@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -207,9 +208,7 @@ func (ps *PeerSync) pushAll(ctx context.Context) {
 
 	ps.mu.RLock()
 	targets := make(map[string]peerTarget, len(ps.peers))
-	for id, t := range ps.peers {
-		targets[id] = t
-	}
+	maps.Copy(targets, ps.peers)
 	ps.mu.RUnlock()
 
 	if len(targets) == 0 {

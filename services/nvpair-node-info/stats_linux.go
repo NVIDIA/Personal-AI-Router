@@ -7,6 +7,7 @@ package main
 
 import (
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"strconv"
@@ -167,9 +168,7 @@ func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
 		return false
 	}
 	parsed, utilizationSamples := parseNvidiaDynamic(csv)
-	for k, v := range parsed {
-		out[k] = v
-	}
+	maps.Copy(out, parsed)
 	return utilizationSamples > 0
 }
 

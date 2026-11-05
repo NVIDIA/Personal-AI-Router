@@ -5,6 +5,7 @@ package cors
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -105,8 +106,6 @@ func ServePreflight(w http.ResponseWriter, r *http.Request, targets []Target) {
 		http.Error(w, "engines do not all permit this preflight", http.StatusForbidden)
 		return
 	}
-	for key, values := range headers {
-		w.Header()[key] = values
-	}
+	maps.Copy(w.Header(), headers)
 	w.WriteHeader(http.StatusNoContent)
 }

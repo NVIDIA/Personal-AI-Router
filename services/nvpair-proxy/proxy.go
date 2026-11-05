@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -1091,9 +1092,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 		combinedHeaders, allowed = cors.Combine(r, headers)
 		if invalidInventory {
 			if allowed {
-				for key, values := range combinedHeaders {
-					w.Header()[key] = values
-				}
+				maps.Copy(w.Header(), combinedHeaders)
 			}
 			writeJSON(http.StatusBadGateway, []byte(`{"error":"model inventory unavailable"}`))
 			return http.StatusBadGateway, fmt.Errorf("model inventory unavailable")
@@ -1148,9 +1147,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 		writeJSON(http.StatusInternalServerError, []byte(`{"error":"failed to encode model inventory"}`))
 		return http.StatusInternalServerError, err
 	}
-	for key, values := range combinedHeaders {
-		w.Header()[key] = values
-	}
+	maps.Copy(w.Header(), combinedHeaders)
 	writeJSON(http.StatusOK, body)
 	return http.StatusOK, nil
 }
