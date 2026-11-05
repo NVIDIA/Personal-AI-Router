@@ -128,6 +128,15 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	st.mu.Unlock()
 
+	// A start refused before bring-up is reported like one that fails during
+	// it. A desktop Start is sent without waiting for the reply and learns the
+	// outcome from engine:state-changed or a start-failed error, and a refusal
+	// changes no state, so without the report the engine stays shown as
+	// starting.
+	refuse := func(err error) error {
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
+		return err
+	}
 	pathInstalled, _ := e.Detect(engine)
 	rt := st.plat.Runtime
 	port := st.port
@@ -137,17 +146,17 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if port == 0 {
 		p, err := freePort()
 		if err != nil {
-			return fmt.Errorf("allocate port: %w", err)
+			return refuse(fmt.Errorf("allocate port: %w", err))
 		}
 		port = p
 	}
 	if err := e.reservedPortError(port); err != nil {
-		return err
+		return refuse(err)
 	}
 	presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, true)
 	if presence.Identified {
 		if opts.RequireOwned {
-			return fmt.Errorf("cannot apply launch settings: another process already owns the server port")
+			return refuse(fmt.Errorf("cannot apply launch settings: another process already owns the server port"))
 		}
 		slog.Info("adopting already-running external engine", "engine", engine, "port", port)
 		st.mu.Lock()
@@ -170,8 +179,11 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		return nil
 	}
 	if presence.Occupied && rt.modeOrDefault() == "process" {
-		return fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName)
+		return refuse(fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName))
 	}
+	// Not reported: a client offers Install, not Start, for an engine that is
+	// not installed, and an engine removed outside PAIR would otherwise raise an
+	// error on every launch that restores it.
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
@@ -180,7 +192,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if flag := modelLaunchFlag(st.manifest); flag != "" {
 		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
 		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
-			return fmt.Errorf("%s has no model selected; load a model to start it", st.manifest.DisplayName)
+			return refuse(fmt.Errorf("%s has no model selected; load a model to start it", st.manifest.DisplayName))
 		}
 	}
 	vars := st.pathVars()
@@ -242,10 +254,11 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	binPath := st.binPath
 	st.mu.Unlock()
 	launch, err := resolveProcessLaunch(rt, binPath, vars)
-	if err != nil {
-		return err
+	if err == nil {
+		err = validateEffectiveLaunch(rt, launch, vars["host"], vars["port"])
 	}
-	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+	if err != nil {
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 		return err
 	}
 	// The hub cache vLLM itself will use, from the environment it is started with.
@@ -344,6 +357,7 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		}
 		if rt.EditableLaunch != nil && index == rt.EditableLaunch.StartIndex {
 			if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+				e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 				return cleanup(err)
 			}
 		}

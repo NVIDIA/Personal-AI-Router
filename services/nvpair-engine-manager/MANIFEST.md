@@ -286,7 +286,9 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   operation lock is held from reading the launch to the last restore. An engine
   with a `launch_model` action will not start while its launch arguments lack
   the flag: it has no model selected, and refusing beats letting the engine
-  pick and download a default of its own. Requires `runtime.editable_launch`
+  pick and download a default of its own. The refusal is reported as a failed
+  start, like the other refusals before launch, so a client that does not wait
+  for the reply still learns of it. Requires `runtime.editable_launch`
   and `runtime.ready` on every platform.
 
 An optional **`result`** declares how `engine:models` extracts a normalized
