@@ -340,7 +340,6 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 	// Track connection candidates independently of identity claims. Promoted
 	// peers survive multicast gaps using authenticated reads or inference.
 	d.browser = NewDiscovery(noderec.ServiceType, noderec.Domain,
-		WithLivenessProbe(func(n RawNode) bool { return d.reachable(n) }),
 		WithKeyFunc(nodeDiscoveryRecordID),
 	)
 	if resp, err := mdns.NewResponder(instance, noderec.ServiceType, noderec.Domain, noderec.SRVPort, reg.txt()); err != nil {
@@ -404,7 +403,9 @@ type discoveryCandidate struct {
 	// Retain the last authenticated source link for expiry while a changed
 	// announcement awaits proof. It does not authenticate the pending claims.
 	peerUUID string
-	pending  bool
+	// peerRecordID binds that association to the exact authenticated proof.
+	peerRecordID string
+	pending      bool
 }
 
 type peerInfoSample struct {
@@ -483,13 +484,20 @@ func (d *daemon) authenticateCandidate(ctx context.Context, id string, candidate
 	}
 	d.peerMu.Lock()
 	defer d.peerMu.Unlock()
-	if d.candidates[id] != candidate || !d.currentPin(sample) {
+	if d.candidates[id] != candidate {
+		if d.candidates[id] == nil {
+			d.enrichHosts.forget(hostKey{hostUUID: id, service: noderec.ServiceNodeInfo})
+		}
+		return false
+	}
+	if !d.currentPin(sample) {
 		return false
 	}
 	if sample.info.HostUUID == d.reg.record().HostUUID {
 		return false
 	}
 	candidate.peerUUID = sample.info.HostUUID
+	candidate.peerRecordID = sample.recordID
 	candidate.pending = false
 	d.publishPeerInfo(id, sample)
 	return true
@@ -595,6 +603,14 @@ func (d *daemon) currentPin(sample peerInfoSample) bool {
 // The caller must refresh mesh before checking it.
 func (d *daemon) currentPeerRecord(node noderec.DirectoryNode) bool {
 	return node.IdentityVerification == noderec.IdentityPinned && node.DiscoveryRecordID != "" && node.DiscoveryRecordID == d.mesh.PeerRecordID(node.ClusterUUID)
+}
+
+// candidatePeerCurrent checks the candidate's last authenticated association.
+// The caller holds peerMu and has refreshed mesh. Pending claims remain unverified.
+func (d *daemon) candidatePeerCurrent(candidate *discoveryCandidate) bool {
+	peer, present := d.dir.get(candidate.peerUUID)
+	return present && peer.Trusted && candidate.peerRecordID != "" &&
+		candidate.peerRecordID == peer.DiscoveryRecordID && d.currentPeerRecord(peer)
 }
 
 // currentPeerResult also rejects results for an endpoint replaced while a read
@@ -703,6 +719,7 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		delete(d.candidates, node.DiscoveryRecordID)
 		d.authRetries.forget(node.DiscoveryRecordID)
 		d.forgetHardwarePreview(node.DiscoveryRecordID)
+		d.enrichHosts.forget(hostKey{hostUUID: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
 		if d.dir.remove(node.DiscoveryRecordID) {
 			d.emit(noderec.NotifyNodeRemoved, node)
 		}
@@ -724,17 +741,32 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 	if d.candidates == nil {
 		d.candidates = make(map[string]*discoveryCandidate)
 	}
-	peerUUID := ""
+	d.mesh.Refresh()
+	candidate := &discoveryCandidate{node: node, pending: true}
 	if previous := d.candidates[node.DiscoveryRecordID]; previous != nil {
-		peerUUID = previous.peerUUID
+		candidate.peerUUID, candidate.peerRecordID = previous.peerUUID, previous.peerRecordID
 	}
-	d.candidates[node.DiscoveryRecordID] = &discoveryCandidate{node: node, peerUUID: peerUUID, pending: true}
+	d.candidates[node.DiscoveryRecordID] = candidate
+	if node.HostUUID == candidate.peerUUID && d.candidatePeerCurrent(candidate) {
+		if observation, present := d.dir.get(node.DiscoveryRecordID); present {
+			d.dir.remove(node.DiscoveryRecordID)
+			d.forgetHardwarePreview(node.DiscoveryRecordID)
+			d.emit(noderec.NotifyNodeRemoved, observation)
+		}
+	} else {
+		d.publishCandidate(node)
+	}
+	d.wakeAuthentication()
+}
+
+// publishCandidate exposes announcement claims under their independent record ID.
+func (d *daemon) publishCandidate(node noderec.DirectoryNode) {
+	node.LastSeen = time.Now().Unix()
 	method := noderec.NotifyNodeUpdated
 	if d.dir.upsert(node) {
 		method = noderec.NotifyNodeDiscovered
 	}
 	d.emit(method, node)
-	d.wakeAuthentication()
 }
 
 // reloadTrust invalidates stale proofs and schedules authentication after a pin change.
@@ -776,15 +808,18 @@ func (d *daemon) reconcileTrust() {
 		if node.IdentityVerification != noderec.IdentityPinned || d.currentPeerRecord(node) {
 			continue
 		}
-		for _, candidate := range d.candidates {
-			if candidate.peerUUID == node.HostUUID {
-				candidate.peerUUID = ""
-				candidate.pending = true
-			}
-		}
 		d.forget(node.HostUUID)
 		d.dir.remove(node.HostUUID)
 		d.emit(noderec.NotifyNodeRemoved, node)
+	}
+	for _, candidate := range d.candidates {
+		if candidate.peerUUID == "" || d.candidatePeerCurrent(candidate) {
+			continue
+		}
+		candidate.peerUUID, candidate.peerRecordID = "", ""
+		candidate.pending = true
+		d.authRetries.forget(candidate.node.DiscoveryRecordID)
+		d.publishCandidate(candidate.node)
 	}
 	if d.nodeInfoClients != nil {
 		d.nodeInfoClients.DropUnpinned()
@@ -1088,10 +1123,6 @@ func (d *daemon) watchAddress(ctx context.Context) {
 	}
 }
 
-// reachableInfoFreshness is how long a successful node-info enrichment keeps a
-// threshold-missed discovery (~2× default discovery scan interval).
-const reachableInfoFreshness = 10 * time.Second
-
 // retainedPeerGrace gives peers whose last discovery expired a minute without
 // authenticated inventory before removal. Recent inference also keeps them.
 const retainedPeerGrace = time.Minute
@@ -1106,30 +1137,16 @@ const retainedPeerGrace = time.Minute
 // case the probes get wrong — a node saturated by inference is the one least
 // able to answer a control-plane probe and the one most certainly not offline.
 //
-// It is deliberately longer than reachableInfoFreshness. A single long
-// generation streams for tens of seconds with gaps between chunks, and the point
-// is to cover a whole burst of load rather than to require continuous traffic.
+// A single long generation streams for tens of seconds with gaps between chunks,
+// so this covers a whole burst of load rather than requiring continuous traffic.
 const activityFreshness = 60 * time.Second
 
 // loopbackHost reaches the owned engine-manager for model inventory. Local
 // node-info inventory and telemetry arrive over private worker IPC.
 const loopbackHost = "127.0.0.1"
 
-// reachable retains a promoted discovery using its canonical peer's authenticated
-// inventory or approved inference activity. An open port is not identity proof.
-func (d *daemon) reachable(n RawNode) bool {
-	// An unverified observation cannot borrow an established host's liveness.
-	d.peerMu.Lock()
-	candidate := d.candidates[nodeDiscoveryRecordID(n)]
-	if candidate == nil || candidate.pending || candidate.peerUUID == "" {
-		d.peerMu.Unlock()
-		return false
-	}
-	uuid := candidate.peerUUID
-	d.peerMu.Unlock()
-	return d.peerReachable(uuid)
-}
-
+// peerReachable checks a verified peer's current proof and cached availability.
+// Its lifetime is independent of the browser's announcement expiry.
 func (d *daemon) peerReachable(uuid string) bool {
 	if uuid == "" {
 		return false
@@ -1142,13 +1159,17 @@ func (d *daemon) peerReachable(uuid string) bool {
 	if !valid {
 		return false
 	}
+	return d.peerEvidenceFresh(uuid)
+}
+
+func (d *daemon) peerEvidenceFresh(uuid string) bool {
 	d.infoMu.Lock()
-	at := d.nodeInfoStatus[node.HostUUID].lastAcceptedAt
+	at := d.nodeInfoStatus[uuid].lastAcceptedAt
 	d.infoMu.Unlock()
-	if !at.IsZero() && time.Since(at) < reachableInfoFreshness {
+	if !at.IsZero() && time.Since(at) < retainedPeerGrace {
 		return true
 	}
-	if since, ok := d.activitySince(node.HostUUID); ok && since < activityFreshness {
+	if since, ok := d.activitySince(uuid); ok && since < activityFreshness {
 		return true
 	}
 	return false
@@ -1401,13 +1422,7 @@ func (d *daemon) expireRetainedPeer(target noderec.DirectoryNode) {
 		!slices.Equal(peer.CandidateIPs(), target.CandidateIPs()) {
 		return
 	}
-	d.infoMu.Lock()
-	at := d.nodeInfoStatus[peer.HostUUID].lastAcceptedAt
-	d.infoMu.Unlock()
-	if time.Since(at) < retainedPeerGrace {
-		return
-	}
-	if since, ok := d.activitySince(peer.HostUUID); ok && since < activityFreshness {
+	if d.peerEvidenceFresh(peer.HostUUID) {
 		return
 	}
 	d.forget(peer.HostUUID)

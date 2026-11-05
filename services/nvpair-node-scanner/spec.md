@@ -119,17 +119,16 @@ collected by workers for unverified records.
   pinned mTLS for remote samples and private interprocess communication (IPC)
   with the local worker for local samples. Public HTTP node-info never supplies
   scheduling data, including for manually configured nodes.
-- A discovery record becomes eligible for removal after 12 consecutive missed
-  five-second scans. Scanner retains it when there is accepted evidence that the
-  node is available. If more than one node is known and a scan returns none,
-  Scanner ignores at most six consecutive empty scans before counting misses
-  normally. For a paired peer, continued availability must be shown by
-  authenticated inventory reads or inference responses, not just an open TCP
-  port or unverified network claims.
+- A discovery observation expires after 12 consecutive missed five-second
+  scans, clearing its candidate state and remembered address independently of
+  verified peer availability. If more than one node is known and a scan returns
+  none, Scanner ignores at most six consecutive empty scans before counting
+  misses normally.
   If a verified peer remains after its last discovery expires, Scanner continues
-  checking availability through the same canonical sampling loop. After a minute without
-  authenticated inventory or inference activity, Scanner removes its record and
-  caches while preserving membership and saved certificates.
+  checking availability through the same canonical sampling loop. After a minute
+  without authenticated inventory or inference activity, Scanner removes its
+  record and caches while preserving membership and saved certificates. Open
+  TCP ports and unverified network claims cannot retain a verified peer.
 - Scanner applies trust changes while running. Removed or replaced pins clear
   verification status and scheduling samples, close affected idle connections, and
   prevent pending responses from restoring the old state.
@@ -292,6 +291,9 @@ Scanner checks a discovery claiming to be a known host against that link, even
 when the announced certificate identity is missing or different. An announcement
 cannot change which certificate belongs to a node or replace its verified
 service addresses before authentication succeeds.
+Once an observation authenticates, its subsequent announcements stay hidden
+while that exact proof remains current and its claimed host UUID is unchanged.
+Changed claims still require authentication before updating the verified record.
 
 `trusted` is true for a verified peer whose pin is still approved. For the local
 record it follows actual local membership. Adding a pin schedules authentication
@@ -300,10 +302,11 @@ Unverified rows cannot be merged into member rows by matching UUID, name, or
 address in the broker or either frontend.
 
 When the user removes a peer or leaves the cluster, the affected verified peer
-records disappear from the broker's desktop and TUI views. A later mDNS
-announcement may appear as a separate unverified discovery. An unverified
-discovery or a saved manual configuration cannot preserve the removed peer's
-verification.
+records disappear from the broker's desktop and TUI views. Scanner restores
+their known observations as separate unverified discoveries without waiting for
+another announcement change. Replacing a certificate or admission also
+invalidates the prior association. An unverified discovery or a saved manual
+configuration cannot preserve the removed peer's verification.
 
 ### 7.2 Inventory and model transport
 

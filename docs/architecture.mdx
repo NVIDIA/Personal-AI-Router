@@ -105,7 +105,7 @@ the layers that are checked:
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
 | The broker | A `ping` request clients can call, which the terminal interface's **Service** tab uses. |
-| Peer nodes | Reachability, not health: missed announcements are checked against recent authenticated node-info samples and inference activity. The inference proxies report activity but are never probed. |
+| Peer nodes | Availability follows authenticated node-info samples and inference activity independently of announcement expiry. The inference proxies report activity but are never probed. |
 
 Worker supervision is restart-based. The broker retries an unexpected exit with
 exponential backoff from roughly one second to 16 seconds, with a budget of five
@@ -672,22 +672,26 @@ registered ports as well as hardware. Scanner replaces only the successful
 discovery with this verified record. Other observations remain independently
 unverified. The broker retains record provenance through caches and relays;
 unverified claims cannot replace service endpoints or supply scheduling data.
+Updates to a previously authenticated observation stay hidden while its exact
+proof remains current and its claimed host UUID is unchanged. Changed claims
+require authentication before updating the verified peer.
 
 Each enrichment keeps a last-good value, so one failed fetch dims nothing. A
 node's card does not blank out because a single poll timed out.
 
 `trusted` requires a completed peer read against the current exact pin. A pin
 addition schedules authentication; it never makes an announcement trusted.
+Trust withdrawal removes the verified record and restores known observations as
+unverified pairing candidates without waiting for an announcement change.
 
 ### Node Eviction
 
-The browser scans every five seconds. After a discovery has missed three scans
-in a row, about 15 seconds, the browser checks availability on each scan. Accepted
-evidence resets the miss count. After 12 consecutive misses, about a minute, the
-discovery expires if those checks keep failing. For a promoted peer the checks are:
-
-- Inference the node served in the last minute, which the proxies report
-- Authenticated inventory from that node in the last ten seconds
+The browser scans every five seconds. An observation expires after 12 consecutive
+misses, about a minute, clearing its candidate state and remembered address.
+With multiple known nodes, up to six consecutive empty scans receive a shared
+grace period before misses count. Observation expiry is independent of the
+verified peer's availability, so obsolete addresses and ports can be retired
+while the peer stays online.
 
 A verified peer record can outlive its last discovery while authenticated
 inventory or recent inference still proves availability. Scanner continues

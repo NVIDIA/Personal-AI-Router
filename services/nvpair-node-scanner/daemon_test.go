@@ -364,16 +364,19 @@ func TestDiscovery_RemovesUnverifiedRecordWhenAnnouncementDisappears(t *testing.
 	assert.False(t, present)
 }
 
-func TestReachable_RejectsAdvertisementsClaimingTheLocalHost(t *testing.T) {
-	// Reject a discovery claim to our UUID even when a fresh cached sample
-	// would otherwise make that UUID reachable, without any network probe.
+func TestDiscovery_RejectsAdvertisementsClaimingTheLocalHost(t *testing.T) {
+	// Another announcement cannot become a candidate for the locally owned host.
 	const selfUUID = "self-uuid"
 	d := newSelfTestDaemon(selfUUID, "192.0.2.1")
-	d.nodeInfoStatus[selfUUID] = peerInfoStatus{lastAcceptedAt: time.Now()}
+	d.publishSelf()
 	self := RawNode{
-		TXT: []string{"uuid=" + selfUUID, "ip=192.0.2.1"},
+		ID: "another machine", TXT: []string{"uuid=" + selfUUID, "ip=192.0.2.1"},
 	}
-	assert.False(t, d.reachable(self), "an advertisement claiming our UUID must be rejected despite a fresh cached sample")
+	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: self})
+	assert.Empty(t, d.candidates)
+	nodes := d.dir.snapshot("")
+	require.Len(t, nodes, 1)
+	assert.Equal(t, noderec.IdentityLocal, nodes[0].IdentityVerification)
 }
 
 func TestPublishSelf_LocalRecordHasLocalVerificationAndDiscoveryRecordID(t *testing.T) {
@@ -665,15 +668,6 @@ func TestDiscovery_SpoofedClaimsCannotChangeVerifiedPeers(t *testing.T) {
 	test("new host UUID with copied cluster UUID", "fresh-uuid", "peer-uuid")
 }
 
-func TestDiscovery_RemovingSavedCertificateRemovesVerifiedPeer(t *testing.T) {
-	f := newDiscoveryPeerFixture(t, "peer-uuid")
-	f.discover(t)
-	clustertrusttest.RemovePeerPin(t, f.selfDir, "peer-uuid")
-	f.daemon.reloadTrust()
-	_, present := f.daemon.dir.get("peer-uuid")
-	assert.False(t, present)
-}
-
 // discover reports the peer's announcement and waits for authentication attempts.
 func (f *discoveryPeerFixture) discover(t *testing.T) {
 	t.Helper()
@@ -875,6 +869,8 @@ func TestDiscovery_DiscardsResultsInvalidatedDuringRead(t *testing.T) {
 			f.invalidateDuringRead(t, invalidate, func() { f.discover(t) })
 			_, present := f.daemon.dir.get("peer-uuid")
 			assert.False(t, present)
+			key := hostKey{hostUUID: nodeDiscoveryRecordID(f.raw), service: noderec.ServiceNodeInfo}
+			assert.Empty(t, f.daemon.enrichHosts.get(key), "invalidated responses must not retain candidate address memory")
 		})
 	}
 	test("saved peer certificate removed", func(t *testing.T, f *discoveryPeerFixture) { clustertrusttest.RemovePeerPin(t, f.selfDir, "peer-uuid") })
@@ -892,7 +888,7 @@ func TestDiscovery_DiscardsResultsInvalidatedDuringRead(t *testing.T) {
 	})
 }
 
-// invalidateDuringRead holds the HTTP response while the test changes trust.
+// invalidateDuringRead holds the HTTP response while the test invalidates its result.
 // File setup and its fatal assertions run on the test goroutine.
 func (f *discoveryPeerFixture) invalidateDuringRead(t *testing.T, invalidate func(*testing.T, *discoveryPeerFixture), read func()) {
 	t.Helper()
@@ -916,6 +912,123 @@ func (f *discoveryPeerFixture) invalidateDuringRead(t *testing.T, invalidate fun
 	invalidate(t, f)
 	unblock()
 	<-done
+}
+
+func TestDiscovery_PendingAnnouncementDoesNotDuplicateVerifiedPeer(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	peer, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+	updated := f.raw
+	updated.TXT = append(append([]string(nil), f.raw.TXT...), "er=14319")
+	require.Equal(t, nodeDiscoveryRecordID(f.raw), nodeDiscoveryRecordID(updated))
+	var output bytes.Buffer
+	f.daemon.codec = NewCodec(&output)
+
+	f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: updated})
+
+	assert.Equal(t, []noderec.DirectoryNode{peer}, f.daemon.dir.snapshot(""))
+	assert.Empty(t, output.Bytes(), "pending reauthentication must not publish another row")
+}
+
+// A verified peer hides its original unverified announcement. Withdrawing that
+// proof must restore the pairing candidate without waiting for the announcement's
+// TXT record to change.
+func TestDiscovery_TrustChangesRestoreUnverifiedObservations(t *testing.T) {
+	test := func(name string, changeTrust func(*testing.T, *discoveryPeerFixture)) {
+		t.Run(name, func(t *testing.T) {
+			f := newDiscoveryPeerFixture(t, "peer-uuid")
+			f.discover(t)
+			var output bytes.Buffer
+			f.daemon.codec = NewCodec(&output)
+			changeTrust(t, f)
+
+			f.daemon.reloadTrust()
+
+			_, present := f.daemon.dir.get("peer-uuid")
+			assert.False(t, present, "the previous verified record must be withdrawn")
+			// Restore announcement claims without carrying authenticated hardware
+			// or model inventory into the unverified pairing row.
+			observation, present := f.daemon.dir.get(nodeDiscoveryRecordID(f.raw))
+			require.True(t, present, "the still-announced node must be available for pairing")
+			assert.Equal(t, noderec.IdentityUnverified, observation.IdentityVerification)
+			assert.Equal(t, f.raw.ID, observation.Name)
+			assert.False(t, observation.Trusted)
+			assert.Empty(t, observation.GPUs)
+			assert.Empty(t, observation.Models)
+
+			// Directory state alone is insufficient: broker subscribers need the
+			// verified removal followed by the unverified discovery.
+			var methods []string
+			decoder := json.NewDecoder(&output)
+			for decoder.More() {
+				var message Message
+				require.NoError(t, decoder.Decode(&message))
+				var event noderec.NodeEvent
+				require.NoError(t, json.Unmarshal(message.Params, &event))
+				if event.Node.HostUUID == "peer-uuid" {
+					methods = append(methods, message.Method)
+				}
+			}
+			assert.Equal(t, []string{noderec.NotifyNodeRemoved, noderec.NotifyNodeDiscovered}, methods)
+		})
+	}
+	test("peer pin removed", func(t *testing.T, f *discoveryPeerFixture) {
+		clustertrusttest.RemovePeerPin(t, f.selfDir, "peer-uuid")
+	})
+	test("local node leaves", func(t *testing.T, f *discoveryPeerFixture) {
+		require.NoError(t, os.Remove(filepath.Join(f.selfDir, "admission.json")))
+	})
+	// Reusing certificates does not preserve proof across separate admissions.
+	test("same certificates readmitted", func(t *testing.T, f *discoveryPeerFixture) {
+		clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+	})
+}
+
+func TestDiscovery_ChangedUUIDClaimRemainsUnverified(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	updated := f.raw
+	updated.TXT = append(append([]string(nil), f.raw.TXT...), "uuid=another-host")
+
+	f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: updated})
+
+	observation, present := f.daemon.dir.get(nodeDiscoveryRecordID(updated))
+	require.True(t, present)
+	assert.Equal(t, "another-host", observation.HostUUID)
+	assert.Equal(t, noderec.IdentityUnverified, observation.IdentityVerification)
+	peer, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+	assert.Equal(t, noderec.IdentityPinned, peer.IdentityVerification)
+}
+
+func TestDiscovery_StaleAssociationDoesNotHideObservation(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
+
+	// Observe the announcement before the periodic trust reconciliation runs.
+	f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: f.raw})
+
+	observation, present := f.daemon.dir.get(nodeDiscoveryRecordID(f.raw))
+	require.True(t, present)
+	assert.Equal(t, noderec.IdentityUnverified, observation.IdentityVerification)
+}
+
+func TestDiscovery_ObservationExpiryClearsCandidateAndRetainsAvailablePeer(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-20 * time.Second)}
+	recordID := nodeDiscoveryRecordID(f.raw)
+	key := hostKey{hostUUID: recordID, service: noderec.ServiceNodeInfo}
+	require.NotEmpty(t, f.daemon.enrichHosts.get(key))
+
+	f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: f.raw})
+
+	assert.Empty(t, f.daemon.enrichHosts.get(key))
+	assert.Nil(t, f.daemon.candidates[recordID])
+	_, present := f.daemon.dir.get("peer-uuid")
+	assert.True(t, present, "recent inventory must retain the peer for the full minute")
 }
 
 func TestDiscovery_ReauthenticatesAfterSavedCertificateChanges(t *testing.T) {
@@ -1214,41 +1327,21 @@ func TestDiscovery_DiscardsQueuedModelsAfterReadmission(t *testing.T) {
 	assert.True(t, f.daemon.refreshNodeModels(before))
 }
 
-func TestDiscovery_PeerActivityDoesNotKeepSpoofedDiscoveryReachable(t *testing.T) {
-	f := newDiscoveryPeerFixture(t, "peer-uuid")
-	f.discover(t)
-	f.daemon.noteActivity("peer-uuid", 0)
-	require.True(t, f.daemon.reachable(f.raw), "recent authenticated node-info must keep its peer reachable")
-	spoof := f.raw
-	spoof.ID = "spoof"
-	f.daemon.onBrowse(DiscoveryEvent{Type: "discovered", Node: spoof})
-	assert.False(t, f.daemon.reachable(spoof), "verified activity must not keep a spoofed discovery reachable")
-	f.server.Close()
-	f.daemon.infoMu.Lock()
-	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-reachableInfoFreshness - time.Second)}
-	f.daemon.infoMu.Unlock()
-	assert.True(t, f.daemon.reachable(f.raw), "recent inference activity must keep the verified peer reachable")
-	clustertrusttest.RemovePeerPin(t, f.selfDir, "peer-uuid")
-	assert.False(t, f.daemon.reachable(f.raw), "activity must not retain a peer after its certificate is removed")
-}
-
 func TestPeerReachable_RejectsCachedLivenessAfterReadmission(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
 	f.daemon.noteActivity("peer-uuid", 0)
 	require.True(t, f.daemon.peerReachable("peer-uuid"))
-	require.True(t, f.daemon.reachable(f.raw))
 
 	// Readmission changes the proof binding even when both certificates remain.
 	// Availability checks must reject old evidence before a reload notification.
 	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
 
 	assert.False(t, f.daemon.peerReachable("peer-uuid"))
-	assert.False(t, f.daemon.reachable(f.raw))
 
 	f.daemon.reloadTrust()
 	f.daemon.refreshCandidatesOnce(context.Background())
-	assert.True(t, f.daemon.reachable(f.raw))
+	assert.True(t, f.daemon.peerReachable("peer-uuid"))
 }
 
 func TestDiscovery_RequiresReauthenticationBeforeReadmittedPeerTelemetry(t *testing.T) {
