@@ -38,9 +38,6 @@ const (
 // them keeps a repo that ships several formats from downloading each of them.
 var hfDroppedSuffixes = []string{".gguf", ".onnx", ".h5", ".msgpack", ".ot", ".tflite"}
 
-// hfAlternateWeights are dropped when the repo also has safetensors.
-var hfAlternateWeights = []string{".bin", ".pt", ".pth"}
-
 // isConsolidatedWeights reports whether a file holds weights in Mistral's own
 // format, consolidated*.safetensors. vLLM matches that pattern on the file name.
 func isConsolidatedWeights(name string) bool {
@@ -48,28 +45,31 @@ func isConsolidatedWeights(name string) bool {
 	return strings.HasPrefix(base, "consolidated") && strings.HasSuffix(base, ".safetensors")
 }
 
-// isWeightFile reports whether a repository file holds model weights.
+// isWeightFile reports whether a repository file holds model weights in a
+// format vLLM or PyTorch reads.
 func isWeightFile(name string) bool {
-	lower := strings.ToLower(name)
-	return strings.HasSuffix(lower, ".safetensors") || hasSuffixAny(lower, hfAlternateWeights)
+	return hasSuffixAny(strings.ToLower(name), []string{".safetensors", ".bin", ".pt", ".pth"})
 }
 
 // selectHFFiles chooses the repository files to download, and the size of the
-// weights among them: the weights vLLM will load, plus config and tokenizer
-// files. Launch sizing uses the weight size, the bytes vLLM loads into memory. A repo with
-// safetensors does not also need its pickle weights. A repo that also ships
-// Mistral-format consolidated*.safetensors is loaded from those (vLLM's
-// load_format auto prefers them, with params.json and the Mistral tokenizer), so
-// its Hugging Face-format shards are not downloaded. File names that could be
-// read as an option or escape the cache are refused.
-func selectHFFiles(siblings []hfSibling) (files []string, weights int64, err error) {
-	hasSafetensors, mistralFormat := false, false
+// weights among them: the weights vLLM will load (hfChooseWeights, narrowed to
+// shards when the repository's index lists them), plus config and tokenizer
+// files. Any other weight file is a copy vLLM would not load, such as pickle
+// weights beside safetensors, Hugging Face-format shards beside Mistral-format
+// consolidated*.safetensors (with params.json and the Mistral tokenizer), or a
+// single-file copy beside indexed shards, and is not downloaded. Launch sizing
+// uses the weight size, the bytes vLLM loads into memory. File names that could
+// be read as an option or escape the cache are refused.
+func selectHFFiles(siblings []hfSibling, shards []string) (files []string, weights int64, err error) {
+	names := make([]string, 0, len(siblings))
 	for _, f := range siblings {
-		if strings.HasSuffix(strings.ToLower(f.RFilename), ".safetensors") {
-			hasSafetensors = true
-		}
-		if isConsolidatedWeights(f.RFilename) {
-			mistralFormat = true
+		names = append(names, f.RFilename)
+	}
+	chosen, _ := hfChooseWeights(names)
+	if shards != nil {
+		var ok bool
+		if chosen, ok = hfIndexedWeights(chosen, shards); !ok {
+			return nil, 0, errors.New("the repository's weight index lists files the repository does not have")
 		}
 	}
 	hasWeights := false
@@ -82,15 +82,12 @@ func selectHFFiles(siblings []hfSibling) (files []string, weights int64, err err
 		if strings.HasPrefix(lower, "original/") || hasSuffixAny(lower, hfDroppedSuffixes) {
 			continue
 		}
-		if hasSafetensors && hasSuffixAny(lower, hfAlternateWeights) {
-			continue
-		}
-		if mistralFormat && strings.HasSuffix(lower, ".safetensors") && !isConsolidatedWeights(name) {
-			continue
-		}
-		if isWeightFile(name) {
+		switch {
+		case slices.Contains(chosen, name):
 			hasWeights = true
 			weights += f.Size
+		case isWeightFile(name):
+			continue
 		}
 		files = append(files, name)
 	}
@@ -98,6 +95,18 @@ func selectHFFiles(siblings []hfSibling) (files []string, weights int64, err err
 		return nil, 0, errors.New("the repository has no safetensors or PyTorch weights this engine can load")
 	}
 	return files, weights, nil
+}
+
+// hfSiblingIndex returns the index that decides which of a repository's weight
+// files vLLM loads, when it has one and there is more than one candidate. vLLM
+// reads the index in exactly that case before downloading.
+func hfSiblingIndex(siblings []hfSibling) (string, bool) {
+	names := make([]string, 0, len(siblings))
+	for _, f := range siblings {
+		names = append(names, f.RFilename)
+	}
+	weights, index := hfChooseWeights(names)
+	return index, len(weights) > 1 && slices.Contains(names, index)
 }
 
 func hasSuffixAny(s string, suffixes []string) bool {
@@ -371,7 +380,7 @@ func (e *Executor) fetchHFMetadata(ctx context.Context, st *engineState, hubDir,
 		slog.Info("model lookup failed; the first start is sized from free GPU memory", "model", id, "err", err)
 		return hfPendingModel{}, false
 	}
-	files, weights, err := selectHFFiles(siblings)
+	files, weights, err := selectHFFiles(siblings, nil)
 	if err != nil {
 		slog.Info("model lookup found no loadable weights", "model", id, "err", err)
 		return hfPendingModel{}, false
@@ -392,7 +401,42 @@ func (e *Executor) fetchHFMetadata(ctx context.Context, st *engineState, hubDir,
 	if !ok {
 		return hfPendingModel{}, false
 	}
+	// The index came down with the metadata. Size only the shards it lists, the
+	// copy vLLM loads.
+	if index, ok := hfSiblingIndex(siblings); ok {
+		shards, read := hfReadIndex(filepath.Join(snapshot, index))
+		if read {
+			_, weights, err = selectHFFiles(siblings, shards)
+		}
+		if !read || err != nil {
+			slog.Info("the model's weight index could not be read; the first start is sized from free GPU memory", "model", id, "err", err)
+			return hfPendingModel{}, false
+		}
+	}
 	return hfPendingModel{snapshot: snapshot, weights: weights}, true
+}
+
+// fetchHFIndex downloads a repository's weight index ahead of its weights, as
+// vLLM's own download does, and returns the shards it lists, so a Pull fetches
+// only the copy of the weights vLLM loads.
+func (e *Executor) fetchHFIndex(ctx context.Context, tool, hubDir, id, index string, env hfEnv) ([]string, error) {
+	cmd := exec.CommandContext(ctx, tool, "download", id, index, "--cache-dir", hubDir)
+	cmd.Env = os.Environ()
+	for key, value := range env.toolEnv() {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("download the weight index: %s", lastLines(string(out), hfErrorTail))
+	}
+	snapshot, ok := hfSnapshotDir(hubDir, id, "main")
+	if !ok {
+		return nil, errors.New("the weight index did not reach the cache")
+	}
+	shards, ok := hfReadIndex(filepath.Join(snapshot, index))
+	if !ok {
+		return nil, errors.New("the repository's weight index could not be read")
+	}
+	return shards, nil
 }
 
 // hfBlobBytes totals what is in a repository's blobs directory, which holds
@@ -466,7 +510,13 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 	if err != nil {
 		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}
-	files, _, err := selectHFFiles(siblings)
+	files, _, err := selectHFFiles(siblings, nil)
+	if index, ok := hfSiblingIndex(siblings); err == nil && ok {
+		var shards []string
+		if shards, err = e.fetchHFIndex(ctx, tool, hubDir, id, index, env); err == nil {
+			files, _, err = selectHFFiles(siblings, shards)
+		}
+	}
 	if err == nil {
 		err = checkHFLayout(files)
 	}
@@ -519,7 +569,10 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 				tailMu.Unlock()
 				return nil, fmt.Errorf("pull %q: download failed: %s", id, reason)
 			}
-			if _, complete := completeHFModel(repoDir); !complete {
+			// The revision just downloaded must be complete; another, older
+			// complete revision in the cache would not make it so.
+			snapshot, ok := hfSnapshotDir(hubDir, id, "main")
+			if _, _, complete := completeHFSnapshot(snapshot); !ok || !complete {
 				return nil, fmt.Errorf("pull %q: the download finished but the model in the cache is incomplete", id)
 			}
 			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: id})

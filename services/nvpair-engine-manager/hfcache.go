@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,19 +96,12 @@ func scanHFCache(dir string) ([]hfCacheModel, error) {
 }
 
 // completeHFModel reports whether any snapshot of the repository at repoPath is
-// a complete, servable model, and the size of the first such snapshot.
+// a complete, servable model, and the size of the first such snapshot. Each
+// snapshot is judged on its own files: huggingface_hub links a file into a
+// snapshot only once its blob is whole, so a download still running, for
+// another revision or a file vLLM does not load, cannot make a complete
+// snapshot look incomplete, or an incomplete one look complete.
 func completeHFModel(repoPath string) (int64, bool) {
-	if blobs, err := os.ReadDir(filepath.Join(repoPath, "blobs")); err == nil {
-		finished := map[string]bool{}
-		for _, blob := range blobs {
-			finished[blob.Name()] = true
-		}
-		for _, blob := range blobs {
-			if blobStillDownloading(blob.Name(), finished) {
-				return 0, false
-			}
-		}
-	}
 	snapshots, err := os.ReadDir(filepath.Join(repoPath, "snapshots"))
 	if err != nil {
 		return 0, false
@@ -121,19 +115,6 @@ func completeHFModel(repoPath string) (int64, bool) {
 		}
 	}
 	return 0, false
-}
-
-// blobStillDownloading reports whether a blob is a download in progress. hf
-// writes a file as <hash>[.<tag>].incomplete and renames it to <hash> once it
-// is whole. A download that was interrupted and later finished by a retry
-// leaves the old .incomplete file beside the finished blob; that one is stale,
-// and counting it would hide a complete model for good.
-func blobStillDownloading(name string, blobs map[string]bool) bool {
-	if !strings.HasSuffix(name, ".incomplete") {
-		return false
-	}
-	hash, _, _ := strings.Cut(strings.TrimSuffix(name, ".incomplete"), ".")
-	return !blobs[hash]
 }
 
 // completeHFSnapshot reports whether the snapshot at path is a complete,
@@ -157,7 +138,10 @@ func completeHFSnapshot(path string) (disk, weightBytes int64, ok bool) {
 		files[entry.Name()] = info.Size()
 	}
 	weights, index, ok := hfSnapshotWeights(files)
-	if !ok || !hfWeightsComplete(path, files, weights, index) {
+	if ok {
+		weights, ok = hfCompleteWeights(path, files, weights, index)
+	}
+	if !ok {
 		return 0, 0, false
 	}
 
@@ -171,43 +155,88 @@ func completeHFSnapshot(path string) (disk, weightBytes int64, ok bool) {
 }
 
 // hfSnapshotWeights finds, in a snapshot's top-level files, the weights vLLM
-// will load and the index that lists them. ok is false when the snapshot lacks
-// the config or tokenizer vLLM needs, or has no weights.
+// will load, before an index narrows them, and the index that lists them. ok
+// is false when the snapshot lacks the config or tokenizer vLLM needs, or has
+// no weights.
 func hfSnapshotWeights(files map[string]int64) (weights []string, index string, ok bool) {
-	// vLLM loads Mistral-format consolidated weights in preference to the
-	// Hugging Face-format shards whenever a snapshot has any, with their own
-	// index, params.json and the Mistral tokenizer (tekken.json or
-	// tokenizer.model.v*). Completeness is judged on what vLLM will load.
-	mistralFormat := false
-	for name := range files {
-		if isConsolidatedWeights(name) {
-			mistralFormat = true
-		}
-	}
-	index = "model.safetensors.index.json"
-	if mistralFormat {
-		index = "consolidated.safetensors.index.json"
+	names := slices.Sorted(maps.Keys(files))
+	weights, index = hfChooseWeights(names)
+	// A Mistral-format model is loaded with params.json and the Mistral
+	// tokenizer (tekken.json or tokenizer.model.v*), and may lack config.json.
+	if index == hfMistralIndex {
 		if !hasAny(files, []string{"config.json", "params.json"}) || (!hasMistralTokenizer(files) && !hasAny(files, hfTokenizerFiles)) {
 			return nil, "", false
 		}
 	} else if _, ok := files["config.json"]; !ok || !hasAny(files, hfTokenizerFiles) {
 		return nil, "", false
 	}
+	return weights, index, len(weights) > 0
+}
 
-	for name := range files {
-		if strings.HasSuffix(name, ".safetensors") && isConsolidatedWeights(name) == mistralFormat {
-			weights = append(weights, name)
-		}
+const (
+	hfIndex        = "model.safetensors.index.json"
+	hfMistralIndex = "consolidated.safetensors.index.json"
+)
+
+// hfTrainingFiles are files a training run leaves beside the weights, which
+// vLLM never loads (its filter_files_not_needed_for_inference).
+var hfTrainingFiles = []string{"training_args.bin", "optimizer.bin", "optimizer.pt", "scheduler.pt", "scaler.pt"}
+
+// hfChooseWeights picks, from a model's file names, the weight files vLLM's
+// default loader reads, before an index narrows them, and the name of the index
+// that would list them. It is the one rule Pull, the first-start metadata fetch
+// and the cache all use, and follows vLLM's DefaultModelLoader._prepare_weights
+// with load_format auto: Mistral-format consolidated*.safetensors whenever there
+// are any, else *.safetensors, else *.bin, else *.pt, never training state, and
+// only files at the top of the repository, the only place vLLM looks.
+func hfChooseWeights(names []string) (weights []string, index string) {
+	top := slices.DeleteFunc(slices.Clone(names), func(name string) bool { return strings.Contains(name, "/") })
+	if slices.ContainsFunc(top, isConsolidatedWeights) {
+		return slices.DeleteFunc(top, func(name string) bool { return !isConsolidatedWeights(name) }), hfMistralIndex
 	}
-	if len(weights) == 0 {
-		// Repositories that ship both formats are counted once, by safetensors.
-		for name := range files {
-			if strings.HasPrefix(name, "pytorch_model") && strings.HasSuffix(name, ".bin") {
+	for _, suffix := range []string{".safetensors", ".bin", ".pt"} {
+		for _, name := range top {
+			if strings.HasSuffix(name, suffix) && !slices.Contains(hfTrainingFiles, name) {
 				weights = append(weights, name)
 			}
 		}
+		if len(weights) > 0 {
+			break
+		}
 	}
-	return weights, index, len(weights) > 0
+	return weights, hfIndex
+}
+
+// hfIndexedWeights narrows weights to the shards an index lists, as vLLM's
+// filter_duplicate_safetensors_files does. A repository can ship the same
+// weights twice, sharded and as one file, and vLLM loads only the indexed copy,
+// so only that copy is downloaded and counted. ok is false when the index lists
+// a shard that is not among weights.
+func hfIndexedWeights(weights, shards []string) ([]string, bool) {
+	for _, shard := range shards {
+		if !slices.Contains(weights, shard) {
+			return nil, false
+		}
+	}
+	return slices.DeleteFunc(slices.Clone(weights), func(name string) bool { return !slices.Contains(shards, name) }), true
+}
+
+// hfReadIndex returns the shard files the safetensors index at path lists,
+// sorted. ok is false when it cannot be read or lists none.
+func hfReadIndex(path string) ([]string, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var index struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if json.Unmarshal(raw, &index) != nil || len(index.WeightMap) == 0 {
+		return nil, false
+	}
+	shards := slices.Collect(maps.Values(index.WeightMap))
+	slices.Sort(shards)
+	return slices.Compact(shards), true
 }
 
 // checkHFLayout refuses, before anything is downloaded, a repository whose
@@ -231,68 +260,58 @@ func checkHFLayout(names []string) error {
 	if _, hasIndex := files[index]; hasIndex {
 		return nil
 	}
-	if !hfWeightsComplete("", files, weights, index) {
+	if _, complete := hfCompleteWeights("", files, weights, index); !complete {
 		return fmt.Errorf("the repository's %d weight files are not one model vLLM can load: there is no index listing them, and they are not numbered shards of one set", len(weights))
 	}
 	return nil
 }
 
-// hfWeightsComplete verifies the weight files are all present. An index file
-// lists every shard; without one, only shard names like
-// model-00003-of-00004.safetensors say how many there should be, and several
-// unnumbered weight files cannot be told apart from an interrupted download.
-// This is the same rule vLLM applies: it loads the index's shards when there is
-// an index, and otherwise every weight file it finds.
-func hfWeightsComplete(snapshot string, files map[string]int64, weights []string, index string) bool {
+// hfCompleteWeights verifies the weight files are all present, and returns
+// those vLLM loads. An index lists every shard, and only the indexed files are
+// loaded; without one, only shard names like model-00003-of-00004.safetensors
+// say how many there should be, and several unnumbered weight files cannot be
+// told apart from an interrupted download. This is the rule vLLM applies: it
+// loads the index's shards when there is an index, and otherwise every weight
+// file it finds.
+func hfCompleteWeights(snapshot string, files map[string]int64, weights []string, index string) ([]string, bool) {
 	if _, ok := files[index]; ok {
-		raw, err := os.ReadFile(filepath.Join(snapshot, index))
-		if err != nil {
-			return false
+		shards, ok := hfReadIndex(filepath.Join(snapshot, index))
+		if !ok {
+			return nil, false
 		}
-		var index struct {
-			WeightMap map[string]string `json:"weight_map"`
-		}
-		if json.Unmarshal(raw, &index) != nil || len(index.WeightMap) == 0 {
-			return false
-		}
-		for _, shard := range index.WeightMap {
-			if _, ok := files[shard]; !ok {
-				return false
-			}
-		}
-		return true
+		return hfIndexedWeights(weights, shards)
 	}
 	// One unnumbered weight file is the whole model. A file named as one shard
 	// of several is not, however many files there are.
 	if len(weights) == 1 && !hfShardRe.MatchString(weights[0]) {
-		return true
+		return weights, true
 	}
 	seen := map[int]bool{}
 	total := 0
 	for _, name := range weights {
 		match := hfShardRe.FindStringSubmatch(name)
 		if match == nil {
-			return false
+			return nil, false
 		}
 		n, _ := strconv.Atoi(match[1])
 		count, _ := strconv.Atoi(match[2])
 		if total != 0 && count != total {
-			return false
+			return nil, false
 		}
 		total = count
 		seen[n] = true
 	}
 	if total == 0 {
-		return false
+		return nil, false
 	}
 	// Shard numbers come from file names, so count alone is not enough:
 	// -00000-of-00002 and -00001-of-00002 are two files with shard 2 missing.
 	for n := 1; n <= total; n++ {
 		if !seen[n] {
-			return false
+			return nil, false
 		}
 	}
-	return true
+	return weights, true
 }
 
 // hasMistralTokenizer reports whether a snapshot has the tokenizer vLLM uses

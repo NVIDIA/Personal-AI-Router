@@ -29,29 +29,50 @@ func TestSelectHFFiles_KeepsOnlyTheWeightsVLLMCanLoad(t *testing.T) {
 			file("model.safetensors.index.json", 5),
 			file("pytorch_model.bin", 2000),
 			file("original/params.json", 5), file("model.gguf", 3000), file("-rf", 1), file("../escape", 1),
-		})
+		}, nil)
 
 		require.NoError(t, err)
 		assert.Equal(t, []string{"config.json", "tokenizer.json", "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors", "model.safetensors.index.json"}, files)
 		assert.Equal(t, int64(1000+1000), total)
 	})
 	t.Run("a repo with only pickle weights keeps them", func(t *testing.T) {
-		files, _, err := selectHFFiles([]hfSibling{file("config.json", 1), file("pytorch_model.bin", 9)})
+		files, _, err := selectHFFiles([]hfSibling{file("config.json", 1), file("pytorch_model.bin", 9)}, nil)
 
 		require.NoError(t, err)
 		assert.Contains(t, files, "pytorch_model.bin")
 	})
 	t.Run("only a consolidated file is kept when nothing else exists", func(t *testing.T) {
-		files, _, err := selectHFFiles([]hfSibling{file("params.json", 1), file("consolidated.safetensors", 9)})
+		files, _, err := selectHFFiles([]hfSibling{file("params.json", 1), file("consolidated.safetensors", 9)}, nil)
 
 		require.NoError(t, err)
 		assert.Contains(t, files, "consolidated.safetensors")
 	})
 	t.Run("a GGUF-only repo is refused", func(t *testing.T) {
-		_, _, err := selectHFFiles([]hfSibling{file("config.json", 1), file("m.gguf", 9)})
+		_, _, err := selectHFFiles([]hfSibling{file("config.json", 1), file("m.gguf", 9)}, nil)
 
 		assert.Error(t, err, "nothing in the repo is something vLLM can load")
 	})
+}
+
+// A repository can ship the same weights twice, as indexed shards and as one
+// file. vLLM loads only what the index lists, so only that copy is downloaded
+// and counted.
+func TestSelectHFFiles_KeepsOnlyTheShardsTheIndexLists(t *testing.T) {
+	file := func(name string, size int64) hfSibling { return hfSibling{RFilename: name, Size: size} }
+	siblings := []hfSibling{
+		file("config.json", 1), file("tokenizer.json", 1),
+		file("model-00001-of-00002.safetensors", 24), file("model-00002-of-00002.safetensors", 24),
+		file("model.safetensors.index.json", 1), file("model.safetensors", 48),
+	}
+
+	files, total, err := selectHFFiles(siblings, []string{"model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"config.json", "tokenizer.json", "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors", "model.safetensors.index.json"}, files)
+	assert.Equal(t, int64(48), total)
+
+	_, _, err = selectHFFiles(siblings, []string{"model-00001-of-00002.safetensors", "missing.safetensors"})
+	assert.ErrorContains(t, err, "index lists files the repository does not have")
 }
 
 func TestSelectHFFiles_DownloadsTheMistralFormatWeightsVLLMLoads(t *testing.T) {
@@ -61,7 +82,7 @@ func TestSelectHFFiles_DownloadsTheMistralFormatWeightsVLLMLoads(t *testing.T) {
 	file := func(name string, size int64) hfSibling { return hfSibling{RFilename: name, Size: size} }
 	test := func(name string, siblings []hfSibling, wantFiles []string, wantWeights int64) {
 		t.Run(name, func(t *testing.T) {
-			files, total, err := selectHFFiles(siblings)
+			files, total, err := selectHFFiles(siblings, nil)
 
 			require.NoError(t, err)
 			assert.Equal(t, wantFiles, files)
@@ -142,7 +163,8 @@ func hfPullFixture(t *testing.T, siblings []hfSibling, apiStatus int, script str
 // The fake tool lays out a Hugging Face cache the way `hf download` does.
 const fakeHFDownload = `
 repo="$(echo "$@" | sed 's/.*--cache-dir //')/models--Qwen--Test"
-mkdir -p "$repo/blobs" "$repo/snapshots/abc"
+mkdir -p "$repo/blobs" "$repo/snapshots/abc" "$repo/refs"
+printf abc > "$repo/refs/main"
 printf '{}' > "$repo/blobs/c"; printf '{}' > "$repo/blobs/t"; head -c 1000 /dev/zero > "$repo/blobs/w"
 ln -s ../../blobs/c "$repo/snapshots/abc/config.json"
 ln -s ../../blobs/t "$repo/snapshots/abc/tokenizer.json"
@@ -168,6 +190,72 @@ func TestPullHFModel_DownloadsAndReportsSuccess(t *testing.T) {
 	assert.Equal(t, "Qwen/Test", models[0].ID)
 	require.NotEmpty(t, *events)
 	assert.Equal(t, ProgressEvent{Stage: "success", Percent: 100}, (*events)[len(*events)-1])
+}
+
+// fakeHFDownloadWithIndex records each run's files and lays them out in the
+// cache, writing FAKE_HF_INDEX as the index.
+const fakeHFDownloadWithIndex = `
+id=$2; shift 2
+files=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cache-dir) dir=$2; shift 2 ;;
+    *) files="$files $1"; shift ;;
+  esac
+done
+echo "$files" >> "$(dirname "$dir")/hf-calls"
+repo="$dir/models--$(echo "$id" | sed 's#/#--#g')"
+mkdir -p "$repo/refs" "$repo/blobs" "$repo/snapshots/abc"
+printf abc > "$repo/refs/main"
+for f in $files; do
+  case "$f" in
+    model.safetensors.index.json) printf '%s' "$FAKE_HF_INDEX" > "$repo/blobs/$f" ;;
+    *) printf '{}' > "$repo/blobs/$f" ;;
+  esac
+  ln -sf "../../blobs/$f" "$repo/snapshots/abc/$f"
+done
+`
+
+// A Pull reads the index first, as vLLM's own download does, and then fetches
+// only the shards it lists, not a second copy of the same weights.
+func TestPullHFModel_DownloadsOnlyTheShardsTheIndexLists(t *testing.T) {
+	file := func(name string) hfSibling { return hfSibling{RFilename: name, Size: 10} }
+	e, hub, _ := hfPullFixture(t, []hfSibling{
+		file("config.json"), file("tokenizer.json"),
+		file("model-00001-of-00002.safetensors"), file("model-00002-of-00002.safetensors"),
+		file("model.safetensors.index.json"), file("model.safetensors"),
+	}, http.StatusOK, fakeHFDownloadWithIndex)
+	t.Setenv("FAKE_HF_INDEX", `{"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}`)
+
+	res, err := e.PullModelStream(t.Context(), "vllm", "Qwen/Test", nil)
+
+	require.NoError(t, err)
+	var result struct {
+		Bytes int64 `json:"bytes"`
+	}
+	require.NoError(t, json.Unmarshal(res, &result))
+	assert.Equal(t, int64(50), result.Bytes, "config, tokenizer, two shards and the index")
+	calls, err := os.ReadFile(filepath.Join(filepath.Dir(hub), "hf-calls"))
+	require.NoError(t, err)
+	assert.Equal(t, " model.safetensors.index.json\n config.json tokenizer.json model-00001-of-00002.safetensors model-00002-of-00002.safetensors model.safetensors.index.json\n", string(calls))
+}
+
+// Pull checks the revision it downloaded. An older complete revision of the
+// same model in the cache does not make a broken download a success.
+func TestPullHFModel_ReportsAnIncompleteDownloadBesideAnOlderCompleteRevision(t *testing.T) {
+	e, hub, _ := hfPullFixture(t, oneFileRepo, http.StatusOK, `
+dir="$(echo "$@" | sed 's/.*--cache-dir //')"
+repo="$dir/models--Qwen--Test"
+mkdir -p "$repo/snapshots/new" "$repo/refs"
+printf new > "$repo/refs/main"
+ln -sf ../../blobs/blob-config.json "$repo/snapshots/new/config.json"
+ln -sf ../../blobs/blob-tokenizer.json "$repo/snapshots/new/tokenizer.json"
+`)
+	writeHFRepo(t, hub, "Qwen/Test", llmFiles(map[string]string{"model.safetensors": "w"}))
+
+	_, err := e.PullModelStream(t.Context(), "vllm", "Qwen/Test", nil)
+
+	assert.ErrorContains(t, err, "the model in the cache is incomplete")
 }
 
 func TestPullHFModel_ReportsTheToolsOwnMessageWhenTheDownloadFails(t *testing.T) {

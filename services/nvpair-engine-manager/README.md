@@ -163,7 +163,14 @@ ships each model in two formats of the same size; vLLM's default
 `load_format auto` loads Mistral's own `consolidated*.safetensors` with
 `params.json` and `tekken.json` whenever a repository has them, so only those
 weights are downloaded and the Hugging Face-format `model-*.safetensors` are
-skipped. The cache listing judges such a model complete on those files. Other formats in the
+skipped. A repository that ships its weights both as indexed shards and as one
+file (`model.safetensors` beside `model-0000N-of-…` and
+`model.safetensors.index.json`) has its index downloaded first, as vLLM's own
+download does, and only the shards it lists are fetched; vLLM loads only those
+(`filter_duplicate_safetensors_files`). Pull, the first-start size lookup and
+the cache listing choose weights with one rule, so a first start and a cached
+start size a model alike, and launch sizing counts only the indexed shards.
+The cache listing judges such a model complete on those files. Other formats in the
 repository are not fetched; a full `hf download` adds them to the same cache
 without downloading the rest again. Progress is the
 share of those bytes that has landed in the cache, a download that makes no

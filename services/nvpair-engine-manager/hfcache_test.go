@@ -105,8 +105,9 @@ func TestScanHFCache_ListsCompleteModelsOnly(t *testing.T) {
 	writeHFRepo(t, cache, "bartowski/model-GGUF", map[string]string{"model-Q4_K_M.gguf": "w"})
 	writeHFRepo(t, cache, "no/config", map[string]string{"tokenizer.json": "{}", "model.safetensors": "w"})
 	writeHFRepo(t, cache, "no/weights", llmFiles(nil))
+	// Weights still downloading are not linked into the snapshot yet.
 	writeHFRepo(t, cache, "downloading/now", llmFiles(map[string]string{
-		"model.safetensors": "w", "blob.incomplete": "partial",
+		"model.safetensors.incomplete": "partial",
 	}))
 
 	// A file whose blob is gone is not a file we have.
@@ -412,6 +413,25 @@ func TestScanHFCache_JudgesAMistralFormatModelOnTheWeightsVLLMLoads(t *testing.T
 		map[string]string{"params.json": "{}", "consolidated.safetensors": "w"}, false)
 }
 
+// A repository can ship the same weights twice, as indexed shards and as one
+// file. vLLM loads only the shards the index lists, so launch sizing counts
+// only those, while the cache list still reports everything on disk.
+func TestCompleteHFSnapshot_CountsOnlyTheWeightsTheIndexLists(t *testing.T) {
+	cache := t.TempDir()
+	repo := writeHFRepo(t, cache, "org/both-copies", llmFiles(map[string]string{
+		"model.safetensors.index.json":     `{"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}`,
+		"model-00001-of-00002.safetensors": "11111",
+		"model-00002-of-00002.safetensors": "22222",
+		"model.safetensors":                "the same ten",
+	}))
+
+	disk, weights, ok := completeHFSnapshot(filepath.Join(repo, "snapshots", "abc123"))
+
+	require.True(t, ok)
+	assert.Equal(t, int64(5+5), weights, "the indexed shards only")
+	assert.Greater(t, disk, int64(5+5+12), "everything on disk")
+}
+
 // A settings save made while hf cache rm runs waits for the delete, so a failed
 // delete puts back only its own change and the save is kept.
 func TestDeleteHFModel_KeepsASettingsSaveMadeWhileTheToolRuns(t *testing.T) {
@@ -541,23 +561,39 @@ func TestDeleteHFModel_RunsTheToolWithTheEnginesHuggingFaceSettings(t *testing.T
 	assert.Equal(t, "engine-token", string(token))
 }
 
-// A download that was interrupted and then finished by a retry leaves the old
-// .incomplete file beside the finished blob. The model is complete and listed;
-// it used to stay hidden, and so could not be deleted from the model list.
-func TestScanHFCache_ListsAModelFinishedAfterAnInterruptedDownload(t *testing.T) {
-	test := func(name string, finished bool, want []string) {
+// A complete snapshot stays listed whatever else in the repository is still
+// downloading or was interrupted: huggingface_hub links a file into a snapshot
+// only once it is whole, so each snapshot is judged on its own files. A
+// leftover or running download used to hide the whole repository, and so a
+// usable model could not be loaded or deleted from the model list.
+func TestScanHFCache_ListsACompleteSnapshotBesideAnUnfinishedDownload(t *testing.T) {
+	test := func(name string, unfinished func(t *testing.T, repo string), want []string) {
 		t.Run(name, func(t *testing.T) {
 			cache := t.TempDir()
 			repo := writeHFRepo(t, cache, "org/model", llmFiles(map[string]string{"model.safetensors": "w"}))
-			hash := "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
-			if finished {
-				require.NoError(t, os.WriteFile(filepath.Join(repo, "blobs", hash), []byte("w"), 0o644))
-			}
-			require.NoError(t, os.WriteFile(filepath.Join(repo, "blobs", hash+".86b892a3.incomplete"), []byte("part"), 0o644))
+			unfinished(t, repo)
 
 			assert.Equal(t, want, scannedIDs(t, cache))
 		})
 	}
-	test("the retry finished the file", true, []string{"org/model"})
-	test("the file is still downloading", false, []string{})
+	partial := func(t *testing.T, repo, name string) {
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "blobs", name), []byte("part"), 0o644))
+	}
+	test("a leftover from an interrupted download the retry finished", func(t *testing.T, repo string) {
+		partial(t, repo, "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c.86b892a3.incomplete")
+	}, []string{"org/model"})
+	test("a file vLLM does not load, still downloading", func(t *testing.T, repo string) {
+		partial(t, repo, "0123abcd.incomplete")
+	}, []string{"org/model"})
+	test("another revision, still downloading", func(t *testing.T, repo string) {
+		newer := filepath.Join(repo, "snapshots", "def456")
+		require.NoError(t, os.MkdirAll(newer, 0o755))
+		require.NoError(t, os.Symlink(filepath.Join(repo, "blobs", "blob-config.json"), filepath.Join(newer, "config.json")))
+		require.NoError(t, os.Symlink(filepath.Join(repo, "blobs", "blob-tokenizer.json"), filepath.Join(newer, "tokenizer.json")))
+		partial(t, repo, "fedcba98.incomplete")
+	}, []string{"org/model"})
+	test("only an unfinished revision", func(t *testing.T, repo string) {
+		require.NoError(t, os.Remove(filepath.Join(repo, "snapshots", "abc123", "model.safetensors")))
+		partial(t, repo, "fedcba98.incomplete")
+	}, []string{})
 }

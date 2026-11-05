@@ -570,7 +570,11 @@ repo="$dir/models--$(echo "$id" | sed 's#/#--#g')"
 mkdir -p "$repo/refs" "$repo/snapshots/fetched1"
 printf fetched1 > "$repo/refs/$rev"
 for f in $files; do
-  if [ "$f" = config.json ]; then printf '%s' "$FAKE_HF_CONFIG" > "$repo/snapshots/fetched1/$f"; else printf '{}' > "$repo/snapshots/fetched1/$f"; fi
+  case "$f" in
+    config.json) printf '%s' "$FAKE_HF_CONFIG" > "$repo/snapshots/fetched1/$f" ;;
+    model.safetensors.index.json) printf '%s' "$FAKE_HF_INDEX" > "$repo/snapshots/fetched1/$f" ;;
+    *) printf '{}' > "$repo/snapshots/fetched1/$f" ;;
+  esac
 done
 `
 
@@ -595,6 +599,7 @@ func newHFFetch(t *testing.T, status int, siblings []hfSibling) *hfFetch {
 	hfDefaultEndpoint = api.URL
 	t.Cleanup(func() { hfDefaultEndpoint = old })
 	t.Setenv("FAKE_HF_CONFIG", qwen35_4BConfig)
+	t.Setenv("FAKE_HF_INDEX", "")
 	t.Setenv("HF_HUB_OFFLINE", "")
 	t.Setenv("TRANSFORMERS_OFFLINE", "")
 	t.Setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "")
@@ -653,6 +658,26 @@ func TestFetchHFMetadata_PutsTheSmallFilesInTheCacheAtTheRevision(t *testing.T) 
 	native, layers, _, _, _ := cfg.text().kvShape()
 	assert.Equal(t, int64(262144), native)
 	assert.Equal(t, int64(32), layers)
+}
+
+// A repository that ships its weights twice, as indexed shards and as one
+// file, is sized by the shards its index lists, the copy vLLM loads.
+func TestFetchHFMetadata_SizesOnlyTheWeightsTheIndexLists(t *testing.T) {
+	f := newHFFetch(t, http.StatusOK, []hfSibling{
+		{RFilename: "config.json", Size: 2_000},
+		{RFilename: "tokenizer.json", Size: 8_000_000},
+		{RFilename: "model-00001-of-00002.safetensors", Size: 5_000_000_000},
+		{RFilename: "model-00002-of-00002.safetensors", Size: 4_440_000_000},
+		{RFilename: "model.safetensors.index.json", Size: 30_000},
+		{RFilename: "model.safetensors", Size: 9_440_000_000}, // the same weights again
+	})
+	t.Setenv("FAKE_HF_INDEX", `{"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}`)
+
+	pending, ok := f.fetch(t, "Qwen/Qwen3.5-4B", "main")
+
+	require.True(t, ok)
+	assert.Equal(t, int64(5_000_000_000+4_440_000_000), pending.weights, "the indexed shards, not both copies")
+	assert.Equal(t, []string{"Qwen/Qwen3.5-4B config.json tokenizer.json model.safetensors.index.json --revision main"}, f.toolCalls(t), "the index comes down with the metadata")
 }
 
 // HF_HUB_OFFLINE or HF_TOKEN set in the engine's launch settings applies to

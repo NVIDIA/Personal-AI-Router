@@ -257,9 +257,12 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
 - **`hf_cache`** — list the models in a Hugging Face hub cache directory.
   `hf_cache.dir` is templated, normally `"{hf_hub_cache}"`. The reply is
   `{"data":[{"id","size"}]}`, so `result: {"array": "data", "field": "id"}`
-  turns it into a model list. A repository is listed when its snapshot is a
-  complete download holding a config, a tokenizer and weights: vision-only and
-  GGUF-only repositories, interrupted downloads (`.incomplete` blobs, shards
+  turns it into a model list. A repository is listed when any of its snapshots
+  is a complete download holding a config, a tokenizer and the weights vLLM
+  loads, judged on that snapshot's own files (huggingface_hub links a file into
+  a snapshot only once it is whole, so a download still running for another
+  revision or an unused file does not hide a complete one): vision-only and
+  GGUF-only repositories, unfinished downloads (weights not yet linked, shards
   missing from the index or from a `-0000N-of-0000M` set, a lone shard of a
   larger set, several unnumbered weight files with no index) and links whose
   blob is gone are left out. `size` is what the snapshot takes on disk. This is
