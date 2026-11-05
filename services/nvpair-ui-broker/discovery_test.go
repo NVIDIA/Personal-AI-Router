@@ -15,6 +15,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/noderec"
+	"nvpair-ui-broker/relay"
 )
 
 // An unverified discovery can claim the same UUID as a paired peer. Its preview
@@ -376,35 +377,64 @@ func TestScannerNodeInfo_RejectsSnapshotsForReplacedRecord(t *testing.T) {
 	assert.Equal(t, []noderec.NodeInfoEvent{value}, received)
 }
 
-func TestScannerProcess_RejectsQueuedEventsAfterPinReplacement(t *testing.T) {
-	dir := t.TempDir()
-	clustertrusttest.Join(t, dir, "cluster", "self", "peer")
-	mesh := clustertrust.Open(dir)
-	store := newDiscoveryStore()
-	scanner := &scannerProcess{store: store, mesh: mesh}
-	node := noderec.DirectoryNode{HostUUID: "peer", DiscoveryRecordID: mesh.PeerRecordID("peer"), IdentityVerification: noderec.IdentityPinned, Trusted: true}
-	send := func(method string, node noderec.DirectoryNode) {
-		t.Helper()
-		params, err := json.Marshal(noderec.NodeEvent{Node: node})
-		require.NoError(t, err)
-		scanner.handleNotify(method, params)
+// The client store keys verified peers by host UUID, while the worker relay
+// keys them by proof-bound record ID. Pin replacement must retire the old relay
+// entry even when client-store cleanup and scanner notifications arrive in
+// different orders.
+func TestScannerProcess_PinReplacementRetiresSupersededRecords(t *testing.T) {
+	test := func(name string, clearStoreFirst bool) {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			clustertrusttest.Join(t, dir, "cluster", "self", "peer")
+			mesh := clustertrust.Open(dir)
+			store := newDiscoveryStore()
+			relayDir := relay.NewDirectory()
+			var telemetryRemoved int
+			scanner := &scannerProcess{
+				store: store, mesh: mesh, relayDir: relayDir,
+				onTelemetryRemoved: func(string) { telemetryRemoved++ },
+			}
+			node := noderec.DirectoryNode{HostUUID: "peer", DiscoveryRecordID: mesh.PeerRecordID("peer"), IdentityVerification: noderec.IdentityPinned, Trusted: true}
+			send := func(method string, node noderec.DirectoryNode) {
+				t.Helper()
+				params, err := json.Marshal(noderec.NodeEvent{Node: node})
+				require.NoError(t, err)
+				scanner.handleNotify(method, params)
+			}
+			send(noderec.NotifyNodeDiscovered, node)
+			require.True(t, store.verifiedSource("peer", sourceScanner))
+			if clearStoreFirst {
+				// Leave the relay entry behind to verify cleanup when the client
+				// store can no longer identify the superseded record.
+				store.Remove("peer", sourceScanner)
+			}
+			clustertrusttest.WritePeerPin(t, dir, "peer")
+
+			send(noderec.NotifyNodeUpdated, node)
+			assert.Equal(t, !clearStoreFirst, store.verifiedSource("peer", sourceScanner), "a queued old update must leave source ownership unchanged")
+			mesh.Refresh()
+			replacement := node
+			replacement.DiscoveryRecordID = mesh.PeerRecordID("peer")
+			send(noderec.NotifyNodeDiscovered, replacement)
+			if !clearStoreFirst {
+				// Replacement must retire the old relay entry without waiting for
+				// its removal notification to arrive.
+				assert.Equal(t, []noderec.DirectoryNode{replacement}, relayDir.Snapshot(""))
+			}
+			removedBefore := telemetryRemoved
+			// This delayed removal owns only the old relay ID. It must not
+			// remove the replacement's host row or clear its telemetry.
+			send(noderec.NotifyNodeRemoved, node)
+
+			snapshot := store.Snapshot()
+			require.Len(t, snapshot, 1)
+			assert.Equal(t, replacement.DiscoveryRecordID, snapshot[0].DiscoveryRecordID)
+			assert.Equal(t, []noderec.DirectoryNode{replacement}, relayDir.Snapshot(""))
+			assert.Equal(t, removedBefore, telemetryRemoved, "an old removal must preserve the replacement's telemetry")
+		})
 	}
-	send(noderec.NotifyNodeDiscovered, node)
-	require.True(t, store.verifiedSource("peer", sourceScanner))
-	store.Remove("peer", sourceScanner)
-	clustertrusttest.WritePeerPin(t, dir, "peer")
-
-	send(noderec.NotifyNodeUpdated, node)
-	assert.Empty(t, store.Snapshot())
-	mesh.Refresh()
-	replacement := node
-	replacement.DiscoveryRecordID = mesh.PeerRecordID("peer")
-	send(noderec.NotifyNodeDiscovered, replacement)
-	send(noderec.NotifyNodeRemoved, node)
-
-	snapshot := store.Snapshot()
-	require.Len(t, snapshot, 1)
-	assert.Equal(t, replacement.DiscoveryRecordID, snapshot[0].DiscoveryRecordID)
+	test("replacement arrives before source cleanup", false)
+	test("source cleanup precedes replacement", true)
 }
 
 // Store a verified peer alongside an unverified advertisement copying its UUID

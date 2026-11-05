@@ -753,12 +753,12 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 		if method != noderec.NotifyNodeRemoved && !s.currentRecord(ev.Node.HostUUID, ev.Node.DiscoveryRecordID, ev.Node.IdentityVerification) {
 			return
 		}
-		if method == noderec.NotifyNodeRemoved && s.store != nil {
-			// A delayed removal for a previous pin must not remove its newly
-			// authenticated replacement under the same canonical host UUID.
-			if node, present := s.store.sourceNode(directoryToEnriched(ev.Node).storeKey(), sourceScanner); present && node.DiscoveryRecordID != ev.Node.DiscoveryRecordID {
-				return
-			}
+		incoming := directoryToEnriched(ev.Node)
+		key := incoming.storeKey()
+		var previous EnrichedNode
+		var hadPrevious bool
+		if s.store != nil {
+			previous, hadPrevious = s.store.sourceNode(key, sourceScanner)
 		}
 		if method != noderec.NotifyNodeRemoved && s.onLocalNode != nil {
 			s.onLocalNode(ev.Node)
@@ -767,7 +767,19 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 		// services) and the client-facing store (discovery:get-nodes /
 		// nodes-changed, merging manual nodes), carrying the trusted annotation.
 		if s.relayDir != nil {
+			if method != noderec.NotifyNodeRemoved && hadPrevious && previous.DiscoveryRecordID != ev.Node.DiscoveryRecordID {
+				// The client store replaces verified peers by host UUID, while the
+				// relay needs the previous record ID explicitly retired first.
+				s.relayDir.Apply(noderec.NotifyNodeRemoved, noderec.DirectoryNode{
+					HostUUID: previous.HostUUID, DiscoveryRecordID: previous.DiscoveryRecordID,
+				})
+			}
 			s.relayDir.Apply(method, ev.Node)
+		}
+		if method == noderec.NotifyNodeRemoved && hadPrevious && previous.DiscoveryRecordID != ev.Node.DiscoveryRecordID {
+			// Retire a delayed removal's relay entry while preserving the current
+			// host record and its telemetry and workloads.
+			return
 		}
 		verified := ev.Node.IdentityVerification == noderec.IdentityLocal || ev.Node.IdentityVerification == noderec.IdentityPinned
 		if method == noderec.NotifyNodeRemoved && verified && s.onTelemetryRemoved != nil {
@@ -784,15 +796,14 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 				// present, so we must not fail its jobs. Identify the departed
 				// node by HostUUID, the value workloads are stamped/keyed with,
 				// not the display hostname.
-				if s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner) && verified && s.onNodeLost != nil {
+				if s.store.Remove(key, sourceScanner) && verified && s.onNodeLost != nil {
 					s.onNodeLost(ev.Node.HostUUID, ev.Node.Name)
 				}
 			} else {
-				previous, present := s.store.sourceNode(directoryToEnriched(ev.Node).storeKey(), sourceScanner)
-				if present && previous.DiscoveryRecordID != ev.Node.DiscoveryRecordID && s.onTelemetryRemoved != nil {
+				if hadPrevious && previous.DiscoveryRecordID != ev.Node.DiscoveryRecordID && s.onTelemetryRemoved != nil {
 					s.onTelemetryRemoved(ev.Node.HostUUID)
 				}
-				s.store.Upsert(directoryToEnriched(ev.Node), sourceScanner)
+				s.store.Upsert(incoming, sourceScanner)
 			}
 		}
 	case noderec.NotifyNodeTelemetry:

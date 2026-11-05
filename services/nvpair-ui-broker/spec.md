@@ -455,6 +455,10 @@ Each verified record ID is valid only for this node's current identity and
 cluster membership, and for the peer's exact approved certificate. Leaving and
 rejoining the cluster, or changing the peer's certificate pin, invalidates cached
 data and in-flight results tied to that ID.
+Replacing a verified scanner record withdraws its previous record ID from the
+worker relay before publishing the replacement. A delayed removal still retires
+its own relay entry, while the current host record, telemetry, and workloads
+remain intact.
 
 #### Hardware snapshots and previews
 
