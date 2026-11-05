@@ -36,6 +36,8 @@ export interface IWindowApi {
     isFirstRun(): Promise<boolean>
     /** Persist that first-run onboarding completed or was explicitly dismissed. */
     completeFirstRun(): Promise<void>
+    getHideDockIconInBackground(): Promise<boolean>
+    setHideDockIconInBackground(enabled: boolean): Promise<void>
     /**
      * Whether wipe will auto-relaunch (packaged) or quit and require a manual
      * restart (unpackaged / `electron-vite dev`).
@@ -57,6 +59,10 @@ export const windowApi: IWindowApi = {
     isFirstRun: () => invokeAndUnwrap<boolean>(ipcRenderer.invoke('settings:is-first-run')),
     completeFirstRun: () =>
         invokeAndUnwrap<void>(ipcRenderer.invoke('settings:complete-first-run')),
+    getHideDockIconInBackground: () =>
+        invokeAndUnwrap<boolean>(ipcRenderer.invoke('settings:get-hide-dock-icon')),
+    setHideDockIconInBackground: enabled =>
+        invokeAndUnwrap<void>(ipcRenderer.invoke('settings:set-hide-dock-icon', { enabled })),
     getWipePlan: () =>
         invokeAndUnwrap<{ willRelaunch: boolean }>(ipcRenderer.invoke('app:get-wipe-plan')),
     wipeAppData: () => invokeAndUnwrap<void>(ipcRenderer.invoke('app:wipe-data'))
