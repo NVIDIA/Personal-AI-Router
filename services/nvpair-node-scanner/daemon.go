@@ -1621,10 +1621,7 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 
 	age := int64(0)
 	if info.TelemetryValid {
-		age = info.MSSince
-		if age < 0 {
-			age = 0
-		}
+		age = max(info.MSSince, 0)
 		elapsed := time.Since(startedAt).Milliseconds()
 		if elapsed > maxTelemetryAge-age {
 			age = maxTelemetryAge

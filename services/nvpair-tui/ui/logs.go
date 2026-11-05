@@ -87,7 +87,7 @@ func (v *logsView) Init() tea.Cmd { return nil }
 func (v *logsView) SetSize(w, h int) {
 	v.width, v.height = w, h
 	// One row for the status/filter footer.
-	vh := clampWidth(h-1, 1)
+	vh := max(h-1, 1)
 	if !v.ready {
 		v.vp = viewport.New(w, vh)
 		v.ready = true

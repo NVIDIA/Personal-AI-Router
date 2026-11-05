@@ -492,15 +492,12 @@ const maxEngineRows = 6
 // status line — the exact failure the render-time sizing was introduced to make
 // impossible.
 func (d *nodeDetail) sizeEngineTable() {
-	want := clampWidth(len(d.engines)+tableHeaderRows, 1+tableHeaderRows)
-	if want > maxEngineRows {
-		want = maxEngineRows
-	}
+	want := min(max(len(d.engines)+tableHeaderRows, 1+tableHeaderRows), maxEngineRows)
 	// Everything the engine table must not crowd out: the fixed furniture, the
 	// hardware block, and a minimal models table.
 	reserved := detailChromeRows + d.hardwareHeight() + (1 + tableHeaderRows)
 	if room := d.height - reserved; room < want {
-		want = clampWidth(room, 1+tableHeaderRows)
+		want = max(room, 1+tableHeaderRows)
 	}
 	d.engineTable.SetHeight(want)
 }
@@ -520,7 +517,7 @@ func (d *nodeDetail) hardwareHeight() int {
 	// Must agree with hardwareBlock, including its cap — a height that ignored
 	// the cap would over-reserve, and one that ignored the truncation line would
 	// under-reserve by exactly the row that says devices were dropped.
-	lines := clampWidth(len(d.telemetry.summary()), 1)
+	lines := max(len(d.telemetry.summary()), 1)
 	if max := d.hardwareBudget(); lines > max {
 		return max
 	}
@@ -1938,7 +1935,7 @@ func (d *nodeDetail) hardwareBlock() string {
 // than an exhaustive device inventory — the operator came here to act on an
 // engine, not to audit GPUs.
 func (d *nodeDetail) hardwareBudget() int {
-	return clampWidth(d.height/2, 1)
+	return max(d.height/2, 1)
 }
 
 // emptyModelsHint explains an empty list in terms of the thing to fix, since

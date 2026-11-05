@@ -389,10 +389,7 @@ func clampLines(s string, n int) string {
 // than wrapping it, so the tail was lost either way.
 func indentWrap(s string, width int) string {
 	const indent = "  "
-	limit := width - lipgloss.Width(indent)
-	if limit < 8 {
-		limit = 8
-	}
+	limit := max(width-lipgloss.Width(indent), 8)
 
 	var out []string
 	line := ""

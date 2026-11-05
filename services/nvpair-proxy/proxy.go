@@ -571,10 +571,7 @@ func backoffFor(dispatches int, remaining time.Duration) time.Duration {
 	if len(retryBackoff) == 0 || remaining <= 0 {
 		return 0
 	}
-	i := dispatches - 1
-	if i < 0 {
-		i = 0
-	}
+	i := max(dispatches-1, 0)
 	if i >= len(retryBackoff) {
 		i = len(retryBackoff) - 1
 	}

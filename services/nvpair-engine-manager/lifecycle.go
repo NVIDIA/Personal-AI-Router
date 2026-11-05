@@ -568,10 +568,7 @@ func stopGrace(rt Runtime) time.Duration {
 // hung stop command can never wedge StopAll now that the broker no longer
 // force-kills engine-manager on a timeout.
 func commandStopTimeout(rt Runtime) time.Duration {
-	t := stopGrace(rt)
-	if t < 5*time.Second {
-		t = 5 * time.Second
-	}
+	t := max(stopGrace(rt), 5*time.Second)
 	return t
 }
 
