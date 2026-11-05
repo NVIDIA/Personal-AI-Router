@@ -53,6 +53,32 @@ export interface ServiceVersions {
 }
 
 /**
+ * Desktop startup preferences, persisted in `ui-config.json` and mirrored into
+ * the OS login item.
+ */
+export interface StartupSettings {
+    /** Register the app as an OS login item so it starts when the user signs in. */
+    launchAtLogin: boolean
+    /**
+     * Whether the login item is registered with the hidden-start argument. Only
+     * a login-item launch is affected; starting the app by hand always opens the
+     * Overview window.
+     */
+    startHidden: boolean
+}
+
+/**
+ * {@link StartupSettings} as the main process reports them, plus whether this OS
+ * has a login item Electron can write. `launchAtLogin` is what the OS reports
+ * where a login item is managed, so it reads off for an entry the user disabled
+ * in Task Manager or System Settings; elsewhere it is the stored preference.
+ */
+export interface StartupState extends StartupSettings {
+    /** False on Linux, where autostart is not Electron's to manage. */
+    supported: boolean
+}
+
+/**
  * Synchronous preload bootstrap payload.
  *
  * Reserved for preload bootstrap data. The modular Electron bridge currently
@@ -89,6 +115,16 @@ export interface IpcChannelMap {
     'service:restart': { request: void; response: void }
     'service:get-log-level': { request: void; response: ModularLogLevel }
     'service:set-log-level': { request: { level: ModularLogLevel }; response: void }
+    /** Startup switches as the OS reports them, plus whether this OS supports a login item. */
+    'service:get-startup': { request: void; response: StartupState }
+    /**
+     * Persist the given startup preferences and write the OS login item for the
+     * switch that changed. Omitted keys keep their stored value, and a request
+     * that repeats what the switch showed writes nothing. The response is read
+     * back from the OS, so the UI reconciles against what it took rather than
+     * against what was asked for.
+     */
+    'service:set-startup': { request: Partial<StartupSettings>; response: StartupState }
     'service:open-log-file': { request: void; response: void }
     'service:open-log-dir': { request: void; response: void }
     'service:get-versions': { request: void; response: ServiceVersions }

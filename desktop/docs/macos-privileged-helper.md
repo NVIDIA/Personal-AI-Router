@@ -42,7 +42,11 @@ flowchart TD
 `runMacPrivilegedSetup()` runs once per launch:
 
 1. **First run only** — show an info dialog explaining macOS will ask to approve a
-   background helper.
+   background helper. A launch that starts hidden (the login item with **Start
+   minimized to tray** on) skips the whole first-run setup, because nobody is looking
+   at the app to read the explanation: `macHelperSetupComplete` stays false, and the
+   next launch that opens the window runs it. Once setup is complete, a hidden launch
+   still runs step 2, which has no UI.
 2. Call `macPrivilege.ensureConfigured(firstTime)`, which (no UI):
     - reads `nvpair-helper-ctl status`;
     - if the daemon version != app version (in-place Squirrel.Mac update),
