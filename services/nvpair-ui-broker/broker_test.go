@@ -64,6 +64,83 @@ func TestBrokerDiscoverySubscribe_IncludesCachedLocalHardware(t *testing.T) {
 	assert.Equal(t, info, *nodes[0].Info)
 }
 
+func TestBrokerDiscovery_ClientRequestsDoNotWaitForBlockedWorker(t *testing.T) {
+	test := func(name, method string) {
+		t.Run(name, func(t *testing.T) {
+			var output bytes.Buffer
+			broker := &Broker{codec: NewCodec(&output), store: newDiscoveryStore()}
+			directory := relay.NewDirectory()
+			blocked, release := make(chan struct{}), make(chan struct{})
+			// A relay subscriber stands in for a worker that stopped reading stdin.
+			directory.Subscribe(&relay.Subscriber{Send: func([]noderec.DirectoryNode) {
+				close(blocked)
+				<-release
+			}})
+			scanner := &scannerProcess{store: broker.store, stateMu: &broker.discoveryMu, relayDir: directory}
+			var handlers sync.WaitGroup
+			t.Cleanup(func() {
+				close(release)
+				handlers.Wait()
+			})
+			params, err := json.Marshal(noderec.NodeEvent{Node: noderec.DirectoryNode{
+				HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+			}})
+			require.NoError(t, err)
+			handlers.Add(1)
+			go func() {
+				defer handlers.Done()
+				scanner.handleNotify(noderec.NotifyNodeUpdated, params)
+			}()
+			select {
+			case <-blocked:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "the worker delivery did not start")
+			}
+
+			requestID := json.RawMessage(`1`)
+			answered := make(chan struct{})
+			handlers.Add(1)
+			go func() {
+				defer handlers.Done()
+				broker.handleMessage(&Message{JSONRPC: "2.0", ID: &requestID, Method: method})
+				close(answered)
+			}()
+			select {
+			case <-answered:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "client request waited for the blocked worker")
+			}
+
+			codec := NewCodec(&output)
+			response, err := codec.Read()
+			require.NoError(t, err)
+			require.NotNil(t, response.ID)
+			assert.Equal(t, requestID, *response.ID)
+			assert.Nil(t, response.Error)
+		})
+	}
+	test("query", "discovery:get-nodes")
+	test("subscription", "discovery:subscribe")
+}
+
+func TestDiscoveryHardware_IncludesClientWriteWaitInSampleAge(t *testing.T) {
+	var output bytes.Buffer
+	broker := &Broker{codec: NewCodec(&output)}
+	wait := holdDiscoveryNotification(t, &broker.subMu, func() {
+		broker.pushNodeInfo(noderec.NodeInfoEvent{
+			HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+			Info: noderec.NodeInfo{HostUUID: "self", TelemetryValid: true, MSSince: 137},
+		})
+	})
+
+	message, err := NewCodec(&output).Read()
+	require.NoError(t, err)
+	assert.Equal(t, noderec.NotifyNodeInfo, message.Method)
+	var sample noderec.NodeInfoEvent
+	require.NoError(t, json.Unmarshal(message.Params, &sample))
+	assert.GreaterOrEqual(t, sample.Info.MSSince, int64(137)+wait.Milliseconds())
+}
+
 func TestLocalNodeInfo_PreservesAgeAcrossDiscoveryLockWait(t *testing.T) {
 	broker := &Broker{nodeID: "self"}
 	handler := broker.nodeInfoNotificationHandler(0)
@@ -97,8 +174,8 @@ func TestManualTelemetry_IncludesDiscoveryLockWaitInSampleAge(t *testing.T) {
 	assert.GreaterOrEqual(t, samples[0].MSSince, int64(137)+wait.Milliseconds())
 }
 
-// Hold a received notification behind discovery processing, as happens while a
-// manual update waits for proxy replies. This wait must contribute to sample age.
+// Hold a received notification behind processing or client writes. This wait
+// must contribute to sample age.
 func holdDiscoveryNotification(t *testing.T, mu sync.Locker, notify func()) time.Duration {
 	t.Helper()
 	const minimumWait = 50 * time.Millisecond

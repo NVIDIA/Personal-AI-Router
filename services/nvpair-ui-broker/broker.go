@@ -286,11 +286,9 @@ type Broker struct {
 	// goroutine, so it needs no lock.
 	teardownPhases []teardownStep
 
-	// subMu guards subscribed. The discovery:nodes-changed stream is
-	// opt-in: emitNodesChanged (called on the scanner-event goroutine)
-	// reads this flag while the discovery:subscribe / discovery:unsubscribe
-	// handlers (called on the read-loop goroutine) flip it, so the two
-	// goroutines need a lock between them.
+	// subMu guards subscribed and orders client discovery replies, baselines,
+	// and hardware pushes. Client requests use the store's own snapshot lock,
+	// independently of discoveryMu, so blocked worker delivery cannot stall them.
 	subMu      sync.Mutex
 	subscribed bool
 
@@ -644,11 +642,7 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 		func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
 		func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
 		b.updateLocalPeerMetadata,
-		func(value noderec.NodeInfoEvent) {
-			if err := b.codec.Notify(noderec.NotifyNodeInfo, value); err != nil {
-				slog.Warn("forward node-info failed", "host_uuid", value.HostUUID, "err", err)
-			}
-		},
+		b.pushNodeInfo,
 		b.clusterDirArgs()...,
 	)
 	if err != nil {
@@ -2424,9 +2418,8 @@ func (b *Broker) emitNodesChanged() {
 	b.fanDiscoveryToScheduler()
 
 	b.subMu.Lock()
-	subscribed := b.subscribed
-	b.subMu.Unlock()
-	if !subscribed {
+	defer b.subMu.Unlock()
+	if !b.subscribed {
 		return
 	}
 	b.pushNodesChanged()
@@ -2478,9 +2471,22 @@ func (b *Broker) schedulingSnapshot() []AvailableNode {
 // subscription flag, so callers must gate on it themselves (the hook
 // path via emitNodesChanged; the subscribe path because it has just set
 // the flag true and wants an immediate baseline regardless of races).
+// The caller holds subMu through snapshot capture and the client write.
 func (b *Broker) pushNodesChanged() {
 	if err := b.codec.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
 		slog.Warn("emit discovery:nodes-changed failed", "err", err)
+	}
+}
+
+// pushNodeInfo orders an accepted hardware update with client discovery
+// snapshots. Include time waiting for the client writer in the sample's age.
+func (b *Broker) pushNodeInfo(value noderec.NodeInfoEvent) {
+	receivedAt := time.Now()
+	b.subMu.Lock()
+	defer b.subMu.Unlock()
+	value.Info = value.Info.Aged(time.Since(receivedAt))
+	if err := b.codec.Notify(noderec.NotifyNodeInfo, value); err != nil {
+		slog.Warn("forward node-info failed", "host_uuid", value.HostUUID, "err", err)
 	}
 }
 
@@ -3360,8 +3366,8 @@ func (b *Broker) handleMessage(msg *Message) {
 		}
 
 	case "discovery:get-nodes":
-		b.discoveryMu.Lock()
-		defer b.discoveryMu.Unlock()
+		b.subMu.Lock()
+		defer b.subMu.Unlock()
 		if err := b.codec.Respond(msg.ID, GetNodesResult{Nodes: b.store.Snapshot()}); err != nil {
 			log.Printf("failed to respond to discovery:get-nodes: %v", err)
 		}
@@ -3369,12 +3375,10 @@ func (b *Broker) handleMessage(msg *Message) {
 	case "discovery:subscribe":
 		// Serialize the baseline with hardware pushes so an older snapshot
 		// cannot follow a newer sample and overwrite it in the client.
-		b.discoveryMu.Lock()
-		defer b.discoveryMu.Unlock()
 		b.subMu.Lock()
+		defer b.subMu.Unlock()
 		wasSubscribed := b.subscribed
 		b.subscribed = true
-		b.subMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
 			log.Printf("failed to respond to discovery:subscribe: %v", err)
 		}
@@ -3389,8 +3393,8 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "discovery:unsubscribe":
 		b.subMu.Lock()
+		defer b.subMu.Unlock()
 		b.subscribed = false
-		b.subMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
 			log.Printf("failed to respond to discovery:unsubscribe: %v", err)
 		}

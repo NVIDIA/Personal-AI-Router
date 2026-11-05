@@ -234,8 +234,9 @@ func (sn storedNode) source(source nodeSource) *EnrichedNode {
 
 // discoveryStore is the broker's live view of network-discovered nodes.
 // It's the single source of truth that "discovery:get-nodes" reads from.
-// The broker's discoveryMu serializes worker updates, trust changes, and snapshot
-// replies. The store's own lock protects access to its records.
+// The broker's discoveryMu serializes worker updates and trust changes. The
+// store's own lock protects its records and snapshot capture. Client replies
+// and hardware pushes are ordered separately by the broker's subMu.
 //
 // onChange, when non-nil, is invoked after every Upsert and Remove
 // AFTER the write lock has been released. It's the broker's hook for
