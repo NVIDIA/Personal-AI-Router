@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -248,9 +249,11 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
-	launch = applyAutoLaunch(engine, rt, launch, vars["models_dir"], func(id string) (hfModelConfig, int64, bool) {
-		return e.lookupHFModel(ctx, id)
+	hub := filepath.Join(expandPath(vars["models_dir"]), "hub")
+	fetch := onceHFFetch(func(id, revision string) (hfPendingModel, bool) {
+		return e.fetchHFMetadata(ctx, st, hub, id, revision, hfEnv(launch.Env))
 	})
+	launch = applyAutoLaunch(ctx, engine, rt, launch, vars["models_dir"], fetch)
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()

@@ -416,54 +416,52 @@ func TestModelsResult_OmitsDownloadedForAnEngineThatAdvertisesItsList(t *testing
 	assert.Nil(t, ex.ModelsResult(ctx).DownloadedByEngine)
 }
 
-func TestInventoryFieldValidation(t *testing.T) {
-	tests := []struct {
-		name       string
-		advertised string
-		action     string
-		field      string
-		wantErr    bool
-	}{
-		{name: "loaded_models of a loaded-only engine", advertised: advertisedModelsLoaded, action: "loaded_models", field: "root"},
-		{name: "engine that advertises its list", advertised: advertisedModelsList, action: "loaded_models", field: "root", wantErr: true},
-		{name: "action other than loaded_models", advertised: advertisedModelsLoaded, action: "list_models", field: "root", wantErr: true},
-		{name: "object path instead of a field name", advertised: advertisedModelsLoaded, action: "loaded_models", field: "a.b", wantErr: true},
+func TestInventoryField_IsOnlyForTheLoadedModelsOfALoadedOnlyEngine(t *testing.T) {
+	manifestWith := func(advertised, action, field string) *Manifest {
+		m := loadedActionManifest()
+		m.AdvertisedModels = advertised
+		act := m.Actions[action]
+		result := *act.Result
+		result.InventoryField = field
+		act.Result = &result
+		m.Actions[action] = act
+		return m
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := loadedActionManifest()
-			m.AdvertisedModels = tt.advertised
-			act := m.Actions[tt.action]
-			result := *act.Result
-			result.InventoryField = tt.field
-			act.Result = &result
-			m.Actions[tt.action] = act
-
-			err := m.Validate()
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
+	accept := func(name, advertised, action, field string) {
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, manifestWith(advertised, action, field).Validate())
 		})
 	}
+	reject := func(name, advertised, action, field string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, manifestWith(advertised, action, field).Validate())
+		})
+	}
+	accept("loaded_models of a loaded-only engine", advertisedModelsLoaded, "loaded_models", "root")
+	reject("engine that advertises its list", advertisedModelsList, "loaded_models", "root")
+	reject("action other than loaded_models", advertisedModelsLoaded, "list_models", "root")
+	reject("object path instead of a field name", advertisedModelsLoaded, "loaded_models", "a.b")
 }
 
-func TestAdvertisedModelsValidation(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
-	m.AdvertisedModels = advertisedModelsLoaded
-	if err := m.Validate(); err == nil {
-		t.Error(`advertised_models "loaded" without a loaded_models action was accepted`)
+func TestAdvertisedModels_AcceptsOnlyKnownValuesItCanServe(t *testing.T) {
+	accept := func(name, value string) {
+		t.Run(name, func(t *testing.T) {
+			m := loadedActionManifest()
+			m.AdvertisedModels = value
+
+			assert.NoError(t, m.Validate())
+		})
 	}
-	m.AdvertisedModels = "everything"
-	if err := m.Validate(); err == nil {
-		t.Error("an unknown advertised_models value was accepted")
+	reject := func(name string, m *Manifest, value string) {
+		t.Run(name, func(t *testing.T) {
+			m.AdvertisedModels = value
+
+			assert.Error(t, m.Validate())
+		})
 	}
-	m = loadedActionManifest()
-	for _, value := range []string{"", advertisedModelsList, advertisedModelsLoaded} {
-		m.AdvertisedModels = value
-		if err := m.Validate(); err != nil {
-			t.Errorf("advertised_models %q rejected: %v", value, err)
-		}
-	}
+	accept("unset", "")
+	accept("the list", advertisedModelsList)
+	accept("loaded, with a loaded_models action", advertisedModelsLoaded)
+	reject("loaded without a loaded_models action", testEngineManifest(fakeEngineBin), advertisedModelsLoaded)
+	reject("an unknown value", testEngineManifest(fakeEngineBin), "everything")
 }

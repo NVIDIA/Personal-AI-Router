@@ -89,6 +89,24 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	// Like vLLM, a server started with --model serves that one model and no
+	// other.
+	for i, arg := range os.Args[1:] {
+		served, ok := strings.CutPrefix(arg, "--model=")
+		if arg == "--model" && i+2 < len(os.Args) {
+			served, ok = os.Args[i+2], true
+		}
+		if ok {
+			models = map[string]bool{served: true}
+			loaded = map[string]bool{served: true}
+		}
+	}
+	// FAKE_SERVE_MODEL stands in for a server someone started on another model
+	// than the saved launch arguments name, which PAIR then adopted.
+	if served := os.Getenv("FAKE_SERVE_MODEL"); served != "" {
+		models = map[string]bool{served: true}
+		loaded = map[string]bool{served: true}
+	}
 	if path := os.Getenv("FAKE_START_LOG"); path != "" {
 		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {

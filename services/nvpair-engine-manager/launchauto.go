@@ -114,15 +114,19 @@ func parseMeminfo(text string) (total, available int64, ok bool) {
 // It runs after the user's launch has been validated and never changes an
 // argument the user supplied, so anything set in the engine settings wins.
 //
-// lookup, when not nil, supplies a model that is not in the cache yet, so a first
-// start that downloads it is sized for it too.
-func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir string, lookup hfModelLookup) launchCommand {
+// fetch, when not nil, prepares a model that is not in the cache yet, so a
+// first start that downloads it is configured for it too. It is called at most
+// once.
+func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command launchCommand, modelsDir string, fetch hfModelFetcher) launchCommand {
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
 	}
+	if fetch != nil {
+		fetch = onceHFFetch(fetch)
+	}
 	hub := filepath.Join(expandPath(modelsDir), "hub")
-	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), lookup)
-	if tools, parser := planToolCalling(command.Args, hub, command.Bin); len(tools) > 0 {
+	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch)
+	if tools, parser := planToolCalling(ctx, command.Args, hub, command.Bin, fetch); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
 	}
@@ -136,6 +140,23 @@ func applyAutoLaunch(engine string, rt Runtime, command launchCommand, modelsDir
 	slog.Info("engine launch adjusted for the model and GPU", "engine", engine, "added_args", extra, "reason", note)
 	command.Args = append(append([]string{}, command.Args...), extra...)
 	return command
+}
+
+// onceHFFetch returns fetch, called at most once: sizing and the tool-call
+// parser read the same model.
+func onceHFFetch(fetch hfModelFetcher) hfModelFetcher {
+	var (
+		done    bool
+		pending hfPendingModel
+		ok      bool
+	)
+	return func(id, revision string) (hfPendingModel, bool) {
+		if !done {
+			done = true
+			pending, ok = fetch(id, revision)
+		}
+		return pending, ok
+	}
 }
 
 // planMaxNumSeqs returns --max-num-seqs with the manifest's limit, unless the
@@ -248,33 +269,100 @@ func (c hfModelConfig) dtypeBytes() int64 {
 	return 2
 }
 
-// readHFModel finds the model's complete snapshot in the Hugging Face hub cache
-// and returns its parsed config and size on disk.
-func readHFModel(hubDir, id string) (cfg hfModelConfig, size int64, ok bool) {
-	_, cfg, size, ok = findHFSnapshot(hubDir, id)
-	return cfg, size, ok
+// hfRevision is the revision vLLM loads for the model in args: its --revision,
+// or main.
+func hfRevision(args []string) string {
+	if revision, ok := launchFlagValue(args, "--revision"); ok && revision != "" {
+		return revision
+	}
+	return "main"
 }
 
-// findHFSnapshot is readHFModel that also returns the snapshot's directory.
-func findHFSnapshot(hubDir, id string) (dir string, cfg hfModelConfig, size int64, ok bool) {
+// hfSnapshotDir returns the snapshot directory the hub cache holds for a model
+// at a revision, resolved the way huggingface_hub resolves it: a branch or tag
+// is read from refs/, a commit hash names its snapshot directly, and no other
+// snapshot is taken in its place.
+func hfSnapshotDir(hubDir, id, revision string) (string, bool) {
 	repo := filepath.Join(hubDir, "models--"+strings.ReplaceAll(id, "/", "--"))
-	snapshots, err := os.ReadDir(filepath.Join(repo, "snapshots"))
-	if err != nil {
-		return "", cfg, 0, false
+	commit := revision
+	if ref, err := os.ReadFile(filepath.Join(repo, "refs", revision)); err == nil {
+		commit = strings.TrimSpace(string(ref))
 	}
-	for _, snapshot := range snapshots {
-		dir := filepath.Join(repo, "snapshots", snapshot.Name())
-		bytes, complete := completeHFSnapshot(dir)
-		if !complete {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
-		if err != nil || json.Unmarshal(raw, &cfg) != nil {
-			continue
-		}
-		return dir, cfg, bytes, true
+	snapshots := filepath.Join(repo, "snapshots")
+	dir := filepath.Join(snapshots, commit)
+	if rel, err := filepath.Rel(snapshots, dir); err != nil || rel != commit || strings.ContainsAny(commit, `/\`) {
+		return "", false
 	}
-	return "", cfg, 0, false
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", false
+	}
+	return dir, true
+}
+
+// hfLaunchModel is the model a launch serves, as auto-configuration reads it.
+type hfLaunchModel struct {
+	snapshot string
+	cfg      hfModelConfig
+	// weights is the bytes of the weights vLLM loads.
+	weights int64
+	// cached is false for a model this start downloads.
+	cached bool
+}
+
+// findLaunchModel reads the model args name at the revision vLLM will load:
+// from its complete snapshot in the cache, or, when that revision is not fully
+// cached, from fetch, which prepares a model this start is about to download.
+// It reports false when neither has the model's config, and auto-configuration
+// then leaves the model alone rather than read another revision's.
+func findLaunchModel(args []string, hubDir string, fetch hfModelFetcher) (hfLaunchModel, bool) {
+	model, ok := launchFlagValue(args, "--model")
+	if !ok || model == "" {
+		return hfLaunchModel{}, false
+	}
+	revision := hfRevision(args)
+	if dir, ok := hfSnapshotDir(hubDir, model, revision); ok {
+		if _, weights, complete := completeHFSnapshot(dir); complete {
+			cfg, ok := readHFConfig(dir)
+			return hfLaunchModel{snapshot: dir, cfg: cfg, weights: weights, cached: true}, ok
+		}
+	}
+	if fetch == nil {
+		return hfLaunchModel{}, false
+	}
+	pending, ok := fetch(model, revision)
+	if !ok {
+		return hfLaunchModel{}, false
+	}
+	cfg, ok := readHFConfig(pending.snapshot)
+	return hfLaunchModel{snapshot: pending.snapshot, cfg: cfg, weights: pending.weights}, ok
+}
+
+func readHFConfig(snapshot string) (hfModelConfig, bool) {
+	var cfg hfModelConfig
+	raw, err := os.ReadFile(filepath.Join(snapshot, "config.json"))
+	if err != nil || json.Unmarshal(raw, &cfg) != nil {
+		return cfg, false
+	}
+	return cfg, true
+}
+
+// autoGPUShare returns the --gpu-memory-utilization for a launch that needs
+// need bytes on a GPU with total and free bytes, and whether to set one. The
+// share is never below minAutoUtil, so a small model still gets room to work,
+// but what is free, less freeMargin for the desktop and other engines, caps it
+// before that floor: claiming more than is free fails the launch. The cap
+// rounds down so the request never exceeds what is free. Nothing is set when
+// nothing is free beyond the margin; vLLM then reports the shortfall itself.
+func autoGPUShare(need, total, free int64) (float64, bool) {
+	if total <= 0 {
+		return 0, false
+	}
+	capShare := math.Floor(math.Min(maxAutoUtil, float64(free-freeMargin)/float64(total))*100) / 100
+	if capShare <= 0 {
+		return 0, false
+	}
+	share := math.Max(minAutoUtil, math.Ceil(float64(need)/float64(total)*100)/100)
+	return math.Min(share, capShare), true
 }
 
 // planHFContext decides the extra vLLM arguments for the model named in args:
@@ -289,18 +377,18 @@ func findHFSnapshot(hubDir, id string) (dir string, cfg hfModelConfig, size int6
 // A flag the user already set is never touched. Tensor or pipeline parallel
 // launches are left alone entirely: sizing them needs more than GPU 0.
 //
-// A model that is not in the cache yet is sized from lookup, when given, since
-// vLLM downloads it on this start. Without its size and config, only the memory
+// The model is read at the revision vLLM loads (see findLaunchModel). One that
+// is not in the cache yet is read through fetch, when given, since vLLM
+// downloads it on this start. Without its size and config, only the memory
 // share is bounded.
-func planHFContext(args []string, hubDir string, target int64, lookup hfModelLookup) (extra []string, note string) {
+func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetcher) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
 	}
 	if _, ok := launchFlagValue(args, "--pipeline-parallel-size"); ok {
 		return nil, ""
 	}
-	model, ok := launchFlagValue(args, "--model")
-	if !ok || model == "" {
+	if model, ok := launchFlagValue(args, "--model"); !ok || model == "" {
 		return nil, ""
 	}
 	_, userLen := launchFlagValue(args, "--max-model-len")
@@ -312,26 +400,24 @@ func planHFContext(args []string, hubDir string, target int64, lookup hfModelLoo
 	}
 
 	total, free, haveGPU := gpuMemory()
-	cfg, weights, known := readHFModel(hubDir, model)
-	source := ""
-	if !known && lookup != nil {
-		if cfg, weights, known = lookup(model); known {
-			source = "model not in cache, sized from Hugging Face"
-		}
-	}
+	found, known := findLaunchModel(args, hubDir, fetch)
 	if !known {
-		// Not downloaded yet and the lookup could not answer, so its size and
+		// Not downloaded yet and Hugging Face could not answer, so its size and
 		// limits are unknown. Give it what is free, less the margin left for the
 		// desktop and other engines, under the same ceiling as a sized launch.
 		// vLLM's own default would claim memory that is already in use.
 		if haveGPU && !userUtil && !userKV {
-			util := math.Floor(math.Min(maxAutoUtil, float64(free-freeMargin)/float64(total))*100) / 100
-			if util >= minAutoUtil {
+			if util, ok := autoGPUShare(total, total, free); ok {
 				return []string{"--gpu-memory-utilization", fmt.Sprintf("%.2f", util)}, "model not in cache and not looked up"
 			}
 		}
 		return nil, ""
 	}
+	source := ""
+	if !found.cached {
+		source = "model not in cache, sized from Hugging Face"
+	}
+	cfg, weights := found.cfg, found.weights
 	text := cfg.text()
 	native, layers, kvHeads, headDim, ok := text.kvShape()
 	if !ok {
@@ -399,12 +485,7 @@ func planHFContext(args []string, hubDir string, target int64, lookup hfModelLoo
 				}
 			}
 		}
-		need := fixed + perToken*utilCtx
-		util := math.Ceil(float64(need)/float64(total)*100) / 100
-		// The cap rounds down so the request never exceeds what is free.
-		capUtil := math.Floor(math.Min(maxAutoUtil, float64(free-freeMargin)/float64(total))*100) / 100
-		util = math.Max(minAutoUtil, math.Min(util, capUtil))
-		if util >= minAutoUtil {
+		if util, ok := autoGPUShare(fixed+perToken*utilCtx, total, free); ok {
 			extra = append(extra, "--gpu-memory-utilization", fmt.Sprintf("%.2f", util))
 		}
 	}
@@ -425,7 +506,11 @@ func planHFContext(args []string, hubDir string, target int64, lookup hfModelLoo
 // format (see detectToolParser), so no list of model families is kept here. A
 // flag the user already supplied is left as given. When no parser fits, nothing
 // is added, and vLLM answers requests that ask for tool calls with its own error.
-func planToolCalling(args []string, hubDir, bin string) (extra []string, parser string) {
+//
+// The model's tokenizer and chat template are read at the revision vLLM loads.
+// For a model this start downloads, fetch puts them in the cache first, so the
+// first start is configured the same way as every later one.
+func planToolCalling(ctx context.Context, args []string, hubDir, bin string, fetch hfModelFetcher) (extra []string, parser string) {
 	model, ok := launchFlagValue(args, "--model")
 	if !ok || model == "" {
 		return nil, ""
@@ -438,11 +523,11 @@ func planToolCalling(args []string, hubDir, bin string) (extra []string, parser 
 	if hasParser {
 		return []string{"--enable-auto-tool-choice"}, userParser
 	}
-	snapshot, _, _, cached := findHFSnapshot(hubDir, model)
-	if !cached {
+	found, ok := findLaunchModel(args, hubDir, fetch)
+	if !ok {
 		return nil, ""
 	}
-	parser, matched, err := detectToolParser(bin, snapshot)
+	parser, matched, err := detectToolParser(ctx, bin, found.snapshot)
 	if err != nil {
 		slog.Warn("could not work out the model's tool-call format; vLLM will refuse requests that ask for tool calls", "model", model, "err", err)
 		return nil, ""

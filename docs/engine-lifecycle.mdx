@@ -111,7 +111,8 @@ When you install an engine, consider the following:
   and searches Hugging Face (open safetensors chat models) and downloads the one
   you pick into the same cache, with a progress bar, even while vLLM is stopped;
   it then appears in the list. **Delete** removes a cached model from disk,
-  except the one vLLM has loaded (eject it first). Deleting the model a stopped
+  except the one vLLM has loaded (eject it first); if vLLM cannot say which model
+  it is serving, nothing is deleted. Deleting the model a stopped
   or ejected vLLM is set to serve leaves it with no model selected, and
   **Start** refuses with an error until you **Load** another model. **Eject**
   stops vLLM, which frees all of its GPU memory (vLLM cannot drop its model and

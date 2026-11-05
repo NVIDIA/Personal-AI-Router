@@ -260,8 +260,9 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   turns it into a model list. A repository is listed when its snapshot is a
   complete download holding a config, a tokenizer and weights: vision-only and
   GGUF-only repositories, interrupted downloads (`.incomplete` blobs, shards
-  missing from the index or from a `-0000N-of-0000M` set, several unnumbered
-  weight files with no index) and links whose blob is gone are left out. This is
+  missing from the index or from a `-0000N-of-0000M` set, a lone shard of a
+  larger set, several unnumbered weight files with no index) and links whose
+  blob is gone are left out. `size` is what the snapshot takes on disk. This is
   a check on file layout, not on whether the engine supports the architecture.
   A missing directory is an empty cache. Does **not** require the engine to be
   running. With `"delete": true` and `"tool": "hf"` (only as `delete_model`),
@@ -269,7 +270,10 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   running `<tool> cache rm model/<org/name> --cache-dir <dir> --yes`, the tool
   being looked up beside the engine binary as for `hf_pull`. The Hugging Face
   tool keeps shared-store files another repository still links to and takes the
-  store's locks; the manager adds the served-model checks around it.
+  store's locks; the manager adds the served-model checks around it, asking a
+  running engine which model it serves through its `loaded_models` action and
+  refusing when it cannot tell, and holds the engine's operation lock until the
+  removal and any rollback of the launch settings are done.
 - **`launch_model`** — switch the model an engine serves, for an engine with no
   load call because the model is a launch argument (vLLM). `launch_model.flag`
   names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
@@ -278,7 +282,8 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   settings exactly as the settings editor would, and restarts a running engine
   on it. If the new model does not come up, the previous one is restored and the
   error says so; a stopped engine is started on it, and asking a running engine
-  for the model already in the launch arguments restarts nothing. An engine
+  for the model already in the launch arguments restarts nothing. The engine's
+  operation lock is held from reading the launch to the last restore. An engine
   with a `launch_model` action will not start while its launch arguments lack
   the flag: it has no model selected, and refusing beats letting the engine
   pick and download a default of its own. Requires `runtime.editable_launch`
@@ -379,13 +384,21 @@ serves a single model per process and so cannot unload it while running. A
 A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536, "max_num_seqs": 32}`)
 lets the manager add start-time arguments that depend on the model and the
 machine. For `hf_context` it reads the served model's `config.json` from the
-Hugging Face cache and the free GPU memory, then appends `--max-model-len`
+Hugging Face cache, at the revision the engine loads (`--revision` or `main`,
+resolved through `refs/` as `huggingface_hub` does), and the free GPU memory,
+then appends `--max-model-len`
 (the target, the model's own limit when it cannot be extended, or what fits),
 `--hf-overrides` with YaRN rope scaling when the target exceeds the model's
-native window, and `--gpu-memory-utilization` sized to weights plus KV cache.
-A model that is not in the cache yet, which vLLM downloads during the start, is
-sized the same way from its `config.json` and file sizes on Hugging Face; when
-that lookup cannot answer, the share is the free GPU memory less a 1 GiB margin.
+native window, and `--gpu-memory-utilization` sized to the weights the engine
+loads plus KV cache, never below 15% of the GPU and never above what is free
+less a 1 GiB margin (the free-memory cap wins).
+A model that is not in the cache yet, which vLLM downloads during the start,
+first has its files other than weights fetched into the cache with the engine's
+Hugging Face tool (the one an `hf_pull` action names) at that revision, and is
+then sized and given a tool-call parser the same way; when Hugging Face cannot
+answer, the share is the free GPU memory less the margin. That fetch, and the
+`hf_pull` and `hf_cache` work, run with the engine's launch environment, so
+`HF_HUB_OFFLINE` and `HF_TOKEN` set for the engine apply.
 The optional `max_num_seqs` adds `--max-num-seqs`, the most requests the engine
 runs at once (0 or absent leaves the engine's default).
 Arguments the user saved always win and nothing added is written back to saved

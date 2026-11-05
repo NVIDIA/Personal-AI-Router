@@ -13,11 +13,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
-
-	settings "nvpair-shared/enginesettings"
 )
 
 // hfCacheModel is one usable model found in a Hugging Face hub cache. Size is
@@ -113,17 +112,22 @@ func completeHFModel(repoPath string) (int64, bool) {
 		if !snapshot.IsDir() {
 			continue
 		}
-		if size, ok := completeHFSnapshot(filepath.Join(repoPath, "snapshots", snapshot.Name())); ok {
-			return size, true
+		if disk, _, ok := completeHFSnapshot(filepath.Join(repoPath, "snapshots", snapshot.Name())); ok {
+			return disk, true
 		}
 	}
 	return 0, false
 }
 
-func completeHFSnapshot(path string) (int64, bool) {
+// completeHFSnapshot reports whether the snapshot at path is a complete,
+// servable model, the bytes it occupies on disk, and the bytes of the weights
+// vLLM will load from it. The two differ when a repository ships the same
+// weights in another format as well: the cache list shows what the snapshot
+// takes on disk, and launch sizing uses what is loaded.
+func completeHFSnapshot(path string) (disk, weightBytes int64, ok bool) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	// Files are symlinks into blobs/. Stat follows them, so a link whose blob is
 	// missing is not a file we have.
@@ -149,10 +153,10 @@ func completeHFSnapshot(path string) (int64, bool) {
 	if mistralFormat {
 		index = "consolidated.safetensors.index.json"
 		if !hasAny(files, []string{"config.json", "params.json"}) || (!hasMistralTokenizer(files) && !hasAny(files, hfTokenizerFiles)) {
-			return 0, false
+			return 0, 0, false
 		}
 	} else if _, ok := files["config.json"]; !ok || !hasAny(files, hfTokenizerFiles) {
-		return 0, false
+		return 0, 0, false
 	}
 
 	var weights []string
@@ -170,20 +174,24 @@ func completeHFSnapshot(path string) (int64, bool) {
 		}
 	}
 	if len(weights) == 0 || !hfWeightsComplete(path, files, weights, index) {
-		return 0, false
+		return 0, 0, false
 	}
 
-	var size int64
 	for _, bytes := range files {
-		size += bytes
+		disk += bytes
 	}
-	return size, true
+	for _, name := range weights {
+		weightBytes += files[name]
+	}
+	return disk, weightBytes, true
 }
 
 // hfWeightsComplete verifies the weight files are all present. An index file
 // lists every shard; without one, only shard names like
 // model-00003-of-00004.safetensors say how many there should be, and several
 // unnumbered weight files cannot be told apart from an interrupted download.
+// This is the same rule vLLM applies: it loads the index's shards when there is
+// an index, and otherwise every weight file it finds.
 func hfWeightsComplete(snapshot string, files map[string]int64, weights []string, index string) bool {
 	if _, ok := files[index]; ok {
 		raw, err := os.ReadFile(filepath.Join(snapshot, index))
@@ -203,7 +211,9 @@ func hfWeightsComplete(snapshot string, files map[string]int64, weights []string
 		}
 		return true
 	}
-	if len(weights) == 1 {
+	// One unnumbered weight file is the whole model. A file named as one shard
+	// of several is not, however many files there are.
+	if len(weights) == 1 && !hfShardRe.MatchString(weights[0]) {
 		return true
 	}
 	seen := map[int]bool{}
@@ -257,12 +267,17 @@ func hasAny(files map[string]int64, names []string) bool {
 // deleteHFModel removes one model from the hub cache with the engine's own
 // Hugging Face tool (`hf cache rm`), so the cache's owner decides which files go:
 // it keeps any file in the cache-wide shared store that another model, dataset or
-// Space still links to, and takes the store's locks while it does. The model an
-// engine process is serving is refused, since the engine would download it
-// again on its next start. The model a stopped or ejected engine is set to serve
-// is deleted and taken out of its launch arguments, so the engine has no model
-// selected and will not start until one is loaded; if the removal fails, that
-// selection is put back.
+// Space still links to, and takes the store's locks while it does.
+//
+// The model a running engine is serving is refused. That is asked of the engine
+// itself, because an adopted engine may serve a model other than the one its
+// saved arguments name, and the delete is refused when the engine cannot say. A
+// running engine's selected model is refused too, since its next start would
+// download it again. The model a stopped engine is set to serve is deleted and
+// taken out of its launch arguments, so the engine has no model selected and
+// will not start until one is loaded; if the removal fails, that selection is
+// put back. The engine's operation lock is held from the first check to the
+// rollback, so a settings save or start cannot land in between and be undone.
 func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, hubDir, toolName string, params json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Model string `json:"model"`
@@ -275,10 +290,6 @@ func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, h
 	if err != nil {
 		return nil, fmt.Errorf("delete %s: %w", id, err)
 	}
-	served, err := e.servedModel(engine)
-	if err != nil {
-		return nil, fmt.Errorf("delete: cannot tell which model %s is set to serve, so nothing was deleted: %w", engine, err)
-	}
 	name := "models--" + strings.ReplaceAll(id, "/", "--")
 	repo := filepath.Join(hubDir, name)
 	if rel, err := filepath.Rel(hubDir, repo); err != nil || rel != name {
@@ -287,21 +298,60 @@ func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, h
 	if _, err := os.Stat(repo); err != nil {
 		return nil, fmt.Errorf("delete: %s is not in the model cache", id)
 	}
-	reselect := func() {}
-	if served == id {
-		if reselect, err = e.unselectModel(engine, id); err != nil {
-			return nil, err
+	err = e.editLaunch(engine, func(edit *launchEdit) error {
+		refused := fmt.Errorf("delete: %s is the model %s is serving; eject it or load another model first", id, engine)
+		if edit.before.Running {
+			serving, err := e.servingModels(ctx, st, engine)
+			if err != nil {
+				return fmt.Errorf("delete: cannot tell which model %s is serving, so nothing was deleted: %w", engine, err)
+			}
+			if slices.Contains(serving, id) {
+				return refused
+			}
 		}
-	}
-	cmd := exec.CommandContext(ctx, tool, "cache", "rm", "model/"+id, "--cache-dir", hubDir, "--yes")
-	cmd.Env = append(os.Environ(), "HF_HUB_DISABLE_TELEMETRY=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		reselect()
-		return nil, fmt.Errorf("delete %s: %s failed: %w: %s", id, toolName, err, lastLines(string(out), hfErrorTail))
-	}
-	if _, err := os.Stat(repo); err == nil {
-		reselect()
-		return nil, fmt.Errorf("delete %s: %s finished but the model is still in the cache", id, toolName)
+		selected, err := e.selectedModelLocked(edit)
+		if err != nil {
+			return fmt.Errorf("delete: cannot tell which model %s is set to serve, so nothing was deleted: %w", engine, err)
+		}
+		unselected := false
+		if selected == id {
+			flag := modelLaunchFlag(st.manifest)
+			if edit.before.Running || flag == "" || !edit.before.Editable {
+				return refused
+			}
+			text, _, err := withoutLaunchFlag(edit.before.LaunchText, flag)
+			if err != nil {
+				return err
+			}
+			if err := edit.save(ctx, text, false); err != nil {
+				return fmt.Errorf("delete: could not clear %s from the launch settings of %s: %w", id, engine, err)
+			}
+			unselected = true
+		}
+		failed := func(err error) error {
+			if !unselected {
+				return err
+			}
+			if restoreErr := edit.restore(ctx); restoreErr != nil {
+				return fmt.Errorf("%w; putting %s back in the launch settings of %s also failed: %v", err, id, engine, restoreErr)
+			}
+			return err
+		}
+		cmd := exec.CommandContext(ctx, tool, "cache", "rm", "model/"+id, "--cache-dir", hubDir, "--yes")
+		cmd.Env = os.Environ()
+		for key, value := range engineHFEnv(st).toolEnv() {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return failed(fmt.Errorf("delete %s: %s failed: %w: %s", id, toolName, err, lastLines(string(out), hfErrorTail)))
+		}
+		if _, err := os.Stat(repo); err == nil {
+			return failed(fmt.Errorf("delete %s: %s finished but the model is still in the cache", id, toolName))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return json.Marshal(map[string]any{"deleted": id})
 }
@@ -320,62 +370,27 @@ func lastLines(out string, n int) string {
 	return strings.Join(lines, "; ")
 }
 
-// unselectModel takes the model flag out of a stopped engine's saved launch
-// arguments, and returns a function that puts it back. A running engine is
-// serving the model, so it is refused.
-func (e *Executor) unselectModel(engine, id string) (reselect func(), err error) {
-	st, err := e.state(engine)
-	if err != nil {
-		return nil, err
-	}
-	refused := fmt.Errorf("delete: %s is the model %s is serving; eject it or load another model first", id, engine)
-	state, err := e.LaunchSettings(engine)
-	if err != nil {
-		return nil, err
-	}
-	flag := modelLaunchFlag(st.manifest)
-	if state.Running || flag == "" || !state.Editable {
-		return nil, refused
-	}
-	text, _, err := withoutLaunchFlag(state.LaunchText, flag)
-	if err != nil {
-		return nil, err
-	}
-	save := func(launchText string) error {
-		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{
-			Engine:   engine,
-			Settings: settings.Config{ServerPort: state.ServerPort, LaunchText: launchText},
-		}, func() error { return nil })
-		return err
-	}
-	if err := save(text); err != nil {
-		return nil, fmt.Errorf("delete: could not clear %s from the launch settings of %s: %w", id, engine, err)
-	}
-	return func() { _ = save(state.LaunchText) }, nil
-}
-
-// servedModel returns the model the engine is set to serve, from its effective
-// launch arguments, or "" when they name none. It fails when that cannot be
-// determined, so a caller that must not touch the served model fails closed.
-// The engine's binary is detected first, because the launch cannot be resolved
-// before that.
-func (e *Executor) servedModel(engine string) (string, error) {
-	state, err := e.LaunchSettings(engine)
-	if err != nil {
-		return "", err
-	}
+// selectedModelLocked returns the model the engine's launch arguments select,
+// or "" when they name none. It fails when that cannot be determined, so a
+// caller that must not touch the selected model fails closed. The engine's
+// binary is detected first when the launch cannot be resolved without it.
+func (e *Executor) selectedModelLocked(edit *launchEdit) (string, error) {
+	state := edit.before
 	if state.LaunchText == "" {
-		if _, err := e.Detect(engine); err != nil {
+		if _, err := e.Detect(edit.engine); err != nil {
 			return "", err
 		}
-		if state, err = e.LaunchSettings(engine); err != nil {
-			return "", err
-		}
+		state = e.launchStateLocked(edit.engine, edit.st)
+		edit.before = state
 	}
 	tokens, err := parseLaunchText(state.LaunchText)
 	if err != nil {
 		return "", err
 	}
-	model, _ := launchFlagValue(tokens, "--model")
+	flag := modelLaunchFlag(edit.st.manifest)
+	if flag == "" {
+		return "", nil
+	}
+	model, _ := launchFlagValue(tokens, flag)
 	return model, nil
 }

@@ -1072,18 +1072,17 @@ func rmCmd(path string) []string {
 // lifecycle lock for that minute. Status and the installed-engines listing are
 // what the UI polls and what a toggle awaits with a short timeout, so they must
 // answer from what is already known instead of queueing behind the operation.
-func TestStatusDoesNotWaitForARunningLifecycleOperation(t *testing.T) {
+func TestStatus_AnswersWithoutWaitingForARunningLifecycleOperation(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	st, err := ex.state("fake")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	st.opMu.Lock() // an operation is in flight
 	defer st.opMu.Unlock()
 
 	answered := make(chan EngineStatus, 2)
 	go func() {
-		status, _ := ex.Status("fake")
+		status, err := ex.Status("fake")
+		assert.NoError(t, err)
 		answered <- status
 	}()
 	go func() {
@@ -1096,11 +1095,10 @@ func TestStatusDoesNotWaitForARunningLifecycleOperation(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case status := <-answered:
-			if status.Engine != "fake" || status.DisplayName == "" {
-				t.Fatalf("status = %+v", status)
-			}
+			assert.Equal(t, "fake", status.Engine)
+			assert.NotEmpty(t, status.DisplayName)
 		case <-time.After(2 * time.Second):
-			t.Fatal("status waited for a running lifecycle operation")
+			require.FailNow(t, "status waited for a running lifecycle operation")
 		}
 	}
 }

@@ -4,11 +4,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // withToolParserProbe replaces the probe of the installed vLLM, and empties the
@@ -16,7 +21,9 @@ import (
 func withToolParserProbe(t *testing.T, probe func(bin, snapshot string) (toolParserProbe, error)) {
 	t.Helper()
 	old := probeToolParsers
-	probeToolParsers = probe
+	probeToolParsers = func(_ context.Context, bin, snapshot string) (toolParserProbe, error) {
+		return probe(bin, snapshot)
+	}
 	toolParserCache.Clear()
 	t.Cleanup(func() {
 		probeToolParsers = old
@@ -25,22 +32,16 @@ func withToolParserProbe(t *testing.T, probe func(bin, snapshot string) (toolPar
 }
 
 func TestChooseToolParser_PrefersGeneralPurposeParsersAmongEqualMatches(t *testing.T) {
-	cases := []struct {
-		name  string
-		probe toolParserProbe
-		want  string
-	}{
-		{"Qwen JSON in tool_call tags", toolParserProbe{Matches: []string{"ernie45", "granite4", "hermes", "qwen3_json"}}, "hermes"},
-		{"Qwen XML function tags", toolParserProbe{Matches: []string{"qwen3_coder", "qwen3_xml", "seed_oss", "step3p5"}}, "qwen3_coder"},
-		{"only uncommon parsers", toolParserProbe{Matches: []string{"step3p5", "seed_oss"}}, "seed_oss"},
-		{"response template wins", toolParserProbe{HF: true, Matches: []string{"hermes"}}, "hf"},
-		{"nothing matched", toolParserProbe{}, ""},
+	test := func(name string, probe toolParserProbe, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, chooseToolParser(probe))
+		})
 	}
-	for _, c := range cases {
-		if got := chooseToolParser(c.probe); got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
-	}
+	test("Qwen JSON in tool_call tags", toolParserProbe{Matches: []string{"ernie45", "granite4", "hermes", "qwen3_json"}}, "hermes")
+	test("Qwen XML function tags", toolParserProbe{Matches: []string{"qwen3_coder", "qwen3_xml", "seed_oss", "step3p5"}}, "qwen3_coder")
+	test("only uncommon parsers", toolParserProbe{Matches: []string{"step3p5", "seed_oss"}}, "seed_oss")
+	test("response template wins", toolParserProbe{HF: true, Matches: []string{"hermes"}}, "hf")
+	test("nothing matched", toolParserProbe{}, "")
 }
 
 func TestDetectToolParser_ProbesEachModelOnce(t *testing.T) {
@@ -51,16 +52,14 @@ func TestDetectToolParser_ProbesEachModelOnce(t *testing.T) {
 	})
 
 	for range 3 {
-		if parser, _, err := detectToolParser("vllm", "/hub/a"); err != nil || parser != "hermes" {
-			t.Fatalf("got %q, %v", parser, err)
-		}
+		parser, _, err := detectToolParser(t.Context(), "vllm", "/hub/a")
+		require.NoError(t, err)
+		require.Equal(t, "hermes", parser)
 	}
-	if probes != 1 {
-		t.Fatalf("probed %d times, want once for the same model", probes)
-	}
-	if _, _, err := detectToolParser("vllm", "/hub/c"); err != nil || probes != 2 {
-		t.Fatalf("another model must be probed on its own: %d probes, %v", probes, err)
-	}
+	require.Equal(t, 1, probes, "the same model is probed once")
+	_, _, err := detectToolParser(t.Context(), "vllm", "/hub/c")
+	require.NoError(t, err)
+	assert.Equal(t, 2, probes, "another model must be probed on its own")
 }
 
 func TestDetectToolParser_RetriesAFailedProbe(t *testing.T) {
@@ -73,12 +72,12 @@ func TestDetectToolParser_RetriesAFailedProbe(t *testing.T) {
 		return toolParserProbe{Matches: []string{"hermes"}}, nil
 	})
 
-	if _, _, err := detectToolParser("vllm", "/hub/a"); err == nil {
-		t.Fatal("the first probe's failure was not reported")
-	}
-	if parser, _, err := detectToolParser("vllm", "/hub/a"); err != nil || parser != "hermes" {
-		t.Fatalf("the next start must probe again: %q, %v", parser, err)
-	}
+	_, _, err := detectToolParser(t.Context(), "vllm", "/hub/a")
+	require.Error(t, err, "the first probe's failure was not reported")
+
+	parser, _, err := detectToolParser(t.Context(), "vllm", "/hub/a")
+	require.NoError(t, err, "the next start must probe again")
+	assert.Equal(t, "hermes", parser)
 }
 
 // The probe run against the real vLLM install and the models in the local
@@ -91,22 +90,45 @@ func TestToolParserProbe_FindsTheParserWithTheInstalledVLLM(t *testing.T) {
 	if bin == "" {
 		t.Skip("set NVPAIR_LIVE_VLLM_BIN and NVPAIR_LIVE_VLLM_TOOL_MODELS to probe real models with the installed vLLM")
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
 	hub := filepath.Join(home, ".cache", "huggingface", "hub")
 	for _, pair := range strings.Split(os.Getenv("NVPAIR_LIVE_VLLM_TOOL_MODELS"), ",") {
 		model, want, _ := strings.Cut(pair, "=")
-		snapshot, _, _, ok := findHFSnapshot(hub, model)
-		if !ok {
-			t.Errorf("%s is not in %s", model, hub)
-			continue
-		}
-		probe, err := runToolParserProbe(bin, snapshot)
-		if err != nil {
-			t.Errorf("%s: %v", model, err)
-			continue
-		}
-		if got := chooseToolParser(probe); got != want {
-			t.Errorf("%s: chose %q from %+v, want %q", model, got, probe, want)
+		t.Run(model, func(t *testing.T) {
+			found, ok := findLaunchModel([]string{"--model", model}, hub, nil)
+			require.True(t, ok, "%s is not in %s", model, hub)
+
+			probe, err := runToolParserProbe(t.Context(), bin, found.snapshot)
+
+			require.NoError(t, err)
+			assert.Equal(t, want, chooseToolParser(probe), "chosen from %+v", probe)
+		})
+	}
+}
+
+// The probe runs under the start's context, so cancelling the start (Stop, a
+// caller giving up, shutdown) stops the probe instead of leaving it to run out
+// its own timeout.
+func TestDetectToolParser_StopsTheProbeWhenTheStartIsCancelled(t *testing.T) {
+	old := probeToolParsers
+	t.Cleanup(func() {
+		probeToolParsers = old
+		toolParserCache.Clear()
+	})
+	toolParserCache.Clear()
+	probeToolParsers = func(ctx context.Context, bin, snapshot string) (toolParserProbe, error) {
+		select {
+		case <-ctx.Done():
+			return toolParserProbe{}, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return toolParserProbe{}, errors.New("the probe ran on after its start was cancelled")
 		}
 	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, _, err := detectToolParser(ctx, "vllm", "/hub/cancelled")
+
+	require.ErrorIs(t, err, context.Canceled)
 }

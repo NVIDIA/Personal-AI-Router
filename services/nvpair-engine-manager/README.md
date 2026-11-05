@@ -69,7 +69,10 @@ Edit the `--model` argument, or use `load_model`, to serve another model. Only
 `--host` and `--port` are managed controls, and there is no CORS control.
 The context window and GPU share are chosen automatically at every start
 (`auto_launch`, kind `hf_context`), not pinned in the saved launch. The manager
-reads the model's `config.json` from the Hugging Face cache and the free GPU
+reads the model's `config.json` from the Hugging Face cache, at the revision
+vLLM loads (`--revision`, or `main` through `refs/main`, the way
+`huggingface_hub` resolves it; another cached revision is never read in its
+place), and the free GPU
 memory (`nvidia-smi`; on a unified-memory machine such as DGX Spark, where it
 reports `[N/A]`, the total and available system memory from `/proc/meminfo`),
 then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
@@ -77,13 +80,22 @@ model with a larger window is capped there, and a smaller one is shrunk to what
 fits), a YaRN `--hf-overrides` when the model's own window is below 64K (for
 example Qwen3-8B, which stops at 40,960), and a `--gpu-memory-utilization` just
 large enough for the weights, that KV cache and overhead, instead of vLLM's
-92% default. A model with its own rope scaling is never overridden. Anything
+92% default. The weights are the files vLLM loads, not everything in the
+snapshot: an unused PyTorch copy beside the safetensors is not counted. The
+share is at least 15% of the GPU but never more than is free less 1 GiB, which
+wins when the two disagree. A model with its own rope scaling is never overridden. Anything
 the user saves in the launch arguments wins, and a tensor- or pipeline-parallel
 launch is left untouched. A model that is not yet downloaded, such as the
-default on a fresh install, is sized the same way from its `config.json` and
-file sizes on Hugging Face (a 10-second lookup that honours `HF_TOKEN` and
-`HF_HUB_OFFLINE`); if the lookup cannot answer, it gets the free GPU memory less
-1 GiB. Every start also adds `--max-num-seqs 32`: vLLM's default of 256
+default on a fresh install, first has its small files (config, tokenizer, chat
+template; everything but the weights) fetched into the cache with the `hf` tool
+beside `vllm`, at the revision vLLM loads, and its weight sizes read from
+Hugging Face. It is then sized, and its tool-call parser chosen, exactly as a
+cached model is, and vLLM finds those files already there. The fetch and every
+other Hugging Face request PAIR makes for vLLM (pull, delete, size lookup) run
+with the engine's own environment, so `HF_HUB_OFFLINE` or `HF_TOKEN` set in its
+launch settings applies to them too. If Hugging Face cannot answer (offline,
+gated without a token, unreachable), the model gets the free GPU memory less
+1 GiB and no parser. Every start also adds `--max-num-seqs 32`: vLLM's default of 256
 concurrent requests does not fit a hybrid model such as Qwen3.5-4B on a 16 GB
 GPU, and a desktop does not need it. The added arguments appear in the engine-manager log
 (`engine launch adjusted for the model and GPU`) and not in the saved settings,
@@ -98,7 +110,8 @@ and offers that text to every parser vLLM provides; among parsers that read it
 equally, `hermes`, `qwen3_coder`, `llama3_json`, `mistral` and `pythonic` are
 preferred in that order. The probe downloads nothing, runs no code from the model
 repository, takes a few seconds, and is done once per model and vLLM while the
-service runs. The chosen parser appears in the log
+service runs. It runs under the start, so cancelling the start (Stop, a caller
+giving up, shutdown) stops it. The chosen parser appears in the log
 (`vLLM tool-call parser chosen from the model's chat template`).
 When no parser reads the model's format (Nemotron Nano v2's `<TOOLCALL>`, or a
 template with no tool support), nothing is added, and a request that asks for
@@ -124,9 +137,9 @@ the served model: it writes `--model <id>` into the saved launch arguments and
 restarts vLLM on it, restoring the previous model if the new one does not start
 (for example it does not fit in GPU memory).
 
-`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
+`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model the engine reports it is not serving is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 
-`delete_model` removes a model from the hub cache with the `hf cache rm` command of the `hf` tool beside `vllm` (an `hf_cache` action with `delete` and `tool`). Hugging Face's own tool decides which files go: it keeps any file in the cache's shared `blobs/` store that another model, dataset or Space still links to, and takes that store's locks, so a delete cannot remove a file another program is using or linking at the same moment. The cache is the user's standard Hugging Face cache, shared with every other Hugging Face tool on the machine. The model a running vLLM is serving is refused. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one.
+`delete_model` removes a model from the hub cache with the `hf cache rm` command of the `hf` tool beside `vllm` (an `hf_cache` action with `delete` and `tool`). Hugging Face's own tool decides which files go: it keeps any file in the cache's shared `blobs/` store that another model, dataset or Space still links to, and takes that store's locks, so a delete cannot remove a file another program is using or linking at the same moment. The cache is the user's standard Hugging Face cache, shared with every other Hugging Face tool on the machine. The model a running vLLM is serving is refused; which model that is is asked of vLLM itself (`loaded_models`), because an adopted vLLM may serve a model other than the one its saved arguments name, and the delete is refused when vLLM cannot say. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one. The engine's operation lock is held from that check through the removal and any rollback, so a settings save or start made meanwhile waits and is not undone by a failed delete. `load_model`, `unload_model` and `delete_model` share that one launch-change path.
 
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not
@@ -146,7 +159,8 @@ without downloading the rest again. Progress is the
 share of those bytes that has landed in the cache, a download that makes no
 progress for the pull timeout is abandoned, and a cancelled one is stopped. It
 needs no running engine. A gated repo needs its terms accepted and `HF_TOKEN`
-(or a prior `hf auth login`) in the environment.
+(or a prior `hf auth login`), in the service's environment or the engine's launch
+settings.
 
 Install is detect-first. `{install_dir}/venv/bin/vllm` (the managed install) and
 `~/.local/bin/vllm` are checked in that order, and the first one found is

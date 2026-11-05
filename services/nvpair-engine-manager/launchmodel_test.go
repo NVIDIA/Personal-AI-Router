@@ -10,39 +10,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	settings "nvpair-shared/enginesettings"
 )
 
-func TestWithLaunchFlag(t *testing.T) {
-	for _, tc := range []struct {
-		name, text, want string
-		same             bool // the arguments already said this
-	}{
-		{"added when absent", "--max-model-len 4096", "--max-model-len 4096 --model org/new", false},
-		{"added to empty text", "", "--model org/new", false},
-		{"replaces a separate value", "--model org/old --max-model-len 4096", "--model org/new --max-model-len 4096", false},
-		{"replaces an equals form", "--max-model-len 4096 --model=org/old --dtype auto", "--max-model-len 4096 --model org/new --dtype auto", false},
-		{"keeps leading environment assignments", "VLLM_LOGGING_LEVEL=DEBUG --model org/old", "VLLM_LOGGING_LEVEL=DEBUG --model org/new", false},
-		{"collapses a repeated flag", "--model a --x 1 --model=b", "--model org/new --x 1", false},
-		{"goes before a terminator", "--x 1 -- positional", "--x 1 --model org/new -- positional", false},
-		{"keeps quoted values", `--served-model-name "two words" --model org/old`, `--served-model-name "two words" --model org/new`, false},
-		{"leaves a prefix-sharing flag alone", "--model-impl vllm --model org/old", "--model-impl vllm --model org/new", false},
-		{"unchanged when already set", "--x 1 --model org/new", "--x 1 --model org/new", true},
-		{"unchanged despite different quoting", `OLLAMA_HOST="127.0.0.1:1" --model org/new`, "OLLAMA_HOST=127.0.0.1:1 --model org/new", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, changed, err := withLaunchFlag(tc.text, "--model", "org/new")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tc.want || changed != !tc.same {
-				t.Fatalf("withLaunchFlag(%q) = %q (changed %v), want %q (changed %v)", tc.text, got, changed, tc.want, !tc.same)
-			}
+func TestWithLaunchFlag_SetsTheFlagOnceAndKeepsTheRestOfTheText(t *testing.T) {
+	test := func(name, text, want string, wantChanged bool) {
+		t.Run(name, func(t *testing.T) {
+			got, changed, err := withLaunchFlag(text, "--model", "org/new")
+
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.Equal(t, wantChanged, changed, "changed")
 		})
 	}
-	if _, _, err := withLaunchFlag(`--model "unterminated`, "--model", "x"); err == nil {
-		t.Error("launch text that does not parse was accepted")
-	}
+	test("added when absent", "--max-model-len 4096", "--max-model-len 4096 --model org/new", true)
+	test("added to empty text", "", "--model org/new", true)
+	test("replaces a separate value", "--model org/old --max-model-len 4096", "--model org/new --max-model-len 4096", true)
+	test("replaces an equals form", "--max-model-len 4096 --model=org/old --dtype auto", "--max-model-len 4096 --model org/new --dtype auto", true)
+	test("keeps leading environment assignments", "VLLM_LOGGING_LEVEL=DEBUG --model org/old", "VLLM_LOGGING_LEVEL=DEBUG --model org/new", true)
+	test("collapses a repeated flag", "--model a --x 1 --model=b", "--model org/new --x 1", true)
+	test("goes before a terminator", "--x 1 -- positional", "--x 1 --model org/new -- positional", true)
+	test("keeps quoted values", `--served-model-name "two words" --model org/old`, `--served-model-name "two words" --model org/new`, true)
+	test("leaves a prefix-sharing flag alone", "--model-impl vllm --model org/old", "--model-impl vllm --model org/new", true)
+	test("unchanged when already set", "--x 1 --model org/new", "--x 1 --model org/new", false)
+	test("unchanged despite different quoting", `OLLAMA_HOST="127.0.0.1:1" --model org/new`, "OLLAMA_HOST=127.0.0.1:1 --model org/new", false)
+}
+
+func TestWithLaunchFlag_RejectsLaunchTextThatDoesNotParse(t *testing.T) {
+	_, _, err := withLaunchFlag(`--model "unterminated`, "--model", "x")
+
+	assert.Error(t, err)
 }
 
 // switchModelExecutor is a running fake engine with editable launch settings
@@ -53,31 +53,27 @@ func switchModelExecutor(t *testing.T, flag string) *Executor {
 	t.Helper()
 	e := settingsExecutor(t, false)
 	m, ok := e.reg.Get("fake")
-	if !ok {
-		t.Fatal("fake manifest missing")
-	}
+	require.True(t, ok, "fake manifest missing")
 	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: flag}}
-	if err := m.Validate(); err != nil {
-		t.Fatal(err)
+	// Like vLLM, the engine answers which model it serves, under the name
+	// requests use (id) and the model it loaded (root).
+	m.AdvertisedModels = advertisedModelsLoaded
+	m.Actions["loaded_models"] = Action{
+		HTTP:   &ActionHTTP{Method: "GET", Path: "/v1/models"},
+		Result: &ActionResult{Array: "data", Field: "id", InventoryField: "root"},
 	}
+	require.NoError(t, m.Validate())
 	// An engine that chooses its model by launch argument needs one to start.
 	state, err := e.LaunchSettings("fake")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	text, _, err := withLaunchFlag(state.LaunchText, flag, "org/initial")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{
+	require.NoError(t, err)
+	_, err = e.ConfigureLaunch(context.Background(), settings.Configure{
 		Engine:   "fake",
 		Settings: settings.Config{ServerPort: state.ServerPort, LaunchText: text},
-	}, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Start(context.Background(), "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	}, func() error { return nil })
+	require.NoError(t, err)
+	require.NoError(t, e.Start(context.Background(), "fake"), "start")
 	return e
 }
 
@@ -96,75 +92,71 @@ func launchTextOf(t *testing.T, e *Executor) string {
 func launchTextOfEngine(t *testing.T, e *Executor, engine string) string {
 	t.Helper()
 	state, err := e.LaunchSettings(engine)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return state.LaunchText
 }
 
 func TestWithoutLaunchFlag_RemovesEveryFormOfTheFlag(t *testing.T) {
-	for _, tc := range []struct{ name, in, want string }{
-		{"separate value", "--model org/a --port 8001", "--port 8001"},
-		{"equals form", "--model=org/a --port 8001", "--port 8001"},
-		{"repeated", "--model org/a --port 8001 --model=org/b", "--port 8001"},
-		{"after the terminator is kept", "--port 8001 -- --model org/a", "--port 8001 -- --model org/a"},
-		{"absent", "--port 8001", "--port 8001"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, changed, err := withoutLaunchFlag(tc.in, "--model")
-			if err != nil || got != tc.want || changed != (tc.in != tc.want) {
-				t.Fatalf("withoutLaunchFlag(%q) = %q, %v, %v; want %q", tc.in, got, changed, err, tc.want)
-			}
+	test := func(name, text, want string, wantChanged bool) {
+		t.Run(name, func(t *testing.T) {
+			got, changed, err := withoutLaunchFlag(text, "--model")
+
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.Equal(t, wantChanged, changed, "changed")
 		})
 	}
+	test("separate value", "--model org/a --port 8001", "--port 8001", true)
+	test("equals form", "--model=org/a --port 8001", "--port 8001", true)
+	test("repeated", "--model org/a --port 8001 --model=org/b", "--port 8001", true)
+	test("after the terminator is kept", "--port 8001 -- --model org/a", "--port 8001 -- --model org/a", false)
+	test("absent", "--port 8001", "--port 8001", false)
 }
 
-func TestLaunchModelSwitchesAndRestartsARunningEngine(t *testing.T) {
+// loadReply is the load_model result.
+type loadReply struct {
+	Model     string `json:"model"`
+	Restarted bool   `json:"restarted"`
+}
+
+func decodeLoadReply(t *testing.T, raw json.RawMessage) loadReply {
+	t.Helper()
+	var reply loadReply
+	require.NoError(t, json.Unmarshal(raw, &reply))
+	return reply
+}
+
+func TestLaunchModel_SwitchesAndRestartsARunningEngine(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	gen := startGeneration(t, e)
 
 	raw, err := loadModel(t, e, "org/first")
-	if err != nil {
-		t.Fatalf("load first: %v", err)
-	}
-	var reply struct {
-		Model     string `json:"model"`
-		Restarted bool   `json:"restarted"`
-	}
-	if err := json.Unmarshal(raw, &reply); err != nil || reply.Model != "org/first" || !reply.Restarted {
-		t.Fatalf("reply = %s, %v", raw, err)
-	}
-	if text := launchTextOf(t, e); !strings.Contains(text, "--model org/first") {
-		t.Fatalf("launch text %q does not carry the model", text)
-	}
+
+	require.NoError(t, err, "load first")
+	assert.Equal(t, loadReply{Model: "org/first", Restarted: true}, decodeLoadReply(t, raw))
+	assert.Contains(t, launchTextOf(t, e), "--model org/first", "the launch text carries the model")
 	after := mustStatus(t, e)
-	if !after.Running || startGeneration(t, e) == gen {
-		t.Fatalf("engine was not restarted: generation %d, status %+v", gen, after)
-	}
+	assert.True(t, after.Running, "the engine runs the new model")
+	assert.NotEqual(t, gen, startGeneration(t, e), "the engine was restarted")
 
 	// A second switch replaces the first and keeps the rest of the launch text.
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
+	_, err = e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
 		ServerPort: after.Port, LaunchText: launchTextOf(t, e) + " --max-model-len 4096",
-	}}, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadModel(t, e, "org/second"); err != nil {
-		t.Fatalf("load second: %v", err)
-	}
+	}}, func() error { return nil })
+	require.NoError(t, err)
+	_, err = loadModel(t, e, "org/second")
+	require.NoError(t, err, "load second")
 	text := launchTextOf(t, e)
-	if !strings.Contains(text, "--model org/second") || strings.Contains(text, "org/first") || !strings.Contains(text, "--max-model-len 4096") {
-		t.Fatalf("launch text = %q", text)
-	}
+	assert.Contains(t, text, "--model org/second")
+	assert.NotContains(t, text, "org/first")
+	assert.Contains(t, text, "--max-model-len 4096")
 
 	// Asking for the model already being served does not restart anything.
 	gen = startGeneration(t, e)
 	raw, err = loadModel(t, e, "org/second")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, &reply); err != nil || reply.Restarted || startGeneration(t, e) != gen {
-		t.Fatalf("a no-op switch restarted the engine: %s", raw)
-	}
+	require.NoError(t, err)
+	assert.False(t, decodeLoadReply(t, raw).Restarted, "a no-op switch reports no restart")
+	assert.Equal(t, gen, startGeneration(t, e), "a no-op switch restarted the engine")
 }
 
 // startGeneration counts how many times the engine has been started.
@@ -179,143 +171,139 @@ func startGeneration(t *testing.T, e *Executor) int64 {
 func mustStatus(t *testing.T, e *Executor) EngineStatus {
 	t.Helper()
 	st, err := e.Status("fake")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return st
 }
 
 // Load on a stopped engine (after Eject, say) serves the model: it saves the
 // choice and starts the engine, whether or not the model changed.
-func TestLaunchModelOnAStoppedEngineStartsIt(t *testing.T) {
+func TestLaunchModel_StartsAStoppedEngine(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
-	if err := e.Stop("fake"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, e.Stop("fake"))
+
 	raw, err := loadModel(t, e, "org/later")
-	if err != nil {
-		t.Fatalf("load on a stopped engine: %v", err)
-	}
-	if !strings.Contains(string(raw), `"restarted":true`) {
-		t.Fatalf("reply = %s", raw)
-	}
-	if !mustStatus(t, e).Running {
-		t.Fatal("loading a model into a stopped engine must start it")
-	}
-	if text := launchTextOf(t, e); !strings.Contains(text, "--model org/later") {
-		t.Fatalf("launch text = %q", text)
-	}
+
+	require.NoError(t, err, "load on a stopped engine")
+	assert.True(t, decodeLoadReply(t, raw).Restarted)
+	assert.True(t, mustStatus(t, e).Running, "loading a model into a stopped engine must start it")
+	assert.Contains(t, launchTextOf(t, e), "--model org/later")
 
 	// The same model again, on an engine stopped once more, still starts it.
-	if err := e.Stop("fake"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadModel(t, e, "org/later"); err != nil || !mustStatus(t, e).Running {
-		t.Fatalf("an unchanged model on a stopped engine must start it: %v", err)
-	}
+	require.NoError(t, e.Stop("fake"))
+	_, err = loadModel(t, e, "org/later")
+	require.NoError(t, err)
+	assert.True(t, mustStatus(t, e).Running, "an unchanged model on a stopped engine must start it")
 }
 
-func TestLaunchModelOnAStoppedEngineRestoresTheChoiceWhenItWillNotStart(t *testing.T) {
+func TestLaunchModel_RestoresTheChoiceWhenAStoppedEngineWillNotStart(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	before := launchTextOf(t, e)
-	if err := e.Stop("fake"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadModel(t, e, "org/fails-to-load"); err == nil || !strings.Contains(err.Error(), "previous model was restored") {
-		t.Fatalf("err = %v, want the failed start reported with the restore", err)
-	}
-	if mustStatus(t, e).Running {
-		t.Fatal("the engine must stay stopped when the model does not start")
-	}
-	if got := launchTextOf(t, e); got != before {
-		t.Fatalf("launch text = %q, want the previous %q", got, before)
-	}
+	require.NoError(t, e.Stop("fake"))
+
+	_, err := loadModel(t, e, "org/fails-to-load")
+
+	assert.ErrorContains(t, err, "previous model was restored", "the failed start is reported with the restore")
+	assert.False(t, mustStatus(t, e).Running, "the engine must stay stopped when the model does not start")
+	assert.Equal(t, before, launchTextOf(t, e))
 }
 
 func ejectEngine(t *testing.T, e *Executor, model string) (json.RawMessage, error) {
 	t.Helper()
 	m, _ := e.reg.Get("fake")
 	m.Actions["unload_model"] = Action{StopEngine: true}
-	if err := m.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, m.Validate())
 	return e.Action(context.Background(), "fake", "unload_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 }
 
-func TestEjectStopsTheEngineAndFreesItsMemory(t *testing.T) {
+func TestEject_StopsTheEngineAndKeepsItsModelChoice(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
-	if _, err := loadModel(t, e, "org/served"); err != nil {
-		t.Fatal(err)
+	_, err := loadModel(t, e, "org/served")
+	require.NoError(t, err)
+	type ejectReply struct {
+		Stopped bool `json:"stopped"`
 	}
-	if _, err := ejectEngine(t, e, "org/other"); err == nil || !strings.Contains(err.Error(), "not the model") {
-		t.Fatalf("ejecting a model that is not served must be refused: %v", err)
-	}
-	if !mustStatus(t, e).Running {
-		t.Fatal("a refused eject stopped the engine")
-	}
-
-	raw, err := ejectEngine(t, e, "org/served")
-	if err != nil || !strings.Contains(string(raw), `"stopped":true`) {
-		t.Fatalf("eject: %s %v", raw, err)
-	}
-	if mustStatus(t, e).Running {
-		t.Fatal("eject must stop the engine")
-	}
-	if text := launchTextOf(t, e); !strings.Contains(text, "--model org/served") {
-		t.Fatalf("eject must keep the model choice so Load can serve it again: %q", text)
+	eject := func(model string) ejectReply {
+		t.Helper()
+		raw, err := ejectEngine(t, e, model)
+		require.NoError(t, err)
+		var reply ejectReply
+		require.NoError(t, json.Unmarshal(raw, &reply))
+		return reply
 	}
 
-	raw, err = ejectEngine(t, e, "org/served")
-	if err != nil || !strings.Contains(string(raw), `"stopped":false`) {
-		t.Fatalf("ejecting from a stopped engine is a no-op: %s %v", raw, err)
-	}
+	_, err = ejectEngine(t, e, "org/other")
+	assert.ErrorContains(t, err, "not the model", "ejecting a model that is not served must be refused")
+	require.True(t, mustStatus(t, e).Running, "a refused eject stopped the engine")
+
+	assert.Equal(t, ejectReply{Stopped: true}, eject("org/served"))
+	assert.False(t, mustStatus(t, e).Running, "eject must stop the engine")
+	assert.Contains(t, launchTextOf(t, e), "--model org/served", "eject must keep the model choice so Load can serve it again")
+
+	assert.Equal(t, ejectReply{Stopped: false}, eject("org/served"), "ejecting from a stopped engine is a no-op")
 }
 
-func TestLaunchModelRefusesAnythingThatIsNotAModelID(t *testing.T) {
+func TestLaunchModel_RefusesAnythingThatIsNotAModelID(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	before := launchTextOf(t, e)
-	for _, model := range []string{"", " ", "--help", "-x", "org/name --extra", "a b", "../etc/passwd", "/abs/path", "org//name", "a/b/c", "x;y", "$(id)", "org/na\nme"} {
-		if _, err := loadModel(t, e, model); err == nil {
-			t.Errorf("model %q was accepted", model)
-		}
+	reject := func(name, params string) {
+		t.Run(name, func(t *testing.T) {
+			_, err := e.Action(context.Background(), "fake", "load_model", json.RawMessage(params))
+
+			assert.Error(t, err)
+		})
 	}
-	if _, err := e.Action(context.Background(), "fake", "load_model", json.RawMessage(`{"nope":1}`)); err == nil {
-		t.Error("params without a model were accepted")
+	rejectModel := func(name, model string) {
+		reject(name, `{"model":`+quoteJSON(model)+`}`)
 	}
-	if _, err := e.Action(context.Background(), "fake", "load_model", nil); err == nil {
-		t.Error("missing params were accepted")
+	accept := func(name, model string) {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadModel(t, e, model)
+
+			assert.NoError(t, err)
+		})
 	}
-	if got := launchTextOf(t, e); got != before || !mustStatus(t, e).Running {
-		t.Fatalf("a refused switch changed state: %q (was %q)", got, before)
-	}
-	for _, model := range []string{"gpt2", "Qwen/Qwen2.5-0.5B-Instruct", "org/name.v1_2-x"} {
-		if _, err := loadModel(t, e, model); err != nil {
-			t.Errorf("model %q was refused: %v", model, err)
-		}
-	}
+	rejectModel("empty", "")
+	rejectModel("blank", " ")
+	rejectModel("an option", "--help")
+	rejectModel("a short option", "-x")
+	rejectModel("an id followed by an option", "org/name --extra")
+	rejectModel("a space", "a b")
+	rejectModel("a relative path", "../etc/passwd")
+	rejectModel("an absolute path", "/abs/path")
+	rejectModel("an empty path segment", "org//name")
+	rejectModel("three path segments", "a/b/c")
+	rejectModel("a shell separator", "x;y")
+	rejectModel("a command substitution", "$(id)")
+	rejectModel("a newline", "org/na\nme")
+	reject("params without a model", `{"nope":1}`)
+	t.Run("missing params", func(t *testing.T) {
+		_, err := e.Action(context.Background(), "fake", "load_model", nil)
+
+		assert.Error(t, err)
+	})
+	require.Equal(t, before, launchTextOf(t, e), "a refused switch changed the launch text")
+	require.True(t, mustStatus(t, e).Running, "a refused switch stopped the engine")
+
+	accept("a name without an organization", "gpt2")
+	accept("an organization and a name", "Qwen/Qwen2.5-0.5B-Instruct")
+	accept("dots, underscores and dashes", "org/name.v1_2-x")
 }
 
 // If the new model does not come up, the engine goes back to the one it was
 // serving instead of staying down. The fake engine exits at once when it is
 // given the model org/fails-to-load, which stands in for a model that does not fit.
-func TestLaunchModelRestoresThePreviousModelWhenTheNewOneFails(t *testing.T) {
+func TestLaunchModel_RestoresThePreviousModelWhenTheNewOneFails(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	before := launchTextOf(t, e)
 
 	_, err := loadModel(t, e, "org/fails-to-load")
-	if err == nil {
-		t.Fatal("a model that failed to start was reported as loaded")
-	}
+
+	require.Error(t, err, "a model that failed to start was reported as loaded")
 	// The note comes first: the engine's own error that follows it is a long log tail.
-	if !strings.HasPrefix(err.Error(), "switching to org/fails-to-load failed; the previous model was restored: ") {
-		t.Fatalf("error does not lead with the restore note: %v", err)
-	}
-	if got := launchTextOf(t, e); got != before {
-		t.Fatalf("launch text = %q, want the previous %q", got, before)
-	}
-	if !mustStatus(t, e).Running {
-		t.Fatal("the engine was left down after a failed switch")
-	}
+	assert.True(t, strings.HasPrefix(err.Error(), "switching to org/fails-to-load failed; the previous model was restored: "),
+		"error does not lead with the restore note: %v", err)
+	assert.Equal(t, before, launchTextOf(t, e))
+	assert.True(t, mustStatus(t, e).Running, "the engine was left down after a failed switch")
 }
 
 // A remote caller that stops waiting cancels the switch while the new model is
@@ -325,44 +313,44 @@ func TestLaunchModel_RestoresThePreviousModelWhenTheCallerGivesUp(t *testing.T) 
 	e := switchModelExecutor(t, "--model")
 	// Every launch from here on takes a second to become ready, so the switch
 	// below is still starting when its caller gives up.
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
+	_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
 		ServerPort: mustStatus(t, e).Port, LaunchText: "FAKE_START_DELAY=1s " + launchTextOf(t, e),
-	}}, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
+	}}, func() error { return nil })
+	require.NoError(t, err)
 	before := launchTextOf(t, e)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	_, err := e.Action(ctx, "fake", "load_model", json.RawMessage(`{"model":"org/slow"}`))
-	if err == nil {
-		t.Fatal("a switch whose caller gave up was reported as done")
-	}
-	if !strings.Contains(err.Error(), "the previous model was restored") {
-		t.Fatalf("err = %v, want the previous model restored", err)
-	}
-	if got := launchTextOf(t, e); got != before {
-		t.Fatalf("launch text = %q, want the previous %q", got, before)
-	}
-	if !mustStatus(t, e).Running {
-		t.Fatal("the engine was left down after the caller gave up")
-	}
+
+	_, err = e.Action(ctx, "fake", "load_model", json.RawMessage(`{"model":"org/slow"}`))
+
+	require.Error(t, err, "a switch whose caller gave up was reported as done")
+	assert.ErrorContains(t, err, "the previous model was restored")
+	assert.Equal(t, before, launchTextOf(t, e))
+	assert.True(t, mustStatus(t, e).Running, "the engine was left down after the caller gave up")
 }
 
-func TestLaunchModelValidation(t *testing.T) {
-	for _, flag := range []string{"model", "--mod el", "--model=x", ""} {
-		if err := (&Action{LaunchModel: &ActionLaunchModel{Flag: flag}}).validate("load_model"); err == nil {
-			t.Errorf("launch_model flag %q was accepted", flag)
-		}
+func TestLaunchModelAction_AcceptsOnlyALongOptionFlag(t *testing.T) {
+	accept := func(name, flag string) {
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, (&Action{LaunchModel: &ActionLaunchModel{Flag: flag}}).validate("load_model"))
+		})
 	}
-	if err := (&Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}).validate("load_model"); err != nil {
-		t.Errorf("a valid launch_model was rejected: %v", err)
+	reject := func(name, flag string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, (&Action{LaunchModel: &ActionLaunchModel{Flag: flag}}).validate("load_model"))
+		})
 	}
+	accept("a long option", "--model")
+	reject("no dashes", "model")
+	reject("a space in the flag", "--mod el")
+	reject("a value in the flag", "--model=x")
+	reject("empty", "")
+}
 
-	// The restart needs editable launch settings and a readiness probe on every platform.
+// The restart needs editable launch settings and a readiness probe on every platform.
+func TestLaunchModelAction_RequiresEditableLaunch(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
-	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "editable_launch") {
-		t.Errorf("launch_model without editable_launch: %v", err)
-	}
+
+	assert.ErrorContains(t, m.Validate(), "editable_launch")
 }

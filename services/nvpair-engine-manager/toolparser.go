@@ -87,12 +87,14 @@ func vllmPython(bin string) (string, error) {
 	return python, nil
 }
 
-func runToolParserProbe(bin, snapshot string) (toolParserProbe, error) {
+// runToolParserProbe runs the probe under ctx, so a start that is cancelled
+// (Stop, a remote caller giving up, service shutdown) stops it too.
+func runToolParserProbe(ctx context.Context, bin, snapshot string) (toolParserProbe, error) {
 	python, err := vllmPython(bin)
 	if err != nil {
 		return toolParserProbe{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), toolParserProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, toolParserProbeTimeout)
 	defer cancel()
 	// -I keeps the working directory and user site off the import path.
 	cmd := exec.CommandContext(ctx, python, "-I", "-c", toolParserProbeScript, snapshot)
@@ -111,13 +113,13 @@ func runToolParserProbe(bin, snapshot string) (toolParserProbe, error) {
 
 // detectToolParser returns the parser for the model in snapshot, probing it the
 // first time. A failed probe is not cached, so the next start tries again.
-func detectToolParser(bin, snapshot string) (string, []string, error) {
+func detectToolParser(ctx context.Context, bin, snapshot string) (string, []string, error) {
 	key := bin + "\x00" + snapshot
 	if cached, ok := toolParserCache.Load(key); ok {
 		probe := cached.(toolParserProbe)
 		return chooseToolParser(probe), probe.Matches, nil
 	}
-	probe, err := probeToolParsers(bin, snapshot)
+	probe, err := probeToolParsers(ctx, bin, snapshot)
 	if err != nil {
 		return "", nil, err
 	}

@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -50,14 +52,21 @@ func isConsolidatedWeights(name string) bool {
 	return strings.HasPrefix(base, "consolidated") && strings.HasSuffix(base, ".safetensors")
 }
 
-// selectHFFiles chooses the repository files to download and their total size:
-// the weights vLLM will load, plus config and tokenizer files. A repo with
+// isWeightFile reports whether a repository file holds model weights.
+func isWeightFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".safetensors") || hasSuffixAny(lower, hfAlternateWeights)
+}
+
+// selectHFFiles chooses the repository files to download, and the size of the
+// weights among them: the weights vLLM will load, plus config and tokenizer
+// files. Launch sizing uses the weight size, the bytes vLLM loads into memory. A repo with
 // safetensors does not also need its pickle weights. A repo that also ships
 // Mistral-format consolidated*.safetensors is loaded from those (vLLM's
 // load_format auto prefers them, with params.json and the Mistral tokenizer), so
 // its Hugging Face-format shards are not downloaded. File names that could be
 // read as an option or escape the cache are refused.
-func selectHFFiles(siblings []hfSibling) (files []string, total int64, err error) {
+func selectHFFiles(siblings []hfSibling) (files []string, weights int64, err error) {
 	hasSafetensors, mistralFormat := false, false
 	for _, f := range siblings {
 		if strings.HasSuffix(strings.ToLower(f.RFilename), ".safetensors") {
@@ -83,16 +92,16 @@ func selectHFFiles(siblings []hfSibling) (files []string, total int64, err error
 		if mistralFormat && strings.HasSuffix(lower, ".safetensors") && !isConsolidatedWeights(name) {
 			continue
 		}
-		if strings.HasSuffix(lower, ".safetensors") || hasSuffixAny(lower, hfAlternateWeights) {
+		if isWeightFile(name) {
 			hasWeights = true
+			weights += f.Size
 		}
 		files = append(files, name)
-		total += f.Size
 	}
 	if !hasWeights {
 		return nil, 0, errors.New("the repository has no safetensors or PyTorch weights this engine can load")
 	}
-	return files, total, nil
+	return files, weights, nil
 }
 
 func hasSuffixAny(s string, suffixes []string) bool {
@@ -104,11 +113,15 @@ func hasSuffixAny(s string, suffixes []string) bool {
 	return false
 }
 
-// hfRepoFiles lists a repository's files with sizes.
-func (e *Executor) hfRepoFiles(ctx context.Context, id string) ([]hfSibling, error) {
+// hfRepoFiles lists a repository's files with sizes at a revision.
+func (e *Executor) hfRepoFiles(ctx context.Context, id, revision string, env hfEnv) ([]hfSibling, error) {
 	ctx, cancel := context.WithTimeout(ctx, catalogHTTPTimeout)
 	defer cancel()
-	body, err := e.hfGet(ctx, hfAPIBase+"/"+id+"?blobs=true", maxCatalogBody)
+	listing := hfAPIBase + "/" + id
+	if revision != "" && revision != "main" {
+		listing += "/revision/" + url.PathEscape(revision)
+	}
+	body, err := e.hfGet(ctx, listing+"?blobs=true", maxCatalogBody, env)
 	if err != nil {
 		return nil, err
 	}
@@ -121,25 +134,25 @@ func (e *Executor) hfRepoFiles(ctx context.Context, id string) ([]hfSibling, err
 	return repo.Siblings, nil
 }
 
-// hfGet fetches a Hugging Face URL, with HF_TOKEN when set, and returns at most
-// limit bytes of the body. Errors say what the user can do about them.
-func (e *Executor) hfGet(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+// hfGet fetches a Hugging Face URL with the engine's HF_TOKEN, when set, and
+// returns at most limit bytes of the body. It makes no request when the engine
+// is set to work offline. Errors say what the user can do about them.
+func (e *Executor) hfGet(ctx context.Context, rawURL string, limit int64, env hfEnv) ([]byte, error) {
+	if env.offline() {
+		return nil, errors.New("HF_HUB_OFFLINE is set for this engine, so Hugging Face is not contacted")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "PAIR/1.0")
-	if token := os.Getenv("HF_TOKEN"); token != "" {
+	if token := env.get("HF_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := e.client.Do(req)
 	if err != nil {
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			err = urlErr.Err
-		}
-		return nil, fmt.Errorf("look up the model on Hugging Face: %w", err)
+		return nil, fmt.Errorf("look up the model on Hugging Face: %w", withoutURL(err))
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -154,66 +167,151 @@ func (e *Executor) hfGet(ctx context.Context, rawURL string, limit int64) ([]byt
 	return io.ReadAll(io.LimitReader(resp.Body, limit))
 }
 
-// hfFileBase serves repository files. A variable so tests can point it at a
-// local server.
-var hfFileBase = "https://huggingface.co"
+// hfEnv is the environment an engine's Hugging Face work runs in: the
+// engine's launch environment (the manifest's env and the user's assignments
+// in its launch settings) over the service's own, which is what the engine
+// process itself sees. PAIR's own requests and hf tool runs use it, so
+// HF_HUB_OFFLINE or an HF_TOKEN set for the engine applies to them too.
+type hfEnv map[string]string
 
-const (
-	// hfLookupTimeout bounds the model lookup a first start makes, so an
-	// unreachable Hugging Face delays the start by at most this much.
-	hfLookupTimeout = 10 * time.Second
-	// maxHFConfigBody is far above any model's config.json.
-	maxHFConfigBody = 1 << 20
-)
-
-// hfModelLookup supplies the config and download size of a model that is not in
-// the cache, and whether both were found.
-type hfModelLookup func(id string) (cfg hfModelConfig, size int64, ok bool)
-
-// lookupHFModel asks Hugging Face for a model's config.json and the size of the
-// files a download fetches, so a start that is about to download the model can
-// size its launch the same way as for a cached one. It reports false, and the
-// start falls back to sizing from free GPU memory, when offline, when the model is
-// gated without a token, or when the config lacks what sizing needs.
-func (e *Executor) lookupHFModel(ctx context.Context, id string) (hfModelConfig, int64, bool) {
-	var cfg hfModelConfig
-	if !hfModelIDRe.MatchString(id) || hfOffline() {
-		return cfg, 0, false
+// engineHFEnv returns the environment an engine's next start would get. A
+// manifest value that cannot be resolved without a running launch (a port, for
+// instance) is left out; Hugging Face settings never need one.
+func engineHFEnv(st *engineState) hfEnv {
+	st.mu.Lock()
+	rt := st.plat.Runtime
+	st.mu.Unlock()
+	vars := st.pathVars()
+	env := hfEnv{}
+	for key, template := range rt.Env {
+		if value, err := resolvePlaceholders(template, vars); err == nil {
+			env[key] = value
+		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, hfLookupTimeout)
-	defer cancel()
-	siblings, err := e.hfRepoFiles(ctx, id)
-	if err != nil {
-		slog.Info("model size lookup failed; the first start is sized from free GPU memory", "model", id, "err", err)
-		return cfg, 0, false
+	if rt.LaunchEnv != nil {
+		if literal, err := literalEnvironment(rt.LaunchEnv); err == nil {
+			for key, value := range literal {
+				for existing := range env {
+					if environmentKey(existing) == environmentKey(key) {
+						delete(env, existing)
+					}
+				}
+				env[key] = value
+			}
+		}
 	}
-	_, size, err := selectHFFiles(siblings)
-	if err != nil {
-		slog.Info("model size lookup found no loadable weights", "model", id, "err", err)
-		return cfg, 0, false
-	}
-	raw, err := e.hfGet(ctx, hfFileBase+"/"+id+"/resolve/main/config.json", maxHFConfigBody)
-	if err == nil {
-		err = json.Unmarshal(raw, &cfg)
-	}
-	if err != nil {
-		slog.Info("model config lookup failed; the first start is sized from free GPU memory", "model", id, "err", err)
-		return cfg, 0, false
-	}
-	if _, _, _, _, ok := cfg.text().kvShape(); !ok {
-		return cfg, 0, false
-	}
-	return cfg, size, true
+	return env
 }
 
-// hfOffline reports whether HF_HUB_OFFLINE asks Hugging Face tools not to use
-// the network.
-func hfOffline() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("HF_HUB_OFFLINE"))) {
+// get returns the engine's value for key, else the service's.
+func (env hfEnv) get(key string) string {
+	for name, value := range env {
+		if environmentKey(name) == environmentKey(key) {
+			return value
+		}
+	}
+	return os.Getenv(key)
+}
+
+// offline reports whether HF_HUB_OFFLINE asks Hugging Face tools not to use
+// the network, read the way huggingface_hub reads it.
+func (env hfEnv) offline() bool {
+	switch strings.ToLower(strings.TrimSpace(env.get("HF_HUB_OFFLINE"))) {
 	case "1", "on", "yes", "true":
 		return true
 	}
 	return false
+}
+
+// toolEnv is the environment for one run of the engine's hf tool: the engine's
+// own, without progress bars or telemetry.
+func (env hfEnv) toolEnv() map[string]string {
+	out := map[string]string{
+		"HF_HUB_DISABLE_PROGRESS_BARS": "1",
+		"HF_HUB_DISABLE_TELEMETRY":     "1",
+	}
+	for key, value := range env {
+		out[key] = value
+	}
+	return out
+}
+
+// hfFileBase serves repository files. A variable so tests can point it at a
+// local server.
+var hfFileBase = "https://huggingface.co"
+
+// maxHFConfigBody is far above any model's config.json.
+const maxHFConfigBody = 1 << 20
+
+// hfMetadataTimeout bounds the metadata fetch a first start makes, so an
+// unreachable Hugging Face delays the start by at most this much.
+const hfMetadataTimeout = 2 * time.Minute
+
+// hfPendingModel is a model a start is about to download: the snapshot that
+// already holds its config, tokenizer and chat template, fetched ahead of the
+// weights, and the bytes of the weights vLLM will load.
+type hfPendingModel struct {
+	snapshot string
+	weights  int64
+}
+
+// hfModelFetcher prepares a model that is not in the cache yet, at a revision,
+// and reports whether it could.
+type hfModelFetcher func(id, revision string) (hfPendingModel, bool)
+
+// fetchHFMetadata downloads a model's small files (config, tokenizer, chat
+// template and the like, everything a download fetches except the weights)
+// into the hub cache with the engine's hf tool, at the revision vLLM will load,
+// and sizes its weights from the repository listing. A start that is about to
+// download the model can then size its launch and choose its tool-call parser
+// from the same files as for a cached model, and vLLM finds those files
+// already there. It reports false, and the start goes ahead without them, when
+// the engine is offline, the model is gated without a token, or Hugging Face
+// cannot be reached.
+func (e *Executor) fetchHFMetadata(ctx context.Context, st *engineState, hubDir, id, revision string, env hfEnv) (hfPendingModel, bool) {
+	if !hfModelIDRe.MatchString(id) || env.offline() {
+		return hfPendingModel{}, false
+	}
+	toolName := ""
+	for _, act := range st.manifest.Actions {
+		if act.HFPull != nil {
+			toolName = act.HFPull.Tool
+		}
+	}
+	tool, err := hfToolPath(st, toolName)
+	if toolName == "" || err != nil {
+		slog.Info("no Hugging Face tool to fetch the model's metadata; the first start is sized from free GPU memory", "model", id, "err", err)
+		return hfPendingModel{}, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, hfMetadataTimeout)
+	defer cancel()
+	siblings, err := e.hfRepoFiles(ctx, id, revision, env)
+	if err != nil {
+		slog.Info("model lookup failed; the first start is sized from free GPU memory", "model", id, "err", err)
+		return hfPendingModel{}, false
+	}
+	files, weights, err := selectHFFiles(siblings)
+	if err != nil {
+		slog.Info("model lookup found no loadable weights", "model", id, "err", err)
+		return hfPendingModel{}, false
+	}
+	metadata := slices.DeleteFunc(files, isWeightFile)
+	args := append([]string{"download", id}, metadata...)
+	args = append(args, "--cache-dir", hubDir, "--revision", revision)
+	cmd := exec.CommandContext(ctx, tool, args...)
+	cmd.Env = os.Environ()
+	for key, value := range env.toolEnv() {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Info("fetching the model's metadata failed; the first start is sized from free GPU memory", "model", id, "err", err, "output", lastLines(string(out), hfErrorTail))
+		return hfPendingModel{}, false
+	}
+	snapshot, ok := hfSnapshotDir(hubDir, id, revision)
+	if !ok {
+		return hfPendingModel{}, false
+	}
+	return hfPendingModel{snapshot: snapshot, weights: weights}, true
 }
 
 // hfBlobBytes totals what is in a repository's blobs directory, which holds
@@ -233,8 +331,8 @@ func hfBlobBytes(repoDir string) int64 {
 }
 
 // hfToolPath finds the engine's Hugging Face CLI, named by a manifest's
-// hf_pull or hf_cache action, in the directory that holds the engine binary (a
-// vLLM virtualenv ships `hf` beside `vllm`).
+// hf_pull or hf_cache action, in the directory that holds the engine binary,
+// after following any link to it (a vLLM virtualenv ships `hf` beside `vllm`).
 func hfToolPath(st *engineState, name string) (string, error) {
 	st.mu.Lock()
 	binPath := st.binPath
@@ -245,6 +343,12 @@ func hfToolPath(st *engineState, name string) (string, error) {
 			return "", err
 		}
 		binPath = expandPath(bin)
+	}
+	// A vllm on PATH is often a link into the environment it was installed in
+	// (pipx, uv tool), and hf sits beside the real one, as Python does for
+	// vllmPython.
+	if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
+		binPath = resolved
 	}
 	tool := filepath.Join(filepath.Dir(binPath), name)
 	if _, err := os.Stat(tool); err != nil {
@@ -275,13 +379,20 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 	}
 
 	e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: id})
-	siblings, err := e.hfRepoFiles(ctx, id)
+	env := engineHFEnv(st)
+	siblings, err := e.hfRepoFiles(ctx, id, "main", env)
 	if err != nil {
 		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}
-	files, total, err := selectHFFiles(siblings)
+	files, _, err := selectHFFiles(siblings)
 	if err != nil {
 		return nil, fmt.Errorf("pull %q: %w", id, err)
+	}
+	var total int64
+	for _, f := range siblings {
+		if slices.Contains(files, f.RFilename) {
+			total += f.Size
+		}
 	}
 
 	repoDir := filepath.Join(hubDir, "models--"+strings.ReplaceAll(id, "/", "--"))
@@ -289,10 +400,7 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 	args = append(args, "--cache-dir", hubDir)
 	var tailMu sync.Mutex
 	var tail []string
-	proc, err := startManagedProc(tool, args, map[string]string{
-		"HF_HUB_DISABLE_PROGRESS_BARS": "1",
-		"HF_HUB_DISABLE_TELEMETRY":     "1",
-	}, func(_, line string) {
+	proc, err := startManagedProc(tool, args, env.toolEnv(), func(_, line string) {
 		if line = strings.TrimSpace(line); line != "" {
 			tailMu.Lock()
 			defer tailMu.Unlock()
