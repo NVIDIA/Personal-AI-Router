@@ -212,7 +212,7 @@ dir=$5
 echo "$*" >> "$dir/hf-calls"
 printf '%s' "${HF_TOKEN:-}" > "$dir/hf-token"
 repo="$dir/models--$(echo "${3#model/}" | sed 's#/#--#g')"
-if [ -n "$(find "$repo" -name hf-rm-waits)" ]; then touch "$dir/hf-running"; while [ ! -e "$dir/hf-release" ]; do sleep 0.05; done; fi
+if [ -n "$(find "$repo" -name hf-rm-waits)" ]; then touch "$dir/hf-running"; while [ -d "$dir" ] && [ ! -e "$dir/hf-release" ]; do sleep 0.05; done; fi
 if [ -n "$(find "$repo" -name hf-rm-fails)" ]; then echo "PermissionError: cannot remove $repo" >&2; exit 1; fi
 rm -rf "$repo"
 `
@@ -428,6 +428,8 @@ func TestDeleteHFModel_KeepsASettingsSaveMadeWhileTheToolRuns(t *testing.T) {
 	require.NoError(t, err)
 	edited := state.LaunchText + " --max-model-len 4096"
 
+	// However the test ends, release the fake hf so it does not wait forever.
+	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(cache, "hf-release"), nil, 0o600) })
 	deleted := make(chan error, 1)
 	go func() {
 		_, err := e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
