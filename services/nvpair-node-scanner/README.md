@@ -26,6 +26,9 @@ Concretely, the daemon:
   substitute for cluster pins.
   Verified record IDs are opaque and change with the local certificate or
   admission and the peer's exact pin or admission. Host UUIDs remain stable.
+  Further announcements from that observation stay hidden while its
+  authenticated association is current and its claimed host UUID is unchanged.
+  Changed claims require authentication before updating the verified record.
 - **Refreshes models** every 15 seconds from verified endpoints, preserving
   the last successful inventory during outages. A newly authenticated peer
   schedules a model refresh immediately. Remote model lists use pinned
@@ -53,19 +56,19 @@ Concretely, the daemon:
   previews to desktop and TUI through node snapshots and hardware updates.
 - **Follows live trust:** a pin addition schedules authentication. Pin removal,
   replacement, or local departure removes the verified row and its scanner
-  caches and drops affected idle connections. Requests recheck the current pin
+  caches, restores its known observations as unverified pairing candidates,
+  and drops affected idle connections. Requests recheck the current pin
   and serving identities before accepting results, including reused connections
   and reads already in progress.
 - **Advertises live membership:** the same reload re-derives this node's own `cluster-uuid=` from the cluster dir and re-advertises when it differs from what is being published, so joining or leaving a cluster takes effect without a restart.
-- **Retains verified peers during multicast gaps:** the browser retains its
-  twelve missed five-second scans and six empty-scan grace. A promoted peer's
-  authenticated inventory from the last 10 seconds, or approved inference
-  activity from the last 60 seconds, supplies liveness evidence. Canonical reads
-  continue on the sampling loop, without separate synchronous liveness probes.
-  An open TCP port or another discovery claiming that UUID cannot keep the peer alive.
-  A peer retained after its last discovery expires is still checked during
-  the sampling loop. A minute without authenticated inventory or inference
-  activity removes its scanner record and caches, preserving membership and pins.
+- **Expires observations independently of peer availability:** twelve missed
+  five-second scans retire an observation and its candidate caches, even when
+  the verified peer is still available. The canonical sampling loop keeps
+  reading the peer independently of multicast. After its last observation
+  expires, a minute without authenticated inventory or approved inference
+  activity removes the verified record and caches, preserving membership and
+  pins. An open TCP port or another discovery claiming that UUID cannot keep
+  the peer alive.
 - **Allows grace for empty scans:** with multiple known nodes, up to six
   consecutive empty scans receive a shared grace period of about 30 seconds.
   Later empty scans count toward each record's miss threshold. This allows for

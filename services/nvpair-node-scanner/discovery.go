@@ -4,8 +4,8 @@
 package main
 
 // These aliases expose the shared mDNS browser to the scanner. The daemon keys
-// discoveries by discoveryRecordId and supplies authenticated peer availability
-// checks. Scan timing and missed-scan limits use the shared defaults.
+// discoveries by discoveryRecordId. Announcement expiry uses the shared scan
+// timing and missed-scan limits, independently of authenticated peer availability.
 
 import "nvpair-shared/discovery"
 
@@ -17,10 +17,6 @@ type (
 
 // NewDiscovery builds the node browser with the shared defaults.
 var NewDiscovery = discovery.New
-
-// WithLivenessProbe lets the daemon retain a discovery using its verified peer's
-// authenticated inventory or approved inference activity.
-var WithLivenessProbe = discovery.WithLivenessProbe
 
 // WithKeyFunc lets the daemon key discoveries by discoveryRecordId, independently
 // of their claimed UUIDs. Distinct connection candidates remain separate.

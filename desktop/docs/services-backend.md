@@ -234,20 +234,19 @@ from scanner enrichment of each peer's engine-manager `/v1/models` endpoint.
 
 Scanner scans mDNS every five seconds and expires a discovery after twelve
 consecutive misses. When several known nodes disappear together, up to six
-empty scans receive a local-reception grace period.
-
-From the third missed scan, liveness checks use cached evidence from accepted
-sources:
-
-- authenticated node-info inventory received within the last ten seconds;
-- inference response bytes from the peer within the last minute. Engine facades
-  report `node/activity`, which the broker relays as `discovery:node-activity`.
+empty scans receive a local-reception grace period. Expiry clears the observation
+and its candidate caches independently of verified peer availability.
 
 The pinned-mTLS sampling loop refreshes inventory independently of mDNS.
 After a peer's final discovery expires, its verified record is retained while
 authenticated inventory or inference activity is less than a minute old.
-Removal clears the discovery records and measurements; membership and pins
-are owned by cluster-manager.
+Engine facades report inference response bytes through `node/activity`, which
+the broker relays as `discovery:node-activity`. Availability expiry removes the
+verified record and measurements; membership and pins are owned by cluster-manager.
+
+Ordinary announcement updates do not republish an observation already represented
+by a verified peer with the same current proof. Trust withdrawal removes the
+verified record and restores known observations as unverified pairing candidates.
 
 Eviction is a strong claim, not a guess: it is what fails the in-flight workloads
 pinned to that node (`node <name> went offline`). Personal AI Router consumes the
