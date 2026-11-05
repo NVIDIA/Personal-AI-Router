@@ -164,6 +164,10 @@ type Runtime struct {
 	// being served and the machine, at every start. Arguments the user saved
 	// always win, and nothing added here is written back to saved settings.
 	AutoLaunch *AutoLaunch `json:"auto_launch,omitempty"`
+	// UnsupportedWeights names weight formats this platform's engine cannot
+	// load. A start or download of such a model is refused with its reason,
+	// before the engine spends minutes downloading or loading it only to fail.
+	UnsupportedWeights *UnsupportedWeights `json:"unsupported_weights,omitempty"`
 	// Mode selects the lifecycle model: "process" means PAIR owns the launched
 	// foreground process; "command" means PAIR invokes commands that manage a
 	// separate daemon. Empty defaults to "process".
@@ -219,6 +223,21 @@ type AutoLaunch struct {
 }
 
 const autoLaunchHFContext = "hf_context"
+
+// UnsupportedWeights is a weight format a platform's engine cannot load, read
+// from a Hugging Face checkpoint the way vLLM reads it (see weightFormat).
+type UnsupportedWeights struct {
+	// Formats are the refused formats. The only one is "fp8": FP8 weights or an
+	// FP8 KV cache.
+	Formats []string `json:"formats"`
+	// ExceptModelTypes are config.json model_type values the engine loads in
+	// these formats anyway.
+	ExceptModelTypes []string `json:"except_model_types,omitempty"`
+	// Reason is what the refusal tells the user, including what to choose instead.
+	Reason string `json:"reason"`
+}
+
+const weightFormatFP8 = "fp8"
 
 type EditableLaunch struct {
 	FixedArgs  []string        `json:"fixed_args"`
@@ -852,6 +871,16 @@ func (p *Platform) validate(key string) error {
 		}
 		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
 			return fmt.Errorf("platform %q: auto_launch requires a process-mode runtime with editable_launch", key)
+		}
+	}
+	if rule := p.Runtime.UnsupportedWeights; rule != nil {
+		if len(rule.Formats) == 0 || strings.TrimSpace(rule.Reason) == "" {
+			return fmt.Errorf("platform %q: unsupported_weights needs formats and a reason", key)
+		}
+		for _, format := range rule.Formats {
+			if format != weightFormatFP8 {
+				return fmt.Errorf("platform %q: unsupported_weights format %q is not one of [%s]", key, format, weightFormatFP8)
+			}
 		}
 	}
 	if policy := p.Runtime.EditableLaunch; policy != nil {

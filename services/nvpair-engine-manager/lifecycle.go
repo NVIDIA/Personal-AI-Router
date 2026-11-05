@@ -254,6 +254,11 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		return e.fetchHFMetadata(ctx, st, hub, id, revision, hfEnv(launch.Env))
 	})
 	launch = applyAutoLaunch(ctx, engine, rt, launch, vars["models_dir"], fetch)
+	if err := checkLaunchWeights(rt.UnsupportedWeights, launch.Args, hub, fetch); err != nil {
+		werr := fmt.Errorf("start %s: %w", engine, err)
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
+		return werr
+	}
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()

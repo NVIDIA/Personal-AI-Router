@@ -162,6 +162,15 @@ needs no running engine. A gated repo needs its terms accepted and `HF_TOKEN`
 (or a prior `hf auth login`), in the service's environment or the engine's launch
 settings.
 
+On Apple Silicon, vLLM-Metal stores the KV cache in the model's dtype and
+refuses an FP8 KV cache, and its loader has no FP8 path for most model families.
+The `darwin/arm64` platform therefore declares `unsupported_weights` (see
+`MANIFEST.md`): a start or download of an FP8 checkpoint is refused with that
+reason before anything is loaded or downloaded, a failed Load keeps the model
+that was serving, and the Mac catalog leaves FP8 repositories out. Qwen3.5 and
+Qwen3.6, which vLLM-Metal dequantizes itself, are allowed. Linux, DGX Spark
+included, loads FP8 as before.
+
 Install is detect-first. `{install_dir}/venv/bin/vllm` (the managed install) and
 `~/.local/bin/vllm` are checked in that order, and the first one found is
 launched, so an existing install is adopted and nothing is downloaded. Otherwise

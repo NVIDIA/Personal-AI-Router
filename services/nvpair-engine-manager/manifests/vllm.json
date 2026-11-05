@@ -56,6 +56,13 @@
     },
     "darwin/arm64": {
       "detect": ["{install_dir}/venv/bin/vllm", "~/.venv-vllm-metal/bin/vllm"],
+      "runtime": {
+        "unsupported_weights": {
+          "formats": ["fp8"],
+          "except_model_types": ["qwen3_5", "qwen3_5_moe"],
+          "reason": "vLLM on Apple Silicon (vLLM-Metal) cannot load FP8 weights or an FP8 KV cache. Choose the model's BF16 version instead."
+        }
+      },
       "install": {
         "fetch": {
           "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-aarch64-apple-darwin.tar.gz",

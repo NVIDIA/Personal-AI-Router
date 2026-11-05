@@ -409,6 +409,19 @@ when no parser reads the model's tool calls. Tensor- or
 pipeline-parallel launches are left alone. It requires a process-mode runtime
 with `editable_launch`.
 
+A runtime **`unsupported_weights`** (`{"formats": ["fp8"], "except_model_types":
+[...], "reason": "..."}`) names checkpoint formats the platform's engine cannot
+load. `fp8` is the only format: FP8 weights or an FP8 KV cache, read the way
+vLLM reads them (`quant_method` `fp8` or `fbgemm_fp8`, a compressed-tensors
+float 8-bit scheme, or ModelOpt's FP8 `quant_algo` / `kv_cache_quant_algo` in
+`config.json` or `hf_quant_config.json`). A model whose `config.json`
+`model_type` is listed in `except_model_types` is allowed. A start of such a
+model is refused before the engine loads it, a `pull_model` before it
+downloads, and `engine:catalog` leaves FP8 repositories out for a target
+platform that declares the rule. `reason` is shown to the user. Validation
+requires a known format and a reason. The bundled vLLM manifest declares it for
+`darwin/arm64` only.
+
 An optional **`restart_after`** restarts the engine once the action succeeds.
 Declare it on an action that changes state the engine only reads at startup:
 LM Studio's `delete_model` removes the files, but its server answers
@@ -489,7 +502,8 @@ field is missing, `manifest_version` is unsupported, a platform key isn't
 nor nonempty `artifacts`, `fetch` or nonempty `artifacts` is present without
 nonempty `install.run`, `install.script` is combined with
 `fetch`/`artifacts`/`run`, `install.mode` or
-`runtime.mode` is invalid, `models_dir` is a template rather than a literal
+`runtime.mode` is invalid, `runtime.unsupported_weights` lacks a reason or
+names a format other than `fp8`, `models_dir` is a template rather than a literal
 path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
 is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),

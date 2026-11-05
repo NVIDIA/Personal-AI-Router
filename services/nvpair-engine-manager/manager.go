@@ -394,6 +394,9 @@ func (m *Manager) runCatalog(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32603, err.Error())
 		return
 	}
+	// A target whose engine cannot load some weights is not offered them, as
+	// filterForTarget does for MLX. The rule is the target's, not this host's.
+	res.Models = withoutUnsupportedWeights(res.Models, m.exec.unsupportedWeightsFor(normalizeCatalogEngine(p.Engine), res.Platform, res.Arch))
 	m.codec.Respond(msg.ID, res)
 }
 

@@ -388,6 +388,12 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 	if err != nil {
 		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}
+	st.mu.Lock()
+	rule := st.plat.Runtime.UnsupportedWeights
+	st.mu.Unlock()
+	if err := e.checkRepoWeights(ctx, rule, id, files, env); err != nil {
+		return nil, fmt.Errorf("pull %q: %w", id, err)
+	}
 	var total int64
 	for _, f := range siblings {
 		if slices.Contains(files, f.RFilename) {
