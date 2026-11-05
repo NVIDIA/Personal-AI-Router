@@ -485,8 +485,11 @@ change directory metadata or scheduling telemetry precedence.
 Unrelated directory/model updates retain the original observation only
 while its source, proof, trust, and target are unchanged. Removing a source or
 replacing its endpoint/proof withdraws that hardware without erasing independent
-sources. Queries and subscription baselines are serialized with hardware pushes
-so an old baseline cannot follow a newer update.
+sources. Client queries and subscription baselines share an output lock with
+hardware pushes so an old baseline cannot follow a newer update. Snapshot capture
+uses the store's own lock, which is released before writing the client reply.
+Queries and subscriptions do not wait for worker delivery; they return the latest
+cached state even while a worker's stdin blocks the discovery update handler.
 
 Public HTTP supplies automatic display previews of eligible unverified
 records, independently of whether a pairing screen is open. Scanner uses a
