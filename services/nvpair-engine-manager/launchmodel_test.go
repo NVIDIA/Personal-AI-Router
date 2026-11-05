@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -394,11 +395,41 @@ func TestStop_CancelsAStartThatIsStillLoading(t *testing.T) {
 	require.NoError(t, e.Stop("fake"))
 
 	assert.Less(t, time.Since(began), 4*time.Second, "Stop waited out the start")
-	require.Error(t, <-started)
+	require.ErrorIs(t, <-started, errStartStopped, "the start says the user stopped it")
 	assert.False(t, mustStatus(t, e).Running)
 	for _, reported := range e.reporter.snapshot() {
 		assert.NotEqual(t, startFailedID("fake"), reported.ID, "a start the user stopped was reported as failed")
 	}
+}
+
+// engine:start that a Stop cut short replies with the engine's status, stopped,
+// not an error: the user asked for it, and the error would carry the cancelled
+// engine's partial output. A caller that waits for the reply, such as the
+// desktop's first-open start, would otherwise report a failed start.
+func TestRunOp_AnswersAStartTheUserStoppedWithTheStoppedStatus(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	slowStarts(t, e)
+	var out bytes.Buffer // read only after the reply, so no lock is needed
+	m := NewManager(NewCodec(&out), e, nil)
+	id := json.RawMessage("7")
+	replied := make(chan struct{})
+	go func() {
+		m.runOp(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start", Params: json.RawMessage(`{"engine":"fake"}`)})
+		close(replied)
+	}()
+	waitForStartInFlight(t, e)
+
+	require.NoError(t, e.Stop("fake"))
+	<-replied
+
+	var reply struct {
+		Result *EngineStatus    `json:"result"`
+		Error  *json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &reply), out.String())
+	require.Nil(t, reply.Error, "a start the user stopped is not an error: %s", out.String())
+	require.NotNil(t, reply.Result)
+	assert.False(t, reply.Result.Running)
 }
 
 // loadOutcome is a load_model call's result and error.

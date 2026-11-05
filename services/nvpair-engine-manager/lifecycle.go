@@ -98,10 +98,20 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
+		// A Stop that cancelled this start waits for opMu, which is still held
+		// here, so it is still counted as waiting.
+		if e.stopWaiting(st) && !e.shuttingDown.Load() {
+			return fmt.Errorf("%w: %w", errStartStopped, err)
+		}
 		return err
 	}
 	return e.setDesiredEnabled(engine, true)
 }
+
+// errStartStopped marks a start that a Stop or Eject cut short. The user asked
+// for that, so callers answer with the engine's status, stopped, rather than an
+// error carrying the cancelled engine's partial output.
+var errStartStopped = errors.New("the start was stopped")
 
 // doStart performs the start. Callers must hold st.opMu.
 func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, opts startOpts) error {

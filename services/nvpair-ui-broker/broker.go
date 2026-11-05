@@ -3431,7 +3431,20 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	}
 
 	requestedEngine, requestedPort, isEnginePortAssignment := enginePortAssignmentRequest(msg.Method, msg.Params)
-	if isEnginePortAssignment || msg.Method == "engine:stop" || msg.Method == "engine:start" || msg.Method == "engine:restart" {
+	switch {
+	case msg.Method == "engine:stop":
+		// A Stop must reach the engine manager while a Start is still waiting for
+		// readiness, which can take minutes, because cancelling that Start is
+		// what it is for. The Start holds the lock for that whole time, so a
+		// Stop that waited for it would only arrive after the Start had finished
+		// on its own. A Stop changes no launch settings, so it takes the lock
+		// only afterwards, to reconcile, once its reply is sent.
+		defer func() {
+			b.engineConfigMu.Lock()
+			defer b.engineConfigMu.Unlock()
+			b.reconcileLegacySettingsLocked()
+		}()
+	case isEnginePortAssignment || msg.Method == "engine:start" || msg.Method == "engine:restart":
 		b.engineConfigMu.Lock()
 		defer b.engineConfigMu.Unlock()
 		defer b.reconcileLegacySettingsLocked()

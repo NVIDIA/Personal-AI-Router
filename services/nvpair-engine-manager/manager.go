@@ -337,7 +337,9 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 	case "engine:uninstall":
 		err = m.exec.Uninstall(ctx, p.Engine)
 	case "engine:start":
-		err = start()
+		if err = start(); errors.Is(err, errStartStopped) {
+			err = nil
+		}
 	case "engine:stop":
 		err = m.exec.Stop(p.Engine)
 	case "engine:restart":
