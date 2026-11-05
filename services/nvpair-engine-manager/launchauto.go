@@ -116,14 +116,13 @@ func parseMeminfo(text string) (total, available int64, ok bool) {
 // argument the user supplied, so anything set in the engine settings wins.
 //
 // hub is the Hugging Face hub cache the engine will use. fetch, when not nil,
-// prepares a model that is not in the cache yet, so a first start that
-// downloads it is configured for it too. It is called at most once.
+// prepares the model the launch serves when it is not in the cache yet, so a
+// first start that downloads it is configured for it too. Sizing and the
+// tool-call parser both read it, so it must return the same result on every
+// call; a start builds it with sync.OnceValues.
 func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command launchCommand, hub string, fetch hfModelFetcher) launchCommand {
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
-	}
-	if fetch != nil {
-		fetch = onceHFFetch(fetch)
 	}
 	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch)
 	if tools, parser := planToolCalling(ctx, command.Args, hub, command.Bin, fetch); len(tools) > 0 {
@@ -140,23 +139,6 @@ func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command lau
 	slog.Info("engine launch adjusted for the model and GPU", "engine", engine, "added_args", extra, "reason", note)
 	command.Args = slices.Concat(command.Args, extra)
 	return command
-}
-
-// onceHFFetch returns fetch, called at most once: sizing and the tool-call
-// parser read the same model.
-func onceHFFetch(fetch hfModelFetcher) hfModelFetcher {
-	var (
-		done    bool
-		pending hfPendingModel
-		ok      bool
-	)
-	return func(id, revision string) (hfPendingModel, bool) {
-		if !done {
-			done = true
-			pending, ok = fetch(id, revision)
-		}
-		return pending, ok
-	}
 }
 
 // planMaxNumSeqs returns --max-num-seqs with the manifest's limit, unless the
@@ -329,7 +311,7 @@ func findLaunchModel(args []string, hubDir string, fetch hfModelFetcher) (hfLaun
 	if fetch == nil {
 		return hfLaunchModel{}, false
 	}
-	pending, ok := fetch(model, revision)
+	pending, ok := fetch()
 	if !ok {
 		return hfLaunchModel{}, false
 	}

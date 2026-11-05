@@ -285,10 +285,15 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 		return err
 	}
-	// The hub cache vLLM itself will use, from the environment it is started with.
-	hub := hfEnv(launch.Env).hubCache()
-	fetch := onceHFFetch(func(id, revision string) (hfPendingModel, bool) {
-		return e.fetchHFMetadata(ctx, st, hub, id, revision, hfEnv(launch.Env))
+	// The hub cache vLLM itself will use, from the environment it is started
+	// with, and the model it serves. Auto-launch adds sizing and parser flags
+	// but never changes --model or --revision, so they are read once here.
+	env := hfEnv(launch.Env)
+	hub := env.hubCache()
+	model, _ := launchFlagValue(launch.Args, "--model")
+	revision := hfRevision(launch.Args)
+	fetch := sync.OnceValues(func() (hfPendingModel, bool) {
+		return e.fetchHFMetadata(ctx, st, hub, model, revision, env)
 	})
 	launch = applyAutoLaunch(ctx, engine, rt, launch, hub, fetch)
 	if err := checkLaunchWeights(rt.UnsupportedWeights, launch.Args, hub, fetch); err != nil {

@@ -135,7 +135,7 @@ func checkLaunchWeights(rule *UnsupportedWeights, args []string, hubDir string, 
 	revision := hfRevision(args)
 	snapshot, ok := hfSnapshotDir(hubDir, model, revision)
 	if !ok {
-		pending, fetched := fetch(model, revision)
+		pending, fetched := fetch()
 		if !fetched {
 			return nil
 		}

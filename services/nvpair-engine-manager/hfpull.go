@@ -345,9 +345,11 @@ type hfPendingModel struct {
 	weights  int64
 }
 
-// hfModelFetcher prepares a model that is not in the cache yet, at a revision,
-// and reports whether it could.
-type hfModelFetcher func(id, revision string) (hfPendingModel, bool)
+// hfModelFetcher prepares the model a start serves, at the revision it loads,
+// when that model is not in the cache yet, and reports whether it could. A start
+// builds one with sync.OnceValues, so sizing, the tool-call parser and the
+// weight check share a single fetch.
+type hfModelFetcher func() (hfPendingModel, bool)
 
 // fetchHFMetadata downloads a model's small files (config, tokenizer, chat
 // template and the like, everything a download fetches except the weights)

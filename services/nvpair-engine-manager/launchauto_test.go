@@ -39,14 +39,13 @@ func cachedModelAt(t *testing.T, cache, id, config string, weightBytes int64) {
 
 // pendingModel stands in for a model this start downloads: fetch puts its
 // config and tokenizer in cache, as the metadata fetch does, and reports its
-// weight bytes.
+// weight bytes. Like the fetch a start builds, it runs once.
 func pendingModel(t *testing.T, cache, id, config string, weightBytes int64) hfModelFetcher {
 	t.Helper()
-	return func(gotID, revision string) (hfPendingModel, bool) {
-		assert.Equal(t, id, gotID, "fetched another model than the one being started")
+	return sync.OnceValues(func() (hfPendingModel, bool) {
 		repo := writeHFRepo(t, cache, id, map[string]string{"config.json": config, "tokenizer.json": "{}"})
 		return hfPendingModel{snapshot: filepath.Join(repo, "snapshots", "abc123"), weights: weightBytes}, true
-	}
+	})
 }
 
 func withGPU(t *testing.T, totalGiB, freeGiB int64) {
@@ -533,8 +532,8 @@ func TestAutoContext_FirstStartOfAnUncachedModelGetsRoomForItsWeights(t *testing
 func TestAutoContext_DoesNotFetchACachedModel(t *testing.T) {
 	withGPU(t, 48, 48)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
-	fetch := func(id, revision string) (hfPendingModel, bool) {
-		t.Fatalf("fetched %q although it is cached", id)
+	fetch := func() (hfPendingModel, bool) {
+		t.Fatal("fetched a model although it is cached")
 		return hfPendingModel{}, false
 	}
 
@@ -767,8 +766,8 @@ func TestFetchHFMetadata_FallsBackWhenHuggingFaceCannotAnswer(t *testing.T) {
 			// The start then falls back to the capped share, as before: 15 GiB
 			// free less the 1 GiB margin is 0.87 of 16 GiB.
 			withGPU(t, 16, 15)
-			extra, _ := planHFContext([]string{"--model", "org/model"}, f.hub, 65536, func(id, revision string) (hfPendingModel, bool) {
-				return f.fetch(t, id, revision)
+			extra, _ := planHFContext([]string{"--model", "org/model"}, f.hub, 65536, func() (hfPendingModel, bool) {
+				return f.fetch(t, "org/model", "main")
 			})
 			assert.InDelta(t, 0.87, utilOf(t, extra), 0.0001)
 			assert.NotContains(t, extra, "--max-model-len")

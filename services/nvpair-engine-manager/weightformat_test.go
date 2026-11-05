@@ -210,7 +210,7 @@ func TestPullHFModel_RefusesAModelThePlatformCannotLoad(t *testing.T) {
 func TestCheckLaunchWeights_ReadsTheModelThisStartServes(t *testing.T) {
 	hub := t.TempDir()
 	writeHFRepo(t, hub, "org/cached-fp8", llmFiles(map[string]string{"config.json": qwenFP8Config, "model.safetensors": "w"}))
-	noFetch := func(id, revision string) (hfPendingModel, bool) { return hfPendingModel{}, false }
+	noFetch := func() (hfPendingModel, bool) { return hfPendingModel{}, false }
 
 	require.ErrorContains(t, checkLaunchWeights(macFP8Rule, []string{"serve", "--model", "org/cached-fp8"}, hub, noFetch), "org/cached-fp8 is an FP8 model")
 	assert.NoError(t, checkLaunchWeights(macFP8Rule, []string{"serve", "--model", "org/unknown"}, hub, noFetch), "a model that cannot be read is left to vLLM")
@@ -218,7 +218,7 @@ func TestCheckLaunchWeights_ReadsTheModelThisStartServes(t *testing.T) {
 
 	pending := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(pending, "config.json"), []byte(compressedFP8Config), 0o644))
-	fetch := func(id, revision string) (hfPendingModel, bool) { return hfPendingModel{snapshot: pending}, true }
+	fetch := func() (hfPendingModel, bool) { return hfPendingModel{snapshot: pending}, true }
 	assert.ErrorContains(t, checkLaunchWeights(macFP8Rule, []string{"serve", "--model", "org/not-yet-downloaded"}, hub, fetch), "org/not-yet-downloaded is an FP8 model")
 }
 
