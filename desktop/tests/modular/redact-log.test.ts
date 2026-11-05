@@ -71,7 +71,12 @@ describe('redactSensitiveLogText', () => {
             id: 3,
             result: {
                 nodes: [
-                    { id: 'custom-1', host: 'vllm.internal', port: 8000, apiKey: 'sk-abc123def456' },
+                    {
+                        id: 'custom-1',
+                        host: 'vllm.internal',
+                        port: 8000,
+                        apiKey: 'sk-abc123def456'
+                    },
                     { id: 'custom-2', host: 'mtplx.home', port: 8000, api_key: 'sk-xyz789' }
                 ]
             }

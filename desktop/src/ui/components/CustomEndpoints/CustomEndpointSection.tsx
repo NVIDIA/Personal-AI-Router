@@ -8,10 +8,7 @@ import { CustomEndpointAddForm } from './CustomEndpointAddForm'
 import { CustomEndpointCard } from './CustomEndpointCard'
 import { CustomProxyPortField } from './CustomProxyPortField'
 import { customEndpointsUnavailableLabel } from '@/ui/utils/custom-endpoints'
-import type {
-    CustomEndpointInfo,
-    CustomProxyPortState
-} from '@/shared/types/custom-endpoints'
+import type { CustomEndpointInfo, CustomProxyPortState } from '@/shared/types/custom-endpoints'
 import getErrorString from '@/shared/utils/get-error-string'
 
 /**
