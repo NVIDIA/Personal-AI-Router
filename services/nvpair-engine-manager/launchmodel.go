@@ -58,9 +58,10 @@ func (l *launchEdit) save(ctx context.Context, launchText string, resume bool) e
 
 // restore puts back the launch text this change started from, and starts the
 // engine again if it was running then, unless a Stop or Eject is waiting: the
-// user asked for the engine to be off, so it is left stopped. It does not depend on the caller still
-// waiting: a remote caller that gives up cancels ctx mid-start, and a restore
-// under that ctx would fail at once and leave the engine down.
+// user asked for the engine to be off, so it is left stopped. It does not
+// depend on the caller still waiting: a remote caller that gives up cancels ctx
+// mid-start, and a restore under that ctx would fail at once and leave the
+// engine down.
 func (l *launchEdit) restore(ctx context.Context) error {
 	return l.save(context.WithoutCancel(ctx), l.before.LaunchText, l.before.Running && !l.e.stopWaiting(l.st))
 }
