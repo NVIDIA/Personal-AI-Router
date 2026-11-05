@@ -40,6 +40,11 @@ const (
 	// detailInputLaunchArgs edits the arguments and environment an engine is
 	// started with, in the notation LAUNCH_TEXT.md describes.
 	detailInputLaunchArgs
+	// detailInputCustomPort edits the Custom facade's listen port. It is not one
+	// of the three engine settings: Custom fronts endpoints rather than a process
+	// this node starts, so it has no launch, no launch arguments, and no revision
+	// to write against - a port on its own plane, with a field of its own.
+	detailInputCustomPort
 )
 
 // nodeDetail is the drill-down for one machine: its engines and the models each
@@ -69,6 +74,13 @@ type nodeDetail struct {
 	// port a client connects to sits beside the engine it reaches. Left nil for
 	// a peer, whose proxies we do not configure.
 	proxy *proxyTracker
+
+	// custom is this node's custom-endpoint configuration, read once when
+	// the screen opens through custom/list. Read-only on purpose: an
+	// endpoint is configuration, edited on the node that owns it, not while
+	// browsing engines - and none of the four model operations means
+	// anything on a Custom endpoint (see modelCmd's unmanaged refusal).
+	custom customSection
 
 	// catalog is the open download browser, nil when it is closed. It replaces
 	// the whole detail screen while up: it is a list needing its own search and
@@ -195,6 +207,12 @@ var (
 	// engine's own port, p for the proxy fronting it.
 	detailPortKey  = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "engine port"))
 	detailProxyKey = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "proxy port"))
+	// The Custom facade's port is not one of those three fields: it fronts a class
+	// of external endpoints rather than a process, so there is no engine under the
+	// cursor to hold it and no revision to write it against. c for "custom" -
+	// unused in the engines pane; the catalog browser's c is a different screen.
+	detailCustomPortKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "custom port"))
+
 	// a for arguments, the word the backend's own notation uses. Free in this
 	// screen: the letter is taken on the Nodes list and the Jobs tab, but those
 	// are other views, and this one is full-screen.
@@ -300,6 +318,21 @@ func (d *nodeDetail) Init() tea.Cmd {
 	// reading schedules the next one when it lands, so there is exactly one
 	// chain and it cannot outrun a slow node.
 	cmds := []tea.Cmd{d.enginesCmd(), d.modelsCmd(), d.telemetryCmd()}
+	// The endpoint read joins the open-time batch: configuration a peer
+	// keeps, like the engine list, is asked once on opening and never
+	// subscribed to, and it is skipped entirely where no answer exists
+	// (customQueryable).
+	if cmd := d.customCmd(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	// The facade port is a second call rather than a second field of the same
+	// reply because the two questions have different authorities - persisted
+	// configuration versus a live listener - and a node can answer one and refuse
+	// the other. Asked on the same one-shot terms, and skipped on the same
+	// conditions (customQueryable).
+	if cmd := d.customPortCmd(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	if d.proxy != nil {
 		cmds = append(cmds, d.proxy.init(d.client))
 	}
@@ -428,6 +461,10 @@ func (d *nodeDetail) followNode(row nodeRow, found bool) {
 		d.engines = nil
 		d.enginesStale = false
 		d.refreshEngines()
+		// The endpoint list rode the same trusted channel as the engine
+		// list, so leaving the cluster strands it the same way. Dropping it
+		// before the re-size takes the section out with it.
+		d.custom = customSection{}
 		d.sizeEngineTable()
 	}
 }
@@ -496,9 +533,10 @@ func (d *nodeDetail) sizeEngineTable() {
 	if want > maxEngineRows {
 		want = maxEngineRows
 	}
-	// Everything the engine table must not crowd out: the fixed furniture, the
-	// hardware block, and a minimal models table.
-	reserved := detailChromeRows + d.hardwareHeight() + (1 + tableHeaderRows)
+	// Everything the engine table must not crowd out: the fixed furniture,
+	// the hardware block, the custom-endpoint section, and a minimal models
+	// table.
+	reserved := detailChromeRows + d.hardwareHeight() + d.customHeight() + (1 + tableHeaderRows)
 	if room := d.height - reserved; room < want {
 		want = clampWidth(room, 1+tableHeaderRows)
 	}
@@ -613,6 +651,47 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		d.models = msg.models
 		d.refreshModels()
+		return nil, true
+
+	case detailCustomMsg:
+		// Recorded, not toasted: the section speaks in its own place, the
+		// way an unreachable node's hardware readout does, and the answer
+		// arrives verbatim - the unified unavailable message already names
+		// the trouble and the fix.
+		//
+		// The facade port survives the swap. Both Custom reads go out in the
+		// open-time batch, so either can land second, and rebuilding the whole
+		// section here would drop a port that had already arrived.
+		was := d.customHeight()
+		if msg.note != "" {
+			d.custom = customSection{note: msg.note, port: d.custom.port}
+		} else {
+			d.custom = customSection{endpoints: msg.endpoints, port: d.custom.port}
+		}
+		if d.customHeight() != was {
+			d.sizeEngineTable()
+		}
+		return nil, true
+
+	case detailCustomPortMsg:
+		// Recorded the same way, and merged into the section rather than
+		// replacing it. A port the node did not name (Port 0) is not recorded:
+		// this machine's own default says nothing about the node on screen, and a
+		// number of that kind gets read as a fact.
+		if d.custom.port != msg.port {
+			was := d.customHeight()
+			d.custom.port = msg.port
+			if d.customHeight() != was {
+				d.sizeEngineTable()
+			}
+		}
+		return nil, true
+
+	case customPortApplyMsg:
+		// The one Custom answer that belongs in the status line, because it
+		// replies to a keystroke. No re-measuring: the field only opens with a
+		// port line already on the frame, and that line is one row either way.
+		d.applyCustomPort(msg)
 		return nil, true
 
 	case engineOpMsg:
@@ -1054,6 +1133,11 @@ func (d *nodeDetail) handleEngineKey(msg tea.KeyMsg) tea.Cmd {
 		return d.editSetting(engine, detailInputProxyPort)
 	case key.Matches(msg, detailArgsKey):
 		return d.editSetting(engine, detailInputLaunchArgs)
+	// Not about the selected engine: the Custom facade fronts a class of external
+	// endpoints, not the process under the cursor, so the key is answered whatever
+	// row is selected - including none.
+	case key.Matches(msg, detailCustomPortKey):
+		return d.editCustomPort()
 	}
 	var cmd tea.Cmd
 	d.engineTable, cmd = d.engineTable.Update(msg)
@@ -1228,6 +1312,12 @@ func (d *nodeDetail) submitInput() tea.Cmd {
 
 	case detailInputEnginePort, detailInputProxyPort, detailInputLaunchArgs:
 		return d.submitSettings(mode, d.input.Value(), val)
+
+	// Not through submitSettings: that path is one backend operation over a
+	// revision, and the Custom plane has neither. The port goes straight to the
+	// proxy's own rebind, and the node's answer is the verdict.
+	case detailInputCustomPort:
+		return d.submitCustomPort(val)
 	}
 	return nil
 }
@@ -1837,6 +1927,7 @@ func (d *nodeDetail) View() string {
 	const separator = " "
 	status := d.status.render()
 	hardware := d.hardwareBlock()
+	custom := d.customBlock()
 	enginesHeading := d.paneHeading("Engines", detailEngines)
 	modelsHeading := d.paneHeading("Models", detailModels)
 
@@ -1846,7 +1937,8 @@ func (d *nodeDetail) View() string {
 	// it holds three rows it cannot afford and the status line pays for them.
 	if len(d.engines) > 0 {
 		engineRoom := d.height - countLines(identity) - countLines(hardware) -
-			countLines(enginesHeading) - countLines(editor) - countLines(status)
+			countLines(custom) - countLines(enginesHeading) -
+			countLines(editor) - countLines(status)
 		// Against what will actually be rendered, not against the table's
 		// minimum. The section is a row taller than the table whenever the list
 		// is stale — the "not answering" note — which is the ordinary state for
@@ -1854,7 +1946,7 @@ func (d *nodeDetail) View() string {
 		// through at exactly the sizes where it did not fit.
 		if engineRoom < countLines(enginesBody) {
 			d.enginesHidden, d.modelsHidden = true, true
-			return joinLines(identity, hardware, enginesHeading,
+			return joinLines(identity, hardware, custom, enginesHeading,
 				footerStyle.Render(fmt.Sprintf(
 					"  (too little room to list %d engine(s))", len(d.engines))),
 				editor, status)
@@ -1865,7 +1957,7 @@ func (d *nodeDetail) View() string {
 	// what is left decides how much of that section can appear. Measuring the
 	// real strings — including the editor and status line, which come and go —
 	// is what keeps the frame exact whichever of them are on screen.
-	above := countLines(identity) + countLines(hardware) +
+	above := countLines(identity) + countLines(hardware) + countLines(custom) +
 		countLines(enginesHeading) + countLines(enginesBody) +
 		countLines(editor) + countLines(status)
 	room := d.height - above
@@ -1878,7 +1970,7 @@ func (d *nodeDetail) View() string {
 	d.enginesHidden = false
 	if room < sectionChrome+1 {
 		d.modelsHidden = true
-		return joinLines(identity, hardware, enginesHeading, enginesBody, editor, status)
+		return joinLines(identity, hardware, custom, enginesHeading, enginesBody, editor, status)
 	}
 
 	d.modelsHidden = false
@@ -1895,6 +1987,7 @@ func (d *nodeDetail) View() string {
 	return joinLines(
 		identity,
 		hardware,
+		custom,
 		enginesHeading,
 		enginesBody,
 		separator,
@@ -2056,6 +2149,11 @@ func (d *nodeDetail) inputLabel() string {
 		return "engine port: "
 	case detailInputProxyPort:
 		return "proxy port: "
+	// Named in full, and named "Custom": three engine proxy ports and one Custom
+	// facade port can be open on the same screen within seconds of each other,
+	// and "proxy port: " twice says nothing about which one a typed number moves.
+	case detailInputCustomPort:
+		return "custom proxy port: "
 	case detailInputLaunchArgs:
 		return "arguments: "
 	default:
@@ -2089,6 +2187,15 @@ func (d *nodeDetail) Help() []key.Binding {
 		// relays them, and whether a particular engine will accept the write
 		// is the snapshot's answer, given when the key is pressed.
 		bindings = append(bindings, detailPortKey, detailProxyKey, detailArgsKey)
+		// Offered only where it can open. The three above ask the backend whether
+		// the engine is configurable and let it refuse; this one's availability is
+		// settled here, so gating it keeps the footer from advertising a key whose
+		// only possible answer is a refusal. The handler still answers a blind
+		// press, because a peer's port really is displayed and someone reading
+		// this footer a screen earlier has every reason to try.
+		if d.customPortEditable() {
+			bindings = append(bindings, detailCustomPortKey)
+		}
 		if !d.remote() {
 			bindings = append(bindings, detailRestartKey, detailUninstKey)
 		}

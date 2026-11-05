@@ -163,6 +163,24 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			res.LoadedByEngine[engineNames[i]] = ld
 		}
 	}
+
+	// Custom contributes without being swept (see custommodels.go): the
+	// broker pushed the set, so there is no engine to query and no
+	// listOK/loadedOK slot. Merging after the sweep keeps the flat union's
+	// de-duplication intact: a model served both by a Custom endpoint and a
+	// manifest engine is listed once and still attributed to its engine.
+	if custom := e.CustomModels(); len(custom) > 0 {
+		if res.ByEngine == nil {
+			res.ByEngine = make(map[string][]string)
+		}
+		res.ByEngine["custom"] = custom
+		for _, m := range custom {
+			if m != "" && !seen[m] {
+				seen[m] = true
+				res.Models = append(res.Models, m)
+			}
+		}
+	}
 	return res
 }
 

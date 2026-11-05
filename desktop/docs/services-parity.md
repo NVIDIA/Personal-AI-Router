@@ -253,9 +253,11 @@ Personal AI Router uses:
 - llama.cpp `load_model`, `unload_model`, and `delete_model` (`DELETE /models`
   with URL-encoded query params).
 
-All three engines expose Load, Eject, and Delete in the model manager.
-User-configurable keep-alive / expiry controls remain unsupported; managed
-llama.cpp uses its fixed five-minute idle sleep.
+The three managed engines above expose Load, Eject, and Delete in the model
+manager. Custom endpoints take no part: an external service manages its own
+models, so the model manager stays closed for that engine. User-configurable
+keep-alive / expiry controls remain unsupported; managed llama.cpp uses its
+fixed five-minute idle sleep.
 
 LM Studio's `delete_model` declares `restart_after`, so the engine manager
 restarts a running LM Studio once the files are removed — its `/v1/models` is

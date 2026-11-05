@@ -23,7 +23,23 @@ func TestOllama_IsPreparedFirst(t *testing.T) {
 }
 
 func TestEngineNames_ReturnsCanonicalOrder(t *testing.T) {
-	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp"}, Names())
+	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp", "custom"}, Names())
+}
+
+// "custom" fronts user-added external endpoints: PAIR never installs,
+// launches, or relocates anything behind it. Unmanaged is what tells every
+// launcher-shaped consumer — broker port preparation, engine-manager
+// manifests — to skip it, and EnginePortBase 0 encodes "there is no
+// relocated engine process whose port must be freed". Custom joins the set
+// last because everything written for the managed three predates it.
+func TestCustom_IsAnUnmanagedEngineKind(t *testing.T) {
+	custom, ok := ByName("custom")
+	require.True(t, ok, "custom must be a declared engine")
+	assert.True(t, custom.Unmanaged, "custom is routing-only: no manifest, no launch lifecycle")
+	assert.Zero(t, custom.EnginePortBase, "no managed engine process sits behind the custom facade")
+	assert.Equal(t, 8000, custom.FacadePort)
+	assert.Equal(t, "custom-proxy-port.json", custom.PortFile)
+	assert.Equal(t, noderec.ServiceCustom, custom.DiscoveryService)
 }
 
 // There are two proxy identities: ComponentName per facade, ProxyComponent per
@@ -49,12 +65,18 @@ func TestEngineProfiles_DeclareProxyIdentities(t *testing.T) {
 
 // TestFacadeAndEnginePortsDiffer guards the invariant that makes managed mode
 // coherent: the proxy claims the engine's stock port, so the engine has to move
-// somewhere else.
+// somewhere else. An unmanaged engine has no process of its own to relocate,
+// so its EnginePortBase is 0 — the facade port is the only port in play, and
+// the two still may not coincide.
 func TestFacadeAndEnginePorts_Differ(t *testing.T) {
 	for _, e := range All() {
 		assert.NotEqual(t, e.EnginePortBase, e.FacadePort)
 		assert.Positive(t, e.FacadePort)
-		assert.Positive(t, e.EnginePortBase)
+		if e.Unmanaged {
+			assert.Zero(t, e.EnginePortBase, "unmanaged %s declares no relocated engine port", e.Name)
+		} else {
+			assert.Positive(t, e.EnginePortBase, "managed %s must relocate its engine off the facade port", e.Name)
+		}
 	}
 }
 
@@ -125,6 +147,16 @@ func TestAddressedMethod_RoundTripsEngineAndMethod(t *testing.T) {
 			assert.Equal(t, method, bare, "round trip of")
 		}
 	}
+}
+
+// The fourth engine joins facade addressing by being in the engine set, not by
+// each relay learning a special case: "custom:node/add-manual" must split into
+// the custom engine plus the bare method, so broker relay and proxy routing
+// gain the fourth engine "for free".
+func TestSplitAddressedMethod_SplitsCustomFacadeAddresses(t *testing.T) {
+	engine, bare := SplitAddressedMethod("custom:node/add-manual")
+	assert.Equal(t, "custom", engine)
+	assert.Equal(t, "node/add-manual", bare)
 }
 
 // Plenty of unaddressed methods contain a colon, so only a known engine id may

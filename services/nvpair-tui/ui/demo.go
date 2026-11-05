@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-shared/engines"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -175,11 +177,39 @@ func (m dispatcherModel) generates() bool {
 	return false
 }
 
+// demoProbe is one ready facade the demo can send traffic through: the
+// dispatcher's spelling of an engine and the facade port to enter it at.
+type demoProbe struct {
+	backend string
+	port    int
+}
+
+// demoProbes picks a run's discovery targets. A facade that is not ready is
+// simply not a target, and unmanaged engines are not targets either: Custom
+// has no dispatcher backend, so its probe child would be born failing, and
+// its facade dials endpoints outside this machine — the demo is a self-check
+// of what this machine runs, not a way to spend the operator's money on
+// someone else's inference service. If demoing Custom endpoints is ever
+// wanted, the closed set to reopen together is this filter, the dispatcher's
+// --backend list, and the desktop's DEMO_ENGINE_PROBES.
+func demoProbes(proxy *proxyTracker) []demoProbe {
+	probes := make([]demoProbe, 0, len(proxy.engines))
+	for _, e := range proxy.engines {
+		if !e.ready || e.port == 0 {
+			continue
+		}
+		if profile, known := engines.ByName(e.engine); known && profile.Unmanaged {
+			continue
+		}
+		probes = append(probes, demoProbe{backend: dispatcherBackend(e.engine), port: e.port})
+	}
+	return probes
+}
+
 // start begins discovery for a run.
 //
-// Targets are the engine/model pairs the local proxies expose. Ports come from
-// the broker's live proxy status, never a constant, and a proxy that is not ready
-// is simply not a target — an absent engine is not an error.
+// Targets come from demoProbes, and the ports are the broker's live proxy
+// status, never a constant.
 func (d *demoRunner) start(proxy *proxyTracker) (tea.Cmd, error) {
 	if d.status != demoIdle {
 		return nil, fmt.Errorf("a demo is already running on this node")
@@ -192,17 +222,7 @@ func (d *demoRunner) start(proxy *proxyTracker) (tea.Cmd, error) {
 		d.executable = exe
 	}
 
-	type probe struct {
-		backend string
-		port    int
-	}
-	probes := make([]probe, 0, len(proxy.engines))
-	for _, e := range proxy.engines {
-		if !e.ready || e.port == 0 {
-			continue
-		}
-		probes = append(probes, probe{backend: dispatcherBackend(e.engine), port: e.port})
-	}
+	probes := demoProbes(proxy)
 	if len(probes) == 0 {
 		return nil, fmt.Errorf("no proxy is listening yet - wait for the endpoints above to come up")
 	}

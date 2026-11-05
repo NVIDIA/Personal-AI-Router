@@ -61,5 +61,22 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
             label: 'llama.cpp',
             url: 'https://huggingface.co/models?library=gguf'
         }
+    },
+    // Custom fronts user-configured external endpoints: nothing to install,
+    // pull, eject or delete, no engine port of its own (only the custom-proxy
+    // facade port), and no model catalog to hub-search — models live on the
+    // endpoint provider's side and arrive through discovery attribution.
+    custom: {
+        hasExpiry: false,
+        hasEject: false,
+        hasInstall: [],
+        hasEnginePort: false,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: false,
+        modelOpsWhenStopped: false,
+        hasDeleteModel: false
     }
 }

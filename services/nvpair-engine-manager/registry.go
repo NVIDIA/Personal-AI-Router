@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"nvpair-shared/engines"
 )
 
 // ManifestSchemaVersion is the highest manifest_version this binary
@@ -445,6 +447,16 @@ func (r *Registry) addManifest(src string, data []byte) (string, error) {
 	var m Manifest
 	if err := json.Unmarshal(merged, &m); err != nil {
 		return "", fmt.Errorf("%s: invalid JSON: %w", src, err)
+	}
+	// The engine table is the authority on what a launch policy may exist
+	// for. An unmanaged kind is declared without one, so a dropped-in
+	// manifest — plain directory or user override — cannot create that
+	// policy by naming the engine; routing eligibility is not install
+	// permission. (Names outside the table keep loading standalone: the
+	// registry has always accepted third-party engine ids, and tests build
+	// registries around a "fake" engine.)
+	if e, known := engines.ByName(m.Engine); known && e.Unmanaged {
+		return "", fmt.Errorf("%s: engine %q is declared unmanaged in the engine table: it has no launch policy, and a manifest cannot add one", src, m.Engine)
 	}
 	if err := m.Validate(); err != nil {
 		return "", fmt.Errorf("%s: %w", src, err)

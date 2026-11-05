@@ -207,7 +207,10 @@ func (m *Manager) watchPeerSettings(ctx context.Context) {
 
 func (m *Manager) notifyPeerSettings(nodeID string, snapshots []settings.Snapshot) {
 	for _, snapshot := range snapshots {
-		if _, ok := engines.ByName(snapshot.Engine); !ok {
+		// Known is not enough: an unmanaged kind has no launch settings to
+		// observe, so a snapshot naming it would open a settings surface
+		// for an engine this node cannot configure.
+		if e, ok := engines.ByName(snapshot.Engine); !ok || e.Unmanaged {
 			continue
 		}
 		snapshot.NodeID = nodeID

@@ -11,6 +11,7 @@ import { useServiceStatusStore } from '@/ui/stores/service-status.store'
 import { resolveShellView } from '@/ui/utils/shell-view'
 import { useClusterInvitationsStore } from '@/ui/stores/cluster-invitations.store'
 import { useOverviewNodes } from '@/ui/hooks/useOverviewNodes'
+import { type TrayCustomSnapshot, useTrayCustomEndpoints } from './useTrayCustomEndpoints'
 import TrayNodeRow from './TrayNodeRow'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 
@@ -26,6 +27,8 @@ export default function TrayApp() {
     const [maxHeight, setMaxHeight] = useState(0)
 
     const onlineNodes = useMemo(() => nodes.filter(n => n.status !== 'offline'), [nodes])
+    // Custom health has no push feed, so the tray pulls it; see the hook.
+    const customByNode: TrayCustomSnapshot = useTrayCustomEndpoints(onlineNodes)
     const shellView = resolveShellView({ connectorStatus, connected, fetchedNodes })
 
     useEffect(() => {
@@ -120,7 +123,12 @@ export default function TrayApp() {
                     </Flex>
                 ) : (
                     onlineNodes.map(node => (
-                        <TrayNodeRow key={node.id} node={node} activeWorkloads={activeWorkloads} />
+                        <TrayNodeRow
+                            key={node.id}
+                            node={node}
+                            activeWorkloads={activeWorkloads}
+                            customEntries={customByNode.get(node.id)}
+                        />
                     ))
                 )}
             </Stack>

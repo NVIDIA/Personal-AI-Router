@@ -398,8 +398,15 @@ const config: Configuration = {
         // electron-builder names the bundle after the executable, so this is
         // what makes it `NVIDIA PAIR.app`; see packagingProductName.
         executableName: APP_DISPLAY_NAME,
+        // macOS Local Network privacy (macOS 14+) silently denies an app's mDNS
+        // and local-network traffic — "no route to host" with no prompt — unless
+        // the bundle declares that usage. These keys are what makes the
+        // "Allow local network" prompt possible; see docs/troubleshooting.mdx.
         extendInfo: {
-            CFBundleDisplayName: APP_DISPLAY_NAME
+            CFBundleDisplayName: APP_DISPLAY_NAME,
+            NSLocalNetworkUsageDescription:
+                'NVIDIA PAIR discovers and connects to compatible inference engines on your local network.',
+            NSBonjourServices: ['_nvpair-node._tcp']
         },
         icon: './resources/icons/logo.icns',
         // SMAppService (the privileged firewall helper) requires macOS 13+.

@@ -93,12 +93,23 @@ ships in `cli-bin` and the app's updater replaces it.
   only, restart (`r`) and uninstall (`u`, confirmed with `y`). On this machine
   both ports are shown per engine because they are easily confused; a peer's
   screen shows the engine port only, though `p` still writes that peer's proxy
-  port.
+  port. Custom is not in that table: it fronts other machines' endpoints rather
+  than a process this node starts, so it has no launch and no arguments to
+  edit — its facade port is shown and moved from the section above.
 - **Models** — the inventory per engine with loaded state, plus browse-and-download
   (`p`), download by name (`n`), load (`enter`), eject (`e`), and delete (`d`,
   confirmed with `y`). Every destructive key arms on the first press and acts
   only on `y`, against the target captured at arm time — these lists re-sort
   under the cursor whenever a download finishes or a peer republishes.
+
+Above the panes, a node that has custom endpoints lists them, headed **Custom
+endpoints**, with the one proxy port every one of them is reached through. That
+port is the Custom facade's own listener, the address to point an external
+client at; a number with nothing listening behind it says so, because it is
+where the facade will land rather than somewhere to connect. `c` opens the port
+field on this machine only, and only while the facade is listening. The list
+itself is read-only: endpoint configuration belongs to the machine that owns it,
+and both readings happen once, when the screen opens.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a

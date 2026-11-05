@@ -174,6 +174,9 @@ type Broker struct {
 	engineMgrPath         string
 	manualNodesPath       string
 	manualNodesConfigPath string
+	customEndpointsPath   string
+	customRelayMu         sync.Mutex
+	customRelayInFlight   int
 	settingsPath          string
 	clusterMgrPath        string
 	schedulerPath         string
@@ -341,6 +344,18 @@ type Broker struct {
 	manualNodeStatuses map[string]manualNodeStatusEntry
 	manualPersistMu    sync.Mutex
 	manualMutationMu   sync.Mutex
+	customPersistMu    sync.Mutex
+	// customProbeMu guards the per-endpoint probe-verdict cache that
+	// enriches custom/list replies (see customendpoints.go). Config
+	// replace/remove evicts it; it is display truth, never a routing gate.
+	customProbeMu    sync.Mutex
+	customProbeState map[string]customProbeRecord
+	// customAdvertise gates the custom model-set pushes (guarded by
+	// engineConfigMu, which the reconcile that reads/writes it holds).
+	customAdvertise customAdvertiseState
+	// customIngress gates the custom facade's ingress backend-set push.
+	// Same guard and same reconcile; see customIngressState.
+	customIngress customIngressState
 
 	// schedMu guards the cached ranking and its generation.
 	//
@@ -420,6 +435,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		engineMgrPath:         paths.engineMgr,
 		manualNodesPath:       paths.manualNodes,
 		manualNodesConfigPath: defaultManualNodesConfigPath(),
+		customEndpointsPath:   defaultCustomEndpointsPath(),
 		settingsPath:          paths.settings,
 		clusterMgrPath:        paths.clusterMgr,
 		schedulerPath:         paths.scheduler,
@@ -1191,6 +1207,7 @@ func (b *Broker) spawnManualNodes() (supervisedHandle, error) {
 	}
 	b.setManualNodes(w)
 	go b.replayPersistedManualNodes(w)
+	go b.replayPersistedCustomEndpoints(w)
 	slog.Info("manual-nodes started", "path", b.manualNodesPath, "pid", w.cmd.Process.Pid)
 	return w, nil
 }
@@ -1525,6 +1542,10 @@ func (b *Broker) forwardEngineNotification(method string, params json.RawMessage
 		}
 		return
 	}
+	if method == "custom:relay-request" {
+		b.handleCustomRelay(params)
+		return
+	}
 	if b.dispatchErrorsNotif("engine-manager", method, params) {
 		return
 	}
@@ -1634,6 +1655,8 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 		slog.Debug("manual node event", "event", method, "id", s.ID)
 	case "ready":
 		slog.Info("manual-nodes reported ready", "params", string(params))
+	case "custom/updated", "custom/removed":
+		b.handleCustomEndpointNotification(method, params)
 	default:
 		slog.Debug("ignoring manual-nodes notification", "method", method)
 	}
@@ -2251,12 +2274,16 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	availabilityRunners := []func(context.Context){b.runAutoAdvertise, b.runAutoAdvertiseLMStudio}
+	// The Custom plane always reconciles, on its own terms (runCustomAdvertise)
+	// and therefore excluded from the generic loop: its up-condition needs a
+	// local engine port, which Custom never has, and its routing set is fed by
+	// the bridge, not by node/set-local-backend.
+	availabilityRunners := []func(context.Context){b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runCustomAdvertise}
 	for _, profile := range engineProxyProfiles {
 		if !b.proxyEnabled(profile) {
 			continue
 		}
-		if profile.Name == ollamaProxyProfile.Name || profile.Name == lmstudioProxyProfile.Name {
+		if profile.Name == ollamaProxyProfile.Name || profile.Name == lmstudioProxyProfile.Name || profile.Name == customProxyProfile.Name {
 			continue
 		}
 		profile := profile
@@ -3299,6 +3326,16 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "node/add", "node/remove", "nodes/list":
 		b.relayToManualNodes(msg)
+
+	case "custom/add", "custom/remove", "custom/list", "custom/refresh":
+		b.handleCustomEndpoints(msg)
+
+	// The Custom facade port is a port operation, so it does not run on the
+	// read pump: checking a typed port means asking which engines are running,
+	// and moving it means a set-port round-trip through the proxy — both of
+	// which are answered by links the pump itself feeds.
+	case "custom/get-port", "custom/set-port":
+		go b.handleCustomPortRPC(msg)
 
 	case "engine:set-reserved-port", "internal:set-reserved-port":
 		if err := b.codec.RespondError(msg.ID, -32601, "method not found: "+msg.Method); err != nil {

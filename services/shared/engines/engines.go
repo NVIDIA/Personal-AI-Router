@@ -104,6 +104,14 @@ type Engine struct {
 	// broker reads it when reserving ports away from the OLLAMA_HOST alias,
 	// so the two must agree — which is why it lives here.
 	PortFile string
+
+	// Unmanaged marks an engine kind with no manifest and no launch lifecycle:
+	// PAIR never installs, starts, stops, or relocates what sits behind it.
+	// Routing-eligible only. Launcher-shaped consumers — the broker's
+	// managed-port preparation and engine-manager's manifest set — must skip
+	// these. EnginePortBase 0 pairs with this flag: with no managed process
+	// there is nothing to relocate off the facade port.
+	Unmanaged bool
 }
 
 // ProxyComponent is the proxy *process* identity, as distinct from the
@@ -131,9 +139,13 @@ const (
 	NameOllama   = "ollama"
 	NameLMStudio = "lmstudio"
 	NameLlamaCPP = "llamacpp"
+	NameCustom   = "custom"
 )
 
 // all is the ordered engine set. Ollama is first; see the package comment.
+// Unmanaged engines join last: every launcher-shaped consumer was written for
+// the managed three, and the Custom entry declares none of that machinery
+// (EnginePortBase 0, no manifest).
 var all = []Engine{
 	{
 		Name:             NameOllama,
@@ -158,6 +170,15 @@ var all = []Engine{
 		FacadePort:       8080,
 		EnginePortBase:   8081,
 		PortFile:         "llamacpp-proxy-port.json",
+	},
+	{
+		Name:             NameCustom,
+		DisplayName:      "Custom",
+		DiscoveryService: noderec.ServiceCustom,
+		FacadePort:       8000,
+		EnginePortBase:   0,
+		PortFile:         "custom-proxy-port.json",
+		Unmanaged:        true,
 	},
 }
 

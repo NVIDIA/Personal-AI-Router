@@ -88,6 +88,11 @@ const (
 	ServiceOllama   ServiceKey = "ol"
 	ServiceLMStudio ServiceKey = "lm"
 	ServiceLlamaCPP ServiceKey = "lc"
+	// ServiceCustom is the Custom facade's TXT key: the proxy fronting
+	// user-added external OpenAI-compatible endpoints. Advertised so peers
+	// learn the node runs a custom facade; like the managed engine facades
+	// it derives the plain transport.
+	ServiceCustom   ServiceKey = "cu"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -106,8 +111,8 @@ const (
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
 	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCPP,
-	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl,
+	ServiceCustom, ServiceErrors, ServiceWorkload, ServiceCluster,
+	ServiceEngineManager, ServiceEngineControl,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).

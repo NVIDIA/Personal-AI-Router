@@ -28,9 +28,9 @@ Broker-owned workers:
 - `nvpair-proxy`, one process hosting a facade per enabled engine. It starts
  with no engine and no listener; the broker sends a `facade/enable` per engine
  carrying that engine's port. Clients still address each facade as
- `ollama-proxy:`, `lmstudio-proxy:`, or `llamacpp-proxy:`, and one supervisor
- covers them all, so a crash is reported against `nvpair-proxy` and restarts
- every facade together;
+ `ollama-proxy:`, `lmstudio-proxy:`, `llamacpp-proxy:`, or `custom-proxy:`, and
+ one supervisor covers them all, so a crash is reported against `nvpair-proxy`
+ and restarts every facade together;
 - `nvpair-node-scanner`;
 - `nvpair-node-info`;
 - `nvpair-workload-manager`;
@@ -109,9 +109,13 @@ The broker uses both for scheduling.
 
 ### Inference HTTP
 
-Ollama, LM Studio, and llama.cpp proxies expose local client-compatible HTTP
-endpoints. Chat behaves as a local third-party client. Prompts, messages,
-chunks, and response bodies must never be logged.
+Ollama, LM Studio, llama.cpp, and Custom proxies expose local client-compatible
+HTTP endpoints. Chat behaves as a local third-party client. The Custom facade
+fronts user-configured external OpenAI-compatible endpoints; a configured
+endpoint key is injected only on the owning node's last hop and never rides a
+notification or reply — where a key-configured signal exists, it is `keySet`.
+Prompts, messages, chunks, response bodies, and endpoint keys must never be
+logged.
 
 ## Runtime defaults
 
