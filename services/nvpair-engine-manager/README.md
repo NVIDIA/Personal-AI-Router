@@ -237,10 +237,12 @@ Requests (caller → service):
 
 Notifications (service → caller): `engine:ready{version}`,
 `engine:state-changed{EngineStatus}`,
-`engine:models-changed{engine, models}` — pushed when an engine's set of
-loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
-TTL/idle eviction); `models` is the full `engine:models` shape (incl.
-`loadedByEngine`) so a consumer swaps its whole snapshot,
+`engine:models-changed{engine, models}` — pushed when one of an engine's
+model lists changes: what it serves (`modelsByEngine`), what is loaded in
+memory (`loadedByEngine`: explicit load/unload, JIT auto-load, or TTL/idle
+eviction) or what it has downloaded (`downloadedByEngine`), so a pull or delete
+is pushed too; `models` is the full `engine:models` shape so a consumer swaps
+its whole snapshot,
 `engine:install-progress{engine, stage, percent?, error?}` (`error` on the
 terminal `failed` frame),
 `engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a

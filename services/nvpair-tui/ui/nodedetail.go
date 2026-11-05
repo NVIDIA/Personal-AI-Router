@@ -815,9 +815,10 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		clear(d.settings)
 
 	case "engine:models-changed":
-		// The manager polls each running engine's resident set and pushes this
-		// on any change — explicit load/unload, LM Studio's JIT auto-load, and
-		// idle eviction alike. Re-reading is cheaper than merging the delta.
+		// The manager polls each engine's model lists and pushes this on any
+		// change — explicit load/unload, LM Studio's JIT auto-load, idle
+		// eviction, and a pull or delete alike. Re-reading is cheaper than
+		// merging the delta.
 		if !d.remote() {
 			return d.modelsCmd()
 		}

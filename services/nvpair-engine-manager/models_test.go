@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -252,44 +253,89 @@ func TestModelsResultNoLoadedAction_OmitsKey(t *testing.T) {
 	require.Nil(t, ex.ModelsResult(ctx).LoadedByEngine)
 }
 
-// TestSweepLoadedSeedsThenEmitsOnChange covers the watcher's core diff without
+// TestSweepModels_SeedsThenEmitsOnChange covers the watcher's core diff without
 // goroutines or timers: the first sweep only seeds a baseline (the caller,
 // watchLoaded, suppresses its emit), a subsequent identical sweep reports no
 // change, and a sweep after an eviction reports the engine as changed and
 // carries the fresh full model result as the push payload.
-func TestSweepLoaded_SeedsThenEmitsOnChange(t *testing.T) {
+func TestSweepModels_SeedsThenEmitsOnChange(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 
-	// Seed sweep: baseline is {fake:[llama3.2:1b]}.
-	_, prev, _ := ex.sweepLoaded(ctx, nil)
-	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, prev, "seed baseline")
+	// Seed sweep: the loaded baseline is {fake:[llama3.2:1b]}.
+	_, prev, _ := ex.sweepModels(ctx, modelLists{})
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, prev.loaded, "seed baseline")
 
-	// No residency change -> no engine reported changed.
-	changed, prev, _ := ex.sweepLoaded(ctx, prev)
+	// No change -> no engine reported changed.
+	changed, prev, _ := ex.sweepModels(ctx, prev)
 	require.Empty(t, changed, "unchanged sweep reported")
 
 	// Evict everything -> fake changes; payload carries the empty loaded set.
 	setLoaded(t, ex, nil)
-	changed, _, res := ex.sweepLoaded(ctx, prev)
+	changed, _, res := ex.sweepModels(ctx, prev)
 	require.Equal(t, []string{"fake"}, changed, "changed")
 	require.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "pushed LoadedByEngine")
 }
 
-// TestSweepLoadedRetainsLastGoodOnTransientMiss covers the anti-churn guard: an
+// A pull or delete changes what an engine has, not what it has loaded. The push
+// has to follow it too, or a client that waits for pushes (the terminal
+// interface) keeps showing the old list until it asks again.
+func TestSweepModels_EmitsWhenAModelIsPulledOrDeleted(t *testing.T) {
+	test := func(name string, manifest func(t *testing.T) *Manifest, start bool, list func(ModelsResult) []string) {
+		t.Run(name, func(t *testing.T) {
+			m := manifest(t)
+			cache := m.Actions["list_models"].HFCache.Dir
+			ex := newTestExecutor(t, m)
+			ctx := context.Background()
+			if start {
+				t.Cleanup(func() { _ = ex.Stop("fake") })
+				require.NoError(t, ex.Start(ctx, "fake"))
+			}
+			_, prev, _ := ex.sweepModels(ctx, modelLists{})
+
+			writeHFRepo(t, cache, "org/pulled-model", llmFiles(map[string]string{"model.safetensors": "w"}))
+			changed, prev, res := ex.sweepModels(ctx, prev)
+			assert.Equal(t, []string{"fake"}, changed, "after the pull")
+			assert.Contains(t, list(res), "org/pulled-model", "the pushed list")
+
+			require.NoError(t, os.RemoveAll(filepath.Join(cache, "models--org--pulled-model")))
+			changed, _, res = ex.sweepModels(ctx, prev)
+			assert.Equal(t, []string{"fake"}, changed, "after the delete")
+			assert.NotContains(t, list(res), "org/pulled-model", "the pushed list")
+		})
+	}
+	test("a stopped engine that advertises only what it serves, such as vLLM",
+		func(t *testing.T) *Manifest { return loadedOnlyManifest(t, fakeEngineBin) }, false,
+		func(r ModelsResult) []string { return r.DownloadedByEngine["fake"] })
+	test("a running engine that advertises what it has",
+		func(t *testing.T) *Manifest {
+			m := loadedOnlyManifest(t, fakeEngineBin)
+			m.AdvertisedModels = ""
+			delete(m.Actions, "loaded_models")
+			require.NoError(t, m.Validate())
+			return m
+		}, true,
+		func(r ModelsResult) []string { return r.ByEngine["fake"] })
+}
+
+// TestSweepModels_RetainsLastGoodOnTransientMiss covers the anti-churn guard: an
 // engine that drops out of a sweep (a transient loaded_models miss, indistinct
 // from a stop) is NOT reported as changed and keeps its last-good baseline, so a
 // single blip can't emit a spurious drop-then-re-add pair.
-func TestSweepLoaded_RetainsLastGoodOnTransientMiss(t *testing.T) {
+func TestSweepModels_RetainsLastGoodOnTransientMiss(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
-	prev := map[string][]string{"fake": {"llama3.2:1b"}}
+	prev := modelLists{
+		advertised: map[string][]string{"fake": {"llama3.2:1b"}},
+		loaded:     map[string][]string{"fake": {"llama3.2:1b"}},
+		downloaded: map[string][]string{},
+	}
 	// The engine isn't started, so ModelsResult reports it neither running nor
-	// queryable: LoadedByEngine has no "fake" key this sweep.
-	changed, next, _ := ex.sweepLoaded(context.Background(), prev)
+	// queryable: no list has a "fake" key this sweep.
+	changed, next, _ := ex.sweepModels(context.Background(), prev)
 	require.Empty(t, changed, "a disappeared engine reported")
-	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, next, "baseline after miss")
+	require.Equal(t, prev, next, "baseline after miss")
 }
 
 func TestChangedEngines_IdentifiesInventoryDifferences(t *testing.T) {

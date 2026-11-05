@@ -119,8 +119,8 @@ func (m *Manager) Run(ctx context.Context) error {
 		slog.Warn("failed to subscribe to discovery relay for ec peers", "err", err)
 	}
 
-	// Watch each running engine's loaded-model set and emit engine:models-changed
-	// on change (load/unload, JIT auto-load, TTL eviction). Bound to ctx: stops
+	// Watch each engine's model lists and emit engine:models-changed on change
+	// (load/unload, JIT auto-load, TTL eviction, pull, delete). Bound to ctx: stops
 	// when the read loop exits below.
 	go m.exec.watchLoaded(ctx)
 	go m.watchPeerSettings(ctx)
@@ -436,11 +436,11 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32000, err.Error())
 		return
 	}
-	// An action may have changed what's resident (load/unload/pull/delete/run, or
-	// a chat that JIT-loads); nudge the loaded watcher so engine:models-changed
-	// fires promptly instead of waiting for the next poll tick. Pure reads
-	// (list_models/loaded_models/list_downloaded) can't move residency, so skip
-	// the nudge and its wasted sweep for them.
+	// An action may have changed a model list (load/unload/pull/delete/run, or
+	// a chat that JIT-loads); nudge the watcher so engine:models-changed fires
+	// promptly instead of waiting for the next poll tick. Pure reads
+	// (list_models/loaded_models/list_downloaded) can't change one, so skip the
+	// nudge and its wasted sweep for them.
 	if !residencyNeutralActions[p.Action] {
 		m.exec.pokeLoaded()
 	}
