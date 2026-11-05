@@ -375,18 +375,18 @@ func TestAutoContext_ReadsTheRevisionVLLMLoads(t *testing.T) {
 
 func TestApplyAutoLaunch_AppendsAfterTheUsersArguments(t *testing.T) {
 	withGPU(t, 48, 48)
-	// models_dir/hub is the cache.
+	// The engine's hub cache.
 	parent := t.TempDir()
 	cachedModelAt(t, filepath.Join(parent, "hub"), "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 	rt := Runtime{AutoLaunch: &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536}}
 	in := launchCommand{Bin: "vllm", Args: []string{"serve", "--model", "Qwen/Qwen3-8B"}}
 
-	out := applyAutoLaunch(t.Context(), "vllm", rt, in, parent, nil)
+	out := applyAutoLaunch(t.Context(), "vllm", rt, in, filepath.Join(parent, "hub"), nil)
 
 	assert.Equal(t, in.Args, out.Args[:3])
 	assert.Equal(t, "65536", flagOf(t, out.Args, "--max-model-len"))
 	assert.Len(t, in.Args, 3, "the caller's arguments were modified")
-	assert.Equal(t, in.Args, applyAutoLaunch(t.Context(), "vllm", Runtime{}, in, parent, nil).Args, "an engine without auto_launch must be untouched")
+	assert.Equal(t, in.Args, applyAutoLaunch(t.Context(), "vllm", Runtime{}, in, filepath.Join(parent, "hub"), nil).Args, "an engine without auto_launch must be untouched")
 }
 
 func TestPlanToolCalling_UsesTheParserThatReadsTheModelsToolCalls(t *testing.T) {
@@ -591,12 +591,17 @@ func newHFFetch(t *testing.T, status int, siblings []hfSibling) *hfFetch {
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"siblings": siblings}))
 	}))
 	t.Cleanup(api.Close)
-	old := hfAPIBase
-	hfAPIBase = api.URL + "/api/models"
-	t.Cleanup(func() { hfAPIBase = old })
+	old := hfDefaultEndpoint
+	hfDefaultEndpoint = api.URL
+	t.Cleanup(func() { hfDefaultEndpoint = old })
 	t.Setenv("FAKE_HF_CONFIG", qwen35_4BConfig)
 	t.Setenv("HF_HUB_OFFLINE", "")
+	t.Setenv("HF_ENDPOINT", "")
 	t.Setenv("HF_TOKEN", "")
+	t.Setenv("HUGGING_FACE_HUB_TOKEN", "")
+	t.Setenv("HF_TOKEN_PATH", "")
+	// No token a real `hf auth login` stored may reach the fake server.
+	t.Setenv("HF_HOME", t.TempDir())
 	return f
 }
 
@@ -674,6 +679,30 @@ func TestFetchHFMetadata_UsesTheEnginesHuggingFaceSettings(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "engine-token", string(token), "the hf tool gets the engine's token")
 	})
+	t.Run("a token stored by hf auth login", func(t *testing.T) {
+		f := newHFFetch(t, http.StatusOK, qwen35Siblings)
+		home := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(home, "token"), []byte("stored-token\n"), 0o600))
+		f.setLaunchEnv("HF_HOME=" + home)
+
+		_, ok := f.fetch(t, "Qwen/Qwen3.5-4B", "main")
+
+		require.True(t, ok)
+		require.Len(t, f.requests, 1)
+		assert.Equal(t, "Bearer stored-token", f.requests[0].Header.Get("Authorization"))
+	})
+	t.Run("a mirror in the engine settings", func(t *testing.T) {
+		f := newHFFetch(t, http.StatusOK, qwen35Siblings)
+		mirror := hfDefaultEndpoint
+		hfDefaultEndpoint = "http://127.0.0.1:1" // nothing listens: the Hub must not be asked
+		f.setLaunchEnv("HF_ENDPOINT=" + mirror + "/")
+
+		_, ok := f.fetch(t, "Qwen/Qwen3.5-4B", "main")
+
+		require.True(t, ok)
+		require.Len(t, f.requests, 1, "the listing came from the mirror")
+		assert.Equal(t, "/api/models/Qwen/Qwen3.5-4B", f.requests[0].URL.Path)
+	})
 }
 
 func TestFetchHFMetadata_FallsBackWhenHuggingFaceCannotAnswer(t *testing.T) {
@@ -735,7 +764,7 @@ func TestBundledVLLMLaunch_FirstStartOfTheDefaultModelFitsA16GiBGPU(t *testing.T
 	hub := filepath.Join(parent, "hub")
 	in := launchCommand{Bin: "vllm", Args: []string{"serve", "--model", "Qwen/Qwen3.5-4B"}}
 
-	out := applyAutoLaunch(t.Context(), "vllm", rt, in, parent, pendingModel(t, hub, "Qwen/Qwen3.5-4B", qwen35_4BConfig, qwen35_4BBytes))
+	out := applyAutoLaunch(t.Context(), "vllm", rt, in, hub, pendingModel(t, hub, "Qwen/Qwen3.5-4B", qwen35_4BConfig, qwen35_4BBytes))
 
 	weightsAndOverhead := float64(qwen35_4BBytes)*weightsSlack + float64(vllmOverhead)
 	assert.GreaterOrEqual(t, utilOf(t, out.Args)*16*float64(gib), weightsAndOverhead, "the share cannot hold the weights and overhead: %v", out.Args)

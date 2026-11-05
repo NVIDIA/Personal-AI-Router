@@ -90,8 +90,10 @@ func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.
 	assert.Contains(t, manifest.Actions, "list_models")
 	assert.Contains(t, manifest.Actions, "loaded_models")
 	// list_models is what is on disk; only the model being served is advertised.
+	// Listing, Delete and Pull use the hub cache vLLM itself uses, resolved from
+	// its launch environment ({hf_hub_cache}).
 	if list := manifest.Actions["list_models"]; assert.NotNil(t, list.HFCache, "list_models must list the Hugging Face cache") {
-		assert.Equal(t, "{models_dir}/hub", list.HFCache.Dir)
+		assert.Equal(t, "{hf_hub_cache}", list.HFCache.Dir)
 	}
 	assert.Equal(t, advertisedModelsLoaded, manifest.AdvertisedModels, "peers and the proxy must only be offered the served model")
 	if loaded := manifest.Actions["loaded_models"]; assert.NotNil(t, loaded.HTTP, "loaded_models must read vLLM's /v1/models") {
@@ -107,12 +109,12 @@ func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.
 	// Deleting is a removal from the shared cache that needs no running engine.
 	if del := manifest.Actions["delete_model"]; assert.NotNil(t, del.HFCache, "delete_model must remove from the hub cache") {
 		assert.True(t, del.HFCache.Delete)
-		assert.Equal(t, "{models_dir}/hub", del.HFCache.Dir)
+		assert.Equal(t, "{hf_hub_cache}", del.HFCache.Dir)
 	}
 	// Downloads go through the hf tool that ships in the engine's virtualenv.
 	if pull := manifest.Actions["pull_model"]; assert.NotNil(t, pull.HFPull, "pull_model must download through hf into the hub cache") {
 		assert.Equal(t, "hf", pull.HFPull.Tool)
-		assert.Equal(t, "{models_dir}/hub", pull.HFPull.Dir)
+		assert.Equal(t, "{hf_hub_cache}", pull.HFPull.Dir)
 	}
 }
 

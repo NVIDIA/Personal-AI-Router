@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -149,6 +150,8 @@ func TestLaunchModel_KeepsThePreviousModelWhenThePlatformCannotLoadTheNewOne(t *
 	st.mu.Lock()
 	st.modelsDir = modelsDir
 	st.plat.Runtime.UnsupportedWeights = macFP8Rule
+	// As the vLLM manifest does, so the engine's hub cache is modelsDir/hub.
+	st.plat.Runtime.Env = map[string]string{"HF_HOME": modelsDir}
 	st.mu.Unlock()
 	before := launchTextOf(t, e)
 
@@ -169,7 +172,11 @@ func TestPullHFModel_RefusesAModelThePlatformCannotLoad(t *testing.T) {
 		{RFilename: "model.safetensors", Size: 8_000_000_000},
 	}
 	e, _, _ := hfPullFixture(t, siblings, http.StatusOK, "echo the download must not start >&2; exit 1")
-	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/models/") {
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"siblings": siblings}))
+			return
+		}
 		switch filepath.Base(r.URL.Path) {
 		case "config.json":
 			_, err := w.Write([]byte(modelOptFP8Config))
@@ -181,10 +188,10 @@ func TestPullHFModel_RefusesAModelThePlatformCannotLoad(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(files.Close)
-	old := hfFileBase
-	hfFileBase = files.URL
-	t.Cleanup(func() { hfFileBase = old })
+	t.Cleanup(hub.Close)
+	old := hfDefaultEndpoint
+	hfDefaultEndpoint = hub.URL
+	t.Cleanup(func() { hfDefaultEndpoint = old })
 	st, err := e.state("vllm")
 	require.NoError(t, err)
 	st.mu.Lock()

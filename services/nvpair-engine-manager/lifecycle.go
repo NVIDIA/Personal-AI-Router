@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -249,11 +248,12 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
-	hub := filepath.Join(expandPath(vars["models_dir"]), "hub")
+	// The hub cache vLLM itself will use, from the environment it is started with.
+	hub := hfEnv(launch.Env).hubCache()
 	fetch := onceHFFetch(func(id, revision string) (hfPendingModel, bool) {
 		return e.fetchHFMetadata(ctx, st, hub, id, revision, hfEnv(launch.Env))
 	})
-	launch = applyAutoLaunch(ctx, engine, rt, launch, vars["models_dir"], fetch)
+	launch = applyAutoLaunch(ctx, engine, rt, launch, hub, fetch)
 	if err := checkLaunchWeights(rt.UnsupportedWeights, launch.Args, hub, fetch); err != nil {
 		werr := fmt.Errorf("start %s: %w", engine, err)
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)

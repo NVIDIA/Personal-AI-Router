@@ -114,17 +114,16 @@ func parseMeminfo(text string) (total, available int64, ok bool) {
 // It runs after the user's launch has been validated and never changes an
 // argument the user supplied, so anything set in the engine settings wins.
 //
-// fetch, when not nil, prepares a model that is not in the cache yet, so a
-// first start that downloads it is configured for it too. It is called at most
-// once.
-func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command launchCommand, modelsDir string, fetch hfModelFetcher) launchCommand {
+// hub is the Hugging Face hub cache the engine will use. fetch, when not nil,
+// prepares a model that is not in the cache yet, so a first start that
+// downloads it is configured for it too. It is called at most once.
+func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command launchCommand, hub string, fetch hfModelFetcher) launchCommand {
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
 	}
 	if fetch != nil {
 		fetch = onceHFFetch(fetch)
 	}
-	hub := filepath.Join(expandPath(modelsDir), "hub")
 	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch)
 	if tools, parser := planToolCalling(ctx, command.Args, hub, command.Bin, fetch); len(tools) > 0 {
 		extra = append(extra, tools...)

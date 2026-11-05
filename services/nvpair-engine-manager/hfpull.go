@@ -26,10 +26,6 @@ import (
 // vLLM reads it. This file only chooses the files to fetch, reports progress and
 // stops a download that stalls.
 
-// hfAPIBase is the Hugging Face model API. A variable so tests can point it at
-// a local server.
-var hfAPIBase = hfModelsAPI
-
 const (
 	hfPollInterval = time.Second
 	// hfStopGrace is how long a cancelled download gets to exit before it is killed.
@@ -117,7 +113,7 @@ func hasSuffixAny(s string, suffixes []string) bool {
 func (e *Executor) hfRepoFiles(ctx context.Context, id, revision string, env hfEnv) ([]hfSibling, error) {
 	ctx, cancel := context.WithTimeout(ctx, catalogHTTPTimeout)
 	defer cancel()
-	listing := hfAPIBase + "/" + id
+	listing := env.endpoint() + "/api/models/" + id
 	if revision != "" && revision != "main" {
 		listing += "/revision/" + url.PathEscape(revision)
 	}
@@ -147,7 +143,7 @@ func (e *Executor) hfGet(ctx context.Context, rawURL string, limit int64, env hf
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "PAIR/1.0")
-	if token := env.get("HF_TOKEN"); token != "" {
+	if token := env.token(); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := e.client.Do(req)
@@ -178,11 +174,14 @@ type hfEnv map[string]string
 // manifest value that cannot be resolved without a running launch (a port, for
 // instance) is left out; Hugging Face settings never need one.
 func engineHFEnv(st *engineState) hfEnv {
+	env := hfEnv{}
+	if st.plat == nil {
+		return env
+	}
 	st.mu.Lock()
 	rt := st.plat.Runtime
 	st.mu.Unlock()
 	vars := st.pathVars()
-	env := hfEnv{}
 	for key, template := range rt.Env {
 		if value, err := resolvePlaceholders(template, vars); err == nil {
 			env[key] = value
@@ -201,6 +200,77 @@ func engineHFEnv(st *engineState) hfEnv {
 		}
 	}
 	return env
+}
+
+// hfActionVars are the placeholders an hf_cache or hf_pull dir may use: the
+// engine's paths and the hub cache its environment selects.
+func hfActionVars(st *engineState) map[string]string {
+	vars := st.pathVars()
+	vars[hfHubCachePlaceholder] = engineHFEnv(st).hubCache()
+	return vars
+}
+
+// hfDefaultEndpoint is the Hugging Face Hub, when HF_ENDPOINT names no mirror.
+// A variable so tests can point it at a local server.
+var hfDefaultEndpoint = "https://huggingface.co"
+
+// home is the Hugging Face home: HF_HOME, else $XDG_CACHE_HOME/huggingface,
+// else ~/.cache/huggingface, as huggingface_hub's constants resolve it.
+func (env hfEnv) home() string {
+	if home := env.get("HF_HOME"); home != "" {
+		return env.expand(home)
+	}
+	if cache := env.get("XDG_CACHE_HOME"); cache != "" {
+		return filepath.Join(env.expand(cache), "huggingface")
+	}
+	return filepath.Join(expandPath("~"), ".cache", "huggingface")
+}
+
+// hubCache is the hub cache huggingface_hub reads and writes for the engine:
+// HF_HUB_CACHE, else the legacy HUGGINGFACE_HUB_CACHE, else <home>/hub.
+func (env hfEnv) hubCache() string {
+	for _, key := range []string{"HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"} {
+		if dir := env.get(key); dir != "" {
+			return env.expand(dir)
+		}
+	}
+	return filepath.Join(env.home(), "hub")
+}
+
+// endpoint is the Hub the engine downloads from: HF_ENDPOINT, such as a
+// mirror, else huggingface.co.
+func (env hfEnv) endpoint() string {
+	if endpoint := strings.TrimRight(strings.TrimSpace(env.get("HF_ENDPOINT")), "/"); endpoint != "" {
+		return endpoint
+	}
+	return hfDefaultEndpoint
+}
+
+// token is the token huggingface_hub would send: HF_TOKEN, else
+// HUGGING_FACE_HUB_TOKEN, else the one a `hf auth login` stored in
+// HF_TOKEN_PATH or <home>/token.
+func (env hfEnv) token() string {
+	for _, key := range []string{"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"} {
+		if token := strings.TrimSpace(env.get(key)); token != "" {
+			return token
+		}
+	}
+	path := env.get("HF_TOKEN_PATH")
+	if path == "" {
+		path = filepath.Join(env.home(), "token")
+	}
+	raw, err := os.ReadFile(env.expand(path))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// expand expands $VARS, from the engine's environment, and ~ in a Hugging Face
+// path setting, as huggingface_hub does with os.path.expandvars and
+// os.path.expanduser.
+func (env hfEnv) expand(path string) string {
+	return expandPath(os.Expand(path, env.get))
 }
 
 // get returns the engine's value for key, else the service's.
@@ -235,10 +305,6 @@ func (env hfEnv) toolEnv() map[string]string {
 	}
 	return out
 }
-
-// hfFileBase serves repository files. A variable so tests can point it at a
-// local server.
-var hfFileBase = "https://huggingface.co"
 
 // maxHFConfigBody is far above any model's config.json.
 const maxHFConfigBody = 1 << 20
@@ -366,8 +432,7 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 	if !hfModelIDRe.MatchString(id) {
 		return nil, fmt.Errorf("pull %q: not a valid Hugging Face model id (use org/name)", model)
 	}
-	vars := st.pathVars()
-	hubDir, err := resolvePlaceholders(act.HFPull.Dir, vars)
+	hubDir, err := resolvePlaceholders(act.HFPull.Dir, hfActionVars(st))
 	if err != nil {
 		return nil, err
 	}

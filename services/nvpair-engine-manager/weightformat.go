@@ -151,13 +151,13 @@ func (e *Executor) checkRepoWeights(ctx context.Context, rule *UnsupportedWeight
 	if rule == nil {
 		return nil
 	}
-	config, err := e.hfGet(ctx, hfFileBase+"/"+id+"/resolve/main/config.json", maxHFConfigBody, env)
+	config, err := e.hfGet(ctx, env.endpoint()+"/"+id+"/resolve/main/config.json", maxHFConfigBody, env)
 	if err != nil {
 		return nil
 	}
 	var hfQuant []byte
 	if slices.Contains(files, hfQuantConfigFile) {
-		if hfQuant, err = e.hfGet(ctx, hfFileBase+"/"+id+"/resolve/main/"+hfQuantConfigFile, maxHFConfigBody, env); err != nil {
+		if hfQuant, err = e.hfGet(ctx, env.endpoint()+"/"+id+"/resolve/main/"+hfQuantConfigFile, maxHFConfigBody, env); err != nil {
 			hfQuant = nil
 		}
 	}

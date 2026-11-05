@@ -104,9 +104,10 @@ enough for the weights and that context, so other engines can run alongside it,
 and a limit of 32 requests at a time (`--max-num-seqs`). A model that is not
 downloaded yet, such as the default on a fresh install, has its configuration
 and chat template fetched first and is then set up the same way, tool calling
-included, before vLLM downloads its weights. `HF_HUB_OFFLINE` and `HF_TOKEN` set
-in vLLM's launch settings apply to those requests and to downloads and deletes
-too. Arguments you add to the launch text,
+included, before vLLM downloads its weights. Hugging Face settings in vLLM's
+launch settings apply to PAIR's own requests, downloads and deletes too:
+`HF_HUB_OFFLINE`, `HF_TOKEN`, a mirror in `HF_ENDPOINT`, and a cache folder in
+`HF_HUB_CACHE` or `HF_HOME`, which the model list then shows. Arguments you add to the launch text,
 such as your own `--max-model-len`, `--gpu-memory-utilization` or
 `--max-num-seqs`, take precedence, and a launch with
 `--tensor-parallel-size` or `--pipeline-parallel-size` is left as written. PAIR

@@ -255,7 +255,7 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   the declared root. Symlink escapes and missing targets are rejected.
   Does **not** require the engine to be running.
 - **`hf_cache`** — list the models in a Hugging Face hub cache directory.
-  `hf_cache.dir` is templated, normally `"{models_dir}/hub"`. The reply is
+  `hf_cache.dir` is templated, normally `"{hf_hub_cache}"`. The reply is
   `{"data":[{"id","size"}]}`, so `result: {"array": "data", "field": "id"}`
   turns it into a model list. A repository is listed when its snapshot is a
   complete download holding a config, a tokenizer and weights: vision-only and
@@ -397,8 +397,10 @@ first has its files other than weights fetched into the cache with the engine's
 Hugging Face tool (the one an `hf_pull` action names) at that revision, and is
 then sized and given a tool-call parser the same way; when Hugging Face cannot
 answer, the share is the free GPU memory less the margin. That fetch, and the
-`hf_pull` and `hf_cache` work, run with the engine's launch environment, so
-`HF_HUB_OFFLINE` and `HF_TOKEN` set for the engine apply.
+`hf_pull` and `hf_cache` work, run with the engine's launch environment, read
+the way `huggingface_hub` reads it: `HF_HUB_OFFLINE`, the token (`HF_TOKEN`,
+`HUGGING_FACE_HUB_TOKEN`, or the stored login under `HF_TOKEN_PATH` or
+`HF_HOME`), and a mirror in `HF_ENDPOINT` all apply.
 The optional `max_num_seqs` adds `--max-num-seqs`, the most requests the engine
 runs at once (0 or absent leaves the engine's default).
 Arguments the user saved always win and nothing added is written back to saved
@@ -485,6 +487,7 @@ validation at load:
 | `{download}` | Path of the verified download | `install.run` |
 | `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
 | `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
+| `{hf_hub_cache}` | The Hugging Face hub cache the engine itself uses, from its launch environment as `huggingface_hub` resolves it: `HF_HUB_CACHE`, else `HUGGINGFACE_HUB_CACHE`, else `HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub` | the `dir` of an `hf_cache` or `hf_pull` action only |
 | `{models_dir}` | The platform's `models_dir`, expanded | `detect`, runtime args/env, `uninstall.run`, actions. **Not** `install`, which resolves only `{install_dir}` and the download paths — and not `uninstall.remove`, where naming the store is rejected at load. Unset when the platform declares no store, so a template referencing it then fails to resolve rather than silently becoming a path under `/` |
 
 A `cmd` action additionally templates the action's own `params` as

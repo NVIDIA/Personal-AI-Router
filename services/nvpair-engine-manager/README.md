@@ -92,8 +92,12 @@ beside `vllm`, at the revision vLLM loads, and its weight sizes read from
 Hugging Face. It is then sized, and its tool-call parser chosen, exactly as a
 cached model is, and vLLM finds those files already there. The fetch and every
 other Hugging Face request PAIR makes for vLLM (pull, delete, size lookup) run
-with the engine's own environment, so `HF_HUB_OFFLINE` or `HF_TOKEN` set in its
-launch settings applies to them too. If Hugging Face cannot answer (offline,
+with the engine's own environment, read as `huggingface_hub` reads it, so its
+launch settings apply to them too: `HF_HUB_OFFLINE`; the token (`HF_TOKEN`,
+`HUGGING_FACE_HUB_TOKEN`, or the one `hf auth login` stored under `HF_HOME` or
+`HF_TOKEN_PATH`); a mirror in `HF_ENDPOINT`; and the cache folder (`HF_HUB_CACHE`,
+else `HF_HOME/hub`). The model list, Pull, Delete and start-time sizing all use
+the cache vLLM itself will use. If Hugging Face cannot answer (offline,
 gated without a token, unreachable), the model gets the free GPU memory less
 1 GiB and no parser. Every start also adds `--max-num-seqs 32`: vLLM's default of 256
 concurrent requests does not fit a hybrid model such as Qwen3.5-4B on a 16 GB
@@ -130,7 +134,8 @@ kernel build (for example choosing a FlashInfer attention backend) fails until
 the install can live on a path without spaces.
 Readiness polls `/health` for up to eight minutes while weights load.
 
-The model list is the Hugging Face cache (`~/.cache/huggingface/hub`), not what
+The model list is the Hugging Face cache (`~/.cache/huggingface/hub`, or the
+one `HF_HUB_CACHE` or `HF_HOME` in vLLM's launch settings names), not what
 vLLM happens to be serving: `list_models` is an `hf_cache` action listing the
 complete, text-model-shaped downloads (see `MANIFEST.md`), and it works while
 vLLM is stopped. Peers and the proxy, though, are only told about the model being

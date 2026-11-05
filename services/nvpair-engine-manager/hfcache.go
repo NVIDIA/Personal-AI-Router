@@ -41,7 +41,7 @@ var hfShardRe = regexp.MustCompile(`-(\d+)-of-(\d+)\.(?:safetensors|bin)$`)
 // runHFCacheAction lists the models in act.HFCache.Dir. It needs no running
 // engine, so the list is available while the engine is stopped.
 func (e *Executor) runHFCacheAction(ctx context.Context, st *engineState, engine string, act Action, params json.RawMessage) (json.RawMessage, error) {
-	dir, err := resolvePlaceholders(act.HFCache.Dir, st.pathVars())
+	dir, err := resolvePlaceholders(act.HFCache.Dir, hfActionVars(st))
 	if err != nil {
 		return nil, err
 	}

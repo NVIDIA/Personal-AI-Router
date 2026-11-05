@@ -44,6 +44,12 @@ var allowedPlaceholders = map[string]bool{
 	"models_dir":  true,
 }
 
+// hfHubCachePlaceholder is the Hugging Face hub cache the engine itself uses,
+// resolved from its launch environment the way huggingface_hub resolves it
+// (see hfEnv.hubCache). It is available only in the dir of an hf_cache or
+// hf_pull action, whose files must be the ones the engine reads.
+const hfHubCachePlaceholder = "hf_hub_cache"
+
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 
 // resultFieldNameRe matches one element field name, such as "root".
@@ -388,7 +394,7 @@ type ActionRemovePath struct {
 }
 
 // ActionHFCache names the Hugging Face hub cache directory to list. Dir is
-// templated, normally "{models_dir}/hub". The result is {"data":[{"id","size"}]},
+// templated, normally "{hf_hub_cache}", the cache the engine itself uses. The result is {"data":[{"id","size"}]},
 // which the ordinary result extractor reads with array "data" and field "id".
 type ActionHFCache struct {
 	Dir string `json:"dir"`
@@ -404,7 +410,7 @@ type ActionHFCache struct {
 // ActionHFPull downloads a model repository. Tool is the file name of the
 // Hugging Face CLI, looked up in the directory that holds the engine binary
 // (a vLLM virtualenv ships `hf` beside `vllm`). Dir is the hub cache directory,
-// normally "{models_dir}/hub".
+// normally "{hf_hub_cache}", the cache the engine itself uses.
 type ActionHFPull struct {
 	Tool string `json:"tool"`
 	Dir  string `json:"dir"`
@@ -1174,7 +1180,29 @@ func (m *Manifest) validatePlaceholders() error {
 			return fmt.Errorf("platform %q: %w", key, err)
 		}
 	}
-	return validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders)
+	if err := validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders); err != nil {
+		return err
+	}
+	hfAllowed := map[string]bool{hfHubCachePlaceholder: true}
+	for name := range allowedPlaceholders {
+		hfAllowed[name] = true
+	}
+	return validatePlaceholderStrings(m.hfActionDirs(), hfAllowed)
+}
+
+// hfActionDirs are the dirs of the hf_cache and hf_pull actions, which may also
+// name {hf_hub_cache}.
+func (m *Manifest) hfActionDirs() []string {
+	var out []string
+	for _, act := range m.Actions {
+		if act.HFPull != nil {
+			out = append(out, act.HFPull.Dir)
+		}
+		if act.HFCache != nil {
+			out = append(out, act.HFCache.Dir)
+		}
+	}
+	return out
 }
 
 func validatePlaceholderStrings(templates []string, allowed map[string]bool) error {
@@ -1233,14 +1261,8 @@ func (m *Manifest) actionTemplatedStrings() []string {
 			out = append(out, act.RemovePath.Root)
 			// Path may template caller params (e.g. {model}); validated at call time.
 		}
-		if act.HFPull != nil {
-			out = append(out, act.HFPull.Dir)
-		}
-		if act.HFCache != nil {
-			out = append(out, act.HFCache.Dir)
-		}
 	}
-	// Action http.path / cmd are resolved from runtime params (e.g.
+	// hf_cache and hf_pull dirs are checked by hfActionDirs. Action http.path / cmd are resolved from runtime params (e.g.
 	// {model}), so they're validated at call time, not statically here.
 	return out
 }

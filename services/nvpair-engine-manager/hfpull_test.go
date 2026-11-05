@@ -111,9 +111,9 @@ func hfPullFixture(t *testing.T, siblings []hfSibling, apiStatus int, script str
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"siblings": siblings}))
 	}))
 	t.Cleanup(api.Close)
-	old := hfAPIBase
-	hfAPIBase = api.URL
-	t.Cleanup(func() { hfAPIBase = old })
+	old := hfDefaultEndpoint
+	hfDefaultEndpoint = api.URL
+	t.Cleanup(func() { hfDefaultEndpoint = old })
 
 	m := testEngineManifest(bin)
 	m.Engine = "vllm"
@@ -227,4 +227,108 @@ func TestHFToolPath_FindsHFBesideTheEngineALinkPointsTo(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(env, "hf"), tool)
+}
+
+// PAIR reads the same Hugging Face settings vLLM's huggingface_hub reads, in
+// the same order, from the engine's environment over the service's.
+func TestHFEnv_ResolvesTheCacheEndpointAndTokenAsHuggingFaceHubDoes(t *testing.T) {
+	for _, key := range []string{"HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "XDG_CACHE_HOME", "HF_ENDPOINT", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH"} {
+		t.Setenv(key, "")
+	}
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	cache := func(name string, env hfEnv, want string) {
+		t.Run("cache: "+name, func(t *testing.T) {
+			assert.Equal(t, want, env.hubCache())
+		})
+	}
+	cache("HF_HUB_CACHE first", hfEnv{"HF_HUB_CACHE": "/hub", "HUGGINGFACE_HUB_CACHE": "/legacy", "HF_HOME": "/home"}, "/hub")
+	cache("the legacy HUGGINGFACE_HUB_CACHE next", hfEnv{"HUGGINGFACE_HUB_CACHE": "/legacy", "HF_HOME": "/home"}, "/legacy")
+	cache("then HF_HOME/hub", hfEnv{"HF_HOME": "/home"}, "/home/hub")
+	cache("then XDG_CACHE_HOME/huggingface/hub", hfEnv{"XDG_CACHE_HOME": "/xdg"}, "/xdg/huggingface/hub")
+	cache("else ~/.cache/huggingface/hub", hfEnv{}, filepath.Join(home, ".cache", "huggingface", "hub"))
+	cache("~ expanded", hfEnv{"HF_HOME": "~/hf"}, filepath.Join(home, "hf", "hub"))
+	cache("$VARS expanded from the engine's environment", hfEnv{"MODELS": "/models", "HF_HOME": "$MODELS/hf"}, "/models/hf/hub")
+
+	endpoint := func(name string, env hfEnv, want string) {
+		t.Run("endpoint: "+name, func(t *testing.T) {
+			assert.Equal(t, want, env.endpoint())
+		})
+	}
+	endpoint("the Hub by default", hfEnv{}, "https://huggingface.co")
+	endpoint("a mirror, without its trailing slash", hfEnv{"HF_ENDPOINT": "https://mirror.example/"}, "https://mirror.example")
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("from-file\n"), 0o600))
+	hfHome := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(hfHome, "token"), []byte("from-login\n"), 0o600))
+	token := func(name string, env hfEnv, want string) {
+		t.Run("token: "+name, func(t *testing.T) {
+			assert.Equal(t, want, env.token())
+		})
+	}
+	token("HF_TOKEN first", hfEnv{"HF_TOKEN": "env", "HUGGING_FACE_HUB_TOKEN": "legacy", "HF_HOME": hfHome}, "env")
+	token("the legacy HUGGING_FACE_HUB_TOKEN next", hfEnv{"HUGGING_FACE_HUB_TOKEN": "legacy", "HF_HOME": hfHome}, "legacy")
+	token("then HF_TOKEN_PATH", hfEnv{"HF_TOKEN_PATH": tokenFile, "HF_HOME": hfHome}, "from-file")
+	token("then the token hf auth login stored in HF_HOME", hfEnv{"HF_HOME": hfHome}, "from-login")
+	token("none", hfEnv{"HF_HOME": t.TempDir()}, "")
+}
+
+// The model list, Pull and Delete use the cache vLLM itself uses. With
+// HF_HUB_CACHE set in its launch settings, that is not {models_dir}/hub.
+func TestHFCacheAction_ListsTheCacheTheEngineUses(t *testing.T) {
+	t.Setenv("HF_HUB_CACHE", "")
+	modelsDir := t.TempDir()
+	elsewhere := t.TempDir()
+	writeHFRepo(t, filepath.Join(modelsDir, "hub"), "org/default-place", llmFiles(map[string]string{"model.safetensors": "w"}))
+	writeHFRepo(t, elsewhere, "org/engine-place", llmFiles(map[string]string{"model.safetensors": "w"}))
+	m := testEngineManifest(fakeEngineBin)
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	p := m.Platforms[key]
+	p.Runtime.Env = map[string]string{"HF_HOME": "{models_dir}"}
+	p.ModelsDir = modelsDir
+	m.Platforms[key] = p
+	m.Actions["list_models"] = Action{HFCache: &ActionHFCache{Dir: "{" + hfHubCachePlaceholder + "}"}, Result: &ActionResult{Array: "data", Field: "id"}}
+	require.NoError(t, m.Validate())
+	e := newTestExecutor(t, m)
+	st, err := e.state("fake")
+	require.NoError(t, err)
+	listed := func() []string {
+		raw, err := e.Action(t.Context(), "fake", "list_models", nil)
+		require.NoError(t, err)
+		return extractStrings(raw, &ActionResult{Array: "data", Field: "id"})
+	}
+
+	assert.Equal(t, []string{"org/default-place"}, listed(), "by default the manifest's HF_HOME, {models_dir}/hub")
+
+	st.mu.Lock()
+	st.plat.Runtime.LaunchEnv = []string{"HF_HUB_CACHE=" + elsewhere}
+	st.mu.Unlock()
+	assert.Equal(t, []string{"org/engine-place"}, listed(), "HF_HUB_CACHE in the engine's launch settings")
+}
+
+func TestHFHubCachePlaceholder_IsOnlyForHuggingFaceActionDirs(t *testing.T) {
+	accept := func(name string, edit func(*Manifest)) {
+		t.Run(name, func(t *testing.T) {
+			m := testEngineManifest(fakeEngineBin)
+			edit(m)
+			assert.NoError(t, m.Validate())
+		})
+	}
+	reject := func(name string, edit func(*Manifest)) {
+		t.Run(name, func(t *testing.T) {
+			m := testEngineManifest(fakeEngineBin)
+			edit(m)
+			assert.ErrorContains(t, m.Validate(), "hf_hub_cache")
+		})
+	}
+	accept("an hf_cache dir", func(m *Manifest) {
+		m.Actions["list_models"] = Action{HFCache: &ActionHFCache{Dir: "{hf_hub_cache}"}}
+	})
+	accept("an hf_pull dir", func(m *Manifest) {
+		m.Actions["pull_model"] = Action{HFPull: &ActionHFPull{Tool: "hf", Dir: "{hf_hub_cache}"}}
+	})
+	reject("a remove_path root", func(m *Manifest) {
+		m.Actions["delete_model"] = Action{RemovePath: &ActionRemovePath{Root: "{hf_hub_cache}", Path: "{hf_hub_cache}/{model}"}}
+	})
 }
