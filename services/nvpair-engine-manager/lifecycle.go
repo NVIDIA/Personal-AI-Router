@@ -289,7 +289,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	// with, and the model it serves. Auto-launch adds sizing and parser flags
 	// but never changes --model or --revision, so they are read once here.
 	env := hfEnv(launch.Env)
-	hub := env.hubCache()
+	hub := hfLaunchHub(launch.Args, env)
 	model, _ := launchFlagValue(launch.Args, "--model")
 	revision := hfRevision(launch.Args)
 	fetch := sync.OnceValues(func() (hfPendingModel, bool) {

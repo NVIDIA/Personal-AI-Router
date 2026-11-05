@@ -97,8 +97,12 @@ launch settings apply to them too: `HF_HUB_OFFLINE`, else `TRANSFORMERS_OFFLINE`
 the token (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or the one `hf auth login`
 stored under `HF_HOME` or `HF_TOKEN_PATH`), none of which is sent when
 `HF_HUB_DISABLE_IMPLICIT_TOKEN` is set; a mirror in `HF_ENDPOINT`; and the cache folder (`HF_HUB_CACHE`,
-else `HF_HOME/hub`). The model list, Pull, Delete and start-time sizing all use
-the cache vLLM itself will use. If Hugging Face cannot answer (offline,
+else `HF_HOME/hub`), or `--download-dir` when the launch arguments set one, since vLLM
+keeps a model's weights, config and tokenizer there. (vLLM's Transformers config lookup
+also caches a few MB of config and tokenizer files in the default cache; Delete leaves
+that shared cache alone, since other Hugging Face tools may use it, and no weights go
+there.) The model list, Pull, Delete and
+start-time sizing all use the cache vLLM itself will use. If Hugging Face cannot answer (offline,
 gated without a token, unreachable), the model gets the free GPU memory less
 1 GiB and no parser. Every start also adds `--max-num-seqs 32`: vLLM's default of 256
 concurrent requests does not fit a hybrid model such as Qwen3.5-4B on a 16 GB

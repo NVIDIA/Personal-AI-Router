@@ -215,8 +215,38 @@ func engineHFEnv(st *engineState) hfEnv {
 // engine's paths and the hub cache its environment selects.
 func hfActionVars(st *engineState) map[string]string {
 	vars := st.pathVars()
-	vars[hfHubCachePlaceholder] = engineHFEnv(st).hubCache()
+	var args []string
+	if st.plat != nil {
+		st.mu.Lock()
+		args = slices.Concat(st.plat.Runtime.Args, st.plat.Runtime.LaunchArgs)
+		st.mu.Unlock()
+	}
+	vars[hfHubCachePlaceholder] = hfLaunchHub(args, engineHFEnv(st))
 	return vars
+}
+
+// hfLaunchHub is the hub cache vLLM uses for a launch: its --download-dir when
+// the launch sets one, else the cache the engine's environment names. vLLM
+// passes --download-dir to huggingface_hub as cache_dir for the weights and
+// for the tokenizer and config files alike, in the usual hub layout, so the
+// model list, Pull, Delete and launch sizing all read and write there too. The
+// directory is read as huggingface_hub reads cache_dir: ~ is the home folder,
+// and a relative path is relative to the working directory vLLM shares with
+// this service.
+func hfLaunchHub(args []string, env hfEnv) string {
+	dir, ok := launchFlagValue(args, "--download-dir")
+	if !ok || dir == "" {
+		return env.hubCache()
+	}
+	if rest, ok := strings.CutPrefix(dir, "~"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = home + rest
+		}
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return dir
 }
 
 // hfDefaultEndpoint is the Hugging Face Hub, when HF_ENDPOINT names no mirror.

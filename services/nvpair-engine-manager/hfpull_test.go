@@ -462,6 +462,34 @@ func TestHFCacheAction_ListsTheCacheTheEngineUses(t *testing.T) {
 	st.plat.Runtime.LaunchEnv = []string{"HF_HUB_CACHE=" + elsewhere}
 	st.mu.Unlock()
 	assert.Equal(t, []string{"org/engine-place"}, listed(), "HF_HUB_CACHE in the engine's launch settings")
+
+	downloadDir := t.TempDir()
+	writeHFRepo(t, downloadDir, "org/download-dir-place", llmFiles(map[string]string{"model.safetensors": "w"}))
+	st.mu.Lock()
+	st.plat.Runtime.LaunchArgs = []string{"--download-dir", downloadDir}
+	st.mu.Unlock()
+	assert.Equal(t, []string{"org/download-dir-place"}, listed(), "--download-dir in the launch arguments, where vLLM keeps its models")
+}
+
+// vLLM hands --download-dir to huggingface_hub as cache_dir, which expands ~
+// and resolves a relative path against the working directory.
+func TestHFLaunchHub_UsesTheDownloadDirVLLMUses(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	env := hfEnv{"HF_HUB_CACHE": filepath.Join(home, "env-hub")}
+	test := func(name string, args []string, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, hfLaunchHub(args, env))
+		})
+	}
+	test("no --download-dir: the environment's cache", []string{"serve", "--model", "org/m"}, filepath.Join(home, "env-hub"))
+	test("an absolute directory", []string{"--download-dir", filepath.Join(home, "models")}, filepath.Join(home, "models"))
+	test("the = form", []string{"--download-dir=" + filepath.Join(home, "models")}, filepath.Join(home, "models"))
+	test("~ is the home folder", []string{"--download-dir", "~/models"}, filepath.Join(home, "models"))
+	test("a relative directory", []string{"--download-dir", "models"}, filepath.Join(cwd, "models"))
+	test("an empty value: the environment's cache", []string{"--download-dir="}, filepath.Join(home, "env-hub"))
 }
 
 func TestHFHubCachePlaceholder_IsOnlyForHuggingFaceActionDirs(t *testing.T) {
