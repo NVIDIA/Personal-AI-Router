@@ -499,6 +499,50 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 	return extra, note
 }
 
+// launchChatFormat returns where vLLM will read this launch's chat format: the
+// directory of the tokenizer it loads, and the --chat-template it is given, if
+// any. By default that is the model's own snapshot. --tokenizer names another
+// repository or an absolute directory, and --tokenizer-revision a revision of
+// it, which defaults to the model's revision as in vLLM. ok is false when what
+// the launch names cannot be read here: a tokenizer repository or revision that
+// is not cached, or a chat template given as a relative path, which vLLM would
+// resolve against its own working directory. A wrong guess picks a parser that
+// cannot read the model's tool calls, so none is chosen instead.
+func launchChatFormat(args []string, hubDir, modelSnapshot string) (tokenizer, template string, ok bool) {
+	tokenizer = modelSnapshot
+	name, setName := launchFlagValue(args, "--tokenizer")
+	revision, setRevision := launchFlagValue(args, "--tokenizer-revision")
+	if (setName && name != "") || (setRevision && revision != "") {
+		model, _ := launchFlagValue(args, "--model")
+		if name == "" {
+			name = model
+		}
+		if revision == "" {
+			revision = hfRevision(args)
+		}
+		switch {
+		case filepath.IsAbs(name):
+			tokenizer = name
+		case name == model && revision == hfRevision(args):
+			tokenizer = modelSnapshot
+		case hfModelIDRe.MatchString(name):
+			if tokenizer, ok = hfSnapshotDir(hubDir, name, revision); !ok {
+				return "", "", false
+			}
+		default:
+			return "", "", false
+		}
+	}
+	if value, set := launchFlagValue(args, "--chat-template"); set && value != "" {
+		literal := strings.ContainsAny(value, "{}\n")
+		if !literal && !filepath.IsAbs(value) {
+			return "", "", false
+		}
+		template = value
+	}
+	return tokenizer, template, true
+}
+
 // planToolCalling returns the arguments that let clients send tool_choice
 // "auto", which agent clients do on every request. vLLM answers HTTP 400
 // unless both --enable-auto-tool-choice and --tool-call-parser are set. The
@@ -527,7 +571,12 @@ func planToolCalling(ctx context.Context, args []string, hubDir, bin string, fet
 	if !ok {
 		return nil, ""
 	}
-	parser, matched, err := detectToolParser(ctx, bin, found.snapshot)
+	tokenizer, template, ok := launchChatFormat(args, hubDir, found.snapshot)
+	if !ok {
+		slog.Info("the tokenizer or chat template this launch names cannot be read here, so no tool-call parser is chosen; vLLM will refuse requests that ask for tool calls", "model", model)
+		return nil, ""
+	}
+	parser, matched, err := detectToolParser(ctx, bin, tokenizer, template)
 	if err != nil {
 		slog.Warn("could not work out the model's tool-call format; vLLM will refuse requests that ask for tool calls", "model", model, "err", err)
 		return nil, ""

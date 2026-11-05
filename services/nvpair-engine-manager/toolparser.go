@@ -88,8 +88,10 @@ func vllmPython(bin string) (string, error) {
 }
 
 // runToolParserProbe runs the probe under ctx, so a start that is cancelled
-// (Stop, a remote caller giving up, service shutdown) stops it too.
-func runToolParserProbe(ctx context.Context, bin, snapshot string) (toolParserProbe, error) {
+// (Stop, a remote caller giving up, service shutdown) stops it too. tokenizer
+// is the directory of the tokenizer vLLM loads, and template the launch's
+// --chat-template, or "" for the tokenizer's own.
+func runToolParserProbe(ctx context.Context, bin, tokenizer, template string) (toolParserProbe, error) {
 	python, err := vllmPython(bin)
 	if err != nil {
 		return toolParserProbe{}, err
@@ -97,7 +99,11 @@ func runToolParserProbe(ctx context.Context, bin, snapshot string) (toolParserPr
 	ctx, cancel := context.WithTimeout(ctx, toolParserProbeTimeout)
 	defer cancel()
 	// -I keeps the working directory and user site off the import path.
-	cmd := exec.CommandContext(ctx, python, "-I", "-c", toolParserProbeScript, snapshot)
+	args := []string{"-I", "-c", toolParserProbeScript, tokenizer}
+	if template != "" {
+		args = append(args, template)
+	}
+	cmd := exec.CommandContext(ctx, python, args...)
 	cmd.Dir = os.TempDir()
 	out, err := cmd.Output()
 	if err != nil {
@@ -111,15 +117,16 @@ func runToolParserProbe(ctx context.Context, bin, snapshot string) (toolParserPr
 	return probe, nil
 }
 
-// detectToolParser returns the parser for the model in snapshot, probing it the
-// first time. A failed probe is not cached, so the next start tries again.
-func detectToolParser(ctx context.Context, bin, snapshot string) (string, []string, error) {
-	key := bin + "\x00" + snapshot
+// detectToolParser returns the parser for the tokenizer in the tokenizer
+// directory, rendered with template when the launch overrides it, probing it
+// the first time. A failed probe is not cached, so the next start tries again.
+func detectToolParser(ctx context.Context, bin, tokenizer, template string) (string, []string, error) {
+	key := bin + "\x00" + tokenizer + "\x00" + template
 	if cached, ok := toolParserCache.Load(key); ok {
 		probe := cached.(toolParserProbe)
 		return chooseToolParser(probe), probe.Matches, nil
 	}
-	probe, err := probeToolParsers(ctx, bin, snapshot)
+	probe, err := probeToolParsers(ctx, bin, tokenizer, template)
 	if err != nil {
 		return "", nil, err
 	}

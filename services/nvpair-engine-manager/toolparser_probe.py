@@ -3,9 +3,10 @@
 """Find the vLLM tool-call parsers that read a model's tool-call format.
 
 nvpair-engine-manager runs this with the Python of the vLLM it is about to
-launch, passing the model's snapshot directory:
+launch, passing the directory of the tokenizer vLLM will load and, when the
+launch overrides it, the --chat-template value:
 
-    python -I -c <this file> <snapshot dir>
+    python -I -c <this file> <tokenizer dir> [<chat template>]
 
 A model's chat template writes an earlier tool call back into the conversation
 in the same format the model uses when it calls a tool. So the template is
@@ -75,6 +76,14 @@ def main():
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(sys.argv[1], trust_remote_code=False)
+    if len(sys.argv) > 2:
+        # The template the launch names replaces the tokenizer's, read the way
+        # vLLM reads --chat-template: a file path or the template itself.
+        try:
+            from vllm.renderers.chat_utils import load_chat_template
+        except ImportError:
+            from vllm.entrypoints.chat_utils import load_chat_template
+        tok.chat_template = load_chat_template(sys.argv[2])
 
     hf = False
     try:

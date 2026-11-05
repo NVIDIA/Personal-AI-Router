@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -740,4 +741,64 @@ func TestBundledVLLMLaunch_FirstStartOfTheDefaultModelFitsA16GiBGPU(t *testing.T
 	assert.GreaterOrEqual(t, utilOf(t, out.Args)*16*float64(gib), weightsAndOverhead, "the share cannot hold the weights and overhead: %v", out.Args)
 	assert.NotEmpty(t, flagOf(t, out.Args, "--max-model-len"))
 	assert.Equal(t, "32", flagOf(t, out.Args, "--max-num-seqs"), "vLLM's default of 256 does not start on this GPU")
+}
+
+// The probe reads the chat format vLLM will use: the tokenizer --tokenizer and
+// --tokenizer-revision name, and the --chat-template the launch gives. When
+// that cannot be read here, no parser is chosen rather than one read from the
+// model's own template, which vLLM would not be using.
+func TestPlanToolCalling_ProbesTheTokenizerAndTemplateVLLMWillUse(t *testing.T) {
+	cache := cachedModel(t, "org/m", qwen8BConfig, 1_000_000)
+	writeHFRepo(t, cache, "org/tok", map[string]string{"tokenizer.json": "{}", "tokenizer_config.json": "{}"})
+	template := filepath.Join(t.TempDir(), "tools.jinja")
+	require.NoError(t, os.WriteFile(template, []byte("{{ messages }}"), 0o644))
+	snapshot := func(id string) string {
+		return filepath.Join(cache, "models--"+strings.ReplaceAll(id, "/", "--"), "snapshots", "abc123")
+	}
+	probes := func(t *testing.T) *[][2]string {
+		t.Helper()
+		var seen [][2]string
+		old := probeToolParsers
+		probeToolParsers = func(_ context.Context, _, tokenizer, template string) (toolParserProbe, error) {
+			seen = append(seen, [2]string{tokenizer, template})
+			return toolParserProbe{Matches: []string{"hermes"}}, nil
+		}
+		toolParserCache.Clear()
+		t.Cleanup(func() {
+			probeToolParsers = old
+			toolParserCache.Clear()
+		})
+		return &seen
+	}
+	probed := func(name string, extra []string, wantTokenizer, wantTemplate string) {
+		t.Run(name, func(t *testing.T) {
+			seen := probes(t)
+
+			tools, parser := planToolCalling(t.Context(), append([]string{"--model", "org/m"}, extra...), cache, "vllm", nil)
+
+			assert.Equal(t, "hermes", parser)
+			assert.Contains(t, tools, "--tool-call-parser")
+			assert.Equal(t, [][2]string{{wantTokenizer, wantTemplate}}, *seen)
+		})
+	}
+	noParser := func(name string, extra []string) {
+		t.Run(name, func(t *testing.T) {
+			seen := probes(t)
+
+			tools, parser := planToolCalling(t.Context(), append([]string{"--model", "org/m"}, extra...), cache, "vllm", nil)
+
+			assert.Empty(t, tools)
+			assert.Empty(t, parser)
+			assert.Empty(t, *seen, "nothing to probe")
+		})
+	}
+	probed("the model's own tokenizer and template", nil, snapshot("org/m"), "")
+	probed("another cached tokenizer repository", []string{"--tokenizer", "org/tok"}, snapshot("org/tok"), "")
+	probed("the model's revision named as the tokenizer revision", []string{"--tokenizer-revision", "main"}, snapshot("org/m"), "")
+	probed("a tokenizer directory", []string{"--tokenizer", cache}, cache, "")
+	probed("a chat template file", []string{"--chat-template", template}, snapshot("org/m"), template)
+	probed("a chat template given inline", []string{"--chat-template", "{% for m in messages %}{{ m.content }}{% endfor %}"}, snapshot("org/m"), "{% for m in messages %}{{ m.content }}{% endfor %}")
+	noParser("a tokenizer repository that is not cached", []string{"--tokenizer", "org/not-cached"})
+	noParser("a tokenizer revision that is not cached", []string{"--tokenizer-revision", "v9"})
+	noParser("a chat template given as a relative path", []string{"--chat-template", "tools.jinja"})
 }

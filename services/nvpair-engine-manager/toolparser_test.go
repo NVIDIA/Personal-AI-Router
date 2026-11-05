@@ -21,7 +21,7 @@ import (
 func withToolParserProbe(t *testing.T, probe func(bin, snapshot string) (toolParserProbe, error)) {
 	t.Helper()
 	old := probeToolParsers
-	probeToolParsers = func(_ context.Context, bin, snapshot string) (toolParserProbe, error) {
+	probeToolParsers = func(_ context.Context, bin, snapshot, _ string) (toolParserProbe, error) {
 		return probe(bin, snapshot)
 	}
 	toolParserCache.Clear()
@@ -52,12 +52,12 @@ func TestDetectToolParser_ProbesEachModelOnce(t *testing.T) {
 	})
 
 	for range 3 {
-		parser, _, err := detectToolParser(t.Context(), "vllm", "/hub/a")
+		parser, _, err := detectToolParser(t.Context(), "vllm", "/hub/a", "")
 		require.NoError(t, err)
 		require.Equal(t, "hermes", parser)
 	}
 	require.Equal(t, 1, probes, "the same model is probed once")
-	_, _, err := detectToolParser(t.Context(), "vllm", "/hub/c")
+	_, _, err := detectToolParser(t.Context(), "vllm", "/hub/c", "")
 	require.NoError(t, err)
 	assert.Equal(t, 2, probes, "another model must be probed on its own")
 }
@@ -72,10 +72,10 @@ func TestDetectToolParser_RetriesAFailedProbe(t *testing.T) {
 		return toolParserProbe{Matches: []string{"hermes"}}, nil
 	})
 
-	_, _, err := detectToolParser(t.Context(), "vllm", "/hub/a")
+	_, _, err := detectToolParser(t.Context(), "vllm", "/hub/a", "")
 	require.Error(t, err, "the first probe's failure was not reported")
 
-	parser, _, err := detectToolParser(t.Context(), "vllm", "/hub/a")
+	parser, _, err := detectToolParser(t.Context(), "vllm", "/hub/a", "")
 	require.NoError(t, err, "the next start must probe again")
 	assert.Equal(t, "hermes", parser)
 }
@@ -99,7 +99,7 @@ func TestToolParserProbe_FindsTheParserWithTheInstalledVLLM(t *testing.T) {
 			found, ok := findLaunchModel([]string{"--model", model}, hub, nil)
 			require.True(t, ok, "%s is not in %s", model, hub)
 
-			probe, err := runToolParserProbe(t.Context(), bin, found.snapshot)
+			probe, err := runToolParserProbe(t.Context(), bin, found.snapshot, "")
 
 			require.NoError(t, err)
 			assert.Equal(t, want, chooseToolParser(probe), "chosen from %+v", probe)
@@ -117,7 +117,7 @@ func TestDetectToolParser_StopsTheProbeWhenTheStartIsCancelled(t *testing.T) {
 		toolParserCache.Clear()
 	})
 	toolParserCache.Clear()
-	probeToolParsers = func(ctx context.Context, bin, snapshot string) (toolParserProbe, error) {
+	probeToolParsers = func(ctx context.Context, bin, snapshot, template string) (toolParserProbe, error) {
 		select {
 		case <-ctx.Done():
 			return toolParserProbe{}, ctx.Err()
@@ -128,7 +128,7 @@ func TestDetectToolParser_StopsTheProbeWhenTheStartIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	_, _, err := detectToolParser(ctx, "vllm", "/hub/cancelled")
+	_, _, err := detectToolParser(ctx, "vllm", "/hub/cancelled", "")
 
 	require.ErrorIs(t, err, context.Canceled)
 }

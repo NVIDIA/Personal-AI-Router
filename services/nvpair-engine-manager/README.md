@@ -111,7 +111,11 @@ equally, `hermes`, `qwen3_coder`, `llama3_json`, `mistral` and `pythonic` are
 preferred in that order. The probe downloads nothing, runs no code from the model
 repository, takes a few seconds, and is done once per model and vLLM while the
 service runs. It runs under the start, so cancelling the start (Stop, a caller
-giving up, shutdown) stops it. The chosen parser appears in the log
+giving up, shutdown) stops it. It reads the chat format vLLM will use: the
+tokenizer `--tokenizer` and `--tokenizer-revision` name, if set, and a
+`--chat-template` file or inline template. When that tokenizer is not cached,
+or the template is a relative path vLLM would resolve against its own working
+directory, no parser is chosen rather than one read from the wrong template. The chosen parser appears in the log
 (`vLLM tool-call parser chosen from the model's chat template`).
 When no parser reads the model's format (Nemotron Nano v2's `<TOOLCALL>`, or a
 template with no tool support), nothing is added, and a request that asks for
