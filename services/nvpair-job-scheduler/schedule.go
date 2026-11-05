@@ -132,7 +132,7 @@ func (m *Manager) rankAt(now time.Time) ([]string, []NodeRank) {
 func (m *Manager) emitIfChanged(engine string, order []string, ranks []NodeRank, force bool) {
 	m.mu.Lock()
 	prev := m.emitted[engine]
-	changed := force || !equalRanks(prev.ranks, ranks)
+	changed := force || !slices.Equal(prev.ranks, ranks)
 	m.mu.Unlock()
 
 	if !changed {
@@ -170,16 +170,4 @@ func (m *Manager) status() statusResult {
 type statusResult struct {
 	IntervalMs int64                     `json:"interval_ms"`
 	Engines    map[string]EngineSchedule `json:"engines"`
-}
-
-func equalRanks(a, b []NodeRank) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

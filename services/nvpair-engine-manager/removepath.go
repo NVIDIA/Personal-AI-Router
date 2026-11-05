@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -158,12 +159,7 @@ func (s modelStore) under(fi os.FileInfo) bool {
 
 // contains reports whether path sits below the store.
 func (s modelStore) contains(path string) bool {
-	for _, dir := range directoriesAbove(path) {
-		if s.is(dir) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(directoriesAbove(path), s.is)
 }
 
 // directoriesAbove stats each existing directory over path, along the path as

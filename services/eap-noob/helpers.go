@@ -4,22 +4,12 @@
 package eapnoob
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 )
 
 func intp(i int) *int { return &i }
-
-func containsInt(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
 
 // newPeerId generates a fresh, unguessable 16-byte identifier base64url-encoded
 // to a 22-character string (RFC 9140, Section 3.3.1).
@@ -86,8 +76,6 @@ func decodeMAC(r json.RawMessage) ([]byte, error) {
 	}
 	return b, nil
 }
-
-func hmacEqual(a, b []byte) bool { return hmac.Equal(a, b) }
 
 // oobOutput builds the OOB message for the given direction, generating a fresh
 // secret nonce Noob and computing the fingerprint Hoob over the negotiated

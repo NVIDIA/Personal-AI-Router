@@ -589,12 +589,7 @@ func (p SubscribeParams) Matches(n DirectoryNode) bool {
 	if len(p.Services) == 0 {
 		return true
 	}
-	for _, s := range p.Services {
-		if n.HasService(s) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(p.Services, n.HasService)
 }
 
 // GetNodesParams optionally filters discovery:get-nodes to a single service.

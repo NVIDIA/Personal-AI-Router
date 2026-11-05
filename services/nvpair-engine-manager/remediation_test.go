@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 
 	"sync"
@@ -41,12 +42,7 @@ func (c *captured) emit(method string, _ any) {
 func (c *captured) has(method string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, m := range c.emits {
-		if m == method {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.emits, method)
 }
 
 func capturingExecutor(t *testing.T, m *Manifest) (*Executor, *captured) {
