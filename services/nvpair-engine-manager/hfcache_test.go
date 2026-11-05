@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -156,7 +155,7 @@ func TestHFCacheAction_ResultFeedsTheModelListExtractor(t *testing.T) {
 	writeHFRepo(t, cache, "Qwen/Qwen3-8B", llmFiles(map[string]string{"model.safetensors": "w"}))
 	e := &Executor{}
 
-	raw, err := e.runHFCacheAction(context.Background(), &engineState{}, "vllm", Action{HFCache: &ActionHFCache{Dir: cache}}, nil)
+	raw, err := e.runHFCacheAction(t.Context(), &engineState{}, "vllm", Action{HFCache: &ActionHFCache{Dir: cache}}, nil)
 
 	require.NoError(t, err)
 	ids, ok := extractStringsResult(raw, &ActionResult{Array: "data", Field: "id"})
@@ -246,7 +245,7 @@ func TestDeleteHFModel_RemovesTheModelWithTheHuggingFaceTool(t *testing.T) {
 	writeHFRepo(t, cache, "org/served", llmFiles(map[string]string{"model.safetensors": "w"}))
 	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "wwww"}))
 	del := func(model string) (json.RawMessage, error) {
-		return e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+		return e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 	}
 
 	_, err = del("org/served")
@@ -284,7 +283,7 @@ func TestDeleteHFModel_KeepsTheSelectionWhenTheToolFails(t *testing.T) {
 	require.NoError(t, e.Stop("fake"))
 	before := launchTextOf(t, e)
 
-	_, err = e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
+	_, err = e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
 
 	assert.ErrorContains(t, err, "PermissionError", "the tool's own error is reported")
 	assert.Equal(t, []string{"org/served"}, scannedIDs(t, cache), "the model is kept")
@@ -303,7 +302,7 @@ func TestDeleteHFModel_RefusesWithoutTheHuggingFaceTool(t *testing.T) {
 	require.NoError(t, e.Stop("fake"))
 	before := launchTextOf(t, e)
 
-	_, err = e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
+	_, err = e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
 
 	assert.ErrorContains(t, err, "was not found", "a missing tool is reported")
 	assert.Equal(t, []string{"org/served"}, scannedIDs(t, cache))
@@ -325,12 +324,12 @@ func TestDeleteHFModel_LeavesAStoppedEngineWithNoModelSelected(t *testing.T) {
 	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "w"}))
 	require.NoError(t, e.Stop("fake"))
 
-	_, err = e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
+	_, err = e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
 
 	require.NoError(t, err, "deleting the model of a stopped engine")
 	assert.Equal(t, []string{"org/other"}, scannedIDs(t, cache))
 	assert.NotContains(t, launchTextOf(t, e), "--model", "the launch text must no longer name a model")
-	assert.ErrorContains(t, e.Start(context.Background(), "fake"), "no model selected")
+	assert.ErrorContains(t, e.Start(t.Context(), "fake"), "no model selected")
 	_, err = loadModel(t, e, "org/other")
 	require.NoError(t, err, "loading another model")
 	state, err := e.LaunchSettings("fake")
@@ -361,7 +360,7 @@ func TestDeleteHFModel_RefusesTheBundledDefaultModel(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(venvBin, "hf"), []byte(fakeHFCacheRm), 0o755))
 	e := NewExecutor(reg, NewReporter(nil), func(string, any) {}, base)
 	act := func(model string) error {
-		_, err := e.Action(context.Background(), "vllm", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+		_, err := e.Action(t.Context(), "vllm", "delete_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 		return err
 	}
 
@@ -452,7 +451,7 @@ func TestDeleteHFModel_KeepsASettingsSaveMadeWhileTheToolRuns(t *testing.T) {
 	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(cache, "hf-release"), nil, 0o600) })
 	deleted := make(chan error, 1)
 	go func() {
-		_, err := e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
+		_, err := e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":"org/served"}`))
 		deleted <- err
 	}()
 	require.Eventually(t, func() bool {
@@ -462,7 +461,7 @@ func TestDeleteHFModel_KeepsASettingsSaveMadeWhileTheToolRuns(t *testing.T) {
 
 	saved := make(chan error, 1)
 	go func() {
-		_, err := e.ConfigureLaunch(context.Background(), settings.Configure{
+		_, err := e.ConfigureLaunch(t.Context(), settings.Configure{
 			Engine:   "fake",
 			Settings: settings.Config{ServerPort: state.ServerPort, LaunchText: edited},
 		}, func() error { return nil })
@@ -492,7 +491,7 @@ func TestDeleteHFModel_RefusesTheModelAnAdoptedEngineServes(t *testing.T) {
 	writeHFRepo(t, cache, "org/adopted", llmFiles(map[string]string{"model.safetensors": "w"}))
 	require.Contains(t, launchTextOf(t, e), "--model org/initial")
 
-	_, err := e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/adopted"}`))
+	_, err := e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":"org/adopted"}`))
 	require.ErrorContains(t, err, "is the model fake is serving")
 	assert.Equal(t, []string{"org/adopted"}, scannedIDs(t, cache), "a refused delete must leave the model in place")
 	assert.Empty(t, hfCalls(t, cache), "a refused delete must not reach hf cache rm")
@@ -509,7 +508,7 @@ func TestDeleteHFModel_RefusesWhenTheRunningEngineCannotSayWhatItServes(t *testi
 	delete(m.Actions, "loaded_models")
 	writeHFRepo(t, cache, "org/other", llmFiles(map[string]string{"model.safetensors": "w"}))
 
-	_, err := e.Action(context.Background(), "fake", "delete_model", json.RawMessage(`{"model":"org/other"}`))
+	_, err := e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":"org/other"}`))
 	require.ErrorContains(t, err, "cannot tell which model fake is serving")
 	assert.Equal(t, []string{"org/other"}, scannedIDs(t, cache))
 	assert.Empty(t, hfCalls(t, cache))

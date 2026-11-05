@@ -213,7 +213,7 @@ func TestStopAll_RetriesAFailedStopCommand(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, ex.Start(context.Background(), "daemon"))
+	require.NoError(t, ex.Start(t.Context(), "daemon"))
 	ex.StopAll()
 	st, err := ex.Status("daemon")
 	require.NoError(t, err)

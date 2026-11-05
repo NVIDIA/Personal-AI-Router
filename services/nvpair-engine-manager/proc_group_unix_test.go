@@ -6,7 +6,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"runtime"
 	"strconv"
@@ -144,7 +143,7 @@ func TestStopAll_ForceKillsAStartingEngineThatIgnoresTheGracefulSignal(t *testin
 	ex := newTestExecutor(t, m)
 
 	started := make(chan error, 1)
-	go func() { started <- ex.Start(context.Background(), "fake") }()
+	go func() { started <- ex.Start(t.Context(), "fake") }()
 
 	var helper int
 	deadline := time.Now().Add(5 * time.Second)

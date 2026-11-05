@@ -260,7 +260,7 @@ func TestModelsResultNoLoadedAction_OmitsKey(t *testing.T) {
 // carries the fresh full model result as the push payload.
 func TestSweepModels_SeedsThenEmitsOnChange(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
-	ctx := context.Background()
+	ctx := t.Context()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 
@@ -288,7 +288,7 @@ func TestSweepModels_EmitsWhenAModelIsPulledOrDeleted(t *testing.T) {
 			m := manifest(t)
 			cache := m.Actions["list_models"].HFCache.Dir
 			ex := newTestExecutor(t, m)
-			ctx := context.Background()
+			ctx := t.Context()
 			if start {
 				t.Cleanup(func() { _ = ex.Stop("fake") })
 				require.NoError(t, ex.Start(ctx, "fake"))
@@ -361,7 +361,7 @@ func TestSweepModels_RetainsLastGoodOnTransientMiss(t *testing.T) {
 	}
 	// The engine isn't started, so ModelsResult reports it neither running nor
 	// queryable: no list has a "fake" key this sweep.
-	changed, next, _ := ex.sweepModels(context.Background(), prev)
+	changed, next, _ := ex.sweepModels(t.Context(), prev)
 	require.Empty(t, changed, "a disappeared engine reported")
 	require.Equal(t, prev, next, "baseline after miss")
 }
@@ -424,7 +424,7 @@ func loadedOnlyManifest(t *testing.T, bin string) *Manifest {
 // served model and reports the on-disk list apart, for model managers.
 func TestModelsResult_AdvertisesOnlyTheServedModelOfALoadedOnlyEngine(t *testing.T) {
 	ex := newTestExecutor(t, loadedOnlyManifest(t, fakeEngineBin))
-	ctx := context.Background()
+	ctx := t.Context()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(ctx, "fake"))
 
@@ -441,7 +441,7 @@ func TestModelsResult_AdvertisesOnlyTheServedModelOfALoadedOnlyEngine(t *testing
 // Load or Delete them, while nothing is advertised for routing.
 func TestModelsResult_ReportsTheDownloadedModelsOfAStoppedLoadedOnlyEngine(t *testing.T) {
 	ex := newTestExecutor(t, loadedOnlyManifest(t, fakeEngineBin))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	res := ex.ModelsResult(ctx)
 	assert.Equal(t, map[string][]string{"fake": {"other/cached-model"}}, res.DownloadedByEngine, "downloaded")
@@ -456,7 +456,7 @@ func TestModelsResult_OmitsTheDownloadedModelsOfAnEngineThatIsNotInstalled(t *te
 	missing := filepath.Join(t.TempDir(), "not-installed")
 	ex := newTestExecutor(t, loadedOnlyManifest(t, missing))
 
-	res := ex.ModelsResult(context.Background())
+	res := ex.ModelsResult(t.Context())
 	assert.Nil(t, res.DownloadedByEngine)
 }
 
@@ -470,7 +470,7 @@ func TestModelsResult_MarksTheCachedModelLoadedWhenServedUnderAnAlias(t *testing
 	plat.Runtime.Env = map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}", "FAKE_SERVED_MODEL_NAME": "qwen-api"}
 	m.Platforms[key] = plat
 	ex := newTestExecutor(t, m)
-	ctx := context.Background()
+	ctx := t.Context()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(ctx, "fake"))
 
@@ -483,7 +483,7 @@ func TestModelsResult_MarksTheCachedModelLoadedWhenServedUnderAnAlias(t *testing
 // An engine whose advertised list is its inventory reports nothing apart.
 func TestModelsResult_OmitsDownloadedForAnEngineThatAdvertisesItsList(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
-	ctx := context.Background()
+	ctx := t.Context()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(ctx, "fake"))
 

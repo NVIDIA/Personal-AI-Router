@@ -176,7 +176,7 @@ func TestPullHFModel_DownloadsAndReportsSuccess(t *testing.T) {
 		{RFilename: "config.json", Size: 2}, {RFilename: "tokenizer.json", Size: 2}, {RFilename: "model.safetensors", Size: 1000},
 	}, http.StatusOK, fakeHFDownload)
 
-	res, err := e.PullModelStream(context.Background(), "vllm", "Qwen/Test", nil)
+	res, err := e.PullModelStream(t.Context(), "vllm", "Qwen/Test", nil)
 
 	require.NoError(t, err)
 	var result struct {
@@ -262,7 +262,7 @@ func TestPullHFModel_ReportsTheToolsOwnMessageWhenTheDownloadFails(t *testing.T)
 	e, _, _ := hfPullFixture(t, oneFileRepo, http.StatusOK,
 		`echo "connection reset by peer" >&2; exit 1`)
 
-	_, err := e.PullModelStream(context.Background(), "vllm", "Qwen/Test", nil)
+	_, err := e.PullModelStream(t.Context(), "vllm", "Qwen/Test", nil)
 
 	assert.ErrorContains(t, err, "connection reset by peer")
 }
@@ -280,7 +280,7 @@ func TestPullHFModel_RefusesALayoutVLLMCannotLoadBeforeDownloading(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			e, hub, _ := hfPullFixture(t, siblings, http.StatusOK, `touch "$(dirname "$0")/ran-anyway"; exit 0`)
 
-			_, err := e.PullModelStream(context.Background(), "vllm", "Qwen/Test", nil)
+			_, err := e.PullModelStream(t.Context(), "vllm", "Qwen/Test", nil)
 
 			if wantErr == "" {
 				assert.NotContains(t, fmt.Sprint(err), "not one model")
@@ -313,7 +313,7 @@ func TestPullHFModel_RefusesBadInputsBeforeDownloading(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e, _, _ := hfPullFixture(t, nil, apiStatus, "touch ran-anyway; exit 0")
 
-			_, err := e.PullModelStream(context.Background(), "vllm", model, nil)
+			_, err := e.PullModelStream(t.Context(), "vllm", model, nil)
 
 			assert.ErrorContains(t, err, wantMessage)
 		})
@@ -326,7 +326,7 @@ func TestPullHFModel_RefusesBadInputsBeforeDownloading(t *testing.T) {
 
 func TestPullHFModel_StopsPromptlyWhenCancelled(t *testing.T) {
 	e, _, _ := hfPullFixture(t, oneFileRepo, http.StatusOK, "sleep 30")
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 

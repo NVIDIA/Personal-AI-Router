@@ -484,7 +484,7 @@ func TestStart_ReportsARefusalAsAFailedStart(t *testing.T) {
 	test := func(name string, executor func(t *testing.T) *Executor, wantErr string) {
 		t.Run(name, func(t *testing.T) {
 			e := executor(t)
-			require.ErrorContains(t, e.Start(context.Background(), "fake"), wantErr)
+			require.ErrorContains(t, e.Start(t.Context(), "fake"), wantErr)
 			assert.True(t, hasErr(e.Errors(), startFailedID("fake")), "the refusal is reported as a failed start")
 		})
 	}

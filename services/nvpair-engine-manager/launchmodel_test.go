@@ -69,18 +69,18 @@ func switchModelExecutor(t *testing.T, flag string) *Executor {
 	require.NoError(t, err)
 	text, _, err := withLaunchFlag(state.LaunchText, flag, "org/initial")
 	require.NoError(t, err)
-	_, err = e.ConfigureLaunch(context.Background(), settings.Configure{
+	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{
 		Engine:   "fake",
 		Settings: settings.Config{ServerPort: state.ServerPort, LaunchText: text},
 	}, func() error { return nil })
 	require.NoError(t, err)
-	require.NoError(t, e.Start(context.Background(), "fake"), "start")
+	require.NoError(t, e.Start(t.Context(), "fake"), "start")
 	return e
 }
 
 func loadModel(t *testing.T, e *Executor, model string) (json.RawMessage, error) {
 	t.Helper()
-	return e.Action(context.Background(), "fake", "load_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+	return e.Action(t.Context(), "fake", "load_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 }
 
 func quoteJSON(s string) string { b, _ := json.Marshal(s); return string(b) }
@@ -142,7 +142,7 @@ func TestLaunchModel_SwitchesAndRestartsARunningEngine(t *testing.T) {
 	assert.NotEqual(t, gen, startGeneration(t, e), "the engine was restarted")
 
 	// A second switch replaces the first and keeps the rest of the launch text.
-	_, err = e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
+	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{
 		ServerPort: after.Port, LaunchText: launchTextOf(t, e) + " --max-model-len 4096",
 	}}, func() error { return nil })
 	require.NoError(t, err)
@@ -214,7 +214,7 @@ func ejectEngine(t *testing.T, e *Executor, model string) (json.RawMessage, erro
 	m, _ := e.reg.Get("fake")
 	m.Actions["unload_model"] = Action{StopEngine: true}
 	require.NoError(t, m.Validate())
-	return e.Action(context.Background(), "fake", "unload_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+	return e.Action(t.Context(), "fake", "unload_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
 }
 
 func TestEject_StopsTheEngineAndKeepsItsModelChoice(t *testing.T) {
@@ -249,7 +249,7 @@ func TestLaunchModel_RefusesAnythingThatIsNotAModelID(t *testing.T) {
 	before := launchTextOf(t, e)
 	reject := func(name, params string) {
 		t.Run(name, func(t *testing.T) {
-			_, err := e.Action(context.Background(), "fake", "load_model", json.RawMessage(params))
+			_, err := e.Action(t.Context(), "fake", "load_model", json.RawMessage(params))
 
 			assert.Error(t, err)
 		})
@@ -279,7 +279,7 @@ func TestLaunchModel_RefusesAnythingThatIsNotAModelID(t *testing.T) {
 	rejectModel("a newline", "org/na\nme")
 	reject("params without a model", `{"nope":1}`)
 	t.Run("missing params", func(t *testing.T) {
-		_, err := e.Action(context.Background(), "fake", "load_model", nil)
+		_, err := e.Action(t.Context(), "fake", "load_model", nil)
 
 		assert.Error(t, err)
 	})
@@ -315,12 +315,12 @@ func TestLaunchModel_RestoresThePreviousModelWhenTheCallerGivesUp(t *testing.T) 
 	e := switchModelExecutor(t, "--model")
 	// Every launch from here on takes a second to become ready, so the switch
 	// below is still starting when its caller gives up.
-	_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
+	_, err := e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{
 		ServerPort: mustStatus(t, e).Port, LaunchText: "FAKE_START_DELAY=1s " + launchTextOf(t, e),
 	}}, func() error { return nil })
 	require.NoError(t, err)
 	before := launchTextOf(t, e)
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
 
 	_, err = e.Action(ctx, "fake", "load_model", json.RawMessage(`{"model":"org/slow"}`))
@@ -363,7 +363,7 @@ func TestLaunchModelAction_RequiresEditableLaunch(t *testing.T) {
 func slowStarts(t *testing.T, e *Executor) {
 	t.Helper()
 	require.NoError(t, e.Stop("fake"))
-	_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
+	_, err := e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{
 		ServerPort: mustStatus(t, e).Port, LaunchText: "FAKE_START_DELAY=8s " + launchTextOf(t, e),
 	}}, func() error { return nil })
 	require.NoError(t, err)
@@ -388,7 +388,7 @@ func TestStop_CancelsAStartThatIsStillLoading(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	slowStarts(t, e)
 	started := make(chan error, 1)
-	go func() { started <- e.Start(context.Background(), "fake") }()
+	go func() { started <- e.Start(t.Context(), "fake") }()
 	waitForStartInFlight(t, e)
 
 	began := time.Now()
@@ -478,7 +478,7 @@ func TestEject_DuringALoadStopsTheEngineAndKeepsThePreviousModel(t *testing.T) {
 func TestEject_DuringALoadOfARunningEngineLeavesItStopped(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	slowStarts(t, e)
-	require.NoError(t, e.Start(context.Background(), "fake"))
+	require.NoError(t, e.Start(t.Context(), "fake"))
 	before := launchTextOf(t, e)
 	loaded := make(chan loadOutcome, 1)
 	go func() {
@@ -508,7 +508,7 @@ func TestStart_ReportsStartingUntilTheEngineIsReady(t *testing.T) {
 	assert.False(t, mustStatus(t, e).Starting, "a stopped engine is not starting")
 
 	started := make(chan error, 1)
-	go func() { started <- e.Start(context.Background(), "fake") }()
+	go func() { started <- e.Start(t.Context(), "fake") }()
 	waitForStartInFlight(t, e)
 	require.Eventually(t, func() bool { return mustStatus(t, e).Starting }, 5*time.Second, 20*time.Millisecond,
 		"the engine is reported starting while it loads")
@@ -525,7 +525,7 @@ func TestStart_StopsReportingStartingWhenTheStartEnds(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	slowStarts(t, e)
 	started := make(chan error, 1)
-	go func() { started <- e.Start(context.Background(), "fake") }()
+	go func() { started <- e.Start(t.Context(), "fake") }()
 	waitForStartInFlight(t, e)
 	require.Eventually(t, func() bool { return mustStatus(t, e).Starting }, 5*time.Second, 20*time.Millisecond)
 

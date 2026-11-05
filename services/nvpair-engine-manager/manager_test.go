@@ -137,7 +137,7 @@ func mustContain(t *testing.T, s, sub string) {
 // engines running until the parent closes the pipe.
 func TestRunShutsDownWhenCancelledWhileStdinIsIdle(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
-	if err := ex.Start(context.Background(), "fake"); err != nil {
+	if err := ex.Start(t.Context(), "fake"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestRunShutsDownWhenCancelledWhileStdinIsIdle(t *testing.T) {
 		io.Writer
 	}{stdinRead, io.Discard}), ex, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- m.Run(ctx) }()
 	time.Sleep(200 * time.Millisecond) // let it reach the blocking read
