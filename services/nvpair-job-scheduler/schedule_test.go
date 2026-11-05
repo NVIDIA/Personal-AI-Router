@@ -51,7 +51,7 @@ func (r *capRW) priorities(t *testing.T, engine string) []schedulePriorityParams
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []schedulePriorityParams
-	for _, line := range strings.Split(string(r.b), "\n") {
+	for line := range strings.SplitSeq(string(r.b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

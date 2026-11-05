@@ -63,7 +63,7 @@ func lsofPID(port int) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	for _, field := range strings.Fields(string(out)) {
+	for field := range strings.FieldsSeq(string(out)) {
 		if p, err := strconv.Atoi(field); err == nil && p > 0 {
 			return p, true
 		}

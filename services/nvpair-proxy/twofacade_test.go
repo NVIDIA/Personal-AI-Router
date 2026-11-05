@@ -44,7 +44,7 @@ func (w *recordingWriter) lines() [][]byte {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var out [][]byte
-	for _, line := range bytes.Split(w.buf.Bytes(), []byte("\n")) {
+	for line := range bytes.SplitSeq(w.buf.Bytes(), []byte("\n")) {
 		if len(bytes.TrimSpace(line)) > 0 {
 			out = append(out, append([]byte(nil), line...))
 		}

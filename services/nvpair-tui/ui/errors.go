@@ -399,7 +399,7 @@ func indentWrap(s string, width int) string {
 			line = ""
 		}
 	}
-	for _, word := range strings.Fields(s) {
+	for word := range strings.FieldsSeq(s) {
 		for lipgloss.Width(word) > limit {
 			// Longer than a whole line: split it rather than emit an over-wide
 			// row. The head goes out on its own so the break is visible.

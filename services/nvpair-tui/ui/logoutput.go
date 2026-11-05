@@ -34,7 +34,7 @@ func (o *logOutput) Write(p []byte) (int, error) {
 	if lines == nil {
 		return o.fallback.Write(p)
 	}
-	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(p), "\n"), "\n") {
 		// Never blocks. The program's update loop is what drains this channel,
 		// and it logs too: a blocking send from there into a full buffer would
 		// wait on itself. A line lost to a full buffer is the lesser failure.

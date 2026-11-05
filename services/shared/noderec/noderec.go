@@ -203,7 +203,7 @@ func ParseTXT(txt []string) NodeRecord {
 			// room for roughly sixteen IPv4 literals — every one of which a dialer
 			// would walk, at its own per-candidate timeout, before giving up on
 			// the node.
-			for _, part := range strings.Split(val, IPsSeparator) {
+			for part := range strings.SplitSeq(val, IPsSeparator) {
 				if len(r.IPs) >= MaxAdvertisedIPs {
 					break
 				}

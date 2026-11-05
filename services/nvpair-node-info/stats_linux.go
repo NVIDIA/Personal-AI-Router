@@ -209,7 +209,7 @@ func readCPUTimes() cpuTimes {
 // iowait irq softirq steal guest guest_nice. idle time is idle+iowait; total
 // is the sum of every field.
 func parseProcStat(s string) cpuTimes {
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 || fields[0] != "cpu" {
 			continue
@@ -271,7 +271,7 @@ func readMemoryUsed() (uint64, bool) {
 func parseMeminfoUsed(s string) (uint64, bool) {
 	var total, avail, free uint64
 	var haveTotal, haveAvail, haveFree bool
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -315,7 +315,7 @@ func parseMeminfoUsed(s string) (uint64, bool) {
 func parseNvidiaDynamic(out string) (map[string]gpuStat, int) {
 	res := map[string]gpuStat{}
 	utilizationSamples := 0
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		fields := splitCSVRow(line)
 		if len(fields) < 3 {
 			continue

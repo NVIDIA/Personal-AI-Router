@@ -161,7 +161,7 @@ func IPsFromTXT(txt []string) []string {
 			continue
 		}
 		var out []string
-		for _, part := range strings.Split(v, noderec.IPsSeparator) {
+		for part := range strings.SplitSeq(v, noderec.IPsSeparator) {
 			part = strings.TrimSpace(part)
 			if part != "" && net.ParseIP(part) != nil {
 				out = append(out, part)
