@@ -1520,3 +1520,30 @@ func TestServiceTab_OmitsPortSettings(t *testing.T) {
 		assert.NotContains(t, strings.ToLower(it.label), "port", "Service tab still offers %q; ports belong on the node", it.label)
 	}
 }
+
+// vLLM downloads into the Hugging Face cache without its server, as the desktop
+// app allows, so a stopped vLLM can take a download when it is highlighted. An
+// engine that downloads through its server still needs to be running.
+func TestPullTargetEngine_AcceptsAStoppedEngineThatDownloadsWithoutItsServer(t *testing.T) {
+	test := func(name string, highlighted engineStatus, want string) {
+		t.Run(name, func(t *testing.T) {
+			d := localDetail()
+			d.engines = []engineStatus{highlighted}
+			d.refreshEngines()
+			assert.Equal(t, want, d.pullTargetEngine())
+		})
+	}
+	test("a stopped vLLM", engineStatus{Engine: "vllm", Installed: true}, "vllm")
+	test("a vLLM that is not installed", engineStatus{Engine: "vllm"}, "")
+	test("a stopped Ollama", engineStatus{Engine: "ollama", Installed: true}, "")
+	test("a running Ollama", engineStatus{Engine: "ollama", Installed: true, Running: true}, "ollama")
+}
+
+// A vLLM start can download and load for minutes. It is shown as starting,
+// not as not running.
+func TestEngineTable_ShowsAnEngineThatIsStarting(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "vllm", DisplayName: "vLLM", Installed: true, Starting: true}}
+	d.refreshEngines()
+	assert.Contains(t, d.View(), "starting")
+}

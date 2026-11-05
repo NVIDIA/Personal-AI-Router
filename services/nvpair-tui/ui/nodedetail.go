@@ -266,7 +266,7 @@ func detailEngineColumns(w int, remote bool) []table.Column {
 	cols := []column{
 		flexCol("ENGINE", 10, 1),
 		fixedCol("INSTALLED", 9),
-		fixedCol("RUNNING", 7),
+		fixedCol("RUNNING", 8), // fits "starting"
 		fixedCol("HEALTHY", 7),
 		fixedCol("ENGINE PORT", 11),
 	}
@@ -1612,10 +1612,13 @@ func (d *nodeDetail) uninstallEngine(engine *engineStatus) tea.Cmd {
 }
 
 // pullTargetEngine is the engine a download goes into: the one highlighted in
-// the engine pane when it can serve, else the only running engine. Downloading
-// requires a running engine, so a stopped one is never chosen silently.
+// the engine pane when it can download, else the only running engine. Most
+// engines download through their running server, so a stopped one is never
+// chosen silently. An engine that downloads without its server (vLLM, into the
+// Hugging Face cache) can be chosen stopped when it is highlighted, as the
+// desktop app allows.
 func (d *nodeDetail) pullTargetEngine() string {
-	if e := d.selectedEngine(); e != nil && e.Running {
+	if e := d.selectedEngine(); e != nil && (e.Running || e.Installed && pullsWhileStopped[e.Engine]) {
 		return e.Engine
 	}
 	for _, e := range d.engines {
@@ -1649,7 +1652,11 @@ func (d *nodeDetail) refreshEngines() {
 		if e.Port != 0 {
 			port = strconv.Itoa(e.Port)
 		}
-		row := table.Row{e.label(), yesNo(e.Installed), yesNo(e.Running), yesNo(e.Healthy), port}
+		running := yesNo(e.Running)
+		if e.Starting {
+			running = "starting"
+		}
+		row := table.Row{e.label(), yesNo(e.Installed), running, yesNo(e.Healthy), port}
 		if d.proxy != nil {
 			row = append(row, d.proxyPortCell(e.Engine))
 		}

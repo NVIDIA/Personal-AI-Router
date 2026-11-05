@@ -22,8 +22,11 @@ type engineStatus struct {
 	DisplayName string `json:"display_name"`
 	Installed   bool   `json:"installed"`
 	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port"`
+	// Starting is true while a start is launching the engine and waiting for
+	// it to become ready, which for vLLM can be minutes.
+	Starting bool `json:"starting"`
+	Healthy  bool `json:"healthy"`
+	Port     int  `json:"port"`
 }
 
 func (e engineStatus) label() string {
@@ -146,6 +149,13 @@ var modelWires = map[string]modelWire{
 		"delete": modelOnly("delete_model"),
 		"pull":   modelOnly("pull_model"),
 	},
+}
+
+// pullsWhileStopped are the engines whose download does not go through their
+// server: vLLM downloads into the Hugging Face cache with its own tool. It
+// mirrors the desktop's modelOpsWhenStopped capability.
+var pullsWhileStopped = map[string]bool{
+	engines.NameVLLM: true,
 }
 
 // downloadExamples show what a download name looks like for each engine. The
