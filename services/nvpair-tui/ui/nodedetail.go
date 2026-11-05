@@ -1968,9 +1968,9 @@ func (d *nodeDetail) hardwareBudget() int {
 func managedModels(res modelsResult, engine string) []string {
 	downloaded, ok := res.DownloadedByEngine[engine]
 	if !ok {
-		return append([]string(nil), res.ModelsByEngine[engine]...)
+		return slices.Clone(res.ModelsByEngine[engine])
 	}
-	models := append([]string(nil), downloaded...)
+	models := slices.Clone(downloaded)
 	for _, m := range res.LoadedByEngine[engine] {
 		if !slices.Contains(models, m) {
 			models = append(models, m)

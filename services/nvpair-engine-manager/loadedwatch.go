@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"maps"
 	"sort"
 	"time"
 )
@@ -106,12 +107,8 @@ func (e *Executor) sweepModels(ctx context.Context, prev modelLists) (changed []
 			}
 		}
 		next := make(map[string][]string, len(prev)+len(cur))
-		for name, list := range prev {
-			next[name] = list
-		}
-		for name, list := range cur {
-			next[name] = list
-		}
+		maps.Copy(next, prev)
+		maps.Copy(next, cur)
 		return next
 	}
 	next = modelLists{

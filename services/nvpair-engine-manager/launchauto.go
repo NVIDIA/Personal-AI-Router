@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -137,7 +138,7 @@ func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command lau
 		return command
 	}
 	slog.Info("engine launch adjusted for the model and GPU", "engine", engine, "added_args", extra, "reason", note)
-	command.Args = append(append([]string{}, command.Args...), extra...)
+	command.Args = slices.Concat(command.Args, extra)
 	return command
 }
 

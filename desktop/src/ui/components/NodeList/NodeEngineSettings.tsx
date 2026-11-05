@@ -14,6 +14,7 @@ import {
     EngineDefaultLinks,
     EngineDisplayNames
 } from '@/shared/constants/engines'
+import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
 import { BackendRow } from '@/ui/components/BackendRow/BackendRow'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 
@@ -75,18 +76,18 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
     void engineFingerprint
     void modelsFingerprint
 
-    // An engine the node cannot run, such as vLLM on Windows, gets no row.
-    const shownTypes = EnabledEngineTypes.filter(
-        type =>
-            useEngineStatusStore.getState().getStatus(nodeId, type).processStatus !== 'unsupported'
-    )
-    const allBackends: { backend: BackendInfo; statusKnown: boolean }[] = shownTypes.map(type => {
-        const statusStore = useEngineStatusStore.getState()
+    // One row per enabled engine, in order; an engine the node cannot run,
+    // such as vLLM on Windows, gets no row.
+    const statusStore = useEngineStatusStore.getState()
+    const allBackends: { backend: BackendInfo; statusKnown: boolean }[] = getEnginesForNode(
+        nodeId,
+        statusStore.statusByNode
+    ).map(status => {
+        const type = status.engineType
         // Distinguish "the service reported this engine" from "we synthesized
         // a placeholder". The placeholder's processStatus is 'initializing';
         // without this flag a never-reported remote engine spins forever.
         const statusKnown = statusStore.statusByNode.get(nodeId)?.has(type) ?? false
-        const status = statusStore.getStatus(nodeId, type)
         const models = useEngineModelsStore.getState().getModels(nodeId, type)
         const updateAvailable = useEngineUpdateAvailableStore.getState().getInfo(nodeId, type)
 

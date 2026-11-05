@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -89,8 +88,8 @@ func scanHFCache(dir string) ([]hfCacheModel, error) {
 			models = append(models, hfCacheModel{ID: id, Size: size})
 		}
 	}
-	sort.Slice(models, func(i, j int) bool {
-		return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID)
+	slices.SortFunc(models, func(a, b hfCacheModel) int {
+		return strings.Compare(strings.ToLower(a.ID), strings.ToLower(b.ID))
 	})
 	return models, nil
 }
