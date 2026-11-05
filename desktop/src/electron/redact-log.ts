@@ -26,7 +26,14 @@
 const REDACTED = '[redacted]'
 
 /** JSON keys whose values never belong in a log sink. */
-const SENSITIVE_KEYS = new Set(['pin', 'launchText', 'launch_args', 'launch_env', 'apiKey', 'api_key'])
+const SENSITIVE_KEYS = new Set([
+    'pin',
+    'launchText',
+    'launch_args',
+    'launch_env',
+    'apiKey',
+    'api_key'
+])
 
 /** Quoted key forms, so a line with none of them is returned untouched. */
 const SENSITIVE_KEY_HINTS = [...SENSITIVE_KEYS].map(key => `"${key}"`)

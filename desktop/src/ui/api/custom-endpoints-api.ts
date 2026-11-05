@@ -24,10 +24,7 @@
  * the number only means anything beside the endpoints routed through it.
  */
 import type { PreloadServiceTransport as ServiceTransport } from '@/shared/types/service-bridge'
-import type {
-    CustomEndpointInfo,
-    CustomProxyPortState
-} from '@/shared/types/custom-endpoints'
+import type { CustomEndpointInfo, CustomProxyPortState } from '@/shared/types/custom-endpoints'
 
 /**
  * A validated add- or edit-form submission. Port is mandatory — never
@@ -89,8 +86,7 @@ export function createCustomEndpointsApi(transport: ServiceTransport): ICustomEn
         // carries nothing but the optional peer id. A peer that cannot answer
         // rejects instead of yielding this node's own default: a port read from
         // the wrong machine would render a stranger's proxy as editable here.
-        getPort: (nodeId?: string) =>
-            transport.invoke('custom:get-port', nodeId ? { nodeId } : {}),
+        getPort: (nodeId?: string) => transport.invoke('custom:get-port', nodeId ? { nodeId } : {}),
         setPort: (port: number, nodeId?: string) =>
             transport.invoke('custom:set-port', nodeId ? { port, nodeId } : { port })
     }
