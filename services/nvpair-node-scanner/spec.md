@@ -241,8 +241,11 @@ and `info.peer` claims are stripped. The broker retains observations separately
 by source and record, ages them on snapshot reads and replay, and exposes them
 as optional `AvailableNode.info`. Only local and pinned measurements enter
 service and scheduling inputs.
-Directory events report record changes, while snapshots report regular hardware
-measurements. `lastSeen` records the time the record last changed.
+Directory events report changes to identity, services, models, and hardware
+identity or capacity. Utilization and used-memory changes do not emit directory
+updates or advance `lastSeen`. Local and authenticated peer samples still produce
+full hardware updates and compact scheduling telemetry. `lastSeen` records the
+time the directory record last changed.
 
 `ready` is sent before network discovery starts. It reports worker startup,
 not successful advertising, peer authentication, or availability of other
