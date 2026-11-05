@@ -375,6 +375,15 @@ safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 `sizeVram`/`expiresAt` — the backend delivers the simpler `loadedByEngine`
 name-set, not structured details.
 
+vLLM advertises only the model it is serving, so its `modelsByEngine` entry is
+that one name, for routing. Its whole downloaded list arrives as
+`downloadedByEngine`, read even while it is stopped, and `modelsForEngine`
+lists a node's vLLM rows from it. Its `loadedByEngine` uses the same names, so
+a model served under `--served-model-name` still marks its row loaded. When a
+peer's vLLM list was not read, `EngineModels.inventoryKnown` is false and the
+model manager says the downloaded models are unavailable instead of claiming
+none are downloaded.
+
 The model catalogue is owned by the backend: `engine:catalog` on
 `nvpair-engine-manager` serves the curated Ollama, LM Studio, and llama.cpp
 lists, and searches Hugging Face for llama.cpp, and both the desktop app and

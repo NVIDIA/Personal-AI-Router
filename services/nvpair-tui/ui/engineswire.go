@@ -35,11 +35,15 @@ func (e engineStatus) label() string {
 // modelsResult mirrors nvpair-engine-manager's ModelsResult, the engine:models
 // reply and the engine:models-changed payload. LoadedByEngine names the models
 // currently resident in memory, which the engine-manager polls for and pushes —
-// so a client never has to poll to know what is loaded.
+// so a client never has to poll to know what is loaded. DownloadedByEngine is
+// the inventory of an engine that advertises only the model it is serving
+// (vLLM): ModelsByEngine then holds just that one, and this holds every model it
+// can load, even while it is stopped.
 type modelsResult struct {
-	Models         []string            `json:"models"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine"`
+	Models             []string            `json:"models"`
+	ModelsByEngine     map[string][]string `json:"modelsByEngine"`
+	LoadedByEngine     map[string][]string `json:"loadedByEngine"`
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
 }
 
 // engineOp is one lifecycle request and how to describe it to the operator.
@@ -133,10 +137,8 @@ var modelWires = map[string]modelWire{
 		"delete": modelOnly("delete_model"),
 		"pull":   modelOnly("pull_model"),
 	},
-	// vLLM serves one model per process and declares only list_models and
-	// loaded_models, so engine-manager refuses all four of these as undeclared
-	// actions. The spelling is still present so a caller gets that explicit
-	// refusal instead of this table's "no wire" error.
+	// vLLM takes the model under "model" alone. It serves one model per
+	// process, so load restarts it on the model and unload stops it.
 	engines.NameVLLM: {
 		"load":   modelOnly("load_model"),
 		"unload": modelOnly("unload_model"),

@@ -97,6 +97,11 @@ export interface BackendInfo {
     installedVersion?: string
     /** Models on this backend with per-model status */
     models: ModelItem[]
+    /**
+     * Whether {@link models} was read. False when the engine's list could not
+     * be, so an empty list is not shown as "nothing downloaded".
+     */
+    modelsKnown: boolean
     /** System-level dependencies required before install/run (local node only) */
     prerequisites?: BackendPrerequisite[]
     /** Progress info during install/uninstall (local node only, ephemeral) */

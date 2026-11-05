@@ -138,6 +138,7 @@ The single front door every PAIR client talks to, and the supervisor of every ot
   models?: string[]
   modelsByEngine?: { [engine: string]: string[] }
   loadedByEngine?: { [engine: string]: string[] }
+  downloadedByEngine?: { [engine: string]: string[] }
 }
 ```
 

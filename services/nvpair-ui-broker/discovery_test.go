@@ -102,6 +102,28 @@ func TestDiscoveryStoreScannerProjection_Wins(t *testing.T) {
 	require.Equal(t, "manual-host", snap[0].ID, "manual projection should surface after scanner removal (%v)", snap)
 }
 
+// A peer's model lists reach the desktop's AvailableNode unchanged, including
+// the downloaded inventory of a stopped vLLM, so a remote model manager keeps
+// its rows after an Eject.
+func TestDiscoveryStore_CarriesEveryModelListFromTheScanner(t *testing.T) {
+	s := newDiscoveryStore()
+	s.Upsert(directoryToEnriched(noderec.DirectoryNode{
+		HostUUID:           "peer-uuid",
+		Name:               "peer",
+		Models:             []string{"qwen-api"},
+		ModelsByEngine:     map[string][]string{"vllm": {"qwen-api"}},
+		LoadedByEngine:     map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
+		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
+	}), sourceScanner)
+
+	snap := s.Snapshot()
+	require.Len(t, snap, 1)
+	assert.Equal(t, []string{"qwen-api"}, snap[0].Models)
+	assert.Equal(t, map[string][]string{"vllm": {"qwen-api"}}, snap[0].ModelsByEngine)
+	assert.Equal(t, map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}}, snap[0].LoadedByEngine)
+	assert.Equal(t, map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}}, snap[0].DownloadedByEngine)
+}
+
 func newManualTestBroker() *Broker {
 	return &Broker{
 		manualNodeKeys:     make(map[string]string),

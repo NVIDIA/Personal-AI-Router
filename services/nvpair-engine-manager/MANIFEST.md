@@ -347,8 +347,25 @@ chooses what the node tells its peers and its own proxy it can serve. The proxy
 sends a request to any node advertising the model, so an engine that serves one
 model per process sets `"loaded"` and advertises only `loaded_models`, even when
 its `list_models` offers many models it could be switched to. With `"loaded"`,
-`list_models` is not queried for `engine:models`, and a `loaded_models` action is
-required.
+a `loaded_models` action is required, and `engine:models` reports the engine in
+two parts:
+
+- `modelsByEngine` (and the flat `models`) holds the `loaded_models` names: what
+  a request may be routed to. It is absent while the engine is stopped.
+- `downloadedByEngine` holds the `list_models` names: every model the engine can
+  load, so a model manager on this node or a peer keeps its rows for models that
+  are on disk but not being served. It is read whenever the engine is installed,
+  running or not, so its `list_models` must not need a running server (vLLM's
+  `hf_cache` list reads the cache). An empty list means the inventory was read
+  and is empty; a missing key means it was not read.
+
+Its `loaded_models` `result` may also set **`inventory_field`**, the element field
+that names each loaded model the way `list_models` does. vLLM's `/v1/models`
+gives the name a request uses as `id` (a `--served-model-name` alias when one is
+set) and the model it loaded as `root` (its `--model`), so its
+`{"array":"data","field":"id","inventory_field":"root"}` advertises the `id` and
+reports `loadedByEngine` as the `root`, which marks the cached model's row as
+loaded. `inventory_field` is valid only there.
 
 An **`hf_pull`** action (`{"tool": "hf", "dir": "{models_dir}/hub"}`, only as
 `pull_model`) downloads a Hugging Face repository with the named tool, looked up
@@ -467,7 +484,9 @@ an action sets none or more than one of
 `http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`, an `hf_cache` action omits
 `dir` or sets only one of `delete` and `tool`, a `launch_model` flag is not a flag or a platform lacks
 `editable_launch` or `ready`, `advertised_models` is unknown or `"loaded"`
-without a `loaded_models` action, a `remove_path` action omits `root` or
+without a `loaded_models` action, `result.inventory_field` is set anywhere but
+the `loaded_models` action of an engine with `advertised_models` `"loaded"` or is
+not a single field name, a `remove_path` action omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
 both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or

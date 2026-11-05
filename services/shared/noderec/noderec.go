@@ -516,7 +516,16 @@ type DirectoryNode struct {
 	// empty list means "running, nothing loaded"; a missing key means the peer
 	// didn't report loaded state for it. Omitted when the peer reports none.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
-	LastSeen       int64               `json:"lastSeen"` // Unix seconds
+	// DownloadedByEngine is the model inventory of an engine that advertises
+	// only the model it is serving (vLLM), so ModelsByEngine holds just that one
+	// for routing. It lists every model the engine can load, read even while the
+	// engine is stopped, so a model manager keeps its Load and Delete rows. Its
+	// LoadedByEngine entry names models the same way. An engine key with an empty
+	// list means the inventory was read and is empty; a missing key means it was
+	// not read. Enriched from engine-manager's em /v1/models downloadedByEngine
+	// field; omitted when no engine reports one.
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
+	LastSeen           int64               `json:"lastSeen"` // Unix seconds
 }
 
 // Clustered reports whether the node advertises a cluster identity.

@@ -23,8 +23,9 @@ import {
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
-import { EngineTypes } from '@/shared/constants/engines'
+import { EngineTypes, EnginesListingModelsWhenStopped } from '@/shared/constants/engines'
 import {
+    emptyEngineModels,
     emptyEngineStatus,
     engineManagerName,
     engineTypeFromManagerName,
@@ -159,6 +160,15 @@ interface ModularNode {
     // reported. Drives {@link ModelItem.status} `'loaded'`. Empty object when no
     // engine reports loaded state. Mirrors noderec.DirectoryNode.LoadedByEngine.
     loadedByEngine: Record<string, string[]>
+    // Per-engine downloaded inventory of an engine that advertises only the model
+    // it is serving (vLLM), carried on `AvailableNode.downloadedByEngine`. Its
+    // {@link modelsByEngine} entry holds just the served name, for routing; this
+    // lists every model it can load, read even while it is stopped, so the model
+    // manager keeps its rows. Its {@link loadedByEngine} entry names models the
+    // same way. A present key with [] means the inventory was read and is empty;
+    // a missing key means it was not read. Mirrors
+    // noderec.DirectoryNode.DownloadedByEngine.
+    downloadedByEngine: Record<string, string[]>
     engines: Record<ProxyEngine, EnginePresence>
     lastSeen: number
 }
@@ -737,6 +747,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         // A proxy `node/*` event carries no loaded-model state either; the
         // broker-enriched value is preserved across the proxy merge (see mergeNode).
         loadedByEngine: {},
+        downloadedByEngine: {},
         nodeInfoPort: 0,
         nodeInfoUp: false,
         // A proxy `node/*` event carries no broker ranking; its `Addresses` are
@@ -808,6 +819,9 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         // `/v1/models`. `omitempty` on the wire — absent for a peer that reports
         // no loaded state, which stamps every model `idle`.
         loadedByEngine: parseModelsByEngine(obj.loadedByEngine),
+        // Broker `AvailableNode.downloadedByEngine`: what a vLLM peer has
+        // downloaded, reported even while it is stopped. `omitempty` on the wire.
+        downloadedByEngine: parseModelsByEngine(obj.downloadedByEngine),
         engines: emptyEngines(),
         lastSeen: normalizeLastSeen(numberValue(obj.lastSeen) || numberValue(obj.last_seen))
     }
@@ -859,6 +873,7 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         // A residency-only change (a model loaded/evicted with the installed set
         // unchanged) must still count as a node change so the loaded dot updates.
         sameModelsByEngine(left.loadedByEngine, right.loadedByEngine) &&
+        sameModelsByEngine(left.downloadedByEngine, right.downloadedByEngine) &&
         sameEngines(left.engines, right.engines) &&
         left.lastSeen === right.lastSeen
     )
@@ -1122,7 +1137,8 @@ class ModularBridgeState {
                         models: cached.map(item => ({
                             ...item,
                             status: loaded.has(item.name) ? 'loaded' : 'idle'
-                        }))
+                        })),
+                        inventoryKnown: true
                     })
                 }
             }
@@ -1931,7 +1947,7 @@ class ModularBridgeState {
         emitBridgePush('engines:state-changed', {
             nodeId,
             engineType,
-            models: { engineType, nodeId, models: items }
+            models: { engineType, nodeId, models: items, inventoryKnown: true }
         })
     }
 
@@ -2034,6 +2050,15 @@ class ModularBridgeState {
      * noderec.DirectoryNode.EngineModels.
      */
     private modelsForEngine(node: ModularNode, engine: ProxyEngine): string[] {
+        // An engine that advertises only the model it is serving (vLLM) reports
+        // its downloaded inventory apart: that is the list to manage, plus
+        // anything loaded that is not in it, such as a model served from a local
+        // path. Its advertised entry is only the served name, for routing.
+        const downloaded = node.downloadedByEngine[engineManagerName(engine)]
+        if (downloaded !== undefined) {
+            const loaded = node.loadedByEngine[engineManagerName(engine)] ?? []
+            return [...downloaded, ...loaded.filter(name => !downloaded.includes(name))]
+        }
         // Per-engine attribution is authoritative when the node carries any:
         // return exactly this engine's models so a dual-engine node attributes
         // each model to the engine that serves it, and a missing key means this
@@ -2058,7 +2083,14 @@ class ModularBridgeState {
             nodeId: node.id,
             models: this.modelsForEngine(node, engine).map(name =>
                 modelItem(name, loaded.has(name))
-            )
+            ),
+            // An engine whose list is read from disk is listed while stopped, so
+            // an empty list reads as "nothing downloaded". That is true only when
+            // its inventory was actually read; a peer that could not be read, or
+            // whose list never arrived, is unknown.
+            inventoryKnown:
+                !EnginesListingModelsWhenStopped.includes(engine) ||
+                engineManagerName(engine) in node.downloadedByEngine
         }
     }
 
@@ -2095,11 +2127,12 @@ class ModularBridgeState {
                     models: cached.map(item => ({
                         ...item,
                         status: loaded.has(item.name) ? 'loaded' : 'idle'
-                    }))
+                    })),
+                    inventoryKnown: true
                 }
             }
         }
-        if (!node) return { engineType: engine, nodeId, models: [] }
+        if (!node) return emptyEngineModels(nodeId, engine)
         return this.toEngineModels(node, engine)
     }
 
@@ -2684,6 +2717,7 @@ class ModularBridgeState {
             models: existing.models,
             modelsByEngine: existing.modelsByEngine,
             loadedByEngine: existing.loadedByEngine,
+            downloadedByEngine: existing.downloadedByEngine,
             engines: setEngine(existing.engines, engine, next.engines[engine]),
             lastSeen: Math.max(existing.lastSeen, next.lastSeen)
         }

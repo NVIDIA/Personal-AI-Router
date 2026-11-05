@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -228,9 +229,10 @@ func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	// A remote node's models are already in the discovery snapshot the broker
 	// enriched, so the list is populated before any request completes.
 	d.models = modelsResult{
-		Models:         node.models,
-		ModelsByEngine: node.modelsByEngine,
-		LoadedByEngine: node.loadedByEngine,
+		Models:             node.models,
+		ModelsByEngine:     node.modelsByEngine,
+		LoadedByEngine:     node.loadedByEngine,
+		DownloadedByEngine: node.downloadedByEngine,
 	}
 	d.refreshModels()
 	d.adoptProbedTelemetry()
@@ -840,10 +842,12 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			d.node.models = n.Models
 			d.node.modelsByEngine = n.ModelsByEngine
 			d.node.loadedByEngine = n.LoadedByEngine
+			d.node.downloadedByEngine = n.DownloadedByEngine
 			d.models = modelsResult{
-				Models:         n.Models,
-				ModelsByEngine: n.ModelsByEngine,
-				LoadedByEngine: n.LoadedByEngine,
+				Models:             n.Models,
+				ModelsByEngine:     n.ModelsByEngine,
+				LoadedByEngine:     n.LoadedByEngine,
+				DownloadedByEngine: n.DownloadedByEngine,
 			}
 			d.refreshModels()
 
@@ -1681,9 +1685,14 @@ func (d *nodeDetail) refreshModels() {
 	// where it already was.
 	selected := d.selectedModelKey()
 
-	engines := make([]string, 0, len(d.models.ModelsByEngine))
+	engines := make([]string, 0, len(d.models.ModelsByEngine)+len(d.models.DownloadedByEngine))
 	for name := range d.models.ModelsByEngine {
 		engines = append(engines, name)
+	}
+	for name := range d.models.DownloadedByEngine {
+		if _, listed := d.models.ModelsByEngine[name]; !listed {
+			engines = append(engines, name)
+		}
 	}
 	sort.Strings(engines)
 
@@ -1696,7 +1705,7 @@ func (d *nodeDetail) refreshModels() {
 		for _, m := range residents {
 			loaded[m] = true
 		}
-		models := append([]string(nil), d.models.ModelsByEngine[engine]...)
+		models := managedModels(d.models, engine)
 		sort.Strings(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows,
@@ -1941,6 +1950,25 @@ func (d *nodeDetail) hardwareBudget() int {
 	return clampWidth(d.height/2, 1)
 }
 
+// managedModels is the list of models to manage for one engine. An engine that
+// reports a downloaded inventory (vLLM, which advertises only the model it is
+// serving) is listed from that inventory, which is read even while it is
+// stopped, plus anything loaded that is not in it, such as a model served from
+// a local path. Every other engine's advertised list is its inventory.
+func managedModels(res modelsResult, engine string) []string {
+	downloaded, ok := res.DownloadedByEngine[engine]
+	if !ok {
+		return append([]string(nil), res.ModelsByEngine[engine]...)
+	}
+	models := append([]string(nil), downloaded...)
+	for _, m := range res.LoadedByEngine[engine] {
+		if !slices.Contains(models, m) {
+			models = append(models, m)
+		}
+	}
+	return models
+}
+
 // emptyModelsHint explains an empty list in terms of the thing to fix, since
 // "no models" has several quite different causes.
 // emptyEnginesHint explains an engine list that came back empty.
@@ -2025,6 +2053,12 @@ func (d *nodeDetail) emptyModelsHint() string {
 		// something needs starting. Whether an engine is running is exactly
 		// what cannot be seen from outside the cluster.
 		return "  No models advertised by this node."
+	case len(d.models.DownloadedByEngine) > 0 && d.remote():
+		// An engine read its downloaded models and found none, which is known
+		// with the engine stopped. One that could not be read has no entry.
+		return "  No models downloaded on this node's engines."
+	case len(d.models.DownloadedByEngine) > 0:
+		return "  No models installed. Press p to download one."
 	case !d.anyEngineRunning():
 		return "  No models reported - start an engine to see its models."
 	case d.remote():

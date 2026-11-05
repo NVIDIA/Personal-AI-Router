@@ -209,7 +209,8 @@ describe('pending-actions store: model actions', () => {
             models: {
                 nodeId: 'local-node',
                 engineType: 'ollama',
-                models: [loadedModel('llama3.2')]
+                models: [loadedModel('llama3.2')],
+                inventoryKnown: true
             }
         })
         errorsCb?.([

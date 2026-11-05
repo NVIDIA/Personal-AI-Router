@@ -9,7 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"reflect"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -321,61 +322,130 @@ func TestSameStringSet_IgnoresOrdering(t *testing.T) {
 	test("same multiset with dups", []string{"x", "x", "y"}, []string{"y", "x", "x"}, true)
 }
 
-// An engine that serves one model per process can list many models on disk but
-// answers for only the one it is running. The proxy routes to any node that
-// advertises a model, so advertising the on-disk list would send requests to an
-// engine that cannot answer them. advertised_models: "loaded" keeps the local
-// list_models view (what the UI offers) apart from what is advertised.
-func TestModelsResultAdvertisesLoadedModelsWhenDeclared(t *testing.T) {
+// loadedOnlyManifest is a vLLM-like engine: it advertises only what it is
+// serving (loaded_models on the OpenAI-shape /v1/models), and lists what it has
+// downloaded from a Hugging Face cache, which needs no running server.
+func loadedOnlyManifest(t *testing.T, bin string) *Manifest {
+	t.Helper()
 	cache := t.TempDir()
 	writeHFRepo(t, cache, "other/cached-model", llmFiles(map[string]string{"model.safetensors": "w"}))
-
-	m := loadedActionManifest()
+	m := testEngineManifest(bin)
 	m.AdvertisedModels = advertisedModelsLoaded
 	m.Actions["list_models"] = Action{
 		HFCache: &ActionHFCache{Dir: cache},
 		Result:  &ActionResult{Array: "data", Field: "id"},
 	}
-	if err := m.Validate(); err != nil {
-		t.Fatal(err)
+	m.Actions["loaded_models"] = Action{
+		HTTP:   &ActionHTTP{Method: "GET", Path: "/v1/models"},
+		Result: &ActionResult{Array: "data", Field: "id", InventoryField: "root"},
 	}
-	ex := newTestExecutor(t, m)
+	require.NoError(t, m.Validate())
+	return m
+}
+
+// An engine that serves one model per process can list many models on disk but
+// answers for only the one it is running. The proxy routes to any node that
+// advertises a model, so advertising the on-disk list would send requests to an
+// engine that cannot answer them. advertised_models: "loaded" advertises the
+// served model and reports the on-disk list apart, for model managers.
+func TestModelsResult_AdvertisesOnlyTheServedModelOfALoadedOnlyEngine(t *testing.T) {
+	ex := newTestExecutor(t, loadedOnlyManifest(t, fakeEngineBin))
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
-	if err := ex.Start(ctx, "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(ctx, "fake"))
 
 	res := ex.ModelsResult(ctx)
 	served := []string{"llama3.2:1b"} // what the fake engine is running
-	if want := map[string][]string{"fake": served}; !reflect.DeepEqual(res.ByEngine, want) {
-		t.Fatalf("advertised ByEngine = %v, want only the loaded model %v", res.ByEngine, want)
-	}
-	if !reflect.DeepEqual(res.Models, served) {
-		t.Fatalf("advertised Models = %v, want %v", res.Models, served)
-	}
-	if want := map[string][]string{"fake": served}; !reflect.DeepEqual(res.LoadedByEngine, want) {
-		t.Fatalf("LoadedByEngine = %v, want %v", res.LoadedByEngine, want)
-	}
+	assert.Equal(t, map[string][]string{"fake": served}, res.ByEngine, "advertised per engine")
+	assert.Equal(t, served, res.Models, "advertised union")
+	assert.Equal(t, map[string][]string{"fake": served}, res.LoadedByEngine, "loaded")
+	assert.Equal(t, map[string][]string{"fake": {"other/cached-model"}}, res.DownloadedByEngine, "downloaded")
+}
 
-	// The local view still offers what is on disk, running or not.
-	for _, running := range []bool{true, false} {
-		if !running {
-			if err := ex.Stop("fake"); err != nil {
-				t.Fatal(err)
-			}
-		}
-		raw, err := ex.Action(ctx, "fake", "list_models", nil)
-		if err != nil {
-			t.Fatalf("list_models (running=%v): %v", running, err)
-		}
-		if ids, ok := extractStringsResult(raw, m.Actions["list_models"].Result); !ok || !reflect.DeepEqual(ids, []string{"other/cached-model"}) {
-			t.Fatalf("list_models (running=%v) = %v, %v", running, ids, ok)
-		}
+// Ejecting a vLLM model stops the engine. Its downloaded models must still be
+// reported, so a model manager on this node or a peer keeps the rows it needs to
+// Load or Delete them, while nothing is advertised for routing.
+func TestModelsResult_ReportsTheDownloadedModelsOfAStoppedLoadedOnlyEngine(t *testing.T) {
+	ex := newTestExecutor(t, loadedOnlyManifest(t, fakeEngineBin))
+	ctx := context.Background()
+
+	res := ex.ModelsResult(ctx)
+	assert.Equal(t, map[string][]string{"fake": {"other/cached-model"}}, res.DownloadedByEngine, "downloaded")
+	assert.Empty(t, res.ByEngine, "advertised per engine")
+	assert.Empty(t, res.Models, "advertised union")
+	assert.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "nothing loaded, and known to be")
+}
+
+// A model the engine cannot read is unknown, not an empty cache: an engine that
+// is not installed reports no downloaded key at all.
+func TestModelsResult_OmitsTheDownloadedModelsOfAnEngineThatIsNotInstalled(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-installed")
+	ex := newTestExecutor(t, loadedOnlyManifest(t, missing))
+
+	res := ex.ModelsResult(context.Background())
+	assert.Nil(t, res.DownloadedByEngine)
+}
+
+// With vLLM's --served-model-name, requests use the alias, but the model list
+// names the cached repository. The alias is advertised for routing and the
+// loaded marker uses the repository, so the cached row shows as loaded.
+func TestModelsResult_MarksTheCachedModelLoadedWhenServedUnderAnAlias(t *testing.T) {
+	m := loadedOnlyManifest(t, fakeEngineBin)
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	plat := m.Platforms[key]
+	plat.Runtime.Env = map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}", "FAKE_SERVED_MODEL_NAME": "qwen-api"}
+	m.Platforms[key] = plat
+	ex := newTestExecutor(t, m)
+	ctx := context.Background()
+	t.Cleanup(func() { _ = ex.Stop("fake") })
+	require.NoError(t, ex.Start(ctx, "fake"))
+
+	res := ex.ModelsResult(ctx)
+	assert.Equal(t, map[string][]string{"fake": {"qwen-api"}}, res.ByEngine, "advertised per engine")
+	assert.Equal(t, []string{"qwen-api"}, res.Models, "advertised union")
+	assert.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.LoadedByEngine, "loaded")
+}
+
+// An engine whose advertised list is its inventory reports nothing apart.
+func TestModelsResult_OmitsDownloadedForAnEngineThatAdvertisesItsList(t *testing.T) {
+	ex := newTestExecutor(t, loadedActionManifest())
+	ctx := context.Background()
+	t.Cleanup(func() { _ = ex.Stop("fake") })
+	require.NoError(t, ex.Start(ctx, "fake"))
+
+	assert.Nil(t, ex.ModelsResult(ctx).DownloadedByEngine)
+}
+
+func TestInventoryFieldValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		advertised string
+		action     string
+		field      string
+		wantErr    bool
+	}{
+		{name: "loaded_models of a loaded-only engine", advertised: advertisedModelsLoaded, action: "loaded_models", field: "root"},
+		{name: "engine that advertises its list", advertised: advertisedModelsList, action: "loaded_models", field: "root", wantErr: true},
+		{name: "action other than loaded_models", advertised: advertisedModelsLoaded, action: "list_models", field: "root", wantErr: true},
+		{name: "object path instead of a field name", advertised: advertisedModelsLoaded, action: "loaded_models", field: "a.b", wantErr: true},
 	}
-	// Stopped: nothing is running, so nothing is advertised.
-	if res := ex.ModelsResult(ctx); len(res.ByEngine) != 0 || len(res.Models) != 0 {
-		t.Fatalf("a stopped engine advertised %v / %v", res.ByEngine, res.Models)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := loadedActionManifest()
+			m.AdvertisedModels = tt.advertised
+			act := m.Actions[tt.action]
+			result := *act.Result
+			result.InventoryField = tt.field
+			act.Result = &result
+			m.Actions[tt.action] = act
+
+			err := m.Validate()
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
 	}
 }
 

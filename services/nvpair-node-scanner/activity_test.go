@@ -132,9 +132,7 @@ func TestForget_ClearsActivity(t *testing.T) {
 	d := activityDaemon()
 	d.lastInfo = make(map[string]NodeInfoResponse)
 	d.lastInfoAt = make(map[string]time.Time)
-	d.lastModels = make(map[string][]string)
-	d.lastModelsByEngine = make(map[string]map[string][]string)
-	d.lastLoadedByEngine = make(map[string]map[string][]string)
+	d.lastInventory = make(map[string]modelInventory)
 	d.nodeInfoDown = make(map[string]bool)
 
 	d.noteActivity("node", 0)

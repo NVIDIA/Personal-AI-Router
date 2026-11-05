@@ -92,9 +92,9 @@
       "hf_pull": { "tool": "hf", "dir": "{models_dir}/hub" }
     },
     "loaded_models": {
-      "description": "List the model this vLLM server is serving (it serves exactly one). This is what peers and the proxy are told it can answer for.",
+      "description": "List the model this vLLM server is serving (it serves exactly one). Its served name (id) is what peers and the proxy are told it can answer for; its --model (root) marks the downloaded model as loaded.",
       "http": { "method": "GET", "path": "/v1/models" },
-      "result": { "array": "data", "field": "id" }
+      "result": { "array": "data", "field": "id", "inventory_field": "root" }
     }
   }
 }

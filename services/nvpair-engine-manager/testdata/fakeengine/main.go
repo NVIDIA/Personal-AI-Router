@@ -289,11 +289,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"models": ms})
 	})
-	// LM Studio-shape (OpenAI-compatible).
+	// LM Studio-shape (OpenAI-compatible). Each row also carries vLLM's root
+	// (the model it loaded). FAKE_SERVED_MODEL_NAME stands in for vLLM's
+	// --served-model-name: the id becomes that alias while root keeps the model.
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		data := make([]map[string]string, 0)
 		for _, n := range modelNames() {
-			data = append(data, map[string]string{"id": n, "object": "model"})
+			id := n
+			if alias := os.Getenv("FAKE_SERVED_MODEL_NAME"); alias != "" {
+				id = alias
+			}
+			data = append(data, map[string]string{"id": id, "root": n, "object": "model"})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

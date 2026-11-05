@@ -105,6 +105,94 @@ func TestUnreportedLoadState_IsUnknown(t *testing.T) {
 	}
 }
 
+// modelRowStates maps each model row to its LOADED column.
+func modelRowStates(d *nodeDetail) map[string]string {
+	got := map[string]string{}
+	for _, row := range d.modelTable.Rows() {
+		got[row[0]] = row[2]
+	}
+	return got
+}
+
+// Ejecting a vLLM model stops the engine, so it advertises nothing. Its
+// downloaded models must keep their rows, so they can still be loaded or deleted.
+func TestRemoteDetail_KeepsTheDownloadedModelsOfAStoppedVLLMPeer(t *testing.T) {
+	d := remoteDetail()
+
+	d.update(discoveryPush(t, availableNode{
+		HostUUID:           "peer",
+		Name:               "peer-host",
+		LoadedByEngine:     map[string][]string{"vllm": {}},
+		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
+	}))
+
+	assert.Equal(t, map[string]string{
+		"Qwen/Qwen3.5-4B":                        "no",
+		"mistralai/Ministral-3-3B-Instruct-2512": "no",
+	}, modelRowStates(d))
+}
+
+// With --served-model-name, vLLM answers to the alias, but the model manager
+// lists the cached repository, which the loaded list names. The repository row
+// shows as loaded and the alias gets no row of its own.
+func TestModelRows_MarkTheCachedModelLoadedWhenVLLMServesItUnderAnAlias(t *testing.T) {
+	d := localDetail()
+	d.models = modelsResult{
+		Models:             []string{"qwen-api"},
+		ModelsByEngine:     map[string][]string{"vllm": {"qwen-api"}},
+		LoadedByEngine:     map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
+		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
+	}
+	d.refreshModels()
+
+	assert.Equal(t, map[string]string{
+		"Qwen/Qwen3.5-4B":                        "yes",
+		"mistralai/Ministral-3-3B-Instruct-2512": "no",
+	}, modelRowStates(d))
+}
+
+// A model vLLM serves from a local path is not in the cache, but it is loaded
+// and still gets a row.
+func TestModelRows_ListAServedModelThatIsNotInTheDownloadedList(t *testing.T) {
+	d := localDetail()
+	d.models = modelsResult{
+		ModelsByEngine:     map[string][]string{"vllm": {"/models/qwen"}},
+		LoadedByEngine:     map[string][]string{"vllm": {"/models/qwen"}},
+		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
+	}
+	d.refreshModels()
+
+	assert.Equal(t, map[string]string{"/models/qwen": "yes", "Qwen/Qwen3.5-4B": "no"}, modelRowStates(d))
+}
+
+// "Nothing downloaded" is said only when an engine read its inventory and found
+// it empty. A peer whose inventory could not be read is not described that way.
+func TestEmptyModelsHint_SaysNothingIsDownloadedOnlyWhenTheInventoryWasRead(t *testing.T) {
+	tests := []struct {
+		name       string
+		downloaded map[string][]string
+		wantEmpty  bool
+	}{
+		{name: "inventory read and empty", downloaded: map[string][]string{"vllm": {}}, wantEmpty: true},
+		{name: "inventory not read", downloaded: nil, wantEmpty: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := remoteDetail()
+			d.node.membership = membershipMember
+			d.models = modelsResult{DownloadedByEngine: tt.downloaded}
+			d.refreshModels()
+
+			hint := d.emptyModelsHint()
+			if tt.wantEmpty {
+				assert.Contains(t, hint, "No models downloaded")
+			} else {
+				assert.NotContains(t, hint, "downloaded")
+			}
+		})
+	}
+}
+
 // TestLocalDetailIgnoresDiscoveryModels checks this machine keeps using the
 // authoritative engine:models RPC rather than the discovery summary.
 func TestLocalDetail_IgnoresDiscoveryModels(t *testing.T) {

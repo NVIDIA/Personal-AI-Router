@@ -114,6 +114,14 @@ type AvailableNode struct {
 	// consumer show which of a remote node's models are loaded. Omitted
 	// when no engine reports loaded state.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// DownloadedByEngine lists every model an engine can load when that engine
+	// advertises only the one it is serving (vLLM), so ModelsByEngine holds just
+	// that one. It is reported even while the engine is stopped, so a remote
+	// node's model manager keeps its Load and Delete rows, and its LoadedByEngine
+	// entry names models the same way. An engine key with an empty list means the
+	// inventory was read and is empty; a missing key means it was not read.
+	// Omitted when no engine reports one.
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
 }
 
 // GetNodesResult is the response to "discovery:get-nodes". Wrapped in an

@@ -45,6 +45,10 @@ var allowedPlaceholders = map[string]bool{
 }
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+// resultFieldNameRe matches one element field name, such as "root".
+var resultFieldNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
 var resultMatchFieldPathRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*(?:\.[a-zA-Z_][a-zA-Z0-9_-]*)*$`)
 var artifactNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 var sha256Re = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -336,6 +340,13 @@ type ActionResult struct {
 	// field) rather than returning a presence-only list (Ollama's /api/ps,
 	// every row of which is resident and so needs no Match).
 	Match *ResultMatch `json:"match,omitempty"`
+	// InventoryField, valid only on the loaded_models action of an engine with
+	// advertised_models "loaded", names the element field that identifies each
+	// loaded model the way list_models does. vLLM's /v1/models gives the name a
+	// request uses as "id" (a --served-model-name alias when one is set) and the
+	// model it loaded as "root" (its --model): peers and the proxy are told the
+	// id, and the loaded marker on the model list uses the root.
+	InventoryField string `json:"inventory_field,omitempty"`
 }
 
 // ResultMatch is the optional row filter on an ActionResult. Exactly one of
@@ -819,6 +830,9 @@ func (m *Manifest) Validate() error {
 	default:
 		return fmt.Errorf("advertised_models %q invalid (want %q or %q)", m.AdvertisedModels, advertisedModelsList, advertisedModelsLoaded)
 	}
+	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded {
+		return fmt.Errorf("action %q: result.inventory_field requires advertised_models %q", "loaded_models", advertisedModelsLoaded)
+	}
 	return m.validatePlaceholders()
 }
 
@@ -1072,6 +1086,14 @@ func (a *Action) validate(name string) error {
 	}
 	if a.Result != nil && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
 		return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)
+	}
+	if a.Result != nil && a.Result.InventoryField != "" {
+		if name != "loaded_models" {
+			return fmt.Errorf("action %q: result.inventory_field is only valid on loaded_models", name)
+		}
+		if !resultFieldNameRe.MatchString(a.Result.InventoryField) {
+			return fmt.Errorf("action %q: result.inventory_field %q is not a valid field name", name, a.Result.InventoryField)
+		}
 	}
 	if a.Result != nil && a.Result.Match != nil {
 		m := a.Result.Match
