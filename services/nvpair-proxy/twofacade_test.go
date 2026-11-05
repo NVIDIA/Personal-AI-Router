@@ -62,7 +62,7 @@ func (w *recordingWriter) lines() [][]byte {
 func enableOnFreePort(t *testing.T, p *Proxy, engine string) int {
 	t.Helper()
 	var lastErr error
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		port := freeTCPPort(t)
 		_, err := p.enableFacade(enableFacadeParams{
 			Engine:              engine,

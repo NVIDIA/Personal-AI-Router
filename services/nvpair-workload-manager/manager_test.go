@@ -89,11 +89,11 @@ func TestManager_BroadcastPreservesEnqueueOrder(t *testing.T) {
 	defer cancel()
 	go m.broadcastLoop(ctx)
 
-	for i := 0; i < frameCount; i++ {
+	for i := range frameCount {
 		m.broadcastFrame("workload:started", []byte(fmt.Sprintf(`{"seq":%d}`, i)))
 	}
 
-	for want := 0; want < frameCount; want++ {
+	for want := range frameCount {
 		select {
 		case body := <-received:
 			assertFrame(t, body, want)

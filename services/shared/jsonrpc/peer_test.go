@@ -111,10 +111,10 @@ func TestPeer_DeliversNotificationsInOrder(t *testing.T) {
 	go a.Serve(nil, nil)
 
 	const n = 8
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.NoError(t, a.Notify(fmt.Sprintf("n%d", i), nil), "Notify")
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		select {
 		case m := <-got:
 			assert.Equal(t, fmt.Sprintf("n%d", i), m, "out of order")

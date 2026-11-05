@@ -241,7 +241,7 @@ func TestConcurrentStart_IsSerialized(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		wg.Go(func() {
 			assert.NoError(t, ex.Start(context.Background(), "fake"))
 		})

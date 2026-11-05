@@ -88,7 +88,7 @@ func TestActivity_IsRelayedAsANotificationNotARequest(t *testing.T) {
 func TestActivityReports_DoNotStallRelayWithoutAcknowledgment(t *testing.T) {
 	b, relayed := relayHarness(t)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		b.forwardProxyNotificationForGeneration(b.currentOllamaProxyGeneration(),
 			noderec.NotifyNodeActivity, json.RawMessage(`{"hostUuid":"busy-peer"}`))
 	}

@@ -169,7 +169,7 @@ func buildDemoSchedule(targets []demoTarget) []demoRequest {
 	}
 	slots := make([]slot, 0, len(demoCohortOffsets)*perCohort*len(demoStages))
 	for _, cohort := range demoCohortOffsets {
-		for agent := 0; agent < perCohort; agent++ {
+		for range perCohort {
 			for i, stage := range demoStages {
 				at := cohort + stage.offset
 				// The ceiling is a planning invariant as well as a runtime one.

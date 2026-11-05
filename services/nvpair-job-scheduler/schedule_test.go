@@ -485,7 +485,7 @@ func TestRecomputeAll_SerializesOlderAndNewerResults(t *testing.T) {
 func TestFeedbackBurst_BalancesPastDepthThree(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b", "c"})
 	depths := map[string]int{"a": 0, "b": 0, "c": 0}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		order, _ := m.rank()
 		target := order[0]
 		engine := schedulerEngines[i%len(schedulerEngines)]

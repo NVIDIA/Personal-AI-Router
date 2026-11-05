@@ -315,7 +315,7 @@ func telemetryTargetKey(hosts []string, port int) string {
 
 func telemetryRetryDelay(consecutiveFailures int) time.Duration {
 	delay := telemetryRefreshInterval
-	for failure := 0; failure < consecutiveFailures; failure++ {
+	for range consecutiveFailures {
 		if delay >= telemetryRetryMax/2 {
 			return telemetryRetryMax
 		}

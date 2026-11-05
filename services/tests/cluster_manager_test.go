@@ -572,7 +572,7 @@ func TestClusterCancelInvite_PreservesConsistentOutcomeDuringConcurrentAccept(t 
 	}
 
 	const iterations = 6
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		port := 14880 + i
 		b := startCM(t, t.TempDir(), port)
 		time.Sleep(600 * time.Millisecond) // let B's inter-node listener bind

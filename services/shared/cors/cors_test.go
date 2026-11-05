@@ -224,7 +224,7 @@ func TestCORSFanout_BoundsConcurrentRequestsAndHonorsCancellation(t *testing.T) 
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() { ServePreflight(rec, preflight().WithContext(ctx), targets); close(done) }()
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		select {
 		case <-started:
 		case <-time.After(time.Second):

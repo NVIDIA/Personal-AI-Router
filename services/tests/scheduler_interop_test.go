@@ -223,7 +223,7 @@ func TestScheduler_BalancesMixedEngineBurstAcrossNodes(t *testing.T) {
 
 	depths := map[string]int{"a": 0, "b": 0, "c": 0}
 	current := initial
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		target := current[0]
 		engine := "ollama"
 		if i%2 == 1 {

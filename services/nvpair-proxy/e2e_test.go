@@ -136,7 +136,7 @@ func e2eWaitResult(t *testing.T, frames *e2eInbox, id string, timeout time.Durat
 // reports a lost bind race, and returns the port it actually bound.
 func e2eEnableWithRetry(t *testing.T, stdin io.Writer, frames *e2eInbox, engine string, port int) int {
 	t.Helper()
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := range 8 {
 		id := 100 + attempt
 		e2eSend(t, stdin, id, "facade/enable", map[string]any{
 			"engine":              engine,

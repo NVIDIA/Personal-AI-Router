@@ -80,7 +80,7 @@ func TestConcurrentDue_LetsExactlyOneThrough(t *testing.T) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	allowed := 0
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		wg.Go(func() {
 			if r.Due("node-a") {
 				mu.Lock()

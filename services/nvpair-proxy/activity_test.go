@@ -118,7 +118,7 @@ func TestRepeatedChunks_AreCoalescedIntoOneReport(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			w.WriteHeader(http.StatusOK)
-			for i := 0; i < chunks; i++ {
+			for range chunks {
 				_, err := w.Write([]byte(`{"response":"x"}` + "\n"))
 				assert.NoError(t, err)
 				if f, ok := w.(http.Flusher); ok {
