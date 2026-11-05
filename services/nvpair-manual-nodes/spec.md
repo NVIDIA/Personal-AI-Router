@@ -228,7 +228,21 @@ counter.
 
 ### 7.5 Downstream projection
 
-`nvpair-ui-broker` consumes the notifications in `forwardManualNodesNotification`. `node/discovered` and `node/updated` go through `manualToEnriched` into the same discovery store `nvpair-node-scanner` feeds, under source `sourceManual`: `Host` and `Addresses` come from `address`, `Port` from `node_info_port`, `Models` from the de-duplicated union of both engines' lists, and `ModelsByEngine` from `{"ollama": …, "lmstudio": …}`. The store key is the authenticated `hostUuid`, otherwise the independent `manual:<entry-id>` record key, so manual and mDNS nodes share one `discovery:get-nodes` / `discovery:nodes-changed` snapshot. In parallel, `bridgeManualNode` upserts the node into the `nvpair-proxy` Ollama and LM Studio facades whose engine is reachable, with the engine-addressed `ollama:node/add-manual` or `lmstudio:node/add-manual`, and withdraws it from either facade whose engine is not with `<engine>:node/remove-manual`. The llama.cpp facade receives no manual nodes (§4). The candidate is keyed identically, so `nvpair-job-scheduler` priority and `scheduledOn` resolve to it.
+`nvpair-ui-broker` consumes the notifications in
+`handleManualNodesNotification`. `node/discovered` and `node/updated` go through
+`manualToEnriched` into the same discovery store `nvpair-node-scanner` feeds,
+under source `sourceManual`: `Host` and `Addresses` come from `address`, `Port`
+from `node_info_port`, `Models` from the de-duplicated union of both engines'
+lists, and `ModelsByEngine` from `{"ollama": …, "lmstudio": …}`. The store key is
+the authenticated `hostUuid`, otherwise the independent `manual:<entry-id>` record
+key, so manual and mDNS nodes share one `discovery:get-nodes` /
+`discovery:nodes-changed` snapshot. In parallel, `bridgeManualNode` upserts the
+node into the `nvpair-proxy` Ollama and LM Studio facades whose engine is
+reachable, with the engine-addressed `ollama:node/add-manual` or
+`lmstudio:node/add-manual`, and withdraws it from either facade whose engine is
+not with `<engine>:node/remove-manual`. The llama.cpp facade receives no manual
+nodes (§4). The candidate is keyed identically, so `nvpair-job-scheduler` priority
+and `scheduledOn` resolve to it.
 
 The broker reduces only pinned statuses to the highest `utilization_percent` across its GPUs plus `telemetryValid` and `msSince`, and caches that as the manual telemetry source for the same key. A scanner observation of the same host takes precedence. The broker ages the cached sample and relays it to `nvpair-job-scheduler`, which is how a manual node gets GPU pressure in scheduling.
 
@@ -306,7 +320,7 @@ This worker persists nothing. The broker owns a JSON array of `{ id, address, na
 
 A user enters `10.0.1.50` and names it `lab`. The broker relays `{"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"lab"}}`. The worker stores entry `lab` and immediately returns unprobed status: engine and node-info ports filled, every `*_up` false, and unverified identity. Broker persists the successful entry and returns the result to the client while the initial probe runs independently.
 
-On its goroutine the worker probes: `GET http://10.0.1.50:11434/` returns `200`, so `GET /api/tags` yields `["llama3.2:latest"]`; `GET http://10.0.1.50:1234/v1/models` fails to connect, so LM Studio is down; `GET https://10.0.1.50:14318/v1/node-info` over pinned mTLS returns one GPU, a CPU object, a memory object, a valid GPU sample with its age, and matching host/cluster identities. It emits `node/discovered` with the filled `ManualNodeStatus`. The broker's `forwardManualNodesNotification` upserts it through `manualToEnriched` into the discovery store keyed by the reported `hostUuid`, caches its GPU telemetry for the scheduler under the same key, and `bridgeManualNode` sends `nvpair-proxy` `ollama:node/add-manual` under that key and `lmstudio:node/remove-manual`. The node appears in `discovery:nodes-changed` beside mDNS nodes and is a routable, schedulable Ollama target.
+On its goroutine the worker probes: `GET http://10.0.1.50:11434/` returns `200`, so `GET /api/tags` yields `["llama3.2:latest"]`; `GET http://10.0.1.50:1234/v1/models` fails to connect, so LM Studio is down; `GET https://10.0.1.50:14318/v1/node-info` over pinned mTLS returns one GPU, a CPU object, a memory object, a valid GPU sample with its age, and matching host/cluster identities. It emits `node/discovered` with the filled `ManualNodeStatus`. The broker's `handleManualNodesNotification` upserts it through `manualToEnriched` into the discovery store keyed by the reported `hostUuid`, caches its GPU telemetry for the scheduler under the same key, and `bridgeManualNode` sends `nvpair-proxy` `ollama:node/add-manual` under that key and `lmstudio:node/remove-manual`. The node appears in `discovery:nodes-changed` beside mDNS nodes and is a routable, schedulable Ollama target.
 
 Without a valid pin, verified service hardware is unavailable. Eligible unpaired
 entries can independently supply display-only previews, and explicit engine

@@ -61,7 +61,8 @@ allows the user to restart the service.
 Personal AI Router consumes `discovery:get-nodes` and `discovery:nodes-changed` from the
 broker. The bridge:
 
-- keys verified rows by the backend's stable host UUID (`AvailableNode.id`),
+- keys local and verified rows by the backend's stable host UUID (`hostUuid`
+  on the broker wire, normalized to renderer `AvailableNode.id`),
   the same identity workloads (`originatedFrom`/`scheduledOn`), errors (`nodeId`),
   proxy routing (`Node.ID`), and cluster membership (`ClusterNode.nodeUuid`) use;
   unverified rows use their independent `discoveryRecordId`, so copied UUIDs,
@@ -78,6 +79,11 @@ broker. The bridge:
 - merges per-engine proxy presence;
 - carries flat and per-engine remote model inventories;
 - emits node and discovery pushes to the renderer.
+
+The broker's wire `AvailableNode.id` is a display identifier: the hostname for
+scanner records or the entry ID for manual records. The bridge uses `hostUuid`
+or `discoveryRecordId` for row identity and exposes that key as the
+renderer-facing `AvailableNode.id`.
 
 `selfId` is the cluster-manager's `nodeUuid` (from `cluster:get-node-id`), minted
 at startup and resolved as soon as the broker is ready, so self is identified by

@@ -3,7 +3,7 @@
 
 // Package noderec is the single source of truth for the consolidated
 // _nvpair-node._tcp wire format and the discovery JSON-RPC contract shared by the
-// promoted node-scanner daemon, the broker relay, and every consumer of the
+// node-scanner daemon, the broker relay, and every consumer of the
 // consolidated discovery.
 //
 // A node advertises itself as ONE _nvpair-node._tcp record
@@ -23,9 +23,10 @@
 //   - uuid= (hostUuid) and cluster-uuid= (clusterUuid) are distinct fields:
 //     invite resolution keys by hostUuid; the cluster pin is selected by
 //     clusterUuid, which is present only when the node is clustered.
-//   - The model list is NOT in TXT. It moved to HTTP (engine-manager's em
-//     /v1/models) because it can grow past the DNS per-string limit; a peer's
-//     daemon fetches it during enrichment and puts it on DirectoryNode.Models.
+//   - Engine-manager serves model lists at em /v1/models, keeping lists that
+//     can exceed the DNS per-string limit out of TXT. Scanner reads the owned
+//     engine-manager over loopback HTTP and verified peers over pinned mTLS,
+//     then adds the accepted inventory to DirectoryNode.Models.
 package noderec
 
 import (
@@ -329,8 +330,8 @@ const (
 	// This is the only direct evidence a host can have about which of its
 	// addresses work from somewhere else. Everything else it can see — routes,
 	// interface flags, multicast success — describes the link from this side. A
-	// peer completing a request proves the whole path, and the desktop polls every
-	// peer's node-info continuously, so the proof arrives on its own.
+	// peer completing a request proves the whole path. Remote scanner and manual
+	// workers supply these observations through their node-info inventory reads.
 	NotifyObservedAddresses = "nodeinfo:observed-addresses"
 
 	// MethodSetObservedAddresses is broker -> nvpair-node-scanner, relaying
@@ -580,10 +581,11 @@ const (
 
 // DirectoryNode is one node in the consolidated directory served by
 // discovery:get-nodes, carried in the daemon's discovery:node-* events, and
-// listed in the broker's discovery:nodes snapshots. It replaces
-// the per-service EnrichedNode: identity is the stable hostUuid, transport is
-// derived from Services + Clustered (never carried), and node-info enrichment
-// decorates entries that advertise a node-info service.
+// listed in the broker's discovery:nodes snapshots. DiscoveryRecordID tracks
+// each local record, authenticated peer proof, or unverified observation, while
+// IdentityVerification records its provenance. HostUUID is authoritative only
+// for local or pinned records. Verified inventory comes from the owned local
+// registry or a peer's authenticated node-info response.
 type DirectoryNode struct {
 	// DiscoveryRecordID is PAIR's tracking key for one mDNS discovery, local
 	// registry record, or manual configuration. HostUUID is the machine UUID

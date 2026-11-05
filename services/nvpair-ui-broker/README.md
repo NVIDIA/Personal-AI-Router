@@ -95,8 +95,10 @@ worker IPC. Scanner emits full local hardware back to the broker, which exposes
 it to desktop and TUI in discovery snapshots and live hardware updates.
 
 Verified record IDs bind scanner and manual proofs to current pins and local
-membership. Trust changes withdraw affected records, full hardware snapshots,
-and scheduling samples from both sources. Queued events and scheduler replay
+membership. Trust changes remove affected pinned scanner records and clear
+verification, hardware, and scheduling samples for affected manual entries.
+Manual configurations and independently reachable engine routes are preserved.
+Queued events and scheduler replay
 recheck that binding. A scanner crash withdraws its entire directory; its
 replacement authenticates remote records again while local IPC replays retain
 their age. Notifications from a previous worker cannot restore its records.
@@ -253,11 +255,13 @@ Emitted once on startup, after the scanner (and, when available, node-info and o
 
 **Opt-in.** Only delivered to a peer that has called `discovery:subscribe`; until then (and after `discovery:unsubscribe`) the stream is silent. Once subscribed, it's fired every time the discovery store mutates — that is, whenever the daemon reports a `discovery:node-discovered`, `discovery:node-updated`, or `discovery:node-removed` (or a manual node changes). The payload is the full current snapshot as a **bare array** of `AvailableNode` objects (same shape as the array element in `discovery:get-nodes`), sorted by `id`.
 
-Snapshots retain scanner-assigned `discoveryRecordId` and `identityVerification`
-(`local`, `pinned`, or `unverified`). Manual configuration records have their own
-discovery record IDs and are `unverified`. These fields describe provenance separately
-from the `trusted` pin annotation; a claimed UUID or an existing pin alone does
-not establish authenticated endpoint ownership.
+Snapshots carry `discoveryRecordId` and `identityVerification` (`local`, `pinned`,
+or `unverified`). A manual entry is `unverified` under its independent
+`manual:<entry-id>` record ID until pinned-mTLS authentication succeeds. An
+authenticated manual entry is `pinned` and carries its current peer record ID.
+These fields describe provenance separately from the `trusted` annotation; a
+claimed UUID or a saved pin alone does not establish authenticated endpoint
+ownership.
 
 ```json
 {

@@ -67,15 +67,17 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 ### `pairApi.discovery`
 
 - `getNodes()` returns discoverable nodes. Each `AvailableNode` carries the
-  backend `id` (the host UUID for verified rows, or the discovery record ID for
-  unverified rows), the display `name` (hostname), the reachable
+  normalized `id` (the host UUID for local and verified rows, or the discovery
+  record ID for unverified rows), the display `name` (hostname), the reachable
   `ipAddress`/`port`, and the `trusted` and `clustered` flags. A `clustered` node
   already belongs to some cluster and is
   rendered non-invitable.
   Broker records also carry `discoveryRecordId` and `identityVerification` (`local`,
   `pinned`, or `unverified`). The bridge retains these provenance fields through
-  proxy updates and clears them when the broker withdraws the record; public
-  hardware readings cannot change them. Broker snapshots carry optional full
+  proxy updates. Broker withdrawal deletes a pinned peer's row, including cached
+  proxy presence. For other records, a surviving proxy keeps the row while its
+  broker provenance and hardware are cleared. Public hardware readings cannot
+  change provenance. Broker snapshots carry optional full
   hardware in `info`, and live `discovery:node-info` updates refresh the same
   record. Electron matches record ID, verification, and verified host identity
   before projecting GPU, CPU, memory, and VRAM fields. Workers collect local
