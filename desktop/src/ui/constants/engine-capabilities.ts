@@ -20,7 +20,6 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
         hasDeleteModel: true,
-        hasPullModel: true,
         engineHub: { label: 'Ollama', url: 'https://ollama.com/library' }
     },
     'lm-studio': {
@@ -39,7 +38,6 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
         hasDeleteModel: true,
-        hasPullModel: true,
         // LM Studio answers /v1/models from an index it builds at startup and
         // exposes no rescan, so nvpair-engine-manager's delete_model restarts the
         // server. Deleting therefore interrupts inference and needs a warning.
@@ -59,7 +57,6 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         modelOpsWhenStopped: false,
         // The router removes cached models in-process via DELETE /models.
         hasDeleteModel: true,
-        hasPullModel: true,
         hubSearch: true,
         engineHub: {
             label: 'llama.cpp',
@@ -90,10 +87,8 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // with no model selected until Load picks one.
         hasDeleteModel: true,
         deleteBlockedWhileLoaded: true,
-        // The engine manager downloads a Hugging Face repo into the shared cache
-        // with the engine's own `hf` tool (pull_model). The model list is what
-        // that cache holds, and Load switches the served model by restarting vLLM.
-        hasPullModel: true,
+        // Load writes the model into the launch arguments and restarts vLLM on it.
+        loadRestartsEngine: true,
         hubSearch: true,
         engineHub: {
             label: 'vLLM',

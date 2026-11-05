@@ -1992,11 +1992,9 @@ class ModularSupervisor {
 
         // An engine whose list is on disk keeps it while stopped: read it like a
         // running engine's instead of clearing it.
+        // vLLM, the one engine whose Load restarts it, is among these, so a model
+        // switch passing through stopped never clears its list.
         if (!booleanValue(obj.running) && !EnginesListingModelsWhenStopped.includes(engineType)) {
-            // A model switch restarts the engine, so it reports stopped on the
-            // way. The list of models does not change, and clearing it made the
-            // card empty until the engine was back.
-            if (getModularBridgeState().isLocalModelSwitching(engineType)) return
             this.beginModelRefresh(engineType)
             this.stoppedModelEngines.add(engineType)
             this.stoppedModelSentinels.add(engineType)

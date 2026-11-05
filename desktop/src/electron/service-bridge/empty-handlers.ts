@@ -261,20 +261,19 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
             // LM Studio and llama.cpp declare real `load_model` manifest actions.
-            // vLLM's `load_model` switches the served model by restarting the
-            // engine on it, which takes minutes and can fail (the model may not
-            // fit), so like Ollama's its rejection is observed and attributed
-            // to the pending model row.
-            // All require the engine running (HTTP/CLI action), matching the
-            // disabled rule in ModelRow.tsx.
+            // vLLM's `load_model` serves the model by restarting a running engine
+            // on it, or starting a stopped one, which takes minutes and can fail
+            // (the model may not fit), so like Ollama's its rejection is observed
+            // and attributed to the pending model row.
+            // Ollama, LM Studio and llama.cpp require the engine running (HTTP/CLI
+            // action); vLLM declares modelOpsWhenStopped. ModelRow.tsx applies
+            // the same rule.
             // See docs/services-parity.md#models.
             if (payload.model) {
                 if (payload.engineType === 'vllm') {
-                    // vLLM switches model by restarting, so the engine passes through
-                    // "stopped" on the way. Show that as starting rather than as
-                    // turned off, and end it when the request finishes: the reply
-                    // arrives once the new model is serving (or the old one restored).
-                    state.beginLocalModelSwitch('vllm')
+                    // The reply arrives once the new model is serving, or the
+                    // previous one is restored. The renderer's pending Load shows
+                    // the engine as starting while it restarts.
                     void supervisor
                         .callProcess(
                             'broker',
@@ -290,7 +289,6 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                                 modelName: payload.model
                             })(getErrorString(err))
                         )
-                        .finally(() => state.clearLocalModelSwitch('vllm'))
                 } else if (payload.engineType === 'ollama') {
                     supervisor.sendProcess(
                         'broker',

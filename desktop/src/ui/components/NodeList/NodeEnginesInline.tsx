@@ -18,15 +18,11 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
     const isDisconnected = useNodesStore(s => isRemote && s.nodes.get(nodeId)?.status === 'offline')
     // Re-render when a lifecycle command for this node begins/clears; the
     // per-engine pending state is read below via getState().
-    const lifecyclePendingFingerprint = usePendingActionsStore(state => {
-        const parts: string[] = []
-        for (const [key, p] of state.pending) {
-            if (p.nodeId === nodeId && key.endsWith(':lifecycle')) {
-                parts.push(`${p.engineType}:${p.action}`)
-            }
-        }
-        return parts.join('|')
-    })
+    const lifecyclePendingFingerprint = usePendingActionsStore(state =>
+        EnabledEngineTypes.map(
+            type => `${type}:${state.getLifecyclePending(nodeId, type) ?? ''}`
+        ).join('|')
+    )
     void lifecyclePendingFingerprint
     const selfEngines = useMemo(
         () => getEnginesForNode(nodeId ?? '', statusByNode, EnabledEngineTypes),

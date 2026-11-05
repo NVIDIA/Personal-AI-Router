@@ -138,7 +138,11 @@ interface PendingActionsState {
     pending: Map<string, PendingAction>
     /** Record an optimistic pending entry for a fired command. No-op for non-lifecycle/non-model commands. */
     begin(payload: EngineCommandPayload): void
-    /** The pending lifecycle action for an engine, or undefined when none is in flight. */
+    /**
+     * The pending lifecycle action for an engine, or undefined when none is in
+     * flight. A Load on an engine whose Load restarts it (`loadRestartsEngine`)
+     * counts, as `loadModel`.
+     */
     getLifecyclePending(nodeId: string, engineType: EngineType): EngineCommandType | undefined
     /** The pending action for a specific model, or undefined when none is in flight. */
     getModelPending(
@@ -212,8 +216,18 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
         }
     },
 
-    getLifecyclePending: (nodeId, engineType) =>
-        asCommand(get().pending.get(lifecycleKey(nodeId, engineType))?.action),
+    getLifecyclePending: (nodeId, engineType) => {
+        const lifecycle = asCommand(get().pending.get(lifecycleKey(nodeId, engineType))?.action)
+        if (lifecycle || !EngineCapabilities[engineType]?.loadRestartsEngine) return lifecycle
+        // A Load on an engine that restarts to serve the model is a lifecycle
+        // change too: one entry, the model row's, covers both the row and the
+        // engine, cleared by the same backend truth and timeout.
+        const prefix = `${nodeId}:${engineType}:model:`
+        for (const [key, p] of get().pending) {
+            if (key.startsWith(prefix) && p.action === 'loadModel') return 'loadModel'
+        }
+        return undefined
+    },
 
     getModelPending: (nodeId, engineType, model) =>
         asCommand(get().pending.get(modelKey(nodeId, engineType, model))?.action),

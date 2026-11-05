@@ -18,7 +18,7 @@ import type { Workload, WorkloadState } from '@/shared/types/workloads'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import {
-    MODEL_SWITCH_TIMEOUT_MS,
+    MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
     MODULAR_NODE_INFO_SELF_HOST,
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
@@ -418,8 +418,23 @@ const PENDING_OP_IDLE_TIMEOUT_MS = 90_000
 // Vendor installers can be quiet for minutes; allow a bounded 30-minute window.
 const INSTALL_PENDING_OP_IDLE_TIMEOUT_MS = 30 * 60_000
 
+/**
+ * How long an optimistic status may stand without the backend resolving it.
+ * A start is resolved by `engine:state-changed` once the engine passes its
+ * readiness probe, and engines allow that probe minutes (vLLM 8, Ollama 10),
+ * so a start keeps its marker for the awaited lifecycle envelope that already
+ * outlasts every engine's readiness window. A shorter net shows a still-loading
+ * engine as stopped, and its toggle then sends another Start instead of Stop.
+ */
 function pendingEngineOpIdleTimeoutMs(status: EngineProcessStatus): number {
-    return status === 'installing' ? INSTALL_PENDING_OP_IDLE_TIMEOUT_MS : PENDING_OP_IDLE_TIMEOUT_MS
+    switch (status) {
+        case 'installing':
+            return INSTALL_PENDING_OP_IDLE_TIMEOUT_MS
+        case 'starting':
+            return MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+        default:
+            return PENDING_OP_IDLE_TIMEOUT_MS
+    }
 }
 
 /**
@@ -955,15 +970,6 @@ class ModularBridgeState {
     private pendingEngineOps = new Map<EngineType, EngineProcessStatus>()
     private pendingOpTimers = new Map<EngineType, ReturnType<typeof setTimeout>>()
     /**
-     * Engines in the middle of a model switch, which restarts the engine. Unlike
-     * a pending op this is not resolved by `engine:state-changed`: the restart
-     * reports "stopped" first, and showing that as the engine being off made it
-     * look disabled. It ends when the switch request itself finishes (success or
-     * failure), with a timeout in case that never arrives.
-     */
-    private modelSwitches = new Set<EngineType>()
-    private modelSwitchTimers = new Map<EngineType, ReturnType<typeof setTimeout>>()
-    /**
      * Optimistic transitional status for a remote peer while a user-initiated
      * `engine:remote-*` op is in flight on this node (the client). Keyed by
      * `${nodeId}:${engineType}`; cleared when discovery reports the resolved
@@ -1416,42 +1422,6 @@ class ModularBridgeState {
         // already carries the resolved, fact-derived status.
         this.discardPendingOp(engineType)
         this.emitLocalEngineStatus(engineType)
-    }
-
-    /**
-     * Mark an engine as switching model. While it is down for the restart the UI
-     * shows it as starting, not stopped, and its model list is kept. The caller
-     * ends it with {@link clearLocalModelSwitch} when the request finishes.
-     */
-    beginLocalModelSwitch(engineType: EngineType): void {
-        if (!this.selfId) return
-        this.dropModelSwitch(engineType)
-        this.modelSwitches.add(engineType)
-        this.modelSwitchTimers.set(
-            engineType,
-            setTimeout(() => this.clearLocalModelSwitch(engineType), MODEL_SWITCH_TIMEOUT_MS)
-        )
-        this.emitLocalEngineStatus(engineType)
-    }
-
-    /** End a model switch and show the engine's real status again. */
-    clearLocalModelSwitch(engineType: EngineType): void {
-        if (!this.modelSwitches.has(engineType)) return
-        this.dropModelSwitch(engineType)
-        this.emitLocalEngineStatus(engineType)
-    }
-
-    isLocalModelSwitching(engineType: EngineType): boolean {
-        return this.modelSwitches.has(engineType)
-    }
-
-    private dropModelSwitch(engineType: EngineType): void {
-        const timer = this.modelSwitchTimers.get(engineType)
-        if (timer) {
-            clearTimeout(timer)
-            this.modelSwitchTimers.delete(engineType)
-        }
-        this.modelSwitches.delete(engineType)
     }
 
     /**
@@ -2178,11 +2148,9 @@ class ModularBridgeState {
                 nodeId,
                 processStatus: facts.running
                     ? 'running'
-                    : this.modelSwitches.has(engineType)
-                      ? 'starting'
-                      : facts.installed
-                        ? 'stopped'
-                        : 'not-installed',
+                    : facts.installed
+                      ? 'stopped'
+                      : 'not-installed',
                 // The engine-manager reports the manifest's configured port for a
                 // pinned-port engine (for example managed llama.cpp on 8081 behind
                 // its 8080 proxy facade) whether it is running or merely installed,

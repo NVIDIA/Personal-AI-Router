@@ -202,9 +202,19 @@ and has a Hugging Face catalog. Load switches the served model through `load_mod
 restarts the engine, restoring the previous model if the new one does not start.
 Only the model being served is advertised to peers and the proxy, so a request
 for another cached model is refused until it is loaded. A Load switch passes through a stopped engine for the length of the
-restart, so the desktop marks the engine as switching: its card shows starting
-rather than stopped, and its model list is kept, until the load request finishes
-(success, or failure with the previous model restored). Weights live in the shared
+restart. The pending Load in the renderer's pending-actions store (the one owner
+of optimistic engine and model state) also covers the engine, because vLLM's
+capabilities declare `loadRestartsEngine`: its card shows starting rather than
+stopped, and its toggle stays locked, until the model is reported loaded, the
+load fails, or the 20-minute switch budget runs out. Its model list is read from
+disk while stopped, so it is kept throughout. Local and remote Loads are covered
+the same way.
+
+A local Start, of any engine, shows starting until the engine-manager reports
+the outcome. Its safety net is the awaited lifecycle envelope
+(`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 14 minutes), which outlasts every
+engine's readiness window (vLLM 8 minutes, Ollama 10), so a slow start is never
+shown as stopped while it is still loading. Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
 never remove.
 

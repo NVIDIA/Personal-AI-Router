@@ -54,7 +54,6 @@ describe('engine identity', () => {
             hasModelSearchOnlyWhenRunning: false,
             hasDeleteModel: true,
             deleteBlockedWhileLoaded: true,
-            hasPullModel: true,
             hubSearch: true,
             hasInstall: ['linux', 'darwin'],
             hasEnginePort: true,
@@ -67,12 +66,6 @@ describe('engine identity', () => {
             expect(EngineCapabilities[engineType].modelOpsWhenStopped).toBe(
                 EnginesListingModelsWhenStopped.includes(engineType)
             )
-        }
-    })
-
-    it('offers Add model to every engine, vLLM included', () => {
-        for (const engineType of EngineTypes) {
-            expect(EngineCapabilities[engineType].hasPullModel).toBe(true)
         }
     })
 

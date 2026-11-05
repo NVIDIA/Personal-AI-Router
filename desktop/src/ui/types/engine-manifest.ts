@@ -37,10 +37,11 @@ export interface EngineCaps {
     /** When true, show the Delete action in the model action menu. */
     hasDeleteModel: boolean
     /**
-     * When true, the engine can download a model on request (a `pull_model`
-     * action), so the model list offers "Add model".
+     * When true, Load serves a model by restarting the engine on it (one model
+     * per process), so while a Load is in flight the engine passes through
+     * stopped and is shown as starting.
      */
-    hasPullModel: boolean
+    loadRestartsEngine?: boolean
     /**
      * When true, the model hub can search the whole upstream catalog for a typed
      * query (the backend's `engine:catalog` reports `searchable`), instead of only

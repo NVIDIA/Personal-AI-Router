@@ -45,6 +45,10 @@ function syntheticPendingStatus(
             return 'uninstalling'
         case 'toggle':
             return current === 'running' ? 'stopping' : 'starting'
+        case 'loadModel':
+            // An engine that restarts to serve the model reports stopped on the
+            // way; it is starting again, not turned off.
+            return current === 'running' ? null : 'starting'
         default:
             return null
     }
