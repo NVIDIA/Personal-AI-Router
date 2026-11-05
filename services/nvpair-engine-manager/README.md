@@ -191,13 +191,12 @@ startup cleanup uses the same policy. On Windows, the windowless engines we
 spawn cannot receive a graceful (non-`/F`) close, so stopping uses immediate
 `taskkill /T /F`.
 
-On macOS, stopping LM Studio runs `lms daemon down` to terminate the headless
+Stopping LM Studio runs `lms daemon down` to terminate the headless
 `llmster` daemon and release its loaded models. `lms server stop` only closes
 the HTTP server and can leave the daemon and models in memory. The daemon
 command does not quit the LM Studio GUI; if a GUI-managed server still serves
 PAIR's configured port, stopping reports an error. The same stop command is
-used during restart and application shutdown. Windows and Linux retain
-`lms server stop`.
+used during restart and application shutdown on every supported platform.
 
 ### Adoption — start may attach to an engine it didn't launch
 

@@ -27,7 +27,7 @@
     "port": 1235,
     "bind": "127.0.0.1",
     "start": [["{cli}", "server", "start", "--port", "{port}", "--bind", "{host}"]],
-    "stop": { "cmd": ["{cli}", "server", "stop"] },
+    "stop": { "cmd": ["{cli}", "daemon", "down"] },
     "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 60 },
     "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
   },
@@ -60,18 +60,8 @@
       },
       "runtime": { "cli": "%USERPROFILE%\\.lmstudio\\bin\\lms.exe" }
     },
-    "darwin/arm64": {
-      "runtime": {
-        "cli": "~/.lmstudio/bin/lms",
-        "stop": { "cmd": ["{cli}", "daemon", "down"] }
-      }
-    },
-    "darwin/amd64": {
-      "runtime": {
-        "cli": "~/.lmstudio/bin/lms",
-        "stop": { "cmd": ["{cli}", "daemon", "down"] }
-      }
-    },
+    "darwin/arm64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
+    "darwin/amd64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
     "linux/amd64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
     "linux/arm64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } }
   },
