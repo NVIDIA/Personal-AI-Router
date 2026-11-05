@@ -497,7 +497,7 @@ script. It is still added with **no code** — using `mode: "command"`, a
 ```
 
 What each piece does here:
-- **`mode: "command"`** — no owned process; liveness is the `/v1/models` probe, and `stop.cmd` (`lms server stop`) brings the daemon down.
+- **`mode: "command"`** — no owned process; liveness is the `/v1/models` probe. In this Linux example, `stop.cmd` (`lms server stop`) closes the HTTP server but leaves the daemon running. The bundled macOS platforms override it with `lms daemon down` to terminate `llmster` and release loaded models. That command does not quit the LM Studio GUI; a GUI-managed server still serving the configured port causes stop to report an error.
 - **`cmd` action** — `pull_model` shells out to `lms get {model}` (no HTTP equivalent exists), with `{model}` filled from the call's params.
 - **`model_resolution: "lms-get"`** — `pull_model` tries the model as given, then the Hub artifact id, then the Hugging Face repo URL, so a bare `owner/name` for a Hugging-Face-hosted model (most of LM Studio's catalog) downloads instead of 404ing against the Hub registry.
 - **`{cli}`** — the manifest-global `pull_model` action resolves to the right per-OS binary (`lms.exe` on Windows, `lms` elsewhere).

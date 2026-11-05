@@ -60,8 +60,18 @@
       },
       "runtime": { "cli": "%USERPROFILE%\\.lmstudio\\bin\\lms.exe" }
     },
-    "darwin/arm64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
-    "darwin/amd64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
+    "darwin/arm64": {
+      "runtime": {
+        "cli": "~/.lmstudio/bin/lms",
+        "stop": { "cmd": ["{cli}", "daemon", "down"] }
+      }
+    },
+    "darwin/amd64": {
+      "runtime": {
+        "cli": "~/.lmstudio/bin/lms",
+        "stop": { "cmd": ["{cli}", "daemon", "down"] }
+      }
+    },
     "linux/amd64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } },
     "linux/arm64": { "runtime": { "cli": "~/.lmstudio/bin/lms" } }
   },

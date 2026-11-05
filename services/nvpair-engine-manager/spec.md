@@ -23,6 +23,11 @@ extensibility story for an open-source product.
   [LAUNCH_TEXT.md](LAUNCH_TEXT.md).
 - Detect installation; **user-mode** install (HTTPS download + checksum-verify-when-pinned + run) per OS/arch.
 - Lifecycle: start (with readiness probe), stop, restart, status, periodic health.
+- On macOS, LM Studio stops through `lms daemon down`, terminating the headless
+  daemon and releasing loaded models rather than only closing its HTTP server.
+  It does not quit the LM Studio GUI; a GUI-managed server that keeps serving
+  the configured port causes stop to report an error. Restart and shutdown use
+  the same stop command. Windows and Linux retain `lms server stop`.
 - Persistent server-port changes preserve arguments, environment and unrelated
   manifest overrides. Resetting to the bundled port removes only shared and
   host-platform port overrides, deleting the file only when it has no other
