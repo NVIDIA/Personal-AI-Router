@@ -135,7 +135,7 @@ func (e *Executor) hfRepoFiles(ctx context.Context, id, revision string, env hfE
 // is set to work offline. Errors say what the user can do about them.
 func (e *Executor) hfGet(ctx context.Context, rawURL string, limit int64, env hfEnv) ([]byte, error) {
 	if env.offline() {
-		return nil, errors.New("HF_HUB_OFFLINE is set for this engine, so Hugging Face is not contacted")
+		return nil, errors.New("HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set for this engine, so Hugging Face is not contacted")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -246,10 +246,14 @@ func (env hfEnv) endpoint() string {
 	return hfDefaultEndpoint
 }
 
-// token is the token huggingface_hub would send: HF_TOKEN, else
+// token is the token huggingface_hub would send: none when
+// HF_HUB_DISABLE_IMPLICIT_TOKEN is set, else HF_TOKEN, else
 // HUGGING_FACE_HUB_TOKEN, else the one a `hf auth login` stored in
 // HF_TOKEN_PATH or <home>/token.
 func (env hfEnv) token() string {
+	if hfTrue(env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")) {
+		return ""
+	}
 	for _, key := range []string{"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"} {
 		if token := strings.TrimSpace(env.get(key)); token != "" {
 			return token
@@ -283,11 +287,22 @@ func (env hfEnv) get(key string) string {
 	return os.Getenv(key)
 }
 
-// offline reports whether HF_HUB_OFFLINE asks Hugging Face tools not to use
-// the network, read the way huggingface_hub reads it.
+// offline reports whether HF_HUB_OFFLINE, else TRANSFORMERS_OFFLINE, asks
+// Hugging Face tools not to use the network, read the way huggingface_hub
+// reads them.
 func (env hfEnv) offline() bool {
-	switch strings.ToLower(strings.TrimSpace(env.get("HF_HUB_OFFLINE"))) {
-	case "1", "on", "yes", "true":
+	value := env.get("HF_HUB_OFFLINE")
+	if value == "" {
+		value = env.get("TRANSFORMERS_OFFLINE")
+	}
+	return hfTrue(value)
+}
+
+// hfTrue reports whether a Hugging Face setting is on, as huggingface_hub's
+// _is_true decides it.
+func hfTrue(value string) bool {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "1", "ON", "YES", "TRUE":
 		return true
 	}
 	return false
@@ -389,7 +404,9 @@ func hfBlobBytes(repoDir string) int64 {
 	}
 	var total int64
 	for _, entry := range entries {
-		if info, err := entry.Info(); err == nil && !info.IsDir() {
+		// os.Stat, not entry.Info: huggingface_hub replaces a finished blob
+		// with a link to its shared store, and the link's own size is tiny.
+		if info, err := os.Stat(filepath.Join(repoDir, "blobs", entry.Name())); err == nil && !info.IsDir() {
 			total += info.Size()
 		}
 	}

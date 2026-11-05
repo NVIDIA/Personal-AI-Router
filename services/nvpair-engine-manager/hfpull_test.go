@@ -274,7 +274,7 @@ func TestHFToolPath_FindsHFBesideTheEngineALinkPointsTo(t *testing.T) {
 // PAIR reads the same Hugging Face settings vLLM's huggingface_hub reads, in
 // the same order, from the engine's environment over the service's.
 func TestHFEnv_ResolvesTheCacheEndpointAndTokenAsHuggingFaceHubDoes(t *testing.T) {
-	for _, key := range []string{"HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "XDG_CACHE_HOME", "HF_ENDPOINT", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH"} {
+	for _, key := range []string{"HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "XDG_CACHE_HOME", "HF_ENDPOINT", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH", "HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"} {
 		t.Setenv(key, "")
 	}
 	home, err := os.UserHomeDir()
@@ -286,11 +286,11 @@ func TestHFEnv_ResolvesTheCacheEndpointAndTokenAsHuggingFaceHubDoes(t *testing.T
 	}
 	cache("HF_HUB_CACHE first", hfEnv{"HF_HUB_CACHE": "/hub", "HUGGINGFACE_HUB_CACHE": "/legacy", "HF_HOME": "/home"}, "/hub")
 	cache("the legacy HUGGINGFACE_HUB_CACHE next", hfEnv{"HUGGINGFACE_HUB_CACHE": "/legacy", "HF_HOME": "/home"}, "/legacy")
-	cache("then HF_HOME/hub", hfEnv{"HF_HOME": "/home"}, "/home/hub")
-	cache("then XDG_CACHE_HOME/huggingface/hub", hfEnv{"XDG_CACHE_HOME": "/xdg"}, "/xdg/huggingface/hub")
+	cache("then HF_HOME/hub", hfEnv{"HF_HOME": "/home"}, filepath.Join("/home", "hub"))
+	cache("then XDG_CACHE_HOME/huggingface/hub", hfEnv{"XDG_CACHE_HOME": "/xdg"}, filepath.Join("/xdg", "huggingface", "hub"))
 	cache("else ~/.cache/huggingface/hub", hfEnv{}, filepath.Join(home, ".cache", "huggingface", "hub"))
 	cache("~ expanded", hfEnv{"HF_HOME": "~/hf"}, filepath.Join(home, "hf", "hub"))
-	cache("$VARS expanded from the engine's environment", hfEnv{"MODELS": "/models", "HF_HOME": "$MODELS/hf"}, "/models/hf/hub")
+	cache("$VARS expanded from the engine's environment", hfEnv{"MODELS": "/models", "HF_HOME": "$MODELS/hf"}, filepath.Join("/models", "hf", "hub"))
 
 	endpoint := func(name string, env hfEnv, want string) {
 		t.Run("endpoint: "+name, func(t *testing.T) {
@@ -313,11 +313,38 @@ func TestHFEnv_ResolvesTheCacheEndpointAndTokenAsHuggingFaceHubDoes(t *testing.T
 	token("the legacy HUGGING_FACE_HUB_TOKEN next", hfEnv{"HUGGING_FACE_HUB_TOKEN": "legacy", "HF_HOME": hfHome}, "legacy")
 	token("then HF_TOKEN_PATH", hfEnv{"HF_TOKEN_PATH": tokenFile, "HF_HOME": hfHome}, "from-file")
 	token("then the token hf auth login stored in HF_HOME", hfEnv{"HF_HOME": hfHome}, "from-login")
+	token("none when HF_HUB_DISABLE_IMPLICIT_TOKEN is set", hfEnv{"HF_HUB_DISABLE_IMPLICIT_TOKEN": "true", "HF_TOKEN": "env", "HF_HOME": hfHome}, "")
+
+	offline := func(name string, env hfEnv, want bool) {
+		t.Run("offline: "+name, func(t *testing.T) {
+			assert.Equal(t, want, env.offline())
+		})
+	}
+	offline("online by default", hfEnv{}, false)
+	offline("HF_HUB_OFFLINE", hfEnv{"HF_HUB_OFFLINE": "1"}, true)
+	offline("TRANSFORMERS_OFFLINE when HF_HUB_OFFLINE is unset", hfEnv{"TRANSFORMERS_OFFLINE": "YES"}, true)
+	offline("HF_HUB_OFFLINE wins over TRANSFORMERS_OFFLINE", hfEnv{"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "1"}, false)
 	token("none", hfEnv{"HF_HOME": t.TempDir()}, "")
 }
 
 // The model list, Pull and Delete use the cache vLLM itself uses. With
 // HF_HUB_CACHE set in its launch settings, that is not {models_dir}/hub.
+// A finished blob that huggingface_hub moved to its shared store is a link;
+// download progress counts the file it points to, so it does not fall back.
+func TestHFBlobBytes_CountsAFinishedBlobLinkedToTheSharedStore(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "models--org--model")
+	blobs := filepath.Join(repo, "blobs")
+	require.NoError(t, os.MkdirAll(blobs, 0o755))
+	shared := filepath.Join(t.TempDir(), "shared-blob")
+	require.NoError(t, os.WriteFile(shared, make([]byte, 4096), 0o644))
+	if err := os.Symlink(shared, filepath.Join(blobs, "finished")); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(blobs, "other.incomplete"), make([]byte, 100), 0o644))
+
+	assert.Equal(t, int64(4096+100), hfBlobBytes(repo))
+}
+
 func TestHFCacheAction_ListsTheCacheTheEngineUses(t *testing.T) {
 	t.Setenv("HF_HUB_CACHE", "")
 	modelsDir := t.TempDir()

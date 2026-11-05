@@ -400,9 +400,11 @@ Hugging Face tool (the one an `hf_pull` action names) at that revision, and is
 then sized and given a tool-call parser the same way; when Hugging Face cannot
 answer, the share is the free GPU memory less the margin. That fetch, and the
 `hf_pull` and `hf_cache` work, run with the engine's launch environment, read
-the way `huggingface_hub` reads it: `HF_HUB_OFFLINE`, the token (`HF_TOKEN`,
-`HUGGING_FACE_HUB_TOKEN`, or the stored login under `HF_TOKEN_PATH` or
-`HF_HOME`), and a mirror in `HF_ENDPOINT` all apply.
+the way `huggingface_hub` reads it: `HF_HUB_OFFLINE` (else
+`TRANSFORMERS_OFFLINE`), the token (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or
+the stored login under `HF_TOKEN_PATH` or `HF_HOME`, none of them sent when
+`HF_HUB_DISABLE_IMPLICIT_TOKEN` is set), and a mirror in `HF_ENDPOINT` all
+apply.
 The optional `max_num_seqs` adds `--max-num-seqs`, the most requests the engine
 runs at once (0 or absent leaves the engine's default).
 Arguments the user saved always win and nothing added is written back to saved

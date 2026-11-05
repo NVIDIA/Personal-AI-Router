@@ -93,9 +93,10 @@ Hugging Face. It is then sized, and its tool-call parser chosen, exactly as a
 cached model is, and vLLM finds those files already there. The fetch and every
 other Hugging Face request PAIR makes for vLLM (pull, delete, size lookup) run
 with the engine's own environment, read as `huggingface_hub` reads it, so its
-launch settings apply to them too: `HF_HUB_OFFLINE`; the token (`HF_TOKEN`,
-`HUGGING_FACE_HUB_TOKEN`, or the one `hf auth login` stored under `HF_HOME` or
-`HF_TOKEN_PATH`); a mirror in `HF_ENDPOINT`; and the cache folder (`HF_HUB_CACHE`,
+launch settings apply to them too: `HF_HUB_OFFLINE`, else `TRANSFORMERS_OFFLINE`;
+the token (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or the one `hf auth login`
+stored under `HF_HOME` or `HF_TOKEN_PATH`), none of which is sent when
+`HF_HUB_DISABLE_IMPLICIT_TOKEN` is set; a mirror in `HF_ENDPOINT`; and the cache folder (`HF_HUB_CACHE`,
 else `HF_HOME/hub`). The model list, Pull, Delete and start-time sizing all use
 the cache vLLM itself will use. If Hugging Face cannot answer (offline,
 gated without a token, unreachable), the model gets the free GPU memory less

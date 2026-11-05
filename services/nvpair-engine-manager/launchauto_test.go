@@ -596,6 +596,8 @@ func newHFFetch(t *testing.T, status int, siblings []hfSibling) *hfFetch {
 	t.Cleanup(func() { hfDefaultEndpoint = old })
 	t.Setenv("FAKE_HF_CONFIG", qwen35_4BConfig)
 	t.Setenv("HF_HUB_OFFLINE", "")
+	t.Setenv("TRANSFORMERS_OFFLINE", "")
+	t.Setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "")
 	t.Setenv("HF_ENDPOINT", "")
 	t.Setenv("HF_TOKEN", "")
 	t.Setenv("HUGGING_FACE_HUB_TOKEN", "")
@@ -665,6 +667,28 @@ func TestFetchHFMetadata_UsesTheEnginesHuggingFaceSettings(t *testing.T) {
 		assert.False(t, ok)
 		assert.Empty(t, f.requests, "no request may reach Hugging Face")
 		assert.Empty(t, f.toolCalls(t), "the hf tool must not run")
+	})
+	t.Run("TRANSFORMERS_OFFLINE in the engine settings", func(t *testing.T) {
+		f := newHFFetch(t, http.StatusOK, qwen35Siblings)
+		f.setLaunchEnv("TRANSFORMERS_OFFLINE=1")
+
+		_, ok := f.fetch(t, "Qwen/Qwen3.5-4B", "main")
+
+		assert.False(t, ok)
+		assert.Empty(t, f.requests, "no request may reach Hugging Face")
+		assert.Empty(t, f.toolCalls(t), "the hf tool must not run")
+	})
+	t.Run("implicit token disabled in the engine settings", func(t *testing.T) {
+		f := newHFFetch(t, http.StatusOK, qwen35Siblings)
+		home := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(home, "token"), []byte("stored-token\n"), 0o600))
+		f.setLaunchEnv("HF_HUB_DISABLE_IMPLICIT_TOKEN=1", "HF_TOKEN=engine-token", "HF_HOME="+home)
+
+		_, ok := f.fetch(t, "Qwen/Qwen3.5-4B", "main")
+
+		require.True(t, ok)
+		require.Len(t, f.requests, 1)
+		assert.Empty(t, f.requests[0].Header.Get("Authorization"), "neither HF_TOKEN nor a stored token is sent")
 	})
 	t.Run("a token in the engine settings", func(t *testing.T) {
 		f := newHFFetch(t, http.StatusOK, qwen35Siblings)
