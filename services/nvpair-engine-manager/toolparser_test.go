@@ -62,6 +62,29 @@ func TestDetectToolParser_ProbesEachModelOnce(t *testing.T) {
 	assert.Equal(t, 2, probes, "another model must be probed on its own")
 }
 
+// Editing a --chat-template file and restarting must probe the new template,
+// not reuse what the old one matched.
+func TestDetectToolParser_ProbesAgainWhenTheTemplateFileChanges(t *testing.T) {
+	probes := 0
+	withToolParserProbe(t, func(bin, snapshot string) (toolParserProbe, error) {
+		probes++
+		return toolParserProbe{Matches: []string{"hermes"}}, nil
+	})
+	template := filepath.Join(t.TempDir(), "chat.jinja")
+	require.NoError(t, os.WriteFile(template, []byte("{{ messages }}"), 0o644))
+
+	for range 2 {
+		_, _, err := detectToolParser(t.Context(), "vllm", "/hub/a", template)
+		require.NoError(t, err)
+	}
+	require.Equal(t, 1, probes, "an unchanged template is probed once")
+
+	require.NoError(t, os.WriteFile(template, []byte("{{ messages }}{{ tools }}"), 0o644))
+	_, _, err := detectToolParser(t.Context(), "vllm", "/hub/a", template)
+	require.NoError(t, err)
+	assert.Equal(t, 2, probes, "the edited template is probed again")
+}
+
 func TestDetectToolParser_RetriesAFailedProbe(t *testing.T) {
 	probes := 0
 	withToolParserProbe(t, func(bin, snapshot string) (toolParserProbe, error) {

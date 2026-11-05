@@ -6,7 +6,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,9 +45,9 @@ type toolParserProbe struct {
 var probeToolParsers = runToolParserProbe
 
 // toolParserCache keeps each probe's result for the life of the service, keyed
-// by vLLM binary and snapshot directory, so a model is probed once rather than
-// on every start, wake and switch. A different vLLM or model revision is a
-// different key.
+// by vLLM binary, snapshot directory and chat template (with a template file's
+// contents), so a model is probed once rather than on every start, wake and
+// switch. A different vLLM, model revision or template is a different key.
 var toolParserCache sync.Map
 
 // preferredToolParsers breaks ties when several parsers read a format equally
@@ -122,6 +124,12 @@ func runToolParserProbe(ctx context.Context, bin, tokenizer, template string) (t
 // the first time. A failed probe is not cached, so the next start tries again.
 func detectToolParser(ctx context.Context, bin, tokenizer, template string) (string, []string, error) {
 	key := bin + "\x00" + tokenizer + "\x00" + template
+	// A --chat-template file can be edited between starts under the same path,
+	// so its contents are part of the key. vLLM reads the file on every start.
+	if raw, err := os.ReadFile(template); template != "" && err == nil {
+		sum := sha256.Sum256(raw)
+		key += "\x00" + hex.EncodeToString(sum[:])
+	}
 	if cached, ok := toolParserCache.Load(key); ok {
 		probe := cached.(toolParserProbe)
 		return chooseToolParser(probe), probe.Matches, nil

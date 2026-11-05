@@ -63,6 +63,20 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
 }
 
+// The readiness allowance counts from when the start began, so time spent
+// before the engine launched is not granted a second time.
+func TestWaitReady_CountsTheAllowanceFromWhenTheStartBegan(t *testing.T) {
+	e := newTestExecutor(t, &Manifest{Engine: "test"})
+	probe := &Probe{TCP: "127.0.0.1:{port}", TimeoutS: 60}
+	began := time.Now().Add(-61 * time.Second)
+
+	finished := time.Now()
+	err := e.waitReady(t.Context(), probe, 1, began)
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(finished), 10*time.Second, "the allowance had already run out")
+}
+
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 	t.Helper()
 	transport, ok := client.Transport.(*http.Transport)

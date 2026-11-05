@@ -320,6 +320,34 @@ func TestSweepModels_EmitsWhenAModelIsPulledOrDeleted(t *testing.T) {
 		func(r ModelsResult) []string { return r.ByEngine["fake"] })
 }
 
+// While vLLM's cache cannot be read, a push caused by another engine carries no
+// vLLM list, and a consumer drops those rows. When the cache reads again the
+// list matches the last-good one, but it still has to be pushed once.
+func TestSweepModels_PushesADownloadedListThatReadsAgainUnchanged(t *testing.T) {
+	m := loadedOnlyManifest(t, fakeEngineBin)
+	cache := m.Actions["list_models"].HFCache.Dir
+	ex := newTestExecutor(t, m)
+	ctx := t.Context()
+	_, prev, _ := ex.sweepModels(ctx, modelLists{})
+	require.Equal(t, []string{"other/cached-model"}, prev.downloaded["fake"], "seed baseline")
+
+	require.NoError(t, os.Chmod(cache, 0))
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o755) })
+	changed, prev, res := ex.sweepModels(ctx, prev)
+	if _, read := res.DownloadedByEngine["fake"]; read {
+		t.Skip("this system can still read a directory with no permissions")
+	}
+	assert.Empty(t, changed, "a cache that cannot be read is not a change")
+
+	require.NoError(t, os.Chmod(cache, 0o755))
+	changed, prev, res = ex.sweepModels(ctx, prev)
+	assert.Equal(t, []string{"fake"}, changed, "the list read again")
+	assert.Equal(t, []string{"other/cached-model"}, res.DownloadedByEngine["fake"], "the pushed list")
+
+	changed, _, _ = ex.sweepModels(ctx, prev)
+	assert.Empty(t, changed, "pushed once, not on every sweep after")
+}
+
 // TestSweepModels_RetainsLastGoodOnTransientMiss covers the anti-churn guard: an
 // engine that drops out of a sweep (a transient loaded_models miss, indistinct
 // from a stop) is NOT reported as changed and keeps its last-good baseline, so a

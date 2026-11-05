@@ -77,9 +77,11 @@ func (e *Executor) watchLoaded(ctx context.Context) {
 }
 
 // modelLists is the watcher's baseline: the last-good value of each per-engine
-// list in a ModelsResult.
+// list in a ModelsResult, and the engines whose downloaded list the last sweep
+// could not read.
 type modelLists struct {
 	advertised, loaded, downloaded map[string][]string
+	downloadedMissed               map[string]bool
 }
 
 // sweepModels performs one poll: it fetches the current model result and
@@ -116,6 +118,24 @@ func (e *Executor) sweepModels(ctx context.Context, prev modelLists) (changed []
 		advertised: sweep(prev.advertised, res.ByEngine),
 		loaded:     sweep(prev.loaded, res.LoadedByEngine),
 		downloaded: sweep(prev.downloaded, res.DownloadedByEngine),
+	}
+	// A push made while an engine's downloaded list could not be read carries
+	// no list for it, so a consumer drops its rows. When the list reads again,
+	// push once even if it matches the last-good one, or those rows stay
+	// missing until something else changes.
+	for name := range prev.downloaded {
+		if _, ok := res.DownloadedByEngine[name]; !ok {
+			if next.downloadedMissed == nil {
+				next.downloadedMissed = map[string]bool{}
+			}
+			next.downloadedMissed[name] = true
+		}
+	}
+	for name := range prev.downloadedMissed {
+		if _, ok := res.DownloadedByEngine[name]; ok && !seen[name] {
+			seen[name] = true
+			changed = append(changed, name)
+		}
 	}
 	sort.Strings(changed)
 	return changed, next, res

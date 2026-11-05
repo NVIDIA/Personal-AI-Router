@@ -260,6 +260,10 @@ func (e *Executor) bringUp(ctx context.Context, st *engineState, engine string, 
 // bringUpProcess spawns the engine as a foreground process this service
 // owns, then waits for readiness.
 func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+	// The readiness allowance counts from here, so the work before launch
+	// (vLLM's metadata fetch and tool-parser probe) is inside it, and a start
+	// stays within what a remote peer waits for.
+	began := time.Now()
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()
@@ -311,7 +315,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		case <-readyCtx.Done():
 		}
 	}()
-	readyErr := e.waitReady(readyCtx, rt.Ready, port)
+	readyErr := e.waitReady(readyCtx, rt.Ready, port, began)
 	select {
 	case <-proc.done:
 		readyErr = fmt.Errorf("process exited before readiness; check the launch options")
@@ -391,7 +395,7 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		// official stop command before Start releases the lifecycle lock.
 		started = true
 	}
-	if err := e.waitReady(ctx, rt.Ready, port); err != nil {
+	if err := e.waitReady(ctx, rt.Ready, port, time.Now()); err != nil {
 		werr := fmt.Errorf("engine %q did not become ready: %w", engine, err)
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
@@ -955,7 +959,9 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 	}
 }
 
-func (e *Executor) waitReady(ctx context.Context, p *Probe, port int) error {
+// waitReady polls the readiness probe until it passes or the manifest's
+// allowance, counted from began, runs out.
+func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time.Time) error {
 	if p == nil {
 		return nil
 	}
@@ -963,7 +969,7 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int) error {
 	if p.TimeoutS > 0 {
 		timeout = time.Duration(p.TimeoutS) * time.Second
 	}
-	deadline := time.Now().Add(timeout)
+	deadline := began.Add(timeout)
 	for {
 		if e.probe(ctx, p, port) {
 			return nil

@@ -404,7 +404,8 @@ the way `huggingface_hub` reads it: `HF_HUB_OFFLINE` (else
 `TRANSFORMERS_OFFLINE`), the token (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or
 the stored login under `HF_TOKEN_PATH` or `HF_HOME`, none of them sent when
 `HF_HUB_DISABLE_IMPLICIT_TOKEN` is set), and a mirror in `HF_ENDPOINT` all
-apply.
+apply. The readiness `timeout_s` counts from when the start begins, so this
+work before launch is inside it.
 The optional `max_num_seqs` adds `--max-num-seqs`, the most requests the engine
 runs at once (0 or absent leaves the engine's default).
 Arguments the user saved always win and nothing added is written back to saved
