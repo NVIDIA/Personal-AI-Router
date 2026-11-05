@@ -48,6 +48,11 @@ export interface IEngineApi {
 
     /** Start or stop an engine process on a node. */
     toggle(engineType: EngineType, nodeId: string): void
+    /**
+     * Stop an engine, including one that is still starting (a slow start, or a
+     * vLLM Load restarting it), which cancels the start.
+     */
+    stop(engineType: EngineType, nodeId: string): void
     /** Install an engine on a node. */
     install(engineType: EngineType, nodeId: string): void
     /** Uninstall an engine from a node without removing downloaded models. */
@@ -94,6 +99,8 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
 
         toggle: (engineType, nodeId) =>
             fireCommand(transport, { command: 'toggle', engineType, nodeId }),
+        stop: (engineType, nodeId) =>
+            fireCommand(transport, { command: 'stop', engineType, nodeId }),
         install: (engineType, nodeId) =>
             fireCommand(transport, { command: 'install', engineType, nodeId }),
         uninstall: (engineType, nodeId) =>

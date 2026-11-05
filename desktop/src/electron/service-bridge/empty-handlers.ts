@@ -156,6 +156,31 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
 }
 
 /**
+ * Stop a local engine, whatever it reports. A toggle reads the engine's status
+ * to decide, and an engine that is still starting reports not running, so the
+ * toggle would send another start; Stop is sent when the UI shows it starting.
+ * The engine-manager cancels the start in flight.
+ */
+function stopLocalEngine(engine: string, engineType: EngineType): void {
+    const supervisor = getModularSupervisor()
+    getModularBridgeState().beginLocalEngineOp(engineType, 'stopping')
+    supervisor.sendProcess(
+        'broker',
+        'engine:stop',
+        { engine },
+        error => {
+            getModularBridgeState().clearPendingEngineOp(engineType)
+            supervisor.reportError(
+                `Failed to stop ${engine}: ${error}`,
+                'error',
+                `engine-cmd:stop:${engine}`
+            )
+        },
+        true
+    )
+}
+
+/**
  * Dispatch a UI engine command to the local `nvpair-engine-manager`. Lifecycle and
  * model operations are **fire-and-forget**: the engine-manager runs each in its
  * own goroutine and reports progress (`engine:install-progress`), completion
@@ -241,6 +266,9 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             break
         case 'toggle':
             void toggleLocalEngine(engine, payload.engineType)
+            break
+        case 'stop':
+            stopLocalEngine(engine, payload.engineType)
             break
         case 'pullModel':
             // Pulls need UI feedback the backend doesn't emit (progress + failure),
@@ -383,6 +411,9 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
             break
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
+            break
+        case 'stop':
+            void supervisor.toggleEngineRemote(nodeId, engine, payload.engineType, true)
             break
         case 'pullModel':
             if (payload.model) {

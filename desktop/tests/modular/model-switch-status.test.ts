@@ -148,6 +148,15 @@ describe('a vLLM Load is one pending action for the row and the engine', () => {
         expect(lifecyclePending('local-node', 'ollama')).toBeUndefined()
     })
 
+    it('shows a Stop sent during the Load as the lifecycle action', () => {
+        load('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        usePendingActionsStore
+            .getState()
+            .begin({ command: 'stop', engineType: 'vllm', nodeId: 'local-node' })
+
+        expect(lifecyclePending('local-node', 'vllm')).toBe('stop')
+    })
+
     it('lets a lifecycle command already in flight win', () => {
         usePendingActionsStore
             .getState()

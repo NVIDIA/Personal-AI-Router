@@ -120,7 +120,9 @@ When you install an engine, consider the following:
   or ejected vLLM is set to serve leaves it with no model selected, and
   **Start** refuses with an error until you **Load** another model. **Eject**
   stops vLLM, which frees all of its GPU memory (vLLM cannot drop its model and
-  keep running); the model list stays visible and **Load** starts it again on
+  keep running). Eject, or turning the engine's switch off, also works while
+  vLLM is still loading a model: it stops at once, and a Load cut short keeps
+  the model that was selected before; the model list stays visible and **Load** starts it again on
   the model you pick. vLLM does not unload a model on its own when it sits idle,
   so eject it when you want the GPU back. Other nodes and the proxy see only the
   model vLLM is serving, so a request for a different cached model is refused

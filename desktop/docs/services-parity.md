@@ -211,7 +211,11 @@ disk while stopped, so it is kept throughout. Local and remote Loads are covered
 the same way.
 
 A local Start, of any engine, shows starting until the engine-manager reports
-the outcome. Its safety net is the awaited lifecycle envelope
+the outcome. While it shows starting (a Start, or a vLLM Load restarting the
+engine), its switch stays on and usable: turning it off sends an explicit
+`stop` command (`engine:stop`, or `engine:remote-stop` for a peer), because a
+toggle reads the engine's status and an engine that is still starting reports
+not running. The engine-manager cancels the start in flight. Its safety net is the awaited lifecycle envelope
 (`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 14 minutes), which outlasts every
 engine's readiness window (vLLM 8 minutes, Ollama 10), so a slow start is never
 shown as stopped while it is still loading. Weights live in the shared
