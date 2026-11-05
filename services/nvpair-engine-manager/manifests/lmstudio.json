@@ -27,7 +27,7 @@
     "port": 1235,
     "bind": "127.0.0.1",
     "start": [["{cli}", "server", "start", "--port", "{port}", "--bind", "{host}"]],
-    "stop": { "cmd": ["{cli}", "daemon", "down"] },
+    "stop": { "cmd": ["{cli}", "daemon", "down"], "grace_s": 10 },
     "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 60 },
     "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
   },
