@@ -58,6 +58,8 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	require.True(t, ok, "lmstudio profile missing")
 	llamacpp, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")
+	vllm, ok := profileFor("vllm")
+	require.True(t, ok, "vllm profile missing")
 
 	accept := func(name string, profile engineProfile, method, path string, wantRole routeRole) {
 		t.Run(name, func(t *testing.T) {
@@ -105,10 +107,6 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 
 	reject("llamacpp models post passthrough", llamacpp, http.MethodPost, "/models")
 
-	vllm, ok := profileFor("vllm")
-	if !ok {
-		t.Fatal("vllm profile missing")
-	}
 	accept("vllm chat", vllm, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
 	accept("vllm completions", vllm, http.MethodPost, "/v1/completions", roleInferencePOST)
 	accept("vllm embeddings", vllm, http.MethodPost, "/v1/embeddings", roleInferencePOST)

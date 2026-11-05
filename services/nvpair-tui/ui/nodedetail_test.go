@@ -168,29 +168,19 @@ func TestModelRows_ListAServedModelThatIsNotInTheDownloadedList(t *testing.T) {
 // "Nothing downloaded" is said only when an engine read its inventory and found
 // it empty. A peer whose inventory could not be read is not described that way.
 func TestEmptyModelsHint_SaysNothingIsDownloadedOnlyWhenTheInventoryWasRead(t *testing.T) {
-	tests := []struct {
-		name       string
-		downloaded map[string][]string
-		wantEmpty  bool
-	}{
-		{name: "inventory read and empty", downloaded: map[string][]string{"vllm": {}}, wantEmpty: true},
-		{name: "inventory not read", downloaded: nil, wantEmpty: false},
+	hintFor := func(downloaded map[string][]string) string {
+		d := remoteDetail()
+		d.node.membership = membershipMember
+		d.models = modelsResult{DownloadedByEngine: downloaded}
+		d.refreshModels()
+		return d.emptyModelsHint()
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			d := remoteDetail()
-			d.node.membership = membershipMember
-			d.models = modelsResult{DownloadedByEngine: tt.downloaded}
-			d.refreshModels()
-
-			hint := d.emptyModelsHint()
-			if tt.wantEmpty {
-				assert.Contains(t, hint, "No models downloaded")
-			} else {
-				assert.NotContains(t, hint, "downloaded")
-			}
-		})
-	}
+	t.Run("inventory read and empty", func(t *testing.T) {
+		assert.Contains(t, hintFor(map[string][]string{"vllm": {}}), "No models downloaded")
+	})
+	t.Run("inventory not read", func(t *testing.T) {
+		assert.NotContains(t, hintFor(nil), "downloaded")
+	})
 }
 
 // TestLocalDetailIgnoresDiscoveryModels checks this machine keeps using the
