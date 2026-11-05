@@ -23,11 +23,14 @@ export const EnabledEngineTypes: EngineType[] = [
 
 /**
  * The manifest-backed engines `nvpair-engine-manager` can report install/run
- * state for. The compact engine surfaces (tray `Engines (n/m)` count, node-card
- * toggle row, per-node engine list) enumerate THIS set, not
- * `EnabledEngineTypes`: Custom is a configured facade with no install state,
- * no model pull, and no on/off switch, so it has nothing to count or toggle
- * there. Its own state lives in the per-node Custom endpoints section.
+ * state for. The toggle surfaces (node-card toggle row, per-node engine list)
+ * enumerate THIS set, not `EnabledEngineTypes`: Custom is a configured facade
+ * with no install state, no model pull, and no on/off switch, so it has
+ * nothing to toggle there. Its own state lives in the per-node Custom
+ * endpoints section. The tray `Engines (n/m)` count is the exception: it
+ * counts engines a node can actually route to, so it adds this set's
+ * installed entries to the node's per-endpoint Custom snapshot — see
+ * `countNodeEngineServices`.
  */
 export const MANIFEST_ENGINE_TYPES: EngineType[] = ['ollama', 'lm-studio', 'llama-cpp', 'vllm']
 
