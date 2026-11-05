@@ -10,8 +10,8 @@ import { LocalBadge } from '@/ui/components/LocalBadge'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
-import { engineStatusesToListRows, getEnginesForNode } from '@/ui/utils/get-engines-for-node'
-import { EnabledEngineTypes, MANIFEST_ENGINE_TYPES } from '@/shared/constants/engines'
+import { countNodeEngineServices } from '@/ui/utils/get-engines-for-node'
+import type { CustomEndpointInfo } from '@/shared/types/custom-endpoints'
 import { getGpuColor } from '@/ui/utils/colors'
 import { CHART_COLORS } from '@/ui/constants/colors'
 import GpuRadialChartSvg from '@/ui/components/GpuRadialChartSvg'
@@ -27,16 +27,26 @@ const gridStyle = {
     borderBottom: '1px solid var(--color-translucent-white-100)'
 }
 
-function TrayNodeRow({ node, activeWorkloads }: { node: NodeItem; activeWorkloads: Workload[] }) {
+function TrayNodeRow({
+    node,
+    activeWorkloads,
+    customEntries
+}: {
+    node: NodeItem
+    activeWorkloads: Workload[]
+    /**
+     * This node's Custom engine endpoints from the tray's own `custom:list`
+     * pull (undefined until the first snapshot). The Engines count combines
+     * them with the reported engine statuses; see countNodeEngineServices.
+     */
+    customEntries: readonly CustomEndpointInfo[] | undefined
+}) {
     const nodeMetrics = useMetricsStore(state => state.nodeMetrics.get(node.id))
     const isLocal = useConnectionStore(state => state.selfId === node.id)
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
-    const engineRows = useMemo(
-        () =>
-            engineStatusesToListRows(
-                getEnginesForNode(node.id, statusByNode, MANIFEST_ENGINE_TYPES)
-            ),
-        [node.id, statusByNode]
+    const engineCounts = useMemo(
+        () => countNodeEngineServices(statusByNode.get(node.id), customEntries),
+        [customEntries, node.id, statusByNode]
     )
     // Treat only inference-ready GPUs as "has GPU" per the backend readiness
     // list (or any GPU when the backend sends no list); see gpu-inference.ts.
@@ -48,17 +58,6 @@ function TrayNodeRow({ node, activeWorkloads }: { node: NodeItem; activeWorkload
         () => buildRadialChartMetrics(node.topology, nodeMetrics, hasGpu),
         [hasGpu, node.topology, nodeMetrics]
     )
-
-    const isSingleEngine = EnabledEngineTypes.length === 1
-    const singleEngineRunning = useMemo(() => {
-        if (!isSingleEngine) return false
-        return engineRows[0]?.processStatus === 'running'
-    }, [isSingleEngine, engineRows])
-    const servicesLabel = useMemo(() => {
-        if (isSingleEngine) return engineRows[0]?.displayName ?? ''
-        const running = engineRows.filter(b => b.processStatus === 'running').length
-        return `Engines (${running}/${engineRows.length})`
-    }, [engineRows, isSingleEngine])
 
     const jobCount = useMemo(
         () => activeWorkloads.filter(w => workloadExecutionNodeId(w) === node.id).length,
@@ -108,16 +107,8 @@ function TrayNodeRow({ node, activeWorkloads }: { node: NodeItem; activeWorkload
                         {isLocal && <LocalBadge />}
                     </Flex>
                     <Flex align="center" gap="1">
-                        {isSingleEngine && (
-                            <span
-                                className="inline-block w-1.5 h-1.5 rounded-full"
-                                style={{
-                                    backgroundColor: singleEngineRunning ? '#76b900' : '#666'
-                                }}
-                            />
-                        )}
                         <Text kind="body/regular/xs" className="text-subtle-color">
-                            {servicesLabel}
+                            {`Engines (${engineCounts.online}/${engineCounts.total})`}
                         </Text>
                     </Flex>
                     <Text kind="body/regular/xs" className="text-subtle-color">
