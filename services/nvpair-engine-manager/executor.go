@@ -71,8 +71,13 @@ type engineState struct {
 	binPath    string
 	proc       *managedProc
 	healthStop context.CancelFunc
-	// startCancel lets StopAll unblock doStart before waiting on opMu.
+	// startCancel lets StopAll, Stop and Eject unblock doStart before waiting
+	// on opMu.
 	startCancel context.CancelFunc
+	// stopsWaiting counts Stop and Eject calls waiting for opMu. While it is
+	// above zero no start begins, and a model switch that a stop cancelled
+	// puts its previous launch back without starting it.
+	stopsWaiting int
 }
 
 // Executor owns engine lifecycle for every engine known on this host.

@@ -116,7 +116,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		st.startCancel = nil
 		st.mu.Unlock()
 	}()
-	if e.shuttingDown.Load() {
+	if e.shuttingDown.Load() || e.stopWaiting(st) {
 		return context.Canceled
 	}
 
@@ -433,6 +433,8 @@ func (e *Executor) Stop(engine string) error {
 	if err != nil {
 		return err
 	}
+	done, _ := e.requestStop(st)
+	defer done()
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	stopErr := e.doStop(st, engine)
@@ -1030,10 +1032,43 @@ func (e *Executor) reportStartFailedUnlessShuttingDown(ctx context.Context, engi
 	}
 	// CommandContext can surface an exit status instead of context.Canceled on
 	// Windows, so the canceled operation context is the authoritative signal.
-	if e.shuttingDown.Load() && ctx.Err() != nil {
+	// A start the user stopped did not fail either.
+	if ctx.Err() != nil && (e.shuttingDown.Load() || e.stopWaitingFor(engine)) {
 		return
 	}
 	e.reportStartFailed(engine, err)
+}
+
+// requestStop cancels a start in flight, as StopAll does, so a Stop or Eject
+// does not wait out a readiness window of minutes for an engine it is about to
+// stop, and keeps any other start from beginning until the caller is done. The
+// returned function ends the request; call it after the stop, once opMu is
+// released or about to be. cancelled reports whether a start was in flight.
+func (e *Executor) requestStop(st *engineState) (done func(), cancelled bool) {
+	st.mu.Lock()
+	st.stopsWaiting++
+	cancel := st.startCancel
+	st.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return func() {
+		st.mu.Lock()
+		st.stopsWaiting--
+		st.mu.Unlock()
+	}, cancel != nil
+}
+
+// stopWaiting reports whether a Stop or Eject is waiting for the engine.
+func (e *Executor) stopWaiting(st *engineState) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.stopsWaiting > 0
+}
+
+func (e *Executor) stopWaitingFor(engine string) bool {
+	st, err := e.state(engine)
+	return err == nil && e.stopWaiting(st)
 }
 
 func freePort() (int, error) {

@@ -57,11 +57,12 @@ func (l *launchEdit) save(ctx context.Context, launchText string, resume bool) e
 }
 
 // restore puts back the launch text this change started from, and starts the
-// engine again if it was running then. It does not depend on the caller still
+// engine again if it was running then, unless a Stop or Eject is waiting: the
+// user asked for the engine to be off, so it is left stopped. It does not depend on the caller still
 // waiting: a remote caller that gives up cancels ctx mid-start, and a restore
 // under that ctx would fail at once and leave the engine down.
 func (l *launchEdit) restore(ctx context.Context) error {
-	return l.save(context.WithoutCancel(ctx), l.before.LaunchText, l.before.Running)
+	return l.save(context.WithoutCancel(ctx), l.before.LaunchText, l.before.Running && !l.e.stopWaiting(l.st))
 }
 
 // start starts the stopped engine on its saved launch and records that the
@@ -124,8 +125,18 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		if err == nil {
 			return nil
 		}
+		stopped := e.stopWaiting(edit.st)
 		if !changed {
+			if stopped {
+				return fmt.Errorf("loading %s was stopped before it finished", model)
+			}
 			return fmt.Errorf("starting %s failed: %w", model, err)
+		}
+		if stopped {
+			if restoreErr := edit.restore(ctx); restoreErr != nil {
+				return fmt.Errorf("loading %s was stopped, and restoring the previous model also failed: %v", model, restoreErr)
+			}
+			return fmt.Errorf("loading %s was stopped before it finished; the previous model is selected again", model)
 		}
 		// The engine's own error carries a long log tail, so say what happened first.
 		if restoreErr := edit.restore(ctx); restoreErr != nil {
@@ -234,8 +245,21 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 	}
 	model := strings.TrimSpace(request.Model)
 	stopped := false
-	err := e.editLaunch(engine, func(edit *launchEdit) error {
+	st, err := e.state(engine)
+	if err != nil {
+		return nil, err
+	}
+	// Eject is a stop: a start in flight, such as a Load restarting the engine,
+	// is cancelled rather than waited out.
+	done, cancelledStart := e.requestStop(st)
+	defer done()
+	err = e.editLaunch(engine, func(edit *launchEdit) error {
 		if !edit.before.Running {
+			// A start this Eject cancelled leaves the engine stopped; record that
+			// the user wants it off, as a Stop would, so it is not restarted.
+			if cancelledStart {
+				return e.setDesiredEnabled(engine, false)
+			}
 			return nil
 		}
 		// When the engine cannot say what it serves, it is stopped anyway: Eject

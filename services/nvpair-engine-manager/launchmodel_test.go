@@ -354,3 +354,101 @@ func TestLaunchModelAction_RequiresEditableLaunch(t *testing.T) {
 
 	assert.ErrorContains(t, m.Validate(), "editable_launch")
 }
+
+// slowStarts stops the engine and makes every later launch take 8 seconds to
+// become ready (under the fake manifest's 10-second readiness limit), so a
+// start is still in flight when the test acts on it.
+func slowStarts(t *testing.T, e *Executor) {
+	t.Helper()
+	require.NoError(t, e.Stop("fake"))
+	_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: settings.Config{
+		ServerPort: mustStatus(t, e).Port, LaunchText: "FAKE_START_DELAY=8s " + launchTextOf(t, e),
+	}}, func() error { return nil })
+	require.NoError(t, err)
+}
+
+// waitForStartInFlight returns once the engine's start has begun.
+func waitForStartInFlight(t *testing.T, e *Executor) {
+	t.Helper()
+	st, err := e.state("fake")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.startCancel != nil
+	}, 10*time.Second, 10*time.Millisecond, "the start never began")
+}
+
+// Stopping an engine that is still loading cancels the start instead of
+// waiting out its readiness window, and the user's stop is not reported as a
+// failed start.
+func TestStop_CancelsAStartThatIsStillLoading(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	slowStarts(t, e)
+	started := make(chan error, 1)
+	go func() { started <- e.Start(context.Background(), "fake") }()
+	waitForStartInFlight(t, e)
+
+	began := time.Now()
+	require.NoError(t, e.Stop("fake"))
+
+	assert.Less(t, time.Since(began), 4*time.Second, "Stop waited out the start")
+	require.Error(t, <-started)
+	assert.False(t, mustStatus(t, e).Running)
+	for _, reported := range e.reporter.snapshot() {
+		assert.NotEqual(t, startFailedID("fake"), reported.ID, "a start the user stopped was reported as failed")
+	}
+}
+
+// Eject during a Load that is starting the engine stops it at once, puts the
+// previous model back without starting it, and leaves the engine off.
+func TestEject_DuringALoadStopsTheEngineAndKeepsThePreviousModel(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	slowStarts(t, e)
+	before := launchTextOf(t, e)
+	loaded := make(chan error, 1)
+	go func() {
+		_, err := loadModel(t, e, "org/slow")
+		loaded <- err
+	}()
+	waitForStartInFlight(t, e)
+
+	began := time.Now()
+	_, err := ejectEngine(t, e, "")
+	require.NoError(t, err)
+
+	assert.Less(t, time.Since(began), 4*time.Second, "Eject waited out the Load")
+	assert.ErrorContains(t, <-loaded, "loading org/slow was stopped before it finished; the previous model is selected again")
+	assert.Equal(t, before, launchTextOf(t, e))
+	assert.False(t, mustStatus(t, e).Running, "a stopped Load must not start the previous model again")
+	enabled, known, err := e.desired.get("fake")
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, enabled, "the user turned the engine off")
+}
+
+// The same while a Load is restarting a running engine: the restore that would
+// normally bring the previous model back up must leave the engine stopped.
+func TestEject_DuringALoadOfARunningEngineLeavesItStopped(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	slowStarts(t, e)
+	require.NoError(t, e.Start(context.Background(), "fake"))
+	before := launchTextOf(t, e)
+	loaded := make(chan error, 1)
+	go func() {
+		_, err := loadModel(t, e, "org/slow")
+		loaded <- err
+	}()
+	waitForStartInFlight(t, e)
+
+	began := time.Now()
+	_, err := ejectEngine(t, e, "")
+	require.NoError(t, err)
+
+	// Restarting the previous model first, only to stop it again, would hold
+	// the Eject for another 8-second start.
+	assert.Less(t, time.Since(began), 4*time.Second, "Eject waited for the previous model to start again")
+	assert.ErrorContains(t, <-loaded, "loading org/slow was stopped before it finished")
+	assert.Equal(t, before, launchTextOf(t, e))
+	assert.False(t, mustStatus(t, e).Running, "a stopped Load must not start the previous model again")
+}
