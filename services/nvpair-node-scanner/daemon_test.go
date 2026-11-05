@@ -249,6 +249,56 @@ func TestLocalNodeInfo_UsesMeasurementsFromLocalWorker(t *testing.T) {
 	test("after leaving", true)
 }
 
+func TestLocalNodeInfo_UsageChangesEmitMeasurementsWithoutDirectoryUpdates(t *testing.T) {
+	d := newSelfTestDaemon("self-uuid", "192.0.2.17")
+	info := noderec.NodeInfo{
+		HostUUID: "self-uuid", TelemetryValid: true,
+		GPUs:   []GPUInfo{{Name: "GPU", VramBytes: 8192, VramUsedBytes: 1024, UtilizationPercent: 10}},
+		CPU:    &CPUInfo{Name: "CPU", Cores: 8, UtilizationPercent: 10},
+		Memory: &MemoryInfo{TotalBytes: 16384, UsedBytes: 2048},
+	}
+	d.acceptLocalNodeInfo(info)
+	node, present := d.dir.get("self-uuid")
+	require.True(t, present)
+	node.LastSeen = 1
+	d.dir.upsert(node)
+
+	info.GPUs = []GPUInfo{{Name: "GPU", VramBytes: 8192, VramUsedBytes: 4096, UtilizationPercent: 73}}
+	info.CPU = &CPUInfo{Name: "CPU", Cores: 8, UtilizationPercent: 25}
+	info.Memory = &MemoryInfo{TotalBytes: 16384, UsedBytes: 8192}
+	var output bytes.Buffer
+	d.codec = NewCodec(&output)
+	d.acceptLocalNodeInfo(info)
+
+	current, present := d.dir.get("self-uuid")
+	require.True(t, present)
+	assert.Equal(t, int64(1), current.LastSeen)
+	assert.Equal(t, info.GPUs, current.GPUs)
+	assert.Equal(t, info.CPU, current.CPU)
+	assert.Equal(t, info.Memory, current.Memory)
+
+	var methods []string
+	var snapshot noderec.NodeInfoEvent
+	var telemetry noderec.NodeTelemetry
+	decoder := json.NewDecoder(&output)
+	for decoder.More() {
+		var message Message
+		require.NoError(t, decoder.Decode(&message))
+		methods = append(methods, message.Method)
+		switch message.Method {
+		case noderec.NotifyNodeInfo:
+			require.NoError(t, json.Unmarshal(message.Params, &snapshot))
+		case noderec.NotifyNodeTelemetry:
+			require.NoError(t, json.Unmarshal(message.Params, &telemetry))
+		}
+	}
+	assert.ElementsMatch(t, []string{noderec.NotifyNodeInfo, noderec.NotifyNodeTelemetry}, methods)
+	assert.Equal(t, info.GPUs, snapshot.Info.GPUs)
+	assert.Equal(t, info.CPU, snapshot.Info.CPU)
+	assert.Equal(t, info.Memory, snapshot.Info.Memory)
+	assert.Equal(t, uint32(73), telemetry.GPUUtilizationPct)
+}
+
 // Local scheduling must reflect the busiest GPU, regardless of its list position.
 func TestLocalNodeInfo_ReportsHighestGPUUtilization(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.0.2.17")

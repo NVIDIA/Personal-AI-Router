@@ -84,6 +84,54 @@ func TestTelemetryDispatch_UpdatesInventoryAndSchedulingTogether(t *testing.T) {
 	assert.Equal(t, f.info.GPUs, snapshot.Info.GPUs)
 }
 
+func TestTelemetryDispatch_UsageChangesEmitMeasurementsWithoutDirectoryUpdates(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.info.GPUs[0].VramBytes = 8192
+	f.info.GPUs[0].VramUsedBytes = 1024
+	f.info.CPU = &CPUInfo{Name: "CPU", Cores: 8, UtilizationPercent: 10}
+	f.info.Memory = &MemoryInfo{TotalBytes: 16384, UsedBytes: 2048}
+	f.discover(t)
+	node, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+	node.LastSeen = 1
+	f.daemon.dir.upsert(node)
+
+	f.info.GPUs = []GPUInfo{{Name: "verified GPU", VramBytes: 8192, VramUsedBytes: 4096, UtilizationPercent: 73}}
+	f.info.CPU = &CPUInfo{Name: "CPU", Cores: 8, UtilizationPercent: 25}
+	f.info.Memory = &MemoryInfo{TotalBytes: 16384, UsedBytes: 8192}
+	var output bytes.Buffer
+	f.daemon.codec = NewCodec(&output)
+	f.daemon.refreshTelemetryOnce(context.Background())
+
+	current, present := f.daemon.dir.get("peer-uuid")
+	require.True(t, present)
+	assert.Equal(t, int64(1), current.LastSeen)
+	assert.Equal(t, f.info.GPUs, current.GPUs)
+	assert.Equal(t, f.info.CPU, current.CPU)
+	assert.Equal(t, f.info.Memory, current.Memory)
+
+	var methods []string
+	var snapshot noderec.NodeInfoEvent
+	var telemetry noderec.NodeTelemetry
+	decoder := json.NewDecoder(&output)
+	for decoder.More() {
+		var message Message
+		require.NoError(t, decoder.Decode(&message))
+		methods = append(methods, message.Method)
+		switch message.Method {
+		case noderec.NotifyNodeInfo:
+			require.NoError(t, json.Unmarshal(message.Params, &snapshot))
+		case noderec.NotifyNodeTelemetry:
+			require.NoError(t, json.Unmarshal(message.Params, &telemetry))
+		}
+	}
+	assert.ElementsMatch(t, []string{noderec.NotifyNodeInfo, noderec.NotifyNodeTelemetry}, methods)
+	assert.Equal(t, f.info.GPUs, snapshot.Info.GPUs)
+	assert.Equal(t, f.info.CPU, snapshot.Info.CPU)
+	assert.Equal(t, f.info.Memory, snapshot.Info.Memory)
+	assert.Equal(t, uint32(73), telemetry.GPUUtilizationPct)
+}
+
 func TestTelemetryDispatch_BackoffDoesNotInterruptHealthyPeer(t *testing.T) {
 	failing := newDiscoveryPeerFixture(t, "failing-peer")
 	failing.discover(t)

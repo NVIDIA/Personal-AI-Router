@@ -639,8 +639,9 @@ type DirectoryNode struct {
 	LastSeen       int64               `json:"lastSeen"` // Unix seconds
 }
 
-// Equals compares all fields by value. Slice order matters, and nil collections
-// differ from empty collections.
+// Equals compares directory state, including hardware identity and capacity,
+// but ignores utilization and used-memory measurements. Slice order matters,
+// and nil collections differ from empty collections.
 func (n DirectoryNode) Equals(other DirectoryNode) bool {
 	return n.DiscoveryRecordID == other.DiscoveryRecordID &&
 		n.IdentityVerification == other.IdentityVerification &&
@@ -651,9 +652,14 @@ func (n DirectoryNode) Equals(other DirectoryNode) bool {
 		n.ClusterUUID == other.ClusterUUID &&
 		n.Trusted == other.Trusted &&
 		(n.Services == nil) == (other.Services == nil) && maps.Equal(n.Services, other.Services) &&
-		equalSlice(n.GPUs, other.GPUs) &&
-		equalOptional(n.CPU, other.CPU) &&
-		equalOptional(n.Memory, other.Memory) &&
+		(n.GPUs == nil) == (other.GPUs == nil) &&
+		slices.EqualFunc(n.GPUs, other.GPUs, func(a, b GPUInfo) bool {
+			return a.Name == b.Name && a.VramBytes == b.VramBytes
+		}) &&
+		(n.CPU == nil) == (other.CPU == nil) &&
+		(n.CPU == nil || n.CPU.Name == other.CPU.Name && n.CPU.Cores == other.CPU.Cores) &&
+		(n.Memory == nil) == (other.Memory == nil) &&
+		(n.Memory == nil || n.Memory.TotalBytes == other.Memory.TotalBytes) &&
 		equalSlice(n.Models, other.Models) &&
 		(n.ModelsByEngine == nil) == (other.ModelsByEngine == nil) &&
 		maps.EqualFunc(n.ModelsByEngine, other.ModelsByEngine, equalSlice[string]) &&
@@ -665,14 +671,6 @@ func (n DirectoryNode) Equals(other DirectoryNode) bool {
 // equalSlice compares ordered values while distinguishing nil from empty slices.
 func equalSlice[T comparable](a, b []T) bool {
 	return (a == nil) == (b == nil) && slices.Equal(a, b)
-}
-
-// equalOptional distinguishes an absent value from a present zero value.
-func equalOptional[T comparable](a, b *T) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
 
 // Clustered reports whether the node advertises a cluster identity.

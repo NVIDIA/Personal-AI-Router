@@ -235,6 +235,26 @@ func TestDirectoryNode_EqualsDistinguishesRecordChanges(t *testing.T) {
 	test("model attribution changes", DirectoryNode{ModelsByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{ModelsByEngine: map[string][]string{"lmstudio": {"model-a"}}})
 	test("loaded models change", DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-b"}}})
 	test("timestamp changes", DirectoryNode{LastSeen: 1}, DirectoryNode{LastSeen: 2})
+	test("GPU name changes", DirectoryNode{GPUs: []GPUInfo{{Name: "GPU A"}}}, DirectoryNode{GPUs: []GPUInfo{{Name: "GPU B"}}})
+	test("GPU capacity changes", DirectoryNode{GPUs: []GPUInfo{{VramBytes: 1024}}}, DirectoryNode{GPUs: []GPUInfo{{VramBytes: 2048}}})
+	test("GPU count changes", DirectoryNode{GPUs: []GPUInfo{}}, DirectoryNode{GPUs: []GPUInfo{{Name: "GPU"}}})
+	test("GPU order changes", DirectoryNode{GPUs: []GPUInfo{{Name: "GPU A"}, {Name: "GPU B"}}}, DirectoryNode{GPUs: []GPUInfo{{Name: "GPU B"}, {Name: "GPU A"}}})
+	test("CPU name changes", DirectoryNode{CPU: &CPUInfo{Name: "CPU A"}}, DirectoryNode{CPU: &CPUInfo{Name: "CPU B"}})
+	test("CPU core count changes", DirectoryNode{CPU: &CPUInfo{Cores: 8}}, DirectoryNode{CPU: &CPUInfo{Cores: 16}})
+	test("memory capacity changes", DirectoryNode{Memory: &MemoryInfo{TotalBytes: 4096}}, DirectoryNode{Memory: &MemoryInfo{TotalBytes: 8192}})
+}
+
+func TestDirectoryNode_EqualsIgnoresHardwareMeasurements(t *testing.T) {
+	test := func(name string, a, b DirectoryNode) {
+		t.Run(name, func(t *testing.T) {
+			assert.True(t, a.Equals(b))
+			assert.True(t, b.Equals(a))
+		})
+	}
+	test("GPU utilization", DirectoryNode{GPUs: []GPUInfo{{UtilizationPercent: 10}}}, DirectoryNode{GPUs: []GPUInfo{{UtilizationPercent: 90}}})
+	test("used GPU memory", DirectoryNode{GPUs: []GPUInfo{{VramUsedBytes: 1024}}}, DirectoryNode{GPUs: []GPUInfo{{VramUsedBytes: 2048}}})
+	test("CPU utilization", DirectoryNode{CPU: &CPUInfo{UtilizationPercent: 10}}, DirectoryNode{CPU: &CPUInfo{UtilizationPercent: 90}})
+	test("used system memory", DirectoryNode{Memory: &MemoryInfo{UsedBytes: 1024}}, DirectoryNode{Memory: &MemoryInfo{UsedBytes: 2048}})
 }
 
 func TestDirectoryNode_EqualsDistinguishesAbsentAndEmptyValues(t *testing.T) {

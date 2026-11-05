@@ -168,6 +168,7 @@ const (
 // applyLocalInfo changes only hardware under one directory lock. Background
 // model refreshes do not take selfMu, so separate get/upsert calls could overwrite
 // their newer model inventory with the hardware handler's earlier copy.
+// Measurement-only changes retain LastSeen and do not report a directory update.
 func (d *directory) applyLocalInfo(info noderec.NodeInfo) (noderec.DirectoryNode, localInfoResult) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -175,21 +176,15 @@ func (d *directory) applyLocalInfo(info noderec.NodeInfo) (noderec.DirectoryNode
 	if !present {
 		return node, localInfoMissing
 	}
-	if slices.Equal(node.GPUs, info.GPUs) && equalOptional(node.CPU, info.CPU) && equalOptional(node.Memory, info.Memory) {
-		return node, localInfoUnchanged
-	}
+	previous := node
 	node.GPUs, node.CPU, node.Memory = info.GPUs, info.CPU, info.Memory
-	node.LastSeen = time.Now().Unix()
-	d.nodes[info.HostUUID] = node
-	return node, localInfoUpdated
-}
-
-// equalOptional distinguishes an absent value from a present zero value.
-func equalOptional[T comparable](a, b *T) bool {
-	if a == nil || b == nil {
-		return a == b
+	result := localInfoUnchanged
+	if !previous.Equals(node) {
+		node.LastSeen = time.Now().Unix()
+		result = localInfoUpdated
 	}
-	return *a == *b
+	d.nodes[info.HostUUID] = node
+	return node, result
 }
 
 // applyModels atomically reconciles one node's model inventory from a completed
