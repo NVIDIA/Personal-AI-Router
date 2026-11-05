@@ -99,7 +99,10 @@ membership. Trust changes remove affected pinned scanner records and clear
 verification, hardware, and scheduling samples for affected manual entries.
 Manual configurations and independently reachable engine routes are preserved.
 Queued events and scheduler replay
-recheck that binding. A scanner crash withdraws its entire directory; its
+recheck that binding. A verified scanner replacement retires the previous record
+ID from the worker relay before publishing the replacement. Delayed removals
+retire only their own relay entry and preserve the current host record and
+measurements. A scanner crash withdraws its entire directory; its
 replacement authenticates remote records again while local IPC replays retain
 their age. Notifications from a previous worker cannot restore its records.
 
