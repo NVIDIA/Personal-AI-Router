@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"io"
 	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -144,11 +143,10 @@ func TestRunShutsDownWhenCancelledWhileStdinIsIdle(t *testing.T) {
 
 	stdinRead, stdinWrite := io.Pipe() // never written to, never closed
 	t.Cleanup(func() { _ = stdinWrite.Close() })
-	var out syncBuffer
 	m := NewManager(NewCodec(struct {
 		io.Reader
 		io.Writer
-	}{stdinRead, &out}), ex, nil)
+	}{stdinRead, io.Discard}), ex, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -164,15 +162,4 @@ func TestRunShutsDownWhenCancelledWhileStdinIsIdle(t *testing.T) {
 	if status, _ := ex.Status("fake"); status.Running {
 		t.Fatal("the engine was left running by the shutdown")
 	}
-}
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
 }

@@ -6,12 +6,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -35,52 +32,31 @@ func (c *catalogService) vllmCatalog(ctx context.Context, query string) ([]Catal
 		return c.vllm.get(ctx)
 	}
 	return c.searchCache("vllm:"+strings.ToLower(query), "vllm search", func(ctx context.Context) ([]CatalogModel, error) {
-		rows, err := c.fetchVLLMListings(ctx, "search", []string{query})
+		rows, err := c.fetchListings(ctx, vllmListings("search", []string{query}))
 		if err != nil {
 			return nil, err
 		}
-		return normalizeVLLMRows(rows), nil
+		return normalizeListing(rows, vllmModel), nil
 	}).get(ctx)
 }
 
 func (c *catalogService) fetchVLLM(ctx context.Context) ([]CatalogModel, error) {
-	rows, err := c.fetchVLLMListings(ctx, "author", vllmPublishers)
+	rows, err := c.fetchListings(ctx, vllmListings("author", vllmPublishers))
 	if err != nil {
 		return nil, err
 	}
-	return normalizeVLLMRows(rows), nil
+	return normalizeListing(rows, vllmModel), nil
 }
 
-// fetchVLLMListings reads one listing per value and pipeline. Any request
-// failing fails the whole fetch, so a refresh never replaces the cached list
-// with one silently missing a publisher.
-func (c *catalogService) fetchVLLMListings(ctx context.Context, field string, values []string) ([]hfModelRow, error) {
-	type job struct{ value, pipeline string }
-	var jobs []job
+// vllmListings is one listing request per value and pipeline.
+func vllmListings(field string, values []string) []url.Values {
+	var queries []url.Values
 	for _, v := range values {
 		for _, p := range vllmPipelines {
-			jobs = append(jobs, job{v, p})
+			queries = append(queries, vllmListing(field, v, p))
 		}
 	}
-	batches := make([][]hfModelRow, len(jobs))
-	errs := make([]error, len(jobs))
-	var wg sync.WaitGroup
-	for i, j := range jobs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			batches[i], errs[i] = c.fetchHF(ctx, vllmListing(field, j.value, j.pipeline))
-		}()
-	}
-	wg.Wait()
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
-	}
-	var rows []hfModelRow
-	for _, b := range batches {
-		rows = append(rows, b...)
-	}
-	return rows, nil
+	return queries
 }
 
 // vllmListing is a listing request narrowed by one field, author or search, and
@@ -100,25 +76,6 @@ func vllmListing(field, value, pipeline string) url.Values {
 	return q
 }
 
-func normalizeVLLMRows(rows []hfModelRow) []CatalogModel {
-	seen := make(map[string]int, len(rows))
-	out := make([]CatalogModel, 0, len(rows))
-	for _, r := range rows {
-		model, ok := vllmModel(r)
-		if !ok {
-			continue
-		}
-		if idx, dup := seen[model.ID]; dup {
-			out[idx] = model
-			continue
-		}
-		seen[model.ID] = len(out)
-		out = append(out, model)
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Downloads > out[j].Downloads })
-	return out
-}
-
 // vllmModel turns one listing entry into a download, or reports it is not one.
 // Gated and private repos fail to download without credentials, MLX is Apple's
 // framework, and a listing can still include embedding models the chat endpoint
@@ -128,7 +85,7 @@ func vllmModel(r hfModelRow) (CatalogModel, bool) {
 	if repo == "" {
 		repo = strings.TrimSpace(r.ModelID)
 	}
-	if !llamaCPPRepoPattern.MatchString(repo) {
+	if !hfRepoPattern.MatchString(repo) {
 		return CatalogModel{}, false
 	}
 	if r.Private || string(bytes.TrimSpace(r.Gated)) != "false" {

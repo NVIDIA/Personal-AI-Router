@@ -117,9 +117,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		if listSpec == nil && loadedSpec == nil {
 			continue
 		}
-		wg.Add(1)
-		go func(i int, name string) {
-			defer wg.Done()
+		wg.Go(func() {
 			// An engine that can only answer for what it is running advertises its
 			// loaded set. Its list_models is a view of what could be loaded, which
 			// is not what a peer or the proxy may route to, so it is reported apart.
@@ -141,7 +139,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 				r.loaded, r.loadedOK = e.queryModelList(ctx, name, "loaded_models", loadedSpec)
 			}
 			perEngine[i] = r
-		}(i, name)
+		})
 	}
 	wg.Wait()
 

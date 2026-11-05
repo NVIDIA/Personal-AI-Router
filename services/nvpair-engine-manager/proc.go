@@ -91,10 +91,13 @@ func (mp *managedProc) stop(grace time.Duration) {
 	default:
 	}
 	pid := mp.cmd.Process.Pid
+	// However the process we started exits, an engine that forks helpers (vLLM's
+	// EngineCore) can leave them behind, holding GPU memory, when its main
+	// process goes down mid-start. Nothing else will ever clean them up.
+	defer killGroupRemnants(pid)
 	if grace <= 0 {
 		_ = signalPID(pid, true)
 		<-mp.done
-		killGroupRemnants(pid)
 		return
 	}
 	_ = gracefulSignal(mp.cmd)
@@ -102,16 +105,11 @@ func (mp *managedProc) stop(grace time.Duration) {
 	defer timer.Stop()
 	select {
 	case <-mp.done:
-		// The process we started exited, but an engine that forks helpers (vLLM's
-		// EngineCore) can leave them behind, holding GPU memory, when its main
-		// process goes down mid-start. Nothing else will ever clean them up.
-		killGroupRemnants(pid)
 		return
 	case <-timer.C:
 	}
 	_ = signalPID(pid, true)
 	<-mp.done
-	killGroupRemnants(pid)
 }
 
 // terminatePID stops the process with the given PID (and its tree on
