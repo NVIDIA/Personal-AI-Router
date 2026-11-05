@@ -669,13 +669,21 @@ addition schedules authentication; it never makes an announcement trusted.
 
 ### Node Eviction
 
-The scanner scans every five seconds. After a node has missed three scans in a
-row, about 15 seconds, the scanner checks on it at every scan, and any answer
-resets the count. It drops the node only after 12 consecutive misses, about a
-minute, with every check along the way failing. For a promoted peer the checks are:
+The browser scans every five seconds. After a discovery has missed three scans
+in a row, about 15 seconds, the browser checks availability on each scan. Accepted
+evidence resets the miss count. After 12 consecutive misses, about a minute, the
+discovery expires if those checks keep failing. For a promoted peer the checks are:
 
 - Inference the node served in the last minute, which the proxies report
 - Authenticated inventory from that node in the last ten seconds
+
+A verified peer record can outlive its last discovery while authenticated
+inventory or recent inference still proves availability. Scanner continues
+sampling the retained peer independently. A failed refresh removes that record
+once its last authenticated inventory is at least a minute old and no inference
+activity was observed in the last minute. Trust invalidation also removes the
+affected verified record. Cluster membership and saved pins have their own
+lifetime and are preserved when availability expires.
 
 These checks use accepted evidence without starting another network request.
 The canonical sampling loop continues independently, so multicast loss does not

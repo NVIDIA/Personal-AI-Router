@@ -240,7 +240,7 @@ Example readiness notification:
 
 Example projected discovery push (a bare array, unlike the wrapped `discovery:get-nodes` result):
 ```json
-{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"id":"studio","name":"studio","hostUuid":"6f1c…","discoveryRecordId":"pin:6f1c…","identityVerification":"pinned","ipAddress":"192.168.1.24","port":14318,"lastSeen":1767225600,"trusted":true}]}
+{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"id":"studio","name":"studio","hostUuid":"6f1c…","discoveryRecordId":"peer:6f1c…:<hash>","identityVerification":"pinned","ipAddress":"192.168.1.24","port":14318,"lastSeen":1767225600,"trusted":true}]}
 ```
 
 ## 7. API / Interface Contract
@@ -385,7 +385,7 @@ Each worker's reader goroutine invokes a forwarder. Every forwarder calls `dispa
 | `forwardProxyProcessNotification` | `nvpair-proxy` | an engine-addressed notification goes to that engine's handler, with that engine's spawn generation for Ollama and LM Studio; an unaddressed one is process-scoped and handled once — `workload:*` is stamped and routed to the workload manager, and `node/activity` is forwarded to the scanner as `discovery:node-activity` |
 | `forwardProxyNotificationForGeneration` / `forwardLMStudioProxyNotificationForGeneration` | one facade | stale generations dropped; a `bind-failed` on the managed facade port blocks the facade, otherwise selects a fallback port unless the user set the port explicitly; `ready` triggers port reconciliation; the remainder is emitted as `<engine>-proxy:<method>` to that namespace's subscribers |
 | `forwardDefaultEngineProxyNotification` | the llama.cpp facade | no port reconciliation and no generation check: error-pipeline frames are claimed, and the remainder is emitted as `llamacpp-proxy:<method>` to that namespace's subscribers |
-| `forwardManualNodesNotification` | `nvpair-manual-nodes` | source events upsert full authenticated hardware or separate display previews into `AvailableNode.info`; only pinned measurements feed scheduling; explicit reachable engine routes bridge independently; clients receive merged `discovery:nodes-changed` snapshots, not a separate manual `discovery:node-info` event |
+| `handleManualNodesNotification` | `nvpair-manual-nodes` | source events upsert full authenticated hardware or separate display previews into `AvailableNode.info`; only pinned measurements feed scheduling; explicit reachable engine routes bridge independently; clients receive merged `discovery:nodes-changed` snapshots, not a separate manual `discovery:node-info` event |
 | `forwardSettingsNotification` | `nvpair-node-settings` | only `connection/cluster-identity` and `connection/cluster-auto-sync` are re-emitted, verbatim and unconditionally; everything else is debug-logged and dropped |
 | `forwardClusterManagerNotification` | `nvpair-cluster-manager` | notifications relayed verbatim; identity changes persist settings and reconverge advertisement; trust changes invalidate obsolete scanner/manual proofs and prompt scanner reauthentication; node-info follows live mesh membership |
 | `forwardWorkloadManagerNotification` | `nvpair-workload-manager` | only `workloads:upsert` and `workloads:remove` are applied to the store and re-emitted to subscribers; `ready` and anything else are internal and dropped |
@@ -440,8 +440,11 @@ The broker also relays two kinds of evidence into the scanner that it cannot gat
 
 `convergeScannerIdentity` closes the fresh-host startup-order window in which the scanner minted a node id before `nvpair-cluster-manager` wrote its identity: it waits for `cluster:get-node-id` to answer, then calls the scanner's `discovery:reload-identity` so the advertised `uuid=` matches the cluster principal. It is best-effort and idempotent, and a later membership change reconverges through the identity-change path and the scanner's own membership watch.
 
-`cluster:trust-changed` makes the broker withdraw scanner and manual records
-whose proof no longer matches the live mesh, then prompt `discovery:reload-trust`.
+`cluster:trust-changed` makes the broker remove pinned scanner records whose
+proof no longer matches the live mesh. Affected manual entries lose verification,
+hardware, and scheduling measurements and return to independent configuration
+records; their explicit engine routes are preserved. The broker then prompts
+`discovery:reload-trust`.
 Announcements remain connection candidates. A saved pin chooses which identity
 to authenticate; it cannot establish endpoint ownership by itself. Only a
 successful pinned-mTLS read with matching response identities promotes a peer.

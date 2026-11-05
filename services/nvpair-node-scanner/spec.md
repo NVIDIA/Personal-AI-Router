@@ -131,14 +131,16 @@ collected by workers for unverified records.
   authenticated inventory or inference activity, Scanner removes its record and
   caches while preserving membership and saved certificates.
 - Scanner applies trust changes while running. Removed or replaced pins clear
-  verification status and scheduling samples, close affected connections, and
+  verification status and scheduling samples, close affected idle connections, and
   prevent pending responses from restoring the old state.
 
 **Non-functional**
 
 - Scanner runs on Windows, Linux, and macOS on x64 and arm64, without administrator
   privileges.
-- Request duration, response size, addresses tried, and simultaneous reads are bounded.
+- Node-info requests have deadlines and a 64 KiB response limit, and concurrent
+  authentication, telemetry, preview, and model reads have separate limits.
+  Model requests have deadlines but currently decode bodies without a byte limit.
   A slow discovered node must not block telemetry reads from verified peers.
 - Scanner has few dependencies and reuses shared discovery and cluster-trust packages.
 - Tests are repeatable with simulated discovery and local HTTP/TLS test servers,
@@ -475,7 +477,8 @@ and service ports (§7.1).
 
 - **Performance**: Scanner keeps discovery and two-second telemetry responsive by
   limiting simultaneous reads. Nodes awaiting authentication have separate
-  identity and retry state from verified peers. Requests and response sizes are bounded.
+  identity and retry state from verified peers. Node-info reads have request
+  deadlines and response-size limits; model reads have deadlines but no body-size limit.
   Waiting behind another node-info read must not consume a request's own timeout
   budget. Model-request deadlines allow engine-manager's bounded inventory
   collection to finish.
@@ -510,7 +513,7 @@ and service ports (§7.1).
 | Missing or malformed announcement | Unusable fields are ignored; usable unverified data is retained within discovery limits |
 | Peer authentication or identity mismatch | The discovery is not marked verified, the existing peer record is unchanged, and no unencrypted retry occurs |
 | Inventory/model timeout or unreachable peer | Previously read inventory is retained, measurements age, and retries use increasing intervals up to the limit |
-| Pin removal/replacement or local departure | Verification is cleared, affected connections close, routing stops using the peer, and scheduling samples are discarded |
+| Pin removal/replacement or local departure | Verification is cleared, affected idle connections close, routing stops using the peer, and scheduling samples are discarded; in-flight results are checked against current trust before acceptance |
 | Response arriving after a trust change | The response is discarded before records are updated or telemetry is sent |
 | Unverified UUID/name/address collision | Discovery and configuration records remain separate and cannot overwrite local or verified data |
 | Worker restart | The broker resends local registrations/details, remote records are authenticated again, and cached sample age is preserved |
@@ -527,10 +530,11 @@ connection cannot restore its former trust.
 
 ## 13. Observability
 
-- **Logging**: logs contain structured operational details on stderr, including
-  service, node or discovery record ID, authentication outcome, retries, and
-  directory changes. Key material, certificates, pairing PINs, prompts, and
-  response bodies are never logged.
+- **Logging**: structured stderr logs cover advertising failures, address changes,
+  node-info outage and recovery, model-request failures, invalid local snapshots,
+  and notification failures. Depending on the event, fields identify the host,
+  address, endpoint, or method. Discovery changes are emitted as JSON-RPC events.
+  Key material, certificates, pairing PINs, prompts, and response bodies are never logged.
 - **Freshness**: snapshots report whether samples are usable and how old they are.
   Resending a sample never reduces its age. Failed reads must not make a node
   appear freshly measured with zero usage.

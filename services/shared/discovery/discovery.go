@@ -1,10 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package discovery provides a single mDNS service browser that five services
-// (nvpair-node-scanner, nvpair-errors, nvpair-proxy, nvpair-workload-manager,
-// nvpair-cluster-manager) each carried a near-identical copy of (the mDNS
-// dedup).
+// Package discovery provides the shared mDNS service browser and its
+// scan-and-diff state machine.
 //
 // The core is a scan-and-diff state machine: each scan browses a service type
 // over grandcat/zeroconf, re-sends the PTR query from a per-interface unicast
@@ -23,9 +21,9 @@
 //   - WithLivenessProbe — check availability before evicting a missing node;
 //     retain it while the callback has current evidence that it is available.
 //   - WithSelfFilter — drop our own advertisement from results (workload-manager).
-//   - WithKeyFunc — key the node map by something other than the instance name
-//     (cluster-manager keys by uuid= so two hosts sharing an instance name but
-//     distinct UUIDs don't collide).
+//   - WithKeyFunc — choose the key for each connection candidate instead of
+//     using its instance name. Scanner uses its discovery record ID to keep
+//     observations separate from the host identities they claim.
 //
 // Two consumption shapes are supported over the same core:
 //   - Run(ctx, events) — push: a background loop that emits Discovered/Updated/
@@ -161,8 +159,8 @@ func WithSelfFilter(selfInstance string) Option {
 }
 
 // WithKeyFunc keys the node map by fn(node) instead of the instance name. Return
-// "" to fall back to the instance name for that node. cluster-manager keys by
-// uuid= so two hosts sharing an instance name but distinct UUIDs don't collide.
+// "" to fall back to the instance name for that node. Scanner uses a discovery
+// record ID derived from the advertised endpoint and resolved addresses.
 func WithKeyFunc(fn func(Node) string) Option { return func(o *options) { o.keyFunc = fn } }
 
 // Browser maintains a reconciled set of discovered nodes for one service type.

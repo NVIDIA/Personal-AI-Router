@@ -2023,15 +2023,10 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			}
 			u = lb
 		case p.mesh.HasPin(n.ClusterUUID):
-			// A pinned cluster peer: reach it only over mTLS to its promoted
-			// proxy (the ol port now advertises the proxy, not the engine).
-			// The pin is read from the live mesh refreshed above, not from the
-			// relayed n.Trusted: that flag is the scanner's answer from whenever
-			// it last saw this peer's mDNS record, so a peer discovered before
-			// this node's pins were written stays false until its record next
-			// changes. It is also strictly weaker than what we hold here — the
-			// dial itself is gated on ClientTLSConfig finding the same pin — so
-			// the relayed value can only ever disagree by being stale.
+			// Reach this peer's proxy over mTLS using its current pin. Relay-fed
+			// remote records have already passed pinned-and-trusted admission;
+			// the refreshed mesh and the pinned client also authorize this dial
+			// against live membership and trust.
 			u.Scheme = "https"
 			peerUUID = n.ClusterUUID
 		case f.discovery.IsManual(n.ID):
