@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -477,6 +479,92 @@ func TestDeleteHFModel_KeepsASettingsSaveMadeWhileTheToolRuns(t *testing.T) {
 	require.ErrorContains(t, <-deleted, "PermissionError")
 	require.NoError(t, <-saved)
 	assert.Equal(t, edited, launchTextOf(t, e), "the settings save must survive the delete's rollback")
+}
+
+func TestDeleteHFModel_UsesTheCacheSavedBeforeItGetsTheOperationLock(t *testing.T) {
+	toolDir := t.TempDir()
+	toolName := "hf"
+	if runtime.GOOS == "windows" {
+		toolName += ".exe"
+	}
+	// Build a portable CLI because the shell fixtures cannot run on Windows.
+	out, err := exec.Command("go", "build", "-o", filepath.Join(toolDir, toolName), "./testdata/fakehf").CombinedOutput()
+	require.NoError(t, err, "%s", out)
+
+	test := func(name string, downloadDir bool) {
+		t.Run(name, func(t *testing.T) {
+			oldCache, newCache := t.TempDir(), t.TempDir()
+			// Only the new cache has the model, so reading the old location before
+			// taking the operation lock would reject this queued deletion.
+			repo := filepath.Join(newCache, "models--org--downloaded")
+			require.NoError(t, os.Mkdir(repo, 0o755))
+			m := testEngineManifest(filepath.Join(toolDir, "engine"))
+			platform := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
+			platform.Runtime.Port = 13001
+			platform.Runtime.Args = []string{"serve", "--model", "org/initial"}
+			platform.Runtime.EditableLaunch = &EditableLaunch{FixedArgs: []string{"serve"}}
+			platform.Runtime.LaunchArgs = []string{"--model", "org/initial"}
+			if downloadDir {
+				platform.Runtime.LaunchArgs = append(platform.Runtime.LaunchArgs, "--download-dir", oldCache)
+			} else {
+				platform.Runtime.LaunchEnv = []string{"HF_HUB_CACHE=" + oldCache}
+			}
+			m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = platform
+			m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
+			m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: "{hf_hub_cache}", Delete: true, Tool: toolName}}
+			e := newTestExecutor(t, m)
+			e.overrideDir = t.TempDir()
+			st, err := e.state("fake")
+			require.NoError(t, err)
+			st.binPath = filepath.Join(toolDir, "engine")
+
+			// The settings operation owns the lock before Delete is requested.
+			st.opMu.Lock()
+			release := sync.OnceFunc(st.opMu.Unlock)
+			defer release()
+			started := make(chan struct{})
+			deleted := make(chan error, 1)
+			go func() {
+				close(started)
+				_, err := e.Action(t.Context(), "fake", "delete_model", json.RawMessage(`{"model":"org/downloaded"}`))
+				deleted <- err
+			}()
+			<-started
+			// Give a premature cache read time to fail while the lock is held.
+			// A sync.Mutex exposes no signal when this call starts waiting.
+			select {
+			case err := <-deleted:
+				require.FailNow(t, "Delete completed before the settings operation released the lock", "delete error: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			args := []string{"--model", "org/current"}
+			env := map[string]string{}
+			if downloadDir {
+				args = append(args, "--download-dir", newCache)
+			} else {
+				env["HF_HUB_CACHE"] = newCache
+			}
+			launchText, err := formatLaunchParts(env, args)
+			require.NoError(t, err)
+			saved, err := e.configureLaunchLocked(t.Context(), st, settings.Configure{
+				Engine: "fake", Settings: settings.Config{ServerPort: 13001, LaunchText: launchText},
+			}, func() error { return nil })
+			require.NoError(t, err)
+			release()
+
+			select {
+			case err := <-deleted:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "Delete did not finish after the settings operation")
+			}
+			assert.NoDirExists(t, repo)
+			assert.Equal(t, saved.LaunchText, launchTextOf(t, e), "deleting another model must preserve the saved launch")
+		})
+	}
+	test("download directory in the launch arguments", true)
+	test("cache directory in the launch environment", false)
 }
 
 // An adopted engine can serve another model than its saved arguments name. That

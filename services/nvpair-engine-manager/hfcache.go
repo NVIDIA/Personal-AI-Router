@@ -41,12 +41,12 @@ var hfShardRe = regexp.MustCompile(`-(\d+)-of-(\d+)\.(?:safetensors|bin)$`)
 // runHFCacheAction lists the models in act.HFCache.Dir. It needs no running
 // engine, so the list is available while the engine is stopped.
 func (e *Executor) runHFCacheAction(ctx context.Context, st *engineState, engine string, act Action, params json.RawMessage) (json.RawMessage, error) {
+	if act.HFCache.Delete {
+		return e.deleteHFModel(ctx, st, engine, act.HFCache.Dir, act.HFCache.Tool, params)
+	}
 	dir, err := resolvePlaceholders(act.HFCache.Dir, hfActionVars(st))
 	if err != nil {
 		return nil, err
-	}
-	if act.HFCache.Delete {
-		return e.deleteHFModel(ctx, st, engine, expandPath(dir), act.HFCache.Tool, params)
 	}
 	models, err := scanHFCache(expandPath(dir))
 	if err != nil {
@@ -347,7 +347,7 @@ func hasAny(files map[string]int64, names []string) bool {
 // will not start until one is loaded; if the removal fails, that selection is
 // put back. The engine's operation lock is held from the first check to the
 // rollback, so a settings save or start cannot land in between and be undone.
-func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, hubDir, toolName string, params json.RawMessage) (json.RawMessage, error) {
+func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, dirTemplate, toolName string, params json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Model string `json:"model"`
 	}
@@ -355,19 +355,26 @@ func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, h
 		return nil, fmt.Errorf("delete: params.model must be a Hugging Face model id such as org/name")
 	}
 	id := strings.TrimSpace(p.Model)
-	tool, err := hfToolPath(st, toolName)
-	if err != nil {
-		return nil, fmt.Errorf("delete %s: %w", id, err)
-	}
-	name := "models--" + strings.ReplaceAll(id, "/", "--")
-	repo := filepath.Join(hubDir, name)
-	if rel, err := filepath.Rel(hubDir, repo); err != nil || rel != name {
-		return nil, fmt.Errorf("delete: refusing a path outside the model cache")
-	}
-	if _, err := os.Stat(repo); err != nil {
-		return nil, fmt.Errorf("delete: %s is not in the model cache", id)
-	}
-	err = e.editLaunch(engine, func(edit *launchEdit) error {
+	err := e.editLaunch(engine, func(edit *launchEdit) error {
+		// A settings operation ahead of this delete may change the cache. Read
+		// its location under the same lock as the selection and removal.
+		dir, err := resolvePlaceholders(dirTemplate, hfActionVars(st))
+		if err != nil {
+			return err
+		}
+		hubDir := expandPath(dir)
+		tool, err := hfToolPath(st, toolName)
+		if err != nil {
+			return fmt.Errorf("delete %s: %w", id, err)
+		}
+		name := "models--" + strings.ReplaceAll(id, "/", "--")
+		repo := filepath.Join(hubDir, name)
+		if rel, err := filepath.Rel(hubDir, repo); err != nil || rel != name {
+			return fmt.Errorf("delete: refusing a path outside the model cache")
+		}
+		if _, err := os.Stat(repo); err != nil {
+			return fmt.Errorf("delete: %s is not in the model cache", id)
+		}
 		refused := fmt.Errorf("delete: %s is the model %s is serving; eject it or load another model first", id, engine)
 		if edit.before.Running {
 			serving, err := e.servingModels(ctx, st, engine)
