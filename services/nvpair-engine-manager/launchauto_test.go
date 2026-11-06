@@ -879,3 +879,19 @@ func TestPlanToolCalling_ProbesTheTokenizerAndTemplateVLLMWillUse(t *testing.T) 
 	noParser("a tokenizer revision that is not cached", []string{"--tokenizer-revision", "v9"})
 	noParser("a chat template given as a relative path", []string{"--chat-template", "tools.jinja"})
 }
+
+func TestAutoContext_KeepsTheNativeLimitWithUserConfigOverrides(t *testing.T) {
+	withGPU(t, 48, 48)
+	// A first-start metadata fixture needs no cache symlinks, including on Windows.
+	snapshot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(snapshot, "config.json"), []byte(qwen8BConfig), 0o644))
+	fetch := func() (hfPendingModel, bool) {
+		return hfPendingModel{snapshot: snapshot, weights: 16_400_000_000}, true
+	}
+	args := []string{"--model", "Qwen/Qwen3-8B", "--hf-overrides", `{"attention_dropout":0.0}`}
+
+	extra, _ := planHFContext(args, t.TempDir(), 65536, fetch)
+
+	assert.Equal(t, "40960", flagOf(t, extra, "--max-model-len"))
+	assert.NotContains(t, extra, "--hf-overrides")
+}

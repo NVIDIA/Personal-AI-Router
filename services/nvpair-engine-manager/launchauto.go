@@ -410,7 +410,7 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 
 	ctx := target
 	var overrides string
-	extend := native < target && !text.ropeExtended()
+	extend := native < target && !text.ropeExtended() && !userOverrides
 	if native < target && !extend {
 		ctx = native
 	}
@@ -454,7 +454,7 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 			}
 		}
 		extra = append(extra, "--max-model-len", strconv.FormatInt(ctx, 10))
-		if overrides != "" && !userOverrides {
+		if overrides != "" {
 			extra = append(extra, "--hf-overrides", overrides)
 		}
 	}
