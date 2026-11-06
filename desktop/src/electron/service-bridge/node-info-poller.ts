@@ -14,6 +14,7 @@ import {
 } from '@/shared/constants/modular-runtime'
 
 const log = createStructuredLogger('service-bridge')
+const NODE_INFO_MAX_RESPONSE_BYTES = 1024 * 1024
 const NODE_INFO_ERROR_BODY_DRAIN_LIMIT_BYTES = 64 * 1024
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -410,7 +411,7 @@ async function fetchNodeInfo(host: string, port: number, run: AbortSignal): Prom
             return { parsed: null, reason: `HTTP ${response.status}` }
         }
 
-        return { parsed: await response.json(), reason: '' }
+        return { parsed: await readNodeInfoResponse(response), reason: '' }
     } catch (err) {
         // The poller stopping is not a verdict on this endpoint: the caller
         // discards the attempt, so no reason is ever read from it.
@@ -427,6 +428,31 @@ async function fetchNodeInfo(host: string, port: number, run: AbortSignal): Prom
         }
     } finally {
         clearTimeout(attemptTimer)
+    }
+}
+
+async function readNodeInfoResponse(response: Response): Promise<JsonValue> {
+    if (!response.body) throw new Error('node-info response body is missing')
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    const parts: string[] = []
+    let received = 0
+    try {
+        while (true) {
+            const chunk = await reader.read()
+            if (chunk.done) break
+            received += chunk.value.byteLength
+            if (received > NODE_INFO_MAX_RESPONSE_BYTES) {
+                await reader.cancel()
+                throw new Error('node-info response exceeds 1 MiB')
+            }
+            parts.push(decoder.decode(chunk.value, { stream: true }))
+        }
+        parts.push(decoder.decode())
+        return JSON.parse(parts.join(''))
+    } finally {
+        reader.releaseLock()
     }
 }
 
