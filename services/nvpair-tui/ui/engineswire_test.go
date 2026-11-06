@@ -93,10 +93,7 @@ func TestOllamaUnload_SendsKeepAlive(t *testing.T) {
 // was too, leaving the operator unable to tell a started download from a
 // keystroke that missed.
 func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
-	msg := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
-	require.NotNil(t, msg, "a pull that outran its deadline produced no message at all")
-	op, ok := msg.(engineOpMsg)
-	require.True(t, ok, "result must be engineOpMsg")
+	op := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
 	require.NoError(t, op.err, "a still-running download must not be reported as failed")
 	assert.True(t, op.detached, "a still-running download must not be reported as complete")
 }
@@ -119,8 +116,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// reply rather than a failed start.
 	longRunning := func(name, op string) {
 		t.Run(name, func(t *testing.T) {
-			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-			require.True(t, ok, "result must be engineOpMsg")
+			result := classifyOpResult("x", "ollama", op, context.DeadlineExceeded)
 			assert.True(t, result.detached, "a timed-out long operation must be reported as still running")
 			require.NoError(t, result.err, "operation is still running")
 		})
@@ -134,8 +130,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 
 	quick := func(name, op string) {
 		t.Run(name, func(t *testing.T) {
-			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-			require.True(t, ok, "result must be engineOpMsg")
+			result := classifyOpResult("x", "ollama", op, context.DeadlineExceeded)
 			assert.False(t, result.detached, "a quick operation that times out has really failed")
 			assert.Error(t, result.err, "a timeout must not be reported as success")
 		})
@@ -145,7 +140,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	quick("stop times out", "stop")
 
 	// A real error is still an error, however long the operation usually takes.
-	result, _ := classifyOpResult("x", "ollama", "pull", errors.New("no such model")).(engineOpMsg)
+	result := classifyOpResult("x", "ollama", "pull", errors.New("no such model"))
 	assert.False(t, result.detached, "a genuine pull error must not be detached")
 	assert.Error(t, result.err, "a genuine pull error must be reported")
 }

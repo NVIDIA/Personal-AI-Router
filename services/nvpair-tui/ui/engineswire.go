@@ -275,7 +275,7 @@ func modelCmd(client *rpc.Client, node, engine string, act modelAction, model st
 // classifyModelOpResult is classifyOpResult for a model operation, which can
 // also have been stopped: vLLM's Load starts the engine, and a Stop or Eject
 // during it ends the Load with "stopped" in the reply.
-func classifyModelOpResult(what, engine, op string, msg *rpc.Message, err error) tea.Msg {
+func classifyModelOpResult(what, engine, op string, msg *rpc.Message, err error) engineOpMsg {
 	if err == nil && msg != nil && op == "load" {
 		var reply struct {
 			Stopped bool `json:"stopped"`
@@ -319,7 +319,7 @@ var longRunningOps = map[string]bool{
 }
 
 // classifyOpResult reports an operation as done, failed, or still running.
-func classifyOpResult(what, engine, op string, err error) tea.Msg {
+func classifyOpResult(what, engine, op string, err error) engineOpMsg {
 	if err != nil && longRunningOps[op] && errors.Is(err, context.DeadlineExceeded) {
 		return engineOpMsg{what: what, engine: engine, detached: true}
 	}
