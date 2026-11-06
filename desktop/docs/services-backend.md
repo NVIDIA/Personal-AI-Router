@@ -110,11 +110,12 @@ verified inventory, routing, liveness, or scheduling. The broker caches each
 source with its receipt time, preserves sample age on query/replay, and clears
 hardware when its source or proof is invalidated. Internal scheduling snapshots
 omit the full display payload and use only accepted compact GPU telemetry.
-The broker stamps `info.observedAt` with the whole display observation's receipt
-time, independently of GPU sample age, and preserves it across snapshots and
-pushes. Electron uses it directly for metrics deduplication, keeps measurement
-updates separate from structural node changes, and never reconstructs observation
-time from GPU sample age.
+`info.observedAt` records local receipt of the whole display observation,
+independently of GPU sample age. Manual hardware retains the time assigned by
+the owned manual worker; other observations are stamped by the broker. Snapshots
+and pushes preserve it. Electron uses it directly for metrics deduplication,
+keeps measurement updates separate from structural node changes, and never
+reconstructs observation time from GPU sample age.
 
 Scanner supplies identity, addresses, and models for hosts also tracked by manual
 configuration. If scanner hardware is missing, the broker may display manual

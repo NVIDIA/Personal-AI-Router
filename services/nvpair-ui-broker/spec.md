@@ -65,7 +65,7 @@ The single front door every PAIR client talks to, and the supervisor of every ot
 - **Worker crash**: a supervised worker exits unexpectedly; the broker drops its handle (so status reads stop returning stale state), emits the sticky `supervisor:subprocess-crashed:<name>` error, respawns after backoff, and clears the error once the worker has stayed up for the healthy-reset window.
 - **Scheduler fan-out**: `nvpair-job-scheduler` computes one node-wide ranking and emits it once per engine as `schedule:priority{engine, …}`; the broker drops the byte-identical repeat, mints one generation, and delivers `node/set-priority` to the proxy process off the reader goroutine.
 - **Change a port from the terminal**: `nvpair-tui`'s node detail screen reads `engine:get-settings`, validates the edited engine port, proxy port, or startup arguments with `engine:preview-settings`, and commits the normalized settings the preview returned with `engine:apply-settings` — the same operation the desktop editor uses, for this node or a pinned peer. A port already in use is reported as a conflict and refused, never silently swapped for another. The narrower `<engine>-proxy:set-port` and `engine:set-port` setters run through the same operation, but no in-tree client calls them.
-- **Keep a busy peer**: while a peer's engine streams response bytes back through a facade, the proxy raises `node/activity`; the broker forwards it to the scanner as `discovery:node-activity`, which counts as proof the peer is alive even when it is too loaded to answer mDNS or a liveness probe.
+- **Keep a busy peer**: while a peer's engine streams response bytes back through a facade, the proxy raises `node/activity`; the broker forwards it to the scanner as `discovery:node-activity`. Recent inference activity provides availability evidence for retaining a verified peer when announcements or authenticated inventory reads are delayed.
 - **Graceful shutdown**: on `shutdown`, SIGINT/SIGTERM, or stdin EOF, the broker stops the proxy process first (every facade at once), asks `nvpair-engine-manager` to `engine:prepare-shutdown` under a 5-second cap, then closes the remaining workers' stdin and joins them concurrently — all within one 10-second teardown budget, escalating to signal and kill for a worker that does not exit.
 - **Edge case — optional worker binary absent**: an unresolved default sibling for an optional worker is a warning, not a failure; the broker starts without it and every method in that worker's namespace answers `-32000 "<worker> not available"`.
 - **Edge case — explicit path that does not exist**: an operator-supplied `--*-path` that cannot be stat'ed is fatal at startup, because a wrong explicit path is a mistake worth failing loudly on.
@@ -198,9 +198,11 @@ reads, and unverified previews from separate public HTTP collection. Public
 `info.hostUuid`, `info.clusterUuid`, and `info.peer` claims are stripped. Missing
 `info` withdraws previous hardware. `lastSeen` is a record-change time, not sample
 age or proof of availability. Internal scheduling snapshots omit `info`.
-The broker assigns `info.observedAt`, the receipt time of the whole display
-observation in Unix milliseconds. It is independent of GPU sample age: CPU and
-memory observations can advance while the GPU collector retains an older sample.
+`info.observedAt` records local receipt of the whole display observation in Unix
+milliseconds. Manual hardware retains the time assigned by the owned manual
+worker; other observations are stamped by the broker. It is independent of GPU
+sample age: CPU and memory observations can advance while the GPU collector
+retains an older sample.
 Cached snapshots, source reprojection, and live forwarding preserve that value
 while `info.msSince` continues to report GPU sample age. Owned local observations
 are stamped before caching and relay to scanner, which preserves the timestamp
@@ -447,7 +449,7 @@ No worker registers itself. The broker holds a `relay.RegistrationCache` of this
 
 The canonical service keys and the ports the broker registers are `ni` = 14318 (`nvpair-node-info`), `er` = 14319 (`nvpair-errors`), `wl` = 14320 (`nvpair-workload-manager`), `cl` = 14321 (`nvpair-cluster-manager`), `em` = 14322 (`nvpair-engine-manager`'s model-list HTTP endpoint), and `ec` = 14323 (`nvpair-engine-manager`'s cluster-scoped remote-control surface, registered only when a cluster directory is configured). `ol`, `lm`, `lc`, and `vl` are registered dynamically with that engine's **facade** listen port — not the engine's port — while the broker's 5-second health poll of the engine's backend port answers (`/` for Ollama, `/v1/models` for LM Studio, `/health` for llama.cpp and vLLM), and are unregistered whenever the engine or its facade goes away, so a peer never routes to a facade that has nothing behind it.
 
-The broker also relays two kinds of evidence into the scanner that it cannot gather itself. A proxy's `node/activity`, raised while a peer's engine streams response bytes back, becomes the `discovery:node-activity` notification — proof of life for a peer too loaded to answer mDNS or a liveness probe. `nvpair-node-info`'s `nodeinfo:observed-addresses`, the local addresses remote peers have actually reached, becomes `discovery:set-observed-addresses`, which the scanner uses to rank the addresses it publishes. Both are sent off the producing worker's reader goroutine.
+The broker also relays two kinds of evidence into the scanner that it cannot gather itself. A proxy's `node/activity`, raised while a peer's engine streams response bytes back, becomes `discovery:node-activity`. The scanner uses that recent inference evidence when deciding whether to retain a verified peer independently of announcement expiry. `nvpair-node-info`'s `nodeinfo:observed-addresses`, the local addresses remote peers have actually reached, becomes `discovery:set-observed-addresses`, which the scanner uses to rank the addresses it publishes. Both are sent off the producing worker's reader goroutine.
 
 `convergeScannerIdentity` closes the fresh-host startup-order window in which the scanner minted a node id before `nvpair-cluster-manager` wrote its identity: it waits for `cluster:get-node-id` to answer, then calls the scanner's `discovery:reload-identity` so the advertised `uuid=` matches the cluster principal. It is best-effort and idempotent, and a later membership change reconverges through the identity-change path and the scanner's own membership watch.
 

@@ -201,7 +201,7 @@ Two classes of proxy notification are **not** re-emitted under any
 `<engine>-proxy:` namespace, because neither is a proxy control-plane event:
 
 - The `workload:*` lifecycle events the proxy fires per inference request. Those are workload-manager traffic — see the workload-manager paragraph below for how they're routed.
-- `node/activity`, which a proxy raises while a peer's engine is streaming response bytes back through it. That is discovery input: the broker forwards it to `nvpair-node-scanner` as a `discovery:node-activity` notification, where it counts as proof the peer is alive and cancels the eviction it would otherwise face for failing a liveness probe it had no spare CPU to answer. No client has any use for a per-request liveness frame. The handoff is a bounded queue drained by one goroutine — reports arrive for as long as inference streams, so a wedged scanner must not be able to stall the proxy reader, and a dropped report only means the scanner falls back to probing a node that will very likely answer.
+- `node/activity`, which a proxy raises while a peer's engine is streaming response bytes back through it. The broker forwards it to `nvpair-node-scanner` as `discovery:node-activity`. Recent inference activity provides availability evidence for retaining a verified peer independently of multicast announcement expiry. The handoff uses a bounded queue drained by one goroutine so a blocked scanner cannot stall the proxy reader. Dropping a report loses one availability hint; the scanner continues independent authenticated inventory reads and retains verified peers while recent accepted inventory or inference evidence remains fresh.
 
 **`nvpair-workload-manager`** is the cluster workload relay, and it's the only worker the broker talks to **bidirectionally over a notification-only link** (no id-bearing request/response). It supervises it the same optional, non-fatal way as node-info / proxy: a missing default sibling (and no `--workload-manager-path`) just means no cluster workload relay. The broker plays the workload **broker** role between the proxy and the manager:
 
@@ -310,10 +310,12 @@ The broker retains source observations and receipt times so fresh subscribers
 and on-demand queries see the latest accepted hardware. Reads and replay add
 elapsed cache time without reducing sample age. Source removal, proof changes,
 worker replacement, and endpoint replacement withdraw the affected hardware.
-For client display, the broker stamps `info.observedAt` with receipt time in Unix
-milliseconds. It identifies the whole display observation, independently of GPU
-sample age, so fresh CPU and memory readings remain visible if GPU collection
-stalls. That timestamp stays fixed across cached delivery while `msSince`
+For client display, `info.observedAt` records local receipt time in Unix
+milliseconds. Manual hardware retains the time assigned by the owned manual
+worker; other observations are stamped by the broker. It identifies the whole
+display observation, independently of GPU sample age, so fresh CPU and memory
+readings remain visible if GPU collection stalls. That timestamp stays fixed
+across cached delivery while `msSince`
 increases, so snapshots and live pushes identify the same observation. Owned local
 observations are stamped before caching and relay to scanner, preserving their
 timestamp through scanner restart replay.

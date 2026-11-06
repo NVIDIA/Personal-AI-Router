@@ -56,6 +56,7 @@ Emitted when a manually added node has been probed and its initial status determ
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
     "telemetryValid":true,
     "msSince":120,
+    "observedAt":1793966400000,
     "hostUuid":"stable-node-uuid",
     "identityVerification":"pinned",
     "discoveryRecordId":"opaque-proof-bound-record-id"
@@ -77,6 +78,13 @@ bound to the local identity/admission and peer pin/admission. Pin changes,
 departure, or identity replacement withdraw that proof and all hardware fields;
 configured engine endpoints remain independently available. In-flight probes
 cannot update an entry removed and re-added under the same ID.
+
+Outer `observedAt` is the worker's local receipt time for the displayed
+authenticated hardware or public preview, in Unix milliseconds. Cached
+notifications and list replies preserve it; each accepted read gets its own
+receipt time even when measurements are unchanged. It is independent of GPU
+validity and `msSince`, and is omitted when hardware is absent. The broker uses
+it as `info.observedAt` so repeated delivery does not create extra chart samples.
 
 Optional `preview` contains a separate sanitized `noderec.NodeInfo` public
 hardware reading. It has its own receipt time and sample age and never changes

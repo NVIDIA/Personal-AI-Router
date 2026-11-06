@@ -240,7 +240,7 @@ and `info.peer` claims are stripped. The broker retains observations separately
 by source and record, ages them on snapshot reads and replay, and exposes them
 as optional `AvailableNode.info`. Only local and pinned measurements enter
 service and scheduling inputs.
-For client display, the broker adds a stable `info.observedAt` receipt time for
+For client display, the broker exposes a stable `info.observedAt` receipt time for
 the whole display observation. Cached snapshots and live updates preserve it
 while GPU sample age increases. It is separate from scanner identity and
 scheduling evidence.

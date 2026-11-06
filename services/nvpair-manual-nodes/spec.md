@@ -142,6 +142,7 @@ durable entry list and replays it after a restart (§7.6, §9).
   "memory": { "total_bytes": 137438953472, "used_bytes": 34359738368 },
   "telemetryValid": true,
   "msSince": 137,
+  "observedAt": 1793966400000,
   "hostUuid": "b1f0c2de-8a44-4d0e-9c1a-77e2f5b3a901",
   "discoveryRecordId": "peer:b1f0c2de-8a44-4d0e-9c1a-77e2f5b3a901:opaque-binding",
   "identityVerification": "pinned"
@@ -152,14 +153,21 @@ durable entry list and replays it after a restart (§7.6, §9).
 
 `telemetryValid` and `msSince` are always present. They describe node-info's GPU sample validity and age in milliseconds, including time spent in the request and local caches. A valid idle sample is distinct from an unavailable sample. Failed authenticated reads clear these fields to `false` and `0`; consumers ignore age while validity is false.
 
+Outer `observedAt` is the worker's local receipt time for the displayed
+authenticated hardware or public preview, in Unix milliseconds. Cached
+notifications and list replies preserve it; each accepted read gets its own
+receipt time even when measurements are unchanged. It is independent of GPU
+validity and `msSince`, and is omitted when hardware is absent.
+
 `discoveryRecordId` is an opaque binding to the current local identity and admission and the exact peer pin. It is present only after authentication. Removed or replaced authorization clears that binding, `hostUuid`, and service hardware measurements. Cached status reads and notifications include elapsed time since the accepted hardware response.
 
 Optional `preview` is a separate `noderec.NodeInfo` hardware snapshot for display
 only. Public `hostUuid`, `clusterUuid`, and `peer` claims are stripped. A separate
 receipt timestamp preserves preview age across list replies and notifications.
-`node_info_up` and top-level hardware fields remain exclusively authenticated
-service observations. Every accepted preview emits `node/updated`; a failed read
-retains the previous preview with its original age and retries on the next cycle.
+`node_info_up` and top-level GPU, CPU, memory, validity, and age fields describe
+only authenticated service observations. Every accepted preview emits
+`node/updated`; a failed read retains the previous preview and continues aging it,
+then retries on the next cycle.
 
 Example emitted frame (`node/discovered`, an unnamed entry whose LM Studio is absent):
 
@@ -252,6 +260,10 @@ is projected into optional `AvailableNode.info` in `discovery:get-nodes` and
 elapsed sample age on queries/replay. It strips full display hardware from
 scheduling snapshots. Preview data cannot join a verified host by a response UUID
 or supply verified service fields. Desktop and TUI receive the broker snapshots.
+The broker projects the owned worker's outer `observedAt` into `info.observedAt`;
+timestamps inside public responses cannot select the displayed observation time.
+Broker delivery receipt time remains separate, so only additional broker cache
+time is added to the GPU age already reported by the worker.
 
 `node/removed` drops the alias and either reprojects the key from a surviving alias or releases the store, telemetry, and proxy claims. `nvpair-node-scanner` participates in none of this — it has no manual concept.
 
@@ -265,7 +277,7 @@ This worker persists nothing. The broker owns a JSON array of `{ id, address, na
 
 ### 7.8 Versioning
 
-`Version` is stamped at build time via `-ldflags "-X main.Version=…"` from `services/versions.json` (`components["nvpair-manual-nodes"]`), printed by `--version`, and carried in the `ready` notification's `version`. The worker and broker share the current identity-verification and hardware contracts. Optional fields use `omitempty`, including `tls_port`, `mtls`, `lmstudio_models`, `cpu`, `memory`, `hostUuid`, and `preview`; `lmstudio_up`, `lmstudio_port`, `telemetryValid`, and `msSince` are always present.
+`Version` is stamped at build time via `-ldflags "-X main.Version=…"` from `services/versions.json` (`components["nvpair-manual-nodes"]`), printed by `--version`, and carried in the `ready` notification's `version`. The worker and broker share the current identity-verification and hardware contracts. Optional fields use `omitempty`, including `tls_port`, `mtls`, `lmstudio_models`, `cpu`, `memory`, `observedAt`, `hostUuid`, and `preview`; `lmstudio_up`, `lmstudio_port`, `telemetryValid`, and `msSince` are always present.
 
 ## 8. Dependencies
 
