@@ -169,25 +169,25 @@ func planMaxNumSeqs(args []string, limit int) []string {
 }
 
 // launchFlagValue returns the value of a flag in either "--flag value" or
-// "--flag=value" form, and whether the flag is present at all. When the flag
-// is repeated, the last value wins, as it does for vLLM's argument parser.
+// "--flag=value" form, and whether the flag is present at all. vLLM accepts
+// underscores and dashes in option names; values are always left literal.
+// When the flag is repeated, the last value wins, as it does for vLLM's parser.
 // Arguments after a "--" terminator are not options, so they are not read.
 func launchFlagValue(args []string, flag string) (value string, found bool) {
+	flag = strings.ReplaceAll(flag, "_", "-")
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		switch {
-		case arg == "--":
-			return value, found
-		case arg == flag:
-			value, found = "", true
-			if i+1 < len(args) {
-				value = args[i+1]
-				i++ // its value
-			}
-		default:
-			if v, ok := strings.CutPrefix(arg, flag+"="); ok {
-				value, found = v, true
-			}
+		if arg == "--" {
+			break
+		}
+		name, inlineValue, hasInlineValue := strings.Cut(arg, "=")
+		if strings.ReplaceAll(name, "_", "-") != flag {
+			continue
+		}
+		value, found = inlineValue, true
+		if !hasInlineValue && i+1 < len(args) {
+			value = args[i+1]
+			i++ // its value
 		}
 	}
 	return value, found

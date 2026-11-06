@@ -94,6 +94,23 @@ func TestLaunchFlagValue_ReadsTheValueVLLMWillUse(t *testing.T) {
 	test("absent", []string{"--port", "8001"}, "", false)
 }
 
+func TestLaunchFlagValue_AcceptsBothOptionSpellingsWithoutChangingValues(t *testing.T) {
+	test := func(name string, args []string, flag, want string) {
+		t.Run(name, func(t *testing.T) {
+			value, found := launchFlagValue(args, flag)
+
+			assert.True(t, found)
+			assert.Equal(t, want, value)
+		})
+	}
+	test("separate underscore option", []string{"--download_dir", "models_with_underscores"}, "--download-dir", "models_with_underscores")
+	test("equals form preserves underscores and equals in the value", []string{"--download_dir=models_with_underscores=revision"}, "--download-dir", "models_with_underscores=revision")
+	test("last occurrence uses underscores", []string{"--download-dir", "first", "--download_dir=second"}, "--download-dir", "second")
+	test("last occurrence uses dashes", []string{"--download_dir=first", "--download-dir", "second"}, "--download-dir", "second")
+	test("the declared flag uses underscores", []string{"--download_dir", "models"}, "--download_dir", "models")
+	test("an underscore option after the terminator is ignored", []string{"--download-dir", "first", "--", "--download_dir", "second"}, "--download-dir", "first")
+}
+
 // The GPU share holds what the launch needs, at least minAutoUtil, and never
 // more than is free: a share above free memory fails the launch, so the cap on
 // free memory wins over the floor.
@@ -957,4 +974,19 @@ func TestAutoContext_LeavesExplicitDtypeMemorySizingToTheEngine(t *testing.T) {
 	test("float32 weights and cache", "--dtype", "float32")
 	test("explicit half precision", "--dtype", "half")
 	test("quantized cache", "--kv-cache-dtype", "fp8")
+}
+
+func TestAutoContext_PreservesTheUnderscoreContextLimit(t *testing.T) {
+	withoutGPU(t)
+	// A first-start metadata fixture needs no cache symlinks, including on Windows.
+	snapshot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(snapshot, "config.json"), []byte(qwen8BConfig), 0o644))
+	fetch := func() (hfPendingModel, bool) {
+		return hfPendingModel{snapshot: snapshot, weights: 16_400_000_000}, true
+	}
+	args := []string{"--model", "Qwen/Qwen3-8B", "--max_model_len", "8192"}
+
+	extra, _ := planHFContext(args, t.TempDir(), 65536, fetch, nil)
+
+	assert.Empty(t, extra, "the explicit limit must prevent automatic context and rope overrides")
 }

@@ -487,6 +487,8 @@ func TestHFLaunchHub_UsesTheDownloadDirVLLMUses(t *testing.T) {
 	test("no --download-dir: the environment's cache", []string{"serve", "--model", "org/m"}, filepath.Join(home, "env-hub"))
 	test("an absolute directory", []string{"--download-dir", filepath.Join(home, "models")}, filepath.Join(home, "models"))
 	test("the = form", []string{"--download-dir=" + filepath.Join(home, "models")}, filepath.Join(home, "models"))
+	test("the underscore spelling", []string{"--download_dir", filepath.Join(home, "models_with_underscores")}, filepath.Join(home, "models_with_underscores"))
+	test("the underscore spelling with =", []string{"--download_dir=" + filepath.Join(home, "models_with_underscores")}, filepath.Join(home, "models_with_underscores"))
 	test("~ is the home folder", []string{"--download-dir", "~/models"}, filepath.Join(home, "models"))
 	test("a relative directory", []string{"--download-dir", "models"}, filepath.Join(cwd, "models"))
 	test("an empty value: the environment's cache", []string{"--download-dir="}, filepath.Join(home, "env-hub"))
@@ -510,6 +512,7 @@ func TestHFActionVars_UsesSavedArgumentsInPlaceOfManifestDefaults(t *testing.T) 
 	test("empty saved arguments removes the manifest directory", []string{}, envCache)
 	test("saved arguments omit the manifest directory", []string{"--model", "org/saved"}, envCache)
 	test("saved arguments select another directory", []string{"--model", "org/saved", "--download-dir", savedCache}, savedCache)
+	test("saved arguments use the underscore spelling", []string{"--model", "org/saved", "--download_dir", savedCache}, savedCache)
 }
 
 // Cache inspection also runs while stopped. Unrelated unresolved launch
