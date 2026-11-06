@@ -1,15 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Cross-process tests for the two broker-management hotfix legs:
+// Cross-process tests for broker management:
 //
 //	A. the broker bridges a reachable supervised manual node into
 //	   ollama-proxy (node/add-manual), so inference can route to a node
-//	   that never appears over mDNS; and
+//	   that never appears over mDNS;
 //	B. the broker accepts a client-originated errors:report and forwards it
-//	   into nvpair-errors, reflected in the next errors:update.
+//	   into nvpair-errors, reflected in the next errors:update; and
+//	C. the broker starts the vLLM facade by default.
 //
-// Both reuse the supervision harness (startBrokerWith) and binaries built by
+// These reuse the supervision harness (startBrokerWith) and binaries built by
 // TestMain.
 package tests
 
@@ -352,4 +353,16 @@ func TestBroker_AcceptsClientErrorsReportRequest(t *testing.T) {
 			require.FailNow(t, fmt.Sprintf("timed out (ack=%v update=%v) for errors:report request %q", gotAck, gotUpdate, id))
 		}
 	}
+}
+
+func TestBrokerDefaults_StartTheVLLMProxy(t *testing.T) {
+	stdin, msgs, stderr, cleanup := startBrokerWith(t, "--proxy-path", proxyBin)
+	t.Cleanup(cleanup)
+	go func() {
+		for range stderr {
+		}
+	}()
+
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	assert.Positive(t, waitEngineProxyReady(t, "vllm-proxy", stdin, msgs, 15*time.Second), "the default vLLM proxy must be a listening facade")
 }

@@ -159,10 +159,10 @@ const (
 	llamaCPPQuantization = "Q4_K_M"
 	// llamaCPPLimit is the page size for each publisher and for each search.
 	llamaCPPLimit = 50
-	// llamaCPPSearchCacheLimit bounds how many distinct queries are kept, oldest
-	// use evicted first. Each is a short list, but the set of possible queries
-	// is not bounded at all.
-	llamaCPPSearchCacheLimit = 20
+	// searchCacheLimit bounds how many distinct queries are kept across every
+	// engine's catalog, oldest use evicted first. Each is a short list, but the
+	// set of possible queries is not bounded at all.
+	searchCacheLimit = 20
 	// maxCatalogQuery bounds a query passed upstream, in characters. A longer
 	// one is refused rather than shortened, which would search for something
 	// the operator did not type.
@@ -215,11 +215,19 @@ type hfModelRow struct {
 	Gated       json.RawMessage `json:"gated"`
 	PipelineTag string          `json:"pipeline_tag"`
 	Siblings    []hfSibling     `json:"siblings"`
+	// Safetensors is present when the listing asks to expand it: the parameter
+	// count per tensor type, which gives a model's size without a second request.
+	Safetensors struct {
+		Parameters map[string]int64 `json:"parameters"`
+		Total      int64            `json:"total"`
+	} `json:"safetensors"`
 }
 
 // hfSibling is one file in a Hugging Face repo.
 type hfSibling struct {
 	RFilename string `json:"rfilename"`
+	// Size is reported only when the repo is asked for with blobs=true.
+	Size int64 `json:"size"`
 }
 
 // catalogService answers engine:catalog. The embedded list is parsed once; each
@@ -234,12 +242,13 @@ type catalogService struct {
 
 	lmStudio *listingCache
 	llamaCPP *listingCache
+	vllm     *listingCache
 
 	// searchMu guards the llama.cpp searches, kept by lowercased query with
 	// searchOrder from least to most recently used.
-	searchMu      sync.Mutex
-	llamaSearches map[string]*listingCache
-	searchOrder   []string
+	searchMu    sync.Mutex
+	searches    map[string]*listingCache
+	searchOrder []string
 
 	// baseURL overrides the listing endpoint in tests. Empty means the real one;
 	// the caching and coalescing around the fetch is the part worth testing, and
@@ -281,11 +290,12 @@ func newCatalogService() *catalogService {
 	// endpoint has no reason to redirect, and following one blindly would let an
 	// upstream (or a captive portal) move the request somewhere else.
 	c := &catalogService{
-		client:        newEngineHTTPClient(catalogHTTPTimeout),
-		llamaSearches: map[string]*listingCache{},
+		client:   newEngineHTTPClient(catalogHTTPTimeout),
+		searches: map[string]*listingCache{},
 	}
 	c.lmStudio = &listingCache{label: "lm studio catalog", fetch: c.fetchLmStudio}
 	c.llamaCPP = &listingCache{label: "llama.cpp catalog", fetch: c.fetchLlamaCPP}
+	c.vllm = &listingCache{label: "vllm catalog", fetch: c.fetchVLLM}
 	return c
 }
 
@@ -337,6 +347,28 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		return CatalogResult{
 			// GGUF has no machine-locked quantizations, so nothing is filtered
 			// for the target.
+			Models:     models,
+			Source:     source,
+			Platform:   platform,
+			Arch:       arch,
+			FetchedAt:  fetchedAt.UTC().Format(time.RFC3339),
+			Searchable: true,
+			Query:      query,
+		}, nil
+	case "vllm":
+		query, err := catalogQuery(query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		models, fetchedAt, err := c.vllmCatalog(ctx, query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		source := hfModelsAPI + "?filter=safetensors&author=" + strings.Join(vllmPublishers, ",")
+		if query != "" {
+			source = hfModelsAPI + "?filter=safetensors&search=" + url.QueryEscape(query)
+		}
+		return CatalogResult{
 			Models:     models,
 			Source:     source,
 			Platform:   platform,
@@ -402,6 +434,8 @@ func normalizeCatalogEngine(engine string) string {
 		return "lmstudio"
 	case "llama-cpp", "llama.cpp", "llamacpp":
 		return "llamacpp"
+	case "vllm":
+		return "vllm"
 	default:
 		return e
 	}
@@ -579,23 +613,25 @@ func (c *catalogService) llamaCPPCatalog(ctx context.Context, query string) ([]C
 // llamaCPPSearch is the cache for one query, created on first use. Queries
 // differing only in case share one.
 func (c *catalogService) llamaCPPSearch(query string) *listingCache {
-	key := strings.ToLower(query)
+	return c.searchCache("llamacpp:"+strings.ToLower(query), "llama.cpp search", func(ctx context.Context) ([]CatalogModel, error) {
+		rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
+		if err != nil {
+			return nil, err
+		}
+		return normalizeListing(rows, llamaCPPModel), nil
+	})
+}
+
+// searchCache returns the cache for one search, creating it on first use and
+// marking it most recently used. The set of possible queries is unbounded, so
+// the least recently used are evicted past searchCacheLimit.
+func (c *catalogService) searchCache(key, label string, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
-	search, ok := c.llamaSearches[key]
+	search, ok := c.searches[key]
 	if !ok {
-		search = &listingCache{
-			label:   "llama.cpp search",
-			emptyOK: true,
-			fetch: func(ctx context.Context) ([]CatalogModel, error) {
-				rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
-				if err != nil {
-					return nil, err
-				}
-				return normalizeLlamaCPPRows(rows), nil
-			},
-		}
-		c.llamaSearches[key] = search
+		search = &listingCache{label: label, emptyOK: true, fetch: fetch}
+		c.searches[key] = search
 	}
 	for i, k := range c.searchOrder {
 		if k == key {
@@ -604,26 +640,38 @@ func (c *catalogService) llamaCPPSearch(query string) *listingCache {
 		}
 	}
 	c.searchOrder = append(c.searchOrder, key)
-	for len(c.searchOrder) > llamaCPPSearchCacheLimit {
-		delete(c.llamaSearches, c.searchOrder[0])
+	for len(c.searchOrder) > searchCacheLimit {
+		delete(c.searches, c.searchOrder[0])
 		c.searchOrder = c.searchOrder[1:]
 	}
 	return search
 }
 
-// fetchLlamaCPP reads every approved publisher's GGUF repos. Any publisher
-// failing fails the whole fetch, so a refresh never replaces the cached list
-// with one that is silently missing a publisher.
+// fetchLlamaCPP reads every approved publisher's GGUF repos.
 func (c *catalogService) fetchLlamaCPP(ctx context.Context) ([]CatalogModel, error) {
-	batches := make([][]hfModelRow, len(llamaCPPPublishers))
-	errs := make([]error, len(llamaCPPPublishers))
+	queries := make([]url.Values, 0, len(llamaCPPPublishers))
+	for _, publisher := range llamaCPPPublishers {
+		queries = append(queries, llamaCPPListing("author", publisher))
+	}
+	rows, err := c.fetchListings(ctx, queries)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeListing(rows, llamaCPPModel), nil
+}
+
+// fetchListings reads several listing requests at once and returns their
+// entries in request order. Any request failing fails the whole fetch, so a
+// refresh never replaces the cached list with one that is silently missing a
+// publisher.
+func (c *catalogService) fetchListings(ctx context.Context, queries []url.Values) ([]hfModelRow, error) {
+	batches := make([][]hfModelRow, len(queries))
+	errs := make([]error, len(queries))
 	var wg sync.WaitGroup
-	for i, publisher := range llamaCPPPublishers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			batches[i], errs[i] = c.fetchHF(ctx, llamaCPPListing("author", publisher))
-		}()
+	for i, q := range queries {
+		wg.Go(func() {
+			batches[i], errs[i] = c.fetchHF(ctx, q)
+		})
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
@@ -633,7 +681,7 @@ func (c *catalogService) fetchLlamaCPP(ctx context.Context) ([]CatalogModel, err
 	for _, batch := range batches {
 		rows = append(rows, batch...)
 	}
-	return normalizeLlamaCPPRows(rows), nil
+	return rows, nil
 }
 
 // withoutURL drops the request URL a net/http error carries, keeping the cause.
@@ -750,12 +798,12 @@ func isMLX(id string, tags []string) bool {
 	return mlxPattern.MatchString(id)
 }
 
-// The shapes a llama.cpp download depends on.
+// The shapes a catalog download depends on.
 var (
-	// llamaCPPRepoPattern is a repo id safe to pass to llama.cpp: owner/name,
-	// each starting with a letter or digit, nothing that could read as a path
-	// or a flag.
-	llamaCPPRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	// hfRepoPattern is a Hugging Face repo id safe to pass to an engine's
+	// download: owner/name, each starting with a letter or digit, nothing that
+	// could read as a path or a flag.
+	hfRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	// llamaCPPQuantFile matches the offered quantization in a GGUF file name.
 	llamaCPPQuantFile = regexp.MustCompile(`(?i)` + llamaCPPQuantization + `[.-]`)
 	// splitGGUFPattern matches a shard of a model split across files.
@@ -770,14 +818,16 @@ var generativePipelines = map[string]bool{
 	"any-to-any":         true,
 }
 
-// normalizeLlamaCPPRows converts listing entries into llama.cpp downloads,
-// dropping the ones llama.cpp cannot fetch or serve, de-duplicating across
-// publishers, and putting the most-downloaded first.
-func normalizeLlamaCPPRows(rows []hfModelRow) []CatalogModel {
+// normalizeListing converts listing entries into one engine's downloads with
+// toModel, which drops the entries that engine cannot fetch or serve. Entries
+// are de-duplicated across publishers and pipelines, the later one winning, and
+// the most-downloaded come first. llama.cpp and vLLM read the same Hugging Face
+// listing and differ only in toModel.
+func normalizeListing(rows []hfModelRow, toModel func(hfModelRow) (CatalogModel, bool)) []CatalogModel {
 	seen := make(map[string]int, len(rows))
 	out := make([]CatalogModel, 0, len(rows))
 	for _, r := range rows {
-		model, ok := llamaCPPModel(r)
+		model, ok := toModel(r)
 		if !ok {
 			continue
 		}
@@ -803,7 +853,7 @@ func llamaCPPModel(r hfModelRow) (CatalogModel, bool) {
 	if repo == "" {
 		repo = strings.TrimSpace(r.ModelID)
 	}
-	if !llamaCPPRepoPattern.MatchString(repo) {
+	if !hfRepoPattern.MatchString(repo) {
 		return CatalogModel{}, false
 	}
 	// Only an explicit false is open. A gated repo reports how it is gated, and

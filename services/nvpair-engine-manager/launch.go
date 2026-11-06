@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -24,6 +25,36 @@ func environmentKey(key string) string {
 		return strings.ToUpper(key)
 	}
 	return key
+}
+
+// setEnvironmentValue replaces every platform-equivalent spelling of key.
+// Keep the supplied spelling and value, including an explicitly empty value.
+func setEnvironmentValue(env map[string]string, key, value string) {
+	for existing := range env {
+		if environmentKey(existing) == environmentKey(key) {
+			delete(env, existing)
+		}
+	}
+	env[key] = value
+}
+
+// launchArguments applies saved arguments to a manifest command. Settings
+// validation checks the editable policy before a launch; readers can also use
+// this composition without detecting or starting an engine.
+func launchArguments(rt Runtime, defaults []string, vars map[string]string) []string {
+	if rt.LaunchArgs == nil {
+		return defaults
+	}
+	var args []string
+	if p := rt.EditableLaunch; p != nil {
+		args = slices.Clone(p.FixedArgs)
+		for _, control := range p.Controls {
+			if value, managed := control.managedValue(vars["host"], vars["port"]); managed && control.flag() != "" {
+				args = append(args, control.flag(), value)
+			}
+		}
+	}
+	return append(args, rt.LaunchArgs...)
 }
 
 func validEnvironmentKey(key string) bool {

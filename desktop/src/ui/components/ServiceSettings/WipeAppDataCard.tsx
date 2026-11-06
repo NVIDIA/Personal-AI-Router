@@ -17,8 +17,8 @@ function wipeMessage() {
             </Text>
             <Text kind="body/regular/sm">
                 Your downloaded models (for example <code>~/.ollama</code>, <code>~/.llamacpp</code>
-                , and <code>~/.lmstudio/models</code>) are <strong>not</strong> deleted, and neither
-                are engines you installed yourself.
+                , <code>~/.lmstudio/models</code>, and <code>~/.cache/huggingface</code>) are{' '}
+                <strong>not</strong> deleted, and neither are engines you installed yourself.
             </Text>
             <Text kind="body/regular/sm">
                 If an engine {APP_DISPLAY_NAME} installed cannot be removed, the reset stops before

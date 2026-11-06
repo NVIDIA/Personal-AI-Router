@@ -317,7 +317,7 @@ func TestValidate_RejectsInvalidManifests(t *testing.T) {
 		}, "json_match.value is required"},
 		{"action without http or cmd", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {Description: "neither"}}
-		}, "exactly one of http, cmd, or remove_path"},
+		}, "exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine"},
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
@@ -551,6 +551,23 @@ func TestBundledOllama_AllowsConfiguredStartupTime(t *testing.T) {
 	}
 }
 
+// A vLLM start fetches model metadata and probes for a tool parser before the
+// engine launches, all inside its readiness allowance. That whole allowance
+// must fit what a remote peer waits for, and the work before launch must leave
+// the engine time to come up.
+func TestBundledVLLM_StartFitsTheRemoteReadinessBudget(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
+	m, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+	for key, p := range m.Platforms {
+		require.NotNil(t, p.Runtime.Ready, "readiness probe missing (%v)", key)
+		startAllowance := time.Duration(p.Runtime.Ready.TimeoutS) * time.Second
+		assert.Greater(t, remoteReadyResponseHeaderTimeout, startAllowance, "the whole start, work before launch included (%v)", key)
+		assert.Greater(t, startAllowance, hfMetadataTimeout+toolParserProbeTimeout, "the work before launch leaves the engine time to come up (%v)", key)
+	}
+}
+
 func writeManifest(t *testing.T, dir, name string, m Manifest) {
 	t.Helper()
 	data, err := json.MarshalIndent(m, "", "  ")
@@ -675,5 +692,116 @@ func TestLMStudioInstall_UsesSafeBootstrapCommands(t *testing.T) {
 			assert.Equal(t, "https://lmstudio.ai/install.sh", p.Install.Fetch.URL, " (%v)", key)
 		}
 		assert.Equal(t, []string{"bash", "{download}"}, p.Install.Run, " (%v)", key)
+	}
+}
+
+func TestValidate_RejectsANegativeAutoLaunchRequestLimit(t *testing.T) {
+	m := validManifest()
+	platform := m.Platforms["linux/amd64"]
+	platform.Runtime.AutoLaunch = &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536, MaxNumSeqs: -1}
+	m.Platforms["linux/amd64"] = platform
+	require.ErrorContains(t, m.Validate(), "max_num_seqs", "a negative request limit was accepted")
+}
+
+// vLLM is Linux (NVIDIA) and Apple Silicon only, installs through a pinned uv
+// bootstrap, serves exactly one model per process and has no load, unload, pull or delete API. These
+// are the properties the rest of the stack (UI capabilities, the model wire,
+// the install gate) relies on, so a manifest edit that drops one fails here.
+func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *testing.T) {
+	reg := loadWithOverrides(t, t.TempDir())
+	manifest, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+	require.Len(t, manifest.Platforms, 3, "want linux/amd64, linux/arm64 and darwin/arm64 only")
+
+	// wantPin is the version the platform's install script must pin: Linux
+	// installs vLLM itself from PyPI, macOS installs the vLLM core and
+	// vLLM-Metal wheels.
+	test := func(key, wantPin string) {
+		t.Run(key, func(t *testing.T) {
+			platform, ok := manifest.Platforms[key]
+			require.True(t, ok, "vllm has no %s platform block", key)
+
+			// Our managed install must win over an external one.
+			require.GreaterOrEqual(t, len(platform.Detect), 2, "detect must list the managed install and an external one")
+			assert.True(t, strings.HasPrefix(platform.Detect[0], "{install_dir}/"), "detect order = %v, want the managed install first", platform.Detect)
+			require.NotNil(t, platform.Install)
+			require.NotNil(t, platform.Install.Fetch, "the uv bootstrap must be a fetch")
+			require.NotEmpty(t, platform.Install.Fetch.SHA256, "the uv bootstrap must be sha256-pinned")
+			assert.Empty(t, platform.Install.Script, "install must not use the unpinned script escape hatch")
+			script := strings.Join(platform.Install.Run, " ")
+			assert.Contains(t, script, wantPin, "the vLLM install must be pinned")
+			// vLLM 0.32 asks only for mistral_common>=1.11.6. Release 1.13 made an
+			// argument of get_lark_from_jinja required that vLLM 0.32 does not pass,
+			// so with the Mistral tool-call parser every request to a Mistral model
+			// fails. vLLM 0.33 makes the same call; drop the pin only with a vLLM
+			// release that itself requires mistral_common 1.13.
+			assert.Contains(t, script, "mistral_common==1.12.0", "the install must pin mistral_common==1.12.0 for vLLM 0.32")
+			if strings.HasPrefix(key, "darwin/") {
+				// The macOS wheels are downloaded by the script itself, so each one
+				// has to be checked against a digest before it is installed.
+				assert.Equal(t, 2, strings.Count(script, "shasum -a 256 -c"), "want one wheel digest check for the vLLM core and one for vLLM-Metal")
+			}
+
+			rt := platform.Runtime
+			require.NotNil(t, rt.EditableLaunch)
+			assert.Equal(t, []string{"serve"}, rt.EditableLaunch.FixedArgs, "launch must start with the fixed serve subcommand")
+			assert.Equal(t, "~/.cache/huggingface", platform.ModelsDir, "models_dir must be the Hugging Face cache")
+			// vLLM compiles FlashInfer sampling kernels at first start and that build
+			// cannot cope with the spaces in PAIR's app-data path
+			// ("Nvidia Corporation/Personal AI Router"), so it must stay off. It also
+			// keeps a system CUDA toolkit and C++ compiler from being required.
+			assert.Equal(t, "0", rt.Env["VLLM_USE_FLASHINFER_SAMPLER"], "the FlashInfer sampler must be disabled")
+			// vLLM reserves 92% of GPU memory by default and refuses a context above
+			// the model's own limit. Both are decided per model at start, so the
+			// manifest must not pin them in the saved launch.
+			require.NotNil(t, rt.AutoLaunch, "vllm must size its context and GPU share automatically")
+			assert.Equal(t, autoLaunchHFContext, rt.AutoLaunch.Kind)
+			assert.Equal(t, 65536, rt.AutoLaunch.ContextTokens, "vllm must aim for a 64K window")
+			// vLLM's default of 256 concurrent requests does not fit a hybrid model
+			// such as the default Qwen3.5-4B on a 16 GiB GPU.
+			assert.Equal(t, 32, rt.AutoLaunch.MaxNumSeqs, "vllm must run at most 32 requests at a time")
+			assert.NotContains(t, rt.Args, "--gpu-memory-utilization", "must not be pinned in the default launch")
+			assert.NotContains(t, rt.Args, "--max-model-len", "must not be pinned in the default launch")
+			assert.Equal(t, 8001, rt.Port, "the facade owns 8000")
+		})
+	}
+	test("linux/amd64", "vllm==")
+	test("linux/arm64", "vllm==")
+	test("darwin/arm64", "vllm-0.32.0")
+}
+
+func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.T) {
+	reg := loadWithOverrides(t, t.TempDir())
+	manifest, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+
+	assert.Contains(t, manifest.Actions, "list_models")
+	assert.Contains(t, manifest.Actions, "loaded_models")
+	// list_models is what is on disk; only the model being served is advertised.
+	// Listing, Delete and Pull use the hub cache vLLM itself uses, resolved from
+	// its launch environment ({hf_hub_cache}).
+	if list := manifest.Actions["list_models"]; assert.NotNil(t, list.HFCache, "list_models must list the Hugging Face cache") {
+		assert.Equal(t, "{hf_hub_cache}", list.HFCache.Dir)
+	}
+	assert.Equal(t, advertisedModelsLoaded, manifest.AdvertisedModels, "peers and the proxy must only be offered the served model")
+	if loaded := manifest.Actions["loaded_models"]; assert.NotNil(t, loaded.HTTP, "loaded_models must read vLLM's /v1/models") {
+		assert.Equal(t, "/v1/models", loaded.HTTP.Path)
+	}
+	// Switching the model is a launch-argument change plus a restart, since the
+	// engine has no load call.
+	if load := manifest.Actions["load_model"]; assert.NotNil(t, load.LaunchModel, "load_model must switch the model through a launch argument") {
+		assert.Equal(t, "--model", load.LaunchModel.Flag)
+	}
+	// vLLM cannot drop its model and keep running, so Eject stops the engine.
+	assert.True(t, manifest.Actions["unload_model"].StopEngine, "unload_model must stop the engine")
+	// Deleting is a removal from the shared cache that needs no running engine.
+	if del := manifest.Actions["delete_model"]; assert.NotNil(t, del.HFCache, "delete_model must remove from the hub cache") {
+		assert.True(t, del.HFCache.Delete)
+		assert.Equal(t, "{hf_hub_cache}", del.HFCache.Dir)
+	}
+	// Downloads go through the hf tool that ships in the engine's virtualenv.
+	if pull := manifest.Actions["pull_model"]; assert.NotNil(t, pull.HFPull, "pull_model must download through hf into the hub cache") {
+		assert.Equal(t, "hf", pull.HFPull.Tool)
+		assert.Equal(t, "{hf_hub_cache}", pull.HFPull.Dir)
 	}
 }

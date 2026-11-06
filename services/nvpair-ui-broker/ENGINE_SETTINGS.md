@@ -16,7 +16,7 @@ propagation is not part of this API.
 | `engine:preview-settings` | `{engine, nodeId?, expectedRevision, settings, resolution?}` | Normalized settings, errors, conflict, restart/rebind summary |
 | `engine:apply-settings` | Preview request plus `requestId` | `{revision, phase}` acknowledgement |
 
-`engine` is `ollama`, `lmstudio`, or `llamacpp`. `settings` contains all three
+`engine` is `ollama`, `lmstudio`, `llamacpp`, or `vllm`. `settings` contains all three
 fields: `serverPort`, `proxyPort`, `launchText`. The last field contains
 arguments and leading environment assignments, without the executable or
 startup subcommand. The argument grammar is

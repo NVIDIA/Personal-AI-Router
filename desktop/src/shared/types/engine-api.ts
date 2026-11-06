@@ -49,13 +49,17 @@ export interface EngineHubModel {
 }
 
 /** Response for the `engine:search-hub` channel. */
-export interface EngineHubSearchResponse {
-    models: EngineHubModel[]
+export interface EngineHubSearchResponse<TModel = EngineHubModel> {
+    models: TModel[]
+    /** Whether upstream queries are supported; null when the catalog could not be read. */
+    searchable: boolean | null
 }
 
 /** Engine command discriminator. */
 export type EngineCommandType =
     | 'toggle'
+    /** Stop an engine that is still starting, which a toggle cannot tell from stopped. */
+    | 'stop'
     | 'install'
     | 'installAll'
     | 'uninstall'

@@ -28,7 +28,7 @@ type removalCall struct {
 func removalBroker(t *testing.T, fail string) (*rpc.Client, <-chan removalCall) {
 	t.Helper()
 	c1, c2 := net.Pipe()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
 		cancel()
 		c1.Close()
