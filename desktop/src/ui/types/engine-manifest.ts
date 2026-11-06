@@ -43,12 +43,6 @@ export interface EngineCaps {
      */
     loadRestartsEngine?: boolean
     /**
-     * When true, the model hub can search the whole upstream catalog for a typed
-     * query (the backend's `engine:catalog` reports `searchable`), instead of only
-     * filtering the browse list.
-     */
-    hubSearch?: boolean
-    /**
      * When true, the engine restarts as part of deleting a model, so Delete asks
      * for confirmation first. The engine manager owns the restart; this flag only
      * tells the UI that deleting has that side effect.

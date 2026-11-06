@@ -108,7 +108,11 @@ selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo
 that cache (no running engine needed), and `loadModel` on a cached model switches
 the served model by restarting vLLM on it.
 `searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
-live Hugging Face catalogs for LM Studio, llama.cpp and vLLM. A non-empty
+live Hugging Face catalogs for LM Studio, llama.cpp and vLLM. It returns the model
+rows and the backend's `searchable` flag, which controls whether the model hub
+submits an upstream query or filters the populated list locally. An unavailable
+catalog reports `searchable: null`, so an explicit query can retry after an
+initial browse failure. A non-empty
 llama.cpp or vLLM query performs an explicit bounded search across public
 Hugging Face repositories (GGUF for llama.cpp, safetensors chat models for vLLM);
 other calls return the populated engine catalog. llama.cpp pull

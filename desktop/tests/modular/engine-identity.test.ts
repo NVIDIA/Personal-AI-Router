@@ -54,7 +54,6 @@ describe('engine identity', () => {
             hasModelSearchOnlyWhenRunning: false,
             hasDeleteModel: true,
             deleteBlockedWhileLoaded: true,
-            hubSearch: true,
             hasInstall: ['linux', 'darwin'],
             hasEnginePort: true,
             engineHub: { label: 'vLLM' }

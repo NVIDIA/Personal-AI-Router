@@ -809,7 +809,9 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
         ),
     'engine:command': payload => handleEngineCommand(payload),
     'engine:search-hub': payload =>
-        payload ? getEngineHubModels(payload.engineType, payload.query) : { models: [] },
+        payload
+            ? getEngineHubModels(payload.engineType, payload.query)
+            : { models: [], searchable: false },
 
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),
