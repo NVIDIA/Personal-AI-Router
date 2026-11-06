@@ -51,6 +51,45 @@ func TestBrowser_ResolvesDiscoveryRecordsWithoutReplacingVerifiedHost(t *testing
 	test("candidate arrives first", []noderec.DirectoryNode{candidate, peer})
 }
 
+// An advertised UUID is untrusted text and may equal another record's ID.
+// Selecting that record must still resolve its own endpoint in either order.
+func TestBrowser_UUIDClaimsCannotReplaceDiscoveryRecordLookups(t *testing.T) {
+	selected := noderec.DirectoryNode{
+		HostUUID: "selected-uuid", DiscoveryRecordID: "observation:selected", Name: "selected-node",
+		IdentityVerification: noderec.IdentityUnverified, IP: "192.0.2.20",
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
+	}
+	claiming := noderec.DirectoryNode{
+		HostUUID: selected.DiscoveryRecordID, DiscoveryRecordID: "observation:other", Name: "other-node",
+		IdentityVerification: noderec.IdentityUnverified, IP: "192.0.2.30",
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14322}},
+	}
+	test := func(name string, records []noderec.DirectoryNode) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			browser := newBrowser()
+			browser.setRelay(records)
+			resolve := func(key, wantAddress string, wantPort int) {
+				t.Helper()
+				addresses, port, found := browser.Resolve(key)
+				require.True(t, found, "resolve %q", key)
+				assert.Equal(t, []string{wantAddress}, addresses, "resolve %q", key)
+				assert.Equal(t, wantPort, port, "resolve %q", key)
+			}
+
+			resolve("observation:selected", "192.0.2.20", 14321)
+			resolve("observation:other", "192.0.2.30", 14322)
+			// Both candidates must remain selectable by hostname despite the colliding text.
+			resolve("selected-node", "192.0.2.20", 14321)
+			resolve("other-node", "192.0.2.30", 14322)
+		})
+	}
+	test("selected record arrives first", []noderec.DirectoryNode{selected, claiming})
+	test("claiming record arrives first", []noderec.DirectoryNode{claiming, selected})
+}
+
+// Every lookup form must preserve address ranking so pairing and reconnection
+// can try the publisher's alternative addresses when the first is unreachable.
 func TestBrowser_ResolvesRecordUUIDAndHostnameWithRankedAddresses(t *testing.T) {
 	const peerUUID = "peer-uuid"
 	const recordID = "peer:peer-uuid"
