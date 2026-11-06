@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -319,4 +319,81 @@ func TestSameStringSet_IgnoresOrdering(t *testing.T) {
 	test("different elements", []string{"x"}, []string{"y"}, false)
 	test("duplicates matter", []string{"x", "x"}, []string{"x", "y"}, false)
 	test("same multiset with dups", []string{"x", "x", "y"}, []string{"y", "x", "x"}, true)
+}
+
+// An engine that serves one model per process can list many models on disk but
+// answers for only the one it is running. The proxy routes to any node that
+// advertises a model, so advertising the on-disk list would send requests to an
+// engine that cannot answer them. advertised_models: "loaded" keeps the local
+// list_models view (what the UI offers) apart from what is advertised.
+func TestModelsResultAdvertisesLoadedModelsWhenDeclared(t *testing.T) {
+	cache := t.TempDir()
+	writeHFRepo(t, cache, "other/cached-model", llmFiles(map[string]string{"model.safetensors": "w"}))
+
+	m := loadedActionManifest()
+	m.AdvertisedModels = advertisedModelsLoaded
+	m.Actions["list_models"] = Action{
+		HFCache: &ActionHFCache{Dir: cache},
+		Result:  &ActionResult{Array: "data", Field: "id"},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ex := newTestExecutor(t, m)
+	ctx := context.Background()
+	t.Cleanup(func() { _ = ex.Stop("fake") })
+	if err := ex.Start(ctx, "fake"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	res := ex.ModelsResult(ctx)
+	served := []string{"llama3.2:1b"} // what the fake engine is running
+	if want := map[string][]string{"fake": served}; !reflect.DeepEqual(res.ByEngine, want) {
+		t.Fatalf("advertised ByEngine = %v, want only the loaded model %v", res.ByEngine, want)
+	}
+	if !reflect.DeepEqual(res.Models, served) {
+		t.Fatalf("advertised Models = %v, want %v", res.Models, served)
+	}
+	if want := map[string][]string{"fake": served}; !reflect.DeepEqual(res.LoadedByEngine, want) {
+		t.Fatalf("LoadedByEngine = %v, want %v", res.LoadedByEngine, want)
+	}
+
+	// The local view still offers what is on disk, running or not.
+	for _, running := range []bool{true, false} {
+		if !running {
+			if err := ex.Stop("fake"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		raw, err := ex.Action(ctx, "fake", "list_models", nil)
+		if err != nil {
+			t.Fatalf("list_models (running=%v): %v", running, err)
+		}
+		if ids, ok := extractStringsResult(raw, m.Actions["list_models"].Result); !ok || !reflect.DeepEqual(ids, []string{"other/cached-model"}) {
+			t.Fatalf("list_models (running=%v) = %v, %v", running, ids, ok)
+		}
+	}
+	// Stopped: nothing is running, so nothing is advertised.
+	if res := ex.ModelsResult(ctx); len(res.ByEngine) != 0 || len(res.Models) != 0 {
+		t.Fatalf("a stopped engine advertised %v / %v", res.ByEngine, res.Models)
+	}
+}
+
+func TestAdvertisedModelsValidation(t *testing.T) {
+	m := testEngineManifest(fakeEngineBin)
+	m.AdvertisedModels = advertisedModelsLoaded
+	if err := m.Validate(); err == nil {
+		t.Error(`advertised_models "loaded" without a loaded_models action was accepted`)
+	}
+	m.AdvertisedModels = "everything"
+	if err := m.Validate(); err == nil {
+		t.Error("an unknown advertised_models value was accepted")
+	}
+	m = loadedActionManifest()
+	for _, value := range []string{"", advertisedModelsList, advertisedModelsLoaded} {
+		m.AdvertisedModels = value
+		if err := m.Validate(); err != nil {
+			t.Errorf("advertised_models %q rejected: %v", value, err)
+		}
+	}
 }

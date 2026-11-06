@@ -74,6 +74,7 @@ func TestRemoteReadinessBudget_CoversEngineStartupAllowance(t *testing.T) {
 	test("start waits", controlStartPath, "ollama", true)
 	test("delete waits", controlDeletePath, "lmstudio", true)
 	test("Ollama load waits", controlLoadPath, "ollama", true)
+	test("vLLM load waits", controlLoadPath, "vllm", true)
 	test("LM Studio load does not wait", controlLoadPath, "lmstudio", false)
 	test("stop does not wait", controlStopPath, "ollama", false)
 	test("unload does not wait", controlUnloadPath, "ollama", false)

@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # nvpair-engine-manager
 
 A config-driven control plane for local inference engines. The bundled
-manifests support Ollama, LM Studio, and llama.cpp. It manages everything about
+manifests support Ollama, LM Studio, llama.cpp, and vLLM. It manages everything about
 an engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
@@ -39,6 +39,114 @@ supported NVIDIA/Metal devices can accelerate, while the dynamic CPU backend
 remains the fallback. Hardware acceptance, not `/health` alone, is required to
 claim GPU activation.
 
+### vLLM
+
+The `vllm` manifest covers Linux (`linux/amd64` and `linux/arm64`, NVIDIA GPU
+with a CUDA 13 driver) and Apple Silicon macOS (`darwin/arm64`, macOS 15 or newer,
+through the vLLM-Metal plugin). There is no native Windows path, so on Windows
+`engine:get-installed` leaves vLLM out and PAIR does not offer it. The
+macOS install builds a managed Python 3.12 venv with a sha256-pinned `uv` and
+installs the pinned vLLM core and vLLM-Metal wheels, each checked against a
+digest, so no compiler is needed. `vllm serve` listens on loopback `8001`, and
+the proxy facade owns `8000`. vLLM serves **one model per process** and has no
+load, unload, pull or delete API of its own, so the manifest provides them as
+manager actions: `load_model`, `unload_model`, `pull_model` and `delete_model`,
+described below. PAIR passes requests straight to vLLM and does not load or
+unload models on its own: a model is loaded with Load and released with Eject.
+
+The default launch serves `Qwen/Qwen3.5-4B` through `--model <hugging-face-id>`.
+The model thinks before it answers, and with no `--reasoning-parser` in the launch
+that reasoning arrives in the reply ahead of the answer; adding
+`--reasoning-parser qwen3` in the launch settings moves it to
+`reasoning_content`. The model is about 9.3 GB of weights, so the default needs a GPU with at least 16 GB of
+memory; on a smaller GPU, download and load a smaller model before starting.
+Edit the `--model` argument, or use `load_model`, to serve another model. Only
+`--host` and `--port` are managed controls, and there is no CORS control.
+The context window and GPU share are chosen automatically at every start
+(`auto_launch`, kind `hf_context`), not pinned in the saved launch. The manager
+reads the model's `config.json` from the Hugging Face cache and the free GPU
+memory (`nvidia-smi`; on a unified-memory machine such as DGX Spark, where it
+reports `[N/A]`, the total and available system memory from `/proc/meminfo`),
+then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
+model with a larger window is capped there, and a smaller one is shrunk to what
+fits), a YaRN `--hf-overrides` when the model's own window is below 64K (for
+example Qwen3-8B, which stops at 40,960), and a `--gpu-memory-utilization` just
+large enough for the weights, that KV cache and overhead, instead of vLLM's
+92% default. A model with its own rope scaling is never overridden. Anything
+the user saves in the launch arguments wins, and a tensor- or pipeline-parallel
+launch is left untouched. A model that is not yet downloaded gets only a capped
+memory share. The added arguments appear in the engine-manager log
+(`engine launch adjusted for the model and GPU`) and not in the saved settings,
+so switching models re-sizes for the new one.
+It also enables tool calling, which agent clients need on every request
+(vLLM answers HTTP 400 to `tool_choice: "auto"` otherwise). The parser is found
+from the model, not from a list of families: `hf` when the tokenizer ships
+`response_template` metadata, otherwise the parser of the installed vLLM that
+reads the model's own tool-call format. To find it, `toolparser_probe.py` runs
+with vLLM's Python, renders the model's chat template with one example tool call,
+and offers that text to every parser vLLM provides; among parsers that read it
+equally, `hermes`, `qwen3_coder`, `llama3_json`, `mistral` and `pythonic` are
+preferred in that order. The probe downloads nothing, runs no code from the model
+repository, takes a few seconds, and is done once per model and vLLM while the
+service runs. The chosen parser appears in the log
+(`vLLM tool-call parser chosen from the model's chat template`).
+When no parser reads the model's format (Nemotron Nano v2's `<TOOLCALL>`, or a
+template with no tool support), nothing is added, and a request that asks for
+tool calls gets vLLM's own error (HTTP 400). A parser named in the launch
+arguments is always used as given.
+The environment sets `VLLM_USE_FLASHINFER_SAMPLER=0`. vLLM's FlashInfer sampler
+compiles GPU kernels on first start, and that build cannot handle the spaces in
+PAIR's app-data folder (`Nvidia Corporation/Personal AI Router`), so the
+built-in sampler is used instead. As a side effect no CUDA toolkit or C++
+compiler is needed. The same limit means anything that forces a FlashInfer
+kernel build (for example choosing a FlashInfer attention backend) fails until
+the install can live on a path without spaces.
+Readiness polls `/health` for up to eight minutes while weights load.
+
+The model list is the Hugging Face cache (`~/.cache/huggingface/hub`), not what
+vLLM happens to be serving: `list_models` is an `hf_cache` action listing the
+complete, text-model-shaped downloads (see `MANIFEST.md`), and it works while
+vLLM is stopped. Peers and the proxy, though, are only told about the model being
+served (`advertised_models: loaded`, read from vLLM's `GET /v1/models`), because
+the proxy routes a request to any node advertising its model and vLLM cannot
+answer for the others. A stopped vLLM advertises nothing. `load_model` switches
+the served model: it writes `--model <id>` into the saved launch arguments and
+restarts vLLM on it, restoring the previous model if the new one does not start
+(for example it does not fit in GPU memory).
+
+`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model other than the served one is refused. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
+
+`delete_model` removes a model's folder from the hub cache, and the large files it links to in the cache's shared `blobs/` store when no other model uses them (an `hf_cache` action with `delete`); the model a running vLLM is serving is refused. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one.
+
+`pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
+and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not
+GGUF, ONNX, pickle copies of weights that also exist as safetensors, or a
+duplicate consolidated file, or `original/` checkpoints), and runs the `hf` tool
+that ships beside `vllm` in the engine's virtualenv to download them into the hub
+cache. Like the other engines' pulls (one Ollama tag, one llama.cpp
+quantization), it downloads what the engine loads, not the whole repository: the
+same set vLLM fetches when it downloads a model itself. Other formats in the
+repository are not fetched; a full `hf download` adds them to the same cache
+without downloading the rest again. Progress is the
+share of those bytes that has landed in the cache, a download that makes no
+progress for the pull timeout is abandoned, and a cancelled one is stopped. It
+needs no running engine. A gated repo needs its terms accepted and `HF_TOKEN`
+(or a prior `hf auth login`) in the environment.
+
+Install is detect-first. `{install_dir}/venv/bin/vllm` (the managed install) and
+`~/.local/bin/vllm` are checked in that order, and the first one found is
+launched, so an existing install is adopted and nothing is downloaded. Otherwise
+the install downloads a sha256-pinned `uv` release, lets `uv` fetch a managed
+Python 3.12, creates `{install_dir}/venv` and installs a pinned `vllm` wheel from
+PyPI. No source build happens. The pinned wheel is a CUDA 13 build, so the install
+first checks that `nvidia-smi` exists, that the driver supports CUDA 13 or newer
+(it reads either the `CUDA UMD Version` or the older `CUDA Version` field), and
+that at least 25 GB of disk is free, enough for the engine and its default model. It fails with a clear message otherwise,
+before downloading anything. The
+download is several GB, because `torch` and the CUDA libraries come with it.
+Model weights download from Hugging Face on first start into `~/.cache/huggingface`
+(`HF_HOME`), which no removal this service performs will delete.
+
 ## Communication
 
 Bidirectional newline-delimited JSON-RPC 2.0 — the same conventions as
@@ -55,9 +163,9 @@ Requests (caller → service):
 
 | Method | Params | Result |
 |---|---|---|
-| `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
+| `engine:get-installed` | — | `{ engines: [EngineStatus] }` for every engine this host can run; an engine whose manifest has no block for the host's OS and CPU is left out |
 | `engine:describe` | `{ engine }` | the engine's manifest |
-| `engine:status` | `{ engine }` | `EngineStatus` |
+| `engine:status` | `{ engine }` | `EngineStatus`; an error for an engine this host cannot run |
 | `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes every engine this service installed, selected by its install marker, each through the `engine:uninstall` path. Backs "reset all data" in both clients; downloaded models are kept. Neither `removed` nor `error` means the engine was left alone as not ours |
@@ -68,7 +176,7 @@ Requests (caller → service):
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:catalog` | `{ engine, platform?, arch?, query? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Each engine has one curated source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. llama.cpp downloads any GGUF repo as `repo:quantization`; its browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. It is the one `searchable` source: a `query` searches all of Hugging Face under the same rules, each query cached on its own (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:catalog` | `{ engine, platform?, arch?, query? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Each engine has one curated source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. llama.cpp downloads any GGUF repo as `repo:quantization`; its browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. It is the one `searchable` source: a `query` searches all of Hugging Face under the same rules, each query cached on its own (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
@@ -186,8 +294,14 @@ allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
 reports the failed start. On Unix, stopping an owned process sends SIGTERM to
 its process group, waits the manifest's `stop.grace_s` (five seconds by
-default), then escalates to SIGKILL; `signal:"kill"` skips the grace. Failed
-startup cleanup uses the same policy. On Windows, the windowless engines we
+default), then escalates to SIGKILL, which also takes any helper processes the
+engine forked (vLLM's `EngineCore` holds the GPU) that outlived it; `signal:"kill"`
+skips the grace. Failed startup cleanup uses the same policy. While the whole
+service is shutting down the grace is capped at three seconds, whatever the
+manifest says: the parent allows engine-manager only a few seconds to stop its
+engines before it kills it, and engine-manager cannot escalate once killed, so a
+longer grace would leave the engine orphaned (an engine still loading its model
+does not answer a polite signal at all). On Windows, the windowless engines we
 spawn cannot receive a graceful (non-`/F`) close, so stopping uses immediate
 `taskkill /T /F`.
 
@@ -204,7 +318,9 @@ would only collide on the port. Consequences worth knowing:
 - **An adopted engine has no child process the service owns**, so `engine:stop`
   (and `engine:restart`'s stop phase, and shutdown's cleanup) resolves the PID
   bound to the engine's port and terminates it **only when that process is
-  running the very binary NVPAIR manages for the engine** — reclaiming an orphan
+  running the very binary NVPAIR manages for the engine** (for an engine
+  installed as a Python package, such as vLLM, that is the interpreter running the
+  engine's script, read from the process's command line on Linux) — reclaiming an orphan
   a prior run left on our own managed port (e.g. an `ollama serve` on `11435`
   whose handle was lost after a crash). This is precise to the port, so a
   genuine third-party listener on a *different* port (Ollama's own desktop app
@@ -352,7 +468,9 @@ termination, console hiding) are the only build-tagged Go
 
 Shuts down on stdin EOF (parent closed the pipe), `SIGINT`/`SIGTERM`, or a
 `shutdown` JSON-RPC request — stopping any running engines first so none
-are orphaned.
+are orphaned. A signal shuts down at once even while stdin is idle and an engine
+is still starting; the start is cancelled and its process group force-killed
+within the three-second shutdown grace (see Process-mode stops above).
 
 That engine sweep (`StopAll`) runs **exactly once per process**, and every
 caller returns only once it has finished. An ordinary quit asks for it twice:
@@ -367,3 +485,8 @@ the sweep, which would re-pay the readiness probe for every adopted engine whose
 stop is declined. They do retry any engine whose stop failed through a process
 handle or a stop command, such as an `lms server stop` that errored, because
 another attempt can succeed where a declined stop cannot.
+
+`engine:status` and `engine:get-installed` never wait for a lifecycle operation
+(a start, stop, install or model switch can hold an engine for minutes): while
+one runs they report what is already known and the operation reports its own
+result.

@@ -127,13 +127,13 @@ func TestParseProxyEngines_ValidatesSelectedEngineNames(t *testing.T) {
 			require.Equal(t, append([]string{}, want...), append([]string{}, got...))
 		})
 	}
-	test("default set", "ollama,lmstudio,llamacpp", []string{"ollama", "lmstudio", "llamacpp"}, false)
+	test("default set", "ollama,lmstudio,llamacpp,vllm", []string{"ollama", "lmstudio", "llamacpp", "vllm"}, false)
 	test("single engine", "lmstudio", []string{"lmstudio"}, false)
 	test("whitespace and blanks are tolerated", " ollama , , lmstudio ", []string{"ollama", "lmstudio"}, false)
 	test("duplicates collapse", "ollama,ollama", []string{"ollama"}, false)
 	test("empty selects nothing", "", nil, false)
 	// Silently fronting the engines it did recognize would look like the flag worked.
-	test("unknown engine fails", "ollama,vllm", nil, true)
+	test("unknown engine fails", "ollama,nosuchengine", nil, true)
 }
 
 // An engine left out of --proxy-engines is not started, and neither is any

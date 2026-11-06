@@ -175,6 +175,14 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
+	// An engine whose model is a launch argument cannot start without one. vLLM
+	// would serve, and first download, a default model of its own instead.
+	if flag := modelLaunchFlag(st.manifest); flag != "" {
+		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
+		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
+			return fmt.Errorf("%s has no model selected; load a model to start it", st.manifest.DisplayName)
+		}
+	}
 	vars := st.pathVars()
 	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
 	vars["port"] = strconv.Itoa(port)
@@ -240,6 +248,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
 		return err
 	}
+	launch = applyAutoLaunch(engine, rt, launch, vars["models_dir"])
 
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()
@@ -280,7 +289,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop(stopGrace(rt))
+		proc.stop(e.stopGraceFor(rt))
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
@@ -455,7 +464,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			// we manage :11435) is never touched; we decline only a process
 			// whose image we can't confirm is ours.
 			pid, image, ok := pidOnPort(port)
-			if ok && isManagedInstallPath(binPath, st.installDir) && isOurEngineImage(image, binPath) {
+			if ok && isManagedInstallPath(binPath, st.installDir) && (isOurEngineImage(image, binPath) || procRunsScript(pid, binPath)) {
 				st.mu.Lock()
 				st.stopping = true
 				if st.healthStop != nil {
@@ -463,7 +472,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 					st.healthStop = nil
 				}
 				st.mu.Unlock()
-				grace := stopGrace(rt)
+				grace := e.stopGraceFor(rt)
 				terminatePID(pid, grace)
 				if !pidAlive(pid) {
 					e.markStopped(st, engine)
@@ -499,7 +508,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop(stopGrace(rt))
+		proc.stop(e.stopGraceFor(rt))
 	}
 
 	e.markStopped(st, engine)
@@ -550,6 +559,26 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 // stopGrace is how long to wait after a graceful stop before escalating to a
 // forced kill, taken from the manifest's stop spec: default 5s, the spec's
 // grace_s when set, or 0 when the spec asks for an immediate kill.
+// shutdownStopGraceCap is the longest an engine is given to exit on a polite
+// signal once the whole service is shutting down. The parent bounds the engine
+// stop to a few seconds (the broker allows engine-manager 5s for it) and then
+// kills engine-manager, which cannot escalate to a forced kill after that: the
+// engine, running in its own process group, would be left behind. So at
+// shutdown the force kill has to come inside that window, however generous the
+// manifest's grace is for an ordinary stop. An engine that is still loading
+// (vLLM with its weights half read) does not answer a polite signal at all.
+const shutdownStopGraceCap = 3 * time.Second
+
+// stopGraceFor is the grace for stopping an engine now: the manifest's, capped
+// during shutdown.
+func (e *Executor) stopGraceFor(rt Runtime) time.Duration {
+	grace := stopGrace(rt)
+	if e.shuttingDown.Load() && grace > shutdownStopGraceCap {
+		return shutdownStopGraceCap
+	}
+	return grace
+}
+
 func stopGrace(rt Runtime) time.Duration {
 	grace := 5 * time.Second
 	if sp := rt.Stop; sp != nil {

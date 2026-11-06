@@ -45,11 +45,11 @@ function ModelRowInner({
         const items: { id: string; children: string; disabled?: boolean; danger?: boolean }[] = []
         // A command is already in flight for this model -- lock the whole menu so
         // the user cannot fire a second conflicting op before it resolves.
-        const busy = pendingAction !== undefined
+        const busy = !isRunning || pendingAction !== undefined
         items.push({
             id: 'load',
             children: 'Load',
-            disabled: busy || isLoaded || !model.downloaded || !isRunning
+            disabled: busy || isLoaded || !model.downloaded
         })
         if (capabilities.hasEject) {
             items.push({
@@ -63,12 +63,18 @@ function ModelRowInner({
             })
         }
         if (capabilities.hasDeleteModel) {
-            items.push({ id: 'delete', children: 'Delete', danger: true, disabled: busy })
+            items.push({
+                id: 'delete',
+                children: 'Delete',
+                danger: true,
+                disabled: busy || (isLoaded && !!capabilities.deleteBlockedWhileLoaded)
+            })
         }
         return items
     }, [
         capabilities.hasEject,
         capabilities.hasDeleteModel,
+        capabilities.deleteBlockedWhileLoaded,
         isLoaded,
         isRunning,
         model.downloaded,
@@ -88,6 +94,7 @@ function ModelRowInner({
                     modelName={model.name}
                     formattedName={formattedName}
                     isLoaded={isLoaded}
+                    disabled={!isRunning}
                     actionItems={actionItems}
                     actionDd={actionDd}
                     onAction={onAction}
@@ -97,6 +104,7 @@ function ModelRowInner({
                     progress={progress}
                     busyLabel={busyLabel}
                     hasExpiry={capabilities.hasExpiry}
+                    disabled={!isRunning}
                     expiryDd={expiryDd}
                     onExpiryChange={onExpiryChange}
                 />

@@ -109,7 +109,7 @@ func TestPortForEngine_DistinguishesDownFromUnknown(t *testing.T) {
 	p := newProxyTracker()
 	_, ready := p.portForEngine("ollama")
 	assert.False(t, ready, "a proxy that has never reported reads as ready")
-	port, ready := p.portForEngine("vllm")
+	port, ready := p.portForEngine("nosuchengine")
 	assert.False(t, ready)
 	assert.Zero(t, port)
 }

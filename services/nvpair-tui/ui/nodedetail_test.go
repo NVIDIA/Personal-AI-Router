@@ -218,7 +218,7 @@ func TestProxyIndexForEngine_NormalizesNamesAndRejectsUnknownEngine(t *testing.T
 	assert.Equal(t, 1, p.indexForEngine("lmstudio"))
 	// Case and padding must not decide whether a port renders.
 	assert.Equal(t, 0, p.indexForEngine("  OLLAMA "), "normalisation")
-	assert.Equal(t, -1, p.indexForEngine("vllm"), "unknown engine")
+	assert.Equal(t, -1, p.indexForEngine("nosuchengine"), "unknown engine")
 }
 
 // seedSettings puts a settings snapshot in the cache, as a fetch or a push
