@@ -81,9 +81,11 @@ func TestDiscoveryStore_ForwardedHardwareKeepsIndependentSampleAge(t *testing.T)
 		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
 	}, sourceScanner)
 	receivedAt := time.Now()
+	// A source-supplied ObservedAt deliberately uses another clock. The broker
+	// must replace it, then preserve its own timestamp while delivery age grows.
 	accepted, ok := store.AcceptInfo(noderec.NodeInfoEvent{
 		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
-		Info: noderec.NodeInfo{HostUUID: "self", TelemetryValid: true, MSSince: 137},
+		Info: noderec.NodeInfo{HostUUID: "self", TelemetryValid: true, MSSince: 137, ObservedAt: 1},
 	}, receivedAt)
 	require.True(t, ok)
 
@@ -95,6 +97,8 @@ func TestDiscoveryStore_ForwardedHardwareKeepsIndependentSampleAge(t *testing.T)
 	require.Len(t, nodes, 1)
 	require.NotNil(t, nodes[0].Info)
 	assert.Equal(t, int64(5137), accepted.Info.MSSince)
+	assert.Equal(t, receivedAt.UnixMilli()-137, accepted.Info.ObservedAt)
+	assert.Equal(t, accepted.Info.ObservedAt, nodes[0].Info.ObservedAt)
 	assert.GreaterOrEqual(t, nodes[0].Info.MSSince, int64(137)+beforeRead.Sub(receivedAt).Milliseconds())
 	assert.LessOrEqual(t, nodes[0].Info.MSSince, int64(137)+afterRead.Sub(receivedAt).Milliseconds())
 }
@@ -127,11 +131,27 @@ func TestDiscoveryStore_PreservesHardwareAgeAcrossModelUpdates(t *testing.T) {
 	require.NotNil(t, snapshot[0].Info)
 	assert.Equal(t, []string{"new model"}, snapshot[0].Models)
 	assert.Equal(t, []GPUInfo{{Name: "GPU"}}, snapshot[0].Info.GPUs)
+	assert.Equal(t, observedAt.UnixMilli()-137, snapshot[0].Info.ObservedAt)
 
 	// Bound the age by the actual snapshot operation, so a slow test runner
 	// cannot fail an otherwise correct result through an arbitrary time limit.
 	assert.GreaterOrEqual(t, snapshot[0].Info.MSSince, int64(137)+beforeRead.Sub(observedAt).Milliseconds())
 	assert.LessOrEqual(t, snapshot[0].Info.MSSince, int64(137)+afterRead.Sub(observedAt).Milliseconds())
+}
+
+// TelemetryValid describes GPU scheduling telemetry. A CPU-only observation
+// still needs a stable display timestamp when that flag is false.
+func TestDiscoveryStore_CPUObservationUsesReceiptTimeWithoutGPUTelemetry(t *testing.T) {
+	store := newDiscoveryStore()
+	store.Upsert(EnrichedNode{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+	}, sourceScanner)
+	accepted, ok := store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
+		Info: noderec.NodeInfo{HostUUID: "self", CPU: &CPUInfo{Name: "CPU"}, ObservedAt: 1},
+	}, time.UnixMilli(100_000))
+	require.True(t, ok)
+	assert.Equal(t, int64(100_000), accepted.Info.ObservedAt)
 }
 
 // Cached hardware belongs to a particular authenticated record and endpoint.
@@ -282,6 +302,7 @@ func TestDiscoveryStore_PreservesManualHardwareAgeAfterScannerRemoval(t *testing
 	require.Len(t, snapshot, 1)
 	require.NotNil(t, snapshot[0].Info)
 	assert.Equal(t, []GPUInfo{{Name: "manual GPU"}}, snapshot[0].Info.GPUs)
+	assert.Equal(t, observedAt.UnixMilli()-137, snapshot[0].Info.ObservedAt)
 
 	assert.GreaterOrEqual(t, snapshot[0].Info.MSSince, int64(137)+beforeRead.Sub(observedAt).Milliseconds())
 	assert.LessOrEqual(t, snapshot[0].Info.MSSince, int64(137)+afterRead.Sub(observedAt).Milliseconds())
@@ -374,7 +395,10 @@ func TestScannerNodeInfo_RejectsSnapshotsForReplacedRecord(t *testing.T) {
 	params, err = json.Marshal(value)
 	require.NoError(t, err)
 	scanner.handleNotify(noderec.NotifyNodeInfo, params)
-	assert.Equal(t, []noderec.NodeInfoEvent{value}, received)
+	require.Len(t, received, 1)
+	assert.Equal(t, value.DiscoveryRecordID, received[0].DiscoveryRecordID)
+	assert.Equal(t, value.Info.HostUUID, received[0].Info.HostUUID)
+	assert.Positive(t, received[0].Info.ObservedAt)
 }
 
 // The client store keys verified peers by host UUID, while the worker relay

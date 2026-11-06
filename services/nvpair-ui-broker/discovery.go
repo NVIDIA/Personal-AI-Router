@@ -142,6 +142,17 @@ type storedNode struct {
 	lastSeen time.Time
 }
 
+// observeNodeInfo fixes a display sample's time in the broker's clock domain.
+// A source cannot choose this timestamp, and delivery/cache delays only age
+// MSSince afterward. CPU-only observations without valid GPU telemetry use receipt time.
+func observeNodeInfo(info noderec.NodeInfo, receivedAt time.Time) noderec.NodeInfo {
+	info.ObservedAt = receivedAt.UnixMilli()
+	if info.TelemetryValid {
+		info.ObservedAt = max(int64(0), info.ObservedAt-max(int64(0), info.MSSince))
+	}
+	return info
+}
+
 // AcceptInfo caches and returns hardware only under its current scanner record.
 // Public previews are sanitized for both storage and forwarding and stay under
 // discovery record IDs, separate from verified host keys.
@@ -181,6 +192,7 @@ func (s *discoveryStore) AcceptInfo(value noderec.NodeInfoEvent, receivedAt time
 			return noderec.NodeInfoEvent{}, false
 		}
 	}
+	value.Info = observeNodeInfo(value.Info, receivedAt)
 	node.Info = &value.Info
 	node.infoReceivedAt = receivedAt
 	return value, true

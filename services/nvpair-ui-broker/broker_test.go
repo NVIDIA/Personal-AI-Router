@@ -34,11 +34,13 @@ func TestBrokerDiscoverySubscribe_IncludesCachedLocalHardware(t *testing.T) {
 		HostUUID: "self", GPUs: []GPUInfo{{Name: "local GPU"}},
 		CPU: &CPUInfo{Name: "local CPU", Cores: 8}, Memory: &MemoryInfo{TotalBytes: 16384},
 	}
+	receivedAt := time.Now()
 	_, ok := broker.store.AcceptInfo(noderec.NodeInfoEvent{
 		HostUUID: "self", DiscoveryRecordID: "local:self", IdentityVerification: noderec.IdentityLocal,
 		Info: info,
-	}, time.Now())
+	}, receivedAt)
 	require.True(t, ok)
+	info.ObservedAt = receivedAt.UnixMilli()
 	requestID := json.RawMessage(`1`)
 
 	broker.handleMessage(&Message{JSONRPC: "2.0", ID: &requestID, Method: "discovery:subscribe"})
