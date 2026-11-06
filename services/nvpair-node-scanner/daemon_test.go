@@ -249,6 +249,47 @@ func TestLocalNodeInfo_UsesMeasurementsFromLocalWorker(t *testing.T) {
 	test("after leaving", true)
 }
 
+type localNodePublicationWriter struct {
+	bytes.Buffer
+	modelUpdateMu         *sync.Mutex
+	modelUpdateCouldEnter bool
+}
+
+func (w *localNodePublicationWriter) Write(frame []byte) (int, error) {
+	var message Message
+	if err := json.Unmarshal(frame, &message); err != nil {
+		return 0, err
+	}
+	// Model and hardware updates must stay serialized from mutation through
+	// publication, or an older full-node event can overwrite newer models.
+	// Probe the shared lock here without relying on goroutine timing. Blocking
+	// this writer would serialize both notifications behind the codec's lock.
+	if message.Method == noderec.NotifyNodeUpdated && w.modelUpdateMu.TryLock() {
+		w.modelUpdateCouldEnter = true
+		w.modelUpdateMu.Unlock()
+	}
+	return w.Buffer.Write(frame)
+}
+
+func TestLocalNodeInfo_SerializesHardwarePublicationWithModelUpdates(t *testing.T) {
+	d := newSelfTestDaemon("self-uuid", "192.0.2.17")
+	// Start with a local record but no hardware so the snapshot emits a full update.
+	d.publishSelf()
+	output := &localNodePublicationWriter{modelUpdateMu: &d.peerMu}
+	d.codec = NewCodec(output)
+	info := noderec.NodeInfo{HostUUID: "self-uuid", GPUs: []GPUInfo{{Name: "GPU"}}}
+
+	d.acceptLocalNodeInfo(info)
+
+	message, err := NewCodec(&output.Buffer).Read()
+	require.NoError(t, err)
+	require.Equal(t, noderec.NotifyNodeUpdated, message.Method)
+	var event noderec.NodeEvent
+	require.NoError(t, json.Unmarshal(message.Params, &event))
+	assert.Equal(t, info.GPUs, event.Node.GPUs)
+	assert.False(t, output.modelUpdateCouldEnter, "model updates must not overtake a hardware publication")
+}
+
 func TestLocalNodeInfo_UsageChangesEmitMeasurementsWithoutDirectoryUpdates(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.0.2.17")
 	info := noderec.NodeInfo{

@@ -177,9 +177,9 @@ const (
 	localInfoUpdated
 )
 
-// applyLocalInfo changes only hardware under one directory lock. Background
-// model refreshes do not take selfMu, so separate get/upsert calls could overwrite
-// their newer model inventory with the hardware handler's earlier copy.
+// applyLocalInfo updates hardware while preserving the current model inventory.
+// The daemon holds peerMu through mutation and publication to order the resulting
+// full-node notification with model updates.
 // Measurement-only changes retain LastSeen and do not report a directory update.
 func (d *directory) applyLocalInfo(info noderec.NodeInfo) (noderec.DirectoryNode, localInfoResult) {
 	d.mu.Lock()
