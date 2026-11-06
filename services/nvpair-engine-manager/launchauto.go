@@ -34,11 +34,21 @@ const (
 	minAutoUtil    = 0.15
 )
 
-// gpuMemory reports total and free bytes on GPU 0. It is a variable so tests
-// can supply a machine.
+// gpuMemory reports memory only when the launch has one unambiguous GPU.
+// It is a variable so tests can supply a machine.
 var gpuMemory = nvidiaSMIMemory
 
-func nvidiaSMIMemory() (total, free int64, ok bool) {
+func nvidiaSMIMemory(env map[string]string) (total, free int64, ok bool) {
+	// CUDA ordinals can differ from nvidia-smi's physical-device order. Leave
+	// memory sizing to the engine when it has an explicit device selection.
+	if _, selected := os.LookupEnv("CUDA_VISIBLE_DEVICES"); selected {
+		return 0, 0, false
+	}
+	for name := range env {
+		if environmentKey(name) == "CUDA_VISIBLE_DEVICES" {
+			return 0, 0, false
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits").Output()
@@ -48,12 +58,16 @@ func nvidiaSMIMemory() (total, free int64, ok bool) {
 	return parseGPUMemory(string(out), systemMemory)
 }
 
-// parseGPUMemory reads the first row of nvidia-smi's memory.total,memory.free
-// query, in MiB. On a unified-memory machine such as DGX Spark the GPU shares
-// system RAM and nvidia-smi reports [N/A]; system memory then stands in, as it
-// does in nvpair-node-info, and as vLLM itself sees it there.
+// parseGPUMemory reads a single GPU's memory.total,memory.free query, in MiB.
+// Multiple devices are ambiguous without reproducing CUDA's enumeration, so
+// the engine handles their memory sizing. On a unified-memory machine such as
+// DGX Spark the GPU shares system RAM and nvidia-smi reports [N/A]; system
+// memory then stands in, as it does in nvpair-node-info and vLLM itself.
 func parseGPUMemory(out string, system func() (total, available int64, ok bool)) (total, free int64, ok bool) {
-	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	line := strings.TrimSpace(out)
+	if strings.ContainsAny(line, "\r\n") {
+		return 0, 0, false
+	}
 	parts := strings.Split(line, ",")
 	if len(parts) != 2 {
 		return 0, 0, false
@@ -124,7 +138,7 @@ func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command lau
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
 	}
-	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch)
+	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch, command.Env)
 	if tools, parser := planToolCalling(ctx, command.Args, hub, command.Bin, fetch); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
@@ -363,7 +377,7 @@ func autoGPUShare(need, total, free int64) (float64, bool) {
 // is not in the cache yet is read through fetch, when given, since vLLM
 // downloads it on this start. Without its size and config, only the memory
 // share is bounded.
-func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetcher) (extra []string, note string) {
+func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
 	}
@@ -381,7 +395,7 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 		return nil, ""
 	}
 
-	total, free, haveGPU := gpuMemory()
+	total, free, haveGPU := gpuMemory(env)
 	found, known := findLaunchModel(args, hubDir, fetch)
 	if !known {
 		// Not downloaded yet and Hugging Face could not answer, so its size and

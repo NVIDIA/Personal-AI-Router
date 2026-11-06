@@ -51,14 +51,14 @@ func pendingModel(t *testing.T, cache, id, config string, weightBytes int64) hfM
 func withGPU(t *testing.T, totalGiB, freeGiB int64) {
 	t.Helper()
 	old := gpuMemory
-	gpuMemory = func() (int64, int64, bool) { return totalGiB * gib, freeGiB * gib, true }
+	gpuMemory = func(map[string]string) (int64, int64, bool) { return totalGiB * gib, freeGiB * gib, true }
 	t.Cleanup(func() { gpuMemory = old })
 }
 
 func withoutGPU(t *testing.T) {
 	t.Helper()
 	old := gpuMemory
-	gpuMemory = func() (int64, int64, bool) { return 0, 0, false }
+	gpuMemory = func(map[string]string) (int64, int64, bool) { return 0, 0, false }
 	t.Cleanup(func() { gpuMemory = old })
 }
 
@@ -130,7 +130,7 @@ func TestAutoContext_SizesTheModelNamedLast(t *testing.T) {
 	// use it rather than fall back to the uncached first one.
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"serve", "--model", "org/not-cached", "--model", "Qwen/Qwen3-8B"}, cache, 65536, nil)
+	extra, _ := planHFContext([]string{"serve", "--model", "org/not-cached", "--model", "Qwen/Qwen3-8B"}, cache, 65536, nil, nil)
 
 	assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"), "sized from Qwen3-8B's config: %v", extra)
 }
@@ -139,7 +139,7 @@ func TestAutoContext_ExtendsAShortModelToTheTarget(t *testing.T) {
 	withGPU(t, 48, 48)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"serve", "--model", "Qwen/Qwen3-8B"}, cache, 65536, nil)
+	extra, _ := planHFContext([]string{"serve", "--model", "Qwen/Qwen3-8B"}, cache, 65536, nil, nil)
 
 	assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"), "the model alone stops at 40960")
 	var overrides struct {
@@ -165,7 +165,7 @@ func TestAutoContext_CapsALongModelAtTheTarget(t *testing.T) {
 	cfg := strings.Replace(qwen8BConfig, "40960", "262144", 1)
 	cache := cachedModel(t, "Qwen/Long", cfg, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/Long"}, cache, 65536, nil)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Long"}, cache, 65536, nil, nil)
 
 	assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"), "the target, not the 262144 native window")
 	assert.NotContains(t, extra, "--hf-overrides", "a model that already supports the target needs no rope override")
@@ -176,7 +176,7 @@ func TestAutoContext_LeavesModelsWithRopeScalingAlone(t *testing.T) {
 	cfg := strings.Replace(qwen8BConfig, `"torch_dtype"`, `"rope_scaling":{"rope_type":"yarn","factor":4.0},"torch_dtype"`, 1)
 	cache := cachedModel(t, "Qwen/Scaled", cfg, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/Scaled"}, cache, 131072, nil)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Scaled"}, cache, 131072, nil, nil)
 
 	assert.NotContains(t, extra, "--hf-overrides", "must not override a model's own rope scaling")
 	assert.Equal(t, "40960", flagOf(t, extra, "--max-model-len"))
@@ -186,7 +186,7 @@ func TestAutoContext_ShrinksToWhatFitsInFreeMemory(t *testing.T) {
 	withGPU(t, 48, 22)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536, nil)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536, nil, nil)
 
 	n, err := strconv.ParseInt(flagOf(t, extra, "--max-model-len"), 10, 64)
 	require.NoError(t, err)
@@ -204,7 +204,7 @@ func TestAutoContext_KeepsTheShareWithinFreeMemoryOnALargeBusyGPU(t *testing.T) 
 	withGPU(t, 48, 7)
 	cache := cachedModel(t, "Qwen/Qwen3-0.6B", qwen8BConfig, 1_200_000_000)
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-0.6B"}, cache, 65536, nil)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-0.6B"}, cache, 65536, nil, nil)
 
 	assert.InDelta(t, 0.12, utilOf(t, extra), 0.0001)
 	assert.LessOrEqual(t, utilOf(t, extra)*48, 6.0, "the share must fit the 6 GiB free beyond the margin")
@@ -215,14 +215,14 @@ func TestAutoContext_NeverOverridesWhatTheUserSet(t *testing.T) {
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 
 	t.Run("the user's context", func(t *testing.T) {
-		extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len=8192"}, cache, 65536, nil)
+		extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len=8192"}, cache, 65536, nil, nil)
 
 		assert.NotContains(t, extra, "--max-model-len")
 		assert.NotContains(t, extra, "--hf-overrides")
 		assert.LessOrEqual(t, utilOf(t, extra), 0.45, "an 8K window needs far less of the GPU")
 	})
 	t.Run("the user's GPU share", func(t *testing.T) {
-		extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--gpu-memory-utilization", "0.5"}, cache, 65536, nil)
+		extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--gpu-memory-utilization", "0.5"}, cache, 65536, nil, nil)
 
 		assert.NotContains(t, extra, "--gpu-memory-utilization")
 		n, err := strconv.ParseInt(flagOf(t, extra, "--max-model-len"), 10, 64)
@@ -231,7 +231,7 @@ func TestAutoContext_NeverOverridesWhatTheUserSet(t *testing.T) {
 		assert.GreaterOrEqual(t, n, int64(4096))
 	})
 	t.Run("both", func(t *testing.T) {
-		extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len", "4096", "--gpu-memory-utilization", "0.3"}, cache, 65536, nil)
+		extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", "--max-model-len", "4096", "--gpu-memory-utilization", "0.3"}, cache, 65536, nil, nil)
 
 		assert.Empty(t, extra)
 	})
@@ -242,7 +242,7 @@ func TestAutoContext_SkipsShardedLaunches(t *testing.T) {
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 	test := func(flag string) {
 		t.Run(flag, func(t *testing.T) {
-			extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", flag, "2"}, cache, 65536, nil)
+			extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B", flag, "2"}, cache, 65536, nil, nil)
 
 			assert.Empty(t, extra, "sizing a sharded launch needs more than GPU 0")
 		})
@@ -254,7 +254,7 @@ func TestAutoContext_SkipsShardedLaunches(t *testing.T) {
 func TestAutoContext_GivesAModelNotInTheCacheWhatIsFree(t *testing.T) {
 	withGPU(t, 48, 20)
 
-	extra, _ := planHFContext([]string{"--model", "org/not-downloaded"}, t.TempDir(), 65536, nil)
+	extra, _ := planHFContext([]string{"--model", "org/not-downloaded"}, t.TempDir(), 65536, nil, nil)
 
 	assert.NotContains(t, extra, "--max-model-len", "an unknown model's limits are unknown")
 	assert.LessOrEqual(t, utilOf(t, extra), 19.0/48.0+0.001, "must leave a margin of the 20 GiB free")
@@ -264,7 +264,7 @@ func TestAutoContext_BoundsTheWindowWithoutAGPUReading(t *testing.T) {
 	withoutGPU(t)
 	cache := cachedModel(t, "Qwen/Qwen3-8B", qwen8BConfig, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536, nil)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, cache, 65536, nil, nil)
 
 	assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"), "the window does not depend on the GPU reading")
 	assert.NotContains(t, extra, "--gpu-memory-utilization", "without a reading the GPU share is left to vLLM")
@@ -275,7 +275,7 @@ func TestAutoContext_WrapsOverridesForAMultimodalConfig(t *testing.T) {
 	cfg := `{"architectures":["Qwen3VLForConditionalGeneration"],"text_config":` + qwen8BConfig + `}`
 	cache := cachedModel(t, "Qwen/VL", cfg, 16_400_000_000)
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/VL"}, cache, 65536, nil)
+	extra, _ := planHFContext([]string{"--model", "Qwen/VL"}, cache, 65536, nil, nil)
 
 	var overrides map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(flagOf(t, extra, "--hf-overrides")), &overrides))
@@ -292,8 +292,8 @@ func TestAutoContext_SizesByTheWeightsVLLMLoadsNotTheDiskTheSnapshotUses(t *test
 	repo := writeHFRepo(t, both, "Qwen/Qwen3-8B", map[string]string{"pytorch_model.bin": "x"})
 	require.NoError(t, os.Truncate(filepath.Join(repo, "blobs", "blob-pytorch_model.bin"), 16_400_000_000))
 
-	alone, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, single, 65536, nil)
-	withCopy, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, both, 65536, nil)
+	alone, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, single, 65536, nil, nil)
+	withCopy, _ := planHFContext([]string{"--model", "Qwen/Qwen3-8B"}, both, 65536, nil, nil)
 
 	assert.Equal(t, alone, withCopy)
 	models, err := scanHFCache(both)
@@ -355,18 +355,18 @@ func TestAutoContext_ReadsTheRevisionVLLMLoads(t *testing.T) {
 	cache := hfRevisions(t)
 
 	t.Run("main", func(t *testing.T) {
-		extra, _ := planHFContext([]string{"--model", "org/m"}, cache, 65536, nil)
+		extra, _ := planHFContext([]string{"--model", "org/m"}, cache, 65536, nil, nil)
 
 		assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"))
 		assert.NotContains(t, extra, "--hf-overrides", "main's 131072-token window needs no rope override")
 	})
 	t.Run("an explicit older revision", func(t *testing.T) {
-		extra, _ := planHFContext([]string{"--model", "org/m", "--revision", "aaa111"}, cache, 65536, nil)
+		extra, _ := planHFContext([]string{"--model", "org/m", "--revision", "aaa111"}, cache, 65536, nil, nil)
 
 		assert.Contains(t, extra, "--hf-overrides", "aaa111's 8192-token window is extended to the target")
 	})
 	t.Run("a revision that is not cached", func(t *testing.T) {
-		extra, _ := planHFContext([]string{"--model", "org/m", "--revision", "ccc333"}, cache, 65536, nil)
+		extra, _ := planHFContext([]string{"--model", "org/m", "--revision", "ccc333"}, cache, 65536, nil, nil)
 
 		assert.NotContains(t, extra, "--max-model-len", "no other revision's config is read")
 	})
@@ -488,7 +488,7 @@ func TestParseGPUMemory_ReadsADiscreteGPUAndFallsBackOnUnifiedMemory(t *testing.
 		})
 	}
 	reads("discrete GPU, in MiB", "49140, 48600\n", 49140<<20, 48600<<20)
-	reads("first GPU of several", "24576, 20000\n49140, 48600\n", 24576<<20, 20000<<20)
+	unreadable("multiple GPUs without an identified CUDA device", "24576, 20000\n49140, 48600\n")
 	reads("DGX Spark reports N/A", "[N/A], [N/A]\n", 128*gib, 100*gib)
 	reads("not supported", "[Not Supported], [Not Supported]\n", 128*gib, 100*gib)
 	unreadable("malformed", "error\n")
@@ -520,7 +520,7 @@ func TestAutoContext_FirstStartOfAnUncachedModelGetsRoomForItsWeights(t *testing
 	withGPU(t, 16, 15)
 	cache := t.TempDir()
 
-	extra, note := planHFContext([]string{"--model", "Qwen/Qwen3.5-4B"}, cache, 65536, pendingModel(t, cache, "Qwen/Qwen3.5-4B", qwen35_4BConfig, qwen35_4BBytes))
+	extra, note := planHFContext([]string{"--model", "Qwen/Qwen3.5-4B"}, cache, 65536, pendingModel(t, cache, "Qwen/Qwen3.5-4B", qwen35_4BConfig, qwen35_4BBytes), nil)
 
 	weightsAndOverhead := float64(qwen35_4BBytes)*weightsSlack + float64(vllmOverhead)
 	assert.GreaterOrEqual(t, utilOf(t, extra)*16*float64(gib), weightsAndOverhead, "the share must hold the weights and overhead: %v", extra)
@@ -537,7 +537,7 @@ func TestAutoContext_DoesNotFetchACachedModel(t *testing.T) {
 		return hfPendingModel{}, false
 	}
 
-	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3.5-8B", "--model", "Qwen/Qwen3-8B"}, cache, 65536, fetch)
+	extra, _ := planHFContext([]string{"--model", "Qwen/Qwen3.5-8B", "--model", "Qwen/Qwen3-8B"}, cache, 65536, fetch, nil)
 
 	assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"))
 }
@@ -768,7 +768,7 @@ func TestFetchHFMetadata_FallsBackWhenHuggingFaceCannotAnswer(t *testing.T) {
 			withGPU(t, 16, 15)
 			extra, _ := planHFContext([]string{"--model", "org/model"}, f.hub, 65536, func() (hfPendingModel, bool) {
 				return f.fetch(t, "org/model", "main")
-			})
+			}, nil)
 			assert.InDelta(t, 0.87, utilOf(t, extra), 0.0001)
 			assert.NotContains(t, extra, "--max-model-len")
 		})
@@ -890,8 +890,48 @@ func TestAutoContext_KeepsTheNativeLimitWithUserConfigOverrides(t *testing.T) {
 	}
 	args := []string{"--model", "Qwen/Qwen3-8B", "--hf-overrides", `{"attention_dropout":0.0}`}
 
-	extra, _ := planHFContext(args, t.TempDir(), 65536, fetch)
+	extra, _ := planHFContext(args, t.TempDir(), 65536, fetch, nil)
 
 	assert.Equal(t, "40960", flagOf(t, extra, "--max-model-len"))
 	assert.NotContains(t, extra, "--hf-overrides")
+}
+
+func TestApplyAutoLaunch_UsesTheEngineDeviceEnvironment(t *testing.T) {
+	env := map[string]string{"CUDA_VISIBLE_DEVICES": "1"}
+	old := gpuMemory
+	var received map[string]string
+	gpuMemory = func(got map[string]string) (int64, int64, bool) {
+		received = got
+		return 0, 0, false
+	}
+	t.Cleanup(func() { gpuMemory = old })
+	rt := Runtime{AutoLaunch: &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536}}
+	command := launchCommand{
+		Args: []string{"--model", "org/model", "--tool-call-parser", "hermes", "--enable-auto-tool-choice"},
+		Env:  env,
+	}
+
+	launch := applyAutoLaunch(t.Context(), "vllm", rt, command, t.TempDir(), nil)
+
+	assert.Equal(t, env, received)
+	assert.NotContains(t, launch.Args, "--gpu-memory-utilization")
+}
+
+func TestNvidiaSMIMemory_LeavesExplicitDeviceSelectionToTheEngine(t *testing.T) {
+	// Register restoration before testing without an inherited selection.
+	t.Setenv("CUDA_VISIBLE_DEVICES", "")
+	require.NoError(t, os.Unsetenv("CUDA_VISIBLE_DEVICES"))
+	test := func(name string, env map[string]string) {
+		t.Run(name, func(t *testing.T) {
+			total, free, ok := nvidiaSMIMemory(env)
+
+			assert.False(t, ok)
+			assert.Zero(t, total)
+			assert.Zero(t, free)
+		})
+	}
+	test("selected device", map[string]string{"CUDA_VISIBLE_DEVICES": "1"})
+	test("no visible devices", map[string]string{"CUDA_VISIBLE_DEVICES": ""})
+	t.Setenv("CUDA_VISIBLE_DEVICES", "1")
+	test("inherited selection", nil)
 }
