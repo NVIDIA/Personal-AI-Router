@@ -85,25 +85,13 @@ func (e *Executor) StatusAtPort(engine string, probePort int) (EngineStatus, err
 func (e *Executor) GetInstalled() []EngineStatus {
 	var out []EngineStatus
 	for _, name := range e.reg.Names() {
-		st, err := e.state(name)
+		status, err := e.Status(name)
 		if err != nil {
 			// No block for this host, such as vLLM on Windows: the engine
 			// cannot be installed or run here, so it is not offered at all.
 			continue
 		}
-		// Same reasoning as StatusAtPort: one engine mid-start must not hold up
-		// the listing of every other engine.
-		if !st.opMu.TryLock() {
-			out = append(out, e.snapshot(name, st))
-			continue
-		}
-		pathInstalled, _ := e.Detect(name)
-		st.mu.Lock()
-		port := st.port
-		st.mu.Unlock()
-		e.reconcilePresence(context.Background(), name, st, pathInstalled, port, false)
-		out = append(out, e.snapshot(name, st))
-		st.opMu.Unlock()
+		out = append(out, status)
 	}
 	return out
 }
