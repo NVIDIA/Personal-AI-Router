@@ -98,12 +98,7 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
-		// A Stop that cancelled this start waits for opMu, which is still held
-		// here, so it is still counted as waiting.
-		if e.stopWaiting(st) && !e.shuttingDown.Load() {
-			return fmt.Errorf("%w: %w", errStartStopped, err)
-		}
-		return err
+		return e.startStopped(st, err)
 	}
 	return e.setDesiredEnabled(engine, true)
 }
@@ -112,6 +107,16 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 // for that, so callers answer with the engine's status, stopped, rather than an
 // error carrying the cancelled engine's partial output.
 var errStartStopped = errors.New("the start was stopped")
+
+// startStopped wraps a failed start's error in errStartStopped when a Stop or
+// Eject cut it short. Callers must still hold st.opMu: the Stop that cancelled
+// the start waits for it, so it is still counted as waiting.
+func (e *Executor) startStopped(st *engineState, err error) error {
+	if e.stopWaiting(st) && !e.shuttingDown.Load() {
+		return fmt.Errorf("%w: %w", errStartStopped, err)
+	}
+	return err
+}
 
 // doStart performs the start. Callers must hold st.opMu.
 func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, opts startOpts) error {
@@ -828,7 +833,7 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 		return err
 	}
 	if err := e.doStart(ctx, st, engine, startOpts{}); err != nil {
-		return err
+		return e.startStopped(st, err)
 	}
 	return e.setDesiredEnabled(engine, true)
 }

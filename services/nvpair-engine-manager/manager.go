@@ -337,13 +337,16 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 	case "engine:uninstall":
 		err = m.exec.Uninstall(ctx, p.Engine)
 	case "engine:start":
-		if err = start(); errors.Is(err, errStartStopped) {
-			err = nil
-		}
+		err = start()
 	case "engine:stop":
 		err = m.exec.Stop(p.Engine)
 	case "engine:restart":
 		err = m.exec.Restart(ctx, p.Engine)
+	}
+	// A start, restart or install-and-start that the user's Stop cut short
+	// answers with the status, stopped.
+	if errors.Is(err, errStartStopped) {
+		err = nil
 	}
 	if err != nil {
 		m.codec.RespondError(msg.ID, -32000, err.Error())

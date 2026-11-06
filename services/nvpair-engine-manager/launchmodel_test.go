@@ -409,27 +409,58 @@ func TestStop_CancelsAStartThatIsStillLoading(t *testing.T) {
 func TestRunOp_AnswersAStartTheUserStoppedWithTheStoppedStatus(t *testing.T) {
 	e := switchModelExecutor(t, "--model")
 	slowStarts(t, e)
+
+	status := stopDuringOp(t, e, "engine:start", `{"engine":"fake"}`)
+
+	assert.False(t, status.Running)
+}
+
+// The broker no longer holds a Stop back while a Restart is starting the engine
+// again, so a Restart is cut short the same way and answers the same way: the
+// desktop and the TUI wait for its reply.
+func TestRunOp_AnswersARestartTheUserStoppedWithTheStoppedStatus(t *testing.T) {
+	e := switchModelExecutor(t, "--model")
+	slowStarts(t, e)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+
+	status := stopDuringOp(t, e, "engine:restart", `{"engine":"fake"}`)
+
+	assert.False(t, status.Running)
+	enabled, known, err := e.desired.get("fake")
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, enabled, "the user turned the engine off")
+}
+
+// stopDuringOp sends a lifecycle method through the manager, stops the engine once the
+// start it begins is in flight, and returns the reply, which must be the
+// engine's status, not an error: the user asked for the stop, and the error
+// would carry the cancelled engine's partial output.
+func stopDuringOp(t *testing.T, e *Executor, method, params string) EngineStatus {
+	t.Helper()
 	var out bytes.Buffer // read only after the reply, so no lock is needed
 	m := NewManager(NewCodec(&out), e, nil)
 	id := json.RawMessage("7")
 	replied := make(chan struct{})
 	go func() {
-		m.runOp(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start", Params: json.RawMessage(`{"engine":"fake"}`)})
+		m.runOp(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: method, Params: json.RawMessage(params)})
 		close(replied)
 	}()
 	waitForStartInFlight(t, e)
 
+	began := time.Now()
 	require.NoError(t, e.Stop("fake"))
 	<-replied
 
+	assert.Less(t, time.Since(began), 4*time.Second, "the reply waited out the start")
 	var reply struct {
 		Result *EngineStatus    `json:"result"`
 		Error  *json.RawMessage `json:"error"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(out.String()), &reply), out.String())
+	require.NoError(t, json.Unmarshal(out.Bytes(), &reply), out.String())
 	require.Nil(t, reply.Error, "a start the user stopped is not an error: %s", out.String())
 	require.NotNil(t, reply.Result)
-	assert.False(t, reply.Result.Running)
+	return *reply.Result
 }
 
 // loadOutcome is a load_model call's result and error.
