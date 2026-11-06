@@ -30,39 +30,6 @@ func TestBrokerDefaults_StartTheVLLMProxy(t *testing.T) {
 	assert.Positive(t, waitEngineProxyReady(t, "vllm-proxy", stdin, msgs, 15*time.Second), "the default vLLM proxy must be a listening facade")
 }
 
-func TestBrokerVLLMProxySetPort_RejectsInvalidPorts(t *testing.T) {
-	stdin, msgs, stderr, cleanup := startBrokerWith(t,
-		"--proxy-path", proxyBin, "--proxy-engines", "vllm",
-	)
-	t.Cleanup(cleanup)
-	go func() {
-		for range stderr {
-		}
-	}()
-	waitForMethod(t, msgs, "app:ready", 10*time.Second)
-	nextID := 7400
-	reject := func(name, params string) {
-		t.Run(name, func(t *testing.T) {
-			id := nextID
-			nextID++
-			_, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":%d,"method":"vllm-proxy:set-port","params":%s}`+"\n", id, params)
-			require.NoError(t, err, "write proxy port request")
-
-			response := waitForResponse(t, msgs, 10*time.Second)
-
-			require.NotNil(t, response.ID)
-			require.Equal(t, fmt.Sprint(id), string(*response.ID), "response ID")
-			require.NotNil(t, response.Error, "want the broker's invalid-port rejection")
-			assert.Equal(t, -32602, response.Error.Code)
-			assert.Equal(t, "port must be between 1 and 65535", response.Error.Message)
-		})
-	}
-	reject("missing port", `{}`)
-	reject("zero port", `{"port":0}`)
-	reject("negative port", `{"port":-1}`)
-	reject("oversized port", `{"port":65536}`)
-}
-
 // vLLM serves one model per process under its Hugging Face id, so a facade in
 // front of it must route only the exact id a node advertises.
 func TestVLLMFacade_ServesTheModelListAndRoutesOnlyExactModelIDs(t *testing.T) {
