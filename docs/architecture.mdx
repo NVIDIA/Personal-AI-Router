@@ -251,9 +251,17 @@ maximum-GPU utilization value for scheduling with the same healthy cadence and
 capped failure backoff, which the broker relays straight to the job scheduler.
 Routing never depends on renderer metrics.
 
-The scanner and Electron poller bound node-info JSON input to 1 MiB before
-parsing. Scanner and manual-node model inventory reads are bounded to 16 MiB.
+Scanner and manual-node node-info decoding reads at most 1 MiB, and their model
+inventory decoding reads at most 16 MiB. A JSON value that extends past its limit
+follows the existing enrichment or probe failure path. The Electron poller
+cancels node-info responses that exceed 1 MiB and treats them as failed polls.
 These bounds limit metadata parsing allocations independently of HTTP timeouts.
+
+Error synchronization likewise decodes at most 1 MiB of incoming JSON; a
+snapshot whose JSON value exceeds that budget returns `400` without reconciling
+errors. Remote engine install and model-pull streams instead have a per-frame
+limit, so a long operation can continue reporting progress without a cumulative
+response-size ceiling. The frame limit and failure behavior are defined in the engine-manager spec.
 
 ## Inference Data Flow
 
