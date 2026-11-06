@@ -1,18 +1,24 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { getModularBridgeState } from '@/electron/service-bridge/modular-state'
+import type { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
+import type { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
+
+type BridgeState = ReturnType<typeof getModularBridgeState>
+type Supervisor = ReturnType<typeof getModularSupervisor>
 
 const mocks = vi.hoisted(() => ({
     state: {
-        getSelfId: vi.fn(() => 'local-node'),
-        beginLocalEngineOp: vi.fn()
+        getSelfId: vi.fn<BridgeState['getSelfId']>(() => 'local-node'),
+        beginLocalEngineOp: vi.fn<BridgeState['beginLocalEngineOp']>()
     },
     supervisor: {
-        hasProcess: vi.fn(() => true),
-        sendProcess: vi.fn(),
-        callProcess: vi.fn(),
-        reportError: vi.fn()
+        hasProcess: vi.fn<Supervisor['hasProcess']>(() => true),
+        sendProcess: vi.fn<Supervisor['sendProcess']>(),
+        callProcess: vi.fn<Supervisor['callProcess']>(),
+        reportError: vi.fn<Supervisor['reportError']>()
     }
 }))
 
@@ -25,7 +31,9 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => []
 }))
-vi.mock('@/electron/service-bridge/model-catalog', () => ({ getEngineHubModels: vi.fn() }))
+vi.mock('@/electron/service-bridge/model-catalog', () => ({
+    getEngineHubModels: vi.fn<typeof getEngineHubModels>()
+}))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 
@@ -58,6 +66,7 @@ describe('local model load command', () => {
             true
         ])
 
+        assert.isDefined(onFailure)
         onFailure('timeout awaiting response headers', true)
         expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
             'Failed to load model on ollama: timeout awaiting response headers',

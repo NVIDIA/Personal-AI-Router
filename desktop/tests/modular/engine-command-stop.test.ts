@@ -1,20 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { getModularBridgeState } from '@/electron/service-bridge/modular-state'
+import type { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
+import type { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
+
+type BridgeState = ReturnType<typeof getModularBridgeState>
+type Supervisor = ReturnType<typeof getModularSupervisor>
 
 const mocks = vi.hoisted(() => ({
     state: {
-        getSelfId: vi.fn(() => 'local-node'),
-        beginLocalEngineOp: vi.fn(),
-        clearPendingEngineOp: vi.fn()
+        getSelfId: vi.fn<BridgeState['getSelfId']>(() => 'local-node'),
+        beginLocalEngineOp: vi.fn<BridgeState['beginLocalEngineOp']>(),
+        clearPendingEngineOp: vi.fn<BridgeState['clearPendingEngineOp']>()
     },
     supervisor: {
-        hasProcess: vi.fn(() => true),
-        sendProcess: vi.fn(),
-        callProcess: vi.fn(),
-        reportError: vi.fn(),
-        toggleEngineRemote: vi.fn()
+        hasProcess: vi.fn<Supervisor['hasProcess']>(() => true),
+        sendProcess: vi.fn<Supervisor['sendProcess']>(),
+        callProcess: vi.fn<Supervisor['callProcess']>(),
+        reportError: vi.fn<Supervisor['reportError']>(),
+        toggleEngineRemote: vi.fn<Supervisor['toggleEngineRemote']>()
     }
 }))
 
@@ -27,7 +33,9 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => []
 }))
-vi.mock('@/electron/service-bridge/model-catalog', () => ({ getEngineHubModels: vi.fn() }))
+vi.mock('@/electron/service-bridge/model-catalog', () => ({
+    getEngineHubModels: vi.fn<typeof getEngineHubModels>()
+}))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 
@@ -59,7 +67,8 @@ describe('stopping an engine that is still starting', () => {
             true
         ])
 
-        onFailure('cannot stop engine "vllm": it is running under external management')
+        assert.isDefined(onFailure)
+        onFailure('cannot stop engine "vllm": it is running under external management', true)
         expect(mocks.state.clearPendingEngineOp).toHaveBeenCalledWith('vllm')
         expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
             'Failed to stop vllm: cannot stop engine "vllm": it is running under external management',
