@@ -6,20 +6,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"log/slog"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,10 +28,7 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	return buf
 }
 
-// TestNodeInfoOutageIsStatedOnceAtEachEnd pins the reporting to the transitions.
-// The sweep repeats for as long as the node is advertised, so reporting every
-// attempt is what made this unreadable — and reporting none of them is what hid
-// it entirely.
+// Repeated polling reports outage and recovery transitions once each.
 func TestNodeInfoOutage_IsStatedOnceAtEachEnd(t *testing.T) {
 	logs := captureLogs(t)
 	d := &daemon{}
@@ -59,8 +46,7 @@ func TestNodeInfoOutage_IsStatedOnceAtEachEnd(t *testing.T) {
 	require.Equal(t, 1, strings.Count(logs.String(), "node-info is answering again"), "recovery reported")
 }
 
-// TestNodeInfoSilenceWhenNothingChanges keeps the steady state quiet: a peer that
-// has always answered has nothing to say about itself.
+// A peer that remains available must not produce repetitive log messages.
 func TestNodeInfoOutage_EmitsNothingWhileAvailabilityIsUnchanged(t *testing.T) {
 	logs := captureLogs(t)
 	d := &daemon{}
@@ -69,79 +55,6 @@ func TestNodeInfoOutage_EmitsNothingWhileAvailabilityIsUnchanged(t *testing.T) {
 		d.noteNodeInfo("peer-uuid", "10.0.0.5:14300", true)
 	}
 	require.Empty(t, logs.Bytes(), "a healthy peer must log nothing")
-}
-
-// TestNodeInfoConnectGivesUpBeforeTheRequestBudget covers the split itself. The
-// address is reserved for documentation and is routed nowhere, so connecting to
-// it either fails immediately (the local network says so) or hangs — and hanging
-// is the case that mattered: it must end at the connect budget rather than
-// consume the whole request timeout the enrichment client allows.
-func TestNodeInfoConnect_GivesUpBeforeTheRequestBudget(t *testing.T) {
-	require.Less(t, nodeInfoDialTimeout, nodeInfoFetchTimeout, "a connect budget of")
-
-	start := time.Now()
-	conn, err := nodeInfoTransport(nil).DialContext(context.Background(), "tcp", "192.0.2.1:14300")
-	if err == nil {
-		require.NoError(t, conn.Close())
-		require.FailNow(t, "nothing may answer at a documentation address")
-	}
-	require.Less(t, time.Since(start), nodeInfoFetchTimeout, "connect must give up at the dial budget %v", nodeInfoDialTimeout)
-}
-
-func TestNodeInfoTransport_BoundsConnectionsPerHost(t *testing.T) {
-	transport := nodeInfoTransport(nil)
-	require.Equal(t, 1, transport.MaxConnsPerHost)
-	require.Equal(t, 1, transport.MaxIdleConnsPerHost)
-}
-
-// Two requests share one connection and each fits its own timeout. Time spent
-// waiting for that connection must not consume the second request's response budget.
-func TestNodeInfoFetches_UseIndependentRequestBudgets(t *testing.T) {
-	const responseDelay = 200 * time.Millisecond
-	var requests atomic.Int32
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		time.Sleep(responseDelay)
-		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
-	}))
-	var connections atomic.Int32
-	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-		if state == http.StateNew {
-			connections.Add(1)
-		}
-	}
-	server.Start()
-	defer server.Close()
-
-	serverURL, err := url.Parse(server.URL)
-	require.NoError(t, err, "parse server URL")
-	port, err := strconv.Atoi(serverURL.Port())
-	require.NoError(t, err, "parse server port")
-	transport := nodeInfoTransport(nil)
-	defer transport.CloseIdleConnections()
-	d := &daemon{http: &http.Client{Timeout: 300 * time.Millisecond, Transport: transport}}
-
-	start := make(chan struct{})
-	results := make(chan bool, 2)
-	var wg sync.WaitGroup
-	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			_, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
-			results <- ok
-		}()
-	}
-	close(start)
-	wg.Wait()
-	close(results)
-
-	for ok := range results {
-		require.True(t, ok, "a queued healthy request consumed its timeout before reaching the peer")
-	}
-	require.Equal(t, int32(2), requests.Load(), "server received")
-	require.Equal(t, int32(1), connections.Load(), "requests used")
 }
 
 func TestNodeInfoOriginGate_HonorsCanceledWaiter(t *testing.T) {
@@ -157,40 +70,4 @@ func TestNodeInfoOriginGate_HonorsCanceledWaiter(t *testing.T) {
 		waitingRelease()
 		require.FailNow(t, "canceled origin request acquired the occupied gate")
 	}
-}
-
-func TestNodeInfoErrorBody_IsDrainedForConnectionReuse(t *testing.T) {
-	var requests atomic.Int32
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if requests.Add(1) == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, err := w.Write([]byte("temporarily unavailable"))
-			assert.NoError(t, err)
-			return
-		}
-		assert.NoError(t, json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"}))
-	}))
-	var connections atomic.Int32
-	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-		if state == http.StateNew {
-			connections.Add(1)
-		}
-	}
-	server.Start()
-	defer server.Close()
-
-	serverURL, err := url.Parse(server.URL)
-	require.NoError(t, err, "parse server URL")
-	port, err := strconv.Atoi(serverURL.Port())
-	require.NoError(t, err, "parse server port")
-	transport := nodeInfoTransport(nil)
-	defer transport.CloseIdleConnections()
-	d := &daemon{http: &http.Client{Timeout: time.Second, Transport: transport}}
-
-	_, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
-	require.False(t, ok, "HTTP 503 unexpectedly succeeded")
-	info, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
-	require.True(t, ok, "second fetch (%v, %v)", info, ok)
-	require.Equal(t, "peer-uuid", info.HostUUID, "second fetch (%v, %v)", info, ok)
-	require.Equal(t, int32(1), connections.Load(), "requests used")
 }

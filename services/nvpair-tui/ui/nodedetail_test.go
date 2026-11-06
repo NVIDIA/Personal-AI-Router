@@ -9,6 +9,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
@@ -19,6 +20,59 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// GPU sample age applies to utilization, independently of CPU and memory.
+// Retained inventory and unrelated measurements stay visible beside it.
+func TestNodeDetailHardware_ShowsAgeOfCachedGPUUtilization(t *testing.T) {
+	d := newNodeDetail(nil, nodeRow{
+		key: "peer", name: "peer", presence: presenceOnline,
+		infoReceivedAt: time.Now(),
+		info: &noderec.NodeInfo{
+			GPUs:           []noderec.GPUInfo{{Name: "Cached GPU", VramBytes: 8 << 30, UtilizationPercent: 73}},
+			CPU:            &noderec.CPUInfo{Name: "CPU", UtilizationPercent: 7},
+			Memory:         &noderec.MemoryInfo{TotalBytes: 32 << 30, UsedBytes: 12 << 30},
+			TelemetryValid: true, MSSince: 600000,
+		},
+	})
+	d.SetSize(120, 40)
+
+	block := d.hardwareBlock()
+
+	assert.Contains(t, block, "Cached GPU")
+	assert.Contains(t, block, "73% (10m ago)")
+	assert.Contains(t, block, "8.0 GiB")
+	assert.Contains(t, block, "CPU")
+	assert.Contains(t, block, "7%")
+	assert.Contains(t, block, "12.0 GiB / 32.0 GiB")
+}
+
+func TestNodeDetailHardware_IncludesTimeSinceSnapshotReceipt(t *testing.T) {
+	d := newNodeDetail(nil, nodeRow{
+		key: "peer", presence: presenceOnline,
+		infoReceivedAt: time.Now().Add(-2 * time.Minute),
+		info: &noderec.NodeInfo{
+			GPUs:           []noderec.GPUInfo{{Name: "Cached GPU", UtilizationPercent: 73}},
+			TelemetryValid: true, MSSince: 600000,
+		},
+	})
+	d.SetSize(100, 30)
+
+	assert.Contains(t, d.hardwareBlock(), "73% (12m ago)")
+	assert.Equal(t, int64(600000), d.node.info.MSSince, "rendering must not mutate the cached sample")
+}
+
+func TestNodeDetailHardware_ReportsMissingBrokerSnapshot(t *testing.T) {
+	test := func(name string, presence nodePresence, want string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			d := newNodeDetail(nil, nodeRow{key: "peer", name: "peer", presence: presence})
+
+			assert.Contains(t, d.hardwareBlock(), want)
+		})
+	}
+	test("offline node", presenceOffline, "unavailable (node is not reachable)")
+	test("reachable node without hardware", presenceOnline, "hardware: unavailable")
+}
 
 func localDetail() *nodeDetail {
 	d := newNodeDetail(nil, nodeRow{key: "self", name: "this-host", self: true, presence: presenceOnline})
@@ -32,52 +86,41 @@ func remoteDetail() *nodeDetail {
 	return d
 }
 
-// discoveryPush builds a discovery:nodes-changed notification.
-func discoveryPush(t *testing.T, nodes ...availableNode) NotificationMsg {
-	t.Helper()
-	params, err := json.Marshal(nodes)
-	require.NoError(t, err)
-	return NotificationMsg{Msg: &rpc.Message{Method: "discovery:nodes-changed", Params: params}}
-}
-
-// TestRemoteDetailFollowsDiscoveryModels is the regression guard for a peer's
-// detail screen freezing at the moment it was opened.
-//
-// A peer's model inventory arrives only in the enriched discovery snapshot —
-// there is no per-node models RPC — and the screen seeded itself from the
-// snapshot it was constructed with and then ignored every later one. Pulling a
-// model onto that peer, including from this very screen, changed nothing on
-// screen until the operator backed out and re-entered.
+// Remote models follow the broker's complete discovery snapshot through the
+// Nodes view, so a newly available model appears without reopening the detail.
 func TestRemoteDetail_FollowsDiscoveryModels(t *testing.T) {
-	d := remoteDetail()
-	d.models = modelsResult{Models: []string{"old-model"}}
-	d.refreshModels()
+	v := newNodesView(nil)
+	v.SetSize(100, 30)
+	peer := availableNode{HostUUID: "peer", Name: "peer-host", Models: []string{"old-model"}}
+	v.Update(discoveryPush(t, peer))
+	v.openDetail()
+	require.NotNil(t, v.detail)
 
-	d.update(discoveryPush(t, availableNode{
-		HostUUID:       "peer",
-		Name:           "peer-host",
-		Models:         []string{"old-model", "new-model"},
-		ModelsByEngine: map[string][]string{"ollama": {"old-model", "new-model"}},
-	}))
+	peer.Models = []string{"old-model", "new-model"}
+	peer.ModelsByEngine = map[string][]string{"ollama": {"old-model", "new-model"}}
+	v.Update(discoveryPush(t, peer))
 
-	require.Len(t, d.models.Models, 2, "refreshed pair from discovery")
-	assert.Contains(t, d.View(), "new-model", "a model that appeared on the peer is not on screen")
+	require.Len(t, v.detail.models.Models, 2)
+	assert.Contains(t, v.View(), "new-model")
 }
 
 // TestRemoteDetailIgnoresOtherNodesDiscovery checks the screen only takes the
 // entry for its own node, so a busy cluster cannot overwrite it.
 func TestRemoteDetail_IgnoresOtherNodesDiscovery(t *testing.T) {
-	d := remoteDetail()
-	d.models = modelsResult{Models: []string{"mine"}}
-	d.refreshModels()
+	v := newNodesView(nil)
+	v.SetSize(100, 30)
+	peer := availableNode{HostUUID: "peer", Name: "peer-host", Models: []string{"mine"}}
+	v.Update(discoveryPush(t, peer))
+	v.openDetail()
+	require.NotNil(t, v.detail)
 
-	d.update(discoveryPush(t, availableNode{
+	v.Update(discoveryPush(t, peer, availableNode{
 		HostUUID: "somebody-else",
 		Name:     "other-host",
 		Models:   []string{"theirs"},
 	}))
 
-	assert.Equal(t, []string{"mine"}, d.models.Models, "another node's discovery entry overwrote this one")
+	assert.Equal(t, []string{"mine"}, v.detail.models.Models)
 }
 
 // TestUnreportedLoadStateIsUnknown is the regression guard for "not loaded"
@@ -108,11 +151,17 @@ func TestUnreportedLoadState_IsUnknown(t *testing.T) {
 // TestLocalDetailIgnoresDiscoveryModels checks this machine keeps using the
 // authoritative engine:models RPC rather than the discovery summary.
 func TestLocalDetail_IgnoresDiscoveryModels(t *testing.T) {
-	d := localDetail()
+	v := newNodesView(nil)
+	v.SetSize(100, 30)
+	v.feeds.selfUUID = "self"
+	v.Update(discoveryPush(t, availableNode{HostUUID: "self", Name: "this-host"}))
+	v.openDetail()
+	require.NotNil(t, v.detail)
+	d := v.detail
 	d.models = modelsResult{Models: []string{"authoritative"}}
 	d.refreshModels()
 
-	d.update(discoveryPush(t, availableNode{
+	v.Update(discoveryPush(t, availableNode{
 		HostUUID: "self",
 		Name:     "this-host",
 		Models:   []string{"stale-summary"},
@@ -127,16 +176,16 @@ func TestLocalDetail_IgnoresDiscoveryModels(t *testing.T) {
 // screen notices an engine starting or stopping over there.
 func TestRemoteDetail_PollsEngines(t *testing.T) {
 	d := remoteDetail()
-	cmd, _ := d.update(detailEnginesTickMsg{gen: d.telemetryGen})
+	cmd, _ := d.update(detailEnginesTickMsg{gen: d.refreshGen})
 	assert.NotNil(t, cmd, "remote detail did not re-read engines on its tick")
 
-	// A superseded screen's tick is dropped, matching the telemetry chain.
-	cmd, _ = d.update(detailEnginesTickMsg{gen: d.telemetryGen + 1})
+	// A superseded screen's tick cannot extend its engine polling chain.
+	cmd, _ = d.update(detailEnginesTickMsg{gen: d.refreshGen + 1})
 	assert.Nil(t, cmd, "a stale chain's tick was extended")
 
 	// This machine has real pushes, so it must not poll.
 	local := localDetail()
-	cmd, _ = local.update(detailEnginesTickMsg{gen: local.telemetryGen})
+	cmd, _ = local.update(detailEnginesTickMsg{gen: local.refreshGen})
 	assert.Nil(t, cmd, "local detail polls engines despite receiving engine:state-changed")
 }
 
@@ -1138,8 +1187,8 @@ func TestEmptyEngineList_ExplainsItself(t *testing.T) {
 //
 // A peer's engines are fetched over pin-based mTLS, so a node outside the
 // cluster cannot be asked at all. That call was made anyway, and its failure
-// rendered as "not answering" — beside a hardware readout, polled over an
-// endpoint that needs no pairing, visibly updating for the same machine.
+// rendered as "not answering" beside an updating hardware preview. The broker
+// can supply that public preview independently of paired engine control.
 func TestUnpairedNode_IsNotCalledSilent(t *testing.T) {
 	test := func(name string, membership nodeMembership, want string) {
 		t.Run(name, func(t *testing.T) {
@@ -1261,7 +1310,9 @@ func TestDetail_ResizesWhenHardwareArrives(t *testing.T) {
 	require.LessOrEqual(t, renderedRows(d.View()), budget, "setup already overflows")
 
 	// A dual-GPU reading is four hardware lines instead of the unavailable one.
-	d.update(nodeTelemetryMsg{nodeKey: d.node.key, gen: d.telemetryGen, telemetry: nodeTelemetry{
+	row := d.node
+	row.infoReceivedAt = time.Now()
+	row.info = &noderec.NodeInfo{
 		TelemetryValid: true,
 		GPUs: []noderec.GPUInfo{
 			{Name: "GPU 0", VramBytes: 1 << 30},
@@ -1269,7 +1320,8 @@ func TestDetail_ResizesWhenHardwareArrives(t *testing.T) {
 		},
 		CPU:    &noderec.CPUInfo{Name: "CPU", Cores: 8},
 		Memory: &noderec.MemoryInfo{TotalBytes: 1 << 34, UsedBytes: 1 << 33},
-	}})
+	}
+	d.followNode(row, true)
 
 	assert.GreaterOrEqual(t, d.hardwareHeight(), 4, "one row per reading")
 	// The frame is what matters, not any particular table's height. Asserting on

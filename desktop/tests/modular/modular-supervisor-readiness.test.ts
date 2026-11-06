@@ -40,11 +40,6 @@ vi.mock('@/electron/service-bridge/broadcaster', () => ({
     emitBridgePush: mocks.emitBridgePush
 }))
 
-vi.mock('@/electron/service-bridge/node-info-poller', () => ({
-    startNodeInfoPoller: vi.fn(),
-    stopNodeInfoPoller: vi.fn()
-}))
-
 vi.mock('@/electron/service-bridge/modular-state', () => ({
     getModularBridgeState: () => mocks.bridgeState,
     isUpstreamUnreachableError: () => false,

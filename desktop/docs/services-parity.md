@@ -20,7 +20,7 @@ history.
 | -------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Process supervision        | Complete                        | Electron starts only `nvpair-ui-broker`; the broker supervises all workers                                                                      |
 | Discovery                  | Complete                        | Broker discovery snapshots drive available nodes and node state                                                                                 |
-| Node telemetry             | Integrated with direct poll     | Electron polls advertised `/v1/node-info` (plain HTTP); remote OS and some remote telemetry are backend-limited                                 |
+| Node telemetry             | Broker snapshots and pushes    | Workers supply owned local measurements, pinned peer measurements, and unverified previews to desktop and TUI                                 |
 | Manual nodes               | Complete with local persistence | Broker owns probing, durable entries, restart replay, and proxy registration                                                                     |
 | Ollama routing             | Complete                        | Broker relay and backend scheduler drive proxy routing                                                                                          |
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                        |
@@ -60,39 +60,51 @@ allows the user to restart the service.
 Personal AI Router consumes `discovery:get-nodes` and `discovery:nodes-changed` from the
 broker. The bridge:
 
-- keys every node by the backend's stable per-host UUID (`AvailableNode.hostUuid`),
+- keys local and verified rows by the backend's stable host UUID (`hostUuid`
+  on the broker wire, normalized to renderer `AvailableNode.id`),
   the same identity workloads (`originatedFrom`/`scheduledOn`), errors (`nodeId`),
-  proxy routing (`Node.ID`), `/v1/node-info` (`hostUuid`), and cluster membership
-  (`ClusterNode.nodeUuid`) all use; the hostname is display only;
+  proxy routing (`Node.ID`), and cluster membership (`ClusterNode.nodeUuid`) use;
+  unverified rows use their independent `discoveryRecordId`, so copied UUIDs,
+  hostnames, and addresses cannot merge them into verified rows;
 - preserves the backend's canonical reachable address;
 - reflects the discovery `trusted` (locally pinned peer) and `clustered` (belongs
   to some cluster) flags, and uses `clustered` to mark an already-clustered
-  discovered node non-invitable. `trusted` is a display annotation the scanner
-  re-derives whenever the cluster-manager reports a pin-set change, and again on
-  its periodic sweep of each peer's reported membership; it is not the routing
-  gate. Each proxy answers "do I hold a pin for this peer?" from its own
-  mesh when it resolves candidates, so PAIR must never treat `trusted` as
-  authoritative for whether work can reach a node;
+  discovered node non-invitable. Scanner derives `trusted` from current approved
+  pins after authenticating remote inventory. Discovery-fed proxy routing and
+  engine control require a local record or a trusted pinned peer; workload and
+  error synchronization require a trusted pinned peer. Protected network calls
+  also enforce the caller's current mesh trust. Explicitly configured engine
+  routes remain independent of discovery verification;
 - merges per-engine proxy presence;
 - carries flat and per-engine remote model inventories;
 - emits node and discovery pushes to the renderer.
+
+The broker's wire `AvailableNode.id` is a display identifier: the hostname for
+scanner records or the entry ID for manual records. The bridge uses `hostUuid`
+or `discoveryRecordId` for row identity and exposes that key as the
+renderer-facing `AvailableNode.id`.
 
 `selfId` is the cluster-manager's `nodeUuid` (from `cluster:get-node-id`), minted
 at startup and resolved as soon as the broker is ready, so self is identified by
 the same UUID key rather than a hostname guess.
 
-The broker discovery surface does not include full dynamic telemetry, so
-Electron polls `/v1/node-info` for CPU, memory, GPU, and VRAM values.
+The broker supplies full hardware in optional `AvailableNode.info` snapshots and
+live `discovery:node-info` updates, matched to each row's current discovery record
+ID and verification. This covers local IPC measurements, pinned peer readings,
+and sanitized public previews for unverified discoveries or manual entries.
+Public previews update hardware display fields only and never change identity,
+trust, service addresses, models, liveness, routing, or scheduling. Broker caches
+preserve the original sample's age and withdraw hardware when its source,
+endpoint, or proof is invalidated.
+Broker `info.observedAt` records receipt of the whole display observation,
+independently of GPU sample age, and is stable across delivery and replay. Electron
+forwards each newer measurement once through `metrics:update`, including unchanged
+readings, without broadcasting structural node or engine changes. Charts reject
+duplicate and older observation times.
 
-Two limitations follow from the current discovery and node-info contract:
-
-- **Remote telemetry.** The poll is plain HTTP. A remote node that does not
-  answer `/v1/node-info` over plain HTTP contributes no live CPU/GPU/VRAM
-  telemetry; Personal AI Router still shows its discovery-level data. This resolves when the
-  backend exposes a plaintext metrics path for such nodes.
-- **Remote OS.** The contract does not report a remote node's operating system.
-  The local node's OS is known from the running process; remote nodes fall back
-  to a placeholder until the backend reports OS on discovery or node-info.
+The contract does not report a remote node's operating system. The local node's
+OS is known from the running process; remote nodes fall back to a placeholder
+until the backend reports OS on discovery or node-info.
 
 Manual nodes use the broker's `node/add`, `node/remove`, and `nodes/list`
 surface. Electron persists user entries and replays them after broker startup so
@@ -489,22 +501,14 @@ provide an equivalent client-facing contract:
 
 | Responsibility                                              | Location                                         |
 | ----------------------------------------------------------- | ------------------------------------------------ |
-| Poll node telemetry over `/v1/node-info`                    | `node-info-poller.ts`                            |
 | Bridge the local node into engine proxies                   | `modular-supervisor.ts`                          |
 | Present optimistic engine transition state                  | `pending-actions.store.ts`, bridge state         |
 | Relay the backend model catalogue to the renderer           | `service-bridge/model-catalog.ts`                |
 | Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
 | Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
-| Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |
 
 These are current integration boundaries. Do not add compatibility shims or
 duplicate backend services around them.
-
-The last row is a display-side collapse, not a directory decision. The scanner
-treats a matching address, hostname, and `lastSeen` gap as grounds to ask the
-machine who it is, and evicts only on a node-info identity mismatch; the bridge
-has no such proof and hides the row on the suspicion alone. It must never be
-extended into anything a consumer reads as an eviction.
 
 ## Unused backend methods
 

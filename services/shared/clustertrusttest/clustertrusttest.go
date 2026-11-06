@@ -72,6 +72,13 @@ func WriteAdmission(t *testing.T, clusterDir, clusterID string, epoch uint64) {
 func WritePeerPin(t *testing.T, clusterDir, peerUUID string) {
 	t.Helper()
 	certPEM, _ := mintLeaf(t, peerUUID)
+	WritePeerPinFromCertificate(t, clusterDir, peerUUID, certPEM)
+}
+
+// WritePeerPinFromCertificate pins an existing fixture's exact certificate.
+// Unlike WritePeerPin, it does not mint a different leaf for the same identity.
+func WritePeerPinFromCertificate(t *testing.T, clusterDir, peerUUID string, certPEM []byte) {
+	t.Helper()
 	trusted := filepath.Join(clusterDir, "trusted")
 	if err := os.MkdirAll(trusted, 0o700); err != nil {
 		t.Fatal(err)

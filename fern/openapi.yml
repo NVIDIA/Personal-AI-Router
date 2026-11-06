@@ -153,10 +153,12 @@ paths:
       operationId: getNodeInfo
       summary: Get node info
       description: >
-        Returns telemetry for a discovered PAIR node. The desktop application
-        polls this endpoint because the data is not fully represented in the
-        broker control surface. The stable host UUID, not the display hostname,
-        correlates discovery, membership, workloads, telemetry, and routing.
+        Returns hardware inventory and measurements for a PAIR node. Service
+        workers read public HTTP for unverified display previews and pinned mTLS
+        for authenticated peer inventory. Desktop and TUI receive hardware through
+        broker snapshots and updates. Verified host UUIDs correlate discovery,
+        membership, workloads, telemetry, and routing; unverified previews use
+        independent discovery record IDs.
       responses:
         "200":
           description: Node telemetry snapshot.

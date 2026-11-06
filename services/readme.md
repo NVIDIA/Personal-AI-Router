@@ -49,9 +49,9 @@ This tree builds twelve Go binaries. `nvpair-ui-broker` is the parent service an
 | --- | --- |
 | `nvpair-ui-broker` | Parent service and JSON-RPC API surface used by the bundled UI and other clients. Supervises workers, relays consolidated discovery, and coordinates routing and scheduling. |
 | `nvpair-proxy` | The engine HTTP reverse proxy: one process hosting a facade per enabled engine, each enabled over `facade/enable` after spawn. Serves each engine's own dialect (Ollama-native and OpenAI-compatible), routes only to advertised model owners, and applies owner failover and scheduler priorities. |
-| `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
-| `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
-| `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
+| `nvpair-node-info` | Supplies local hardware over owned worker IPC and serves public hardware previews and pinned-mTLS peer inventory on `:14318` at `/v1/node-info`. |
+| `nvpair-node-scanner` | Advertises and browses `_nvpair-node._tcp`, maintains separate discovery candidates and verified peer records, and collects local IPC hardware, pinned-mTLS peer inventory and models, and unverified public previews. |
+| `nvpair-manual-nodes` | Tracks user-entered addresses independently of mDNS, probes engines and authenticated hardware every 10 s, and collects eligible public hardware previews separately. |
 | `nvpair-workload-manager` | Cluster-wide workload relay. |
 | `nvpair-errors` | Service-errors datastore + cross-node sync. |
 | `nvpair-engine-manager` | Config-driven control plane for local inference engines, model inventory, and trusted remote engine operations. |

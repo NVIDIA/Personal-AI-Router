@@ -105,7 +105,7 @@ the layers that are checked:
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
 | The broker | A `ping` request clients can call, which the terminal interface's **Service** tab uses. |
-| Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
+| Peer nodes | Availability follows authenticated node-info samples and inference activity independently of announcement expiry. The inference proxies report activity but are never probed. |
 
 Worker supervision is restart-based. The broker retries an unexpected exit with
 exponential backoff from roughly one second to 16 seconds, with a budget of five
@@ -178,17 +178,26 @@ Not every surface is gated, and the exceptions are deliberate:
 | Workload replication, error synchronization | Mutual TLS |
 | Cluster membership | Mutual TLS, after pairing |
 | Pairing itself | Plaintext, authenticated by the PIN |
-| Host and GPU telemetry | Plaintext HTTP, **not** authenticated |
+| Unpaired hardware previews, read by workers | Plaintext HTTP, **not** authenticated |
+| Peer node inventory and registry metadata | Pinned mutual TLS on the node-info port |
 
 Pairing is plaintext because no trust exists yet at that point. The six-digit PIN
 is what authenticates the exchange that establishes the pinned certificates.
 
-Node telemetry is a considered trade-off, not an oversight. It is treated as the
-lowest-sensitivity inter-node surface and is read by consumers that are not
-cluster members, so it stays plaintext even on a clustered node. The practical
-consequence is that hostname, hardware inventory, and utilization for a node
-running PAIR are readable by anything on the same subnet that asks. Do not run
-PAIR on a network where that is unacceptable.
+Public hardware displays are available over unauthenticated HTTP, including
+while clustered. Any machine that can reach this endpoint can read the node's
+hardware inventory and utilization. Do not run PAIR on a network where that is
+unacceptable.
+
+Desktop and TUI receive all hardware through their local broker. Public HTTP is
+used by workers for display-only previews before a node is paired. Paired
+hardware uses authenticated inventory, and local hardware uses owned worker IPC.
+
+The same node-info port also serves peer node inventory over pinned mutual
+TLS. This response includes the serving host's local registry metadata. It requires
+current membership, the client's exact approved certificate, and registry
+metadata matching the serving identity. The public HTTP hardware display response
+is independent of this peer node inventory handler.
 
 ### Two Personalities on One Port
 
@@ -242,14 +251,34 @@ shows:
 
 Each of these listens on its own port. Refer to the [port map](#port-map) below.
 
-Electron polls every discovered node's `/v1/node-info` directly because that
-detail is richer than the broker's control surface exposes. Electron samples
-healthy nodes every two seconds. Consecutive failures back off to 4, 8, 16, then
-30 seconds and reset on success. This is the one place Electron makes service-data
-HTTP calls of its own. Separately, the backend scanner samples a compact
-maximum-GPU utilization value for scheduling with the same healthy cadence and
-capped failure backoff, which the broker relays straight to the job scheduler.
-Routing never depends on renderer metrics.
+Local service inventory and scheduling samples arrive from the owned node-info
+worker over private stdio IPC, through the broker to scanner. IPC ties these
+measurements to the worker the broker started. These measurements are available
+before joining and after leaving a cluster.
+The broker retains the latest snapshot for scanner restart replay and adds
+cache/queue time to its sample age so replay cannot make an old sample appear
+fresh. Scanner's owned local registry supplies node-info's peer metadata over the
+reverse IPC path; discovered announcements cannot supply local measurements or
+metadata.
+
+Scanner keeps unverified announcements under separate discovery record IDs.
+It promotes a candidate only after reading peer node inventory over exact-pin
+mTLS and checking both response identities against that certificate. The peer's
+name, addresses, service ports, and hardware then come from the authenticated
+response. Discovery claims and public HTTP cannot replace that canonical peer
+record. Candidate authentication has separate worker permits from verified
+telemetry polling. Scanner rechecks live pins before accepting results, including
+results returned over reused connections.
+
+Desktop and TUI receive hardware snapshots and updates from their local broker.
+Workers collect local measurements over private IPC, paired peer measurements
+over pinned mTLS, and public HTTP previews for eligible unverified discoveries
+and manual entries.
+
+The broker preserves each sample's age when returning cached hardware and clears
+measurements when their record or authentication is no longer valid. Public
+previews update display fields only. They cannot establish identity or affect
+routing, node reachability, or scheduling.
 
 ## Inference Data Flow
 
@@ -540,7 +569,7 @@ A default installation listens on these ports:
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
 | `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
-| `14318` | Node hardware and telemetry |
+| `14318` | Public hardware displays and peer node inventory |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
 | `14321` | Pairing and cluster membership |
@@ -586,17 +615,15 @@ of being crammed into TXT.
 
 ### Node Identity
 
-PAIR identifies every node by a stable UUID, never by its hostname.
+PAIR keys the owned local node and authenticated peers by stable host UUID.
+That UUID correlates cluster membership, workload attribution, error reports,
+scheduling telemetry, and verified proxy routes. Hostnames are display names,
+so renaming a host or sharing a hostname does not merge distinct hosts.
 
-An mDNS instance name defaults to the hostname, so two machines that share one
-would silently merge into a single node. Every service therefore advertises a
-per-host UUID, and the directory is keyed by it.
-
-That UUID is the correlation key across the entire system: discovery entries,
-cluster membership, workload attribution, error reports, telemetry, and proxy
-routing all resolve against it. Hostnames are display only. A machine can be
-renamed without becoming a different node, and a duplicated hostname does not
-collapse two machines into one.
+Unverified announcements have independent discovery record IDs. Their claimed
+UUIDs cannot select a local or authenticated peer's record. A manual engine
+configuration also keeps its own key until its hardware endpoint authenticates.
+Public hardware previews remain attached to these unverified display records.
 
 The UUID reuses the cluster manager's persisted identity when that exists, so one
 host presents the same UUID everywhere. If the cluster manager has never run, the
@@ -619,61 +646,70 @@ long-lived receiver.
 
 ### Node Enrichment
 
-Announcements establish that a node exists and which ports it serves. PAIR
-fetches the interesting facts afterwards, for each node, over HTTP:
+Announcements supply discovery candidates and advertised service ports. Scanner
+enriches node records with details from two services:
 
-- GPU, CPU, and memory inventory from its node-info port
-- Its model list from its engine-manager port, as a flat union, a per-engine
-  breakdown, and the per-engine set of models currently loaded in memory
+- GPU, CPU, and memory inventory from node-info, over pinned mutual TLS for
+  verified remote peers and private worker IPC for the local host
+- Its model list from engine-manager, over pinned mutual TLS for remote peers or
+  loopback HTTP for the local host, as a flat union, a per-engine breakdown, and
+  the per-engine set of models currently loaded in memory
 
-Each enrichment keeps a last-good value, so one failed fetch dims nothing. A
-node's card does not blank out because a single poll timed out.
+Authenticated node-info supplies the canonical peer's name, addresses, and
+registered ports as well as hardware. Scanner replaces only the successful
+discovery with this verified record. Other observations remain independently
+unverified. The broker retains record provenance through caches and relays;
+unverified claims cannot replace service endpoints or supply scheduling data.
+Updates to a previously authenticated observation stay hidden while its exact
+proof remains current and its claimed host UUID is unchanged. Changed claims
+require authentication before updating the verified peer.
 
-With a cluster directory configured, a browsed peer whose `cluster-uuid=` matches
-a pin this node holds is annotated as trusted, which is how the interface can
-distinguish a paired node from a stranger it can merely see.
+Each enrichment keeps a last-good value during temporary failures at an unchanged
+source. A peer's model inventories are cleared when its authenticated proof,
+address list, or engine-manager port changes, or when engine-manager disappears.
+An available replacement endpoint triggers an immediate model refresh.
+
+`trusted` requires a completed peer read against the current exact pin. A pin
+addition schedules authentication; it never makes an announcement trusted.
+Trust withdrawal removes the verified record and restores known observations as
+unverified pairing candidates without waiting for an announcement change.
 
 ### Node Eviction
 
-The scanner scans every five seconds. After a node has missed three scans in a
-row, about 15 seconds, the scanner checks on it at every scan, and any answer
-resets the count. It drops the node only after 12 consecutive misses, about a
-minute, with every check along the way failing. These are the checks:
+The browser scans every five seconds. An observation expires after 12 consecutive
+misses, about a minute, clearing its candidate state and remembered address.
+With multiple known nodes, up to six consecutive empty scans receive a shared
+grace period before misses count. Observation expiry is independent of the
+verified peer's availability, so obsolete addresses and ports can be retired
+while the peer stays online.
 
-- Inference the node served in the last minute, which the proxies report
-- Recent telemetry from that node
-- A direct request to the node's node-info endpoint
-- A probe of the engine-manager port
+A verified peer record can outlive its last discovery while authenticated
+inventory or recent inference still proves availability. Scanner continues
+sampling the retained peer independently. A failed refresh removes that record
+once its last authenticated inventory is at least a minute old and no inference
+activity was observed in the last minute. Trust invalidation also removes the
+affected verified record. Cluster membership and saved pins have their own
+lifetime and are preserved when availability expires.
 
-The activity check comes first because a node under load is the one most likely
-to miss an announcement, and evicting it would pull a working machine out of the
-routing pool at its busiest.
+These checks use accepted evidence without starting another network request.
+The canonical sampling loop continues independently, so multicast loss does not
+add synchronous probes to discovery processing. Recent inventory or inference
+activity keeps a healthy node in the routing pool through Wi-Fi, VPN, and sleep
+or wake gaps. Inference proxy ports are never probed for liveness.
 
-The remaining checks deliberately avoid the inference proxy ports. Those ports
-exist to serve requests, and using them as a liveness test would put connection
-attempts on the serving path every time multicast dropped a packet.
-
-Multicast is lossy, and Wi-Fi, VPN adapters, and sleeping network interfaces all
-produce gaps that have nothing to do with a node's health. Without that probe a
-momentary gap would evict a perfectly healthy node and take its models out of the
-routing pool.
-
-Discovery holds record replacement to the same standard. A node can reappear with
-a new identity, for example after a reset. The old entry then looks superseded,
-and leaving both in place would list the machine twice. But a matching address
-and hostname arrive in an unauthenticated announcement that anything on the
-network can send, so those signals only mark the old record as a suspect.
-Discovery confirms the node's identity before dropping that record. A stale
-duplicate therefore cannot linger, and nothing can displace a peer by claiming
-its address.
+A reset node may reappear under a new identity. Its unverified announcement
+cannot replace a verified record by matching its name or address. The old
+record follows authenticated liveness and trust invalidation. Public HTTP
+identity reports and open TCP ports cannot remove or retain verified peers.
 
 ### Manual Nodes
 
 Some networks block or filter multicast, so discovery is not the only path in.
 `nvpair-manual-nodes` takes an address you enter directly and probes it on a
 fixed interval, and a manual node that answers is folded into the same directory
-as a discovered one. It is initially keyed by the address you typed, and re-keyed
-to the peer's real UUID as soon as that node reports it.
+as a discovered one. A manual configuration has its own key until a pinned mTLS
+read proves the peer's UUID. Public hardware responses remain display-only;
+explicit manual engine configuration does not authorize their use for scheduling.
 
 ## Trust Boundaries
 

@@ -79,7 +79,7 @@ The main integration points are:
 | JSON-RPC stdio framing                                             | `src/electron/service-bridge/json-rpc-subprocess.ts` |
 | Logical invoke handlers                                            | `src/electron/service-bridge/empty-handlers.ts`      |
 | Node, engine, workload, and error projection                       | `src/electron/service-bridge/modular-state.ts`       |
-| Node telemetry polling                                             | `src/electron/service-bridge/node-info-poller.ts`    |
+| Broker hardware snapshot and push projection                      | `src/electron/service-bridge/modular-state.ts`       |
 | Runtime binary inventory                                           | `src/shared/constants/modular-binaries.ts`           |
 | Backend-coupled defaults                                           | `src/shared/constants/modular-runtime.ts`            |
 | Frontend channel contract                                          | `src/shared/types/ws-channels.ts`                    |
@@ -96,19 +96,36 @@ startup deadline in `src/shared/constants/modular-runtime.ts` for
 Settings > Service with retry and log access. If a stalled broker reports ready
 later, the connector transitions to connected without spawning a second broker.
 
-### Direct HTTP exception
+### Node hardware
 
-The broker does not expose rich node telemetry over JSON-RPC. Electron therefore
-polls each healthy discovered node's advertised `/v1/node-info` endpoint every
-two seconds and merges CPU, memory, GPU, and VRAM data into `metrics:update`;
-consecutive failures back off to a 30-second cap and reset on success.
-Those renderer snapshots are display-only. Independently, the backend scanner
-samples a compact maximum-GPU utilization value on the same healthy cadence,
-with the same capped failure backoff, and sends it through the broker to the
-scheduler.
+Electron and TUI receive full hardware in broker `AvailableNode.info` snapshots
+and `discovery:node-info` updates. Electron projects CPU, memory, GPU, and VRAM
+into renderer node state and `metrics:update`. Broker workers own local IPC
+collection, pinned-mTLS peer reads, address failover, retry policy, and separate
+public HTTP previews for unverified discoveries or manual configurations.
 
-All other service control flows through broker JSON-RPC. Engine proxy HTTP is
-reserved for inference clients.
+Hardware must match the current discovery record and verification. Public
+preview identity and registry claims are stripped, and previews cannot enter
+verified inventory, routing, liveness, or scheduling. The broker caches each
+source with its receipt time, preserves sample age on query/replay, and clears
+hardware when its source or proof is invalidated. Internal scheduling snapshots
+omit the full display payload and use only accepted compact GPU telemetry.
+`info.observedAt` records local receipt of the whole display observation,
+independently of GPU sample age. Manual hardware retains the time assigned by
+the owned manual worker; other observations are stamped by the broker. Snapshots
+and pushes preserve it. Electron uses it directly for metrics deduplication,
+keeps measurement updates separate from structural node changes, and never
+reconstructs observation time from GPU sample age.
+
+Scanner supplies identity, addresses, and models for hosts also tracked by manual
+configuration. If scanner hardware is missing, the broker may display manual
+hardware when both records are trusted and share the same pinned host identity
+and verification ID. Choosing that sample preserves its age and does not change
+scheduling inputs.
+
+Service control flows through broker JSON-RPC. Engine proxy HTTP is reserved
+for inference clients. The node-info public HTTP listener serves unpaired
+previews collected by services.
 
 ## Current domain routing
 
@@ -209,52 +226,43 @@ the next startup.
 addresses, the `trusted` and `clustered` flags, model inventory, and per-engine
 model attribution.
 
-Personal AI Router keys every node by that `hostUuid`, the same identity the backend stamps on
-workloads (`originatedFrom`/`scheduledOn`), errors (`nodeId`), proxy routing
-(`Node.ID`), `/v1/node-info`, and cluster membership (`ClusterNode.nodeUuid`); the
-hostname is kept only as the display `name`. This lets a single broker+proxy merge
-resolve to one node and lets workload/error attribution land on the right node.
+Personal AI Router keys local and verified nodes by `hostUuid`, the identity the
+services stamp on workloads (`originatedFrom`/`scheduledOn`), errors (`nodeId`),
+proxy routing (`Node.ID`), and cluster membership (`ClusterNode.nodeUuid`).
+Unverified discoveries use their independent `discoveryRecordId` as their key.
+Hostnames are display names. A public hardware preview cannot merge an
+unverified discovery into a local or verified node.
 
 Local model state comes from `nvpair-engine-manager`; remote model state comes
 from scanner enrichment of each peer's engine-manager `/v1/models` endpoint.
+Scanner clears a peer's model inventories when its authenticated proof or
+engine-manager endpoint changes or disappears. An available replacement endpoint
+triggers a refresh. Temporary failures at an unchanged source retain its last
+successful inventory.
 
 ### When the backend drops a node
 
-A node leaves the directory only after it has been absent from every mDNS scan
-for the browser's full miss threshold — twelve scans at five seconds, so a full
-minute — with a failed liveness probe on every one of those scans from the
-fifteen-second mark onward. The window is sized to outlast a node saturated by
-its own inference load, because such a node starves its own control plane: it
-stops answering mDNS and stops accepting probe connections for as long as the
-load runs, while still serving requests normally.
+Scanner scans mDNS every five seconds and expires a discovery after twelve
+consecutive misses. When several known nodes disappear together, up to six
+empty scans receive a local-reception grace period. Expiry clears the observation
+and its candidate caches independently of verified peer availability.
 
-Waiting a minute does not mean looking once at the end of it. The scan cadence,
-the two-second node-info telemetry sweep, and the per-scan liveness probe all
-keep running, and any single success resets the counter and recovers the node
-outright — so eviction rests on a run of about ten consecutive failures rather
-than on whichever dial happens to land on the deadline.
+The pinned-mTLS sampling loop refreshes inventory independently of mDNS.
+After a peer's final discovery expires, its verified record is retained while
+authenticated inventory or inference activity is less than a minute old.
+Engine facades report inference response bytes through `node/activity`, which
+the broker relays as `discovery:node-activity`. Availability expiry removes the
+verified record and measurements; membership and pins are owned by cluster-manager.
 
-A scan that returns *none* of several known nodes is treated as a local receive
-failure rather than a mass departure, and penalizes nobody, for up to six
-consecutive scans. Independent machines do not leave in the same five-second
-window; a starved process hears silence from all of them at once. This needs two
-or more known nodes to engage — losing a lone peer is ambiguous either way.
-
-Two independent signals can vouch for a node inside that window and cancel the
-eviction:
-
-- a successful node-info enrichment in the last ten seconds;
-- inference response bytes from that node in the last minute. Every engine
-  facade raises `node/activity` when a peer's engine streams a response back through them; the
-  broker relays it to the scanner as `discovery:node-activity`. This is the only
-  liveness signal that gets stronger as a node gets busier, which is exactly when
-  the probe-based signals fail.
+Ordinary announcement updates do not republish an observation already represented
+by a verified peer with the same current proof. Trust withdrawal removes the
+verified record and restores known observations as unverified pairing candidates.
 
 Eviction is a strong claim, not a guess: it is what fails the in-flight workloads
 pinned to that node (`node <name> went offline`). Personal AI Router consumes the
 result through the discovery snapshot and must not add a second, shorter
-reachability verdict of its own — a failed `/v1/node-info` poll keeps the last
-good metrics and never marks a node offline.
+reachability verdict of its own. Failed hardware collection leaves the last
+accepted sample aging and never independently marks a node offline.
 
 The model catalogue is backend-owned. `nvpair-engine-manager` serves the curated
 Ollama, LM Studio, and llama.cpp lists over `engine:catalog`, filtered for the
@@ -289,8 +297,10 @@ Personal AI Router:
 Cluster membership correlates by `ClusterNode.nodeUuid` — the stable per-host
 UUID that also keys discovery, workloads, errors, and `selfId` — never the
 hostname (`ClusterNode.id`, which is display only). `nodes:remove` is sent the
-UUID (self-removal routes to `cluster:leave`); a manual node's `node/remove` is
-resolved back to the hostname the entry was keyed by.
+UUID (self-removal routes to `cluster:leave`). For manual-node removal, the
+bridge sends the broker `node/remove {nodeId}`, which resolves the node key to
+the worker's exact configured entry ID. A matching entry name cannot select a
+different node configuration.
 
 ### Secure inference (backend-owned)
 

@@ -2023,15 +2023,10 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			}
 			u = lb
 		case p.mesh.HasPin(n.ClusterUUID):
-			// A pinned cluster peer: reach it only over mTLS to its promoted
-			// proxy (the ol port now advertises the proxy, not the engine).
-			// The pin is read from the live mesh refreshed above, not from the
-			// relayed n.Trusted: that flag is the scanner's answer from whenever
-			// it last saw this peer's mDNS record, so a peer discovered before
-			// this node's pins were written stays false until its record next
-			// changes. It is also strictly weaker than what we hold here — the
-			// dial itself is gated on ClientTLSConfig finding the same pin — so
-			// the relayed value can only ever disagree by being stale.
+			// Reach this peer's proxy over mTLS using its current pin. Relay-fed
+			// remote records have already passed pinned-and-trusted admission;
+			// the refreshed mesh and the pinned client also authorize this dial
+			// against live membership and trust.
 			u.Scheme = "https"
 			peerUUID = n.ClusterUUID
 		case f.discovery.IsManual(n.ID):
@@ -2530,12 +2525,21 @@ func (p *Proxy) setPriorityLocked(priority schedulerwire.Priority) int {
 	return len(cleaned)
 }
 
-// subscribedToNode projects a relay DirectoryNode onto the proxy's routable Node
-// for the ol service, returning false when the node doesn't advertise ol or has
-// no dialable address. The engine port comes from the ol service key (the real
-// Ollama port the broker's engine poller registered, not the proxy's listen
-// port).
+// subscribedToNode projects a local record or a trusted pinned peer into a
+// routable node for this engine. It requires the engine's advertised service
+// and a dialable IP. The service supplies the engine's registered server port.
 func subscribedToNode(p engineProfile, n noderec.DirectoryNode) (Node, bool) {
+	verification := n.IdentityVerification
+	if verification != noderec.IdentityLocal && verification != noderec.IdentityPinned {
+		// UUID, trusted, and loopback claims cannot make an unverified
+		// advertisement eligible for inference routing.
+		return Node{}, false
+	}
+	if verification == noderec.IdentityPinned && !n.Trusted {
+		// A proved remote identity still needs current trust. Local records
+		// come from the owned worker and do not require a peer pin.
+		return Node{}, false
+	}
 	svc, ok := n.Services[p.DiscoveryService]
 	if !ok || n.IP == "" {
 		return Node{}, false

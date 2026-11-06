@@ -508,15 +508,16 @@ approve. See README.md for the complete forwarding and intersection rules.
 
 ### 5.9 Candidate resolution
 
-Resolution turns the eligible owners into dial targets. It re-reads membership
-and pins from the cluster directory first, so a peer paired or removed since the
-last request is reflected on this one. Each owner is then classified by where
+Resolution turns the eligible owners into dial targets. Relay-fed owners first
+pass the identity gate in §5.11. Resolution then refreshes membership and pins
+from the cluster directory, so each relay-fed remote dial requires a current pin in
+addition to the admitted discovery record. Each owner is classified by where
 its address points:
 
 | Owner | Dialed as | Why |
 | --- | --- | --- |
 | This facade — its own listen port, or an alias address it bound | the local engine from `node/set-local-backend`, over loopback; dropped when none is set or it is unhealthy | this node advertises the facade under the engine's own key (e.g. `ol`, `lm`, `lc`), so dialing it would enter this node's own cluster ingress and recurse |
-| A peer this node holds a pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | the relayed `trusted` flag is the scanner's answer from the peer's last record change, so it is stale for a peer discovered before this node's pins existed |
+| An admitted peer this node holds a current pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | discovery supplies the verified identity and `trusted: true`; the live mesh authorizes the outbound connection against the current pin |
 | A manual node from `node/add-manual` | plain HTTP to the address the user supplied | a deliberate, separately labelled bypass |
 | Anything else — an unpinned peer, or any peer while this node is unclustered | dropped | a peer's facade refuses plaintext from the LAN, so it is not reachable |
 
@@ -566,8 +567,11 @@ filtered set, on every change. Each snapshot **replaces** the facade's relay-fed
 overlay, so a departed node is simply absent from the next one and there is no
 state to drift.
 
-A directory node becomes a routable node only if it advertises that key and has
-an address:
+A directory node enters the routing overlay only when `identityVerification`
+is `local`, or it is `pinned` with `trusted: true`, and it advertises this
+engine's service key with a nonempty canonical `ip`. Owned local records need
+no peer pin. Unverified records remain outside the overlay regardless of their
+UUID, address, model, or trust claims. For an admitted record:
 
 - its id is its `hostUuid`, so routing, `scheduledOn`, and the scheduler's list
   agree on one identity that survives a rename;

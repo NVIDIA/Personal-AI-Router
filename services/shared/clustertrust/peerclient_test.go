@@ -51,6 +51,15 @@ func checkPeerClientCertificates(t *testing.T, client *http.Client, selfDER, pee
 	}
 }
 
+func TestPeerClientPool_NodeInfoOptionsPreserveTransportBounds(t *testing.T) {
+	pool := NewPeerClientPoolOpts(Open(""), PeerClientOptions{Timeout: 3 * time.Second, DialTimeout: 250 * time.Millisecond, MaxConnsPerHost: 1})
+	transport := pool.newTransport(nil)
+	assert.Equal(t, 250*time.Millisecond, transport.TLSHandshakeTimeout)
+	assert.Equal(t, 1, transport.MaxConnsPerHost)
+	assert.Equal(t, 1, transport.MaxIdleConnsPerHost)
+	assert.Equal(t, PeerIdleTimeout, transport.IdleConnTimeout)
+}
+
 // TestPeerClientPool_ReusesOneConnection is the regression for the dropped
 // inter-node event bug: building a client per request meant every event paid a
 // fresh mTLS handshake and leaked the socket afterwards, so a burst exhausted
@@ -122,7 +131,7 @@ func TestPeerClientPool_BoundsIdleConnections(t *testing.T) {
 	require.True(t, ok, "pinned peer must yield a client")
 	entry := pool.entries["uuid-peer"]
 	assert.Equal(t, PeerIdleTimeout, entry.transport.IdleConnTimeout)
-	assert.Equal(t, peerMaxIdleConnsPerHost, entry.transport.MaxIdleConnsPerHost)
+	assert.Equal(t, peerMaxConnsPerHost, entry.transport.MaxIdleConnsPerHost)
 	// The bound that actually protects the peer. Retaining idle connections stops
 	// the leak, but only capping TOTAL connections per host stops a per-event
 	// fan-out from opening hundreds of simultaneous handshakes during a burst —
