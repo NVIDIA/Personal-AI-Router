@@ -85,7 +85,7 @@ type statsCollector struct {
 // before returning so an immediate UMA response can include vram_used_bytes;
 // GPU collection remains asynchronous because nvidia-smi may take up to its
 // three-second timeout. Never returns nil.
-func startStatsCollector() *statsCollector {
+func startStatsCollector(_ []GPUInfo) *statsCollector {
 	c := &statsCollector{
 		stop: make(chan struct{}),
 		done: make(chan struct{}),

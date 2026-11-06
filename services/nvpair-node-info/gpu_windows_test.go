@@ -6,6 +6,8 @@
 package main
 
 import (
+	"os"
+	"slices"
 	"testing"
 	"unsafe"
 
@@ -74,19 +76,50 @@ func TestLuidUint64_CombinesHighAndLowParts(t *testing.T) {
 	test("signed high word", 0xffffffff, -1, 0xffffffffffffffff)
 }
 
-func TestKeepPhysicalAdapter_FiltersByPhysicalAdapterIdentity(t *testing.T) {
-	physical := map[uint64]struct{}{
-		0x1000: {},
-		0x2000: {},
+// The whole-enumeration gate still drops a Remote Desktop phantom clone while
+// the registry knows the real card, and refuses to apply a registry that knows
+// none of the current adapters. That stale state at boot used to publish an
+// empty GPU list until the service was restarted, even though DXGI (the Windows
+// graphics API) had found the adapters.
+func TestSelectPhysicalAdapters_FiltersOnlyWhenRegistryMatchesAdapters(t *testing.T) {
+	card := adapterCandidate{
+		gpu:  GPUInfo{Name: "Test Adapter", statsKey: "luid_card"},
+		luid: 0x1000,
 	}
-	test := func(name string, luid uint64, physical map[uint64]struct{}, want bool) {
+	clone := adapterCandidate{
+		gpu:  GPUInfo{Name: "Test Adapter", statsKey: "luid_clone"},
+		luid: 0x2000,
+	}
+	both := []adapterCandidate{card, clone}
+
+	test := func(name string, candidates []adapterCandidate, physical map[uint64]struct{}, want []adapterCandidate) {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, want, keepPhysicalAdapter(luid, physical))
+			// Keep inputs and expectations independent even when a case uses
+			// the same fixture for both, so an in-place change cannot mask a bug.
+			input := slices.Clone(candidates)
+			expected := slices.Clone(want)
+			assert.Equal(t, expected, selectPhysicalAdapters(input, physical))
 		})
 	}
-	test("nil map keeps all", 0x9999, nil, true)
-	test("empty map keeps all", 0x9999, map[uint64]struct{}{}, true)
-	test("listed LUID kept", 0x1000, physical, true)
-	test("unlisted LUID dropped", 0x9999, physical, false)
-	test("second listed LUID kept", 0x2000, physical, true)
+	test("gate keeps the listed subset", both, map[uint64]struct{}{0x1000: {}}, []adapterCandidate{card})
+	test("gate that would drop every adapter is skipped", both, map[uint64]struct{}{0x9999: {}, 0xaaaa: {}}, both)
+	test("all listed adapters are kept", both, map[uint64]struct{}{0x1000: {}, 0x2000: {}}, both)
+	test("nil map keeps all", both, nil, both)
+	test("empty map keeps all", both, map[uint64]struct{}{}, both)
+	t.Run("no candidates stays empty", func(t *testing.T) {
+		assert.Empty(t, selectPhysicalAdapters(nil, map[uint64]struct{}{0x1000: {}}))
+	})
+}
+
+// This smoke test requires NVPAIR_LIVE_GPU=1 and a Windows host with GPUs.
+// Registry filtering scenarios are covered above with fixed adapter lists.
+func TestDetectGPUs_ReportsLiveAdapters(t *testing.T) {
+	if os.Getenv("NVPAIR_LIVE_GPU") == "" {
+		t.Skip("set NVPAIR_LIVE_GPU=1 to run against the host's GPUs")
+	}
+	gpus := detectGPUs()
+	require.NotEmpty(t, gpus, "detectGPUs reported no adapters on a host that has them")
+	for i, gpu := range gpus {
+		t.Logf("GPU %d: %s (%d MiB, %s)", i, gpu.Name, gpu.VramBytes/(1024*1024), gpu.statsKey)
+	}
 }
