@@ -45,17 +45,27 @@ flowchart TD
    background helper.
 2. Call `macPrivilege.ensureConfigured(firstTime)`, which (no UI):
     - reads `nvpair-helper-ctl status`;
-    - if the daemon version != app version (in-place Squirrel.Mac update),
-      `uninstall` + `install` to refresh it, and force a firewall reconfigure;
+    - if enabled but unreachable, or the daemon version differs from the app
+      version, attempt `uninstall` + `install` once per app version, re-check
+      `status`, and force a firewall reconfigure;
     - if not registered, `install` (which calls `SMAppService.daemon().register()`);
-    - when `enabled`, run `configure-firewall` (no `--app-path`: the daemon
+    - when `enabled` and reachable with no known version mismatch, run
+      `configure-firewall` (no `--app-path`: the daemon
       derives the target bundle from the verified caller — see Security).
 3. On `requiresApproval`, the control tool calls
    `SMAppService.openSystemSettingsLoginItems()`; main surfaces guidance to
    enable the background item under **System Settings → General → Login Items &
    Extensions**, then relaunch.
 4. On success (`enabled` + firewall configured), set the one-time
-   `macHelperSetupComplete` flag in `ui-config.ts`.
+   `macHelperSetupComplete` flag in `ui-config.ts`. Clear it if setup fails or
+   approval is pending so firewall configuration is retried on the next launch.
+
+Before replacing a stale helper, PAIR persists `macHelperRepairAttemptVersion`
+and clears `macHelperSetupComplete` in `configs/ui-config.json`. This also covers
+upgrades from 1.0.0 where signature rejection prevents reading a daemon version.
+An interrupted or unsuccessful replacement is not repeated for the same app
+version. An enabled helper that remains unreachable or reports a different
+version leaves setup incomplete; registration alone does not imply success.
 
 The firewall is reconfigured on first run, after a version refresh, and after a
 fresh registration (so a release that adds a networked binary still gets its
@@ -213,6 +223,14 @@ Use a signed release candidate on a test Mac, including an upgrade from the
 affected release. Install in `/Applications`, launch PAIR as the normal user,
 and approve its background helper if prompted. Do not re-sign the installed
 app or alter the pinned requirements to make these checks pass.
+
+For upgrade coverage, first confirm the affected release reports `enabled` but
+`reachable: false`, then replace the app in place without unregistering the old
+helper or clearing user data. On the updated app's first launch, confirm it
+re-registers the helper and records the new app version in
+`macHelperRepairAttemptVersion`. Follow the checks below after any required
+approval. If repair fails, verify setup remains incomplete and relaunching the
+same version does not trigger another unregister/register cycle.
 
 1. Run the release validation command above against the installed app.
 2. Run `"/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" status`.

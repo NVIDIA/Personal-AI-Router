@@ -172,6 +172,9 @@ if (!gotTheLock || exitRequested) {
 
             const result = await macPrivilege.ensureConfigured(firstTime)
             if (!result.supported) return
+            setMacHelperSetupComplete(
+                result.registration === 'enabled' && result.firewallConfigured
+            )
 
             if (result.registration === 'requiresApproval') {
                 if (firstTime) {
@@ -190,7 +193,6 @@ if (!gotTheLock || exitRequested) {
             }
 
             if (result.registration === 'enabled' && result.firewallConfigured) {
-                setMacHelperSetupComplete(true)
                 log.info({ sublevel: 'mac-helper', message: 'Privileged helper configured' })
             } else {
                 log.error({
@@ -199,6 +201,7 @@ if (!gotTheLock || exitRequested) {
                 })
             }
         } catch (err) {
+            setMacHelperSetupComplete(false)
             log.error({ sublevel: 'mac-helper', message: `Privileged setup error: ${err}` })
         }
     }

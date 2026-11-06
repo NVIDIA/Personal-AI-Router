@@ -17,12 +17,15 @@ interface UiConfig {
     modularLogLevel: ModularLogLevel
     /** macOS only: the one-time privileged-helper setup (register the SMAppService daemon + configure the Application Firewall) has completed. Gates the first-run admin prompt; left false until the daemon is enabled and firewall configuration succeeds, so an approval-pending launch retries next time. */
     macHelperSetupComplete: boolean
+    /** Last app version that attempted to replace an enabled but stale helper. */
+    macHelperRepairAttemptVersion: string
 }
 
 const DEFAULTS: UiConfig = {
     firstRun: true,
     modularLogLevel: MODULAR_DEFAULT_LOG_LEVEL,
-    macHelperSetupComplete: false
+    macHelperSetupComplete: false,
+    macHelperRepairAttemptVersion: ''
 }
 
 let config: UiConfig = { ...DEFAULTS }
@@ -119,5 +122,16 @@ export function isMacHelperSetupComplete(): boolean {
 
 export function setMacHelperSetupComplete(value: boolean): void {
     config.macHelperSetupComplete = value
+    save()
+}
+
+export function getMacHelperRepairAttemptVersion(): string {
+    return config.macHelperRepairAttemptVersion
+}
+
+/** Record the attempt and invalidate completed setup before replacing the helper. */
+export function setMacHelperRepairAttemptVersion(value: string): void {
+    config.macHelperRepairAttemptVersion = value
+    config.macHelperSetupComplete = false
     save()
 }
