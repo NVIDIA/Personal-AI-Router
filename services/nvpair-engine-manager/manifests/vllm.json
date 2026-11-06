@@ -4,7 +4,15 @@
   "display_name": "vLLM",
   "manifest_version": 1,
   "advertised_models": "loaded",
-  "install": { "mode": "user" },
+  "detect": ["{install_dir}/venv/bin/vllm", "~/.local/bin/vllm"],
+  "install": {
+    "mode": "user",
+    "run": [
+      "sh", "-c",
+      "set -eu; command -v nvidia-smi >/dev/null 2>&1 || { echo 'vLLM needs an NVIDIA GPU and driver (nvidia-smi not found)' >&2; exit 1; }; cuda_major=$(nvidia-smi -q 2>/dev/null | awk -F' *: *' '/^CUDA (UMD )?Version/ {split($2, v, \".\"); print v[1]; exit}'); [ \"${cuda_major:-0}\" -ge 13 ] 2>/dev/null || { echo \"vLLM needs an NVIDIA driver that supports CUDA 13 or newer (found: ${cuda_major:-none}). Update your NVIDIA driver and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 26214400 ] || { echo 'vLLM needs at least 25 GB of free disk space (the engine and its default model)' >&2; exit 1; }; mkdir -p \"$2/uv\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"vllm==0.32.0\" \"mistral_common==1.12.0\"",
+      "vllm-install", "{download}", "{install_dir}"
+    ]
+  },
   "models_dir": "~/.cache/huggingface",
   "uninstall": { "remove": ["{install_dir}"] },
   "runtime": {
@@ -27,31 +35,19 @@
   },
   "platforms": {
     "linux/amd64": {
-      "detect": ["{install_dir}/venv/bin/vllm", "~/.local/bin/vllm"],
       "install": {
         "fetch": {
           "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-x86_64-unknown-linux-gnu.tar.gz",
           "sha256": "eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220"
-        },
-        "run": [
-          "sh", "-c",
-          "set -eu; command -v nvidia-smi >/dev/null 2>&1 || { echo 'vLLM needs an NVIDIA GPU and driver (nvidia-smi not found)' >&2; exit 1; }; cuda_major=$(nvidia-smi -q 2>/dev/null | awk -F' *: *' '/^CUDA (UMD )?Version/ {split($2, v, \".\"); print v[1]; exit}'); [ \"${cuda_major:-0}\" -ge 13 ] 2>/dev/null || { echo \"vLLM needs an NVIDIA driver that supports CUDA 13 or newer (found: ${cuda_major:-none}). Update your NVIDIA driver and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 26214400 ] || { echo 'vLLM needs at least 25 GB of free disk space (the engine and its default model)' >&2; exit 1; }; mkdir -p \"$2/uv\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"vllm==0.32.0\" \"mistral_common==1.12.0\"",
-          "vllm-install", "{download}", "{install_dir}"
-        ]
+        }
       }
     },
     "linux/arm64": {
-      "detect": ["{install_dir}/venv/bin/vllm", "~/.local/bin/vllm"],
       "install": {
         "fetch": {
           "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-aarch64-unknown-linux-gnu.tar.gz",
           "sha256": "9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14"
-        },
-        "run": [
-          "sh", "-c",
-          "set -eu; command -v nvidia-smi >/dev/null 2>&1 || { echo 'vLLM needs an NVIDIA GPU and driver (nvidia-smi not found)' >&2; exit 1; }; cuda_major=$(nvidia-smi -q 2>/dev/null | awk -F' *: *' '/^CUDA (UMD )?Version/ {split($2, v, \".\"); print v[1]; exit}'); [ \"${cuda_major:-0}\" -ge 13 ] 2>/dev/null || { echo \"vLLM needs an NVIDIA driver that supports CUDA 13 or newer (found: ${cuda_major:-none}). Update your NVIDIA driver and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 26214400 ] || { echo 'vLLM needs at least 25 GB of free disk space (the engine and its default model)' >&2; exit 1; }; mkdir -p \"$2/uv\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"vllm==0.32.0\" \"mistral_common==1.12.0\"",
-          "vllm-install", "{download}", "{install_dir}"
-        ]
+        }
       }
     },
     "darwin/arm64": {
