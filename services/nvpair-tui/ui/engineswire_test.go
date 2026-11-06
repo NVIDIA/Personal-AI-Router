@@ -191,7 +191,7 @@ func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 		assert.Contains(t, downloadExamples, e.Name, "every engine needs a download example")
 	}
 	assert.Contains(t, downloadPrompt(engines.NameLlamaCPP, "llama.cpp"), ":Q4_K_M", "llama.cpp prompt must show the quantization suffix")
-	assert.Equal(t, "model name for vLLM", downloadPrompt("vllm", "vLLM"))
+	assert.Equal(t, "model name for No Such Engine", downloadPrompt("nosuchengine", "No Such Engine"))
 }
 
 // TestEveryEngineHasAModelWire is what makes adding an engine a matter of
@@ -205,7 +205,7 @@ func TestEveryEngine_HasAModelWire(t *testing.T) {
 			require.NoError(t, err, "%s must have a local wire for %s", e.Name, op)
 		}
 	}
-	_, err := modelActionWire("vllm", "load", "m")
+	_, err := modelActionWire("nosuchengine", "load", "m")
 	assert.Error(t, err, "an engine with no wire must not be given one")
 }
 

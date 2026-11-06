@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Original "vL" lettermark drawn for PAIR; not the vLLM project logo. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 250">
+  <g fill="none" stroke="#30a2ff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="40,70 92,180 144,70" />
+    <polyline points="176,70 176,180 222,180" />
+  </g>
+</svg>

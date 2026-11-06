@@ -5,11 +5,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
     state: {
-        getSelfId: vi.fn(() => 'local-node')
+        getSelfId: vi.fn(() => 'local-node'),
+        beginLocalModelSwitch: vi.fn(),
+        clearLocalModelSwitch: vi.fn()
     },
     supervisor: {
         hasProcess: vi.fn(() => true),
         sendProcess: vi.fn(),
+        callProcess: vi.fn(),
         reportError: vi.fn()
     }
 }))
@@ -68,6 +71,77 @@ describe('local model load command', () => {
                 modelName: 'llama3.2'
             }
         )
+    })
+
+    describe('vLLM model switch', () => {
+        const load = () =>
+            handleServiceBridgeInvoke('engine:command', {
+                command: 'loadModel',
+                engineType: 'vllm',
+                nodeId: 'local-node',
+                model: 'Qwen/Qwen3-8B'
+            })
+        const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+        it('awaits load_model and shows the engine as starting, not stopped, until it finishes', async () => {
+            let finish: (value: undefined) => void = () => undefined
+            mocks.supervisor.callProcess.mockReturnValue(
+                new Promise(resolve => {
+                    finish = resolve
+                })
+            )
+            await load()
+
+            // The switch restarts the engine, so it is marked before the request is sent.
+            expect(mocks.state.beginLocalModelSwitch).toHaveBeenCalledWith('vllm')
+            expect(mocks.supervisor.sendProcess).not.toHaveBeenCalled()
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                'broker',
+                'engine:action',
+                { engine: 'vllm', action: 'load_model', params: { model: 'Qwen/Qwen3-8B' } },
+                20 * 60_000
+            )
+            // Still in progress: the marker stays.
+            await flush()
+            expect(mocks.state.clearLocalModelSwitch).not.toHaveBeenCalled()
+
+            finish(undefined)
+            await flush()
+            expect(mocks.state.clearLocalModelSwitch).toHaveBeenCalledWith('vllm')
+            expect(mocks.supervisor.reportError).not.toHaveBeenCalled()
+        })
+
+        it('attributes a failure to the model row and ends the marker', async () => {
+            mocks.supervisor.callProcess.mockRejectedValue(
+                new Error('did not become ready; the previous model was restored')
+            )
+            await load()
+            await flush()
+
+            expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+                'Failed to load model on vllm: did not become ready; the previous model was restored',
+                'error',
+                'engine-cmd:load model:vllm',
+                {
+                    nodeId: 'local-node',
+                    engineType: 'vllm',
+                    operation: 'load',
+                    modelName: 'Qwen/Qwen3-8B'
+                }
+            )
+            // A failed switch will not bring the engine back by itself.
+            expect(mocks.state.clearLocalModelSwitch).toHaveBeenCalledWith('vllm')
+        })
+    })
+
+    it('does not mark an Ollama load as a model switch', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'loadModel',
+            engineType: 'ollama',
+            nodeId: 'local-node',
+            model: 'llama3.2'
+        })
+        expect(mocks.state.beginLocalModelSwitch).not.toHaveBeenCalled()
     })
 
     it('leaves the LM Studio load path unobserved', async () => {

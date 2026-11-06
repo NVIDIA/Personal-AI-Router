@@ -7,6 +7,7 @@ import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cl
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import {
+    MODEL_SWITCH_TIMEOUT_MS,
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
@@ -260,11 +261,37 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
             // LM Studio and llama.cpp declare real `load_model` manifest actions.
+            // vLLM's `load_model` switches the served model by restarting the
+            // engine on it, which takes minutes and can fail (the model may not
+            // fit), so like Ollama's its rejection is observed and attributed
+            // to the pending model row.
             // All require the engine running (HTTP/CLI action), matching the
             // disabled rule in ModelRow.tsx.
             // See docs/services-parity.md#models.
             if (payload.model) {
-                if (payload.engineType === 'ollama') {
+                if (payload.engineType === 'vllm') {
+                    // vLLM switches model by restarting, so the engine passes through
+                    // "stopped" on the way. Show that as starting rather than as
+                    // turned off, and end it when the request finishes: the reply
+                    // arrives once the new model is serving (or the old one restored).
+                    state.beginLocalModelSwitch('vllm')
+                    void supervisor
+                        .callProcess(
+                            'broker',
+                            'engine:action',
+                            { engine, action: 'load_model', params: { model: payload.model } },
+                            MODEL_SWITCH_TIMEOUT_MS
+                        )
+                        .catch(err =>
+                            failAction('load model', {
+                                nodeId: payload.nodeId,
+                                engineType: payload.engineType,
+                                operation: 'load',
+                                modelName: payload.model
+                            })(getErrorString(err))
+                        )
+                        .finally(() => state.clearLocalModelSwitch('vllm'))
+                } else if (payload.engineType === 'ollama') {
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',

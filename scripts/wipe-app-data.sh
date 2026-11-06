@@ -24,10 +24,11 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.ps1 (Windows twin — update both in the same change)
 #
-# Explicit exclusions (never add): ~/.ollama, ~/.llamacpp, ~/.lmstudio, external
-# engine installs, and the application install tree (Program Files / /opt/PAIR /
-# the macOS app bundle). Those three are the engines' model stores; each engine
-# declares its own as models_dir, and nothing PAIR removes may delete one.
+# Explicit exclusions (never add): ~/.ollama, ~/.llamacpp, ~/.lmstudio,
+# ~/.cache/huggingface, engine installs PAIR did not create, and the application
+# install tree (Program Files / /opt/PAIR / the macOS app bundle). Those home
+# directories are model stores; each engine declares its own as models_dir, and
+# nothing PAIR removes may delete one. PAIR's managed vLLM payload is included.
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -44,9 +45,10 @@ usage() {
 Usage: scripts/wipe-app-data.sh [options]
 
 Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
-identity, chat history, PAIR-managed engines under the app data root).
+identity, chat history, and PAIR-managed engines).
 
-Does NOT delete model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models).
+Does NOT delete model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models,
+~/.cache/huggingface).
 Does NOT uninstall the application binary.
 
 Options:
@@ -113,6 +115,7 @@ fi
 
 CURRENT_ROOT="$CONFIG_BASE/$APP_ORG/$APP_DATA_DIR_NAME"
 LEGACY_ROOT="$CONFIG_BASE/$APP_PREVIOUS_ORG/$APP_PREVIOUS_DATA_DIR_NAME"
+VLLM_INSTALL_ROOT="$HOME_DIR/.nvpair/engine-bin/vllm"
 
 USERNAME="${USER:-user}"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -130,6 +133,7 @@ CONTROL_DIR="$RUNTIME_BASE/nvpair-$SCOPE"
 TARGETS=()
 TARGETS+=("$CURRENT_ROOT|Current shared Electron + backend app data root")
 TARGETS+=("$LEGACY_ROOT|Legacy pre-rename app data root (NVIDIA Corporation/PAIR)")
+TARGETS+=("$VLLM_INSTALL_ROOT|PAIR-managed vLLM payload")
 TARGETS+=("$CACHE_HOME/nvpair-updater|electron-updater download cache")
 TARGETS+=("$CONTROL_DIR|Removed CLI control socket directory and auth token")
 TARGETS+=("$HOME_DIR/.local/bin/nvpair|Generated Linux nvpair launcher")
@@ -216,7 +220,7 @@ if [[ "$CONFIRM" -eq 0 ]]; then
   fi
   echo ""
   echo "WARNING: This permanently deletes all NVIDIA PAIR app data."
-  echo "Model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models) are NOT removed."
+  echo "Model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models, ~/.cache/huggingface) are NOT removed."
   echo ""
   echo "Paths to remove:"
   for entry in "${TARGETS[@]}"; do
@@ -251,6 +255,8 @@ done
 # Remove org parents only when empty (other NVIDIA apps may share them).
 rmdir "$CONFIG_BASE/$APP_ORG" 2>/dev/null || true
 rmdir "$CONFIG_BASE/$APP_PREVIOUS_ORG" 2>/dev/null || true
+rmdir "$HOME_DIR/.nvpair/engine-bin" 2>/dev/null || true
+rmdir "$HOME_DIR/.nvpair" 2>/dev/null || true
 
 echo "Removed $removed path(s)."
 if [[ "$failures" -gt 0 ]]; then

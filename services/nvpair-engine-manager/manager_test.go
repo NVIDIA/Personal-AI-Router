@@ -8,8 +8,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
-
+	"sync"
 	"testing"
 	"time"
 
@@ -129,4 +130,49 @@ func TestStatusQueries_DoNotBlockMessageDispatchDuringEngineOperation(t *testing
 func mustContain(t *testing.T, s, sub string) {
 	t.Helper()
 	require.Contains(t, s, sub)
+}
+
+// A SIGTERM cancels the manager's context while the read loop is blocked on
+// stdin, which stays open and silent. Shutdown must not wait for the next
+// message: it has to stop the engines and return, or the process hangs with its
+// engines running until the parent closes the pipe.
+func TestRunShutsDownWhenCancelledWhileStdinIsIdle(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	if err := ex.Start(context.Background(), "fake"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	stdinRead, stdinWrite := io.Pipe() // never written to, never closed
+	t.Cleanup(func() { _ = stdinWrite.Close() })
+	var out syncBuffer
+	m := NewManager(NewCodec(struct {
+		io.Reader
+		io.Writer
+	}{stdinRead, &out}), ex, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond) // let it reach the blocking read
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+	if status, _ := ex.Status("fake"); status.Running {
+		t.Fatal("the engine was left running by the shutdown")
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
 }

@@ -37,11 +37,28 @@ export interface EngineCaps {
     /** When true, show the Delete action in the model action menu. */
     hasDeleteModel: boolean
     /**
+     * When true, the engine can download a model on request (a `pull_model`
+     * action), so the model list offers "Add model".
+     */
+    hasPullModel: boolean
+    /**
+     * When true, the model hub can search the whole upstream catalog for a typed
+     * query (the backend's `engine:catalog` reports `searchable`), instead of only
+     * filtering the browse list.
+     */
+    hubSearch?: boolean
+    /**
      * When true, the engine restarts as part of deleting a model, so Delete asks
      * for confirmation first. The engine manager owns the restart; this flag only
      * tells the UI that deleting has that side effect.
      */
     restartsOnModelDelete?: boolean
+    /**
+     * When true, the model an engine is serving cannot be deleted, so Delete is
+     * disabled for it. An engine that serves one model per process breaks if its
+     * model files go, so the backend refuses it and the UI does not offer it.
+     */
+    deleteBlockedWhileLoaded?: boolean
     /**
      * If the engine has its own public model catalog (e.g. ollama.com), provide the
      * hub config here. Presence doubles as the truthy flag for the hub source selector.

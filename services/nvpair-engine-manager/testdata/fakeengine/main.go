@@ -81,8 +81,10 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	// "--fail-launch", or a model named org/fails-to-load, stands in for a launch
+	// the engine rejects, such as a model that does not fit in GPU memory.
 	for _, arg := range os.Args[1:] {
-		if arg == "--fail-launch" {
+		if arg == "--fail-launch" || arg == "org/fails-to-load" {
 			fmt.Fprintln(os.Stderr, "invalid launch", os.Args[1:])
 			os.Exit(2)
 		}

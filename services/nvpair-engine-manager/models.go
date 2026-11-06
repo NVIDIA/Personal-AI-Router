@@ -80,6 +80,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	listOK := make([]bool, len(engineNames))
 	loaded := make([][]string, len(engineNames))
 	loadedOK := make([]bool, len(engineNames))
+	advertiseLoaded := make([]bool, len(engineNames))
 	var wg sync.WaitGroup
 	for i, name := range engineNames {
 		mf, ok := e.reg.Get(name)
@@ -95,6 +96,13 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		}
 		if listSpec == nil && loadedSpec == nil {
 			continue
+		}
+		// An engine that can only answer for what it is running advertises its
+		// loaded set. Its list_models is a view of what could be loaded, which
+		// is not what a peer or the proxy may route to, so it is not queried here.
+		if mf.AdvertisedModels == advertisedModelsLoaded && loadedSpec != nil {
+			advertiseLoaded[i] = true
+			listSpec = nil
 		}
 		wg.Add(1)
 		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
@@ -133,6 +141,9 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 	res := ModelsResult{Models: []string{}}
 	seen := map[string]bool{}
 	for i, models := range perEngine {
+		if advertiseLoaded[i] {
+			models, listOK[i] = loaded[i], loadedOK[i]
+		}
 		if listOK[i] {
 			if res.ByEngine == nil {
 				res.ByEngine = make(map[string][]string)

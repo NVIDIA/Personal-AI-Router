@@ -91,7 +91,7 @@ type Executor struct {
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
 	progress *progressHub
-	baseDir  string // user-scoped install base
+	baseDir  string // default user-scoped install base
 	// desired persists explicit per-engine ON/OFF intent. Runtime state remains
 	// in-memory; shutdown cleanup must not rewrite this store.
 	desired *desiredStateStore
@@ -233,20 +233,27 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	}
 	plat, ok := m.HostPlatform()
 	if !ok {
-		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("%s is not supported on %s/%s", m.DisplayName, runtime.GOOS, runtime.GOARCH)
 	}
 	st := &engineState{
 		manifest:   m,
 		plat:       plat,
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
-		installDir: filepath.Join(e.baseDir, engine),
+		installDir: engineInstallDir(e.baseDir, engine, plat.InstallDir),
 	}
 	if plat.ModelsDir != "" {
 		st.modelsDir = expandPath(plat.ModelsDir)
 	}
 	e.engines[engine] = st
 	return st, nil
+}
+
+func engineInstallDir(defaultBase, engine, configured string) string {
+	if configured != "" {
+		return filepath.Clean(expandPath(configured))
+	}
+	return filepath.Join(defaultBase, engine)
 }
 
 // pathVars are the directory placeholders every templated manifest string can

@@ -165,8 +165,8 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     )
     const isRunning = useMemo(() => backend.processStatus === 'running', [backend.processStatus])
     const supportsSearch = useMemo(
-        () => !hasModelSearchOnlyWhenRunning || isRunning,
-        [hasModelSearchOnlyWhenRunning, isRunning]
+        () => (caps?.hasPullModel ?? false) && (!hasModelSearchOnlyWhenRunning || isRunning),
+        [caps?.hasPullModel, hasModelSearchOnlyWhenRunning, isRunning]
     )
 
     const handleDownload = useCallback(

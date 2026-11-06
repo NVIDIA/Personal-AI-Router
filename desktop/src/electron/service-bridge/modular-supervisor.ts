@@ -12,6 +12,7 @@ import {
     type JsonRpcNotification,
     type JsonValue
 } from './json-rpc-subprocess'
+import { EnginesListingModelsWhenStopped } from '@/shared/constants/engines'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
@@ -1080,8 +1081,8 @@ class ModularSupervisor {
             const result = await this.callProcess('broker', 'engine:get-installed')
             const obj = objectValue(result)
             if (!obj || !Array.isArray(obj.engines)) return
+            getModularBridgeState().applyEngineManagerList(result)
             for (const engine of obj.engines) {
-                getModularBridgeState().applyEngineManagerStatus(engine)
                 this.refreshManagedEngineModels(engine)
             }
         } catch (err) {
@@ -1989,7 +1990,13 @@ class ModularSupervisor {
         const engineType = getModularBridgeState().modelPullTarget(engine)
         if (!engineType) return
 
-        if (!booleanValue(obj.running)) {
+        // An engine whose list is on disk keeps it while stopped: read it like a
+        // running engine's instead of clearing it.
+        if (!booleanValue(obj.running) && !EnginesListingModelsWhenStopped.includes(engineType)) {
+            // A model switch restarts the engine, so it reports stopped on the
+            // way. The list of models does not change, and clearing it made the
+            // card empty until the engine was back.
+            if (getModularBridgeState().isLocalModelSwitching(engineType)) return
             this.beginModelRefresh(engineType)
             this.stoppedModelEngines.add(engineType)
             this.stoppedModelSentinels.add(engineType)

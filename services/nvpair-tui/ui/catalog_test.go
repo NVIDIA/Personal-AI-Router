@@ -325,9 +325,9 @@ func TestCatalog_IgnoresOtherEnginesReply(t *testing.T) {
 // TestCatalogEmptyCatalogIsDistinctFromNoMatch checks the two empty states read
 // differently, because the fixes are different.
 func TestCatalogEmptyCatalog_IsDistinctFromNoMatch(t *testing.T) {
-	b := newCatalogBrowser(nil, "vllm", "vLLM", "this-host", false)
+	b := newCatalogBrowser(nil, "nosuchengine", "No Such Engine", "this-host", false)
 	b.SetSize(100, 24)
-	b.update(catalogLoadedMsg{engine: "vllm", models: nil})
+	b.update(catalogLoadedMsg{engine: "nosuchengine", models: nil})
 
 	assert.Contains(t, b.View(), "No catalog available")
 }
