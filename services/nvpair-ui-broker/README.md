@@ -310,10 +310,13 @@ The broker retains source observations and receipt times so fresh subscribers
 and on-demand queries see the latest accepted hardware. Reads and replay add
 elapsed cache time without reducing sample age. Source removal, proof changes,
 worker replacement, and endpoint replacement withdraw the affected hardware.
-For client display, the broker stamps `info.observedAt` once in its own clock
-domain, in Unix milliseconds. It applies the source age when available and uses
-receipt time otherwise. That timestamp stays fixed across cached delivery while
-`msSince` increases, so snapshots and live pushes identify the same observation.
+For client display, the broker stamps `info.observedAt` with receipt time in Unix
+milliseconds. It identifies the whole display observation, independently of GPU
+sample age, so fresh CPU and memory readings remain visible if GPU collection
+stalls. That timestamp stays fixed across cached delivery while `msSince`
+increases, so snapshots and live pushes identify the same observation. Owned local
+observations are stamped before caching and relay to scanner, preserving their
+timestamp through scanner restart replay.
 The full `info` payload is omitted from internal scheduling snapshots.
 
 #### `ollama-proxy:<event>`

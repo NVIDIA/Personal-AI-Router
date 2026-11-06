@@ -198,12 +198,14 @@ reads, and unverified previews from separate public HTTP collection. Public
 `info.hostUuid`, `info.clusterUuid`, and `info.peer` claims are stripped. Missing
 `info` withdraws previous hardware. `lastSeen` is a record-change time, not sample
 age or proof of availability. Internal scheduling snapshots omit `info`.
-The broker assigns `info.observedAt`, a stable Unix millisecond time in its local
-clock domain, once when accepting an observation. Valid source age is subtracted
-from receipt time; observations without valid GPU telemetry use receipt time.
+The broker assigns `info.observedAt`, the receipt time of the whole display
+observation in Unix milliseconds. It is independent of GPU sample age: CPU and
+memory observations can advance while the GPU collector retains an older sample.
 Cached snapshots, source reprojection, and live forwarding preserve that value
-while `info.msSince` continues to age. Incoming `observedAt` values are overwritten
-and do not establish identity, trust, or scheduling freshness.
+while `info.msSince` continues to report GPU sample age. Owned local observations
+are stamped before caching and relay to scanner, which preserves the timestamp
+on return. Remote `observedAt` values are overwritten. Display observation time
+does not establish identity, trust, or scheduling freshness.
 
 `NodeInfoEvent` — scanner-origin hardware forwarded as `discovery:node-info`:
 `{discoveryRecordId, hostUuid, clusterUuid?, identityVerification, info}`. Clients

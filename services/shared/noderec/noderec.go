@@ -452,9 +452,10 @@ type NodeInfo struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
-	// ObservedAt is the broker-local Unix millisecond sample time for client
-	// displays. The broker assigns it once on receipt, applying the source age,
-	// and preserves it across snapshots and replay. It does not establish trust.
+	// ObservedAt is the local receipt time for the whole display observation,
+	// assigned by the collecting worker or broker in Unix milliseconds. It stays
+	// fixed across cached delivery and replay, independently of GPU sample age,
+	// and does not establish trust.
 	ObservedAt  int64   `json:"observedAt,omitempty"`
 	HostUUID    string  `json:"hostUuid,omitempty"`
 	ClusterUUID *string `json:"clusterUuid,omitempty"`

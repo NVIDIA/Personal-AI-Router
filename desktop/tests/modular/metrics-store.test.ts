@@ -11,6 +11,8 @@ afterEach(() => {
     vi.unstubAllGlobals()
 })
 
+// The renderer independently protects chart history even if duplicate or
+// out-of-order events reach it from the main-process bridge.
 it('appends only newer observations, including readings with unchanged values', () => {
     let deliver: ((metrics: NodeItemMetrics) => void) | undefined
     const onUpdate = vi.fn<Window['pairApi']['metrics']['onUpdate']>(handler => {

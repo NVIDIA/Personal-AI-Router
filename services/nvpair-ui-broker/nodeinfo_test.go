@@ -24,28 +24,45 @@ func TestLocalNodeInfo_RelaysOwnedWorkerSamples(t *testing.T) {
 	b := &Broker{nodeID: "owned-host"}
 	sp, messages := localInfoScanner(t)
 	b.setScanner(sp)
-	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","GPUs":[{"name":"GPU","utilization_percent":61}],"telemetryValid":true,"msSince":137}}`))
+	beforeReceipt := time.Now()
+	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","GPUs":[{"name":"GPU","utilization_percent":61}],"telemetryValid":true,"msSince":137,"observedAt":1}}`))
 	info := readLocalInfo(t, messages)
+	afterReceipt := time.Now()
 	assert.Equal(t, "owned-host", info.HostUUID)
 	assert.True(t, info.TelemetryValid)
 	assert.GreaterOrEqual(t, info.MSSince, int64(137))
+	assert.GreaterOrEqual(t, info.ObservedAt, beforeReceipt.UnixMilli(), "the broker replaces the worker's supplied display time")
+	assert.LessOrEqual(t, info.ObservedAt, afterReceipt.UnixMilli())
 	require.Len(t, info.GPUs, 1)
 	assert.Equal(t, uint32(61), info.GPUs[0].UtilizationPercent)
 }
 
-func TestLocalNodeInfo_ReplayPreservesSampleAge(t *testing.T) {
+func TestLocalNodeInfo_ReplayPreservesObservationTimeAndGPUAge(t *testing.T) {
 	// Simulate a snapshot waiting in the broker cache while scanner is absent.
-	// Replaying it must include that wait in its age so an old measurement
-	// cannot appear freshly sampled after scanner restarts.
+	// Replaying it must age the GPU sample without giving the display observation
+	// a new timestamp when scanner restarts.
 	b := &Broker{nodeID: "owned-host"}
-	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":137}}`))
-	require.NotNil(t, b.localInfo)
-	b.localInfo.receivedAt = time.Now().Add(-3 * time.Second)
+	receivedAt := time.Now().Add(-3 * time.Second)
+	b.acceptLocalInfo(json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":137}}`), receivedAt)
 	sp, messages := localInfoScanner(t)
+	beforeReplay := time.Now()
 	b.replayLocalInfo(sp)
 	info := readLocalInfo(t, messages)
-	assert.GreaterOrEqual(t, info.MSSince, int64(3137))
-	assert.LessOrEqual(t, info.MSSince, int64(6000))
+	afterReplay := time.Now()
+	assert.GreaterOrEqual(t, info.MSSince, int64(137)+beforeReplay.Sub(receivedAt).Milliseconds())
+	assert.LessOrEqual(t, info.MSSince, int64(137)+afterReplay.Sub(receivedAt).Milliseconds())
+
+	// Scanner returns the cached observation later. Its second broker receipt
+	// must preserve the display time assigned before the restart.
+	store := newDiscoveryStore()
+	store.Upsert(EnrichedNode{
+		HostUUID: "owned-host", DiscoveryRecordID: "local:owned-host", IdentityVerification: noderec.IdentityLocal,
+	}, sourceScanner)
+	accepted, ok := store.AcceptInfo(noderec.NodeInfoEvent{
+		HostUUID: "owned-host", DiscoveryRecordID: "local:owned-host", IdentityVerification: noderec.IdentityLocal, Info: info,
+	}, time.Now())
+	require.True(t, ok)
+	assert.Equal(t, receivedAt.UnixMilli(), accepted.Info.ObservedAt)
 }
 
 func TestLocalNodeInfo_RejectsForeignWorkerIdentity(t *testing.T) {

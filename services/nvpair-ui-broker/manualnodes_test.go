@@ -252,6 +252,39 @@ func TestManualToEnriched_ExcludesUnverifiedHardwareFromServiceRecords(t *testin
 	assert.Equal(t, []string{modelName}, node.Models)
 }
 
+// The initial probe can publish the same hardware in both node/updated and
+// node/discovered. Engine changes can also republish a cached public preview.
+// Those deliveries must not create chart samples, but a fresh equal read must.
+func TestManualToEnriched_PreservesWorkerObservationTime(t *testing.T) {
+	test := func(name, hardwareJSON string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			check := func(observedAt, age, deliveryTime int64) {
+				t.Helper()
+				payload := fmt.Sprintf(`{"id":"lab","observedAt":%d,%s}`, observedAt, fmt.Sprintf(hardwareJSON, age))
+				var status manualNodeStatus
+				require.NoError(t, json.Unmarshal([]byte(payload), &status))
+				receivedAt := time.UnixMilli(deliveryTime)
+
+				node := manualToEnriched(status, receivedAt)
+
+				require.NotNil(t, node.Info)
+				assert.Equal(t, observedAt, node.Info.ObservedAt)
+				assert.Equal(t, age, node.Info.MSSince)
+				// Worker cache time is already in msSince. Only later broker
+				// cache time may be added, or the GPU sample would age twice.
+				assert.Equal(t, receivedAt, node.infoReceivedAt)
+			}
+			check(100_000, 137, 101_000)
+			check(100_000, 2137, 103_000)
+			check(104_000, 137, 105_000)
+		})
+	}
+	test("authenticated hardware", `"identityVerification":"pinned","hostUuid":"peer","telemetryValid":true,"msSince":%d,"cpu":{"utilization_percent":7}`)
+	// Public response clocks cannot override the owned worker's receipt time.
+	test("public preview", `"preview":{"observedAt":1,"telemetryValid":true,"msSince":%d,"cpu":{"utilization_percent":7}}`)
+}
+
 type observedProxyWriter struct {
 	net.Conn
 	onWrite func()

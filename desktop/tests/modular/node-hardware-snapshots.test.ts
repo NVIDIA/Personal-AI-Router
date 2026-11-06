@@ -95,7 +95,7 @@ describe('broker hardware snapshots', () => {
         expect(state.getNodesInitial().nodes[node.hostUuid].topology.gpus).toEqual([])
     })
 
-    it('forwards a broker observation only once across snapshots and hardware pushes', () => {
+    it('ignores replayed and older observations across snapshots and hardware pushes', () => {
         vi.spyOn(Date, 'now').mockReturnValue(100_000)
         const state = getModularBridgeState()
         const hostUuid = 'aged-hardware'
@@ -105,14 +105,12 @@ describe('broker hardware snapshots', () => {
             GPUs: [{ name: 'Cached GPU', utilization_percent: 25 }],
             telemetryValid: true,
             msSince: 7000,
-            observedAt: 93_000
+            observedAt: 100_000
         }
         const node = {
             hostUuid,
             discoveryRecordId,
-            identityVerification: 'pinned',
-            ipAddress: '192.0.2.32',
-            port: 14318
+            identityVerification: 'pinned'
         }
         state.handleNotification({
             source: 'broker',
@@ -123,7 +121,7 @@ describe('broker hardware snapshots', () => {
             'metrics:update',
             expect.objectContaining({
                 id: hostUuid,
-                current: expect.objectContaining({ timestamp: 93_000 })
+                current: expect.objectContaining({ timestamp: 100_000 })
             })
         )
 
@@ -148,10 +146,7 @@ describe('broker hardware snapshots', () => {
             }
         })
 
-        expect(emitBridgePush).not.toHaveBeenCalled()
-
-        // A fresh measurement updates charts without broadcasting structural
-        // node or engine changes.
+        // A delayed observation must not move chart history backward either.
         state.handleNotification({
             source: 'broker',
             method: 'discovery:node-info',
@@ -159,21 +154,64 @@ describe('broker hardware snapshots', () => {
                 hostUuid,
                 discoveryRecordId,
                 identityVerification: 'pinned',
+                info: { ...info, observedAt: 99_999 }
+            }
+        })
+
+        expect(emitBridgePush).not.toHaveBeenCalled()
+    })
+
+    // CPU and memory keep updating while GPU collection is stalled. A new
+    // observation must reach charts without structural node or engine changes.
+    it('updates CPU and memory metrics while the GPU sample grows stale', () => {
+        const state = getModularBridgeState()
+        const hostUuid = 'system-with-stale-gpu'
+        const node = {
+            hostUuid,
+            discoveryRecordId: 'record:system-with-stale-gpu',
+            identityVerification: 'pinned'
+        }
+        const info = {
+            hostUuid,
+            GPUs: [{ name: 'Cached GPU', utilization_percent: 25 }],
+            cpu: { name: 'CPU', utilization_percent: 7 },
+            memory: { total_bytes: 1024, used_bytes: 256 },
+            telemetryValid: true,
+            msSince: 7000,
+            observedAt: 100_000
+        }
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: [{ ...node, info }]
+        })
+        vi.mocked(emitBridgePush).mockClear()
+
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:node-info',
+            params: {
+                ...node,
                 info: {
                     ...info,
-                    GPUs: [{ name: 'Cached GPU', utilization_percent: 40 }],
-                    observedAt: 95_000
+                    cpu: { name: 'CPU', utilization_percent: 40 },
+                    memory: { total_bytes: 1024, used_bytes: 512 },
+                    msSince: 9000,
+                    observedAt: 102_000
                 }
             }
         })
+
         expect(emitBridgePush).toHaveBeenCalledTimes(1)
         expect(emitBridgePush).toHaveBeenCalledWith(
             'metrics:update',
             expect.objectContaining({
                 id: hostUuid,
                 current: expect.objectContaining({
-                    timestamp: 95_000,
-                    gpuUtilization: [{ id: `${hostUuid}:gpu:0`, value: 40 }]
+                    timestamp: 102_000,
+                    cpuUtilization: 40,
+                    memoryUsage: 50,
+                    gpuUtilization: [{ id: `${hostUuid}:gpu:0`, value: 25 }]
                 })
             })
         )
@@ -223,7 +261,7 @@ describe('broker hardware snapshots', () => {
         expect(emitBridgePush).toHaveBeenCalledTimes(1)
     })
 
-    it('clears broker hardware readiness and sample time when only proxy presence remains', () => {
+    it('withdraws broker hardware without creating metrics while a proxy keeps the row', () => {
         vi.spyOn(Date, 'now').mockReturnValue(100_000)
         const state = getModularBridgeState()
         const hostUuid = 'proxy-withdrawn-hardware'
@@ -243,11 +281,19 @@ describe('broker hardware snapshots', () => {
                         GPUs: [{ name: 'Owned GPU' }],
                         inference_hardware_ids: ['gpu:owned'],
                         telemetryValid: true,
-                        msSince: 7000
+                        msSince: 7000,
+                        observedAt: 100_000
                     }
                 }
             ]
         })
+        expect(emitBridgePush).toHaveBeenCalledWith(
+            'metrics:update',
+            expect.objectContaining({
+                id: hostUuid,
+                current: expect.objectContaining({ timestamp: 100_000 })
+            })
+        )
         state.handleNotification({
             source: 'ollama-proxy',
             method: 'node/discovered',

@@ -82,7 +82,8 @@ They do not imply a WebSocket connection. Browser clients are not supported.
   record. Electron matches record ID, verification, and verified host identity
   before projecting GPU, CPU, memory, and VRAM fields. Workers collect local
   IPC measurements, pinned peer measurements, and sanitized unverified previews.
-  The broker's `info.observedAt` supplies a stable Unix millisecond sample time.
+  The broker's `info.observedAt` supplies a stable Unix millisecond display
+  observation time, independently of GPU sample age.
   Electron emits `metrics:update` once for each newer observation, including
   unchanged readings, and ignores replayed or older measurements. Changes to
   utilization, used memory, sample time, or directory freshness do not emit
