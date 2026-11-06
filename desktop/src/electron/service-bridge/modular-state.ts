@@ -2505,8 +2505,9 @@ class ModularBridgeState {
 
         // A model pulled/deleted while an engine is already running produces no
         // `engine:state-changed`, so the engine-manager model cache would go stale.
-        // Refresh on a flat-union change and on this engine's attribution change:
-        // deleting a model shared with another engine changes only the latter.
+        // Refresh on advertised and downloaded inventory changes. vLLM can gain
+        // or lose a cached model without changing the model it serves, including
+        // while stopped, so its separate downloaded list must trigger a refresh.
         if (merged.id === this.selfId && existing) {
             const unionChanged = !sameStringList(existing.models, merged.models)
             for (const engine of PROXY_ENGINES) {
@@ -2519,13 +2520,23 @@ class ModularBridgeState {
                         existing.modelsByEngine[managerEngine] ?? [],
                         merged.modelsByEngine[managerEngine] ?? []
                     )
+                const hadDownloaded = managerEngine in existing.downloadedByEngine
+                const hasDownloaded = managerEngine in merged.downloadedByEngine
+                const downloadedChanged =
+                    hadDownloaded !== hasDownloaded ||
+                    !sameStringList(
+                        existing.downloadedByEngine[managerEngine] ?? [],
+                        merged.downloadedByEngine[managerEngine] ?? []
+                    )
+                const canListWhileStopped =
+                    EnginesListingModelsWhenStopped.includes(engine) && hasDownloaded
                 // Proxy presence is not a lifecycle fact: the broker can keep
                 // serving engine-manager while this optional routing proxy is
                 // unavailable. Use the local manager fact first, with proxy
                 // presence only as the existing external-engine fallback.
                 if (
-                    this.engineActiveForModels(merged, engine) &&
-                    (unionChanged || attributionChanged)
+                    (this.engineActiveForModels(merged, engine) || canListWhileStopped) &&
+                    (unionChanged || attributionChanged || downloadedChanged)
                 ) {
                     this.onLocalDiscoveryModelsChanged?.(engine)
                 }
