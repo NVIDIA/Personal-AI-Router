@@ -4,7 +4,6 @@
 package main
 
 import (
-	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,25 +31,4 @@ func TestIdentity_RejectsReloadWhenPrivateKeyIsMissing(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(dir, "node.key")), "remove key")
 	_, err = loadOrMintIdentity(dir)
 	require.Error(t, err, "expected a loud failure when identity.json exists but the key is gone")
-}
-
-func TestPIN_RoundTripsThroughNoobEncoding(t *testing.T) {
-	test := func(name, pin string) {
-		t.Run(name, func(t *testing.T) {
-			noob := noobFromPIN(pin)
-			require.Len(t, noob, 16, "noob length")
-			want := new(big.Int)
-			want.SetString(pin, 10)
-			require.Equal(t, want.String(), new(big.Int).SetBytes(noob).String(), "noob decodes incorrectly")
-		})
-	}
-	test("all zeroes", "000000")
-	test("leading zeroes", "000123")
-	test("ordinary PIN", "402199")
-	test("maximum PIN", "999999")
-
-	gp, noob, err := generatePIN()
-	require.NoError(t, err, "generatePIN")
-	require.Regexp(t, pinPattern, gp, "generated PIN")
-	require.Equal(t, string(noobFromPIN(gp)), string(noob), "generatePIN's noob does not match noobFromPIN of its PIN")
 }

@@ -21,6 +21,12 @@ const (
 // NAI (RFC 9140, Section 3.2.1).
 const defaultNAI = "noob@eap-noob.arpa"
 
+// PAIR supports protocol version 1 and server-to-peer OOB.
+const (
+	protocolVersion = 1
+	oobDirection    = 2
+)
+
 // eapResult is a non-protocol control message used by this transport-agnostic
 // library to convey the terminating EAP-Success / EAP-Failure indication that a
 // real EAP lower layer would deliver out of band of the EAP-NOOB payloads.
@@ -58,8 +64,6 @@ type wireMessage struct {
 	Ns  json.RawMessage `json:"Ns,omitempty"`
 	Np  json.RawMessage `json:"Np,omitempty"`
 
-	SleepTime *int `json:"SleepTime,omitempty"`
-
 	NoobId json.RawMessage `json:"NoobId,omitempty"`
 	MACs   json.RawMessage `json:"MACs,omitempty"`
 	MACp   json.RawMessage `json:"MACp,omitempty"`
@@ -68,21 +72,6 @@ type wireMessage struct {
 	ErrorInfo string `json:"ErrorInfo,omitempty"`
 
 	EAP string `json:"eap,omitempty"`
-}
-
-// encode marshals a message to compact JSON and parses it back so callers can
-// capture the exact serialized bytes of each field (the bytes that travel on
-// the wire and feed the MAC/Hoob arrays).
-func encode(m *wireMessage) ([]byte, *wireMessage, error) {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return nil, nil, err
-	}
-	parsed := new(wireMessage)
-	if err := json.Unmarshal(b, parsed); err != nil {
-		return nil, nil, err
-	}
-	return b, parsed, nil
 }
 
 func decode(b []byte) (*wireMessage, error) {

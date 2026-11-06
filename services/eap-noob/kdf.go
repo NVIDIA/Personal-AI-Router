@@ -12,15 +12,10 @@ import (
 // Section 3.5, Table 4).
 var algorithmID = []byte("EAP-NOOB")
 
-// keyMaterial holds the labeled slices of the KDF output (RFC 9140, Table 5).
+// keyMaterial retains only the Completion authentication keys (RFC 9140, Table 5).
 type keyMaterial struct {
-	MSK      []byte // 64
-	EMSK     []byte // 64
-	AMSK     []byte // 64
-	MethodID []byte // 32
-	Kms      []byte // 32
-	Kmp      []byte // 32
-	Kz       []byte // 32 (Completion / KeyingMode 3 only)
+	Kms []byte // 32
+	Kmp []byte // 32
 }
 
 // oneStepKDF implements the NIST SP 800-56C one-step KDF with a 4-byte
@@ -61,12 +56,7 @@ func completionFixedInfo(np, ns, noob []byte) []byte {
 func deriveCompletion(z, np, ns, noob []byte) keyMaterial {
 	out := oneStepKDF(z, completionFixedInfo(np, ns, noob), 320)
 	return keyMaterial{
-		MSK:      out[0:64],
-		EMSK:     out[64:128],
-		AMSK:     out[128:192],
-		MethodID: out[192:224],
-		Kms:      out[224:256],
-		Kmp:      out[256:288],
-		Kz:       out[288:320],
+		Kms: out[224:256],
+		Kmp: out[256:288],
 	}
 }

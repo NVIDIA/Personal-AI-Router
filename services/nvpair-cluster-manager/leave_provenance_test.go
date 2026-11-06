@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"eapnoob"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -134,7 +136,7 @@ func TestExpirePendingInvite_ClearsBothSides(t *testing.T) {
 	// The receiver holds the matching pending inbound invite + joiner session
 	// (addr points at the inviter's pairing endpoint) + tentative member.
 	receiver.setClusterIdentity("", "")
-	peer := &PairingInfo{
+	peer := &eapnoob.PairingInfo{
 		NodeID:   inviter.identity.NodeID,
 		NodeUUID: inviter.identity.NodeUUID,
 		Name:     inviter.identity.Name,
