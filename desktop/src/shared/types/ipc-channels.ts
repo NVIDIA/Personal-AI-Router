@@ -60,6 +60,13 @@ export interface ServiceVersions {
  */
 export type BootstrapPayload = { port: number; token: string } | null
 
+/** Result of an Electron native file picker for selecting a local model file. */
+export interface ModelFileSelection {
+    canceled: boolean
+    filePath: string | null
+    fileName: string | null
+}
+
 export interface IpcChannelMap {
     // -- Window --
     'window:close': { request: void; response: void }
@@ -77,6 +84,7 @@ export interface IpcChannelMap {
     'window:copy-to-clipboard': { request: string; response: void }
     'window:copy-image-to-clipboard': { request: { base64: string }; response: void }
     'window:save-debug-logs': { request: void; response: string | null }
+    'window:select-model-file': { request: void; response: ModelFileSelection }
 
     // -- Tray --
     'tray:resize': { request: number; response: number }

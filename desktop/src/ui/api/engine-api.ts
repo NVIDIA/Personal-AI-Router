@@ -54,14 +54,20 @@ export interface IEngineApi {
     uninstall(engineType: EngineType, nodeId: string): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
-    /** Load a model into memory on a node. */
-    loadModel(engineType: EngineType, nodeId: string, model: string): void
+    /** Cancel an in-progress model download on a node. */
+    cancelPull(engineType: EngineType, nodeId: string, model: string): void
+    /** Load a model into memory on a node with optional context token size. */
+    loadModel(engineType: EngineType, nodeId: string, model: string, numCtx?: number): void
     /** Unload a model from memory on a node. */
     unloadModel(engineType: EngineType, nodeId: string, model: string): void
     /** Delete a downloaded model from a node. */
     deleteModel(engineType: EngineType, nodeId: string, model: string): void
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
+    /** Re-scan installed models on a node from its machine. */
+    refreshModels(engineType: EngineType, nodeId: string): void
+    /** Import a local model file (.gguf, etc.) from the machine into an engine. */
+    importLocalModel(engineType: EngineType, nodeId: string, model: string, filePath: string): void
     /** Load an engine catalog or explicitly search its upstream registry. */
     searchHub(engineType: EngineType, query?: string): Promise<EngineHubSearchResponse>
 
@@ -100,8 +106,10 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
             fireCommand(transport, { command: 'uninstall', engineType, nodeId }),
         pullModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
-        loadModel: (engineType, nodeId, model) =>
-            fireCommand(transport, { command: 'loadModel', engineType, nodeId, model }),
+        cancelPull: (engineType, nodeId, model) =>
+            fireCommand(transport, { command: 'cancelPull', engineType, nodeId, model }),
+        loadModel: (engineType, nodeId, model, numCtx) =>
+            fireCommand(transport, { command: 'loadModel', engineType, nodeId, model, numCtx }),
         unloadModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'unloadModel', engineType, nodeId, model }),
         deleteModel: (engineType, nodeId, model) =>
@@ -113,6 +121,16 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 nodeId,
                 model,
                 expiry
+            }),
+        refreshModels: (engineType, nodeId) =>
+            fireCommand(transport, { command: 'refreshModels', engineType, nodeId }),
+        importLocalModel: (engineType, nodeId, model, filePath) =>
+            fireCommand(transport, {
+                command: 'importLocalModel',
+                engineType,
+                nodeId,
+                model,
+                filePath
             }),
         searchHub: (engineType, query) =>
             transport.invoke(

@@ -4,6 +4,7 @@
 import { ipcRenderer } from 'electron'
 import { invokeAndUnwrap } from '@/preload/api/unwrap'
 import type { OverviewCommand } from '@/shared/types/overview'
+import type { ModelFileSelection } from '@/shared/types/ipc-channels'
 
 export interface IWindowActionApi {
     close(): Promise<void>
@@ -30,6 +31,8 @@ export interface IWindowActionApi {
     copyImageToClipboard(base64: string): Promise<void>
     /** Opens a native save dialog and writes a diagnostic log bundle. */
     saveDebugLogs(): Promise<string | null>
+    /** Opens a native file dialog to select a local model file (.gguf, .bin, .safetensors). */
+    selectModelFile(): Promise<ModelFileSelection>
 }
 
 export const windowActionApi: IWindowActionApi = {
@@ -64,5 +67,7 @@ export const windowActionApi: IWindowActionApi = {
     copyImageToClipboard: base64 =>
         invokeAndUnwrap<void>(ipcRenderer.invoke('window:copy-image-to-clipboard', { base64 })),
     saveDebugLogs: () =>
-        invokeAndUnwrap<string | null>(ipcRenderer.invoke('window:save-debug-logs'))
+        invokeAndUnwrap<string | null>(ipcRenderer.invoke('window:save-debug-logs')),
+    selectModelFile: () =>
+        invokeAndUnwrap<ModelFileSelection>(ipcRenderer.invoke('window:select-model-file'))
 }

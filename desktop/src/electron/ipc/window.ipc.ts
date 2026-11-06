@@ -1,7 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { app, BrowserWindow, clipboard, Menu, nativeImage } from 'electron'
+import path from 'node:path'
+import {
+    app,
+    BrowserWindow,
+    clipboard,
+    dialog,
+    Menu,
+    nativeImage,
+    type OpenDialogOptions
+} from 'electron'
 import { safeHandle } from '@/electron/ipc/safe-handle'
 import { openExternalSafe } from '@/electron/open-external'
 import { createOverviewWindow, focusNodeInOverview, markOverviewReady } from '@/electron/window'
@@ -94,5 +103,31 @@ export function registerWindowIpc(): void {
     safeHandle('window:save-debug-logs', event => {
         const win = BrowserWindow.fromWebContents(event.sender)
         return saveDebugLogs(win)
+    })
+
+    safeHandle('window:select-model-file', async event => {
+        const win = BrowserWindow.fromWebContents(event.sender)
+        const options: OpenDialogOptions = {
+            title: 'Select Model File',
+            buttonLabel: 'Select Model',
+            properties: ['openFile'],
+            filters: [
+                {
+                    name: 'Model Files (*.gguf, *.bin, *.safetensors)',
+                    extensions: ['gguf', 'bin', 'safetensors']
+                },
+                { name: 'GGUF Models (*.gguf)', extensions: ['gguf'] },
+                { name: 'All Files (*.*)', extensions: ['*'] }
+            ]
+        }
+        const result = win
+            ? await dialog.showOpenDialog(win, options)
+            : await dialog.showOpenDialog(options)
+        if (result.canceled || result.filePaths.length === 0) {
+            return { canceled: true, filePath: null, fileName: null }
+        }
+        const filePath = result.filePaths[0]
+        const fileName = path.basename(filePath)
+        return { canceled: false, filePath, fileName }
     })
 }

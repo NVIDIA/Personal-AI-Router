@@ -61,10 +61,13 @@ export type EngineCommandType =
     | 'uninstall'
     | 'update'
     | 'pullModel'
+    | 'cancelPull'
     | 'loadModel'
     | 'unloadModel'
     | 'deleteModel'
     | 'setModelExpiry'
+    | 'refreshModels'
+    | 'importLocalModel'
 
 /** Payload for engine commands sent from the UI. */
 export interface EngineCommandPayload {
@@ -73,6 +76,8 @@ export interface EngineCommandPayload {
     nodeId: string
     model?: string
     expiry?: string
+    filePath?: string
+    numCtx?: number
 }
 
 /** Canonical engine state snapshot sent on connect/reconnect. */

@@ -241,12 +241,30 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
         case 'toggle':
             void toggleLocalEngine(engine, payload.engineType)
             break
+        case 'refreshModels':
+            void supervisor.refreshEngineModels(engine, payload.engineType)
+            break
+        case 'importLocalModel':
+            if (payload.model && payload.filePath) {
+                void supervisor.importLocalModel(
+                    engine,
+                    payload.engineType,
+                    payload.model,
+                    payload.filePath
+                )
+            }
+            break
         case 'pullModel':
             // Pulls need UI feedback the backend doesn't emit (progress + failure),
             // so the supervisor owns the optimistic-progress + awaited-completion
             // orchestration. Void it: the command stays fire-and-forget for the UI.
             if (payload.model) {
                 void supervisor.pullModel(engine, payload.engineType, payload.model)
+            }
+            break
+        case 'cancelPull':
+            if (payload.model) {
+                void supervisor.cancelPull(engine, payload.engineType, payload.model)
             }
             break
         case 'deleteModel':
@@ -265,13 +283,17 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // See docs/services-parity.md#models.
             if (payload.model) {
                 if (payload.engineType === 'ollama') {
+                    const runParams: JsonObject = { model: payload.model, stream: false }
+                    if (typeof payload.numCtx === 'number' && payload.numCtx > 0) {
+                        runParams.options = { num_ctx: payload.numCtx }
+                    }
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',
                         {
                             engine,
                             action: 'run_model',
-                            params: { model: payload.model, stream: false }
+                            params: runParams
                         },
                         failAction('load model', {
                             nodeId: payload.nodeId,
@@ -359,9 +381,22 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
             break
+        case 'refreshModels':
+            void supervisor.refreshRemoteEngineStatus(nodeId)
+            break
+        case 'importLocalModel':
+            refuseRemote(
+                'Importing a local model file is only available on the local node where the file resides.'
+            )
+            break
         case 'pullModel':
             if (payload.model) {
                 void supervisor.pullModelRemote(nodeId, engine, payload.engineType, payload.model)
+            }
+            break
+        case 'cancelPull':
+            if (payload.model) {
+                void supervisor.cancelPullRemote(nodeId, engine, payload.engineType, payload.model)
             }
             break
         case 'uninstall':
