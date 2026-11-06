@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -199,12 +200,7 @@ func engineHFEnv(st *engineState) hfEnv {
 	if rt.LaunchEnv != nil {
 		if literal, err := literalEnvironment(rt.LaunchEnv); err == nil {
 			for key, value := range literal {
-				for existing := range env {
-					if environmentKey(existing) == environmentKey(key) {
-						delete(env, existing)
-					}
-				}
-				env[key] = value
+				setEnvironmentValue(env, key, value)
 			}
 		}
 	}
@@ -218,8 +214,11 @@ func hfActionVars(st *engineState) map[string]string {
 	var args []string
 	if st.plat != nil {
 		st.mu.Lock()
-		args = slices.Concat(st.plat.Runtime.Args, st.plat.Runtime.LaunchArgs)
+		rt, port := st.plat.Runtime, st.port
 		st.mu.Unlock()
+		args = launchArguments(rt, rt.Args, map[string]string{
+			"host": effectiveBind(rt.Bind, ""), "port": strconv.Itoa(port),
+		})
 	}
 	vars[hfHubCachePlaceholder] = hfLaunchHub(args, engineHFEnv(st))
 	return vars

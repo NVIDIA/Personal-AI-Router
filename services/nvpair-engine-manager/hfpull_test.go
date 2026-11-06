@@ -492,6 +492,51 @@ func TestHFLaunchHub_UsesTheDownloadDirVLLMUses(t *testing.T) {
 	test("an empty value: the environment's cache", []string{"--download-dir="}, filepath.Join(home, "env-hub"))
 }
 
+func TestHFActionVars_UsesSavedArgumentsInPlaceOfManifestDefaults(t *testing.T) {
+	envCache, defaultCache, savedCache := t.TempDir(), t.TempDir(), t.TempDir()
+	test := func(name string, args []string, want string) {
+		t.Run(name, func(t *testing.T) {
+			st := &engineState{plat: &Platform{Runtime: Runtime{
+				Args:           []string{"serve", "--model", "org/default", "--download-dir", defaultCache},
+				Env:            map[string]string{"HF_HUB_CACHE": envCache},
+				LaunchArgs:     args,
+				EditableLaunch: &EditableLaunch{FixedArgs: []string{"serve"}},
+			}}}
+
+			assert.Equal(t, want, hfActionVars(st)[hfHubCachePlaceholder])
+		})
+	}
+	test("no saved arguments inherits the manifest directory", nil, defaultCache)
+	test("empty saved arguments removes the manifest directory", []string{}, envCache)
+	test("saved arguments omit the manifest directory", []string{"--model", "org/saved"}, envCache)
+	test("saved arguments select another directory", []string{"--model", "org/saved", "--download-dir", savedCache}, savedCache)
+}
+
+// Cache inspection also runs while stopped. Unrelated unresolved launch
+// templates must not hide readable HF settings, and user values stay literal.
+func TestEngineHFEnv_KeepsReadableDefaultsAndLiteralUserValues(t *testing.T) {
+	test := func(name string, assignments []string, want map[string]string) {
+		t.Run(name, func(t *testing.T) {
+			st := &engineState{modelsDir: "/models", plat: &Platform{Runtime: Runtime{
+				Env:       map[string]string{"HF_HOME": "{models_dir}", "UNRESOLVED": "{port}", "KEEP": "default"},
+				LaunchEnv: assignments,
+			}}}
+
+			assert.Equal(t, hfEnv(want), engineHFEnv(st))
+		})
+	}
+	test("unavailable launch variables are skipped", nil, map[string]string{"HF_HOME": "/models", "KEEP": "default"})
+	test("invalid assignments retain readable defaults", []string{"INVALID"}, map[string]string{"HF_HOME": "/models", "KEEP": "default"})
+	test("user paths stay literal and defaults survive", []string{"HF_HOME=$HOME/{models_dir}", "EMPTY="}, map[string]string{
+		"HF_HOME": "$HOME/{models_dir}", "EMPTY": "", "KEEP": "default",
+	})
+	want := map[string]string{"HF_HOME": "/models", "hf_home": "literal", "KEEP": "default"}
+	if runtime.GOOS == "windows" {
+		delete(want, "HF_HOME")
+	}
+	test("user name casing follows the platform", []string{"hf_home=literal"}, want)
+}
+
 func TestHFHubCachePlaceholder_IsOnlyForHuggingFaceActionDirs(t *testing.T) {
 	accept := func(name string, edit func(*Manifest)) {
 		t.Run(name, func(t *testing.T) {

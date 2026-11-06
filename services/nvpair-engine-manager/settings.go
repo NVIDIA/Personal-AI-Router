@@ -66,26 +66,11 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 				if command.Env == nil {
 					command.Env = map[string]string{}
 				}
-				for supplied := range command.Env {
-					if environmentKey(supplied) == environmentKey(name) {
-						delete(command.Env, supplied)
-					}
-				}
-				command.Env[name] = value
+				setEnvironmentValue(command.Env, name, value)
 			}
 		}
 	}
-	if rt.LaunchArgs == nil {
-		return command, nil
-	}
-	command.Args = slices.Clone(p.FixedArgs)
-	for _, control := range p.Controls {
-		if value, managed := control.managedValue(vars["host"], vars["port"]); managed && control.flag() != "" {
-			command.Args = append(command.Args, control.flag(), value)
-		}
-	}
-	command.Args = append(command.Args, rt.LaunchArgs...)
-
+	command.Args = launchArguments(rt, command.Args, vars)
 	return command, nil
 }
 
