@@ -1,0 +1,69 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Proxy response-header timeout
+
+The unified inference proxy (`nvpair-proxy`) caps how long it
+wait for the upstream engine to send response headers: `ResponseHeaderTimeout`
+on the upstream transport. The default is 120 s, and it is now configurable.
+
+## Why the timeout exists, and why 120 s is not always enough
+
+An engine sends no response headers until generation starts. Two normal
+situations delay that past 120 s:
+
+- **Queueing.** Ollama serves one request at a time by default
+  (`OLLAMA_NUM_PARALLEL=1`). Twenty concurrent requests at ~11 s each means
+  the last one waits ~220 s for its turn — every request past the 120 s mark
+  fails through PAIR with a 502 while succeeding direct.
+- **Cold model loads.** The first request after a model change waits on the
+  load before any header is sent.
+
+When the timeout trips, the proxy closes the upstream connection (which also
+cancels the engine's queued work) and answers
+`502 {"error":"upstream error: net/http: timeout awaiting response headers"}`.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Proxy
+    participant Engine
+
+    App->>Proxy: POST /v1/chat/completions
+    Proxy->>Engine: forward (ResponseHeaderTimeout = T)
+    alt headers within T
+        Engine-->>Proxy: headers, then stream
+        Proxy-->>App: 200 stream
+    else no headers within T
+        Note over Proxy: close upstream,<br/>cancel engine work
+        Proxy-->>App: 502 timeout awaiting response headers
+    end
+```
+
+## Configuring it
+
+Precedence is flag, then environment, then the 120 s default:
+
+```bash
+nvpair-proxy --response-header-timeout 10m
+NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT=10m nvpair-proxy
+```
+
+The value is a Go duration (`30s`, `5m`, `1h30m`). The broker spawns the
+proxy as a child process, so the environment variable set on the broker (or
+the desktop app / headless launcher) is inherited — no broker change is
+needed. A missing, unparseable, or non-positive value logs a warning and
+falls back to 120 s, so a bad setting can never silently disable the timeout.
+
+The effective value is logged at proxy startup (`response_header_timeout`)
+for post-mortem analysis.
+
+## Choosing a value
+
+Match it to the worst case you want to survive: queue depth × per-request
+time, or the slowest cold load on your hardware. There is no correctness cost
+to a generous value — it only bounds how long a request waits on an engine
+that never answers. Keep it shorter than any client-side timeout above PAIR
+so failures still surface where you expect them.
