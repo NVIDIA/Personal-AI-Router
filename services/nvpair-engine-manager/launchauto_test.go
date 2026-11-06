@@ -935,3 +935,26 @@ func TestNvidiaSMIMemory_LeavesExplicitDeviceSelectionToTheEngine(t *testing.T) 
 	t.Setenv("CUDA_VISIBLE_DEVICES", "1")
 	test("inherited selection", nil)
 }
+
+func TestAutoContext_LeavesExplicitDtypeMemorySizingToTheEngine(t *testing.T) {
+	withGPU(t, 80, 80)
+	// A first-start metadata fixture needs no cache symlinks, including on Windows.
+	snapshot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(snapshot, "config.json"), []byte(qwen8BConfig), 0o644))
+	fetch := func() (hfPendingModel, bool) {
+		return hfPendingModel{snapshot: snapshot, weights: 16_400_000_000}, true
+	}
+	test := func(name, flag, value string) {
+		t.Run(name, func(t *testing.T) {
+			args := []string{"--model", "Qwen/Qwen3-8B", flag, value}
+
+			extra, _ := planHFContext(args, t.TempDir(), 65536, fetch, nil)
+
+			assert.NotContains(t, extra, "--gpu-memory-utilization")
+			assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"))
+		})
+	}
+	test("float32 weights and cache", "--dtype", "float32")
+	test("explicit half precision", "--dtype", "half")
+	test("quantized cache", "--kv-cache-dtype", "fp8")
+}

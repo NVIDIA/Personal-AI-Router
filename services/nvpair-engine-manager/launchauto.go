@@ -391,11 +391,20 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 	_, userOverrides := launchFlagValue(args, "--hf-overrides")
 	userUtilText, userUtil := launchFlagValue(args, "--gpu-memory-utilization")
 	_, userKV := launchFlagValue(args, "--kv-cache-memory-bytes")
+	_, userDtype := launchFlagValue(args, "--dtype")
+	_, userCacheDtype := launchFlagValue(args, "--kv-cache-dtype")
 	if userLen && userUtil {
 		return nil, ""
 	}
 
-	total, free, haveGPU := gpuMemory(env)
+	// A dtype override changes how checkpoint bytes become runtime weights
+	// and cache storage. Let vLLM size those combinations instead of estimating
+	// them from the repository's dtype and on-disk size.
+	var total, free int64
+	var haveGPU bool
+	if !userDtype && !userCacheDtype {
+		total, free, haveGPU = gpuMemory(env)
+	}
 	found, known := findLaunchModel(args, hubDir, fetch)
 	if !known {
 		// Not downloaded yet and Hugging Face could not answer, so its size and

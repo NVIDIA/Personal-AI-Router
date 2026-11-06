@@ -102,8 +102,9 @@ the free GPU memory cannot hold it), YaRN rope scaling when the model's own wind
 is smaller (for example Qwen3-8B's 40,960 tokens), a GPU memory share just large
 enough for the weights and that context, so other engines can run alongside it,
 and a limit of 32 requests at a time (`--max-num-seqs`).
-Memory sizing is left to the engine when CUDA device visibility is configured
-or more than one physical GPU is reported, so PAIR cannot size a different GPU
+Memory sizing is left to the engine when CUDA device visibility is configured,
+more than one physical GPU is reported, or the launch explicitly sets `--dtype`
+or `--kv-cache-dtype`. This avoids sizing a different device or storage format
 from the one the engine uses. A model that is not
 downloaded yet, such as the default on a fresh install, has its configuration
 and chat template fetched first and is then set up the same way, tool calling
