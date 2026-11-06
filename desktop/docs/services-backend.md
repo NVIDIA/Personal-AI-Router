@@ -110,6 +110,10 @@ verified inventory, routing, liveness, or scheduling. The broker caches each
 source with its receipt time, preserves sample age on query/replay, and clears
 hardware when its source or proof is invalidated. Internal scheduling snapshots
 omit the full display payload and use only accepted compact GPU telemetry.
+The broker stamps `info.observedAt` once in its own clock domain and preserves
+that sample time across snapshots and pushes. Electron uses it directly for
+metrics deduplication, keeps measurement updates separate from structural node
+changes, and never reconstructs sample time from delivery age.
 
 Scanner supplies identity, addresses, and models for hosts also tracked by manual
 configuration. If scanner hardware is missing, the broker may display manual

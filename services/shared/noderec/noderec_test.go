@@ -21,6 +21,7 @@ func TestSampleAging_PreservesValidityAndFreshness(t *testing.T) {
 			got := info.Aged(elapsed)
 			assert.Equal(t, info.TelemetryValid, got.TelemetryValid)
 			assert.Equal(t, wantAge, got.MSSince)
+			assert.Equal(t, info.ObservedAt, got.ObservedAt)
 
 			telemetry := NodeTelemetry{HostUUID: "host-a", GPUUtilizationPct: 84, TelemetryValid: info.TelemetryValid, MSSince: info.MSSince}
 			want := telemetry
@@ -28,7 +29,7 @@ func TestSampleAging_PreservesValidityAndFreshness(t *testing.T) {
 			assert.Equal(t, want, telemetry.Aged(elapsed), "compact scheduling samples share the hardware age rules")
 		})
 	}
-	test("queue time", NodeInfo{TelemetryValid: true, MSSince: 137}, 250*time.Millisecond, 387)
+	test("queue time", NodeInfo{TelemetryValid: true, MSSince: 137, ObservedAt: 93_000}, 250*time.Millisecond, 387)
 	test("unavailable sample", NodeInfo{MSSince: 137}, time.Second, 0)
 	test("negative source age", NodeInfo{TelemetryValid: true, MSSince: -1}, time.Second, 1000)
 	test("clock moves backwards", NodeInfo{TelemetryValid: true, MSSince: 137}, -time.Second, 137)

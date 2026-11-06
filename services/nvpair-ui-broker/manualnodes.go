@@ -281,6 +281,10 @@ func manualToEnriched(s manualNodeStatus, receivedAt time.Time) EnrichedNode {
 			en.Info, en.infoReceivedAt = &preview, receivedAt
 		}
 	}
+	if en.Info != nil {
+		observation := observeNodeInfo(*en.Info, receivedAt)
+		en.Info = &observation
+	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}
 	}

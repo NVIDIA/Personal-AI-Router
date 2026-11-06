@@ -240,6 +240,9 @@ and `info.peer` claims are stripped. The broker retains observations separately
 by source and record, ages them on snapshot reads and replay, and exposes them
 as optional `AvailableNode.info`. Only local and pinned measurements enter
 service and scheduling inputs.
+For client display, the broker adds a stable `info.observedAt` time in its local
+clock domain. Cached snapshots and live updates preserve it while sample age
+increases. It is separate from scanner identity and scheduling evidence.
 Directory events report changes to identity, services, models, and hardware
 identity or capacity. Utilization and used-memory changes do not emit directory
 updates or advance `lastSeen`. Local and authenticated peer samples still produce

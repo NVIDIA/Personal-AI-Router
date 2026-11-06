@@ -97,6 +97,10 @@ Public previews update hardware display fields only and never change identity,
 trust, service addresses, models, liveness, routing, or scheduling. Broker caches
 preserve the original sample's age and withdraw hardware when its source,
 endpoint, or proof is invalidated.
+Broker `info.observedAt` is stable across delivery and replay. Electron forwards
+each newer measurement once through `metrics:update`, including unchanged
+readings, without broadcasting structural node or engine changes. Charts reject
+duplicate and older sample times.
 
 The contract does not report a remote node's operating system. The local node's
 OS is known from the running process; remote nodes fall back to a placeholder

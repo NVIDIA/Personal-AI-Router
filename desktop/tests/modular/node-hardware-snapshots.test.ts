@@ -95,7 +95,7 @@ describe('broker hardware snapshots', () => {
         expect(state.getNodesInitial().nodes[node.hostUuid].topology.gpus).toEqual([])
     })
 
-    it('preserves the sample timestamp across a snapshot and an unchanged hardware update', () => {
+    it('forwards a broker observation only once across snapshots and hardware pushes', () => {
         vi.spyOn(Date, 'now').mockReturnValue(100_000)
         const state = getModularBridgeState()
         const hostUuid = 'aged-hardware'
@@ -104,21 +104,20 @@ describe('broker hardware snapshots', () => {
             hostUuid,
             GPUs: [{ name: 'Cached GPU', utilization_percent: 25 }],
             telemetryValid: true,
-            msSince: 7000
+            msSince: 7000,
+            observedAt: 93_000
+        }
+        const node = {
+            hostUuid,
+            discoveryRecordId,
+            identityVerification: 'pinned',
+            ipAddress: '192.0.2.32',
+            port: 14318
         }
         state.handleNotification({
             source: 'broker',
             method: 'discovery:nodes-changed',
-            params: [
-                {
-                    hostUuid,
-                    discoveryRecordId,
-                    identityVerification: 'pinned',
-                    ipAddress: '192.0.2.32',
-                    port: 14318,
-                    info
-                }
-            ]
+            params: [{ ...node, info }]
         })
         expect(emitBridgePush).toHaveBeenCalledWith(
             'metrics:update',
@@ -128,10 +127,15 @@ describe('broker hardware snapshots', () => {
             })
         )
 
-        // Two seconds later the same sample is two seconds older. Its original
-        // measurement time must remain 93,000 ms rather than becoming fresh.
+        // Delivery age can differ by a millisecond. Neither replay is a new
+        // observation, even though reconstructing its timestamp would drift.
         vi.mocked(emitBridgePush).mockClear()
         vi.mocked(Date.now).mockReturnValue(102_000)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: [{ ...node, info: { ...info, msSince: 8999 } }]
+        })
 
         state.handleNotification({
             source: 'broker',
@@ -140,15 +144,37 @@ describe('broker hardware snapshots', () => {
                 hostUuid,
                 discoveryRecordId,
                 identityVerification: 'pinned',
-                info: { ...info, msSince: 9000 }
+                info: { ...info, msSince: 9001 }
             }
         })
 
+        expect(emitBridgePush).not.toHaveBeenCalled()
+
+        // A fresh measurement updates charts without broadcasting structural
+        // node or engine changes.
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:node-info',
+            params: {
+                hostUuid,
+                discoveryRecordId,
+                identityVerification: 'pinned',
+                info: {
+                    ...info,
+                    GPUs: [{ name: 'Cached GPU', utilization_percent: 40 }],
+                    observedAt: 95_000
+                }
+            }
+        })
+        expect(emitBridgePush).toHaveBeenCalledTimes(1)
         expect(emitBridgePush).toHaveBeenCalledWith(
             'metrics:update',
             expect.objectContaining({
                 id: hostUuid,
-                current: expect.objectContaining({ timestamp: 93_000 })
+                current: expect.objectContaining({
+                    timestamp: 95_000,
+                    gpuUtilization: [{ id: `${hostUuid}:gpu:0`, value: 40 }]
+                })
             })
         )
     })
@@ -165,7 +191,8 @@ describe('broker hardware snapshots', () => {
             GPUs: [],
             cpu: { name: 'CPU', utilization_percent: 7 },
             telemetryValid: false,
-            msSince: 0
+            msSince: 0,
+            observedAt: 100_000
         }
         state.handleNotification({
             source: 'broker',
@@ -178,7 +205,12 @@ describe('broker hardware snapshots', () => {
         state.handleNotification({
             source: 'broker',
             method: 'discovery:node-info',
-            params: { hostUuid, discoveryRecordId, identityVerification: 'local', info }
+            params: {
+                hostUuid,
+                discoveryRecordId,
+                identityVerification: 'local',
+                info: { ...info, observedAt: 102_000 }
+            }
         })
 
         expect(emitBridgePush).toHaveBeenCalledWith(
@@ -188,6 +220,7 @@ describe('broker hardware snapshots', () => {
                 current: expect.objectContaining({ timestamp: 102_000, cpuUtilization: 7 })
             })
         )
+        expect(emitBridgePush).toHaveBeenCalledTimes(1)
     })
 
     it('clears broker hardware readiness and sample time when only proxy presence remains', () => {
@@ -240,12 +273,7 @@ describe('broker hardware snapshots', () => {
         expect(remaining.topology.gpus).toEqual([])
         expect(remaining.topology.inferenceHardwareIds).toBeUndefined()
 
-        expect(emitBridgePush).toHaveBeenCalledWith(
-            'metrics:update',
-            expect.objectContaining({
-                id: hostUuid,
-                current: expect.objectContaining({ timestamp: 105_000 })
-            })
-        )
+        // Withdrawal changes the row, but must not fabricate a chart sample.
+        expect(emitBridgePush).not.toHaveBeenCalledWith('metrics:update', expect.anything())
     })
 })

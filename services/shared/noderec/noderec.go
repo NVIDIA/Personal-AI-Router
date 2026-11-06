@@ -452,8 +452,12 @@ type NodeInfo struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
-	HostUUID       string      `json:"hostUuid,omitempty"`
-	ClusterUUID    *string     `json:"clusterUuid,omitempty"`
+	// ObservedAt is the broker-local Unix millisecond sample time for client
+	// displays. The broker assigns it once on receipt, applying the source age,
+	// and preserves it across snapshots and replay. It does not establish trust.
+	ObservedAt  int64   `json:"observedAt,omitempty"`
+	HostUUID    string  `json:"hostUuid,omitempty"`
+	ClusterUUID *string `json:"clusterUuid,omitempty"`
 	// Peer is included only in peer node inventory served over pinned mTLS.
 	Peer *PeerMetadata `json:"peer,omitempty"`
 }

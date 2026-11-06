@@ -309,6 +309,7 @@ func TestBroker_IncludesLocalHardwareInQueriesAndUpdates(t *testing.T) {
 	require.Equal(t, noderec.IdentityLocal, sample.IdentityVerification)
 	require.NotEmpty(t, sample.HostUUID)
 	assert.Equal(t, sample.HostUUID, sample.Info.HostUUID)
+	require.Positive(t, sample.Info.ObservedAt)
 
 	sendReq(t, stdin, 100, "discovery:get-nodes")
 	response := waitForResponseID(t, messages, 100, 5*time.Second)
@@ -324,6 +325,9 @@ func TestBroker_IncludesLocalHardwareInQueriesAndUpdates(t *testing.T) {
 	require.NotNil(t, local.Info, "the query must include hardware received before the request")
 	assert.Equal(t, sample.HostUUID, local.Info.HostUUID)
 	assert.Equal(t, sample.DiscoveryRecordID, local.DiscoveryRecordID)
+	// The live worker may collect again before this query. Store tests check
+	// exact timestamp preservation using a fixed observation.
+	assert.GreaterOrEqual(t, local.Info.ObservedAt, sample.Info.ObservedAt)
 
 	assert.Len(t, local.Info.GPUs, len(sample.Info.GPUs))
 }

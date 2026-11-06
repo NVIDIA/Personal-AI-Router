@@ -560,12 +560,7 @@ function normalizeLastSeen(value: number): number {
 }
 
 function sameGpu(left: ModularGpu, right: ModularGpu): boolean {
-    return (
-        left.name === right.name &&
-        left.vramBytes === right.vramBytes &&
-        left.vramUsedBytes === right.vramUsedBytes &&
-        left.utilizationPercent === right.utilizationPercent
-    )
+    return left.name === right.name && left.vramBytes === right.vramBytes
 }
 
 function sameGpuList(left: ModularGpu[], right: ModularGpu[]): boolean {
@@ -578,16 +573,12 @@ function sameGpuList(left: ModularGpu[], right: ModularGpu[]): boolean {
 
 function sameCpu(left: ModularCpu | null, right: ModularCpu | null): boolean {
     if (!left || !right) return left === right
-    return (
-        left.name === right.name &&
-        left.cores === right.cores &&
-        left.utilizationPercent === right.utilizationPercent
-    )
+    return left.name === right.name && left.cores === right.cores
 }
 
 function sameMemory(left: ModularMemory | null, right: ModularMemory | null): boolean {
     if (!left || !right) return left === right
-    return left.totalBytes === right.totalBytes && left.usedBytes === right.usedBytes
+    return left.totalBytes === right.totalBytes
 }
 
 function sameInferenceHardwareIds(left?: string[], right?: string[]): boolean {
@@ -596,8 +587,8 @@ function sameInferenceHardwareIds(left?: string[], right?: string[]): boolean {
     return sameStringList(left, right)
 }
 
-// Sample time is compared separately: unchanged hardware still refreshes metrics.
-function sameHardwareValues(left: NodeHardware, right: NodeHardware): boolean {
+// Measurements and sample times do not change the node's hardware inventory.
+function sameHardwareInventory(left: NodeHardware, right: NodeHardware): boolean {
     return (
         sameGpuList(left.gpus, right.gpus) &&
         sameCpu(left.cpu, right.cpu) &&
@@ -669,13 +660,13 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
     }
 }
 
-function toMetrics(node: ModularNode): NodeItemMetrics {
+function toMetrics(node: ModularNode, timestamp: number): NodeItemMetrics {
     const memoryUsage =
         node.memory && node.memory.totalBytes > 0
             ? (node.memory.usedBytes / node.memory.totalBytes) * 100
             : 0
     const current = {
-        timestamp: node.telemetryTimestamp ?? Date.now(),
+        timestamp,
         cpuUtilization: node.cpu?.utilizationPercent ?? 0,
         memoryUsage,
         gpuUtilization: node.gpus.map((gpu, index) => ({
@@ -799,14 +790,13 @@ function nodeHardwareValue(
     // Unverified previews belong to the discovery record, regardless of the
     // responder's claimed UUID. Hardware never changes identity or trust.
     if (verification !== 'unverified' && stringValue(info.hostUuid) !== hostUuid) return null
+    const observedAt = numberValue(info.observedAt)
     return {
         gpus: gpuArrayValue(info.GPUs),
         cpu: cpuValue(info.cpu),
         memory: memoryValue(info.memory),
         inferenceHardwareIds: optionalStringArrayValue(info.inference_hardware_ids),
-        telemetryTimestamp: booleanValue(info.telemetryValid)
-            ? Date.now() - Math.max(0, numberValue(info.msSince))
-            : undefined
+        telemetryTimestamp: observedAt > 0 ? observedAt : undefined
     }
 }
 
@@ -917,16 +907,14 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         // node's own ranking of where to reach it.
         sameStringList(left.brokerAddresses, right.brokerAddresses) &&
         sameStringSet(left.proxyAddresses, right.proxyAddresses) &&
-        sameHardwareValues(left, right) &&
-        left.telemetryTimestamp === right.telemetryTimestamp &&
+        sameHardwareInventory(left, right) &&
         sameStringList(left.models, right.models) &&
         sameModelsByEngine(left.modelsByEngine, right.modelsByEngine) &&
         // A residency-only change (a model loaded/evicted with the installed set
         // unchanged) must still count as a node change so the loaded dot updates.
         sameModelsByEngine(left.loadedByEngine, right.loadedByEngine) &&
         sameModelsByEngine(left.downloadedByEngine, right.downloadedByEngine) &&
-        sameEngines(left.engines, right.engines) &&
-        left.lastSeen === right.lastSeen
+        sameEngines(left.engines, right.engines)
     )
 }
 
@@ -950,6 +938,7 @@ function sameModelsByEngine(
 
 class ModularBridgeState {
     private nodes = new Map<string, ModularNode>()
+    private metricTimestamps = new Map<string, number>()
     private brokerNodeIds = new Set<string>()
     private withdrawnPeerIds = new Set<string>()
     private errors: ServiceError[] = []
@@ -1248,14 +1237,7 @@ class ModularBridgeState {
 
         const hardware = nodeHardwareValue(response, nodeId, node.identityVerification)
         if (!hardware) return
-        const next = { ...node, ...hardware }
-        if (sameHardwareValues(node, hardware)) {
-            this.nodes.set(nodeId, next)
-            emitBridgePush('metrics:update', toMetrics(next))
-            return
-        }
-
-        this.upsertNode(next)
+        this.upsertNode({ ...node, ...hardware })
     }
 
     getErrors(): ServiceError[] {
@@ -2517,9 +2499,11 @@ class ModularBridgeState {
         // so there is no hostname guessing here — `setSelfId` is the sole source.
         const existing = this.nodes.get(node.id)
         const merged = this.mergeNode(existing, node, source)
-        if (existing && sameNode(existing, merged)) return
+        const changed = !existing || !sameNode(existing, merged)
         this.nodes.set(merged.id, merged)
-        this.emitNodeChanged(merged)
+        if (changed) this.emitNodeChanged(merged)
+        this.emitNodeMetrics(merged)
+        if (!changed) return
 
         // A model pulled/deleted while an engine is already running produces no
         // `engine:state-changed`, so the engine-manager model cache would go stale.
@@ -2554,6 +2538,7 @@ class ModularBridgeState {
     /** Delete a node and clean every index that referenced it. */
     private removeNodeEntry(nodeId: string): void {
         if (!this.nodes.delete(nodeId)) return
+        this.metricTimestamps.delete(nodeId)
         this.brokerNodeIds.delete(nodeId)
         this.dropRemoteEngineFacts(nodeId)
         emitBridgePush('nodes:remove', nodeId)
@@ -2562,7 +2547,6 @@ class ModularBridgeState {
 
     private emitNodeChanged(merged: ModularNode): void {
         emitBridgePush('nodes:upsert', toNodeItem(merged, this.selfId))
-        emitBridgePush('metrics:update', toMetrics(merged))
         emitBridgePush('discovery:nodes-changed', this.getAvailableNodes())
         // For the local node, engine-manager is the source of truth for
         // install/running state; discovery only fills in models. A remote node
@@ -2585,6 +2569,15 @@ class ModularBridgeState {
                 models: this.discoveryModelsForNode(merged, engine, merged.id)
             })
         }
+    }
+
+    private emitNodeMetrics(node: ModularNode): void {
+        const timestamp = node.telemetryTimestamp
+        if (timestamp === undefined) return
+        const previous = this.metricTimestamps.get(node.id)
+        if (previous !== undefined && timestamp <= previous) return
+        this.metricTimestamps.set(node.id, timestamp)
+        emitBridgePush('metrics:update', toMetrics(node, timestamp))
     }
 
     private mergeNode(
