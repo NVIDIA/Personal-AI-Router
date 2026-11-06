@@ -185,12 +185,14 @@ With `--control-port` and a clustered `--cluster-dir`, engine-manager serves a c
 
 The `engine:remote-*` methods are the client half: engine-manager resolves the target `node` in an `ec` peer directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker relay), dials the peer's `ec` surface with the same pinned identity, relays each streamed progress frame up as `engine:remote-progress` (keyed by a minted `opId`), and settles the request on the terminal frame. Remote install/pull run for the operation's full duration (no broker-imposed timeout); remote stop and model unload/delete are fast request/response, remote Ollama model load uses the readiness-sized response budget, and remote start waits for the engine's bounded readiness result. They error if this node isn't clustered or the target isn't a pinned peer.
 
-The remote client reads NDJSON one line at a time with a 1 MiB buffer limit
-(`remoteStreamFrameBytes`), including the line delimiter. The limit applies to
-each progress, result, or error frame independently; the total stream may exceed
-1 MiB over a long operation. Blank lines are ignored. An oversized frame, a read
-error, malformed frame JSON, or EOF without a result frame fails the remote
-request; a terminal error frame also fails it with the peer's error message.
+The remote client reads NDJSON one line at a time with the shared worker-path
+8 MiB buffer limit (`remoteStreamFrameBytes = maxFrameBytes`), including the line
+delimiter. This accommodates terminal model-pull results containing accumulated
+CLI output. The limit applies to each progress, result, or error frame
+independently; the total stream may exceed 8 MiB over a long operation. Blank
+lines are ignored. An oversized frame, a read error, malformed frame JSON, or
+EOF without a result frame fails the remote request; a terminal error frame also
+fails it with the peer's error message.
 
 ## 8. Dependencies
 - **Upstream**: the orchestrator that spawns it and forwards `engine:*` (`nvpair-ui-broker`).

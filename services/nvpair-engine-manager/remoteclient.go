@@ -26,7 +26,7 @@ import (
 const (
 	remoteResponseHeaderTimeout      = 30 * time.Second
 	remoteReadyResponseHeaderTimeout = 11 * time.Minute
-	remoteStreamFrameBytes           = 1 << 20
+	remoteStreamFrameBytes           = maxFrameBytes
 )
 
 // remoteClient talks to one peer's ec surface.
