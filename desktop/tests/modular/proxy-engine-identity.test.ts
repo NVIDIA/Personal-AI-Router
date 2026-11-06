@@ -19,11 +19,17 @@ import { engineManagerName } from '@/shared/utils/engines'
 
 describe('proxy engine identity', () => {
     it('declares the complete proxy set in stable order', () => {
-        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp'])
-        expect(PROXY_NODE_SOURCES).toEqual(['ollama-proxy', 'lmstudio-proxy', 'llamacpp-proxy'])
+        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'colibri'])
+        expect(PROXY_NODE_SOURCES).toEqual([
+            'ollama-proxy',
+            'lmstudio-proxy',
+            'llamacpp-proxy',
+            'colibri-proxy'
+        ])
         expect(isProxyEngine('ollama')).toBe(true)
         expect(isProxyEngine('lm-studio')).toBe(true)
         expect(isProxyEngine('llama-cpp')).toBe(true)
+        expect(isProxyEngine('colibri')).toBe(true)
     })
 
     it('round-trips engine, manager, and relay source identities', () => {
@@ -35,6 +41,7 @@ describe('proxy engine identity', () => {
         expect(proxyEngineFromSource('other-proxy')).toBeNull()
         expect(proxyEngineFromManagerId('other')).toBeNull()
         expect(proxyEngineFromManagerId('llamacpp')).toBe('llama-cpp')
+        expect(proxyEngineFromManagerId('colibri')).toBe('colibri')
     })
 
     it('routes each proxy notification to the mapped engine', () => {

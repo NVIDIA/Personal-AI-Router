@@ -250,7 +250,8 @@ not select or pin proxy routes.
 An NVPAIR-launched engine binds to loopback and is never directly LAN-reachable.
 Peers reach it only through the node's proxy over a cluster-mTLS ingress, so
 discovery advertises the promoted proxy port for `ol`/`lm` rather than the
-engine's private port; llama.cpp uses the additional `lc` key. Transport
+engine's private port; llama.cpp uses the additional `lc` key and Colibri the
+`co` key. Transport
 security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.
@@ -276,6 +277,13 @@ same method, so both front ends browse one implementation.
   public Hugging Face matches across publishers, each query cached on its own.
   Both keep only public, generative repositories with a primary `Q4_K_M` file
   and emit exact `owner/repository:Q4_K_M` pull IDs;
+- Colibri models come from the list in Colibri's engine manifest (Colibri's
+  own setup list, vendors' original checkpoints such as DeepSeek V4 Flash and
+  Kimi K3 among them), then every public Hugging Face repository tagged
+  `colibri` that has a root `config.json`, fetched and cached the same way and
+  searchable within the tag. Each pull ID is the `owner/repository` id, which
+  the engine manager's `hf_snapshot` action downloads whole into
+  `~/colibri-models`;
 - the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
   rows, keeps them only for Apple Silicon, and echoes the target it filtered
   for, so a client driving a peer is not offered models that peer cannot
@@ -408,7 +416,8 @@ deletes finish. Unpackaged (`electron-vite dev`) builds omit relaunch and the UI
 tells the developer to run `npm start` again — quitting Electron tears down the Vite
 renderer server, so auto-relaunch would come up with nothing to load.
 
-The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`) and
+The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`,
+`~/colibri-models`) and
 the application install tree are never removed. The reset does uninstall the
 engines PAIR installed, through `engine:uninstall-managed` while the broker is
 still running, so an engine a vendor installer placed in the user's home is

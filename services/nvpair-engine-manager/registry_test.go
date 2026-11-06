@@ -317,7 +317,49 @@ func TestValidate_RejectsInvalidManifests(t *testing.T) {
 		}, "json_match.value is required"},
 		{"action without http or cmd", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {Description: "neither"}}
-		}, "exactly one of http, cmd, or remove_path"},
+		}, "exactly one of http, cmd, remove_path, scan_dir, launch_model, or hf_snapshot"},
+		{"action with two kinds", func(m *Manifest) {
+			m.Actions = map[string]Action{"x": {
+				HTTP:    &ActionHTTP{Method: "GET", Path: "/p"},
+				ScanDir: &ActionScanDir{Root: "{models_dir}", Marker: "config.json"},
+			}}
+		}, "exactly one of"},
+		{"scan_dir missing marker", func(m *Manifest) {
+			m.Actions["list_models"] = Action{ScanDir: &ActionScanDir{Root: "{models_dir}"}}
+		}, "scan_dir.root and scan_dir.marker are required"},
+		{"scan_dir depth out of range", func(m *Manifest) {
+			m.Actions["list_models"] = Action{ScanDir: &ActionScanDir{Root: "{models_dir}", Marker: "config.json", Depth: 9}}
+		}, "scan_dir.depth 9 invalid"},
+		{"scan_dir marker with a separator", func(m *Manifest) {
+			m.Actions["list_models"] = Action{ScanDir: &ActionScanDir{Root: "{models_dir}", Marker: "../config.json"}}
+		}, "must be a plain file name"},
+		{"scan_dir root uses model", func(m *Manifest) {
+			m.Actions["list_models"] = Action{ScanDir: &ActionScanDir{Root: "{models_dir}/{model}", Marker: "config.json"}}
+		}, "unknown placeholder {model}"},
+		{"launch_model missing marker", func(m *Manifest) {
+			m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Path: "{models_dir}/{model}"}}
+		}, "launch_model.path and launch_model.marker are required"},
+		{"hf_snapshot on another action", func(m *Manifest) {
+			m.Actions["fetch"] = Action{HFSnapshot: &ActionHFSnapshot{Dest: "{models_dir}/{model}"}}
+		}, "hf_snapshot is only valid as pull_model"},
+		{"hf_snapshot with restart_after", func(m *Manifest) {
+			m.Actions[pullModelAction] = Action{HFSnapshot: &ActionHFSnapshot{Dest: "{models_dir}/{model}"}, RestartAfter: true}
+		}, "hf_snapshot does not support restart_after"},
+		{"model placeholder in detect", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Detect = []string{"{install_dir}/{model}"}
+			m.Platforms["linux/amd64"] = p
+		}, "unknown placeholder {model}"},
+		{"model placeholder in ready probe", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Runtime.Ready = &Probe{HTTP: "http://127.0.0.1:{port}/{model}"}
+			m.Platforms["linux/amd64"] = p
+		}, "unknown placeholder {model}"},
+		{"model placeholder in install run", func(m *Manifest) {
+			p := m.Platforms["linux/amd64"]
+			p.Install.Run = append(p.Install.Run, "{model}")
+			m.Platforms["linux/amd64"] = p
+		}, "unknown placeholder {model}"},
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
@@ -351,6 +393,24 @@ func TestValidate_RejectsInvalidManifests(t *testing.T) {
 			require.ErrorContains(t, m.Validate(), tc.want)
 		})
 	}
+}
+
+// {model} is resolved by the runner only in the launch and in the two actions
+// that act on one model directory, so those are the only places it validates.
+func TestValidate_AcceptsModelPlaceholderInLaunchOnly(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.ModelsDir = "~/models"
+	p.Runtime.Args = []string{"serve", "--model-id", "{model}"}
+	p.Runtime.Env = map[string]string{"MODEL_DIR": "{models_dir}/{model}"}
+	m.Platforms["linux/amd64"] = p
+	m.Actions["list_models"] = Action{
+		ScanDir: &ActionScanDir{Root: "{models_dir}", Marker: "config.json", Depth: 2},
+		Result:  &ActionResult{Array: "models", Field: "name"},
+	}
+	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Path: "{models_dir}/{model}", Marker: "config.json"}, RestartAfter: true}
+	m.Actions[pullModelAction] = Action{HFSnapshot: &ActionHFSnapshot{Dest: "{models_dir}/{model}"}}
+	require.NoError(t, m.Validate())
 }
 
 func TestPlatformFor_ResolvesDeclaredPlatformAndRejectsMissingPlatform(t *testing.T) {

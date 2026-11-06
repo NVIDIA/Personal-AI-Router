@@ -59,7 +59,34 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasDeleteModel: true,
         engineHub: {
             label: 'llama.cpp',
-            url: 'https://huggingface.co/models?library=gguf'
+            url: 'https://huggingface.co/models?library=gguf',
+            searchable: true
+        }
+    },
+    colibri: {
+        hasExpiry: false,
+        // Colibri serves one model per process: there is no model to eject
+        // short of stopping the engine. "Load" switches the served model by
+        // restarting the server onto it (nvpair-engine-manager's launch_model).
+        hasEject: false,
+        // Releases exist for Windows x64, Linux x64 and Apple silicon; other
+        // architectures report the engine as unavailable.
+        hasInstall: ['win32', 'darwin', 'linux'],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        // Downloads write the model store directly, so they work while the
+        // engine is stopped — the engine cannot start before a model exists.
+        hasModelSearchOnlyWhenRunning: false,
+        modelOpsWhenStopped: false,
+        // delete_model removes the model directory from ~/colibri-models.
+        hasDeleteModel: true,
+        engineHub: {
+            label: 'Colibri',
+            url: 'https://huggingface.co/models?other=colibri',
+            searchable: true
         }
     }
 }

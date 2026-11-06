@@ -14,7 +14,10 @@ export const WELCOME_STEP_SUB_HEADINGS = ['', 'You can update later by clicking 
 export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
     'lm-studio': true,
-    'llama-cpp': true
+    'llama-cpp': true,
+    // Colibri models are tens to hundreds of gigabytes and its launcher needs
+    // Python 3.10+, so it is offered during onboarding but not preselected.
+    colibri: false
 }
 
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {

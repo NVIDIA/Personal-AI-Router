@@ -99,6 +99,8 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 	}
 	m.settingsRelay.send = codec.Notify
 	exec.settingsParent = m.settingsRelay.call
+	m.catalog.listed = exec.catalogEntries
+	m.catalog.modelTypes = exec.servedModelTypes
 	return m
 }
 
@@ -323,7 +325,7 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 	switch msg.Method {
 	case "engine:install":
 		if err = m.exec.Install(ctx, p.Engine); err == nil && p.Start {
-			err = start()
+			err = m.exec.StartAfterInstall(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind})
 		}
 	case "engine:uninstall":
 		err = m.exec.Uninstall(ctx, p.Engine)

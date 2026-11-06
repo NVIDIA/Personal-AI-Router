@@ -151,6 +151,12 @@ var llamaCPPBaseRoutes = []route{
 	{Path: "/v1/models", UpstreamPath: "/models", Role: roleModelListOpenAIGET},
 }
 
+// colibriBaseRoutes is Colibri's model list. Its server reports the one model
+// it was launched with, under the id it was given, in the OpenAI envelope.
+var colibriBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -170,9 +176,12 @@ func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
 	llamacpp, _ := engines.ByName("llamacpp")
+	colibri, _ := engines.ByName(engines.NameColibri)
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
+	// Colibri serves the Anthropic Messages API alongside the OpenAI one.
+	colibriRoutes := slices.Concat(colibriBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -199,6 +208,16 @@ func buildProfiles() []engineProfile {
 			Routes:                llamaCPPRoutes,
 			ModelNaming:           exactID,
 			ReservedPersistedPort: 8081,
+		},
+		{
+			Engine:         colibri,
+			StandalonePort: 8000,
+			Routes:         colibriRoutes,
+			// Colibri reports the owner/repository id it was launched with.
+			ModelNaming: exactID,
+			// 8001 is where engine-manager runs a managed Colibri, so a proxy
+			// that restored it would sit on the engine's own port.
+			ReservedPersistedPort: 8001,
 		},
 	}
 }

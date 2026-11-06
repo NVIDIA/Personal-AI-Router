@@ -8,8 +8,8 @@ import type { EngineManagerName, EngineType } from '@/shared/types/engines'
  * separate from the complete engine registry so an engine can be declared
  * before every proxy-state consumer is ready to handle it.
  */
-export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'llama-cpp'>
-export type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy' | 'llamacpp-proxy'
+export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'llama-cpp' | 'colibri'>
+export type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy' | 'llamacpp-proxy' | 'colibri-proxy'
 
 interface ProxyEngineIdentity {
     managerName: EngineManagerName
@@ -28,10 +28,14 @@ const PROXY_ENGINE_IDENTITIES: Record<ProxyEngine, ProxyEngineIdentity> = {
     'llama-cpp': {
         managerName: 'llamacpp',
         source: 'llamacpp-proxy'
+    },
+    colibri: {
+        managerName: 'colibri',
+        source: 'colibri-proxy'
     }
 }
 
-export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'llama-cpp']
+export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'llama-cpp', 'colibri']
 
 export const PROXY_NODE_SOURCES: readonly ProxyNodeSource[] = PROXY_ENGINES.map(
     engine => PROXY_ENGINE_IDENTITIES[engine].source

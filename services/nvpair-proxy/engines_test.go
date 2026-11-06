@@ -32,6 +32,24 @@ func TestLlamaCPPProfile_DeclaresChatRouteAndReservedEnginePort(t *testing.T) {
 	require.Equal(t, 8081, profile.ReservedPersistedPort, "reserved engine port")
 }
 
+func TestColibriProfile_ServesOpenAIAndAnthropicByRepositoryID(t *testing.T) {
+	profile, ok := profileFor("colibri")
+	require.True(t, ok, "colibri profile missing")
+	for _, path := range []string{"/v1/chat/completions", "/v1/completions", "/v1/messages"} {
+		role, ok := profile.roleFor(http.MethodPost, path)
+		require.True(t, ok, "POST %s has no route", path)
+		assert.Equal(t, roleInferencePOST, role, "POST %s", path)
+	}
+	route, ok := profile.routeFor(http.MethodGet, "/v1/models")
+	require.True(t, ok, "GET /v1/models has no route")
+	assert.Equal(t, roleModelListOpenAIGET, route.Role)
+	assert.Equal(t, "/v1/models", route.upstreamPath())
+	assert.Equal(t, "Justvugg/GLM-5.3-colibri-int4-g64", profile.normalizeModel("Justvugg/GLM-5.3-colibri-int4-g64"), "a repository id is used as is")
+	assert.Equal(t, 8000, profile.StandalonePort, "facade port")
+	assert.Equal(t, 8001, profile.ReservedPersistedPort, "reserved engine port")
+	assert.False(t, profile.SupportsHostAlias, "host alias")
+}
+
 func TestLlamaCPPModelList_UsesNativeInventoryForBothPublicRoutes(t *testing.T) {
 	profile, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")

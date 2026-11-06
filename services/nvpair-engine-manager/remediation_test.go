@@ -399,7 +399,7 @@ func TestWindowsLMStudioUninstall_ExpandsDeclaredPaths(t *testing.T) {
 func TestBundledManifests_ValidateAndExposeRequiredActions(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "bundled manifests invalid")
-	for _, want := range []string{"ollama", "lmstudio", "llamacpp"} {
+	for _, want := range []string{"ollama", "lmstudio", "llamacpp", "colibri"} {
 		m, ok := reg.Get(want)
 		require.True(t, ok, "missing bundled engine (%v)", want)
 		assert.Contains(t, m.Actions, "list_models", "bundled (%v)", want)

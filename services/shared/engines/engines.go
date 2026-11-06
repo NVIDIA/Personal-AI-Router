@@ -131,6 +131,7 @@ const (
 	NameOllama   = "ollama"
 	NameLMStudio = "lmstudio"
 	NameLlamaCPP = "llamacpp"
+	NameColibri  = "colibri"
 )
 
 // all is the ordered engine set. Ollama is first; see the package comment.
@@ -158,6 +159,16 @@ var all = []Engine{
 		FacadePort:       8080,
 		EnginePortBase:   8081,
 		PortFile:         "llamacpp-proxy-port.json",
+	},
+	{
+		// Colibri's stock server listens on 8000; PAIR's facade claims that port
+		// and runs the managed engine on 8001.
+		Name:             NameColibri,
+		DisplayName:      "Colibri",
+		DiscoveryService: noderec.ServiceColibri,
+		FacadePort:       8000,
+		EnginePortBase:   8001,
+		PortFile:         "colibri-proxy-port.json",
 	},
 }
 

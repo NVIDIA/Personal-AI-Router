@@ -109,7 +109,7 @@ The broker uses both for scheduling.
 
 ### Inference HTTP
 
-Ollama, LM Studio, and llama.cpp proxies expose local client-compatible HTTP
+Ollama, LM Studio, llama.cpp, and Colibri proxies expose local client-compatible HTTP
 endpoints. Chat behaves as a local third-party client. Prompts, messages,
 chunks, and response bodies must never be logged.
 
@@ -235,11 +235,14 @@ The model catalogue is owned by `nvpair-engine-manager` and served over
 `engine:catalog`, so the desktop app and the terminal interface browse one
 implementation. Electron relays it through
 `src/electron/service-bridge/model-catalog.ts`. It provides curated Ollama,
-LM Studio, and llama.cpp catalogs, filtered for the OS and CPU a model will
+LM Studio, llama.cpp, and Colibri catalogs, filtered for the OS and CPU a model will
 install on; model operations go through the engine manager. llama.cpp's is
 populated from approved Hugging Face publishers and also answers a bounded
 search across public publishers. Every llama.cpp result is an exact
-`owner/repository:Q4_K_M` pull ID.
+`owner/repository:Q4_K_M` pull ID. Colibri's is the models its manifest lists
+by repository (Colibri's own `coli setup` list), then every open Hugging Face
+repository tagged `colibri`, searchable within the tag, and every result is the
+`owner/repository` id its snapshot download fetches whole.
 
 Managed llama.cpp installation uses CUDA archives on Windows and Linux and
 standard Metal-capable archives on macOS. Package choice is based on platform
