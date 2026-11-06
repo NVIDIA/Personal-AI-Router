@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 
 	"nvpair-tui/rpc"
@@ -37,6 +38,14 @@ type workload struct {
 	// a peer, which is the whole point of a cluster — so both are shown.
 	ScheduledOn string `json:"scheduledOn"`
 	CreatedAt   int64  `json:"createdAt"` // Unix millis
+	// Stats arrives with the terminal event only (see nvpair-shared/inferstats).
+	Stats *workloadStats `json:"stats"`
+}
+
+// workloadStats is the subset of a workload's stats block the view shows.
+type workloadStats struct {
+	TokensPerSecond float64 `json:"tokensPerSecond"`
+	Estimated       bool    `json:"estimated"`
 }
 
 // jobsView is the Jobs tab: inference work across the cluster, headed by the
@@ -141,6 +150,7 @@ func workloadColumns(w int) []table.Column {
 		flexCol("FROM", 8, 1),
 		flexCol("RAN ON", 8, 1),
 		fixedCol("AGE", 6),
+		fixedCol("TOK/S", 7),
 	})
 }
 
@@ -494,6 +504,7 @@ func (v *jobsView) refreshRows() {
 			v.namer.name(w.OriginatedFrom),
 			v.ranOn(w),
 			ageLabel(w.CreatedAt),
+			speedLabel(w.Stats),
 		})
 	}
 	v.table.SetRows(rows)
@@ -602,3 +613,22 @@ func workloadKey(w workload) string {
 // workloadRef is what a removal names: an origin and an ID, without the engine
 // or run that would narrow it to one generation.
 type workloadRef struct{ origin, id string }
+
+// speedLabel renders decode throughput for the TOK/S column: one decimal below
+// 100 tok/s, whole tokens above, prefixed "~" when the proxy only estimated the
+// token count from stream chunks. Empty until the terminal event brings the
+// measurement.
+func speedLabel(s *workloadStats) string {
+	if s == nil || s.TokensPerSecond <= 0 {
+		return ""
+	}
+	prec := 1
+	if s.TokensPerSecond >= 100 {
+		prec = 0
+	}
+	label := strconv.FormatFloat(s.TokensPerSecond, 'f', prec, 64)
+	if s.Estimated {
+		label = "~" + label
+	}
+	return label
+}
