@@ -49,18 +49,7 @@ const modelsPath = "/v1/models"
 //     the same listener with no rebind.
 func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust.Mesh) {
 	addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
-	models := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		// {"models":[...union...],"modelsByEngine":{"ollama":[...],...},
-		// "loadedByEngine":{"ollama":[...],...}} — the flat union stays for
-		// existing consumers; modelsByEngine and loadedByEngine are additive
-		// (both omitempty, so absent when no engine reports them).
-		_ = json.NewEncoder(w).Encode(exec.ModelsResult(r.Context()))
-	})
+	models := modelsHandler(exec)
 
 	plainMux := http.NewServeMux()
 	plainMux.Handle(modelsPath, loopbackOnly(models))
@@ -88,6 +77,28 @@ func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust
 		"clustered", mesh.Clustered())
 	go serveOrWarn(tlsSrv, tls.NewListener(split.TLS(), mesh.ServerTLSConfig()))
 	serveOrWarn(plainSrv, split.Plain())
+}
+
+func modelsHandler(exec *Executor) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		result, err := exec.modelsResult(r.Context())
+		if err != nil {
+			// The scanner keeps its last-good inventory on a non-200 reply.
+			// A timed-out sweep must not look like an authoritative empty list.
+			http.Error(w, "model inventory unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// {"models":[...union...],"modelsByEngine":{"ollama":[...],...},
+		// "loadedByEngine":{"ollama":[...],...}} — the flat union stays for
+		// existing consumers; modelsByEngine and loadedByEngine are additive
+		// (both omitempty, so absent when no engine reports them).
+		_ = json.NewEncoder(w).Encode(result)
+	}
 }
 
 // serveOrWarn runs srv on l, treating a normal shutdown (and the sub-listener
