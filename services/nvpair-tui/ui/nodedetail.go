@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -228,9 +229,10 @@ func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	// A remote node's models are already in the discovery snapshot the broker
 	// enriched, so the list is populated before any request completes.
 	d.models = modelsResult{
-		Models:         node.models,
-		ModelsByEngine: node.modelsByEngine,
-		LoadedByEngine: node.loadedByEngine,
+		Models:             node.models,
+		ModelsByEngine:     node.modelsByEngine,
+		LoadedByEngine:     node.loadedByEngine,
+		DownloadedByEngine: node.downloadedByEngine,
 	}
 	d.refreshModels()
 	d.adoptProbedTelemetry()
@@ -264,7 +266,7 @@ func detailEngineColumns(w int, remote bool) []table.Column {
 	cols := []column{
 		flexCol("ENGINE", 10, 1),
 		fixedCol("INSTALLED", 9),
-		fixedCol("RUNNING", 7),
+		fixedCol("RUNNING", 8), // fits "starting"
 		fixedCol("HEALTHY", 7),
 		fixedCol("ENGINE PORT", 11),
 	}
@@ -627,6 +629,8 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 			d.status.error("%s failed: %s", what, msg.err)
 		case msg.detached:
 			d.status.info("%s is continuing in the background - watch for progress", what)
+		case msg.stopped:
+			d.status.info("%s was stopped before it finished", what)
 		default:
 			d.status.ok("%s requested", what)
 		}
@@ -813,9 +817,10 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		clear(d.settings)
 
 	case "engine:models-changed":
-		// The manager polls each running engine's resident set and pushes this
-		// on any change — explicit load/unload, LM Studio's JIT auto-load, and
-		// idle eviction alike. Re-reading is cheaper than merging the delta.
+		// The manager polls each engine's model lists and pushes this on any
+		// change — explicit load/unload, LM Studio's JIT auto-load, idle
+		// eviction, and a pull or delete alike. Re-reading is cheaper than
+		// merging the delta.
 		if !d.remote() {
 			return d.modelsCmd()
 		}
@@ -840,10 +845,12 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			d.node.models = n.Models
 			d.node.modelsByEngine = n.ModelsByEngine
 			d.node.loadedByEngine = n.LoadedByEngine
+			d.node.downloadedByEngine = n.DownloadedByEngine
 			d.models = modelsResult{
-				Models:         n.Models,
-				ModelsByEngine: n.ModelsByEngine,
-				LoadedByEngine: n.LoadedByEngine,
+				Models:             n.Models,
+				ModelsByEngine:     n.ModelsByEngine,
+				LoadedByEngine:     n.LoadedByEngine,
+				DownloadedByEngine: n.DownloadedByEngine,
 			}
 			d.refreshModels()
 
@@ -1605,10 +1612,13 @@ func (d *nodeDetail) uninstallEngine(engine *engineStatus) tea.Cmd {
 }
 
 // pullTargetEngine is the engine a download goes into: the one highlighted in
-// the engine pane when it can serve, else the only running engine. Downloading
-// requires a running engine, so a stopped one is never chosen silently.
+// the engine pane when it can download, else the only running engine. Most
+// engines download through their running server, so a stopped one is never
+// chosen silently. An engine that downloads without its server (vLLM, into the
+// Hugging Face cache) can be chosen stopped when it is highlighted, as the
+// desktop app allows.
 func (d *nodeDetail) pullTargetEngine() string {
-	if e := d.selectedEngine(); e != nil && e.Running {
+	if e := d.selectedEngine(); e != nil && (e.Running || e.Installed && pullsWhileStopped[e.Engine]) {
 		return e.Engine
 	}
 	for _, e := range d.engines {
@@ -1642,7 +1652,11 @@ func (d *nodeDetail) refreshEngines() {
 		if e.Port != 0 {
 			port = strconv.Itoa(e.Port)
 		}
-		row := table.Row{e.label(), yesNo(e.Installed), yesNo(e.Running), yesNo(e.Healthy), port}
+		running := yesNo(e.Running)
+		if e.Starting {
+			running = "starting"
+		}
+		row := table.Row{e.label(), yesNo(e.Installed), running, yesNo(e.Healthy), port}
 		if d.proxy != nil {
 			row = append(row, d.proxyPortCell(e.Engine))
 		}
@@ -1681,9 +1695,14 @@ func (d *nodeDetail) refreshModels() {
 	// where it already was.
 	selected := d.selectedModelKey()
 
-	engines := make([]string, 0, len(d.models.ModelsByEngine))
+	engines := make([]string, 0, len(d.models.ModelsByEngine)+len(d.models.DownloadedByEngine))
 	for name := range d.models.ModelsByEngine {
 		engines = append(engines, name)
+	}
+	for name := range d.models.DownloadedByEngine {
+		if _, listed := d.models.ModelsByEngine[name]; !listed {
+			engines = append(engines, name)
+		}
 	}
 	sort.Strings(engines)
 
@@ -1696,7 +1715,7 @@ func (d *nodeDetail) refreshModels() {
 		for _, m := range residents {
 			loaded[m] = true
 		}
-		models := append([]string(nil), d.models.ModelsByEngine[engine]...)
+		models := managedModels(d.models, engine)
 		sort.Strings(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows,
@@ -1941,6 +1960,25 @@ func (d *nodeDetail) hardwareBudget() int {
 	return clampWidth(d.height/2, 1)
 }
 
+// managedModels is the list of models to manage for one engine. An engine that
+// reports a downloaded inventory (vLLM, which advertises only the model it is
+// serving) is listed from that inventory, which is read even while it is
+// stopped, plus anything loaded that is not in it, such as a model served from
+// a local path. Every other engine's advertised list is its inventory.
+func managedModels(res modelsResult, engine string) []string {
+	downloaded, ok := res.DownloadedByEngine[engine]
+	if !ok {
+		return slices.Clone(res.ModelsByEngine[engine])
+	}
+	models := slices.Clone(downloaded)
+	for _, m := range res.LoadedByEngine[engine] {
+		if !slices.Contains(models, m) {
+			models = append(models, m)
+		}
+	}
+	return models
+}
+
 // emptyModelsHint explains an empty list in terms of the thing to fix, since
 // "no models" has several quite different causes.
 // emptyEnginesHint explains an engine list that came back empty.
@@ -2025,6 +2063,12 @@ func (d *nodeDetail) emptyModelsHint() string {
 		// something needs starting. Whether an engine is running is exactly
 		// what cannot be seen from outside the cluster.
 		return "  No models advertised by this node."
+	case len(d.models.DownloadedByEngine) > 0 && d.remote():
+		// An engine read its downloaded models and found none, which is known
+		// with the engine stopped. One that could not be read has no entry.
+		return "  No models downloaded on this node's engines."
+	case len(d.models.DownloadedByEngine) > 0:
+		return "  No models installed. Press p to download one."
 	case !d.anyEngineRunning():
 		return "  No models reported - start an engine to see its models."
 	case d.remote():

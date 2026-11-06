@@ -209,7 +209,8 @@ describe('pending-actions store: model actions', () => {
             models: {
                 nodeId: 'local-node',
                 engineType: 'ollama',
-                models: [loadedModel('llama3.2')]
+                models: [loadedModel('llama3.2')],
+                inventoryKnown: true
             }
         })
         errorsCb?.([
@@ -241,6 +242,26 @@ describe('pending-actions store: model actions', () => {
         vi.advanceTimersByTime(12 * 60_000 + 1_000)
         expect(
             usePendingActionsStore.getState().getModelPending('remote-node', 'ollama', 'llama3.2')
+        ).toBeUndefined()
+    })
+
+    it('keeps a vLLM load locked while the engine restarts on the new model', () => {
+        usePendingActionsStore.getState().begin({
+            command: 'loadModel',
+            engineType: 'vllm',
+            nodeId: 'local-node',
+            model: 'Qwen/Qwen3-8B'
+        })
+
+        // Well past the default net: readiness alone can take 8 minutes.
+        vi.advanceTimersByTime(12 * 60_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        ).toBe('loadModel')
+
+        vi.advanceTimersByTime(8 * 60_000 + 1_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
         ).toBeUndefined()
     })
 

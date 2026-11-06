@@ -317,7 +317,7 @@ func TestValidate_RejectsInvalidManifests(t *testing.T) {
 		}, "json_match.value is required"},
 		{"action without http or cmd", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {Description: "neither"}}
-		}, "exactly one of http, cmd, or remove_path"},
+		}, "exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine"},
 		{"action missing method", func(m *Manifest) {
 			m.Actions = map[string]Action{"x": {HTTP: &ActionHTTP{Path: "/p"}}}
 		}, "http.method and http.path"},
@@ -551,6 +551,23 @@ func TestBundledOllama_AllowsConfiguredStartupTime(t *testing.T) {
 	}
 }
 
+// A vLLM start fetches model metadata and probes for a tool parser before the
+// engine launches, all inside its readiness allowance. That whole allowance
+// must fit what a remote peer waits for, and the work before launch must leave
+// the engine time to come up.
+func TestBundledVLLM_StartFitsTheRemoteReadinessBudget(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
+	m, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+	for key, p := range m.Platforms {
+		require.NotNil(t, p.Runtime.Ready, "readiness probe missing (%v)", key)
+		startAllowance := time.Duration(p.Runtime.Ready.TimeoutS) * time.Second
+		assert.Greater(t, remoteReadyResponseHeaderTimeout, startAllowance, "the whole start, work before launch included (%v)", key)
+		assert.Greater(t, startAllowance, hfMetadataTimeout+toolParserProbeTimeout, "the work before launch leaves the engine time to come up (%v)", key)
+	}
+}
+
 func writeManifest(t *testing.T, dir, name string, m Manifest) {
 	t.Helper()
 	data, err := json.MarshalIndent(m, "", "  ")
@@ -676,4 +693,12 @@ func TestLMStudioInstall_UsesSafeBootstrapCommands(t *testing.T) {
 		}
 		assert.Equal(t, []string{"bash", "{download}"}, p.Install.Run, " (%v)", key)
 	}
+}
+
+func TestValidate_RejectsANegativeAutoLaunchRequestLimit(t *testing.T) {
+	m := validManifest()
+	platform := m.Platforms["linux/amd64"]
+	platform.Runtime.AutoLaunch = &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536, MaxNumSeqs: -1}
+	m.Platforms["linux/amd64"] = platform
+	require.ErrorContains(t, m.Validate(), "max_num_seqs", "a negative request limit was accepted")
 }

@@ -250,7 +250,7 @@ not select or pin proxy routes.
 An NVPAIR-launched engine binds to loopback and is never directly LAN-reachable.
 Peers reach it only through the node's proxy over a cluster-mTLS ingress, so
 discovery advertises the promoted proxy port for `ol`/`lm` rather than the
-engine's private port; llama.cpp uses the additional `lc` key. Transport
+engine's private port; llama.cpp uses the additional `lc` key and vLLM the `vl` key. Transport
 security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.
@@ -408,7 +408,7 @@ deletes finish. Unpackaged (`electron-vite dev`) builds omit relaunch and the UI
 tells the developer to run `npm start` again — quitting Electron tears down the Vite
 renderer server, so auto-relaunch would come up with nothing to load.
 
-The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`) and
+The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`, `~/.cache/huggingface`) and
 the application install tree are never removed. The reset does uninstall the
 engines PAIR installed, through `engine:uninstall-managed` while the broker is
 still running, so an engine a vendor installer placed in the user's home is

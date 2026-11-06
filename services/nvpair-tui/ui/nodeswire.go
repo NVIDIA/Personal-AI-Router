@@ -43,11 +43,13 @@ type availableNode struct {
 	// The broker enriches each discovered node with the model inventory it
 	// learned from that peer's engine-manager, so a remote node's models need
 	// no extra call: Models is the flat de-duplicated union, ModelsByEngine
-	// attributes each to the engine serving it, and LoadedByEngine names those
-	// currently resident in memory.
-	Models         []string            `json:"models"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine"`
+	// attributes each to the engine serving it, LoadedByEngine names those
+	// currently resident in memory, and DownloadedByEngine lists what an engine
+	// that advertises only its served model (vLLM) has downloaded.
+	Models             []string            `json:"models"`
+	ModelsByEngine     map[string][]string `json:"modelsByEngine"`
+	LoadedByEngine     map[string][]string `json:"loadedByEngine"`
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
 }
 
 // clusterIdentity is this node's principal, from cluster:get-node-id.

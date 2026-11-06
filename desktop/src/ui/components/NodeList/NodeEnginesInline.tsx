@@ -18,15 +18,11 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
     const isDisconnected = useNodesStore(s => isRemote && s.nodes.get(nodeId)?.status === 'offline')
     // Re-render when a lifecycle command for this node begins/clears; the
     // per-engine pending state is read below via getState().
-    const lifecyclePendingFingerprint = usePendingActionsStore(state => {
-        const parts: string[] = []
-        for (const [key, p] of state.pending) {
-            if (p.nodeId === nodeId && key.endsWith(':lifecycle')) {
-                parts.push(`${p.engineType}:${p.action}`)
-            }
-        }
-        return parts.join('|')
-    })
+    const lifecyclePendingFingerprint = usePendingActionsStore(state =>
+        EnabledEngineTypes.map(
+            type => `${type}:${state.getLifecyclePending(nodeId, type) ?? ''}`
+        ).join('|')
+    )
     void lifecyclePendingFingerprint
     const selfEngines = useMemo(
         () => getEnginesForNode(nodeId ?? '', statusByNode, EnabledEngineTypes),
@@ -64,6 +60,13 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
         [nodeId]
     )
 
+    const handleStop = useCallback(
+        (engineType: EngineType) => {
+            window.pairApi.engines.stop(engineType, nodeId)
+        },
+        [nodeId]
+    )
+
     const handleInstall = useCallback(
         (engineType: EngineType) => {
             window.pairApi.engines.install(engineType, nodeId)
@@ -74,9 +77,15 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
     return (
         <>
             {allBackends.map(b => {
-                const pending = Boolean(
-                    usePendingActionsStore.getState().getLifecyclePending(nodeId, b.type)
-                )
+                const pendingAction = usePendingActionsStore
+                    .getState()
+                    .getLifecyclePending(nodeId, b.type)
+                const pending = Boolean(pendingAction)
+                // A start can take minutes, so it stays stoppable while it runs:
+                // a Start in progress, or a Load that restarts the engine.
+                const stoppable =
+                    !(isRemote && isDisconnected) &&
+                    (b.status === 'starting' || pendingAction === 'loadModel')
                 const isTransitioning =
                     pending ||
                     b.status === 'installing' ||
@@ -115,7 +124,15 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                         className="shrink-0 no-drag-elements pair-engines-inline"
                     >
                         <Flex align="center" justify="center" className="h-4 w-7 shrink-0 -mr-1">
-                            {isTransitioning ? (
+                            {stoppable ? (
+                                <Switch
+                                    size="small"
+                                    checked
+                                    onCheckedChange={() => handleStop(b.type)}
+                                    title={`Stop ${b.name}`}
+                                    aria-label={`Stop ${b.name}`}
+                                />
+                            ) : isTransitioning ? (
                                 <span
                                     className="spinner-element-medium"
                                     role="status"

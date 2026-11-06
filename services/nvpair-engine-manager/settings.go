@@ -398,6 +398,13 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	}
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
+	return e.configureLaunchLocked(ctx, st, p, rebind)
+}
+
+// configureLaunchLocked is ConfigureLaunch for a caller that already holds
+// st.opMu, so a model switch or a delete can change the launch, start or roll
+// back without another operation slipping in between.
+func (e *Executor) configureLaunchLocked(ctx context.Context, st *engineState, p settings.Configure, rebind func() error) (settings.LaunchState, error) {
 	if err := ctx.Err(); err != nil {
 		return settings.LaunchState{}, err
 	}

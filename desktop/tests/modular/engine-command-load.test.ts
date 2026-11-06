@@ -5,11 +5,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
     state: {
-        getSelfId: vi.fn(() => 'local-node')
+        getSelfId: vi.fn(() => 'local-node'),
+        beginLocalEngineOp: vi.fn()
     },
     supervisor: {
         hasProcess: vi.fn(() => true),
         sendProcess: vi.fn(),
+        callProcess: vi.fn(),
         reportError: vi.fn()
     }
 }))
@@ -68,6 +70,93 @@ describe('local model load command', () => {
                 modelName: 'llama3.2'
             }
         )
+    })
+
+    describe('vLLM model switch', () => {
+        const load = () =>
+            handleServiceBridgeInvoke('engine:command', {
+                command: 'loadModel',
+                engineType: 'vllm',
+                nodeId: 'local-node',
+                model: 'Qwen/Qwen3-8B'
+            })
+        const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+        // The renderer's pending Load shows the engine as starting while vLLM
+        // restarts, and backend truth ends it; the main process only sends the
+        // request and attributes a failure to the model row.
+        it('awaits load_model for as long as a switch may take', async () => {
+            const reply = Promise.withResolvers<undefined>()
+            mocks.supervisor.callProcess.mockReturnValue(reply.promise)
+
+            await load()
+
+            expect(mocks.supervisor.sendProcess).not.toHaveBeenCalled()
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                'broker',
+                'engine:action',
+                { engine: 'vllm', action: 'load_model', params: { model: 'Qwen/Qwen3-8B' } },
+                20 * 60_000
+            )
+            reply.resolve(undefined)
+            await flush()
+            expect(mocks.supervisor.reportError).not.toHaveBeenCalled()
+        })
+
+        // A Stop or Eject ends the Load, and the reply says so rather than
+        // failing. The user who stopped it here needs no message; a stop made
+        // elsewhere is reported, so the Load does not stay shown in progress.
+        it('reports a stopped Load only when the stop came from elsewhere', async () => {
+            const stopped = { model: 'Qwen/Qwen3-8B', restarted: false, stopped: true }
+            mocks.supervisor.callProcess.mockResolvedValue(stopped)
+
+            await load()
+            await flush()
+            expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+                'Loading Qwen/Qwen3-8B on vllm was stopped before it finished.',
+                'info',
+                'engine-cmd:load model:vllm',
+                {
+                    nodeId: 'local-node',
+                    engineType: 'vllm',
+                    operation: 'load',
+                    modelName: 'Qwen/Qwen3-8B'
+                }
+            )
+
+            mocks.supervisor.reportError.mockClear()
+            const reply = Promise.withResolvers<typeof stopped>()
+            mocks.supervisor.callProcess.mockReturnValue(reply.promise)
+            await load()
+            await handleServiceBridgeInvoke('engine:command', {
+                command: 'stop',
+                engineType: 'vllm',
+                nodeId: 'local-node'
+            })
+            reply.resolve(stopped)
+            await flush()
+            expect(mocks.supervisor.reportError).not.toHaveBeenCalled()
+        })
+
+        it('attributes a failure to the model row', async () => {
+            mocks.supervisor.callProcess.mockRejectedValue(
+                new Error('did not become ready; the previous model was restored')
+            )
+            await load()
+            await flush()
+
+            expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+                'Failed to load model on vllm: did not become ready; the previous model was restored',
+                'error',
+                'engine-cmd:load model:vllm',
+                {
+                    nodeId: 'local-node',
+                    engineType: 'vllm',
+                    operation: 'load',
+                    modelName: 'Qwen/Qwen3-8B'
+                }
+            )
+        })
     })
 
     it('leaves the LM Studio load path unobserved', async () => {

@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { EngineManagerNames, EngineTypes, ModelExpiries } from '@/shared/constants/engines'
+import {
+    EngineManagerNames,
+    EnginesListingModelsWhenStopped,
+    EngineTypes,
+    ModelExpiries
+} from '@/shared/constants/engines'
 import {
     EngineManagerName,
     EngineModels,
@@ -54,7 +59,27 @@ export function emptyEngineStatus(nodeId: string, engineType: EngineType): Engin
     }
 }
 
-/** Shallow placeholder when no model list has been pushed for this node/engine yet. */
+/** An engine the node's engine manager does not list, because the node cannot run it. */
+export function unsupportedEngineStatus(nodeId: string, engineType: EngineType): EngineStatusData {
+    return {
+        engineType,
+        nodeId,
+        processStatus: 'unsupported',
+        enginePort: null,
+        proxyPort: null
+    }
+}
+
+/**
+ * Shallow placeholder when no model list has been pushed for this node/engine
+ * yet. For an engine whose list is read from disk and shown while it is stopped,
+ * no list yet means unknown, not "nothing downloaded".
+ */
 export function emptyEngineModels(nodeId: string, engineType: EngineType): EngineModels {
-    return { nodeId, engineType, models: [] }
+    return {
+        nodeId,
+        engineType,
+        models: [],
+        inventoryKnown: !EnginesListingModelsWhenStopped.includes(engineType)
+    }
 }

@@ -56,6 +56,8 @@ export interface EngineHubSearchResponse {
 /** Engine command discriminator. */
 export type EngineCommandType =
     | 'toggle'
+    /** Stop an engine that is still starting, which a toggle cannot tell from stopped. */
+    | 'stop'
     | 'install'
     | 'installAll'
     | 'uninstall'
