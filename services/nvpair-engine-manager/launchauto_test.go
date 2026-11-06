@@ -472,7 +472,7 @@ func TestPlanToolCalling_ChoosesTheParserOnTheFirstStartOfAnUncachedModel(t *tes
 }
 
 func TestPlanToolCalling_KeepsTheParserTheUserChose(t *testing.T) {
-	cache := cachedModel(t, "org/q", qwen8BConfig, 1_000_000)
+	cache := t.TempDir()
 	withToolParserProbe(t, func(bin, snapshot string) (toolParserProbe, error) {
 		t.Fatal("a parser the user named needs no probe")
 		return toolParserProbe{}, nil
