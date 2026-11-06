@@ -21,7 +21,7 @@ import (
 // measurements behind that). These bodies pin the boundary: what fails over,
 // what commits, what terminates, and what is left alone.
 //
-// firstBodyTimeout stands in at 200ms for its production 120s throughout, so a
+// firstBodyTimeout stands in at 200ms for its production 30m throughout, so a
 // body that drives a node to its five-dispatch budget costs a second of wall
 // clock rather than ten minutes.
 const testFirstBodyTimeout = 200 * time.Millisecond

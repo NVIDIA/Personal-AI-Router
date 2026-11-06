@@ -372,9 +372,9 @@ func TestHandleHTTP_WaitsForAnOwnerWithoutSpendingAttempts(t *testing.T) {
 // TestHandleHTTP_DeadlineWithAnOwnerPresentSaysSo is the other way to run out
 // of time, and the one whose reason is easy to get wrong.
 //
-// A slow attempt can spend 240s — the header cap and the first-content cap back
-// to back — so a job can reach the 10-minute deadline before it reaches five
-// dispatches. The owner is still right there, so reporting that no node became
+// A slow attempt can spend twice the response timeout — the header cap and the
+// first-content cap back to back — so a job can reach the 10-minute deadline
+// before it reaches five dispatches. The owner is still right there, so reporting that no node became
 // available would blame a missing node for attempts that were made and failed.
 func TestHandleHTTP_ReportsDeadlineWhenModelOwnerExists(t *testing.T) {
 	// A deadline the first slow attempt outlives, so the loop breaks on time
@@ -404,7 +404,7 @@ func TestHandleHTTP_ReportsDeadlineWhenModelOwnerExists(t *testing.T) {
 // abort, and with it the distinction the whole mechanism rests on.
 //
 // Without it, a node that vanished mid-request was noticed only when the
-// first-content budget expired: the attempt sat for the full 120s while the
+// first-content budget expired: the attempt sat out that whole budget while the
 // broker's own node-loss sweep had already stamped the record failed, so the UI
 // reported a failure the client was still waiting on. Here the budget is left
 // long on purpose, so finishing quickly is only possible via the discovery

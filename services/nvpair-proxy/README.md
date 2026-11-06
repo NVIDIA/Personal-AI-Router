@@ -66,6 +66,7 @@ parameter, because one flag cannot carry multiple engines' plans.
 |------|---------|-------------|
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
+| `--response-header-timeout` | *(`$NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT`, else `30m`)* | How long one attempt waits for an engine or peer to start answering: the response headers, then the first byte of content (Go duration; `0` waits indefinitely). For a **non-streaming** completion the header wait covers queueing and the whole generation, because the engine sends nothing until the answer is complete. Applies to every inference transport, including the mTLS ingress hop on a peer, so raise it on every node a request may traverse. Unreachable hosts are still cut off by the 10 s dial timeout. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
 | `--version` | | Print version and exit |
 
