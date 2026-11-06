@@ -823,7 +823,9 @@ func TestProbeNode_PublishesUnchangedAuthenticatedMeasurements(t *testing.T) {
 	// changes can accidentally trigger this periodic notification.
 	f.info.TelemetryValid, f.info.MSSince = false, 0
 	f.manager.probeNode(f.entry)
-	readCaptureUntil(t, f.frames, methodIs(updatedMethod))
+	first := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, f.frames, methodIs(updatedMethod)))
+	assert.Equal(t, f.manager.nodes[nodeID(f.entry)].observedAt.UnixMilli(), first.ObservedAt)
+	assert.Equal(t, first.ObservedAt, f.manager.listNodes()[0].ObservedAt, "cached delivery keeps the original observation time")
 
 	f.manager.probeNode(f.entry)
 
@@ -831,6 +833,7 @@ func TestProbeNode_PublishesUnchangedAuthenticatedMeasurements(t *testing.T) {
 	status := decodeParams[ManualNodeStatus](t, message)
 	assert.Equal(t, noderec.IdentityPinned, status.IdentityVerification)
 	assert.False(t, status.TelemetryValid)
+	assert.Equal(t, f.manager.nodes[nodeID(f.entry)].observedAt.UnixMilli(), status.ObservedAt)
 }
 
 // Keep a valid pinned TLS connection but vary the response's host and principal
@@ -1356,8 +1359,14 @@ func TestTrackedNodeStatusAt_AddsPreviewAgeWithoutChangingCachedSample(t *testin
 
 	require.NotNil(t, status.Preview)
 	assert.Equal(t, int64(5137), status.Preview.MSSince)
+	assert.Equal(t, start.UnixMilli(), status.ObservedAt)
+	assert.Equal(t, status.ObservedAt, node.statusAt(start.Add(7*time.Second)).ObservedAt)
 
 	assert.Equal(t, int64(137), node.status.Preview.MSSince)
+
+	// Equal hardware from a new read still gets a new chart observation.
+	node.previewObservedAt = start.Add(9 * time.Second)
+	assert.Equal(t, node.previewObservedAt.UnixMilli(), node.statusAt(start.Add(10*time.Second)).ObservedAt)
 }
 
 func TestProbeNode_ReplacesPublicPreviewWithAuthenticatedHardware(t *testing.T) {

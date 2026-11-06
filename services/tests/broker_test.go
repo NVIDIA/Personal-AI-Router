@@ -383,6 +383,7 @@ func TestBroker_DeliversManualPreviewWithoutTrustingPublicIdentity(t *testing.T)
 				assert.Nil(t, node.Info.ClusterUUID)
 
 				assert.Equal(t, []noderec.GPUInfo{{Name: "preview GPU"}}, node.Info.GPUs)
+				assert.Positive(t, node.Info.ObservedAt)
 				return
 			}
 		case <-timeout.C:
@@ -448,6 +449,7 @@ func TestBroker_DeliversAuthenticatedManualHardwareInDiscovery(t *testing.T) {
 				assert.Equal(t, info.Memory, node.Info.Memory)
 				assert.True(t, node.Info.TelemetryValid)
 				assert.GreaterOrEqual(t, node.Info.MSSince, int64(137))
+				assert.Positive(t, node.Info.ObservedAt)
 				return
 			}
 		case <-timeout.C:

@@ -44,6 +44,7 @@ type manualNodeStatus struct {
 	Memory               *MemoryInfo                  `json:"memory"`
 	TelemetryValid       bool                         `json:"telemetryValid"`
 	MSSince              int64                        `json:"msSince"`
+	ObservedAt           int64                        `json:"observedAt,omitempty"`
 	Preview              *noderec.NodeInfo            `json:"preview,omitempty"`
 	// HostUUID is the authenticated remote identity shared with its scanner
 	// record. It stays empty until a pinned hardware probe succeeds.
@@ -57,6 +58,7 @@ func (s manualNodeStatus) withoutVerification() manualNodeStatus {
 	s.DiscoveryRecordID, s.HostUUID = "", ""
 	s.GPUs, s.CPU, s.Memory = nil, nil, nil
 	s.TelemetryValid, s.MSSince = false, 0
+	s.ObservedAt = 0
 	s.Preview = nil
 	return s
 }
@@ -280,8 +282,9 @@ func manualToEnriched(s manualNodeStatus, receivedAt time.Time) EnrichedNode {
 		}
 	}
 	if en.Info != nil {
-		observation := observeNodeInfo(*en.Info, receivedAt)
-		en.Info = &observation
+		// The owned worker stamps each read once. Public response clocks and
+		// later status deliveries cannot turn cached hardware into a new sample.
+		en.Info.ObservedAt = s.ObservedAt
 	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}

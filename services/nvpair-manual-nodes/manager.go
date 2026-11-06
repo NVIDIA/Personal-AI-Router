@@ -103,6 +103,9 @@ type ManualNodeStatus struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
+	// ObservedAt is this worker's hardware receipt time in Unix milliseconds.
+	// Cached publications keep it even as GPU sample age increases.
+	ObservedAt int64 `json:"observedAt,omitempty"`
 	// HostUUID is the remote's stable per-host identity from node-info, so a
 	// manual node carries the same permanent identity the rest of the system
 	// keys on. Empty when node-info didn't report one.
@@ -139,6 +142,7 @@ func (s ManualNodeStatus) withoutVerification() ManualNodeStatus {
 	s.NodeInfoUp = false
 	s.GPUs, s.CPU, s.Memory = nil, nil, nil
 	s.TelemetryValid, s.MSSince = false, 0
+	s.ObservedAt = 0
 	s.Preview = nil
 	return s
 }
@@ -169,6 +173,16 @@ type trackedNode struct {
 // statusAt projects cached hardware at send time without resetting its age.
 func (n *trackedNode) statusAt(now time.Time) ManualNodeStatus {
 	status := n.status
+	var observedAt time.Time
+	if status.IdentityVerification == noderec.IdentityPinned {
+		observedAt = n.observedAt
+	} else if status.Preview != nil {
+		observedAt = n.previewObservedAt
+	}
+	status.ObservedAt = 0
+	if !observedAt.IsZero() {
+		status.ObservedAt = observedAt.UnixMilli()
+	}
 	if status.TelemetryValid {
 		status.MSSince = (noderec.NodeInfo{TelemetryValid: true, MSSince: status.MSSince}).Aged(now.Sub(n.observedAt)).MSSince
 	}

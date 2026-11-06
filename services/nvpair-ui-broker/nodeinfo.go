@@ -67,6 +67,9 @@ func (b *Broker) acceptLocalInfo(params json.RawMessage, receivedAt time.Time) {
 		slog.Warn("owned node-info snapshot has an unexpected host identity")
 		return
 	}
+	// Stamp before caching so replay through a restarted scanner remains the
+	// same display observation, independently of GPU sample age.
+	snapshot.Info = observeNodeInfo(snapshot.Info, receivedAt)
 	observation := localInfoObservation{info: snapshot.Info, receivedAt: receivedAt}
 	b.localInfoMu.Lock()
 	b.localInfo = &observation
