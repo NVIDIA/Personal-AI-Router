@@ -389,10 +389,7 @@ func clampLines(s string, n int) string {
 // than wrapping it, so the tail was lost either way.
 func indentWrap(s string, width int) string {
 	const indent = "  "
-	limit := width - lipgloss.Width(indent)
-	if limit < 8 {
-		limit = 8
-	}
+	limit := max(width-lipgloss.Width(indent), 8)
 
 	var out []string
 	line := ""
@@ -402,7 +399,7 @@ func indentWrap(s string, width int) string {
 			line = ""
 		}
 	}
-	for _, word := range strings.Fields(s) {
+	for word := range strings.FieldsSeq(s) {
 		for lipgloss.Width(word) > limit {
 			// Longer than a whole line: split it rather than emit an over-wide
 			// row. The head goes out on its own so the break is visible.

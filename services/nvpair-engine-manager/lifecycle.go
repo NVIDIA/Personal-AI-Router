@@ -568,10 +568,7 @@ func stopGrace(rt Runtime) time.Duration {
 // hung stop command can never wedge StopAll now that the broker no longer
 // force-kills engine-manager on a timeout.
 func commandStopTimeout(rt Runtime) time.Duration {
-	t := stopGrace(rt)
-	if t < 5*time.Second {
-		t = 5 * time.Second
-	}
+	t := max(stopGrace(rt), 5*time.Second)
 	return t
 }
 
@@ -823,9 +820,7 @@ func (e *Executor) stopEngines(names []string) []string {
 		if err != nil {
 			continue
 		}
-		wg.Add(1)
-		go func(i int, st *engineState, n string) {
-			defer wg.Done()
+		wg.Go(func() {
 			st.mu.Lock()
 			cancel := st.startCancel
 			retryable := st.plat.Runtime.modeOrDefault() == "command" || st.proc != nil
@@ -839,7 +834,7 @@ func (e *Executor) stopEngines(names []string) []string {
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
 				retry[i] = retryable
 			}
-		}(i, st, n)
+		})
 	}
 	wg.Wait()
 	var failed []string

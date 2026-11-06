@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -333,9 +334,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		prev.LMStudioUp != newStatus.LMStudioUp ||
 		prev.NodeInfoUp != newStatus.NodeInfoUp ||
 		prev.HostUUID != newStatus.HostUUID ||
-		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
-		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
-		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
+		!slices.Equal(prev.OllamaModels, newStatus.OllamaModels) ||
+		!slices.Equal(prev.LMStudioModels, newStatus.LMStudioModels) ||
+		!slices.Equal(prev.GPUs, newStatus.GPUs) ||
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
 		prev.TelemetryValid != newStatus.TelemetryValid ||
@@ -701,42 +702,14 @@ func nodeID(entry ManualEntry) string {
 	return "manual:" + entry.Address
 }
 
-func sliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func gpusEqual(a, b []GPUInfo) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Name != b[i].Name ||
-			a[i].VramBytes != b[i].VramBytes ||
-			a[i].VramUsedBytes != b[i].VramUsedBytes ||
-			a[i].UtilizationPercent != b[i].UtilizationPercent {
-			return false
-		}
-	}
-	return true
-}
-
 // cpuEqual and memoryEqual are nil-aware equality helpers for the new
 // pointer-optional fields. Both sides being nil is equal (the node
 // doesn't report that subsystem); exactly one being nil is a real
 // change (the node started or stopped reporting it, e.g. an OS-level
 // upgrade of nvpair-node-info); both non-nil compares the underlying
-// struct by value. This mirrors what sliceEqual / gpusEqual do for
-// their respective fields — any change, including a utilization tick
-// moving from 41% to 42%, fires a node/updated event so downstream
-// consumers can refresh their view.
+// struct by value. As with slices.Equal on the model and GPU slices, any
+// change, including a utilization tick moving from 41% to 42%, fires a
+// node/updated event so downstream consumers can refresh their view.
 func cpuEqual(a, b *CPUInfo) bool {
 	if a == nil && b == nil {
 		return true

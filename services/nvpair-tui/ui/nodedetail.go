@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -492,15 +492,12 @@ const maxEngineRows = 6
 // status line — the exact failure the render-time sizing was introduced to make
 // impossible.
 func (d *nodeDetail) sizeEngineTable() {
-	want := clampWidth(len(d.engines)+tableHeaderRows, 1+tableHeaderRows)
-	if want > maxEngineRows {
-		want = maxEngineRows
-	}
+	want := min(max(len(d.engines)+tableHeaderRows, 1+tableHeaderRows), maxEngineRows)
 	// Everything the engine table must not crowd out: the fixed furniture, the
 	// hardware block, and a minimal models table.
 	reserved := detailChromeRows + d.hardwareHeight() + (1 + tableHeaderRows)
 	if room := d.height - reserved; room < want {
-		want = clampWidth(room, 1+tableHeaderRows)
+		want = max(room, 1+tableHeaderRows)
 	}
 	d.engineTable.SetHeight(want)
 }
@@ -520,7 +517,7 @@ func (d *nodeDetail) hardwareHeight() int {
 	// Must agree with hardwareBlock, including its cap — a height that ignored
 	// the cap would over-reserve, and one that ignored the truncation line would
 	// under-reserve by exactly the row that says devices were dropped.
-	lines := clampWidth(len(d.telemetry.summary()), 1)
+	lines := max(len(d.telemetry.summary()), 1)
 	if max := d.hardwareBudget(); lines > max {
 		return max
 	}
@@ -1370,7 +1367,7 @@ func joinSettingsErrors(errs map[string]string) string {
 	for field := range errs {
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 	parts := make([]string, 0, len(fields))
 	for _, field := range fields {
 		parts = append(parts, errs[field])
@@ -1685,7 +1682,7 @@ func (d *nodeDetail) refreshModels() {
 	for name := range d.models.ModelsByEngine {
 		engines = append(engines, name)
 	}
-	sort.Strings(engines)
+	slices.Sort(engines)
 
 	d.modelRows = d.modelRows[:0]
 	for _, engine := range engines {
@@ -1697,7 +1694,7 @@ func (d *nodeDetail) refreshModels() {
 			loaded[m] = true
 		}
 		models := append([]string(nil), d.models.ModelsByEngine[engine]...)
-		sort.Strings(models)
+		slices.Sort(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows,
 				detailModelRow{engine: engine, model: m, loaded: loaded[m], loadKnown: known})
@@ -1712,7 +1709,7 @@ func (d *nodeDetail) refreshModels() {
 	// difference. Fall back to the flat union rather than regressing to nothing.
 	if len(d.modelRows) == 0 && len(d.models.Models) > 0 {
 		models := append([]string(nil), d.models.Models...)
-		sort.Strings(models)
+		slices.Sort(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows, detailModelRow{model: m})
 		}
@@ -1938,7 +1935,7 @@ func (d *nodeDetail) hardwareBlock() string {
 // than an exhaustive device inventory — the operator came here to act on an
 // engine, not to audit GPUs.
 func (d *nodeDetail) hardwareBudget() int {
-	return clampWidth(d.height/2, 1)
+	return max(d.height/2, 1)
 }
 
 // emptyModelsHint explains an empty list in terms of the thing to fix, since
@@ -2011,7 +2008,7 @@ func (d *nodeDetail) advertisedEngines() []string {
 		}
 		names = append(names, d.engineLabel(engine))
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

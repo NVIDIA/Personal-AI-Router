@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -96,9 +97,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		if listSpec == nil && loadedSpec == nil {
 			continue
 		}
-		wg.Add(1)
-		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
-			defer wg.Done()
+		wg.Go(func() {
 			st, err := e.Status(name)
 			if err != nil || !st.Running {
 				return
@@ -126,7 +125,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 					slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
 				}
 			}
-		}(i, name, listSpec, loadedSpec)
+		})
 	}
 	wg.Wait()
 
@@ -239,12 +238,7 @@ func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
 	if err := json.Unmarshal(fv, &s); err != nil {
 		return false
 	}
-	for _, want := range m.In {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.In, s)
 }
 
 func resolveObjectPath(obj map[string]json.RawMessage, path string) (json.RawMessage, bool) {

@@ -45,7 +45,7 @@ if (-not (Test-Path (Join-Path $ModuleDir 'go.mod'))) {
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     Write-Host 'inference-dispatcher: go is required and was not found on PATH.' -ForegroundColor Red
-    Write-Host '                      Install Go 1.24.3 or newer (see AGENTS.md).' -ForegroundColor Red
+    Write-Host '                      Install Go 1.25 or newer (see AGENTS.md).' -ForegroundColor Red
     exit 2
 }
 

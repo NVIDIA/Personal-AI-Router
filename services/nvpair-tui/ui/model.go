@@ -426,10 +426,7 @@ func (m Model) headerView() string {
 	default:
 		status = footerStyle.Render("starting service...")
 	}
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(status)
-	if gap < 1 {
-		gap = 1
-	}
+	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(status), 1)
 	return left + strings.Repeat(" ", gap) + status
 }
 

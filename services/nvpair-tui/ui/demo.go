@@ -398,10 +398,7 @@ func (d *demoRunner) note() string {
 	case demoPreparing:
 		return footerStyle.Render("  Inference demo: finding models...")
 	case demoRunning:
-		left := demoMaxSubmit - time.Since(d.started)
-		if left < 0 {
-			left = 0
-		}
+		left := max(demoMaxSubmit-time.Since(d.started), 0)
 		return statusOKStyle.Render(fmt.Sprintf(
 			"  Inference demo: %d/%d sent across %d model(s) on %d engine(s) - %ds left, press t to stop",
 			d.submitted, len(d.schedule), d.targetCount, d.engineCount,

@@ -72,7 +72,7 @@ func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 	// "localhost" is not a loopback IP literal, so modelsClient takes the
 	// pinned mTLS path instead of the plaintext self-fetch.
 	const rounds = 5
-	for i := 0; i < rounds; i++ {
+	for i := range rounds {
 		models, _, _, ok := d.fetchModels("localhost", port, "uuid-peer")
 		require.True(t, ok, "round (%v, %v, %v)", i, ok, models)
 		require.Len(t, models, 1, "round (%v, %v, %v)", i, ok, models)

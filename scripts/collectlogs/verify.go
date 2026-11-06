@@ -4,11 +4,12 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"net"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -52,7 +53,9 @@ func newVerifier(entities []*Entity) *verifier {
 		v.allowed[e.Token] = true
 		alts = append(alts, entityPattern(e))
 	}
-	sort.SliceStable(alts, func(i, j int) bool { return len(alts[i]) > len(alts[j]) })
+	slices.SortStableFunc(alts, func(a, b string) int {
+		return cmp.Compare(len(b), len(a))
+	})
 	if len(alts) > 0 {
 		v.forbidden = regexp.MustCompile(strings.Join(alts, "|"))
 	}

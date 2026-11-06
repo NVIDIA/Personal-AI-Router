@@ -317,7 +317,7 @@ func resolveProxyPath(override string) (string, error) {
 func parseProxyEngines(csv string) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
-	for _, raw := range strings.Split(csv, ",") {
+	for raw := range strings.SplitSeq(csv, ",") {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue

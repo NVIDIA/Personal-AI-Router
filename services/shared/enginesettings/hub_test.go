@@ -22,7 +22,7 @@ func TestSettingsHub_DeliversBaselineCoalescesUpdatesAndEnforcesLimits(t *testin
 	assert.Equal(t, uint64(999), (<-ch)[0].Revision, "slow subscriber missed latest full state")
 	closeSub()
 	var closeAll []func()
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		_, close, ok := h.Subscribe()
 		require.True(t, ok, "early subscriber cap")
 		closeAll = append(closeAll, close)

@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -538,8 +537,7 @@ func TestShutdownRequest_CancelsRun(t *testing.T) {
 	mgr, err := NewManager(NewCodec(server), tlsClientOptions{}, nil)
 	require.NoError(t, err, "NewManager")
 	done := make(chan error, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() {
 		done <- mgr.Run(ctx)
 	}()
