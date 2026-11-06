@@ -24,34 +24,18 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
         ).join('|')
     )
     void lifecyclePendingFingerprint
-    const selfEngines = useMemo(
-        () => getEnginesForNode(nodeId ?? '', statusByNode, EnabledEngineTypes),
+    const allBackends = useMemo(
+        () =>
+            getEnginesForNode(nodeId, statusByNode)
+                // Wait for a service report before showing an engine control.
+                .filter(status => status.processStatus !== 'initializing')
+                .map(status => ({
+                    type: status.engineType,
+                    name: EngineDisplayNames[status.engineType],
+                    status: status.processStatus
+                })),
         [nodeId, statusByNode]
     )
-
-    const allBackends = useMemo(() => {
-        return EnabledEngineTypes.flatMap(type => {
-            const backend = selfEngines.find(b => b.engineType === type)
-
-            // Show every engine the node has actually reported — not just ones
-            // with a proxy port. The broker fronts only Ollama with a proxy, so
-            // gating on `proxyPort` hid LM Studio (managed by nvpair-engine-manager,
-            // loopback-only, no proxy). Skip the padded `initializing`
-            // placeholder so engines a node never reports (e.g. LM Studio on a
-            // remote, undiscovered node) don't show a perpetual spinner.
-            if (!backend || backend.processStatus === 'initializing') {
-                return []
-            }
-
-            return [
-                {
-                    type,
-                    name: EngineDisplayNames[type],
-                    status: backend.processStatus
-                }
-            ]
-        })
-    }, [selfEngines])
 
     const handleToggle = useCallback(
         (engineType: EngineType) => {
