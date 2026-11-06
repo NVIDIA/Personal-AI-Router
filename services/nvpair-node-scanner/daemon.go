@@ -83,8 +83,8 @@ type daemon struct {
 	clusterDir string
 
 	// selfMu serializes registry publications, identity/address changes and owned
-	// hardware snapshots so they agree on this node's identity. Background model
-	// refreshes use dir.mu independently.
+	// hardware snapshots so they agree on this node's identity. Local hardware and
+	// model updates also share peerMu to order directory changes and publications.
 	selfMu sync.Mutex
 	// localInfo is supplied only by the owned worker IPC path, under selfMu.
 	localInfo *noderec.NodeInfo
@@ -1083,13 +1083,16 @@ func (d *daemon) acceptLocalNodeInfo(info noderec.NodeInfo) {
 	}
 	info = info.Aged(0)
 	d.localInfo = &info
+	// Keep the captured full node and its notification ordered with model updates.
+	d.peerMu.Lock()
 	node, result := d.dir.applyLocalInfo(info)
-	switch result {
-	case localInfoMissing:
-		// Build identity and services from the registry, not the hardware snapshot.
-		d.publishSelfLocked()
-	case localInfoUpdated:
+	if result == localInfoUpdated {
 		d.emit(noderec.NotifyNodeUpdated, node)
+	}
+	d.peerMu.Unlock()
+	if result == localInfoMissing {
+		// Build from the registry; publishSelfLocked takes peerMu for publication.
+		d.publishSelfLocked()
 	}
 	var utilization uint32
 	for _, gpu := range info.GPUs {

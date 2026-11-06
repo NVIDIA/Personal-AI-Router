@@ -338,7 +338,9 @@ Node-info publishes `nodeinfo:info-updated {info}` over its owned
 stdio channel at startup and every two seconds. The broker forwards those
 snapshots as `discovery:local-node-info`, adding elapsed time to sample age when
 forwarding or replaying cached data. Scanner emits full local hardware back to
-the broker for client delivery. The public listener serves
+the broker for client delivery. Local hardware and model inventory updates share
+serialization through directory mutation and full-node publication, so consumers
+receive those snapshots in the order they were applied. The public listener serves
 unverified previews. A discovered record must not be treated as local merely because
 its advertised address points to this computer, including a loopback address such
 as `127.0.0.1` or `::1`.

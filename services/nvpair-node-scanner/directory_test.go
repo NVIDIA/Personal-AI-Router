@@ -15,14 +15,19 @@ import (
 	"nvpair-shared/noderec"
 )
 
+// Hardware snapshots carry no models. Applying one must preserve every model
+// inventory already supplied by an independent model refresh.
 func TestApplyLocalInfo_UpdatesOnlyHardware(t *testing.T) {
 	dir := newDirectory()
 	node := noderec.DirectoryNode{
 		HostUUID: "owned-host", DiscoveryRecordID: "local:owned-host",
 		IdentityVerification: noderec.IdentityLocal, Trusted: true,
 		Name: "workstation", IP: "192.0.2.20", ClusterUUID: "principal",
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14322}},
-		Models:   []string{"current-model"}, LastSeen: 1,
+		Services:       map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14322}},
+		Models:         []string{"current-model"},
+		ModelsByEngine: map[string][]string{"ollama": {"current-model"}},
+		LoadedByEngine: map[string][]string{"ollama": {"current-model"}},
+		LastSeen:       1,
 	}
 	dir.upsert(node)
 	info := noderec.NodeInfo{
