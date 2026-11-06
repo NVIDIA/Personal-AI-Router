@@ -186,6 +186,7 @@ func modelScopeDownloadResponseFixture(t *testing.T, download *http.Response) (h
 		if strings.HasSuffix(r.URL.Path, "/files") {
 			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), ContentLength: int64(len(metadata)), Body: io.NopCloser(strings.NewReader(metadata))}, nil
 		}
+		assert.Equal(t, http.MethodGet, r.Method)
 		return download, nil
 	})}
 	handler := newModelScopeHandler(client, "https://modelscope.invalid")

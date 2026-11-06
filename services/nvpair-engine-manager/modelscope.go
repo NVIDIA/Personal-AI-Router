@@ -164,7 +164,9 @@ func newModelScopeHandler(client *http.Client, endpoint string) http.Handler {
 			for _, file := range files {
 				if file.Path == path {
 					query := url.Values{"Revision": {file.Revision}, "FilePath": {path}}
-					req, err := http.NewRequestWithContext(r.Context(), r.Method, endpoint+"/api/v1/models/"+repo+"/repo?"+query.Encode(), nil)
+					// ModelScope can stall on HEAD for large files. Use GET headers;
+					// downstream HEAD closes the response without reading its body.
+					req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint+"/api/v1/models/"+repo+"/repo?"+query.Encode(), nil)
 					if err != nil {
 						http.Error(w, "invalid ModelScope download request", http.StatusBadGateway)
 						return
