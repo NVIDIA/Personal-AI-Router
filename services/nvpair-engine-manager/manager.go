@@ -389,7 +389,7 @@ func (m *Manager) runCatalog(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "engine is required")
 		return
 	}
-	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch, p.Query)
+	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch, p.Query, p.ModelSource)
 	if err != nil {
 		m.codec.RespondError(msg.ID, -32603, err.Error())
 		return

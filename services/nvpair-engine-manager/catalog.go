@@ -112,10 +112,11 @@ type CatalogResult struct {
 // Query searches the upstream, for a source that reports Searchable. Any other
 // source ignores it and returns its whole list for the client to filter.
 type catalogParams struct {
-	Engine   string `json:"engine"`
-	Platform string `json:"platform"`
-	Arch     string `json:"arch"`
-	Query    string `json:"query"`
+	Engine      string `json:"engine"`
+	Platform    string `json:"platform"`
+	Arch        string `json:"arch"`
+	Query       string `json:"query"`
+	ModelSource string `json:"modelSource"` // Peer selection; omitted uses this node's setting.
 }
 
 //go:embed catalog/ollama-models.json
@@ -293,7 +294,7 @@ func newCatalogService() *catalogService {
 // Catalog returns the downloadable models for an engine, filtered for the
 // machine they will be installed on, or the results of a query for a source
 // that can search.
-func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, query string) (CatalogResult, error) {
+func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, query, selectedSource string) (CatalogResult, error) {
 	platform, arch = catalogTarget(platform, arch)
 	switch normalizeCatalogEngine(engine) {
 	case "ollama":
@@ -327,20 +328,24 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		if err != nil {
 			return CatalogResult{}, err
 		}
-		if c.llamaSource != nil {
-			source, err := c.llamaSource()
+		if selectedSource == "" && c.llamaSource != nil {
+			selectedSource, err = c.llamaSource()
 			if err != nil {
 				return CatalogResult{}, err
 			}
-			if source == "modelscope" {
-				models, fetchedAt, err := c.catalogSearch("modelscope:"+strings.ToLower(query), func(ctx context.Context) ([]CatalogModel, error) {
-					return c.fetchModelScope(ctx, query)
-				}).get(ctx)
-				if err != nil {
-					return CatalogResult{}, err
-				}
-				return CatalogResult{Models: models, Source: modelScopeURL + "/models", Platform: platform, Arch: arch, FetchedAt: fetchedAt.UTC().Format(time.RFC3339), Searchable: true, Query: query}, nil
+		}
+		switch selectedSource {
+		case "modelscope":
+			models, fetchedAt, err := c.catalogSearch("modelscope:"+strings.ToLower(query), func(ctx context.Context) ([]CatalogModel, error) {
+				return c.fetchModelScope(ctx, query)
+			}).get(ctx)
+			if err != nil {
+				return CatalogResult{}, err
 			}
+			return CatalogResult{Models: models, Source: modelScopeURL + "/models", Platform: platform, Arch: arch, FetchedAt: fetchedAt.UTC().Format(time.RFC3339), Searchable: true, Query: query}, nil
+		case "", "huggingface":
+		default:
+			return CatalogResult{}, errors.New("unsupported model download source")
 		}
 		models, fetchedAt, err := c.llamaCPPCatalog(ctx, query)
 		if err != nil {

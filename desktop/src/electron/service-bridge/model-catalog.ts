@@ -89,6 +89,7 @@ export async function getEngineHubModels(
         // machine, which is also the one answering, and omitting the target is
         // how the backend is told to filter for itself — operating system and
         // CPU both, since an Intel Mac cannot install what Apple Silicon can.
+        // Omit modelSource too: the manager uses this device's saved selection.
         const result = await getModularSupervisor().callProcess(
             'broker',
             'engine:catalog',

@@ -1424,6 +1424,7 @@ func (d *nodeDetail) openCatalog() tea.Cmd {
 		}
 	}
 	d.catalog = newCatalogBrowser(d.client, engine, label, d.node.name, d.remote())
+	d.catalog.nodeID = d.nodeArg()
 	d.catalog.SetSize(d.width, d.height)
 	return d.catalog.Init()
 }

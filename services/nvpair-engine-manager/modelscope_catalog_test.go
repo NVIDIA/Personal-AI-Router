@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -103,7 +104,7 @@ func TestCatalog_KeepsSourceCachesSeparateWhenSelectionChanges(t *testing.T) {
 	catalog.llamaSource = func() (string, error) { return selected, nil }
 	for _, source := range []string{"huggingface", "modelscope", "huggingface", "modelscope"} {
 		selected = source
-		result, err := catalog.Catalog(context.Background(), "llamacpp", "", "", "absent")
+		result, err := catalog.Catalog(context.Background(), "llamacpp", "", "", "absent", "")
 		require.NoError(t, err)
 		assert.Contains(t, result.Source, source)
 	}
@@ -121,4 +122,36 @@ func TestModelScopeCatalog_DoesNotRevealSearchTextInErrors(t *testing.T) {
 	var urlErr *url.Error
 	assert.NotErrorAs(t, err, &urlErr)
 	assert.NotContains(t, err.Error(), "private model name")
+}
+
+func TestRunCatalog_UsesRequestedSourceInsteadOfLocalSelection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := `[]`
+		if r.URL.Path == "/openapi/v1/models" {
+			body = `{"success":true,"data":{"models":[]}}`
+		}
+		_, err := w.Write([]byte(body))
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	test := func(name, localSource, peerSource, expectedURL string) {
+		t.Run(name, func(t *testing.T) {
+			var output bytes.Buffer
+			manager := NewManager(NewCodec(&output), &Executor{}, nil)
+			manager.catalog.baseURL, manager.catalog.modelScopeEndpoint = server.URL, server.URL
+			manager.catalog.llamaSource = func() (string, error) { return localSource, nil }
+			params, err := json.Marshal(catalogParams{Engine: "llamacpp", Query: "absent", ModelSource: peerSource})
+			require.NoError(t, err)
+			id := json.RawMessage("1")
+			manager.runCatalog(context.Background(), &Message{ID: &id, Params: params})
+			var reply Message
+			require.NoError(t, json.Unmarshal(output.Bytes(), &reply))
+			require.Nil(t, reply.Error)
+			var result CatalogResult
+			require.NoError(t, json.Unmarshal(reply.Result, &result))
+			assert.Equal(t, expectedURL, result.Source)
+		})
+	}
+	test("peer uses ModelScope", "huggingface", "modelscope", "https://modelscope.cn/models")
+	test("peer uses Hugging Face", "modelscope", "huggingface", "https://huggingface.co/api/models?filter=gguf&search=absent")
 }
