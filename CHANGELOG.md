@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.12 — Restore macOS privileged helper communication after upgrades (#192)
+
+- Preserve the helper-specific signing identifier needed to communicate with the macOS background helper and complete setup.
+- Replace an enabled but unreachable helper once per app version after an upgrade, and keep setup incomplete until helper communication and firewall configuration succeed.
+
 ## 1.0.11 — Use the PAIR symbol in the macOS menu bar (#194)
 
 - Replace the opaque app tile with a transparent PAIR house-and-network symbol, with Retina support.
