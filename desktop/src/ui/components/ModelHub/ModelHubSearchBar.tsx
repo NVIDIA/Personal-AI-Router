@@ -10,6 +10,7 @@ interface ModelHubSearchBarProps {
     query: string
     searching: boolean
     onQueryChange: (query: string) => void
+    onCompositionChange: (composing: boolean) => void
     onSearch: (query: string) => void
     sort: SortState
     onSort: (sort: SortState) => void
@@ -20,13 +21,14 @@ export const ModelHubSearchBar = ({
     query,
     searching,
     onQueryChange,
+    onCompositionChange,
     onSearch,
     sort,
     onSort,
     onMenuOpenChange
 }: ModelHubSearchBarProps) => {
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key === 'Enter' && !searching && query.trim()) {
+        if (e.key === 'Enter' && !e.nativeEvent.isComposing && !searching && query.trim()) {
             e.preventDefault()
             onSearch(query)
         }
@@ -37,9 +39,12 @@ export const ModelHubSearchBar = ({
             <ModelHubFilterSort sort={sort} onSort={onSort} onMenuOpenChange={onMenuOpenChange} />
             <TextInput
                 placeholder="Search for a model"
+                aria-label="Search for a model"
                 value={query}
                 onKeyDown={handleKeyDown}
                 onValueChange={onQueryChange}
+                onCompositionStart={() => onCompositionChange(true)}
+                onCompositionEnd={() => onCompositionChange(false)}
                 className="flex-1 min-w-0 max-h-[32px]"
             />
             <Button
