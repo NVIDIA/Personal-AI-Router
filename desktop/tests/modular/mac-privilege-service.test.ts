@@ -307,7 +307,98 @@ describe('macOS helper setup', () => {
         expect(ctl).not.toHaveBeenCalledWith(['install'])
     })
 
-    it('reports a registration failure without installing twice in the same launch', async () => {
+    it('recovers when registration temporarily fails after unregistering', async () => {
+        ctl.mockReturnValueOnce(JSON.stringify(unreachable))
+            .mockReturnValueOnce(JSON.stringify(uninstalled))
+            .mockReturnValueOnce(
+                JSON.stringify({
+                    ok: false,
+                    status: 'notRegistered',
+                    error: 'Operation not permitted'
+                })
+            )
+            .mockReturnValueOnce(JSON.stringify({ ...unreachable, registration: 'notRegistered' }))
+            .mockReturnValueOnce(JSON.stringify({ ...unreachable, registration: 'notRegistered' }))
+            .mockReturnValueOnce(JSON.stringify(installed))
+            .mockReturnValueOnce(JSON.stringify(healthy))
+            .mockReturnValueOnce(JSON.stringify(firewallConfigured))
+
+        const result = await macPrivilege.ensureConfigured(false)
+
+        expect(result).toMatchObject({ firewallConfigured: true, firewallError: null })
+        expect(waitForLaunchRepair).toHaveBeenCalledWith(2000)
+        expect(ctl.mock.calls.filter(([args]) => args[0] === 'uninstall')).toHaveLength(1)
+        expect(getMacHelperRepairAttempts('1.1.0')).toBe(1)
+    })
+
+    it('bounds registration retries when the helper remains unregistered', async () => {
+        ctl.mockImplementation(([command]) => {
+            if (command === 'uninstall') return JSON.stringify(uninstalled)
+            if (command === 'install') {
+                return JSON.stringify({
+                    ok: false,
+                    status: 'notRegistered',
+                    error: 'Operation not permitted'
+                })
+            }
+            return JSON.stringify({ ...unreachable, registration: 'notRegistered' })
+        }).mockReturnValueOnce(JSON.stringify(unreachable))
+
+        const result = await macPrivilege.ensureConfigured(false)
+
+        expect(result).toMatchObject({
+            registration: 'notRegistered',
+            firewallConfigured: false,
+            firewallError: 'Operation not permitted'
+        })
+        expect(ctl.mock.calls.filter(([args]) => args[0] === 'install')).toHaveLength(3)
+        expect(ctl.mock.calls.filter(([args]) => args[0] === 'uninstall')).toHaveLength(1)
+        expect(ctl).not.toHaveBeenCalledWith(['configure-firewall'])
+    })
+
+    it('stops registration retries if approval becomes required during the delay', async () => {
+        ctl.mockReturnValueOnce(JSON.stringify(unreachable))
+            .mockReturnValueOnce(JSON.stringify(uninstalled))
+            .mockReturnValueOnce(
+                JSON.stringify({
+                    ok: false,
+                    status: 'notRegistered',
+                    error: 'Operation not permitted'
+                })
+            )
+            .mockReturnValueOnce(JSON.stringify({ ...unreachable, registration: 'notRegistered' }))
+            .mockReturnValueOnce(
+                JSON.stringify({ ...unreachable, registration: 'requiresApproval' })
+            )
+
+        const result = await macPrivilege.ensureConfigured(false)
+
+        expect(result).toMatchObject({
+            registration: 'requiresApproval',
+            firewallConfigured: false
+        })
+        expect(ctl.mock.calls.filter(([args]) => args[0] === 'install')).toHaveLength(1)
+    })
+
+    it('does not retry registration errors outside a helper replacement', async () => {
+        ctl.mockReturnValueOnce(JSON.stringify({ ...unreachable, registration: 'notRegistered' }))
+            .mockReturnValueOnce(
+                JSON.stringify({
+                    ok: false,
+                    status: 'notRegistered',
+                    error: 'Operation not permitted'
+                })
+            )
+            .mockReturnValueOnce(JSON.stringify({ ...unreachable, registration: 'notRegistered' }))
+
+        const result = await macPrivilege.ensureConfigured(false)
+
+        expect(result.firewallConfigured).toBe(false)
+        expect(waitForLaunchRepair).not.toHaveBeenCalled()
+        expect(ctl.mock.calls.filter(([args]) => args[0] === 'install')).toHaveLength(1)
+    })
+
+    it('does not retry a registration error when the command reports an enabled helper', async () => {
         ctl.mockReturnValueOnce(JSON.stringify(unreachable))
             .mockReturnValueOnce(JSON.stringify(uninstalled))
             .mockReturnValueOnce(

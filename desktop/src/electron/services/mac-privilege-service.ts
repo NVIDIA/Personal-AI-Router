@@ -30,6 +30,8 @@ const log = createStructuredLogger('mac-helper')
 
 const CTL_BINARY_NAME = 'nvpair-helper-ctl'
 const MAX_REPAIR_ATTEMPTS = 2
+const MAX_REGISTRATION_RETRIES = 2
+const REGISTRATION_RETRY_WAIT_MS = 2000
 // launchd's observed stale-constraint repair runs about 10 seconds after rejection.
 const LAUNCH_REPAIR_WAIT_MS = 12000
 
@@ -247,8 +249,23 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
             break
         }
 
-        const installation = await install()
+        let installation = await install()
         current = await status()
+        for (
+            let retry = 0;
+            refresh &&
+            !installation.ok &&
+            installation.registration === 'notRegistered' &&
+            current.registration === 'notRegistered' &&
+            retry < MAX_REGISTRATION_RETRIES;
+            retry++
+        ) {
+            await setTimeout(REGISTRATION_RETRY_WAIT_MS)
+            current = await status()
+            if (current.registration !== 'notRegistered') break
+            installation = await install()
+            current = await status()
+        }
         reconfigureFirewall = true
         if (!installation.ok) {
             return {

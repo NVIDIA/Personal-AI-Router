@@ -51,6 +51,10 @@ flowchart TD
     - before the second replacement, wait 12 seconds for macOS to repair a stale
       launch constraint, then re-check status; skip replacement if the helper
       has recovered or now requires approval;
+    - after unregistering, retry a failed registration at most twice, two seconds
+      apart, only while both the registration result and current status report
+      `notRegistered`; re-check status after each delay and stop retrying if it
+      changes, including when approval is required;
     - if not registered, `install` (which calls `SMAppService.daemon().register()`);
     - when `enabled` and reachable with no known version mismatch, run
       `configure-firewall` (no `--app-path`: the daemon
@@ -79,6 +83,13 @@ bind the replacement record. The 12-second wait allows that observed repair
 window to elapse; it is not a macOS timing guarantee. If two attempts fail, setup
 stays incomplete and subsequent launches do not repeat replacement for the same
 version. Registration alone never implies successful XPC communication.
+
+macOS can also reject registration immediately after a successful asynchronous
+unregister, even though its API promises that re-registration is safe after the
+completion callback. [Apple DTS acknowledges this behavior as a bug](https://developer.apple.com/forums/thread/783539).
+The bounded registration retries allow that transition to settle without another
+unregister or consuming another replacement attempt. The delay is a workaround,
+not a macOS timing guarantee; persistent errors still leave setup incomplete.
 
 The firewall is reconfigured on first run, after a version refresh, and after a
 fresh registration (so a release that adds a networked binary still gets its
