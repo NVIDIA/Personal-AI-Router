@@ -213,7 +213,9 @@ func serveModelScopeDownload(w http.ResponseWriter, r *http.Request, resp *http.
 		return
 	}
 	valid := resp.Header.Get("Content-Encoding") == "" || resp.Header.Get("Content-Encoding") == "identity"
-	if !valid || resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Range") != "" || (resp.ContentLength >= 0 && resp.ContentLength != file.Size) {
+	// ModelScope also sends Content-Range on complete 200 responses. Validate
+	// the full body against the accepted snapshot instead of trusting that header.
+	if !valid || resp.StatusCode != http.StatusOK || (resp.ContentLength >= 0 && resp.ContentLength != file.Size) {
 		http.Error(w, "invalid ModelScope download response", http.StatusBadGateway)
 		return
 	}

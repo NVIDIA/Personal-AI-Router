@@ -46,9 +46,10 @@ func modelScopeDownloadFixture(t *testing.T, content string, download http.Handl
 }
 
 func TestModelScopeDownload_CompletesVerifiedFullFiles(t *testing.T) {
-	test := func(name, content string) {
+	test := func(name, content, contentRange string) {
 		t.Run(name, func(t *testing.T) {
 			handler, path := modelScopeDownloadFixture(t, content, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Range", contentRange)
 				// Exercise unknown-length upstream bodies as well as fixed lengths.
 				assert.NoError(t, http.NewResponseController(w).Flush())
 				_, err := io.WriteString(w, content)
@@ -66,17 +67,20 @@ func TestModelScopeDownload_CompletesVerifiedFullFiles(t *testing.T) {
 			assert.Equal(t, content, string(body))
 			assert.Equal(t, int64(len(content)), response.ContentLength)
 			assert.Equal(t, "none", response.Header.Get("Accept-Ranges"))
+			assert.Empty(t, response.Header.Get("Content-Range"))
 		})
 	}
-	test("empty file", "")
-	test("single byte", "a")
-	test("complete file", "0123456789")
+	test("empty file", "", "")
+	test("single byte", "a", "")
+	test("complete file", "0123456789", "")
+	test("complete file with Content-Range", "0123456789", "bytes 0-9/10")
 }
 
 func TestModelScopeDownload_AbortsIncompleteAndCorruptBodies(t *testing.T) {
 	test := func(name, body string) {
 		t.Run(name, func(t *testing.T) {
 			handler, path := modelScopeDownloadFixture(t, "0123456789", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Range", "bytes 0-9/10")
 				assert.NoError(t, http.NewResponseController(w).Flush())
 				_, err := io.WriteString(w, body)
 				assert.NoError(t, err)
@@ -114,7 +118,6 @@ func TestModelScopeDownload_RejectsMismatchedResponseHeaders(t *testing.T) {
 	test("short Content-Length", "", http.StatusOK, http.Header{"Content-Length": {"9"}})
 	test("large Content-Length", "", http.StatusOK, http.Header{"Content-Length": {"11"}})
 	test("unexpected encoding", "", http.StatusOK, http.Header{"Content-Encoding": {"gzip"}})
-	test("full response with Content-Range", "", http.StatusOK, http.Header{"Content-Range": {"bytes 0-9/10"}})
 	test("range without request", "", http.StatusPartialContent, http.Header{"Content-Range": {"bytes 0-9/10"}})
 	test("range despite full-file request upstream", "bytes=5-9", http.StatusPartialContent, http.Header{"Content-Range": {"bytes 5-9/10"}})
 }
@@ -224,6 +227,7 @@ func TestModelScopeDownload_DoesNotReadHeadOrErrorBodies(t *testing.T) {
 		})
 	}
 	test("HEAD", http.MethodHead, http.StatusOK, http.Header{}, http.Header{})
+	test("HEAD with Content-Range", http.MethodHead, http.StatusOK, http.Header{}, http.Header{"Content-Range": {"bytes 0-9/10"}})
 	test("not modified", http.MethodGet, http.StatusNotModified, http.Header{"If-None-Match": {"model-etag"}}, http.Header{"Etag": {"model-etag"}})
 	test("invalid range", http.MethodGet, http.StatusRequestedRangeNotSatisfiable, http.Header{"Range": {"bytes=20-"}}, http.Header{"Content-Range": {"bytes */10"}})
 	test("provider failure", http.MethodGet, http.StatusServiceUnavailable, http.Header{}, http.Header{})
