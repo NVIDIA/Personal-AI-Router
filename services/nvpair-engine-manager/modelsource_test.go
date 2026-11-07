@@ -52,17 +52,48 @@ func TestModelSource_RejectsUnsupportedSelection(t *testing.T) {
 	assert.Contains(t, preview.Errors, "modelSource")
 }
 
-func TestModelSource_RequestsRestartForSourceOnlyEdit(t *testing.T) {
+func TestModelSource_RestartsEngineForSourceOnlyEdit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environment.json")
+	t.Setenv("PAIR_TEST_ENV_FILE", path)
 	executor, request := llamaSourceExecutor(t)
-	state, err := executor.state("llamacpp")
+	t.Cleanup(executor.StopAll)
+	require.NoError(t, executor.Start(context.Background(), request.Engine))
+	state, err := executor.state(request.Engine)
 	require.NoError(t, err)
-	state.running = true
+	processID := func() int {
+		t.Helper()
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		require.NotNil(t, state.proc)
+		return state.proc.cmd.Process.Pid
+	}
+	beforeProcessID := processID()
+
 	request.Settings.ModelSource = "modelscope"
 	preview, err := executor.PreviewLaunch(request)
 	require.NoError(t, err)
 	require.Empty(t, preview.Errors)
 	assert.True(t, preview.Restart)
-	assert.Equal(t, request.Settings.LaunchText, preview.Settings.LaunchText)
+	assert.Equal(t, request.Settings, preview.Settings)
+	result, err := executor.ConfigureLaunch(context.Background(), settings.Configure{Engine: request.Engine, Settings: request.Settings}, func() error { return nil })
+	require.NoError(t, err)
+	assert.True(t, result.Running)
+	assert.Equal(t, "modelscope", result.ModelSource)
+	assert.Equal(t, request.Settings.ServerPort, result.ServerPort)
+	assert.Equal(t, request.Settings.LaunchText, result.LaunchText)
+	assert.NotEqual(t, beforeProcessID, processID())
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var environment map[string]string
+	require.NoError(t, json.Unmarshal(data, &environment))
+	require.NotEmpty(t, executor.modelScopeURL)
+	assert.Equal(t, executor.modelScopeURL, environment["MODEL_ENDPOINT"])
+	data, err = os.ReadFile(filepath.Join(executor.overrideDir, "llamacpp.json"))
+	require.NoError(t, err)
+	var saved Manifest
+	require.NoError(t, json.Unmarshal(data, &saved))
+	assert.Equal(t, "modelscope", saved.Platforms[runtime.GOOS+"/"+runtime.GOARCH].Runtime.ModelSource)
 }
 
 func TestModelSource_PersistsSelectionWithoutStartingStoppedEngine(t *testing.T) {
