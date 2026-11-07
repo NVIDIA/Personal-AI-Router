@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.11 — Use the PAIR symbol in the macOS menu bar (#194)
+
+- Replace the opaque app tile with a transparent PAIR house-and-network symbol, with Retina support.
+
 ## 1.0.10 — Background services shut down in parallel (#173)
 
 - The background services now shut down in parallel rather than one at a time, so a busy machine no longer pays each service's shutdown in turn.
