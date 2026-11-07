@@ -46,8 +46,11 @@ flowchart TD
 2. Call `macPrivilege.ensureConfigured(firstTime)`, which (no UI):
     - reads `nvpair-helper-ctl status`;
     - if enabled but unreachable, or the daemon version differs from the app
-      version, attempt `uninstall` + `install` once per app version, re-check
-      `status`, and force a firewall reconfigure;
+      version, attempt `uninstall` + `install` at most twice per app version,
+      re-check `status`, and force a firewall reconfigure;
+    - before the second replacement, wait 12 seconds for macOS to repair a stale
+      launch constraint, then re-check status; skip replacement if the helper
+      has recovered or now requires approval;
     - if not registered, `install` (which calls `SMAppService.daemon().register()`);
     - when `enabled` and reachable with no known version mismatch, run
       `configure-firewall` (no `--app-path`: the daemon
@@ -60,12 +63,22 @@ flowchart TD
    `macHelperSetupComplete` flag in `ui-config.ts`. Clear it if setup fails or
    approval is pending so firewall configuration is retried on the next launch.
 
-Before replacing a stale helper, PAIR persists `macHelperRepairAttemptVersion`
-and clears `macHelperSetupComplete` in `configs/ui-config.json`. This also covers
-upgrades from 1.0.0 where signature rejection prevents reading a daemon version.
-An interrupted or unsuccessful replacement is not repeated for the same app
-version. An enabled helper that remains unreachable or reports a different
-version leaves setup incomplete; registration alone does not imply success.
+Before each replacement, PAIR persists `macHelperRepairAttemptVersion` and
+`macHelperRepairAttemptCount` and clears `macHelperSetupComplete` in
+`configs/ui-config.json`. Interrupted attempts count toward the two-attempt
+limit. A saved version without a count represents one previous attempt. Pending
+approval stops recovery; after approval, a subsequent launch can use any
+remaining attempt. A new app version gets a new allowance.
+
+This covers upgrades from 1.0.0 where signature rejection prevents reading a
+daemon version. A correctly signed replacement can also be rejected by launchd
+because its cached launch constraint still requires the old signing identifier.
+In the reproduced failure, macOS invalidated that registration about 10 seconds
+after rejecting the launch, but another unregister/register cycle was needed to
+bind the replacement record. The 12-second wait allows that observed repair
+window to elapse; it is not a macOS timing guarantee. If two attempts fail, setup
+stays incomplete and subsequent launches do not repeat replacement for the same
+version. Registration alone never implies successful XPC communication.
 
 The firewall is reconfigured on first run, after a version refresh, and after a
 fresh registration (so a release that adds a networked binary still gets its
@@ -228,9 +241,12 @@ For upgrade coverage, first confirm the affected release reports `enabled` but
 `reachable: false`, then replace the app in place without unregistering the old
 helper or clearing user data. On the updated app's first launch, confirm it
 re-registers the helper and records the new app version in
-`macHelperRepairAttemptVersion`. Follow the checks below after any required
-approval. If repair fails, verify setup remains incomplete and relaunching the
-same version does not trigger another unregister/register cycle.
+`macHelperRepairAttemptVersion` and `macHelperRepairAttemptCount`. Follow the
+checks below after any required approval. Exercise both approval during initial
+registration and approval followed by relaunch. If the first replacement stays
+unreachable, confirm a delayed second attempt. If both attempts fail, verify
+setup remains incomplete and relaunching the same version does not trigger
+another unregister/register cycle.
 
 1. Run the release validation command above against the installed app.
 2. Run `"/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" status`.
