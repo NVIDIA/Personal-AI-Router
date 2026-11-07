@@ -157,7 +157,9 @@ export function EngineSettingsSection({
                 serverPort,
                 proxyPort,
                 launchText: draft.launchText,
-                ...(engineType === 'llama-cpp' ? { modelSource: draft.modelSource } : {})
+                ...(engineType === 'llama-cpp' && base.settings.modelSource !== undefined
+                    ? { modelSource: draft.modelSource }
+                    : {})
             },
             resolution: useServerPort ? 'server' : 'launch'
         }
