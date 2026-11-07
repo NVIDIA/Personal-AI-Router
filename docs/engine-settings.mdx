@@ -32,8 +32,10 @@ between sources. Downloaded files stay in llama.cpp's existing cache.
 PAIR sets llama.cpp's `MODEL_ENDPOINT` only for ModelScope. Hugging Face keeps
 existing endpoint settings, including custom mirrors. ModelScope downloads do
 not forward Hugging Face credentials; private or gated ModelScope models are
-not supported. An engine adopted from another application keeps this setting
-read-only until it is stopped in that application. A paired device must report
+not supported. An engine adopted from another application keeps its original
+download endpoint; PAIR cannot change the environment of an already-running
+process. This setting stays read-only until that engine is stopped in its own
+application and takes effect when PAIR launches it. A paired device must report
 support for source selection before the dropdown is editable; other settings
 can still be changed on devices that support settings editing.
 
