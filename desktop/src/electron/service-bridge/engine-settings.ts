@@ -39,10 +39,14 @@ function isReceiptPhase(value: JsonValue | undefined): value is EngineSettingsRe
 }
 function config(value: JsonValue | undefined): EngineSettingsConfig {
     const row = object(value)
+    const modelSource = row.modelSource
+    if (modelSource !== undefined && modelSource !== 'huggingface' && modelSource !== 'modelscope')
+        throw new Error('Invalid model download source.')
     return {
         serverPort: number(row.serverPort),
         proxyPort: number(row.proxyPort),
-        launchText: text(row.launchText)
+        launchText: text(row.launchText),
+        ...(modelSource ? { modelSource } : {})
     }
 }
 export function parseEngineSettings(value: JsonValue | undefined): EngineSettingsSnapshot {

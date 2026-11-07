@@ -17,7 +17,11 @@ propagation is not part of this API.
 | `engine:apply-settings` | Preview request plus `requestId` | `{revision, phase}` acknowledgement |
 
 `engine` is `ollama`, `lmstudio`, or `llamacpp`. `settings` contains all three
-fields: `serverPort`, `proxyPort`, `launchText`. The last field contains
+fields: `serverPort`, `proxyPort`, `launchText`. llama.cpp additionally exposes
+`modelSource` (`huggingface` or `modelscope`, default `huggingface`); other engines
+omit it. The selection is persisted and relayed with the rest of the settings.
+Changing it restarts a running llama.cpp router and changes both its catalogue
+and downloads. `launchText` contains
 arguments and leading environment assignments, without the executable or
 startup subcommand. The argument grammar is
 [`pair-arguments-v1`](../nvpair-engine-manager/LAUNCH_TEXT.md). Preview does not

@@ -134,10 +134,12 @@ type Executor struct {
 	// or a stop command, which later StopAll callers retry. The sweep writes it
 	// without retryMu, since stopAllOnce returns to no caller before the sweep
 	// finishes; retryMu serializes the retries that follow.
-	retryMu     sync.Mutex
-	failedStops []string
-	mu          sync.Mutex
-	engines     map[string]*engineState
+	retryMu       sync.Mutex
+	failedStops   []string
+	mu            sync.Mutex
+	engines       map[string]*engineState
+	modelScope    *http.Server
+	modelScopeURL string
 }
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {

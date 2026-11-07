@@ -44,6 +44,7 @@ export const ModelHubContent = ({
     const [allModels, setAllModels] = useState<ModelEntry[]>([])
     const [remoteModels, setRemoteModels] = useState<ModelEntry[]>([])
     const [query, setQuery] = useState('')
+    const [composingQuery, setComposingQuery] = useState(false)
     const [searching, setSearching] = useState(false)
     const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set())
     const [sort, setSort] = useState<SortState>(() =>
@@ -51,8 +52,8 @@ export const ModelHubContent = ({
     )
     const [errors, setErrors] = useState<{ id: string; message: string }[]>([])
 
-    // Per-engine raw-response cache so reopening an engine is instant and
-    // keystrokes filter locally instead of re-invoking the search IPC.
+    // Per-engine browse cache keeps local filtering immediate while upstream
+    // searches wait for a pause in typing.
     const cacheRef = useRef<Map<EngineType, ModelEntry[]>>(new Map())
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
@@ -90,6 +91,7 @@ export const ModelHubContent = ({
     useEffect(() => {
         setRemoteModels([])
         setSearching(false)
+        setComposingQuery(false)
         submittedQueryRef.current = ''
         if (!engine) {
             setAllModels([])
@@ -207,6 +209,15 @@ export const ModelHubContent = ({
         [engine]
     )
 
+    useEffect(() => {
+        if (engine !== 'llama-cpp' || composingQuery || !query.trim()) return
+        const timer = setTimeout(() => {
+            // Enter or the search button may already have submitted this text.
+            if (query.trim() !== submittedQueryRef.current) void handleSearch(query)
+        }, 300)
+        return () => clearTimeout(timer)
+    }, [engine, query, composingQuery, handleSearch])
+
     return (
         <Stack gap="0" className="overflow-hidden min-h-0 min-w-0 grow w-full">
             <Stack gap="4" className="overflow-hidden min-h-0 min-w-0 grow w-full">
@@ -229,6 +240,7 @@ export const ModelHubContent = ({
                         query={query}
                         searching={searching}
                         onQueryChange={handleQueryChange}
+                        onCompositionChange={setComposingQuery}
                         onSearch={handleSearch}
                         sort={sort}
                         onSort={handleSortPersist}
