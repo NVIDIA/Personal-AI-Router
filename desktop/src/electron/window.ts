@@ -264,6 +264,22 @@ const webPreferences = {
     backgroundThrottling: false
 }
 
+let overviewShownListeners: Array<() => void> = []
+
+/**
+ * Run `listener` once, the first time the Overview window is shown. If it is
+ * already on screen the listener runs now. A launch that starts in the tray has
+ * no window yet, so this is how work that needs a person looking at the app
+ * waits for one.
+ */
+export function onOverviewFirstShown(listener: () => void): void {
+    if (getOverviewWindow()?.isVisible()) {
+        listener()
+        return
+    }
+    overviewShownListeners.push(listener)
+}
+
 export function createOverviewWindow(): void {
     const currentWindow = getOverviewWindow()
     if (currentWindow) {
@@ -292,6 +308,12 @@ export function createOverviewWindow(): void {
     window.on('closed', () => {
         overviewWindow = null
         overviewReady = false
+    })
+
+    window.once('show', () => {
+        const listeners = overviewShownListeners
+        overviewShownListeners = []
+        for (const listener of listeners) listener()
     })
 
     /**

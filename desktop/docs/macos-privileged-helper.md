@@ -43,9 +43,13 @@ flowchart TD
 
 1. **First run only** — show an info dialog explaining macOS will ask to approve a
    background helper. A launch that starts hidden (the login item with **Start
-   minimized to tray** on) skips the whole first-run setup, because nobody is looking
-   at the app to read the explanation: `macHelperSetupComplete` stays false, and the
-   next launch that opens the window runs it. Once setup is complete, a hidden launch
+   minimized to tray** on) has nobody to read it, so it checks
+   `macPrivilege.status()` first. If the helper is already enabled, nothing left
+   needs a person: it runs `ensureConfigured(true)` without any dialog and marks
+   setup complete. Otherwise the first-run flow waits for the Overview window's first
+   `show` (a tray or Dock click) and runs then, once. Only one setup run is ever in
+   flight, so the deferred run cannot overlap a launch-time one, and it is skipped if
+   that launch already completed setup. Once setup is complete, a hidden launch
    still runs step 2, which has no UI.
 2. Call `macPrivilege.ensureConfigured(firstTime)`, which (no UI):
     - reads `nvpair-helper-ctl status`;

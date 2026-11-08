@@ -6,7 +6,7 @@ import { electronApp } from '@electron-toolkit/utils'
 
 import { buildCspHeader } from '@/electron/csp'
 import { registerApplicationIconMenu } from '@/electron/application-icon-menu'
-import { createOverviewWindow } from '@/electron/window'
+import { createOverviewWindow, onOverviewFirstShown } from '@/electron/window'
 import { registerWindowShortcuts } from '@/electron/window-shortcuts'
 import { initTray, destroyTray } from '@/electron/tray'
 import { createStructuredLogger } from '@/shared/utils/log'
@@ -238,24 +238,66 @@ if (!gotTheLock || exitRequested) {
     // nvpair-helper-ctl. The first run explains the macOS approval before it appears;
     // subsequent launches reconcile silently (version-aware reinstall).
     //
-    // A hidden launch has nobody to explain the approval to, and the setup opens
-    // dialogs and the System Settings approval page on its own. The first run is
-    // therefore left for a launch that opens the window; `macHelperSetupComplete`
-    // stays false until then. Version-aware reconciliation has no UI and still runs.
-    async function runMacPrivilegedSetup(startedHidden: boolean): Promise<void> {
+    // A hidden launch has nobody to explain the approval to, and the first-run
+    // setup opens dialogs and the System Settings approval page on its own. So a
+    // hidden first-time launch checks the helper first:
+    //   - already approved: everything left is silent (`ensureConfigured` and the
+    //     firewall rules), so it runs now and setup is marked complete;
+    //   - otherwise: the interactive first run waits for the Overview window's
+    //     first show, which a tray or Dock click produces whenever someone is
+    //     looking. It is not skipped for the session.
+    // Version-aware reconciliation has no UI and runs on every launch regardless.
+
+    /** The setup run in progress, if any. Runs share it instead of overlapping. */
+    let macSetupInFlight: Promise<void> | null = null
+    let firstRunSetupDeferred = false
+
+    function runMacPrivilegedSetup(startedHidden: boolean): Promise<void> {
+        if (macSetupInFlight) return macSetupInFlight
+        const run = performMacPrivilegedSetup(startedHidden).finally(() => {
+            if (macSetupInFlight === run) macSetupInFlight = null
+        })
+        macSetupInFlight = run
+        return run
+    }
+
+    /**
+     * Run the first-run flow once the Overview window is first shown. Waits for a
+     * launch-time run still in flight and then re-checks, so the two can never run
+     * together and a launch that already finished setup is not repeated.
+     */
+    function deferFirstRunSetupToOverview(): void {
+        if (firstRunSetupDeferred) return
+        firstRunSetupDeferred = true
+        log.info({
+            sublevel: 'mac-helper',
+            message: 'First-run helper setup deferred to the first time the Overview is shown'
+        })
+        onOverviewFirstShown(() => {
+            void (async () => {
+                await macSetupInFlight?.catch(() => {})
+                if (!isMacHelperSetupComplete()) await runMacPrivilegedSetup(false)
+            })()
+        })
+    }
+
+    async function performMacPrivilegedSetup(startedHidden: boolean): Promise<void> {
         if (!macPrivilege.isSupported()) return
         const firstTime = !isMacHelperSetupComplete()
 
-        if (firstTime && startedHidden) {
-            log.info({
-                sublevel: 'mac-helper',
-                message: 'First-run helper setup deferred to a launch that opens the window'
-            })
-            return
-        }
-
         try {
-            if (firstTime) {
+            // Whether this run may show dialogs. A hidden first-time launch may not.
+            let interactive = firstTime
+            if (firstTime && startedHidden) {
+                const helper = await macPrivilege.status()
+                if (helper.registration !== 'enabled') {
+                    deferFirstRunSetupToOverview()
+                    return
+                }
+                interactive = false
+            }
+
+            if (interactive) {
                 await dialog.showMessageBox({
                     type: 'info',
                     buttons: ['Continue'],
@@ -272,7 +314,7 @@ if (!gotTheLock || exitRequested) {
             )
 
             if (result.registration === 'requiresApproval') {
-                if (firstTime) {
+                if (interactive) {
                     await dialog.showMessageBox({
                         type: 'warning',
                         buttons: ['OK'],
