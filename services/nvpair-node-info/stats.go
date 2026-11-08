@@ -25,11 +25,13 @@ type gpuStat struct {
 // Darwin combines independently published system and GPU samples so a slow
 // ioreg call cannot delay CPU or memory telemetry.
 // GPUInventory is normally nil. It carries an adapter list a collector
-// re-detected after startup, which main.go's mergeGPUInventory folds into the
-// list detected once at boot: the Darwin collector fills it from its retrying
-// ioreg sample, and the Windows collector from its empty-inventory retry loop,
-// so an enumeration that failed or came up empty at boot recovers without
-// restarting the service.
+// re-detected after startup. When GPUInventoryReplaces is false (the Darwin
+// collector, which fills it from its retrying ioreg sample) main.go's
+// mergeGPUInventory folds it into the list detected once at boot. When true (the
+// Windows collector, which re-detects on a DXGI adapters-changed event) it
+// replaces the boot list outright, because Windows reissues adapter LUIDs, the
+// merge key, and merging would list one card twice. Either way an enumeration
+// that failed or came up empty at boot recovers without restarting the service.
 //
 // Unsupported collectors publish a zero-valued snapshot — GPU is a nil map
 // (omitempty semantics for downstream lookups come from the per-GPU omitempty
@@ -39,6 +41,8 @@ type gpuStat struct {
 type statsSnapshot struct {
 	GPU          map[string]gpuStat
 	GPUInventory []GPUInfo
+	// GPUInventoryReplaces marks GPUInventory as the complete adapter list.
+	GPUInventoryReplaces bool
 	// GPUSampledAt is the collection time of the latest usable GPU
 	// utilization sample. A zero value means no usable sample has ever been
 	// collected. Failed collection attempts retain the previous timestamp so

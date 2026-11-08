@@ -28,9 +28,9 @@ import (
 // it is a UINT32 capped at 4 GiB and is wrong for every modern dGPU.
 //
 // VRAM is a hardware property and never changes at runtime, but WHICH adapters
-// enumerate is not settled at boot, so detection runs at startup and, if that
-// came up empty, is retried on a timer by the stats collector until it finds
-// an adapter (stats_windows.go).
+// enumerate is not settled at boot, so detection runs at startup and again
+// whenever DXGI reports that the adapter set changed (adapterChangeSource
+// below, consumed by the stats collector in stats_windows.go).
 
 // IID_IDXGIFactory1 = {770aae78-f26f-4dba-a829-253c83d1b387}
 // https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nn-dxgi-idxgifactory1
@@ -72,16 +72,27 @@ type dxgiAdapterDesc1 struct {
 	Flags                 uint32
 }
 
+// IID_IDXGIFactory7 = {a4966eed-76db-44da-84c1-ee9a7afb20a8}
+// https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_6/nn-dxgi1_6-idxgifactory7
+var iidIDXGIFactory7 = windows.GUID{
+	Data1: 0xa4966eed,
+	Data2: 0x76db,
+	Data3: 0x44da,
+	Data4: [8]byte{0x84, 0xc1, 0xee, 0x9a, 0x7a, 0xfb, 0x20, 0xa8},
+}
+
 var (
 	modDXGI                = windows.NewLazySystemDLL("dxgi.dll")
 	procCreateDXGIFactory1 = modDXGI.NewProc("CreateDXGIFactory1")
+	procCreateDXGIFactory2 = modDXGI.NewProc("CreateDXGIFactory2")
 )
 
 // COM vtable indices. Each interface inherits all methods from its parents,
 // so the index is the cumulative count from IUnknown downward.
 const (
 	// IUnknown: QueryInterface(0), AddRef(1), Release(2)
-	vtblIUnknownRelease = 2
+	vtblIUnknownQueryInterface = 0
+	vtblIUnknownRelease        = 2
 
 	// IDXGIObject: SetPrivateData(3), SetPrivateDataInterface(4),
 	//              GetPrivateData(5), GetParent(6)
@@ -90,6 +101,15 @@ const (
 	//               CreateSoftwareAdapter(11)
 	// IDXGIFactory1: EnumAdapters1(12), IsCurrent(13)
 	vtblIDXGIFactory1EnumAdapters1 = 12
+
+	// IDXGIFactory2 (14-24, ending at CreateSwapChainForComposition),
+	// IDXGIFactory3: GetCreationFlags(25), IDXGIFactory4: EnumAdapterByLuid(26),
+	// EnumWarpAdapter(27), IDXGIFactory5: CheckFeatureSupport(28),
+	// IDXGIFactory6: EnumAdapterByGpuPreference(29),
+	// IDXGIFactory7: RegisterAdaptersChangedEvent(30),
+	//                UnregisterAdaptersChangedEvent(31)
+	vtblIDXGIFactory7RegisterAdaptersChangedEvent   = 30
+	vtblIDXGIFactory7UnregisterAdaptersChangedEvent = 31
 
 	// IDXGIObject (3-6) + IDXGIAdapter: EnumOutputs(7), GetDesc(8),
 	//             CheckInterfaceSupport(9)
@@ -209,10 +229,10 @@ type adapterCandidate struct {
 	luid uint64
 }
 
-// A failed DXGI factory leaves the inventory empty and can be retried, so warn
-// only once. Registry filtering runs only after candidates have been found and
-// always keeps at least one. Since detection stops at the first non-empty list,
-// registry warnings need no separate latches during service startup.
+// A failed DXGI factory leaves the inventory empty and detection runs again on
+// the next adapter change, so warn only once. Registry filtering runs only after
+// candidates have been found and always keeps at least one; its warnings are
+// bounded by how rarely the adapter set changes, so they need no latches.
 var dxgiFactoryWarned atomic.Bool
 
 // selectPhysicalAdapters applies the DirectX-registry LUID gate to a whole
@@ -334,9 +354,10 @@ func enumerateAdapterCandidates() []adapterCandidate {
 }
 
 // detectGPUs enumerates the host's display adapters and returns the ones that
-// should be reported as node GPUs. Safe to call repeatedly: the Windows stats
-// collector retries it on a timer while it comes up empty, so an enumeration
-// that found nothing at boot recovers without a restart (stats_windows.go).
+// should be reported as node GPUs. Safe to call repeatedly: each call builds its
+// own DXGI factory, so it sees the adapter set as it is now rather than the set
+// a long-lived factory was created against. The Windows stats collector calls it
+// again whenever DXGI signals an adapter change (stats_windows.go).
 func detectGPUs() []GPUInfo {
 	candidates := enumerateAdapterCandidates()
 	if len(candidates) == 0 {
@@ -348,4 +369,129 @@ func detectGPUs() []GPUInfo {
 		gpus = append(gpus, c.gpu)
 	}
 	return gpus
+}
+
+// adapterChangeSource tells the stats collector that the DXGI adapter set
+// changed. It is the seam between the Windows event plumbing and the collector's
+// re-detection logic, so the logic can run against a fake in tests.
+type adapterChangeSource interface {
+	// Changed delivers a value each time the adapter set changed since the last
+	// receive. Bursts may be merged into one value, never lost.
+	Changed() <-chan struct{}
+	// Close stops delivery and releases every OS resource. Safe to call once.
+	Close()
+}
+
+// dxgiAdapterEvents is the production adapterChangeSource. It holds one
+// IDXGIFactory7 for its lifetime and registers an auto-reset event with
+// RegisterAdaptersChangedEvent, so DXGI itself says when an adapter appears,
+// disappears, or has its LUID reissued (driver update or restart, GPU timeout
+// and recovery, hot-plug) and nothing has to poll. A goroutine blocks in
+// WaitForMultipleObjects on that event plus a private stop event and forwards
+// each signal to the Changed channel.
+//
+// The factory is only used for the registration. Re-detection builds a fresh
+// factory (detectGPUs), because enumerating through a factory that has gone
+// stale would return the old adapter list.
+type dxgiAdapterEvents struct {
+	factory   unsafe.Pointer // IDXGIFactory7
+	event     windows.Handle // auto-reset, signaled by DXGI
+	stopEvent windows.Handle // manual-reset, signaled by Close
+	cookie    uint32
+	changed   chan struct{}
+	done      chan struct{}
+}
+
+func hrFailed(hr uintptr) bool { return int32(uint32(hr)) < 0 }
+
+// openDXGIAdapterEvents creates the factory and registers the event. It returns
+// an error when IDXGIFactory7 is unavailable (CreateDXGIFactory2 or the
+// interface is missing before Windows 10 1803) or any step fails; the caller
+// decides the fallback.
+func openDXGIAdapterEvents() (adapterChangeSource, error) {
+	if err := procCreateDXGIFactory2.Find(); err != nil {
+		return nil, fmt.Errorf("CreateDXGIFactory2 unavailable: %w", err)
+	}
+	var base unsafe.Pointer
+	hr, _, _ := procCreateDXGIFactory2.Call(0,
+		uintptr(unsafe.Pointer(&iidIDXGIFactory1)),
+		uintptr(unsafe.Pointer(&base)),
+	)
+	if hrFailed(hr) || base == nil {
+		return nil, fmt.Errorf("CreateDXGIFactory2 failed: hr=0x%08x", uint32(hr))
+	}
+	var factory unsafe.Pointer
+	hr = vtableCall(base, vtblIUnknownQueryInterface,
+		uintptr(unsafe.Pointer(&iidIDXGIFactory7)),
+		uintptr(unsafe.Pointer(&factory)),
+	)
+	comRelease(base)
+	if hrFailed(hr) || factory == nil {
+		return nil, fmt.Errorf("IDXGIFactory7 unavailable: hr=0x%08x", uint32(hr))
+	}
+
+	event, err := windows.CreateEvent(nil, 0, 0, nil)
+	if err != nil {
+		comRelease(factory)
+		return nil, fmt.Errorf("CreateEvent: %w", err)
+	}
+	stopEvent, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		_ = windows.CloseHandle(event)
+		comRelease(factory)
+		return nil, fmt.Errorf("CreateEvent: %w", err)
+	}
+
+	s := &dxgiAdapterEvents{
+		factory:   factory,
+		event:     event,
+		stopEvent: stopEvent,
+		changed:   make(chan struct{}, 1),
+		done:      make(chan struct{}),
+	}
+	hr = vtableCall(factory, vtblIDXGIFactory7RegisterAdaptersChangedEvent,
+		uintptr(event),
+		uintptr(unsafe.Pointer(&s.cookie)),
+	)
+	if hrFailed(hr) {
+		_ = windows.CloseHandle(event)
+		_ = windows.CloseHandle(stopEvent)
+		comRelease(factory)
+		return nil, fmt.Errorf("RegisterAdaptersChangedEvent failed: hr=0x%08x", uint32(hr))
+	}
+	slog.Info("DXGI adapters-changed event registered", "cookie", s.cookie)
+
+	go s.wait()
+	return s, nil
+}
+
+func (s *dxgiAdapterEvents) Changed() <-chan struct{} { return s.changed }
+
+// wait forwards each adapters-changed signal until Close signals the stop event.
+func (s *dxgiAdapterEvents) wait() {
+	defer close(s.done)
+	handles := []windows.Handle{s.event, s.stopEvent}
+	for {
+		r, err := windows.WaitForMultipleObjects(handles, false, windows.INFINITE)
+		if err != nil {
+			slog.Warn("waiting for the DXGI adapters-changed event failed; adapter changes will no longer be noticed", "err", err)
+			return
+		}
+		if r != windows.WAIT_OBJECT_0 {
+			return // stop event
+		}
+		select {
+		case s.changed <- struct{}{}:
+		default: // one change is already pending; the receiver will see it
+		}
+	}
+}
+
+func (s *dxgiAdapterEvents) Close() {
+	_ = windows.SetEvent(s.stopEvent)
+	<-s.done
+	vtableCall(s.factory, vtblIDXGIFactory7UnregisterAdaptersChangedEvent, uintptr(s.cookie))
+	comRelease(s.factory)
+	_ = windows.CloseHandle(s.event)
+	_ = windows.CloseHandle(s.stopEvent)
 }

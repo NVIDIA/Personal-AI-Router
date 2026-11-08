@@ -7,6 +7,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -76,13 +77,40 @@ func testAdapter(name string, low uint32) GPUInfo {
 	return GPUInfo{Name: name, VramBytes: 8 << 30, statsKey: luidKey(low, 0)}
 }
 
-// startTestInventoryCollector runs only inventory recovery, with a supplied
-// startup list, retry interval, and detector — no performance-counter query or
+// fakeAdapterChanges stands in for the DXGI adapters-changed event, so the
+// collector's re-detection logic runs without a GPU or a real adapter change.
+type fakeAdapterChanges struct {
+	changed chan struct{}
+	closed  atomic.Bool
+}
+
+func newFakeAdapterChanges() *fakeAdapterChanges {
+	return &fakeAdapterChanges{changed: make(chan struct{}, 1)}
+}
+
+func (f *fakeAdapterChanges) Changed() <-chan struct{} { return f.changed }
+func (f *fakeAdapterChanges) Close()                   { f.closed.Store(true) }
+
+// signal raises one adapters-changed event. Like the real source, a signal
+// raised while one is already pending is merged into it.
+func (f *fakeAdapterChanges) signal() {
+	select {
+	case f.changed <- struct{}{}:
+	default:
+	}
+}
+
+const testQuietPeriod = 500 * time.Millisecond
+
+// startTestInventoryCollector runs only inventory watching, with a supplied
+// startup list, detector and change source — no performance-counter query or
 // stats ticker. This keeps the test's startup and timing conditions explicit.
-func startTestInventoryCollector(t *testing.T, startup []GPUInfo, retryEvery time.Duration, detect func() []GPUInfo) *statsCollector {
+func startTestInventoryCollector(t *testing.T, startup []GPUInfo, source adapterChangeSource, detect func() []GPUInfo) *statsCollector {
 	t.Helper()
 	c := newStatsCollector(detect)
-	c.inventoryRecoverEvery = retryEvery
+	c.quietPeriod = testQuietPeriod
+	c.fallbackDelay = time.Minute
+	c.openChanges = func() (adapterChangeSource, error) { return source, nil }
 	c.startGPUInventory(startup)
 	t.Cleanup(func() { stopTestInventoryCollector(t, c) })
 	return c
@@ -103,137 +131,210 @@ func stopTestInventoryCollector(t *testing.T, c *statsCollector) {
 	}
 }
 
-// waitForInventoryLoopExit fails the test when the inventory goroutine is still
-// running after the deadline, so a loop that never ends fails here instead of
-// hanging the package's test run.
-func waitForInventoryLoopExit(t *testing.T, c *statsCollector) {
-	t.Helper()
-	exited := make(chan struct{})
-	go func() {
-		c.wg.Wait()
-		close(exited)
-	}()
-	select {
-	case <-exited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the GPU inventory loop is still running")
-	}
-}
-
 // Adapter detection at boot can come up empty while the display driver is not
-// ready. Previously nothing looked again, so the node served an empty GPU list
-// until the service was restarted. Empty detections must be retried until
-// adapters appear, with no further detection after the first successful list
-// has been published.
-func TestWindowsCollector_RetriesUntilGPUInventoryIsAvailable(t *testing.T) {
-	const emptyDetections = 3
-	recovered := []GPUInfo{
-		testAdapter("Test Adapter A", 0x54f0),
-		testAdapter("Test Adapter B", 0x6a10),
-	}
-	var calls atomic.Int64
-	c := startTestInventoryCollector(t, nil, time.Millisecond, func() []GPUInfo {
-		if calls.Add(1) <= emptyDetections {
-			return nil
+// ready. The collector looks once right after registering for adapter changes,
+// then again when DXGI signals that adapters appeared; nothing runs on a timer
+// in between. The signal is the only thing that wakes the second detection, so
+// it is raised only after the first has found nothing.
+func TestWindowsCollector_RecoversEmptyStartupInventoryOnAdapterChange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		recovered := []GPUInfo{
+			testAdapter("Test Adapter A", 0x54f0),
+			testAdapter("Test Adapter B", 0x6a10),
 		}
-		return recovered
+		var calls atomic.Int64
+		source := newFakeAdapterChanges()
+		c := startTestInventoryCollector(t, nil, source, func() []GPUInfo {
+			if calls.Add(1) == 1 {
+				return nil // the catch-up look after registration
+			}
+			return recovered
+		})
+		synctest.Wait()
+		require.Equal(t, int64(1), calls.Load(), "one catch-up detection after registering")
+		assert.Empty(t, c.Snapshot().GPUInventory, "nothing found yet")
+
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		require.Equal(t, int64(1), calls.Load(), "an unchanged adapter set must not be detected again")
+
+		source.signal()
+		time.Sleep(2 * testQuietPeriod)
+		synctest.Wait()
+		require.Equal(t, int64(2), calls.Load(), "the adapters-changed signal triggers one detection")
+		require.Equal(t, recovered, c.Snapshot().GPUInventory)
 	})
-
-	// Count only once the loop has exited, so a loop that kept detecting
-	// fails here instead of racing the read below.
-	waitForInventoryLoopExit(t, c)
-
-	require.Equal(t, int64(emptyDetections+1), calls.Load(), "empty attempts plus the successful detection")
-	require.Equal(t, recovered, c.Snapshot().GPUInventory)
 }
 
-// Shutdown is the other way out of the retry loop: a service stopping while
-// the inventory is still empty must not wait for an adapter that never arrives.
-// A long retry interval makes waiting for the next attempt exceed the shutdown
-// deadline. synctest's fake clock and Wait put the loop at its pending timer
-// before Stop is called, without spending real time waiting for that timer.
-func TestWindowsCollector_InterruptsInventoryRetryWaitWhenStopped(t *testing.T) {
+// A burst of signals (a driver restart removes and re-adds each adapter) is one
+// detection after the burst settles, not one per signal and not one mid-burst.
+func TestWindowsCollector_CoalescesAdapterChangeBurst(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		startup := []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}
+		var calls atomic.Int64
+		source := newFakeAdapterChanges()
+		startTestInventoryCollector(t, startup, source, func() []GPUInfo {
+			calls.Add(1)
+			return startup
+		})
+		synctest.Wait()
+		require.Zero(t, calls.Load(), "a populated startup inventory needs no catch-up detection")
+
+		for range 3 {
+			source.signal()
+			time.Sleep(testQuietPeriod / 2)
+			synctest.Wait()
+			require.Zero(t, calls.Load(), "detection waits for the burst to end")
+		}
+		time.Sleep(testQuietPeriod)
+		synctest.Wait()
+		require.Equal(t, int64(1), calls.Load(), "one detection for the whole burst")
+	})
+}
+
+// Windows reissues adapter identifiers (LUIDs) after a driver update, driver
+// restart, or GPU timeout and recovery, and raises the adapters-changed event
+// when it does. The re-detected list must replace the startup list: appending it
+// would report the same physical card twice, once under each identifier.
+func TestWindowsCollector_ReplacesStartupGPUWhenItsIdentifierIsReissued(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		startup := []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}
+		reissued := []GPUInfo{testAdapter("Test Adapter A", 0x7c20)}
+		source := newFakeAdapterChanges()
+		c := startTestInventoryCollector(t, startup, source, func() []GPUInfo { return reissued })
+		synctest.Wait()
+
+		source.signal()
+		time.Sleep(2 * testQuietPeriod)
+		synctest.Wait()
+
+		snap := c.Snapshot()
+		require.Equal(t, reissued, snap.GPUInventory)
+		var response NodeInfoResponse
+		require.NoError(t, json.Unmarshal(buildResponse(startup, nil, 0, snap, "host-uuid", nil), &response))
+		assert.Equal(t, []GPUInfo{{Name: "Test Adapter A", VramBytes: 8 << 30}}, response.GPUs, "one card, not two")
+	})
+}
+
+// A change signal that leaves the adapter set as it was publishes nothing, and a
+// detection that finds no adapters (a driver mid-restart) keeps the last list
+// instead of blanking the node's GPUs.
+func TestWindowsCollector_IgnoresUnchangedAndEmptyDetections(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		startup := []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}
+		var detected atomic.Pointer[[]GPUInfo]
+		detected.Store(&startup)
+		source := newFakeAdapterChanges()
+		c := startTestInventoryCollector(t, startup, source, func() []GPUInfo { return *detected.Load() })
+		synctest.Wait()
+
+		source.signal()
+		time.Sleep(2 * testQuietPeriod)
+		synctest.Wait()
+		assert.Empty(t, c.Snapshot().GPUInventory, "the same adapters are not a change")
+
+		none := []GPUInfo(nil)
+		detected.Store(&none)
+		source.signal()
+		time.Sleep(2 * testQuietPeriod)
+		synctest.Wait()
+		assert.Empty(t, c.Snapshot().GPUInventory, "an empty detection must not replace the startup list")
+	})
+}
+
+// Stop releases the adapter-change registration, including while the loop is
+// idle waiting for a signal that never comes.
+func TestWindowsCollector_StopClosesAdapterChangeSource(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		source := newFakeAdapterChanges()
+		c := startTestInventoryCollector(t, []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}, source,
+			func() []GPUInfo { return nil })
+		synctest.Wait()
+		require.False(t, source.closed.Load(), "the registration lives as long as the collector")
+
+		stopTestInventoryCollector(t, c)
+		assert.True(t, source.closed.Load(), "Stop must unregister the adapters-changed event")
+	})
+}
+
+// Before Windows 10 1803 there is no adapters-changed event. The collector then
+// re-detects exactly once after a delay, which still rescues a display driver
+// that was not ready at boot, and never polls: hours later it has not looked
+// again.
+func TestWindowsCollector_FallsBackToOneDeferredDetectionWithoutAdapterEvents(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		recovered := []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}
+		var calls atomic.Int64
+		c := newStatsCollector(func() []GPUInfo {
+			calls.Add(1)
+			return recovered
+		})
+		c.fallbackDelay = time.Minute
+		c.openChanges = func() (adapterChangeSource, error) { return nil, errors.New("IDXGIFactory7 unavailable") }
+		c.startGPUInventory(nil)
+		t.Cleanup(func() { stopTestInventoryCollector(t, c) })
+
+		synctest.Wait()
+		require.Zero(t, calls.Load(), "the fallback waits before looking")
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		require.Equal(t, int64(1), calls.Load())
+		require.Equal(t, recovered, c.Snapshot().GPUInventory)
+
+		time.Sleep(24 * time.Hour)
+		synctest.Wait()
+		require.Equal(t, int64(1), calls.Load(), "the fallback is a single re-detection, not a poll")
+	})
+}
+
+// Shutdown must not wait out the fallback delay.
+func TestWindowsCollector_StopInterruptsFallbackWait(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var calls atomic.Int64
-		c := startTestInventoryCollector(t, nil, time.Hour, func() []GPUInfo {
+		c := newStatsCollector(func() []GPUInfo {
 			calls.Add(1)
 			return nil
 		})
+		c.fallbackDelay = time.Hour
+		c.openChanges = func() (adapterChangeSource, error) { return nil, errors.New("IDXGIFactory7 unavailable") }
+		c.startGPUInventory(nil)
 		synctest.Wait()
-		require.Equal(t, int64(1), calls.Load(), "the collector should be waiting for its next attempt")
 
 		stopTestInventoryCollector(t, c)
-		assert.Empty(t, c.Snapshot().GPUInventory, "a loop that never found an adapter must not publish inventory")
+		assert.Zero(t, calls.Load())
+		assert.Empty(t, c.Snapshot().GPUInventory)
 	})
 }
 
-// main detects the startup inventory before starting the stats collector. If
-// that detection succeeded, recovery must not enumerate again: a driver reset
-// between the two calls could otherwise report the same physical card with a
-// new identifier, which the response builder would append as a second GPU.
-func TestWindowsCollector_KeepsStartupGPUWithoutDetectingItsReissuedIdentifier(t *testing.T) {
-	startup := []GPUInfo{testAdapter("Test Adapter A", 0x54f0)}
-	reissued := testAdapter("Test Adapter A", 0x7c20)
-	var calls atomic.Int64
-	c := startTestInventoryCollector(t, startup, time.Millisecond, func() []GPUInfo {
-		calls.Add(1)
-		return []GPUInfo{reissued}
-	})
-	waitForInventoryLoopExit(t, c)
-
-	assert.Zero(t, calls.Load(), "a populated startup inventory should prevent further detection")
-	var response NodeInfoResponse
-	require.NoError(t, json.Unmarshal(buildResponse(startup, nil, 0, c.Snapshot(), "host-uuid", nil), &response))
-	assert.Equal(t, []GPUInfo{{Name: "Test Adapter A", VramBytes: 8 << 30}}, response.GPUs)
-}
-
-// Stopping after the first publication keeps one physical card from being
-// listed twice. Windows can reissue adapter identifiers (LUIDs) during a driver
-// update, driver restart, or GPU timeout and recovery. mergeGPUInventory appends
-// any adapter whose statsKey it has not seen, so detecting again could add the
-// same card under its new identifier. The loop must publish once and exit even
-// though a later enumeration would report that new identifier.
-func TestWindowsCollector_StopsDetectingAfterFirstPublication(t *testing.T) {
-	original := testAdapter("Test Adapter A", 0x54f0)
-	reissued := testAdapter("Test Adapter A", 0x7c20) // same card, LUID reissued
-	var calls atomic.Int64
-	c := startTestInventoryCollector(t, nil, time.Millisecond, func() []GPUInfo {
-		if calls.Add(1) == 1 {
-			return []GPUInfo{original}
+// Re-detected adapters and dynamic readings are published independently.
+// Windows performance counters key GPU readings by the same adapter identifier
+// used in the inventory, so the response builder can attach readings to a
+// re-detected GPU. Snapshot must supply both publications together without
+// losing GPU readings, their collection timestamp, or CPU and memory readings.
+// Seed the collector's stats before taking the snapshot so this checks the
+// combination itself. The response builder's matching of readings to adapters is
+// covered in stats_test.go.
+func TestWindowsCollectorSnapshot_PreservesStatsWhenReplacingInventory(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		recovered := []GPUInfo{
+			testAdapter("Test Adapter A", 0x54f0),
+			testAdapter("Test Adapter B", 0x6a10),
 		}
-		return []GPUInfo{reissued}
+		c := startTestInventoryCollector(t, nil, newFakeAdapterChanges(), func() []GPUInfo { return recovered })
+		latest := statsSnapshot{
+			GPU: map[string]gpuStat{
+				recovered[1].statsKey: {VRAMUsed: 1 << 30, UtilizationPct: 42},
+			},
+			GPUSampledAt: time.Time{}.Add(time.Second),
+			CPUUtilPct:   17,
+			MemUsedBytes: 6 << 30,
+		}
+		c.latest.Store(&latest)
+		synctest.Wait()
+
+		want := latest
+		want.GPUInventory = recovered
+		want.GPUInventoryReplaces = true
+		require.Equal(t, want, c.Snapshot())
 	})
-
-	waitForInventoryLoopExit(t, c)
-	require.Equal(t, int64(1), calls.Load(), "only the first detection should run")
-	require.Equal(t, []GPUInfo{original}, c.Snapshot().GPUInventory)
-}
-
-// Recovered adapters and dynamic readings are published independently. Windows
-// performance counters key GPU readings by the same adapter identifier used in
-// the inventory, so the response builder can attach readings to a recovered GPU.
-// Snapshot must supply both publications together without losing GPU readings,
-// their collection timestamp, or CPU and memory readings. Seed the collector's
-// stats before taking the snapshot so this checks the combination itself. The
-// response builder's matching of readings to adapters is covered in stats_test.go.
-func TestWindowsCollectorSnapshot_PreservesStatsWhenAddingRecoveredInventory(t *testing.T) {
-	recovered := []GPUInfo{
-		testAdapter("Test Adapter A", 0x54f0),
-		testAdapter("Test Adapter B", 0x6a10),
-	}
-	c := startTestInventoryCollector(t, nil, time.Millisecond, func() []GPUInfo { return recovered })
-	latest := statsSnapshot{
-		GPU: map[string]gpuStat{
-			recovered[1].statsKey: {VRAMUsed: 1 << 30, UtilizationPct: 42},
-		},
-		GPUSampledAt: time.Time{}.Add(time.Second),
-		CPUUtilPct:   17,
-		MemUsedBytes: 6 << 30,
-	}
-	c.latest.Store(&latest)
-	waitForInventoryLoopExit(t, c)
-
-	want := latest
-	want.GPUInventory = recovered
-	require.Equal(t, want, c.Snapshot())
 }

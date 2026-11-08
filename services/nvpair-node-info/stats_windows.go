@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,13 +100,17 @@ const (
 	// poll without being wastefully tight.
 	statsTickInterval = time.Second
 
-	// gpuInventoryRecoverInterval is how often adapter detection is retried
-	// while the inventory is still empty. 10 s is short enough that a node
-	// which came up before its display stack was ready reports its GPUs within
-	// seconds of them becoming visible, and the retry is a DXGI enumeration
-	// plus a registry read: cheap enough to repeat, far too slow to put on the
-	// 1 s stats tick. The retries end at the first non-empty detection.
-	gpuInventoryRecoverInterval = 10 * time.Second
+	// gpuInventoryQuietPeriod is how long the adapter set must stay quiet after
+	// a DXGI adapters-changed signal before the inventory is re-detected. A
+	// driver restart or a hot-plug raises several signals within a moment as each
+	// adapter goes away and comes back; waiting for the burst to end means one
+	// enumeration sees the settled set rather than a half-initialized one.
+	gpuInventoryQuietPeriod = 500 * time.Millisecond
+
+	// gpuInventoryFallbackDelay is how long the fallback waits before its single
+	// re-detection when the adapters-changed event is unavailable. It is long
+	// enough for a display stack that was not ready at service start to come up.
+	gpuInventoryFallbackDelay = 30 * time.Second
 )
 
 var (
@@ -201,37 +206,48 @@ type statsCollector struct {
 	// the previous one.
 	latest atomic.Pointer[statsSnapshot]
 
-	// gpuInventory is the adapter list runGPUInventory recovered after an
-	// empty startup enumeration, published into every Snapshot() as
-	// GPUInventory and folded into the startup list by main.go's
-	// mergeGPUInventory. nil until a detection returns at least one adapter;
-	// stored once and never replaced.
+	// gpuInventory is the adapter list runGPUInventory last detected after
+	// startup, published into every Snapshot() as GPUInventory with
+	// GPUInventoryReplaces set, so it takes the place of the startup list in
+	// the response. nil until a re-detection returns a list that differs from
+	// the startup one; replaced as the adapter set changes.
 	gpuInventory atomic.Pointer[[]GPUInfo]
 
+	// startup is the list main detected before the collector started; a
+	// re-detection that matches it publishes nothing.
+	startup []GPUInfo
+
 	// detect enumerates the host's adapters. Always detectGPUs in production;
-	// injected in tests so the recovery loop runs without DXGI.
+	// injected in tests so re-detection runs without DXGI.
 	detect func() []GPUInfo
 
-	// inventoryRecoverEvery is the retry cadence while the inventory is empty.
-	// A field rather than a constant so tests can run the loop at millisecond
-	// speed.
-	inventoryRecoverEvery time.Duration
+	// openChanges starts the adapters-changed notification. Always
+	// openDXGIAdapterEvents in production; injected in tests with a fake source.
+	openChanges func() (adapterChangeSource, error)
+
+	// quietPeriod and fallbackDelay are fields rather than constants so tests
+	// can run them at millisecond speed or under synctest's fake clock.
+	quietPeriod   time.Duration
+	fallbackDelay time.Duration
 
 	stop chan struct{}
 	// wg covers the goroutines the collector owns: the 1 s stats tick and the
-	// GPU inventory loop, which ends on its own once it has published.
+	// GPU inventory loop, which runs until Stop.
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 }
 
 // newStatsCollector builds an unstarted collector. Split out of
 // startStatsCollector so tests can construct one with an injected detect
-// function and short intervals, and start only the goroutine under test.
+// function, change source and short intervals, and start only the goroutine
+// under test.
 func newStatsCollector(detect func() []GPUInfo) *statsCollector {
 	c := &statsCollector{
-		stop:                  make(chan struct{}),
-		detect:                detect,
-		inventoryRecoverEvery: gpuInventoryRecoverInterval,
+		stop:          make(chan struct{}),
+		detect:        detect,
+		openChanges:   openDXGIAdapterEvents,
+		quietPeriod:   gpuInventoryQuietPeriod,
+		fallbackDelay: gpuInventoryFallbackDelay,
 	}
 	c.latest.Store(&statsSnapshot{})
 	return c
@@ -268,61 +284,115 @@ func startStatsCollector(startupGPUs []GPUInfo) *statsCollector {
 	return c
 }
 
-// startGPUInventory launches recovery only when startup detection was empty.
-// Keeping a successful startup list avoids enumerating the same card again
-// under a reissued LUID and appending it as a duplicate. Separate from
-// startStatsCollector so a test can run this loop on its own.
+// startGPUInventory launches the inventory watcher. startupGPUs is the list
+// main detected once at boot; it stays in the response until a later detection
+// finds a different adapter set. Separate from startStatsCollector so a test can
+// run this loop on its own.
 func (c *statsCollector) startGPUInventory(startupGPUs []GPUInfo) {
-	if len(startupGPUs) > 0 {
-		return
-	}
+	c.startup = startupGPUs
 	c.wg.Add(1)
-	go c.runGPUInventory()
+	go c.runGPUInventory(len(startupGPUs) == 0)
 }
 
-// runGPUInventory repairs an inventory that came up empty, off the 1 s tick, and
-// stops as soon as it has.
+// runGPUInventory keeps the GPU inventory current without polling: it
+// re-detects only when DXGI says the adapter set changed, and otherwise sleeps
+// in the kernel until then.
 //
-// Windows reassigns adapter LUIDs on every boot but rewrites the DirectX
-// registry keys about a minute later, so a service that enumerated inside that
-// window could gate every real adapter away against the previous boot's LUIDs
-// (the stale-registry case selectPhysicalAdapters now refuses) or simply lose a
-// race with the display driver, and then served an empty GPU list for as long as
-// it ran. This retries every inventoryRecoverEvery until a detection returns at
-// least one adapter, publishes that list once, and exits.
+// A single detection at boot is not enough. Windows reassigns adapter LUIDs on
+// every boot but rewrites the DirectX registry keys about a minute later, a
+// display driver may not be ready when the service starts, and mid-session a
+// driver update or restart, a GPU timeout and recovery, or a hot-plug each
+// change the adapter set or reissue LUIDs. Each of those makes DXGI signal the
+// event registered through c.openChanges, which wakes this loop.
 //
-// It deliberately does not keep refreshing afterwards. An adapter's statsKey is
-// its LUID, and Windows reissues LUIDs mid-session (a driver update or restart,
-// a GPU timeout and recovery). mergeGPUInventory appends any adapter whose
-// statsKey it has not seen, so a later re-detection would list one physical card
-// twice, once under the key it held at startup and once under the reissued one.
-// Publishing a single detection means the inventory can only ever add adapters
-// the startup enumeration missed.
+// A burst of signals is coalesced: re-detection runs once the set has been
+// quiet for quietPeriod. Detection walks COM and reads the registry, which is
+// why it lives on its own goroutine rather than on the stats tick.
 //
-// Detection walks COM and reads the registry, which is why it lives on its own
-// goroutine rather than on the stats tick. Recovered adapters need no extra
-// join wiring: their statsKey is the PDH LUID instance name, and decodeGPU
-// already collects every LUID the counters report regardless of what the
-// inventory knew, so VRAM and utilization land on them at the next tick.
-func (c *statsCollector) runGPUInventory() {
+// A re-detection that finds adapters replaces the inventory (see
+// GPUInventoryReplaces). It must replace, not merge: an adapter's statsKey is
+// its LUID, so merging a list detected after a LUID reissue would show one
+// physical card twice, once under the key it held at startup and once under the
+// new one. The new keys are also the ones the performance counters report from
+// then on, so VRAM usage and utilization land on them at the next tick. A
+// detection that finds nothing is ignored: that is a driver mid-restart, and
+// the last good list is more useful than an empty one.
+//
+// If the change notification cannot be set up (IDXGIFactory7 needs Windows 10
+// 1803, or the factory call failed) this does one deferred re-detection and
+// ends. That covers the common case a timer used to cover, a display stack that
+// was not ready at boot, without a timer that fires forever on hosts where
+// nothing can ever signal a change; a card plugged in later is then reported
+// after the next service restart.
+func (c *statsCollector) runGPUInventory(startupEmpty bool) {
 	defer c.wg.Done()
-	for attempts := 1; ; attempts++ {
-		if gpus := c.detect(); len(gpus) > 0 {
-			// Recovery runs only after startup found no adapters, so even a
-			// successful first attempt repairs an empty startup inventory.
-			slog.Info("GPU inventory recovered after an empty enumeration",
-				"adapters", len(gpus), "attempts", attempts)
-			c.gpuInventory.Store(&gpus)
-			return
-		}
-		timer := time.NewTimer(c.inventoryRecoverEvery)
+
+	src, err := c.openChanges()
+	if err != nil {
+		slog.Info("DXGI adapters-changed notification unavailable; re-detecting GPUs once instead of watching for changes",
+			"err", err, "after", c.fallbackDelay)
+		timer := time.NewTimer(c.fallbackDelay)
+		defer timer.Stop()
 		select {
 		case <-c.stop:
-			timer.Stop()
-			return
 		case <-timer.C:
+			c.redetectGPUs()
 		}
+		return
 	}
+	defer src.Close()
+
+	// An adapter that appeared between main's detection and the registration
+	// above would raise no signal, so look once now if startup saw none.
+	if startupEmpty {
+		c.redetectGPUs()
+	}
+
+	quiet := time.NewTimer(c.quietPeriod)
+	if !quiet.Stop() {
+		<-quiet.C
+	}
+	defer quiet.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-src.Changed():
+		}
+		// Burst: restart the quiet timer on every further signal.
+		quiet.Reset(c.quietPeriod)
+	settle:
+		for {
+			select {
+			case <-c.stop:
+				return
+			case <-src.Changed():
+				quiet.Reset(c.quietPeriod)
+			case <-quiet.C:
+				break settle
+			}
+		}
+		c.redetectGPUs()
+	}
+}
+
+// redetectGPUs enumerates the adapters and publishes the list when it is
+// non-empty and differs from what is already being served.
+func (c *statsCollector) redetectGPUs() {
+	gpus := c.detect()
+	if len(gpus) == 0 {
+		slog.Debug("GPU re-detection found no adapters; keeping the current inventory")
+		return
+	}
+	current := c.startup
+	if p := c.gpuInventory.Load(); p != nil {
+		current = *p
+	}
+	if slices.Equal(gpus, current) {
+		return
+	}
+	slog.Info("GPU inventory updated after an adapter change", "adapters", len(gpus))
+	c.gpuInventory.Store(&gpus)
 }
 
 func (c *statsCollector) open() error {
@@ -624,12 +694,13 @@ func (c *statsCollector) Snapshot() statsSnapshot {
 	}
 	if inventory := c.gpuInventory.Load(); inventory != nil {
 		snap.GPUInventory = *inventory
+		snap.GPUInventoryReplaces = true
 	}
 	return snap
 }
 
-// Stop signals the owned goroutines (the stats tick and, if it is still
-// retrying, the GPU inventory loop) to exit, waits for them, and closes the PDH
+// Stop signals the owned goroutines (the stats tick and the GPU inventory
+// loop, which also unregisters the adapters-changed event) to exit, waits for them, and closes the PDH
 // query. Safe to call any number of times from any number of
 // goroutines — sync.Once guarantees the shutdown body runs exactly
 // once. (A naive `select { case <-c.stop: default: }` guard would race

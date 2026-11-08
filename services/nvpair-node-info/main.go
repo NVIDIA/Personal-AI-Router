@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -174,7 +175,12 @@ func buildResponse(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap sta
 }
 
 func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap statsSnapshot, hostUUID string, clusterUUID *string, now time.Time) []byte {
-	outGPUs := mergeGPUInventory(gpus, snap.GPUInventory)
+	var outGPUs []GPUInfo
+	if snap.GPUInventoryReplaces {
+		outGPUs = slices.Clone(snap.GPUInventory)
+	} else {
+		outGPUs = mergeGPUInventory(gpus, snap.GPUInventory)
+	}
 	for i := range outGPUs {
 		gpu := &outGPUs[i]
 		if gpu.usesSystemMemoryUsage {
