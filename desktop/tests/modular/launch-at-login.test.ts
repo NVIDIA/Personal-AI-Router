@@ -6,6 +6,11 @@ import type { App, LaunchItems, LoginItemSettings } from 'electron'
 import type { StartupSettings } from '@/shared/types/ipc-channels'
 import type { SupportedPlatform } from '@/shared/types/platform'
 import type { currentPlatform } from '@/shared/utils/platform'
+import type {
+    readAutostartEntry,
+    removeAutostartEntry,
+    writeAutostartEntry
+} from '@/electron/linux-autostart'
 
 /**
  * The OS side of launching at login, checked against what actually consumes it:
@@ -20,11 +25,21 @@ const mocks = vi.hoisted(() => ({
         setLoginItemSettings: vi.fn<App['setLoginItemSettings']>(),
         getLoginItemSettings: vi.fn<App['getLoginItemSettings']>()
     },
-    currentPlatform: vi.fn<typeof currentPlatform>()
+    currentPlatform: vi.fn<typeof currentPlatform>(),
+    readAutostartEntry: vi.fn<typeof readAutostartEntry>(),
+    writeAutostartEntry: vi.fn<typeof writeAutostartEntry>(),
+    removeAutostartEntry: vi.fn<typeof removeAutostartEntry>()
 }))
 
 vi.mock('electron', () => ({ app: mocks.app }))
 vi.mock('@/shared/utils/platform', () => ({ currentPlatform: mocks.currentPlatform }))
+// The Linux entry is a file; its reads and writes are the mocks, the Exec line stays real.
+vi.mock('@/electron/linux-autostart', async importOriginal => ({
+    ...(await importOriginal<typeof import('@/electron/linux-autostart')>()),
+    readAutostartEntry: mocks.readAutostartEntry,
+    writeAutostartEntry: mocks.writeAutostartEntry,
+    removeAutostartEntry: mocks.removeAutostartEntry
+}))
 
 import { APP_HIDDEN_ARGUMENT, APP_ID } from '@/shared/constants/app'
 import {
@@ -90,22 +105,22 @@ describe('planning the login item on Windows', () => {
             expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'keep' })
         })
 
-        it('keeps an entry the user disabled in Task Manager', () => {
+        it('opts out when the user disabled the entry in Task Manager', () => {
             // Writing it again would clear the disabled flag. That is the user's
-            // choice, and a launch must not undo it.
+            // choice, so the preference follows the OS and a launch writes nothing.
             const current = {
                 openAtLogin: true,
                 executableWillLaunchAtLogin: false,
                 launchItems: [runEntry({ enabled: false })]
             }
-            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'keep' })
+            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'opt-out' })
         })
 
-        it('keeps a disabled entry even when openAtLogin reads false for it', () => {
+        it('opts out of a disabled entry even when openAtLogin reads false for it', () => {
             // The documentation does not say whether a disabled entry reports
             // openAtLogin, so the Run entries decide.
             const current = { openAtLogin: false, launchItems: [runEntry({ enabled: false })] }
-            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'keep' })
+            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'opt-out' })
         })
 
         it('keeps an entry registered with no arguments when the window should open', () => {
@@ -130,12 +145,12 @@ describe('planning the login item on Windows', () => {
             expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'register', enabled: true })
         })
 
-        it('replaces a stale entry without re-enabling it when the user disabled it', () => {
+        it('opts out of a stale entry the user disabled instead of replacing it', () => {
             const current = {
                 openAtLogin: false,
                 launchItems: [runEntry({ args: [], enabled: false })]
             }
-            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'register', enabled: false })
+            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'opt-out' })
         })
 
         it('replaces an entry for an executable an update moved', () => {
@@ -143,12 +158,12 @@ describe('planning the login item on Windows', () => {
             expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'register', enabled: true })
         })
 
-        it('replaces a moved entry without re-enabling it when the user disabled it', () => {
+        it('opts out of a moved entry the user disabled instead of replacing it', () => {
             const current = {
                 openAtLogin: false,
                 launchItems: [runEntry({ path: MOVED_EXE, enabled: false })]
             }
-            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'register', enabled: false })
+            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'opt-out' })
         })
 
         it('registers a per-user entry beside a machine-wide one', () => {
@@ -214,24 +229,23 @@ describe('planning the login item on macOS', () => {
         })
     })
 
-    it('keeps a login item waiting for approval in System Settings', () => {
-        // Registering again does not approve it, so there is nothing to write.
-        expect(plan(ON_HIDDEN, { status: 'requires-approval' })).toEqual({ kind: 'keep' })
+    it('opts out of a login item waiting for approval in System Settings', () => {
+        // Registering again does not approve it, and only an enabled item counts
+        // as on, so there is nothing to write and the preference follows the OS.
+        expect(plan(ON_HIDDEN, { status: 'requires-approval' })).toEqual({ kind: 'opt-out' })
     })
 
-    it('registers when there is no login item', () => {
-        expect(plan(ON_HIDDEN, { status: 'not-registered' })).toEqual({
-            kind: 'register',
-            enabled: true
-        })
+    it('opts out when there is no login item', () => {
+        expect(plan(ON_HIDDEN, { status: 'not-registered' })).toEqual({ kind: 'opt-out' })
     })
 
     it('removes an enabled login item when launch at login is off', () => {
         expect(plan(OFF, { openAtLogin: true, status: 'enabled' })).toEqual({ kind: 'remove' })
     })
 
-    it('removes a login item waiting for approval when launch at login is off', () => {
-        expect(plan(OFF, { status: 'requires-approval' })).toEqual({ kind: 'remove' })
+    it('keeps a login item waiting for approval when launch at login is off', () => {
+        // It is not enabled, so the OS already says no.
+        expect(plan(OFF, { status: 'requires-approval' })).toEqual({ kind: 'keep' })
     })
 
     it('keeps nothing registered when there is no login item', () => {
@@ -270,14 +284,12 @@ describe('reconciling the login item', () => {
         })
     })
 
-    it('registers a replaced entry as disabled when the user had disabled it', () => {
+    it('opts out and writes nothing for a stale entry the user had disabled', () => {
         mocks.app.getLoginItemSettings.mockReturnValue(
             osState({ launchItems: [runEntry({ args: [], enabled: false })] })
         )
-        reconcileLoginItem(ON_HIDDEN)
-        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith(
-            expect.objectContaining({ openAtLogin: true, enabled: false })
-        )
+        expect(reconcileLoginItem(ON_HIDDEN)).toBe('opt-out')
+        expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 
     it('removes the entry when launch at login is off', () => {
@@ -296,11 +308,11 @@ describe('reconciling the login item', () => {
         expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 
-    it('writes nothing for an entry the user disabled', () => {
+    it('opts out and writes nothing for an entry the user disabled', () => {
         mocks.app.getLoginItemSettings.mockReturnValue(
             osState({ openAtLogin: true, launchItems: [runEntry({ enabled: false })] })
         )
-        reconcileLoginItem(ON_HIDDEN)
+        expect(reconcileLoginItem(ON_HIDDEN)).toBe('opt-out')
         expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 
@@ -316,12 +328,12 @@ describe('reconciling the login item', () => {
         expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({ args: [] })
     })
 
-    it('registers macOS without arguments or the removed openAsHidden option', () => {
+    it('reads macOS without arguments and opts out of a login item that is not enabled', () => {
         mocks.currentPlatform.mockReturnValue('darwin')
         expect(isLoginItemSupported()).toBe(true)
-        reconcileLoginItem(ON_HIDDEN)
+        expect(reconcileLoginItem(ON_HIDDEN)).toBe('opt-out')
         expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith()
-        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true })
+        expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 
     it('touches nothing from an unpackaged build', () => {
@@ -333,10 +345,16 @@ describe('reconciling the login item', () => {
         expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 
-    it('touches nothing on a platform Electron cannot register', () => {
+    it('manages Linux through the autostart file and leaves Electron alone', () => {
         mocks.currentPlatform.mockReturnValue('linux')
-        expect(isLoginItemSupported()).toBe(false)
-        expect(reconcileLoginItem(ON_HIDDEN)).toBe('skipped')
+        mocks.readAutostartEntry.mockReturnValue({
+            present: true,
+            enabled: true,
+            exec: '"/old/place/pair"'
+        })
+        expect(isLoginItemSupported()).toBe(true)
+        expect(reconcileLoginItem(ON_HIDDEN)).toBe('register')
+        expect(mocks.writeAutostartEntry).toHaveBeenCalledWith(true)
         expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
         expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
@@ -488,9 +506,9 @@ describe('reading launch at login from the OS', () => {
             expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
         })
 
-        it('reads on for a login item waiting for approval in System Settings', () => {
+        it('reads off for a login item waiting for approval in System Settings', () => {
             mocks.app.getLoginItemSettings.mockReturnValue(osState({ status: 'requires-approval' }))
-            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(false)
         })
 
         it('reads off when the user removed the login item', () => {
@@ -512,10 +530,12 @@ describe('reading launch at login from the OS', () => {
             expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
         })
 
-        it('returns the stored preference on a platform Electron cannot register', () => {
+        it('reads the autostart file on Linux without asking Electron', () => {
             mocks.currentPlatform.mockReturnValue('linux')
-            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
-            expect(readLaunchAtLogin(OFF)).toBe(false)
+            mocks.readAutostartEntry.mockReturnValue({ present: true, enabled: true, exec: null })
+            expect(readLaunchAtLogin(OFF)).toBe(true)
+            mocks.readAutostartEntry.mockReturnValue({ present: false, enabled: false, exec: null })
+            expect(readLaunchAtLogin(ON_HIDDEN)).toBe(false)
             expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
         })
     })
@@ -609,16 +629,13 @@ describe('planning a change to the Startup switches', () => {
             })
         })
 
-        it('rewrites an entry the user disabled without re-enabling it', () => {
+        it('leaves an entry the user disabled alone', () => {
             const before = {
                 previous: ON_HIDDEN,
                 registered: false,
                 current: staleEntry({ enabled: false })
             }
-            expect(plan({ startHidden: false }, before)).toEqual({
-                kind: 'register',
-                enabled: false
-            })
+            expect(plan({ startHidden: false }, before)).toEqual({ kind: 'keep' })
         })
 
         it('writes nothing when there is no entry to rewrite', () => {
@@ -743,19 +760,18 @@ describe('applying a change to the Startup switches', () => {
         })
     })
 
-    it('keeps a rewritten entry disabled when the user had disabled it', () => {
+    it('writes nothing when start minimized changes on an entry the user disabled', () => {
         mocks.app.getLoginItemSettings.mockReturnValue(
             osState({ launchItems: [runEntry({ enabled: false })] })
         )
-        applyStartupChange({
+        const outcome = applyStartupChange({
             requested: { startHidden: false },
             previous: ON_HIDDEN,
             next: ON_VISIBLE,
             registered: false
         })
-        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith(
-            expect.objectContaining({ enabled: false })
-        )
+        expect(outcome).toBe('keep')
+        expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 
     it('writes nothing when start minimized changes with no entry registered', () => {
@@ -781,7 +797,7 @@ describe('applying a change to the Startup switches', () => {
         expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
     })
 
-    it('touches nothing on a platform Electron cannot register', () => {
+    it('writes the Linux autostart file, not an Electron login item', () => {
         mocks.currentPlatform.mockReturnValue('linux')
         const outcome = applyStartupChange({
             requested: { launchAtLogin: true },
@@ -789,8 +805,20 @@ describe('applying a change to the Startup switches', () => {
             next: ON_HIDDEN,
             registered: false
         })
-        expect(outcome).toBe('skipped')
+        expect(outcome).toBe('register')
+        expect(mocks.writeAutostartEntry).toHaveBeenCalledWith(true)
         expect(mocks.app.getLoginItemSettings).not.toHaveBeenCalled()
         expect(mocks.app.setLoginItemSettings).not.toHaveBeenCalled()
+    })
+
+    it('registers macOS without arguments or the removed openAsHidden option', () => {
+        mocks.currentPlatform.mockReturnValue('darwin')
+        applyStartupChange({
+            requested: { launchAtLogin: true },
+            previous: OFF,
+            next: ON_HIDDEN,
+            registered: false
+        })
+        expect(mocks.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true })
     })
 })
