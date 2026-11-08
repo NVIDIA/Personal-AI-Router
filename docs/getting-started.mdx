@@ -606,11 +606,14 @@ PAIR does not start by itself after a restart unless you ask it to. Open
   when the operating system starts it at sign-in. Starting PAIR yourself still
   opens the window. It is on by default.
 
-Both switches work on Windows and macOS. On Linux they are disabled, because
-autostart is set up per desktop environment. **Launch at login** shows what the
-operating system will do: if you disable PAIR in Windows Task Manager or in the
-Windows startup apps settings, it reads off, and turning it on again enables the
-entry.
+Both switches work on Windows, macOS, and Linux. On Linux, PAIR adds an
+autostart entry for your desktop environment. **Launch at login** shows what the
+operating system will do, and the operating system's choice wins over what PAIR
+last saved. If you disable PAIR in Windows Task Manager or the Windows startup
+apps settings, switch it off in macOS System Settings, or remove or disable the
+entry in your Linux desktop's startup settings, it reads off and PAIR does not
+turn it back on at the next launch. Turning **Launch at login** on again from
+Settings registers it again.
 
 ## Keeping PAIR Up to Date
 

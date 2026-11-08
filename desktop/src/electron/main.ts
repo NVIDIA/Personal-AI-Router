@@ -14,7 +14,8 @@ import {
     loadUiConfig,
     getStartupSettings,
     isMacHelperSetupComplete,
-    setMacHelperSetupComplete
+    setMacHelperSetupComplete,
+    setStartupSettings
 } from '@/electron/config/ui-config'
 import { reconcileLoginItem, shouldStartHidden, wasOpenedAtLogin } from '@/electron/login-item'
 import { currentPlatform } from '@/shared/utils/platform'
@@ -210,13 +211,16 @@ if (!gotTheLock || exitRequested) {
      * executable, so an entry written by the previous version can point at a
      * path that no longer exists. Reconciling on every ready keeps it current
      * without the user touching the toggle again. It writes only when the entry
-     * differs from the preference, and never re-enables an entry the user
-     * disabled in Task Manager or Windows Settings.
+     * differs from the preference. An entry the user switched off outside the app
+     * (Task Manager, Windows Settings, System Settings, a deleted autostart file)
+     * is not re-armed: the OS state wins, and the stored preference is set to off
+     * to match.
      */
     function reconcileLoginItemAtLaunch(): void {
         const startup = getStartupSettings()
         try {
             const outcome = reconcileLoginItem(startup)
+            if (outcome === 'opt-out') setStartupSettings({ launchAtLogin: false })
             log.info({
                 sublevel: 'login-item',
                 message: `Login item ${outcome}: launchAtLogin=${startup.launchAtLogin} startHidden=${startup.startHidden}`

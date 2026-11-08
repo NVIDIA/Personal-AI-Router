@@ -69,12 +69,13 @@ export interface StartupSettings {
 
 /**
  * {@link StartupSettings} as the main process reports them, plus whether this OS
- * has a login item Electron can write. `launchAtLogin` is what the OS reports
+ * has a login item the app can write. `launchAtLogin` is what the OS reports
  * where a login item is managed, so it reads off for an entry the user disabled
- * in Task Manager or System Settings; elsewhere it is the stored preference.
+ * or removed in Task Manager, System Settings or their desktop's startup
+ * settings; elsewhere (an unpackaged build) it is the stored preference.
  */
 export interface StartupState extends StartupSettings {
-    /** False on Linux, where autostart is not Electron's to manage. */
+    /** False on a platform with no login item the app can write. */
     supported: boolean
 }
 
