@@ -8,66 +8,49 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestIdentityMintAndReload(t *testing.T) {
+func TestIdentity_MintsAndReloadsStableCredentials(t *testing.T) {
 	dir := t.TempDir()
 	first, err := loadOrMintIdentity(dir)
-	if err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	if first.NodeUUID == "" || first.CertFingerprint == "" {
-		t.Fatal("expected a non-empty UUID and fingerprint")
-	}
+	require.NoError(t, err, "mint")
+	require.NotEqual(t, "", first.NodeUUID, "expected a non-empty UUID and fingerprint")
+	require.NotEqual(t, "", first.CertFingerprint, "expected a non-empty UUID and fingerprint")
 
 	second, err := loadOrMintIdentity(dir)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if second.NodeUUID != first.NodeUUID {
-		t.Fatalf("UUID changed across reload: %q -> %q", first.NodeUUID, second.NodeUUID)
-	}
-	if second.CertFingerprint != first.CertFingerprint {
-		t.Fatalf("fingerprint changed across reload: %q -> %q", first.CertFingerprint, second.CertFingerprint)
-	}
+	require.NoError(t, err, "reload")
+	require.Equal(t, first.NodeUUID, second.NodeUUID, "UUID changed across reload")
+	require.Equal(t, first.CertFingerprint, second.CertFingerprint, "fingerprint changed across reload")
 }
 
-func TestIdentityLostKeyFailsLoud(t *testing.T) {
+func TestIdentity_RejectsReloadWhenPrivateKeyIsMissing(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := loadOrMintIdentity(dir); err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	if err := os.Remove(filepath.Join(dir, "node.key")); err != nil {
-		t.Fatalf("remove key: %v", err)
-	}
-	if _, err := loadOrMintIdentity(dir); err == nil {
-		t.Fatal("expected a loud failure when identity.json exists but the key is gone")
-	}
+	_, err := loadOrMintIdentity(dir)
+	require.NoError(t, err, "mint")
+	require.NoError(t, os.Remove(filepath.Join(dir, "node.key")), "remove key")
+	_, err = loadOrMintIdentity(dir)
+	require.Error(t, err, "expected a loud failure when identity.json exists but the key is gone")
 }
 
-func TestPINNoobRoundTrip(t *testing.T) {
-	cases := []string{"000000", "000123", "402199", "999999"}
-	for _, pin := range cases {
-		noob := noobFromPIN(pin)
-		if len(noob) != 16 {
-			t.Fatalf("noob length %d, want 16", len(noob))
-		}
-		got := new(big.Int).SetBytes(noob).String()
-		want := new(big.Int)
-		want.SetString(pin, 10)
-		if got != want.String() {
-			t.Fatalf("noob decodes to %s, want %s", got, want.String())
-		}
+func TestPIN_RoundTripsThroughNoobEncoding(t *testing.T) {
+	test := func(name, pin string) {
+		t.Run(name, func(t *testing.T) {
+			noob := noobFromPIN(pin)
+			require.Len(t, noob, 16, "noob length")
+			want := new(big.Int)
+			want.SetString(pin, 10)
+			require.Equal(t, want.String(), new(big.Int).SetBytes(noob).String(), "noob decodes incorrectly")
+		})
 	}
+	test("all zeroes", "000000")
+	test("leading zeroes", "000123")
+	test("ordinary PIN", "402199")
+	test("maximum PIN", "999999")
 
 	gp, noob, err := generatePIN()
-	if err != nil {
-		t.Fatalf("generatePIN: %v", err)
-	}
-	if !pinPattern.MatchString(gp) {
-		t.Fatalf("generated PIN %q is not six digits", gp)
-	}
-	if string(noob) != string(noobFromPIN(gp)) {
-		t.Fatal("generatePIN's noob does not match noobFromPIN of its PIN")
-	}
+	require.NoError(t, err, "generatePIN")
+	require.Regexp(t, pinPattern, gp, "generated PIN")
+	require.Equal(t, string(noobFromPIN(gp)), string(noob), "generatePIN's noob does not match noobFromPIN of its PIN")
 }

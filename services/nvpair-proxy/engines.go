@@ -54,6 +54,12 @@ const (
 	// and the federated response is re-emitted as
 	// {"object": "list", "data": [...]}.
 	roleModelListOpenAIGET
+
+	// roleModelLookupPOST is a POST that names a model but is not a workload:
+	// Ollama's /api/show. Like inference it is routed to an owner of the
+	// requested model and retries a 404 on another owner, but it emits no
+	// workload notifications.
+	roleModelLookupPOST
 )
 
 // modelNaming is how an engine spells a model identifier. It governs the
@@ -101,8 +107,7 @@ type engineProfile struct {
 
 	// Routes classifies the paths this engine's clients call. It is NOT an
 	// allowlist: an unlisted path is forwarded verbatim, which is how
-	// /api/show, /api/pull, /api/ps, /api/version and OPTIONS preflights keep
-	// working.
+	// /api/pull, /api/ps, /api/version and OPTIONS preflights keep working.
 	Routes []route
 
 	// ModelNaming is how this engine spells model identifiers.
@@ -128,6 +133,7 @@ var ollamaBaseRoutes = []route{
 	{Path: "/api/chat", Role: roleInferencePOST},
 	{Path: "/api/embeddings", Role: roleInferencePOST},
 	{Path: "/api/embed", Role: roleInferencePOST},
+	{Path: "/api/show", Role: roleModelLookupPOST},
 	{Path: "/api/tags", Role: roleModelListNativeGET},
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
@@ -246,7 +252,7 @@ func (r route) upstreamPath() string {
 
 // method is the HTTP method a role applies to.
 func (r routeRole) method() string {
-	if r == roleInferencePOST {
+	if r == roleInferencePOST || r == roleModelLookupPOST {
 		return "POST"
 	}
 	return "GET"
@@ -259,14 +265,37 @@ func (r routeRole) isModelList() bool {
 
 // normalizeModel applies the engine's naming convention to a model
 // identifier, so the federated list's dedupe key and the routing gate agree.
+// Ollama names reduce to the shortest form Ollama itself matches on: the
+// default registry.ollama.ai host and library namespace are dropped, an
+// untagged name gets ":latest", and case is folded.
 func (p engineProfile) normalizeModel(model string) string {
 	model = strings.TrimSpace(model)
-	if p.ModelNaming != impliedLatestTag || model == "" {
+	if p.ModelNaming != impliedLatestTag || model == "" || strings.Contains(model, "@") {
 		return model
 	}
-	name := model[strings.LastIndex(model, "/")+1:]
-	if name != "" && !strings.ContainsAny(name, ":@") {
-		return model + ":latest"
+	rest, tag := model, "latest"
+	if i := strings.LastIndex(model, ":"); i > strings.LastIndex(model, "/") {
+		rest, tag = model[:i], model[i+1:]
 	}
-	return model
+	host, namespace, name := "registry.ollama.ai", "library", rest
+	if i := strings.LastIndex(rest, "/"); i >= 0 {
+		namespace, name = rest[:i], rest[i+1:]
+		if j := strings.LastIndex(namespace, "/"); j >= 0 {
+			host, namespace = namespace[:j], namespace[j+1:]
+			if _, h, ok := strings.Cut(host, "://"); ok {
+				host = h
+			}
+		}
+	}
+	if name == "" {
+		return model
+	}
+	prefix := ""
+	switch {
+	case !strings.EqualFold(host, "registry.ollama.ai"):
+		prefix = host + "/" + namespace + "/"
+	case !strings.EqualFold(namespace, "library"):
+		prefix = namespace + "/"
+	}
+	return strings.ToLower(prefix + name + ":" + tag)
 }

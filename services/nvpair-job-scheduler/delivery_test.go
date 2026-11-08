@@ -6,6 +6,9 @@ package main
 import (
 	"io"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // unavailableWriter is an in-memory test fixture; it opens no files or sockets.
@@ -14,14 +17,13 @@ type unavailableWriter struct{}
 func (unavailableWriter) Read([]byte) (int, error)  { return 0, io.EOF }
 func (unavailableWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
-func TestFailedNotificationDoesNotAdvanceStatus(t *testing.T) {
+func TestFailedNotification_DoesNotAdvanceStatus(t *testing.T) {
 	m := mgrWith(unavailableWriter{}, []string{"test-node-a"})
 	m.recomputeAll(false)
 	for _, engine := range schedulerEngines {
 		status := m.status().Engines[engine]
-		if status.LastEmittedAt != 0 || len(status.Emitted) != 0 {
-			t.Fatalf("failed notification was recorded as emitted: %+v", status)
-		}
+		assert.Equal(t, int64(0), status.LastEmittedAt, "failed notification was recorded as emitted (%v)", status)
+		require.Empty(t, status.Emitted, "failed notification was recorded as emitted (%v)", status)
 	}
 }
 
@@ -43,12 +45,8 @@ func (w *recoveringWriter) Write(data []byte) (int, error) {
 	return w.capRW.Write(data)
 }
 
-func TestFailedNotificationRetriesWithoutChangingRanks(t *testing.T) {
-	for _, shortWrite := range []bool{false, true} {
-		name := "write-error"
-		if shortWrite {
-			name = "zero-byte-write"
-		}
+func TestFailedNotification_RetriesWithoutChangingRanks(t *testing.T) {
+	test := func(name string, shortWrite bool) {
 		t.Run(name, func(t *testing.T) {
 			writer := &recoveringWriter{remaining: 1, shortWrite: shortWrite}
 			m := mgrWith(writer, []string{"test-node-a", "test-node-b"})
@@ -56,20 +54,18 @@ func TestFailedNotificationRetriesWithoutChangingRanks(t *testing.T) {
 			m.recomputeAll(false)
 			m.recomputeAll(false)
 			for _, engine := range schedulerEngines {
-				orders := writer.orders(engine)
-				if len(orders) != 1 {
-					t.Fatalf("%s received %d frames, want one successful delivery", engine, len(orders))
-				}
+				orders := writer.orders(t, engine)
+				require.Len(t, orders, 1, " (%v)", engine)
 				assertStrs(t, orders[0], []string{"test-node-a", "test-node-b"})
-				if m.status().Engines[engine].LastEmittedAt == 0 {
-					t.Fatal("successful delivery was not recorded")
-				}
+				assert.NotEqual(t, int64(0), m.status().Engines[engine].LastEmittedAt, "successful delivery was not recorded")
 			}
 		})
 	}
+	test("write-error", false)
+	test("zero-byte-write", true)
 }
 
-func TestFailedChangedNotificationRetainsDeliveredRanks(t *testing.T) {
+func TestFailedChangedNotification_RetainsDeliveredRanks(t *testing.T) {
 	writer := &recoveringWriter{}
 	m := mgrWith(writer, []string{"test-node-a", "test-node-b"})
 	m.recomputeAll(false)
@@ -79,18 +75,15 @@ func TestFailedChangedNotificationRetainsDeliveredRanks(t *testing.T) {
 	m.nodes["test-node-c"] = true
 	m.recomputeAll(false)
 	current := m.status().Engines[engine]
-	if !equalRanks(current.Emitted, previous.Emitted) || current.LastEmittedAt != previous.LastEmittedAt {
-		t.Fatal("failed update replaced the last successfully delivered snapshot")
-	}
+	assert.Equal(t, previous.Emitted, current.Emitted, "failed update replaced the last successfully delivered snapshot")
+	assert.Equal(t, previous.LastEmittedAt, current.LastEmittedAt, "failed update replaced the last successfully delivered snapshot")
 	m.recomputeAll(false)
-	orders := writer.orders(engine)
-	if len(orders) != 2 {
-		t.Fatalf("received %d snapshots, want initial and recovered update", len(orders))
-	}
+	orders := writer.orders(t, engine)
+	require.Len(t, orders, 2, "received")
 	assertStrs(t, orders[1], []string{"test-node-a", "test-node-b", "test-node-c"})
 }
 
-func TestFailedForcedNotificationRetainsDeliveredTimestamp(t *testing.T) {
+func TestFailedForcedNotification_RetainsDeliveredTimestamp(t *testing.T) {
 	writer := &recoveringWriter{}
 	m := mgrWith(writer, []string{"test-node-a"})
 	m.recomputeAll(false)
@@ -98,11 +91,7 @@ func TestFailedForcedNotificationRetainsDeliveredTimestamp(t *testing.T) {
 	m.emitted[engine] = engineState{ranks: m.emitted[engine].ranks, lastEmittedAt: 1}
 	writer.remaining = 1
 	m.recomputeAll(true)
-	if got := m.status().Engines[engine].LastEmittedAt; got != 1 {
-		t.Fatalf("failed forced delivery advanced timestamp to %d", got)
-	}
+	assert.Equal(t, int64(1), m.status().Engines[engine].LastEmittedAt, "failed forced delivery advanced timestamp")
 	m.recomputeAll(false)
-	if got := len(writer.orders(engine)); got != 1 {
-		t.Fatalf("previously delivered unchanged ranks were emitted %d times", got)
-	}
+	assert.Len(t, writer.orders(t, engine), 1, "previously delivered unchanged ranks were emitted")
 }

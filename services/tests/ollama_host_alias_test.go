@@ -13,13 +13,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestInheritedOllamaHostAliasEndToEnd proves the environment-to-listener
 // path with compiled processes: the broker reads OLLAMA_HOST, passes a safe
 // loopback alias to ollama-proxy, and the alias uses the same routing/workload
 // handler as the primary compatibility facade.
-func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
+func TestOllamaHostAlias_ForwardsRequestsThroughBrokerManagedProxy(t *testing.T) {
 	if portBusy(11434) {
 		t.Skip("managed Ollama facade port 11434 already in use; skipping")
 	}
@@ -31,7 +34,8 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":"routed-through-alias"},"done":true}`)
+		_, writeErr := io.WriteString(w, `{"message":{"role":"assistant","content":"routed-through-alias"},"done":true}`)
+		assert.NoError(t, writeErr)
 	}))
 	defer upstream.Close()
 	upstreamPort := upstream.Listener.Addr().(*net.TCPAddr).Port
@@ -45,9 +49,7 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "app:ready", 15*time.Second)
-	if got := waitProxyReady(t, stdin, msgs, 15*time.Second); got != 11434 {
-		t.Fatalf("primary proxy port = %d, want managed facade 11434", got)
-	}
+	require.Equal(t, 11434, waitProxyReady(t, stdin, msgs, 15*time.Second), "primary proxy port")
 
 	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","id":1,"method":"workloads:subscribe"}`)
 	waitForResponse(t, msgs, 5*time.Second)
@@ -57,30 +59,30 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 	waitForResponse(t, msgs, 5*time.Second)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	for _, host := range []string{"127.0.0.1", "[::1]"} {
-		resp, err := client.Post(
-			fmt.Sprintf("http://%s:%d/api/chat", host, aliasPort),
-			"application/json",
-			strings.NewReader(`{"model":"alias-e2e-model","messages":[]}`),
-		)
-		if err != nil {
-			t.Fatalf("POST through inherited OLLAMA_HOST alias %s: %v", host, err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "routed-through-alias") {
-			t.Fatalf("alias %s response = %d %s", host, resp.StatusCode, body)
-		}
+	test := func(name, host string) {
+		t.Run(name, func(t *testing.T) {
+			resp, err := client.Post(
+				fmt.Sprintf("http://%s:%d/api/chat", host, aliasPort),
+				"application/json",
+				strings.NewReader(`{"model":"alias-e2e-model","messages":[]}`),
+			)
+			require.NoError(t, err, "POST through inherited OLLAMA_HOST alias")
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode, "alias response %s", body)
+			require.Contains(t, string(body), "routed-through-alias", "alias response")
+		})
 	}
+	test("IPv4 loopback", "127.0.0.1")
+	test("IPv6 loopback", "[::1]")
 
 	wantStates := map[string]bool{"running": false, "completed": false}
 	deadline := time.After(10 * time.Second)
 	for !wantStates["running"] || !wantStates["completed"] {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before alias workload lifecycle arrived")
-			}
+			require.True(t, ok, "broker stream closed before alias workload lifecycle arrived")
 			if msg.Method != "workloads:upsert" {
 				continue
 			}
@@ -90,11 +92,12 @@ func TestInheritedOllamaHostAliasEndToEnd(t *testing.T) {
 					State string `json:"state"`
 				} `json:"workloadInfo"`
 			}
-			if json.Unmarshal(msg.Params, &p) == nil && p.WorkloadInfo.Model == "alias-e2e-model" {
+			require.NoError(t, json.Unmarshal(msg.Params, &p))
+			if p.WorkloadInfo.Model == "alias-e2e-model" {
 				wantStates[p.WorkloadInfo.State] = true
 			}
 		case <-deadline:
-			t.Fatalf("alias request workload states = %+v, want running and completed", wantStates)
+			require.FailNow(t, fmt.Sprintf("alias request workload states = %+v, want running and completed", wantStates))
 		}
 	}
 
@@ -115,6 +118,6 @@ func freeDualLoopbackPort(t *testing.T) int {
 			return port
 		}
 	}
-	t.Fatal("could not find a free port on both loopback families")
+	require.FailNow(t, "could not find a free port on both loopback families")
 	return 0
 }

@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"reflect"
+
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
 )
@@ -27,7 +30,7 @@ var (
 	lmstudioSetLocalBackend = lmstudioProxyProfile.addressed("node/set-local-backend")
 )
 
-func TestPlanManagedLMStudioPorts(t *testing.T) {
+func TestPlanManagedLMStudioPorts_AvoidsFacadeAndEnginePortConflicts(t *testing.T) {
 	free := func(ports ...int) func(int) bool {
 		set := map[int]bool{}
 		for _, port := range ports {
@@ -35,34 +38,24 @@ func TestPlanManagedLMStudioPorts(t *testing.T) {
 		}
 		return func(port int) bool { return set[port] }
 	}
-	tests := []struct {
-		name string
-		on   bool
-		st   ollamaPortStatus
-		free func(int) bool
-		want managedPortPlan
-	}{
-		{"disabled", false, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{}},
-		{"stopped default moves", true, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{Enabled: true, BackendPort: 1235}},
-		{"running identified default moves", true, ollamaPortStatus{Running: true, Port: 1234}, free(1235), managedPortPlan{Enabled: true, BackendPort: 1235}},
-		{"occupied stopped backend advances", true, ollamaPortStatus{Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true, BackendPort: 1236}},
-		{"running backend is preserved", true, ollamaPortStatus{Running: true, Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true}},
-		{"custom backend preserved", true, ollamaPortStatus{Running: true, Port: 12400}, free(1234), managedPortPlan{Enabled: true}},
-		{"unknown facade owner blocks", true, ollamaPortStatus{Port: 1235}, free(1235), managedPortPlan{Blocked: "the compatibility port is already in use"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := planManagedLMStudioPorts(tc.on, tc.st, tc.free); got != tc.want {
-				t.Fatalf("planManagedLMStudioPorts() = %+v, want %+v", got, tc.want)
-			}
+	test := func(name string, on bool, st ollamaPortStatus, available func(int) bool, want managedPortPlan) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, planManagedLMStudioPorts(on, st, available))
 		})
 	}
+	test("disabled", false, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{})
+	test("stopped default moves", true, ollamaPortStatus{Port: 1234}, free(1234, 1235), managedPortPlan{Enabled: true, BackendPort: 1235})
+	test("running identified default moves", true, ollamaPortStatus{Running: true, Port: 1234}, free(1235), managedPortPlan{Enabled: true, BackendPort: 1235})
+	test("occupied stopped backend advances", true, ollamaPortStatus{Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true, BackendPort: 1236})
+	test("running backend is preserved", true, ollamaPortStatus{Running: true, Port: 1235}, free(1234, 1236), managedPortPlan{Enabled: true})
+	test("custom backend preserved", true, ollamaPortStatus{Running: true, Port: 12400}, free(1234), managedPortPlan{Enabled: true})
+	test("unknown facade owner blocks", true, ollamaPortStatus{Port: 1235}, free(1235), managedPortPlan{Blocked: "the compatibility port is already in use"})
 }
 
 // The engine, its port, and the ignore-persisted decision travel in
 // facade/enable rather than on argv, because the broker plans a different port
 // per engine and a single-valued flag cannot carry two plans.
-func TestManagedLMStudioFacadeSpec(t *testing.T) {
+func TestLMStudioFacadeSpec_PreservesPortPolicyAndOmitsAliasAddresses(t *testing.T) {
 	b := &Broker{}
 	b.lmstudioState().startupPort.Store(managedLMStudioFacadePort)
 	want := enableFacadeRequest{
@@ -70,27 +63,23 @@ func TestManagedLMStudioFacadeSpec(t *testing.T) {
 		Port:                managedLMStudioFacadePort,
 		IgnorePersistedPort: true,
 	}
-	if got := b.lmstudioFacadeSpec(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("managed facade spec = %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, b.lmstudioFacadeSpec(), "managed facade spec")
 
 	// No startup port means the child decides: its own persisted port, else the
 	// engine's standalone default. Naming a port here would override the port a
 	// user chose through set-port.
 	b.lmstudioState().startupPort.Store(0)
 	want = enableFacadeRequest{Engine: "lmstudio"}
-	if got := b.lmstudioFacadeSpec(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("opt-out facade spec = %+v, want %+v (persisted-port behavior)", got, want)
-	}
+	require.Equal(t, want, b.lmstudioFacadeSpec(), "opt-out facade spec preserves persisted-port behavior")
 
 	// The alias stands in for an inherited host variable, which LM Studio does
 	// not have; the child rejects alias addresses for it outright.
-	if len(b.lmstudioFacadeSpec().AliasAddresses) != 0 {
-		t.Fatal("LM Studio facade spec carried alias addresses")
-	}
+	require.Empty(t, b.lmstudioFacadeSpec().AliasAddresses, "LM Studio facade spec carried alias addresses")
 }
 
-func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
+// A proxy ready event alone does not identify the local engine's port. Publish
+// the reconciled engine target before releasing requests waiting on startup.
+func TestManagedLMStudioReady_OpensGateAndPushesBackend(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
@@ -115,25 +104,25 @@ func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
 	go func() {
 		codec := NewCodec(engineServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		engineMethod <- msg.Method
-		_ = codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart})
+		assert.NoError(t, codec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart}))
 	}()
 
 	backend := make(chan proxyLocalBackend, 1)
 	go func() {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var got proxyLocalBackend
-		if json.Unmarshal(msg.Params, &got) == nil {
+		if assert.NoError(t, json.Unmarshal(msg.Params, &got)) {
 			backend <- got
 		}
-		_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+		assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 	}()
 
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"version":"test","port":1234}`))
@@ -141,23 +130,23 @@ func TestManagedLMStudioReadyOpensGateAndPushesBackend(t *testing.T) {
 	requireGateOpens(t, b.lmstudioPortReady, "LM Studio preparation")
 	select {
 	case got := <-engineMethod:
-		if got != "engine:status" {
-			t.Fatalf("engine method = %q, want engine:status", got)
-		}
+		require.Equal(t, "engine:status", got, "engine method")
 	case <-time.After(2 * time.Second):
-		t.Fatal("LM Studio ready did not refresh engine status")
+		require.FailNow(t, "LM Studio ready did not refresh engine status")
 	}
 	select {
 	case got := <-backend:
-		if got.Engine != "lmstudio" || got.Port != managedLMStudioBackendStart || !got.Healthy {
-			t.Fatalf("local backend = %+v, want healthy lmstudio:%d", got, managedLMStudioBackendStart)
-		}
+		require.Equal(t, "lmstudio", got.Engine, "local backend (%v, %v)", got, managedLMStudioBackendStart)
+		require.Equal(t, managedLMStudioBackendStart, got.Port, "local backend")
+		require.True(t, got.Healthy, "local backend must be healthy")
 	case <-time.After(2 * time.Second):
-		t.Fatal("LM Studio ready did not push the local backend")
+		require.FailNow(t, "LM Studio ready did not push the local backend")
 	}
 }
 
-func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
+// Failure to reclaim the compatibility port must disable managed mode and choose
+// a safe proxy port. The warning preserves the reason the expected address changed.
+func TestLMStudioReady_FallsBackAndWarnsForUnexpectedPort(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	errorsClient, errorsServer := net.Pipe()
 	t.Cleanup(func() {
@@ -182,23 +171,23 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 		setPortCount := 0
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			if msg.Method == lmstudioSetLocalBackend {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 				return
 			}
 			var p struct {
 				Port int `json:"port"`
 			}
-			_ = json.Unmarshal(msg.Params, &p)
+			assert.NoError(t, json.Unmarshal(msg.Params, &p))
 			requestedPorts <- p.Port
 			setPortCount++
 			if setPortCount == 1 {
-				_ = codec.RespondError(msg.ID, -32000, "occupied")
+				assert.NoError(t, codec.RespondError(msg.ID, -32000, "occupied"))
 			} else {
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: p.Port})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: p.Port}))
 			}
 		}
 	}()
@@ -210,11 +199,11 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 	warnings := make(chan warning, 1)
 	go func() {
 		msg, err := NewCodec(errorsServer).Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		var got warning
-		if json.Unmarshal(msg.Params, &got) == nil {
+		if assert.NoError(t, json.Unmarshal(msg.Params, &got)) {
 			warnings <- got
 		}
 	}()
@@ -222,46 +211,32 @@ func TestManagedLMStudioWrongReadyEntersFallbackAndWarns(t *testing.T) {
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"version":"test","port":1235}`))
 
 	requireGateOpens(t, b.lmstudioPortReady, "the LM Studio fallback")
-	if b.lmstudioState().managedFacade.Load() {
-		t.Fatal("managed LM Studio mode remained enabled after compatibility-port failure")
-	}
+	require.False(t, b.lmstudioState().managedFacade.Load(), "managed LM Studio mode remained enabled after compatibility-port failure")
 	fallback := int(b.lmstudioState().startupPort.Load())
-	if fallback == 0 || fallback == managedLMStudioFacadePort || fallback == managedLMStudioBackendStart {
-		t.Fatalf("unsafe LM Studio fallback port %d", fallback)
-	}
+	require.NotEqual(t, 0, fallback, "unsafe LM Studio fallback port")
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unsafe LM Studio fallback port")
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unsafe LM Studio fallback port")
 
 	for i, want := range []int{managedLMStudioFacadePort, fallback} {
 		select {
 		case got := <-requestedPorts:
-			if got != want {
-				t.Fatalf("proxy set-port request %d = %d, want %d", i, got, want)
-			}
+			require.Equal(t, want, got, "proxy set-port request %d", i)
 		case <-time.After(2 * time.Second):
-			t.Fatalf("missing proxy set-port request %d", i)
+			require.FailNow(t, fmt.Sprintf("missing proxy set-port request %d", i))
 		}
 	}
 	select {
 	case got := <-warnings:
-		if got.ID != lmstudioPortOwnershipBlockedID || got.Message == "" {
-			t.Fatalf("warning = %+v", got)
-		}
+		require.Equal(t, lmstudioPortOwnershipBlockedID, got.ID, "warning (%v)", got)
+		require.NotEqual(t, "", got.Message, "warning (%v)", got)
 	case <-time.After(2 * time.Second):
-		t.Fatal("LM Studio fallback did not report a warning")
+		require.FailNow(t, "LM Studio fallback did not report a warning")
 	}
 }
 
-func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
-	tests := []struct {
-		method string
-		params string
-	}{
-		{"engine:get-installed", `{}`},
-		{"engine:status", `{"engine":"lmstudio"}`},
-		{"engine:start", `{"engine":"lmstudio"}`},
-		{"engine:restart", `{"engine":"lmstudio"}`},
-	}
-	for _, tc := range tests {
-		t.Run(tc.method, func(t *testing.T) {
+func TestLMStudioRequests_WaitForPortGate(t *testing.T) {
+	test := func(name, requestMethod, params string) {
+		t.Run(name, func(t *testing.T) {
 			engineClient, engineServer := net.Pipe()
 			brokerClient, brokerServer := net.Pipe()
 			t.Cleanup(func() {
@@ -284,11 +259,11 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 			go func() {
 				codec := NewCodec(engineServer)
 				msg, err := codec.Read()
-				if err != nil {
+				if !assertRPCRead(t, err) {
 					return
 				}
 				method <- msg.Method
-				_ = codec.Respond(msg.ID, map[string]any{})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{}))
 			}()
 			response := make(chan error, 1)
 			go func() {
@@ -300,86 +275,74 @@ func TestManagedLMStudioRequestsWaitForPortGate(t *testing.T) {
 			b.relayToEngine(&Message{
 				JSONRPC: "2.0",
 				ID:      &id,
-				Method:  tc.method,
-				Params:  json.RawMessage(tc.params),
+				Method:  requestMethod,
+				Params:  json.RawMessage(params),
 			})
 
 			select {
 			case got := <-method:
-				t.Fatalf("%q was relayed before the LM Studio port gate opened", got)
+				require.FailNow(t, fmt.Sprintf("%q was relayed before the LM Studio port gate opened", got))
 			case <-time.After(100 * time.Millisecond):
 			}
 			close(b.lmstudioPortReady)
 			select {
 			case got := <-method:
-				if got != tc.method {
-					t.Fatalf("method = %q, want %q", got, tc.method)
-				}
+				require.Equal(t, requestMethod, got, "relayed method")
 			case <-time.After(2 * time.Second):
-				t.Fatalf("%q was not relayed after the LM Studio port gate opened", tc.method)
+				require.FailNow(t, "request was not relayed after the LM Studio port gate opened")
 			}
 			select {
 			case err := <-response:
-				if err != nil {
-					t.Fatalf("read broker response: %v", err)
-				}
+				require.NoError(t, err, "read broker response")
 			case <-time.After(2 * time.Second):
-				t.Fatal("broker did not return the relayed response")
+				require.FailNow(t, "broker did not return the relayed response")
 			}
 		})
 	}
+	test("inventory", "engine:get-installed", `{}`)
+	test("status", "engine:status", `{"engine":"lmstudio"}`)
+	test("start", "engine:start", `{"engine":"lmstudio"}`)
+	test("restart", "engine:restart", `{"engine":"lmstudio"}`)
 }
 
-func TestManagedLMStudioPortGateRequestMatcher(t *testing.T) {
-	for _, tc := range []struct {
-		method string
-		params string
-		want   bool
-	}{
-		{"engine:get-installed", `{}`, true},
-		{"engine:status", `{"engine":"lmstudio"}`, true},
-		{"engine:start", `{"engine":"lmstudio"}`, true},
-		{"engine:restart", `{"engine":"lmstudio"}`, true},
-		// Gated for the same reason Ollama gates it: an install that starts
-		// the engine assigns a port, and mid-transition that can be the port
-		// the proxy is taking.
-		{"engine:install", `{"engine":"lmstudio"}`, true},
-		{"engine:install", `{"engine":"ollama"}`, false},
-		{"engine:status", `{"engine":"ollama"}`, false},
-		{"engine:models", `{"engine":"lmstudio"}`, false},
-		{"engine:status", `{`, false},
-	} {
-		if got := needsLMStudioPortGate(tc.method, json.RawMessage(tc.params)); got != tc.want {
-			t.Errorf("needsLMStudioPortGate(%q, %s) = %v, want %v", tc.method, tc.params, got, tc.want)
-		}
+func TestLMStudioPortGate_MatchesRequestsThatRequireStablePorts(t *testing.T) {
+	test := func(name, method, params string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, needsLMStudioPortGate(method, json.RawMessage(params)))
+		})
 	}
+	test("inventory waits", "engine:get-installed", `{}`, true)
+	test("LM Studio status waits", "engine:status", `{"engine":"lmstudio"}`, true)
+	test("LM Studio start waits", "engine:start", `{"engine":"lmstudio"}`, true)
+	test("LM Studio restart waits", "engine:restart", `{"engine":"lmstudio"}`, true)
+	// An install that starts the engine assigns a port, and mid-transition
+	// that can be the port the proxy is taking.
+	test("LM Studio install waits", "engine:install", `{"engine":"lmstudio"}`, true)
+	test("Ollama install does not wait", "engine:install", `{"engine":"ollama"}`, false)
+	test("Ollama status does not wait", "engine:status", `{"engine":"ollama"}`, false)
+	test("LM Studio models do not wait", "engine:models", `{"engine":"lmstudio"}`, false)
+	test("malformed parameters do not wait", "engine:status", `{`, false)
 }
 
-func TestManagedLMStudioPortGateHonorsCancellation(t *testing.T) {
+func TestManagedLMStudioPortGate_HonorsCancellation(t *testing.T) {
 	b := &Broker{
 		ollamaPortReady:   make(chan struct{}),
 		lmstudioPortReady: make(chan struct{}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if b.waitForManagedPortOwnership(ctx) {
-		t.Fatal("cancelled ownership wait reported ready")
-	}
+	require.False(t, b.waitForManagedPortOwnership(ctx), "cancelled ownership wait reported ready")
 }
 
-func TestManagedLMStudioFallbackRemainsPendingUntilGateCloses(t *testing.T) {
+func TestManagedLMStudioFallback_RemainsPendingUntilGateCloses(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioState().managedFacade.Store(false) // fallback disables managed mode first
-	if !b.lmstudioPortOwnershipPending() {
-		t.Fatal("fallback became observable before its proxy rebind completed")
-	}
+	require.True(t, b.lmstudioPortOwnershipPending(), "fallback became observable before its proxy rebind completed")
 	b.markLMStudioPortReady()
-	if b.lmstudioPortOwnershipPending() {
-		t.Fatal("completed fallback still reports pending")
-	}
+	require.False(t, b.lmstudioPortOwnershipPending(), "completed fallback still reports pending")
 }
 
-func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
+func TestManagedLMStudioConcurrentReady_WaitsForFallbackRebind(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	errorsClient, errorsServer := net.Pipe()
 	t.Cleanup(func() {
@@ -403,15 +366,15 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 		count := 0
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			count++
 			requests <- msg.Method
 			if msg.Method == lmstudioSetPort && count == 1 {
-				_ = codec.RespondError(msg.ID, -32000, "occupied")
+				assert.NoError(t, codec.RespondError(msg.ID, -32000, "occupied"))
 			} else {
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: managedLMStudioBackendStart + 1})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: managedLMStudioBackendStart + 1}))
 			}
 		}
 	}()
@@ -419,17 +382,15 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":1235}`))
 	select {
 	case method := <-requests:
-		if method != lmstudioSetPort {
-			t.Fatalf("first proxy request = %q, want %q", method, lmstudioSetPort)
-		}
+		require.Equal(t, lmstudioSetPort, method, "first proxy request")
 	case <-time.After(2 * time.Second):
-		t.Fatal("missing compatibility-port rebind")
+		require.FailNow(t, "missing compatibility-port rebind")
 	}
 	deadline := time.After(2 * time.Second)
 	for b.lmstudioState().managedFacade.Load() {
 		select {
 		case <-deadline:
-			t.Fatal("managed mode was not disabled after rebind failure")
+			require.FailNow(t, "managed mode was not disabled after rebind failure")
 		default:
 			time.Sleep(time.Millisecond)
 		}
@@ -440,9 +401,8 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":1235}`))
 	requireGateStaysShut(t, b.lmstudioPortReady, "a duplicate ready before the fallback rebind")
 
-	if _, err := NewCodec(errorsServer).Read(); err != nil {
-		t.Fatalf("read fallback warning: %v", err)
-	}
+	_, err := NewCodec(errorsServer).Read()
+	require.NoError(t, err, "read fallback warning")
 	requireGateOpens(t, b.lmstudioPortReady, "the fallback rebind")
 }
 
@@ -453,7 +413,7 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 // This used to end in a supervised restart of the process. It cannot now — the
 // same process hosts Ollama's facade — so the assertions are inverted: the gate
 // must open anyway, and the handle and supervisor must be left alone.
-func TestManagedLMStudioExhaustedFallbacksFinishOnlyThatEngine(t *testing.T) {
+func TestLMStudioFallback_FinishesOnlyFailedFacadeWhenPortsAreExhausted(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -476,11 +436,11 @@ func TestManagedLMStudioExhaustedFallbacksFinishOnlyThatEngine(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			attempts <- msg.Method
-			_ = codec.RespondError(msg.ID, -32000, "occupied")
+			assert.NoError(t, codec.RespondError(msg.ID, -32000, "occupied"))
 		}
 	}()
 
@@ -490,21 +450,15 @@ func TestManagedLMStudioExhaustedFallbacksFinishOnlyThatEngine(t *testing.T) {
 	// waiting out the call timeout and answering "retry" forever.
 	requireGateOpens(t, b.lmstudioPortReady, "exhausted LM Studio fallbacks")
 
-	if got := <-attempts; got != lmstudioSetPort {
-		t.Errorf("first attempt was %q, want %q", got, lmstudioSetPort)
-	}
+	assert.Equal(t, lmstudioSetPort, <-attempts, "first proxy attempt")
 	// Same handle still published: the process was not replaced, so every other
 	// facade in it keeps serving. Handle identity is the observable form of
 	// "no process restart".
-	if b.getLMStudioProxy() != proxy {
-		t.Error("exhausting one facade's ports replaced the shared proxy handle")
-	}
-	if b.lmstudioState().managedFacade.Load() {
-		t.Error("managed mode survived exhausted fallbacks")
-	}
+	assert.Same(t, proxy, b.getLMStudioProxy(), "exhausting one facade's ports replaced the shared proxy handle")
+	assert.False(t, b.lmstudioState().managedFacade.Load(), "managed mode survived exhausted fallbacks")
 }
 
-func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
+func TestPrepareManagedLMStudioFacade_MovesDefaultBackend(t *testing.T) {
 	settings, settingsCodec := newTestRPCWorkerPipe(t)
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
@@ -514,41 +468,38 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 	calls := make(chan string, 3)
 	go func() {
 		msg, err := settingsCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		calls <- msg.Method
-		_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": true})
+		assert.NoError(t, settingsCodec.Respond(msg.ID, map[string]bool{"value": true}))
 	}()
 	go func() {
+		type enginePortRequest struct {
+			Engine string `json:"engine"`
+			Port   int    `json:"port"`
+		}
 		status, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		calls <- status.Method
-		var statusRequest struct {
-			Engine string `json:"engine"`
-			Port   int    `json:"port"`
+		var statusRequest enginePortRequest
+		if assert.NoError(t, json.Unmarshal(status.Params, &statusRequest)) {
+			assert.Equal(t, enginePortRequest{"lmstudio", managedLMStudioFacadePort}, statusRequest, "engine:status params")
 		}
-		if json.Unmarshal(status.Params, &statusRequest) != nil ||
-			statusRequest.Engine != "lmstudio" || statusRequest.Port != managedLMStudioFacadePort {
-			t.Errorf("engine:status params = %s", status.Params)
-		}
-		_ = engineCodec.Respond(status.ID, ollamaPortStatus{Running: true, Port: managedLMStudioFacadePort})
+		assert.NoError(t, engineCodec.Respond(status.ID, ollamaPortStatus{Running: true, Port: managedLMStudioFacadePort}))
 
 		setPort, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		calls <- setPort.Method
-		var request struct {
-			Engine string `json:"engine"`
-			Port   int    `json:"port"`
+		var request enginePortRequest
+		if assert.NoError(t, json.Unmarshal(setPort.Params, &request)) {
+			assert.Equal(t, enginePortRequest{"lmstudio", managedLMStudioBackendStart}, request, "engine:set-port params")
 		}
-		if json.Unmarshal(setPort.Params, &request) != nil || request.Engine != "lmstudio" || request.Port != managedLMStudioBackendStart {
-			t.Errorf("engine:set-port params = %s", setPort.Params)
-		}
-		_ = engineCodec.Respond(setPort.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart})
+		assert.NoError(t, engineCodec.Respond(setPort.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart}))
 	}()
 
 	b.prepareManagedLMStudioFacadeWithPortCheck(func(port int) bool {
@@ -558,26 +509,18 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 	for i, want := range []string{"settings/get-force-ports", "engine:status", "engine:set-port"} {
 		select {
 		case got := <-calls:
-			if got != want {
-				t.Fatalf("preparation call %d = %q, want %q", i, got, want)
-			}
+			require.Equal(t, want, got, "preparation call %d", i)
 		case <-time.After(2 * time.Second):
-			t.Fatalf("missing preparation call %d (%s)", i, want)
+			require.FailNow(t, fmt.Sprintf("missing preparation call %d (%s)", i, want))
 		}
 	}
-	if !b.lmstudioState().managedFacade.Load() {
-		t.Fatal("managed LM Studio ownership was not enabled")
-	}
-	if got := b.lmstudioState().backendPort.Load(); got != managedLMStudioBackendStart {
-		t.Fatalf("backend port = %d, want %d", got, managedLMStudioBackendStart)
-	}
-	if got := b.lmstudioState().startupPort.Load(); got != managedLMStudioFacadePort {
-		t.Fatalf("proxy startup port = %d, want %d", got, managedLMStudioFacadePort)
-	}
+	require.True(t, b.lmstudioState().managedFacade.Load(), "managed LM Studio ownership was not enabled")
+	require.Equal(t, int32(managedLMStudioBackendStart), b.lmstudioState().backendPort.Load(), "backend port")
+	require.Equal(t, int32(managedLMStudioFacadePort), b.lmstudioState().startupPort.Load(), "proxy startup port")
 	requireGateShutNow(t, b.lmstudioPortReady, "preparation before proxy readiness")
 }
 
-func TestPrepareUnmanagedLMStudioPreservesPortsAndWaitsForProxy(t *testing.T) {
+func TestPrepareUnmanagedLMStudio_PreservesPortsAndWaitsForProxy(t *testing.T) {
 	settings, settingsCodec := newTestRPCWorkerPipe(t)
 	engine, engineCodec := newTestRPCWorkerPipe(t)
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
@@ -587,13 +530,13 @@ func TestPrepareUnmanagedLMStudioPreservesPortsAndWaitsForProxy(t *testing.T) {
 	go func() {
 		msg, err := settingsCodec.Read()
 		if err == nil {
-			_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": false})
+			assert.NoError(t, settingsCodec.Respond(msg.ID, map[string]bool{"value": false}))
 		}
 	}()
 	go func() {
 		msg, err := engineCodec.Read()
 		if err == nil {
-			_ = engineCodec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400})
+			assert.NoError(t, engineCodec.Respond(msg.ID, ollamaPortStatus{Running: true, Port: 12400}))
 		}
 	}()
 
@@ -603,22 +546,14 @@ func TestPrepareUnmanagedLMStudioPreservesPortsAndWaitsForProxy(t *testing.T) {
 		return true
 	})
 
-	if portChecked {
-		t.Fatal("opt-out preparation unexpectedly probed compatibility ports")
-	}
-	if b.lmstudioState().managedFacade.Load() {
-		t.Fatal("opt-out preparation enabled managed ownership")
-	}
-	if got := b.lmstudioState().backendPort.Load(); got != 12400 {
-		t.Fatalf("custom backend = %d, want 12400", got)
-	}
-	if got := b.lmstudioState().startupPort.Load(); got != 0 {
-		t.Fatalf("opt-out forced proxy startup port %d", got)
-	}
+	require.False(t, portChecked, "opt-out preparation unexpectedly probed compatibility ports")
+	require.False(t, b.lmstudioState().managedFacade.Load(), "opt-out preparation enabled managed ownership")
+	require.Equal(t, int32(12400), b.lmstudioState().backendPort.Load(), "custom backend")
+	require.Equal(t, int32(0), b.lmstudioState().startupPort.Load(), "opt-out forced proxy startup port")
 	requireGateShutNow(t, b.lmstudioPortReady, "opt-out before the persisted proxy port was known")
 }
 
-func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
+func TestManagedLMStudioBindFailure_WaitsForFallbackReady(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioState().managedFacade.Store(true)
 	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
@@ -626,9 +561,9 @@ func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
 	b.forwardLMStudioProxyNotification("error", json.RawMessage(`{"code":"bind-failed","port":1234}`))
 	requireGateStaysShut(t, b.lmstudioPortReady, "a bind failure before a fallback proxy bound")
 	fallback := int(b.lmstudioState().startupPort.Load())
-	if fallback == 0 || fallback == managedLMStudioFacadePort || fallback == managedLMStudioBackendStart {
-		t.Fatalf("unsafe fallback port %d", fallback)
-	}
+	require.NotEqual(t, 0, fallback, "unsafe fallback port")
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unsafe fallback port")
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unsafe fallback port")
 
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
@@ -642,7 +577,7 @@ func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		msg, err := codec.Read()
 		if err == nil {
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+			assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 		}
 	}()
 
@@ -650,30 +585,30 @@ func TestManagedLMStudioBindFailureWaitsForFallbackReady(t *testing.T) {
 	requireGateOpens(t, b.lmstudioPortReady, "fallback readiness")
 }
 
-func TestManagedLMStudioRestartBindFailureChoosesFallback(t *testing.T) {
+func TestManagedLMStudioRestartBindFailure_ChoosesFallback(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioState().managedFacade.Store(true)
 	b.lmstudioState().backendPort.Store(managedLMStudioBackendStart)
 	b.markLMStudioPortReady() // a later supervised proxy generation failed
 
 	b.forwardLMStudioProxyNotification("error", json.RawMessage(`{"code":"bind-failed","port":1234}`))
-	if b.lmstudioState().managedFacade.Load() {
-		t.Fatal("restart bind failure left managed ownership enabled")
-	}
+	require.False(t, b.lmstudioState().managedFacade.Load(), "restart bind failure left managed ownership enabled")
 	fallback := int(b.lmstudioState().startupPort.Load())
-	if fallback == 0 || fallback == managedLMStudioFacadePort || fallback == managedLMStudioBackendStart {
-		t.Fatalf("restart bind failure selected unsafe fallback %d", fallback)
-	}
+	require.NotEqual(t, 0, fallback, "restart bind failure selected unsafe fallback")
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "restart bind failure selected unsafe fallback")
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "restart bind failure selected unsafe fallback")
 }
 
-func TestManagedLMStudioStaleReadyDoesNotOpenCurrentGate(t *testing.T) {
+func TestManagedLMStudioStaleReady_DoesNotOpenCurrentGate(t *testing.T) {
 	b := &Broker{lmstudioPortReady: make(chan struct{})}
 	b.lmstudioProxyGeneration.Store(2)
 	b.forwardLMStudioProxyNotificationForGeneration(1, "ready", json.RawMessage(`{"port":1234}`))
 	requireGateStaysShut(t, b.lmstudioPortReady, "a stale proxy generation's ready")
 }
 
-func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
+// The proxy can initially occupy the custom engine's port. Move the proxy first
+// and retain the engine's configured port before allowing gated requests through.
+func TestUnmanagedLMStudioProxyCollision_RebindsBeforeGate(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -693,7 +628,7 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			methods <- msg.Method
@@ -702,16 +637,16 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
 				requestedFallback <- request.Port
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			case lmstudioSetLocalBackend:
 				var backend proxyLocalBackend
-				_ = json.Unmarshal(msg.Params, &backend)
+				assert.NoError(t, json.Unmarshal(msg.Params, &backend))
 				localBackend <- backend
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			default:
-				_ = codec.RespondError(msg.ID, -32601, "unexpected method")
+				assert.NoError(t, codec.RespondError(msg.ID, -32601, "unexpected method"))
 			}
 		}
 	}()
@@ -722,29 +657,21 @@ func TestUnmanagedLMStudioProxyCollisionRebindsBeforeGate(t *testing.T) {
 	for i, want := range []string{lmstudioSetPort, lmstudioSetLocalBackend} {
 		select {
 		case got := <-methods:
-			if got != want {
-				t.Fatalf("proxy method %d = %q, want %q", i, got, want)
-			}
+			require.Equal(t, want, got, "proxy method %d", i)
 		case <-time.After(2 * time.Second):
-			t.Fatalf("missing proxy method %d (%s)", i, want)
+			require.FailNow(t, fmt.Sprintf("missing proxy method %d (%s)", i, want))
 		}
 	}
 	fallback := <-requestedFallback
-	if fallback == 0 || fallback == 12400 {
-		t.Fatalf("collision fallback = %d", fallback)
-	}
-	if got := int(b.lmstudioState().startupPort.Load()); got != fallback {
-		t.Fatalf("cached proxy fallback = %d, want %d", got, fallback)
-	}
-	if got := int(b.lmstudioState().backendPort.Load()); got != 12400 {
-		t.Fatalf("custom backend changed to %d", got)
-	}
-	if got := <-localBackend; got.Port != 12400 {
-		t.Fatalf("local backend = %+v, want port 12400", got)
-	}
+	require.NotEqual(t, 0, fallback, "collision fallback")
+	require.NotEqual(t, 12400, fallback, "collision fallback")
+	require.Equal(t, fallback, int(b.lmstudioState().startupPort.Load()), "cached proxy fallback")
+	require.Equal(t, int32(12400), b.lmstudioState().backendPort.Load(), "custom backend changed")
+	got := <-localBackend
+	require.Equal(t, 12400, got.Port, "local backend (%v)", got)
 }
 
-func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
+func TestUnmanagedLMStudioCollision_RebindsBeforeStatusProbe(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -764,7 +691,7 @@ func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			order <- msg.Method
@@ -772,39 +699,38 @@ func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			} else {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			}
 		}
 	}()
 	go func() {
 		msg, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		order <- msg.Method
-		_ = engineCodec.Respond(msg.ID, ollamaPortStatus{Port: 12400})
+		assert.NoError(t, engineCodec.Respond(msg.ID, ollamaPortStatus{Port: 12400}))
 	}()
 
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":12400}`))
 	requireGateOpens(t, b.lmstudioPortReady, "the opt-out collision")
-	got := []string{<-order, <-order, <-order}
-	if got[0] != lmstudioSetPort || got[1] != "engine:status" || got[2] != lmstudioSetLocalBackend {
-		t.Fatalf("collision reconciliation order = %v", got)
-	}
+	require.Equal(t, []string{lmstudioSetPort, "engine:status", lmstudioSetLocalBackend}, []string{<-order, <-order, <-order}, "collision reconciliation order")
 }
 
-func TestUnknownLMStudioBackendFallbackSkipsUnprovenPorts(t *testing.T) {
+func TestUnknownLMStudioBackendFallback_SkipsUnprovenPorts(t *testing.T) {
 	b := &Broker{}
 	fallback := b.setLMStudioProxyFallback()
-	if fallback == 0 || fallback == managedLMStudioFacadePort || fallback == managedLMStudioBackendStart {
-		t.Fatalf("unknown-backend fallback selected unproven port %d", fallback)
-	}
+	require.NotEqual(t, 0, fallback, "unknown-backend fallback selected unproven port")
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unknown-backend fallback selected unproven port")
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unknown-backend fallback selected unproven port")
 }
 
-func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
+// An unknown engine port can coincide with the proxy's listener. Move the proxy
+// before probing status so it cannot be mistaken for the engine being discovered.
+func TestUnknownLMStudioBackend_MovesProxyBeforeStatusProbe(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -824,7 +750,7 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			order <- msg.Method
@@ -832,36 +758,32 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
 				fallbackPort <- request.Port
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			} else {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			}
 		}
 	}()
 	go func() {
 		msg, err := engineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		order <- msg.Method
-		_ = engineCodec.Respond(msg.ID, ollamaPortStatus{Port: managedLMStudioBackendStart})
+		assert.NoError(t, engineCodec.Respond(msg.ID, ollamaPortStatus{Port: managedLMStudioBackendStart}))
 	}()
 
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":1235}`))
 	requireGateOpens(t, b.lmstudioPortReady, "the unknown-backend fallback")
-	got := []string{<-order, <-order, <-order}
-	if got[0] != lmstudioSetPort || got[1] != "engine:status" || got[2] != lmstudioSetLocalBackend {
-		t.Fatalf("unknown-backend reconciliation order = %v", got)
-	}
+	require.Equal(t, []string{lmstudioSetPort, "engine:status", lmstudioSetLocalBackend}, []string{<-order, <-order, <-order}, "unknown-backend reconciliation order")
 	fallback := <-fallbackPort
-	if fallback == managedLMStudioFacadePort || fallback == managedLMStudioBackendStart {
-		t.Fatalf("unknown-backend fallback used unsafe port %d", fallback)
-	}
+	require.NotEqual(t, managedLMStudioFacadePort, fallback, "unknown-backend fallback used unsafe port")
+	require.NotEqual(t, managedLMStudioBackendStart, fallback, "unknown-backend fallback used unsafe port")
 }
 
-func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
+func TestUnknownCustomBackend_KeepsRestoreGatedAfterStatusFailure(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -879,11 +801,11 @@ func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
 	go func() {
 		for i := 0; i < 2; i++ {
 			msg, err := engineCodec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			statusCalls <- struct{}{}
-			_ = engineCodec.RespondError(msg.ID, -32000, "status unavailable")
+			assert.NoError(t, engineCodec.RespondError(msg.ID, -32000, "status unavailable"))
 		}
 	}()
 	// Let the pre-fix local-backend call finish so an incorrect gate close is
@@ -892,10 +814,10 @@ func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
 		codec := NewCodec(proxyServer)
 		for {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
-			_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+			assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 		}
 	}()
 
@@ -904,14 +826,16 @@ func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
 		select {
 		case <-statusCalls:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("missing status attempt %d", i+1)
+			require.FailNow(t, fmt.Sprintf("missing status attempt %d", i+1))
 		}
 		requireGateStaysShut(t, b.lmstudioPortReady,
 			fmt.Sprintf("status failure %d with an unknown custom backend", i+1))
 	}
 }
 
-func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *testing.T) {
+// A failed status call must keep restoration gated. The replacement manager must
+// resolve the engine port and update the proxy before enabled engines are restored.
+func TestEngineManagerRespawn_ReconcilesUnknownCustomBackendBeforeRestore(t *testing.T) {
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -937,7 +861,7 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 		msg, err := oldEngineCodec.Read()
 		if err == nil {
 			oldStatus <- struct{}{}
-			_ = oldEngineCodec.RespondError(msg.ID, -32000, "manager exiting")
+			assert.NoError(t, oldEngineCodec.RespondError(msg.ID, -32000, "manager exiting"))
 		}
 	}()
 	restoreDone := make(chan bool, 1)
@@ -947,7 +871,7 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 	select {
 	case <-oldStatus:
 	case <-time.After(2 * time.Second):
-		t.Fatal("initial status failure was not exercised")
+		require.FailNow(t, "initial status failure was not exercised")
 	}
 	requireGateStaysShut(t, b.lmstudioPortReady, "the initial status failure")
 
@@ -956,11 +880,11 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 	order := make(chan string, 4)
 	go func() {
 		status, err := newEngineCodec.Read()
-		if err != nil {
+		if !assertRPCRead(t, err) {
 			return
 		}
 		order <- status.Method
-		_ = newEngineCodec.Respond(status.ID, ollamaPortStatus{Port: 12400})
+		assert.NoError(t, newEngineCodec.Respond(status.ID, ollamaPortStatus{Port: 12400}))
 
 		restore, err := newEngineCodec.Read()
 		if err == nil {
@@ -971,7 +895,7 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 		codec := NewCodec(proxyServer)
 		for i := 0; i < 2; i++ {
 			msg, err := codec.Read()
-			if err != nil {
+			if !assertRPCRead(t, err) {
 				return
 			}
 			order <- msg.Method
@@ -979,24 +903,16 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 				var request struct {
 					Port int `json:"port"`
 				}
-				_ = json.Unmarshal(msg.Params, &request)
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: request.Port})
+				assert.NoError(t, json.Unmarshal(msg.Params, &request))
+				assert.NoError(t, codec.Respond(msg.ID, proxyReadyParams{Port: request.Port}))
 			} else {
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 			}
 		}
 	}()
 
 	b.forwardEngineNotification("engine:ready", nil)
 	requireGateOpens(t, b.lmstudioPortReady, "the engine-manager respawn")
-	if !<-restoreDone {
-		t.Fatal("restore waiter reported cancellation")
-	}
-	got := []string{<-order, <-order, <-order, <-order}
-	want := []string{"engine:status", lmstudioSetPort, lmstudioSetLocalBackend, restoreEnabledEnginesMethod}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("respawn reconciliation order = %v, want %v", got, want)
-		}
-	}
+	require.True(t, <-restoreDone, "restore waiter reported cancellation")
+	require.Equal(t, []string{"engine:status", lmstudioSetPort, lmstudioSetLocalBackend, restoreEnabledEnginesMethod}, []string{<-order, <-order, <-order, <-order}, "respawn reconciliation order")
 }

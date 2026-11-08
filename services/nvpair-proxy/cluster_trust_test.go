@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 )
@@ -18,7 +20,7 @@ import (
 // mDNS record actually moves. Routing must still pick the peer up the moment the
 // pin lands, and drop it again the moment the pin is removed, because it reads
 // the live pin set rather than a trust flag cached at discovery time.
-func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
+func TestResolveCandidates_FollowsLivePinSet(t *testing.T) {
 	const peerUUID = "principal-peer"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 
@@ -33,35 +35,29 @@ func TestResolveCandidatesFollowsLivePinSet(t *testing.T) {
 	p.mesh = clustertrust.Open(clusterDir)
 
 	// Pre-join: no identity, no pins, so the peer is not a routable target.
-	if got := p.soleFacade().resolveCandidates(""); len(got) != 0 {
-		t.Fatalf("pre-join candidates = %+v, want none", got)
-	}
+	require.Empty(t, p.soleFacade().resolveCandidates(""), "pre-join candidates")
 
 	// The cluster-manager lands the join on disk while the proxy is running. No
 	// new discovery snapshot arrives — the peer's mDNS record has not changed.
 	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
 
 	cands := p.soleFacade().resolveCandidates("")
-	if len(cands) != 1 {
-		t.Fatalf("post-join candidates = %+v, want the peer", cands)
-	}
-	if cands[0].id != "peer-a" || cands[0].peerUUID != peerUUID || cands[0].url.Scheme != "https" {
-		t.Fatalf("post-join candidate = %+v, want peer-a over https pinned to %s", cands[0], peerUUID)
-	}
+	require.Len(t, cands, 1, "post-join candidates")
+	require.Equal(t, "peer-a", cands[0].id, "post-join candidate (%v)", peerUUID)
+	require.Equal(t, peerUUID, cands[0].peerUUID, "post-join candidate (%v)", peerUUID)
+	require.Equal(t, "https", cands[0].url.Scheme, "post-join candidate (%v)", peerUUID)
 
 	// Removing the peer from the cluster retires it as a target just as promptly,
 	// again with no discovery event involved.
 	clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
-	if got := p.soleFacade().resolveCandidates(""); len(got) != 0 {
-		t.Fatalf("post-removal candidates = %+v, want none", got)
-	}
+	require.Empty(t, p.soleFacade().resolveCandidates(""), "post-removal candidates")
 }
 
 // TestResolveCandidatesRejectsUnpinnedClusteredPeer keeps the isolation property
 // honest now that trust is read locally: a peer that advertises a cluster
 // principal we hold no pin for is not routable, even though this node is itself
 // a healthy cluster member. Two clusters on one LAN must not route to each other.
-func TestResolveCandidatesRejectsUnpinnedClusteredPeer(t *testing.T) {
+func TestResolveCandidates_RejectsUnpinnedClusteredPeer(t *testing.T) {
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	clustertrusttest.Join(t, clusterDir, "cluster-ours", "principal-self", "principal-ourpeer")
 
@@ -75,7 +71,5 @@ func TestResolveCandidatesRejectsUnpinnedClusteredPeer(t *testing.T) {
 	p := testProxy(anyProfile(t), disc, 11435)
 	p.mesh = clustertrust.Open(clusterDir)
 
-	if got := p.soleFacade().resolveCandidates(""); len(got) != 0 {
-		t.Fatalf("candidates = %+v, want none for a peer in another cluster", got)
-	}
+	require.Empty(t, p.soleFacade().resolveCandidates(""), "candidates")
 }

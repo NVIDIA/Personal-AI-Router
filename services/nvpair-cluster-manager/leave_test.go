@@ -8,6 +8,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestHandleLeave_NotBlockedByUnreachableMember verifies that a member reachable
@@ -15,16 +17,14 @@ import (
 // not stall the whole leave for the full pairingHTTPTimeout (10s). The
 // departure-tombstone pushes run concurrently under leaveNotifyTimeout, then
 // teardown proceeds; the stuck peer converges later from the gossiped tombstone.
-func TestHandleLeave_NotBlockedByUnreachableMember(t *testing.T) {
+func TestHandleLeave_CompletesWhenMemberIsUnreachable(t *testing.T) {
 	m := newTestManager(t) // clustered as "cluster-1"
 
 	// A listener that accepts but never responds, so the mTLS reconcile POST
 	// hangs in the TLS handshake until the client's 10s timeout — exactly the
 	// offline/wedged-peer case that used to hang the leave.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	defer ln.Close()
 	go func() {
 		for {
@@ -38,12 +38,10 @@ func TestHandleLeave_NotBlockedByUnreachableMember(t *testing.T) {
 	addr := ln.Addr().(*net.TCPAddr)
 
 	uuid, cert, fp, _ := makeNode(t, "ghost")
-	if err := m.trust.Pin(&TrustedPin{
+	require.NoError(t, m.trust.Pin(&TrustedPin{
 		NodeUUID: uuid, NodeID: "ghost", Name: "ghost", ClusterID: "cluster-1",
 		CertPem: cert, CertFingerprint: fp, PinnedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("pin ghost: %v", err)
-	}
+	}), "pin ghost")
 	m.upsertMember(&ClusterNode{
 		NodeUUID: uuid, ID: "ghost",
 		IPAddress: "127.0.0.1", Port: addr.Port, State: stateMember,
@@ -53,10 +51,7 @@ func TestHandleLeave_NotBlockedByUnreachableMember(t *testing.T) {
 	m.handleLeave(&Message{})
 	elapsed := time.Since(start)
 
-	if elapsed > leaveNotifyTimeout+3*time.Second {
-		t.Fatalf("handleLeave took %v; the bounded notify phase must not wait the full %v for a wedged member", elapsed, pairingHTTPTimeout)
-	}
-	if id, _ := m.clusterIdentity(); id != "" {
-		t.Fatalf("after leave the node must be unclustered, got cluster id %q", id)
-	}
+	require.LessOrEqual(t, elapsed, leaveNotifyTimeout+3*time.Second, "handleLeave took (%v, %v)", elapsed, pairingHTTPTimeout)
+	id, _ := m.clusterIdentity()
+	require.Equal(t, "", id, "after leave the node must be unclustered, got cluster id")
 }

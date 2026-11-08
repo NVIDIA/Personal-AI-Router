@@ -20,10 +20,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/grandcat/zeroconf"
 )
 
-func TestModelsHTTPEnrichment(t *testing.T) {
+func TestDiscovery_EnrichesModelsThroughHTTP(t *testing.T) {
 	// Stand-in engine-manager HTTP surface serving the model list.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
@@ -32,7 +35,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 		}
 		// Flat union + per-engine attribution, exactly the shape engine-manager's
 		// ModelsResult serializes. The daemon must enrich both onto the node.
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 			"models": []string{"llama3:8b", "qwen:0.5b", "org/router-model-GGUF:Q4_K_M"},
 			"modelsByEngine": map[string][]string{
 				"ollama":   {"llama3:8b"},
@@ -44,17 +47,13 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 				"lmstudio": {},
 				"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 			},
-		})
+		}))
 	}))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse stub url: %v", err)
-	}
+	require.NoError(t, err, "parse stub url")
 	emPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("stub port: %v", err)
-	}
+	require.NoError(t, err, "stub port")
 
 	const instance = "xproc-models-1"
 	// Advertise a _nvpair-node with em=<port> and ip=127.0.0.1 so the daemon
@@ -62,9 +61,7 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 	// address in the daemon's enrichment target selection).
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
 	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	if err != nil {
-		t.Fatalf("register %s: %v", instance, err)
-	}
+	require.NoError(t, err, "register (%v)", instance)
 	t.Cleanup(zsrv.Shutdown)
 	t.Logf("advertising %s @ %s (em=%d)", instance, nodeRecordService, emPort)
 
@@ -80,24 +77,23 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed unexpectedly")
-			}
+			require.True(t, ok, "broker stream closed unexpectedly")
 			if msg.Method == "" && msg.ID != nil {
 				var res availableNodesResult
-				if json.Unmarshal(msg.Result, &res) == nil {
-					if n, found := findNode(res.Nodes, instance); found &&
-						modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
-						loadedByEngineMatch(n.LoadedByEngine) {
-						return // enriched flat + per-engine + loaded lists surfaced
-					}
+				require.NoError(t, json.Unmarshal(msg.Result, &res))
+
+				if n, found := findNode(res.Nodes, instance); found &&
+					modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
+					loadedByEngineMatch(n.LoadedByEngine) {
+					return // enriched flat + per-engine + loaded lists surfaced
 				}
+
 			}
 		case <-ticker.C:
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
 		case <-deadline:
-			t.Fatalf("timed out waiting for %q with an enriched model list", instance)
+			require.FailNow(t, fmt.Sprintf("timed out waiting for %q with an enriched model list", instance))
 		}
 	}
 }

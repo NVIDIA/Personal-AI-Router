@@ -6,6 +6,7 @@ package tests
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -15,6 +16,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/appdir"
 	"nvpair-shared/engines"
@@ -171,7 +175,8 @@ func goBuild(srcDir, output string) error {
 // nvpair-shared/jsonrpc types (jsonrpc.Message / jsonrpc.RPCError), so the
 // integration tests parse exactly what production emits.
 
-func startMsgReader(r io.Reader) <-chan jsonrpc.Message {
+func startMsgReader(t *testing.T, r io.Reader) <-chan jsonrpc.Message {
+	t.Helper()
 	ch := make(chan jsonrpc.Message, 64)
 	go func() {
 		defer close(ch)
@@ -179,9 +184,12 @@ func startMsgReader(r io.Reader) <-chan jsonrpc.Message {
 		scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
 		for scanner.Scan() {
 			var msg jsonrpc.Message
-			if json.Unmarshal(scanner.Bytes(), &msg) == nil {
+			if assert.NoError(t, json.Unmarshal(scanner.Bytes(), &msg)) {
 				ch <- msg
 			}
+		}
+		if err := scanner.Err(); !errors.Is(err, os.ErrClosed) {
+			assert.NoError(t, err)
 		}
 	}()
 	return ch
@@ -194,14 +202,12 @@ func waitForMethod(t *testing.T, ch <-chan jsonrpc.Message, method string, timeo
 	for {
 		select {
 		case msg, ok := <-ch:
-			if !ok {
-				t.Fatalf("stream closed before receiving %q", method)
-			}
+			require.True(t, ok, "stream closed before receiving (%v)", method)
 			if msg.Method == method {
 				return msg
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for method %q", timeout, method)
+			require.FailNowf(t, "timed out waiting for method", "%q after %s", method, timeout)
 		}
 	}
 	return jsonrpc.Message{}
@@ -214,14 +220,12 @@ func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Durat
 	for {
 		select {
 		case msg, ok := <-ch:
-			if !ok {
-				t.Fatal("stream closed before receiving response")
-			}
+			require.True(t, ok, "stream closed before receiving response")
 			if msg.ID != nil && msg.Method == "" {
 				return msg
 			}
 		case <-timer.C:
-			t.Fatal("timed out waiting for JSON-RPC response")
+			require.FailNow(t, "timed out waiting for JSON-RPC response")
 		}
 	}
 	return jsonrpc.Message{}
@@ -245,11 +249,9 @@ func requestOnFreePort(t *testing.T, w io.Writer, msgs <-chan jsonrpc.Message, t
 		if resp.Error == nil {
 			return port
 		}
-		if !isBindRace(resp.Error) {
-			t.Fatalf("%s failed: %v", req["method"], resp.Error)
-		}
+		require.True(t, isBindRace(resp.Error))
 	}
-	t.Fatal("every probed port was taken before the proxy could bind it")
+	require.FailNow(t, "every probed port was taken before the proxy could bind it")
 	return 0
 }
 
@@ -263,25 +265,19 @@ func isBindRace(e *jsonrpc.RPCError) bool {
 // TestLMStudioFacadeChildPersistsUnderPrivateBase proves a real proxy child
 // writes its persisted LM Studio port under the TestMain config base, so no
 // cross-process test can clobber the developer's saved port.
-func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
+func TestLMStudioFacadeChild_PersistsUnderPrivateBase(t *testing.T) {
 	cmd := exec.Command(proxyBin)
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
 	defer func() {
 		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}()
-	msgs := startMsgReader(stdout)
+	msgs := startMsgReader(t, stdout)
 
 	requestOnFreePort(t, stdin, msgs, 10*time.Second, func(port int) map[string]any {
 		return map[string]any{
@@ -306,24 +302,16 @@ func TestLMStudioFacadeChildPersistsUnderPrivateBase(t *testing.T) {
 	})
 
 	path, err := appdir.Path("lmstudio-proxy-port.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rel, err := filepath.Rel(testsConfigBase, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		t.Fatalf("lmstudio port path %q is outside test config base %q", path, testsConfigBase)
-	}
+	require.NoError(t, err, "lmstudio port path (%v, %v)", path, testsConfigBase)
+	require.NotEqual(t, "..", rel, "lmstudio port path (%v, %v)", path, testsConfigBase)
+	require.False(t, strings.HasPrefix(rel, ".."+string(os.PathSeparator)), "lmstudio port path (%v, %v)", path, testsConfigBase)
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read persisted lmstudio port: %v", err)
-	}
+	require.NoError(t, err, "read persisted lmstudio port")
 	var saved struct {
 		Port int `json:"port"`
 	}
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatalf("parse persisted lmstudio port: %v", err)
-	}
-	if saved.Port != persistedPort {
-		t.Fatalf("persisted lmstudio port = %d, want %d", saved.Port, persistedPort)
-	}
+	require.NoError(t, json.Unmarshal(data, &saved), "parse persisted lmstudio port")
+	require.Equal(t, persistedPort, saved.Port, "persisted lmstudio port")
 }

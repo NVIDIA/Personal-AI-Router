@@ -6,9 +6,11 @@ package main
 import (
 	"encoding/json"
 	"net"
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/noderec"
 )
@@ -19,19 +21,9 @@ import (
 // consumer that needs them. Nothing else connects the two, so a broker that drops
 // the notification leaves address ranking with no peer evidence at all while every
 // component's own unit tests still pass.
-func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		from  string
-		addrs []string
-	}{
-		{"a reported set", `{"addresses":["10.172.54.70","10.0.0.5"]}`, []string{"10.172.54.70", "10.0.0.5"}},
-		// An empty set is a withdrawal, not a no-op: it retires evidence whose TTL
-		// expired, and suppressing it would leave the scanner ranking on a link
-		// that has gone away.
-		{"a withdrawal", `{"addresses":[]}`, []string{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestForwardNodeInfoObservedAddresses_ReachesTheScanner(t *testing.T) {
+	test := func(name, from string, addrs []string) {
+		t.Run(name, func(t *testing.T) {
 			brokerSide, scannerSide := net.Pipe()
 			t.Cleanup(func() {
 				_ = brokerSide.Close()
@@ -47,30 +39,29 @@ func TestForwardNodeInfoObservedAddressesReachesTheScanner(t *testing.T) {
 			go func() {
 				codec := NewCodec(scannerSide)
 				msg, err := codec.Read()
-				if err != nil {
+				if !assertRPCRead(t, err) {
 					return
 				}
+				assert.NoError(t, codec.Respond(msg.ID, map[string]bool{"ok": true}))
 				relayed <- msg
-				_ = codec.Respond(msg.ID, map[string]bool{"ok": true})
 			}()
 
-			b.forwardNodeInfoNotification(noderec.NotifyObservedAddresses, json.RawMessage(tc.from))
+			b.forwardNodeInfoNotification(noderec.NotifyObservedAddresses, json.RawMessage(from))
 
 			select {
 			case msg := <-relayed:
-				if msg.Method != noderec.MethodSetObservedAddresses {
-					t.Fatalf("relayed method = %q, want %q", msg.Method, noderec.MethodSetObservedAddresses)
-				}
+				require.Equal(t, noderec.MethodSetObservedAddresses, msg.Method, "relayed method")
 				var got noderec.ObservedAddressesParams
-				if err := json.Unmarshal(msg.Params, &got); err != nil {
-					t.Fatalf("decode relayed params %s: %v", msg.Params, err)
-				}
-				if len(got.Addresses) != len(tc.addrs) || (len(tc.addrs) > 0 && !reflect.DeepEqual(got.Addresses, tc.addrs)) {
-					t.Fatalf("relayed addresses = %v, want %v", got.Addresses, tc.addrs)
-				}
+				require.NoError(t, json.Unmarshal(msg.Params, &got), "decode relayed params")
+				require.Equal(t, addrs, append([]string{}, got.Addresses...), "relayed addresses")
 			case <-time.After(2 * time.Second):
-				t.Fatal("observed addresses never reached the scanner")
+				require.FailNow(t, "observed addresses never reached the scanner")
 			}
 		})
 	}
+	test("a reported set", `{"addresses":["10.172.54.70","10.0.0.5"]}`, []string{"10.172.54.70", "10.0.0.5"})
+	// An empty set is a withdrawal, not a no-op: it retires evidence whose TTL
+	// expired, and suppressing it would leave the scanner ranking on a link
+	// that has gone away.
+	test("a withdrawal", `{"addresses":[]}`, []string{})
 }

@@ -6,8 +6,10 @@ package ui
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
 )
@@ -17,9 +19,7 @@ import (
 func wireOf(t *testing.T, engine, op, model string) map[string]any {
 	t.Helper()
 	envelope, err := modelActionWire(engine, op, model)
-	if err != nil {
-		t.Fatalf("%s %s: %v", engine, op, err)
-	}
+	require.NoError(t, err, "%s %s", engine, op)
 	return envelope
 }
 
@@ -28,9 +28,7 @@ func actionOf(t *testing.T, envelope map[string]any) (string, map[string]any) {
 	t.Helper()
 	action, _ := envelope["action"].(string)
 	params, ok := envelope["params"].(map[string]any)
-	if !ok {
-		t.Fatalf("params = %T, want map[string]any", envelope["params"])
-	}
+	require.True(t, ok, "params must be map[string]any")
 	return action, params
 }
 
@@ -38,66 +36,53 @@ func actionOf(t *testing.T, envelope map[string]any) (string, map[string]any) {
 // under BOTH "name" (Ollama's /api/pull body key) and "model" (LM Studio's
 // `lms get {model}` CLI placeholder). Sending only "name" silently ran
 // `lms get "" --yes`, so the download never reached LM Studio.
-func TestPullSendsBothKeys(t *testing.T) {
-	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
-		envelope := wireOf(t, engine, "pull", "owner/model")
-		if envelope["engine"] != engine {
-			t.Fatalf("engine = %v, want %s", envelope["engine"], engine)
-		}
-		action, params := actionOf(t, envelope)
-		if action != "pull_model" {
-			t.Fatalf("%s: action = %q, want pull_model", engine, action)
-		}
-		if params["name"] != "owner/model" || params["model"] != "owner/model" {
-			t.Errorf("%s: pull params = %v, want both name and model set", engine, params)
-		}
+func TestPull_SendsBothKeys(t *testing.T) {
+	test := func(name, engine string) {
+		t.Run(name, func(t *testing.T) {
+			envelope := wireOf(t, engine, "pull", "owner/model")
+			require.Equal(t, engine, envelope["engine"])
+			action, params := actionOf(t, envelope)
+			require.Equal(t, "pull_model", action)
+			assert.Equal(t, "owner/model", params["name"], "pull must set name")
+			assert.Equal(t, "owner/model", params["model"], "pull must set model")
+		})
 	}
+	test("Ollama", engines.NameOllama)
+	test("LM Studio", engines.NameLMStudio)
 }
 
 // TestOllamaLoadUsesRunModel guards the contract the two engines do NOT share.
 // Ollama has no load action — warming a model is run_model with streaming off —
 // so sending load_model errors, and the failure is quiet enough to look like the
 // model simply not loading.
-func TestOllamaLoadUsesRunModel(t *testing.T) {
+func TestOllamaLoad_UsesRunModel(t *testing.T) {
 	envelope := wireOf(t, engines.NameOllama, "load", "llama3.2")
 	action, params := actionOf(t, envelope)
 
-	if action != "run_model" {
-		t.Errorf("ollama load action = %q, want run_model", action)
-	}
-	if params["model"] != "llama3.2" {
-		t.Errorf("model = %v", params["model"])
-	}
-	if params["stream"] != false {
-		t.Errorf("stream = %v, want false; a streaming load never completes here", params["stream"])
-	}
+	assert.Equal(t, "run_model", action)
+	assert.Equal(t, "llama3.2", params["model"])
+	assert.Equal(t, false, params["stream"], "a streaming load never completes here")
 
 	// LM Studio does declare a real load action.
 	lmEnvelope := wireOf(t, engines.NameLMStudio, "load", "owner/model")
-	if lmAction, _ := actionOf(t, lmEnvelope); lmAction != "load_model" {
-		t.Errorf("lmstudio load action = %q, want load_model", lmAction)
-	}
+	lmAction, _ := actionOf(t, lmEnvelope)
+	assert.Equal(t, "load_model", lmAction)
 }
 
 // TestOllamaUnloadSendsKeepAlive guards the other asymmetry: Ollama only frees a
 // model when keep_alive is 0. Without it the request succeeds and the model
 // stays resident, so eject appears to do nothing.
-func TestOllamaUnloadSendsKeepAlive(t *testing.T) {
+func TestOllamaUnload_SendsKeepAlive(t *testing.T) {
 	envelope := wireOf(t, engines.NameOllama, "unload", "llama3.2")
 	action, params := actionOf(t, envelope)
 
-	if action != "unload_model" {
-		t.Errorf("action = %q, want unload_model", action)
-	}
-	if params["keep_alive"] != 0 {
-		t.Errorf("keep_alive = %v, want 0; without it the model is not evicted", params["keep_alive"])
-	}
+	assert.Equal(t, "unload_model", action)
+	assert.Equal(t, 0, params["keep_alive"], "without keep_alive the model is not evicted")
 
 	// LM Studio's unload takes no keep_alive.
 	lmEnvelope := wireOf(t, engines.NameLMStudio, "unload", "owner/model")
-	if _, lmParams := actionOf(t, lmEnvelope); lmParams["keep_alive"] != nil {
-		t.Errorf("lmstudio unload sent keep_alive = %v, want absent", lmParams["keep_alive"])
-	}
+	_, lmParams := actionOf(t, lmEnvelope)
+	assert.Nil(t, lmParams["keep_alive"], "LM Studio's unload takes no keep_alive")
 }
 
 // TestPullDeadlineReportsDetachedNotSilence guards the acknowledgement for a
@@ -105,21 +90,13 @@ func TestOllamaUnloadSendsKeepAlive(t *testing.T) {
 // engine keeps working, so a failure would be wrong — but the previous silence
 // was too, leaving the operator unable to tell a started download from a
 // keystroke that missed.
-func TestPullDeadlineReportsDetachedNotSilence(t *testing.T) {
+func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
 	msg := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
-	if msg == nil {
-		t.Fatal("a pull that outran its deadline produced no message at all")
-	}
+	require.NotNil(t, msg, "a pull that outran its deadline produced no message at all")
 	op, ok := msg.(engineOpMsg)
-	if !ok {
-		t.Fatalf("got %T, want engineOpMsg", msg)
-	}
-	if op.err != nil {
-		t.Errorf("a still-running download was reported as failed: %v", op.err)
-	}
-	if !op.detached {
-		t.Error("a still-running download was reported as complete")
-	}
+	require.True(t, ok, "result must be engineOpMsg")
+	require.NoError(t, op.err, "a still-running download must not be reported as failed")
+	assert.True(t, op.detached, "a still-running download must not be reported as complete")
 }
 
 // TestDeadlineLeniencyTracksOperationLength checks which operations are excused
@@ -132,142 +109,124 @@ func TestPullDeadlineReportsDetachedNotSilence(t *testing.T) {
 // and reporting "load failed" at the moment the model finishes loading is worse
 // than saying nothing. Quick operations get no such excuse, because a deadline
 // there is a real fault.
-func TestDeadlineLeniencyTracksOperationLength(t *testing.T) {
+func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// Only operations engineOps actually declares: the TUI offers no engine
 	// update, so listing one here would assert against a path nothing reaches.
 	// Start and restart wait on the engine's readiness probe, which the
 	// manifests allow up to ten minutes, so a deadline on either is a slow
 	// reply rather than a failed start.
-	for _, op := range []string{"pull", "load", "install", "uninstall", "start", "restart"} {
-		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-		if !ok {
-			t.Fatalf("%s: unexpected message type", op)
-		}
-		if !result.detached {
-			t.Errorf("%s timing out was reported as a failure, but it is still running", op)
-		}
-		if result.err != nil {
-			t.Errorf("%s carried an error despite still running: %v", op, result.err)
-		}
+	longRunning := func(name, op string) {
+		t.Run(name, func(t *testing.T) {
+			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
+			require.True(t, ok, "result must be engineOpMsg")
+			assert.True(t, result.detached, "a timed-out long operation must be reported as still running")
+			require.NoError(t, result.err, "operation is still running")
+		})
 	}
+	longRunning("pull remains running", "pull")
+	longRunning("load remains running", "load")
+	longRunning("install remains running", "install")
+	longRunning("uninstall remains running", "uninstall")
+	longRunning("start remains running", "start")
+	longRunning("restart remains running", "restart")
 
-	for _, op := range []string{"unload", "delete", "stop"} {
-		result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-		if !ok {
-			t.Fatalf("%s: unexpected message type", op)
-		}
-		if result.detached {
-			t.Errorf("%s timing out was excused as still running; a quick operation "+
-				"that times out has really failed", op)
-		}
-		if result.err == nil {
-			t.Errorf("%s timing out was reported as success", op)
-		}
+	quick := func(name, op string) {
+		t.Run(name, func(t *testing.T) {
+			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
+			require.True(t, ok, "result must be engineOpMsg")
+			assert.False(t, result.detached, "a quick operation that times out has really failed")
+			assert.Error(t, result.err, "a timeout must not be reported as success")
+		})
 	}
+	quick("unload times out", "unload")
+	quick("delete times out", "delete")
+	quick("stop times out", "stop")
 
 	// A real error is still an error, however long the operation usually takes.
 	result, _ := classifyOpResult("x", "ollama", "pull", errors.New("no such model")).(engineOpMsg)
-	if result.detached || result.err == nil {
-		t.Errorf("a genuine pull error was not reported: %+v", result)
-	}
+	assert.False(t, result.detached, "a genuine pull error must not be detached")
+	assert.Error(t, result.err, "a genuine pull error must be reported")
 }
 
 // TestDeleteSendsBothKeys checks delete works on either engine, since Ollama
 // keys it as "name" and LM Studio as "model".
-func TestDeleteSendsBothKeys(t *testing.T) {
-	for _, engine := range []string{engines.NameOllama, engines.NameLMStudio} {
-		envelope := wireOf(t, engine, "delete", "victim")
-		action, params := actionOf(t, envelope)
-		if action != "delete_model" {
-			t.Errorf("%s: action = %q", engine, action)
-		}
-		if params["name"] != "victim" || params["model"] != "victim" {
-			t.Errorf("%s: delete params = %v, want both keys", engine, params)
-		}
+func TestDelete_SendsBothKeys(t *testing.T) {
+	test := func(name, engine string) {
+		t.Run(name, func(t *testing.T) {
+			envelope := wireOf(t, engine, "delete", "victim")
+			action, params := actionOf(t, envelope)
+			assert.Equal(t, "delete_model", action)
+			assert.Equal(t, "victim", params["name"], "delete must set name")
+			assert.Equal(t, "victim", params["model"], "delete must set model")
+		})
 	}
+	test("Ollama", engines.NameOllama)
+	test("LM Studio", engines.NameLMStudio)
 }
 
 // TestLlamaCPPSendsTheModelAlone checks every llama.cpp model operation carries
 // the model under "model" and nothing else, as the engine manager's own wire
 // for it does. Its delete sends the params as a query string, so an extra
 // "name" would reach the engine as a parameter it does not take.
-func TestLlamaCPPSendsTheModelAlone(t *testing.T) {
-	want := map[string]string{
-		"load": "load_model", "unload": "unload_model",
-		"delete": "delete_model", "pull": "pull_model",
+func TestLlamaCPP_SendsTheModelAlone(t *testing.T) {
+	test := func(name, op, action string) {
+		t.Run(name, func(t *testing.T) {
+			envelope := wireOf(t, engines.NameLlamaCPP, op, "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M")
+			got, params := actionOf(t, envelope)
+			assert.Equal(t, action, got)
+			assert.Equal(t, map[string]any{"model": "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M"}, params, "params must contain only the model")
+		})
 	}
-	for op, action := range want {
-		envelope := wireOf(t, engines.NameLlamaCPP, op, "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M")
-		got, params := actionOf(t, envelope)
-		if got != action {
-			t.Errorf("%s: action = %q, want %q", op, got, action)
-		}
-		if len(params) != 1 || params["model"] != "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M" {
-			t.Errorf("%s: params = %v, want only the model", op, params)
-		}
-	}
+	test("load", "load", "load_model")
+	test("unload", "unload", "unload_model")
+	test("delete", "delete", "delete_model")
+	test("pull", "pull", "pull_model")
 }
 
 // TestDownloadPromptUsesTheEnginesSpelling is the regression guard for an
 // Ollama example offered for every engine. "llama3.2" is not a name LM Studio
 // or llama.cpp can download, and llama.cpp's needs a quantization after a colon.
-func TestDownloadPromptUsesTheEnginesSpelling(t *testing.T) {
+func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 	for _, e := range engines.All() {
-		if _, ok := downloadExamples[e.Name]; !ok {
-			t.Errorf("%s has no download example", e.Name)
-		}
+		assert.Contains(t, downloadExamples, e.Name, "every engine needs a download example")
 	}
-	if got := downloadPrompt(engines.NameLlamaCPP, "llama.cpp"); !strings.Contains(got, ":Q4_K_M") {
-		t.Errorf("llama.cpp prompt %q does not show the quantization suffix", got)
-	}
-	if got := downloadPrompt("vllm", "vLLM"); got != "model name for vLLM" {
-		t.Errorf("an engine with no example got %q", got)
-	}
+	assert.Contains(t, downloadPrompt(engines.NameLlamaCPP, "llama.cpp"), ":Q4_K_M", "llama.cpp prompt must show the quantization suffix")
+	assert.Equal(t, "model name for vLLM", downloadPrompt("vllm", "vLLM"))
 }
 
 // TestEveryEngineHasAModelWire is what makes adding an engine a matter of
 // adding its entry: an engine in the shared table without a spelling for every
 // model operation fails here, rather than being sent another engine's action
 // names at runtime.
-func TestEveryEngineHasAModelWire(t *testing.T) {
+func TestEveryEngine_HasAModelWire(t *testing.T) {
 	for _, e := range engines.All() {
 		for op := range modelActions {
-			if _, err := modelActionWire(e.Name, op, "m"); err != nil {
-				t.Errorf("%s has no local wire for %s: %v", e.Name, op, err)
-			}
+			_, err := modelActionWire(e.Name, op, "m")
+			require.NoError(t, err, "%s must have a local wire for %s", e.Name, op)
 		}
 	}
-	if _, err := modelActionWire("vllm", "load", "m"); err == nil {
-		t.Error("an engine with no wire was given one")
-	}
+	_, err := modelActionWire("vllm", "load", "m")
+	assert.Error(t, err, "an engine with no wire must not be given one")
 }
 
 // TestLongRunningOpsAreRealOperations keeps the leniency set honest: every
 // entry must be an operation the interface can actually issue, or the set
 // documents behaviour nothing exercises.
-func TestLongRunningOpsAreRealOperations(t *testing.T) {
+func TestLongRunningOps_AreRealOperations(t *testing.T) {
 	for op := range longRunningOps {
 		_, isLifecycle := engineOps[op]
 		_, isModel := modelActions[op]
-		if !isLifecycle && !isModel {
-			t.Errorf("longRunningOps names %q, which is neither a lifecycle nor a model operation", op)
-		}
+		assert.True(t, isLifecycle || isModel, "%q must be a lifecycle or model operation", op)
 	}
 }
 
 // TestModelActionsCarryRemoteEquivalents checks every model operation has a
 // remote method, since all four are offered on a peer's node.
-func TestModelActionsCarryRemoteEquivalents(t *testing.T) {
+func TestModelActions_DeclareRemoteEquivalentMethods(t *testing.T) {
 	for name, act := range modelActions {
-		if act.op == "" {
-			t.Errorf("%s: no operation name", name)
-		}
-		if act.remote == "" {
-			t.Errorf("%s: no remote method, but model operations are offered on remote nodes", name)
-		}
-		if act.what == "" {
-			t.Errorf("%s: no operator-facing verb", name)
-		}
+		assert.NotEmpty(t, act.op, "%s: no operation name", name)
+		assert.NotEmpty(t, act.remote, "%s: model operations are offered on remote nodes", name)
+		assert.NotEmpty(t, act.what, "%s: no operator-facing verb", name)
 	}
 }
 
@@ -276,25 +235,16 @@ func TestModelActionsCarryRemoteEquivalents(t *testing.T) {
 // but no remote restart, uninstall, or port change — those need process
 // ownership on the target host — so those three must be marked local-only or the
 // UI would offer an operation that always fails.
-func TestLifecycleRemoteCoverageMatchesManager(t *testing.T) {
+func TestLifecycleRemoteCoverage_MatchesManager(t *testing.T) {
 	for name, op := range engineOps {
 		_, hasRemote := remoteEngineMethods[op.method]
-		if op.localOnly && hasRemote {
-			t.Errorf("%s is marked local-only but a remote method exists", name)
-		}
-		if !op.localOnly && !hasRemote {
-			t.Errorf("%s is offered on remote nodes but has no remote method", name)
-		}
+		assert.Equal(t, !op.localOnly, hasRemote, "%s: remote coverage must match the manager", name)
 	}
 
 	for _, name := range []string{"restart", "uninstall"} {
-		if !engineOps[name].localOnly {
-			t.Errorf("%s must be local-only: the manager exposes no remote variant", name)
-		}
+		assert.True(t, engineOps[name].localOnly, "%s must be local-only: the manager exposes no remote variant", name)
 	}
 	for _, name := range []string{"install", "start", "stop"} {
-		if engineOps[name].localOnly {
-			t.Errorf("%s has a remote variant and should not be local-only", name)
-		}
+		assert.False(t, engineOps[name].localOnly, "%s has a remote variant and should not be local-only", name)
 	}
 }

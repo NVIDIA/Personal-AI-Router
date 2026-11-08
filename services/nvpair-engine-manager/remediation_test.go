@@ -14,11 +14,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
+
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // captured records the executor's emitted notifications so tests can
@@ -58,46 +61,38 @@ func capturingExecutor(t *testing.T, m *Manifest) (*Executor, *captured) {
 
 // TestDownloadUnpinned verifies a fetch with no sha256 succeeds (over
 // loopback http) — the unpinned path the bundled Ollama manifest now uses.
-func TestDownloadUnpinned(t *testing.T) {
+func TestDownload_AllowsManifestWithoutChecksum(t *testing.T) {
 	payload := []byte("unpinned engine bytes")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(payload)
+		writeTestResponse(t, w, payload)
 	}))
 	defer srv.Close()
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	p, err := ex.download(context.Background(), "fake", &Fetch{URL: srv.URL}) // no SHA256
-	if err != nil {
-		t.Fatalf("unpinned download should succeed, got %v", err)
-	}
+	require.NoError(t, err, "unpinned download should succeed")
 	defer os.Remove(p)
-	if got, _ := os.ReadFile(p); string(got) != string(payload) {
-		t.Fatalf("downloaded content mismatch: %q", got)
-	}
+	got, err := os.ReadFile(p)
+	require.NoError(t, err)
+	require.Equal(t, string(payload), string(got), "downloaded content mismatch")
 }
 
 // TestValidateDownloadURL pins the HTTPS-only policy (loopback http is the
 // only plaintext exception — used by the live tests and a LAN mirror).
-func TestValidateDownloadURL(t *testing.T) {
-	for _, u := range []string{
-		"https://ollama.com/x.zip", "https://example.com/y",
-		"http://127.0.0.1:8080/x", "http://localhost/x", "http://[::1]:9/x",
-	} {
-		if err := validateDownloadURL(u); err != nil {
-			t.Errorf("%q should be allowed: %v", u, err)
-		}
-	}
-	for _, u := range []string{
-		"http://example.com/x", "http://10.0.0.5/x", "ftp://h/y", "file:///etc/passwd",
-	} {
-		if err := validateDownloadURL(u); err == nil {
-			t.Errorf("%q should be rejected", u)
-		}
-	}
+func TestValidateDownloadURL_RejectsUnsafeDownloadSchemes(t *testing.T) {
+	require.NoError(t, validateDownloadURL("https://ollama.com/x.zip"))
+	require.NoError(t, validateDownloadURL("https://example.com/y"))
+	require.NoError(t, validateDownloadURL("http://127.0.0.1:8080/x"))
+	require.NoError(t, validateDownloadURL("http://localhost/x"))
+	require.NoError(t, validateDownloadURL("http://[::1]:9/x"))
+	assert.Error(t, validateDownloadURL("http://example.com/x"))
+	assert.Error(t, validateDownloadURL("http://10.0.0.5/x"))
+	assert.Error(t, validateDownloadURL("ftp://h/y"))
+	assert.Error(t, validateDownloadURL("file:///etc/passwd"))
 }
 
 // TestUninstallRetries proves a failing uninstall command is retried
 // uninstallRetries times (the command-mode daemon-race mitigation).
-func TestUninstallRetries(t *testing.T) {
+func TestUninstall_RetriesFailedCommandWithinBudget(t *testing.T) {
 	oldR, oldB := uninstallRetries, uninstallBackoff
 	uninstallRetries, uninstallBackoff = 3, 5*time.Millisecond
 	defer func() { uninstallRetries, uninstallBackoff = oldR, oldB }()
@@ -119,16 +114,11 @@ func TestUninstallRetries(t *testing.T) {
 	// A command-mode engine's files live wherever its vendor script put them, so
 	// uninstall declines one PAIR has no record of installing. Claim it, to reach
 	// the retry behavior under test.
-	if err := writeInstallMarker(filepath.Join(ex.baseDir, "fake"), "fake"); err != nil {
-		t.Fatal(err)
-	}
-	err := ex.Uninstall(context.Background(), "fake")
-	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
-		t.Fatalf("expected uninstall failure after 3 attempts, got %v", err)
-	}
-	if data, _ := os.ReadFile(marker); len(data) != 3 {
-		t.Fatalf("expected 3 uninstall attempts, marker has %d (%q)", len(data), data)
-	}
+	require.NoError(t, writeInstallMarker(filepath.Join(ex.baseDir, "fake"), "fake"))
+	require.ErrorContains(t, ex.Uninstall(context.Background(), "fake"), "after 3 attempts", "expected uninstall failure after 3 attempts")
+	data, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	require.Len(t, data, 3, "expected 3 uninstall attempts, marker has")
 }
 
 func hasErr(errs []serviceError, id string) bool {
@@ -143,10 +133,9 @@ func hasErr(errs []serviceError, id string) bool {
 func portOf(t *testing.T, rawURL string) int {
 	t.Helper()
 	u, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, _ := strconv.Atoi(u.Port())
+	require.NoError(t, err)
+	p, err := strconv.Atoi(u.Port())
+	require.NoError(t, err)
 	return p
 }
 
@@ -159,7 +148,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatal("condition not met within timeout")
+	require.FailNow(t, "condition not met within timeout")
 }
 
 func hostKey() string { return runtime.GOOS + "/" + runtime.GOARCH }
@@ -167,7 +156,7 @@ func hostKey() string { return runtime.GOOS + "/" + runtime.GOARCH }
 // TestActionReservedPlaceholderWins is the regression guard for the
 // security fix: a caller-supplied param must NOT be able to override a
 // reserved placeholder like {cli} and hijack argv[0].
-func TestActionReservedPlaceholderWins(t *testing.T) {
+func TestAction_UsesReservedPlaceholderOverCallerParameter(t *testing.T) {
 	m := &Manifest{
 		Engine: "fake", DisplayName: "Fake", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
@@ -183,17 +172,13 @@ func TestActionReservedPlaceholderWins(t *testing.T) {
 	// the model value.
 	res, err := ex.Action(context.Background(), "fake", "echo",
 		json.RawMessage(`{"cli":"definitely-not-a-real-binary","model":"safevalue"}`))
-	if err != nil {
-		t.Fatalf("expected reserved {cli} to win and the command to run, got: %v", err)
-	}
-	if !strings.Contains(string(res), "safevalue") {
-		t.Fatalf("unexpected result: %s", res)
-	}
+	require.NoError(t, err, "expected reserved {cli} to win and the command to run")
+	require.Contains(t, string(res), "safevalue", "unexpected result (%v)", res)
 }
 
 // TestReadinessTimeoutNoSpuriousExit guards the fix that a readiness
 // timeout reports start-failed but NOT a phantom "exited unexpectedly".
-func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
+func TestReadinessTimeout_DoesNotReportSpuriousProcessExit(t *testing.T) {
 	m := &Manifest{
 		Engine: "slow", DisplayName: "Slow", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
@@ -206,34 +191,28 @@ func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
 		}},
 	}
 	ex, _ := capturingExecutor(t, m)
-	err := ex.Start(context.Background(), "slow")
-	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
-		t.Fatalf("expected readiness timeout, got %v", err)
-	}
-	if !hasErr(ex.Errors(), startFailedID("slow")) {
-		t.Fatalf("expected a start-failed error, got %+v", ex.Errors())
-	}
+	require.ErrorContains(t, ex.Start(context.Background(), "slow"), "did not become ready", "expected readiness timeout")
+	require.True(t, hasErr(ex.Errors(), startFailedID("slow")), "expected a start-failed error")
 	// Give the watcher a chance to (wrongly) fire before asserting silence.
 	time.Sleep(400 * time.Millisecond)
-	if hasErr(ex.Errors(), exitedID("slow")) {
-		t.Fatal("must NOT report 'exited unexpectedly' for a readiness timeout")
-	}
-	state, _ := ex.state("slow")
+	require.False(t, hasErr(ex.Errors(), exitedID("slow")), "must NOT report 'exited unexpectedly' for a readiness timeout")
+	state, err := ex.state("slow")
+	require.NoError(t, err)
+	require.NotNil(t, state)
 	state.mu.Lock()
 	proc, running := state.proc, state.running
 	state.mu.Unlock()
-	if proc != nil || running {
-		t.Fatalf("timed-out engine was not cleaned up: proc=%v running=%v", proc != nil, running)
-	}
-	if st, err := ex.Status("slow"); err != nil || st.Running {
-		t.Fatalf("status after timeout = %+v, err=%v; lifecycle lock must be released", st, err)
-	}
+	require.Nil(t, proc, "timed-out engine was not cleaned up: proc (%v)", running)
+	require.False(t, running, "timed-out engine was not cleaned up: proc")
+	st, err := ex.Status("slow")
+	require.NoError(t, err, "status after timeout (%v, %v)", st, err)
+	require.False(t, st.Running, "status after timeout (%v, %v)", st, err)
 }
 
 // TestStartWaitsForDelayedReadinessWithinBudget is a reduced-time regression
 // for engines whose initialization finishes after several failed probes. Start
 // must keep the owned process alive until the configured finite budget expires.
-func TestStartWaitsForDelayedReadinessWithinBudget(t *testing.T) {
+func TestStart_WaitsForDelayedReadinessWithinBudget(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	p := m.Platforms[hostKey()]
 	p.Runtime.Env["FAKE_START_DELAY"] = "750ms"
@@ -243,42 +222,41 @@ func TestStartWaitsForDelayedReadinessWithinBudget(t *testing.T) {
 	ex, _ := capturingExecutor(t, m)
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	startedAt := time.Now()
-	if err := ex.Start(context.Background(), "fake"); err != nil {
-		t.Fatalf("delayed start within readiness budget failed: %v", err)
-	}
-	if elapsed := time.Since(startedAt); elapsed < 700*time.Millisecond {
-		t.Fatalf("fake engine did not exercise delayed readiness: elapsed=%s", elapsed)
-	}
-	if st, err := ex.Status("fake"); err != nil || !st.Running || !st.Healthy {
-		t.Fatalf("delayed start status = %+v, err=%v", st, err)
-	}
-	if enabled, known, err := ex.desired.get("fake"); err != nil || !known || !enabled {
-		t.Fatalf("desired state after delayed start = (%v, %v, %v), want known ON", enabled, known, err)
-	}
-	if hasErr(ex.Errors(), startFailedID("fake")) {
-		t.Fatalf("delayed success retained a start-failed error: %+v", ex.Errors())
-	}
+	require.NoError(t, ex.Start(context.Background(), "fake"), "delayed start within readiness budget failed")
+	require.GreaterOrEqual(t, time.Since(startedAt), 700*time.Millisecond, "fake engine did not exercise delayed readiness: elapsed")
+	st, err := ex.Status("fake")
+	require.NoError(t, err, "delayed start status (%v, %v)", st, err)
+	require.True(t, st.Running, "delayed start status (%v, %v)", st, err)
+	require.True(t, st.Healthy, "delayed start status (%v, %v)", st, err)
+	enabled, known, err := ex.desired.get("fake")
+	require.NoError(t, err, "desired state after delayed start (%v, %v, %v)", enabled, known, err)
+	require.True(t, known, "desired state after delayed start (%v, %v, %v)", enabled, known, err)
+	require.True(t, enabled, "desired state after delayed start (%v, %v, %v)", enabled, known, err)
+	require.False(t, hasErr(ex.Errors(), startFailedID("fake")), "delayed success retained a start-failed error")
 }
 
 // TestConcurrentStartIsSerialized guards the per-engine op lock: many
 // concurrent Starts must not race or double-spawn. Run under -race.
-func TestConcurrentStartIsSerialized(t *testing.T) {
+func TestConcurrentStart_IsSerialized(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); _ = ex.Start(context.Background(), "fake") }()
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, ex.Start(context.Background(), "fake"))
+		}()
 	}
 	wg.Wait()
-	if st, _ := ex.Status("fake"); !st.Running {
-		t.Fatalf("expected running after concurrent starts, got %+v", st)
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err)
+	require.True(t, st.Running, "expected running after concurrent starts (%v)", st)
 }
 
-func TestInstallChecksumMismatchReported(t *testing.T) {
+func TestInstall_ReportsChecksumMismatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("payload"))
+		writeTestResponse(t, w, []byte("payload"))
 	}))
 	defer srv.Close()
 	m := &Manifest{
@@ -290,19 +268,12 @@ func TestInstallChecksumMismatchReported(t *testing.T) {
 		}},
 	}
 	ex, c := capturingExecutor(t, m)
-	err := ex.Install(context.Background(), "fake")
-	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Fatalf("expected checksum mismatch, got %v", err)
-	}
-	if !hasErr(ex.Errors(), installFailedID("fake")) {
-		t.Fatalf("expected install-failed to be reported, got %+v", ex.Errors())
-	}
-	if !c.has("engine:install-progress") {
-		t.Fatal("expected an install-progress notification")
-	}
+	require.ErrorContains(t, ex.Install(context.Background(), "fake"), "checksum mismatch", "expected checksum mismatch")
+	require.True(t, hasErr(ex.Errors(), installFailedID("fake")), "expected install-failed to be reported")
+	require.True(t, c.has("engine:install-progress"), "expected an install-progress notification")
 }
 
-func TestHealthFlipReportsAndClears(t *testing.T) {
+func TestHealthFlip_ReportsAndClears(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -331,9 +302,7 @@ func TestHealthFlipReportsAndClears(t *testing.T) {
 	}
 	ex, _ := capturingExecutor(t, m)
 	t.Cleanup(func() { _ = ex.Stop("d") })
-	if err := ex.Start(context.Background(), "d"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), "d"), "start")
 
 	healthy.Store(false)
 	waitFor(t, 6*time.Second, func() bool { return hasErr(ex.Errors(), unhealthyID("d")) })
@@ -341,155 +310,120 @@ func TestHealthFlipReportsAndClears(t *testing.T) {
 	waitFor(t, 6*time.Second, func() bool { return !hasErr(ex.Errors(), unhealthyID("d")) })
 }
 
-func TestUnexpectedExitReported(t *testing.T) {
+func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
-	if err := ex.Start(context.Background(), "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	st, _ := ex.Status("fake")
+	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
+	st, err := ex.Status("fake")
+	require.NoError(t, err)
 	// The /exit route makes the fake engine os.Exit(1) — a crash.
 	_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/exit", st.Port))
-	waitFor(t, 6*time.Second, func() bool { s, _ := ex.Status("fake"); return !s.Running })
-	if !hasErr(ex.Errors(), exitedID("fake")) {
-		t.Fatalf("expected an 'exited' error after a crash, got %+v", ex.Errors())
-	}
+	waitFor(t, 6*time.Second, func() bool {
+		s, err := ex.Status("fake")
+		require.NoError(t, err)
+		return !s.Running
+	})
+	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
 }
 
-func TestNormalStopIsSilent(t *testing.T) {
+func TestNormalStop_IsSilent(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
-	if err := ex.Start(context.Background(), "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if err := ex.Stop("fake"); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
+	require.NoError(t, ex.Stop("fake"), "stop")
 	time.Sleep(300 * time.Millisecond) // let any watcher fire
-	if hasErr(ex.Errors(), exitedID("fake")) {
-		t.Fatal("a normal stop must not report 'exited unexpectedly'")
-	}
+	require.False(t, hasErr(ex.Errors(), exitedID("fake")), "a normal stop must not report 'exited unexpectedly'")
 }
 
-func TestRestartProcess(t *testing.T) {
+func TestRestart_StopsAndStartsManagedProcess(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
-	if err := ex.Start(context.Background(), "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if err := ex.Restart(context.Background(), "fake"); err != nil {
-		t.Fatalf("restart: %v", err)
-	}
-	if st, _ := ex.Status("fake"); !st.Running || !st.Healthy {
-		t.Fatalf("expected running+healthy after restart, got %+v", st)
-	}
+	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
+	require.NoError(t, ex.Restart(context.Background(), "fake"), "restart")
+	st, err := ex.Status("fake")
+	require.NoError(t, err)
+	require.True(t, st.Running, "expected running+healthy after restart (%v)", st)
+	require.True(t, st.Healthy, "expected running+healthy after restart (%v)", st)
 }
 
-func TestActionUnknownAndHTTPError(t *testing.T) {
+func TestAction_ReportsUnknownActionAndHTTPFailure(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["err"] = Action{HTTP: &ActionHTTP{Method: "GET", Path: "/api/error"}}
 	ex, _ := capturingExecutor(t, m)
 	t.Cleanup(func() { _ = ex.Stop("fake") })
-	if err := ex.Start(context.Background(), "fake"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if _, err := ex.Action(context.Background(), "fake", "nope", nil); err == nil || !strings.Contains(err.Error(), "no action") {
-		t.Fatalf("expected unknown-action error, got %v", err)
-	}
-	if _, err := ex.Action(context.Background(), "fake", "err", nil); err == nil || !strings.Contains(err.Error(), "HTTP 500") {
-		t.Fatalf("expected HTTP 500 error, got %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), "fake"), "start")
+	_, err := ex.Action(context.Background(), "fake", "nope", nil)
+	require.ErrorContains(t, err, "no action", "expected unknown-action error")
+	_, err = ex.Action(context.Background(), "fake", "err", nil)
+	require.ErrorContains(t, err, "HTTP 500", "expected HTTP 500 error")
 }
 
-func TestExpandPathForms(t *testing.T) {
+func TestExpandPath_ResolvesHomeAndEnvironmentVariables(t *testing.T) {
 	t.Setenv("NVPAIR_TEST_VAR", "xyz")
-	for _, tc := range []struct {
-		name, goos, input, want string
-	}{
-		{"windows percent", "windows", "a/%NVPAIR_TEST_VAR%/b", "a/xyz/b"},
-		{"windows dollar", "windows", "a/$NVPAIR_TEST_VAR/b", "a/$NVPAIR_TEST_VAR/b"},
-		{"windows braced dollar", "windows", "a/${NVPAIR_TEST_VAR}/b", "a/${NVPAIR_TEST_VAR}/b"},
-		{"unix dollar", "linux", "a/$NVPAIR_TEST_VAR/b", "a/xyz/b"},
-		{"unix braced dollar", "linux", "a/${NVPAIR_TEST_VAR}/b", "a/xyz/b"},
-		{"unix percent", "linux", "a/%NVPAIR_TEST_VAR%/b", "a/%NVPAIR_TEST_VAR%/b"},
-		{"unix shell parameters", "linux", `tar -xzf "$1" -C "$3"`, `tar -xzf "$1" -C "$3"`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := expandPathForOS(tc.input, tc.goos); got != tc.want {
-				t.Errorf("expandPathForOS(%q, %q) = %q, want %q", tc.input, tc.goos, got, tc.want)
-			}
+	test := func(name, goos, input, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, expandPathForOS(input, goos))
 		})
 	}
+	test("windows percent", "windows", "a/%NVPAIR_TEST_VAR%/b", "a/xyz/b")
+	test("windows dollar", "windows", "a/$NVPAIR_TEST_VAR/b", "a/$NVPAIR_TEST_VAR/b")
+	test("windows braced dollar", "windows", "a/${NVPAIR_TEST_VAR}/b", "a/${NVPAIR_TEST_VAR}/b")
+	test("unix dollar", "linux", "a/$NVPAIR_TEST_VAR/b", "a/xyz/b")
+	test("unix braced dollar", "linux", "a/${NVPAIR_TEST_VAR}/b", "a/xyz/b")
+	test("unix percent", "linux", "a/%NVPAIR_TEST_VAR%/b", "a/%NVPAIR_TEST_VAR%/b")
+	test("unix shell parameters", "linux", `tar -xzf "$1" -C "$3"`, `tar -xzf "$1" -C "$3"`)
 	if home, err := os.UserHomeDir(); err == nil {
-		for _, goos := range []string{"windows", "linux"} {
-			if got, want := expandPathForOS("~/sub", goos), filepath.Join(home, "sub"); got != want {
-				t.Errorf("%s ~ expansion: got %q, want %q", goos, got, want)
-			}
-		}
+		test("windows home", "windows", "~/sub", filepath.Join(home, "sub"))
+		test("unix home", "linux", "~/sub", filepath.Join(home, "sub"))
 	}
 }
 
-func TestBundledWindowsLMStudioUninstallExpansion(t *testing.T) {
+func TestWindowsLMStudioUninstall_ExpandsDeclaredPaths(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio manifest not loaded")
-	}
+	require.True(t, ok, "lmstudio manifest not loaded")
 	for _, arch := range []string{"amd64", "arm64"} {
 		p, ok := m.PlatformFor("windows", arch)
-		if !ok || p.Uninstall == nil || len(p.Uninstall.Run) == 0 {
-			t.Fatalf("windows/%s uninstall command missing", arch)
-		}
+		require.True(t, ok, "windows/ (%v)", arch)
+		require.NotNil(t, p.Uninstall, "windows/ (%v)", arch)
+		require.NotEmpty(t, p.Uninstall.Run, "windows/ (%v)", arch)
 		command := p.Uninstall.Run[len(p.Uninstall.Run)-1]
-		if got := expandPathForOS(command, "windows"); got != command {
-			t.Errorf("windows/%s uninstall command changed during expansion:\n got: %q\nwant: %q", arch, got, command)
-		}
-		for _, variable := range []string{"$root", "$_", "$env:USERPROFILE"} {
-			if !strings.Contains(command, variable) {
-				t.Errorf("windows/%s uninstall command is missing %q", arch, variable)
-			}
-		}
+		assert.Equal(t, command, expandPathForOS(command, "windows"), "windows/ (%v)", arch)
+		assert.Contains(t, command, "$root", "Windows uninstall variable must be preserved for %s", arch)
+		assert.Contains(t, command, "$_", "Windows uninstall variable must be preserved for %s", arch)
+		assert.Contains(t, command, "$env:USERPROFILE", "Windows uninstall variable must be preserved for %s", arch)
 	}
 }
 
 // TestBundledManifestsGolden validates the shipped manifests load and
 // validate (a typo would otherwise only surface as a runtime fatal).
-func TestBundledManifestsGolden(t *testing.T) {
+func TestBundledManifests_ValidateAndExposeRequiredActions(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
-		t.Fatalf("bundled manifests invalid: %v", err)
-	}
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "bundled manifests invalid")
 	for _, want := range []string{"ollama", "lmstudio", "llamacpp"} {
 		m, ok := reg.Get(want)
-		if !ok {
-			t.Fatalf("missing bundled engine %q (have %v)", want, reg.Names())
-		}
-		if _, ok := m.Actions["list_models"]; !ok {
-			t.Errorf("bundled %q is missing the list_models action", want)
-		}
+		require.True(t, ok, "missing bundled engine (%v)", want)
+		assert.Contains(t, m.Actions, "list_models", "bundled (%v)", want)
 	}
 }
 
-func TestDownloadSizeCap(t *testing.T) {
+func TestDownload_RejectsResponseExceedingSizeLimit(t *testing.T) {
 	old := maxDownloadBytes
 	maxDownloadBytes = 64
 	t.Cleanup(func() { maxDownloadBytes = old })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(make([]byte, 256)) // larger than the cap
+		writeTestResponse(t, w, make([]byte, 256)) // larger than the cap
 	}))
 	defer srv.Close()
 
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
-	if _, err := ex.download(context.Background(), "x", &Fetch{URL: srv.URL, SHA256: "abc"}); err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("expected size-cap error, got %v", err)
-	}
+	_, err := ex.download(context.Background(), "x", &Fetch{URL: srv.URL, SHA256: "abc"})
+	require.ErrorContains(t, err, "exceeds", "expected size-cap error")
 }
 
 // TestStopClearsUnhealthy guards that a deliberate stop clears a lingering
 // unhealthy error (the same fix-family as clearing exited on start).
-func TestStopClearsUnhealthy(t *testing.T) {
+func TestStop_ClearsUnhealthy(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -518,9 +452,7 @@ func TestStopClearsUnhealthy(t *testing.T) {
 		}},
 	}
 	ex, _ := capturingExecutor(t, m)
-	if err := ex.Start(context.Background(), "d"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	require.NoError(t, ex.Start(context.Background(), "d"), "start")
 	healthy.Store(false)
 	waitFor(t, 6*time.Second, func() bool { return hasErr(ex.Errors(), unhealthyID("d")) })
 	closed := make(chan struct{})
@@ -535,15 +467,11 @@ func TestStopClearsUnhealthy(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
-	if err := ex.Stop("d"); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
+	require.NoError(t, ex.Stop("d"), "stop")
 	select {
 	case <-closed:
 	case <-time.After(5 * time.Second):
-		t.Fatal("stop command did not close the test endpoint")
+		require.FailNow(t, "stop command did not close the test endpoint")
 	}
-	if hasErr(ex.Errors(), unhealthyID("d")) {
-		t.Fatal("stop must clear the lingering unhealthy error")
-	}
+	require.False(t, hasErr(ex.Errors(), unhealthyID("d")), "stop must clear the lingering unhealthy error")
 }

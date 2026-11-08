@@ -2,7 +2,10 @@ module nvpair-errors
 
 go 1.25.0
 
-require nvpair-shared v0.0.0-00010101000000-000000000000
+require (
+	github.com/stretchr/testify v1.12.1
+	nvpair-shared v0.0.0-00010101000000-000000000000
+)
 
 replace nvpair-shared => ../shared
 
@@ -11,6 +14,7 @@ require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/miekg/dns v1.1.55 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.12.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

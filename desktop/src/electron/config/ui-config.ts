@@ -22,6 +22,8 @@ interface UiConfig {
     launchAtLogin: boolean
     /** Whether the login item carries the hidden-start argument, so a launch at sign-in goes straight to the tray with no window. Only affects a login-item launch — starting the app by hand always opens the Overview. */
     startHidden: boolean
+    /** Last app version that attempted to replace an enabled but stale helper. */
+    macHelperRepairAttemptVersion: string
 }
 
 const DEFAULTS: UiConfig = {
@@ -29,7 +31,8 @@ const DEFAULTS: UiConfig = {
     modularLogLevel: MODULAR_DEFAULT_LOG_LEVEL,
     macHelperSetupComplete: false,
     launchAtLogin: false,
-    startHidden: true
+    startHidden: true,
+    macHelperRepairAttemptVersion: ''
 }
 
 let config: UiConfig = { ...DEFAULTS }
@@ -159,5 +162,16 @@ export function isMacHelperSetupComplete(): boolean {
 
 export function setMacHelperSetupComplete(value: boolean): void {
     config.macHelperSetupComplete = value
+    save()
+}
+
+export function getMacHelperRepairAttemptVersion(): string {
+    return config.macHelperRepairAttemptVersion
+}
+
+/** Record the attempt and invalidate completed setup before replacing the helper. */
+export function setMacHelperRepairAttemptVersion(value: string): void {
+    config.macHelperRepairAttemptVersion = value
+    config.macHelperSetupComplete = false
     save()
 }

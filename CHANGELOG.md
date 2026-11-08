@@ -11,6 +11,38 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.12 — Restore macOS privileged helper communication after upgrades (#192)
+
+- Preserve the helper-specific signing identifier needed to communicate with the macOS background helper and complete setup.
+- Replace an enabled but unreachable helper once per app version after an upgrade, and keep setup incomplete until helper communication and firewall configuration succeed.
+
+## 1.0.11 — Use the PAIR symbol in the macOS menu bar (#194)
+
+- Replace the opaque app tile with a transparent PAIR house-and-network symbol, with Retina support.
+
+## 1.0.10 — Background services shut down in parallel (#173)
+
+- The background services now shut down in parallel rather than one at a time, so a busy machine no longer pays each service's shutdown in turn.
+- When quitting is slow, the service log records where the time went.
+
+## 1.0.9 — Quitting is prompt again (#137)
+
+- Quitting no longer stalls when an engine is running outside PAIR's control. The engine shutdown that runs on the way out was being performed twice, and the repeat cost about a second.
+
+## 1.0.8 — Removing a machine you added by address forgets it in the terminal interface (#172)
+
+- In the terminal interface, removing a cluster member that you added with `f` now also forgets its address, so it no longer reappears after a restart.
+
+## 1.0.7 — Copy API endpoints with /v1 included (#185)
+
+- API endpoint URLs now include `/v1` when displayed or copied, so they can be pasted directly into Hermes and other clients that expect an OpenAI-compatible base URL.
+- The getting-started examples use the copied URL directly and explain how to remove `/v1` for native Ollama clients.
+
+## 1.0.6 — Model lookups through PAIR reach a node that has the model (#163)
+
+- `/api/show` requests to PAIR's Ollama port now go only to a node that has the requested model. Before, they could reach a node without it and get a 404, so a client such as Hermes Agent could not read the model's details.
+- Ollama model names that include the default `library` namespace or `registry.ollama.ai` host, or that differ only in case, now match the same model when PAIR picks a node. Inference requests that use such names reach a node that has the model instead of failing with a 502.
+
 ## 1.0.5 — Harden trusted-peer file paths (#159)
 
 - Reject unsafe peer identifiers before loading, writing, or removing trust-store files, protecting cluster data from path traversal.

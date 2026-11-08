@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The demo's guarantees are all about what it does NOT do: nothing at or after
@@ -31,24 +33,19 @@ func targets(n int) []demoTarget {
 	return out
 }
 
-func TestScheduleSubmitsNothingAtOrAfterTheCeiling(t *testing.T) {
+func TestSchedule_SubmitsNothingAtOrAfterTheCeiling(t *testing.T) {
 	// The ceiling is the demo's one hard promise: a burst that outlives its
 	// window is indistinguishable from a load generator someone forgot about.
 	for _, count := range []int{1, 3, 7, 60, 61, 200} {
 		schedule := buildDemoSchedule(targets(count))
-		if len(schedule) == 0 {
-			t.Fatalf("%d targets produced an empty schedule", count)
-		}
+		require.NotEmpty(t, schedule, "%d targets produced an empty schedule", count)
 		for _, req := range schedule {
-			if req.at >= demoMaxSubmit {
-				t.Errorf("%d targets: request planned at %s, ceiling is %s",
-					count, req.at, demoMaxSubmit)
-			}
+			assert.Less(t, req.at, demoMaxSubmit, "%d targets: request must precede the ceiling", count)
 		}
 	}
 }
 
-func TestScheduleLastSubmissionLandsAtFiftyEight(t *testing.T) {
+func TestScheduleLastSubmission_LandsAtFiftyEight(t *testing.T) {
 	// Pins the cohort/stage arithmetic against a silent change: if the omitted
 	// 50s cohort were reinstated, or a stage offset moved, the window would
 	// quietly stop being what both front ends document.
@@ -59,38 +56,29 @@ func TestScheduleLastSubmissionLandsAtFiftyEight(t *testing.T) {
 			last = req.at
 		}
 	}
-	if want := 58 * time.Second; last != want {
-		t.Errorf("last submission at %s, want %s", last, want)
-	}
+	assert.Equal(t, 58*time.Second, last)
 }
 
-func TestScheduleTouchesEveryTargetBeforeRepeatingOne(t *testing.T) {
+func TestSchedule_TouchesEveryTargetBeforeRepeatingOne(t *testing.T) {
 	// The round-robin exists so a host with many models demonstrates all of
 	// them. Assigning targets before sorting by time would still touch them all
 	// eventually, but not before revisiting some — and a demo that sends four
 	// requests to one model and none to another is not showing the router.
 	const count = 17
 	schedule := buildDemoSchedule(targets(count))
-	if len(schedule) < count {
-		t.Fatalf("schedule has %d requests, too few for %d targets", len(schedule), count)
-	}
+	require.GreaterOrEqual(t, len(schedule), count, "schedule must cover every target")
 
 	seen := map[string]int{}
 	for _, req := range schedule[:count] {
 		seen[req.target.model]++
 	}
-	if len(seen) != count {
-		t.Errorf("first %d requests covered %d distinct targets, want %d",
-			count, len(seen), count)
-	}
+	assert.Len(t, seen, count, "first requests must cover distinct targets")
 	for model, n := range seen {
-		if n != 1 {
-			t.Errorf("target %q received %d of the first %d requests, want 1", model, n, count)
-		}
+		assert.Equal(t, 1, n, "target %q among the first %d requests", model, count)
 	}
 }
 
-func TestScheduleAddsAgentsSoEveryTargetFits(t *testing.T) {
+func TestSchedule_AddsAgentsSoEveryTargetFits(t *testing.T) {
 	// Beyond the 60 requests the base agent count produces, the schedule has to
 	// grow rather than drop targets off the end.
 	const count = 130
@@ -102,19 +90,12 @@ func TestScheduleAddsAgentsSoEveryTargetFits(t *testing.T) {
 	}
 	// 130 targets over a 26-letter model alphabet is 26 distinct names; what
 	// matters is that the schedule is long enough to cover the target count.
-	if len(schedule) < count {
-		t.Errorf("%d targets produced only %d requests", count, len(schedule))
-	}
-	if got := demoAgentsPerCohort(count); got <= demoBaseAgentsPerCohort {
-		t.Errorf("agents per cohort %d did not grow past the base %d",
-			got, demoBaseAgentsPerCohort)
-	}
+	assert.GreaterOrEqual(t, len(schedule), count, "schedule must cover every target")
+	assert.Greater(t, demoAgentsPerCohort(count), demoBaseAgentsPerCohort, "agents per cohort must grow past the base")
 }
 
-func TestScheduleIsEmptyWithoutTargets(t *testing.T) {
-	if got := buildDemoSchedule(nil); got != nil {
-		t.Errorf("no targets produced %d requests, want none", len(got))
-	}
+func TestSchedule_IsEmptyWithoutTargets(t *testing.T) {
+	assert.Empty(t, buildDemoSchedule(nil))
 }
 
 // tickAt runs the runner's tick as though the given time had elapsed.
@@ -135,13 +116,11 @@ func armedRunner(t *testing.T, targetCount int) *demoRunner {
 	d.executable = "/nonexistent/inference-dispatcher"
 	d.status = demoPreparing
 	d.gen = 1
-	if !d.armed(demoTargetsMsg{gen: 1, targets: targets(targetCount)}) {
-		t.Fatal("runner did not arm")
-	}
+	require.True(t, d.armed(demoTargetsMsg{gen: 1, targets: targets(targetCount)}), "runner did not arm")
 	return d
 }
 
-func TestTickSubmitsEachRequestExactlyOnce(t *testing.T) {
+func TestTick_SubmitsEachRequestExactlyOnce(t *testing.T) {
 	// The cursor is what prevents a replay. Ticking repeatedly over the same
 	// window must not resend anything, which a "submit everything due" loop
 	// without the cursor would do on every single tick.
@@ -156,60 +135,42 @@ func TestTickSubmitsEachRequestExactlyOnce(t *testing.T) {
 			break
 		}
 	}
-	if total != planned {
-		t.Errorf("submitted %d of %d planned requests", total, planned)
-	}
+	assert.Equal(t, planned, total, "submitted requests")
 }
 
 // TestOnlyStartedRequestsCount is the regression guard for the progress note
 // counting a request as sent when its dispatcher never started. The desktop
 // counts on spawn, and so does this.
-func TestOnlyStartedRequestsCount(t *testing.T) {
+func TestRequestCounter_CountsOnlyStartedRequests(t *testing.T) {
 	d := armedRunner(t, 3)
 	d.started = time.Now()
 	cmds, _ := d.tick()
-	if len(cmds) == 0 {
-		t.Fatal("no requests were due at the start of the window")
-	}
-	if d.submitted != 0 {
-		t.Errorf("counted %d sent before any dispatcher started", d.submitted)
-	}
+	require.NotEmpty(t, cmds, "no requests were due at the start of the window")
+	assert.Equal(t, 0, d.submitted, "counted sent before any dispatcher started")
 	// armedRunner's executable does not exist, so every one of these fails.
 	for _, cmd := range cmds {
-		if msg := cmd(); msg != nil {
-			t.Errorf("a dispatcher that never started reported %#v", msg)
-		}
+		assert.Nil(t, cmd(), "a dispatcher that never started reported a message")
 	}
 
 	d.spawned(demoSpawnedMsg{gen: d.gen})
-	if d.submitted != 1 {
-		t.Errorf("a started dispatcher was counted %d times, want once", d.submitted)
-	}
+	assert.Equal(t, 1, d.submitted, "a started dispatcher must be counted once")
 	d.spawned(demoSpawnedMsg{gen: d.gen - 1})
-	if d.submitted != 1 {
-		t.Error("an earlier run's request was counted in this one")
-	}
+	assert.Equal(t, 1, d.submitted, "an earlier run's request was counted in this one")
 }
 
-func TestTickSubmitsNothingOnceTheWindowHasClosed(t *testing.T) {
+func TestTick_SubmitsNothingOnceTheWindowHasClosed(t *testing.T) {
 	// The wall clock, not the tick count, enforces the ceiling — so a process
 	// that was suspended across the whole window must come back to a finished
 	// demo rather than flushing sixty requests at once.
 	d := armedRunner(t, 3)
 
 	n, finished := tickAt(t, d, demoMaxSubmit+30*time.Second)
-	if n != 0 {
-		t.Errorf("submitted %d requests after the ceiling, want 0", n)
-	}
-	if !finished {
-		t.Error("tick past the ceiling did not finish the run")
-	}
-	if d.status != demoIdle {
-		t.Errorf("status %v after the ceiling, want idle", d.status)
-	}
+	assert.Equal(t, 0, n, "submitted requests after the ceiling")
+	assert.True(t, finished, "tick past the ceiling did not finish the run")
+	assert.Equal(t, demoIdle, d.status, "status after the ceiling")
 }
 
-func TestStopEndsTheRunAndIgnoresLateDiscovery(t *testing.T) {
+func TestStop_EndsTheRunAndIgnoresLateDiscovery(t *testing.T) {
 	// Discovery spawns processes and can take seconds. Without the generation
 	// guard a stop during it would be undone by its own reply, starting a demo
 	// the operator had already cancelled.
@@ -220,35 +181,24 @@ func TestStopEndsTheRunAndIgnoresLateDiscovery(t *testing.T) {
 	d.gen = 1
 
 	d.stop()
-	if d.status != demoIdle {
-		t.Fatalf("status %v after stop, want idle", d.status)
-	}
+	require.Equal(t, demoIdle, d.status, "status after stop")
 
-	if d.armed(demoTargetsMsg{gen: 1, targets: targets(2)}) {
-		t.Error("a stale discovery reply started a run")
-	}
-	if d.status != demoIdle {
-		t.Errorf("status %v after a stale reply, want idle", d.status)
-	}
+	assert.False(t, d.armed(demoTargetsMsg{gen: 1, targets: targets(2)}), "a stale discovery reply started a run")
+	assert.Equal(t, demoIdle, d.status, "status after a stale reply")
 }
 
-func TestStopMidRunLeavesNothingScheduled(t *testing.T) {
+func TestStopMidRun_LeavesNothingScheduled(t *testing.T) {
 	d := armedRunner(t, 3)
-	if n, _ := tickAt(t, d, 0); n == 0 {
-		t.Fatal("no requests were due at the start of the window")
-	}
+	n, _ := tickAt(t, d, 0)
+	require.NotEqual(t, 0, n, "no requests were due at the start of the window")
 
 	d.stop()
 	n, finished := tickAt(t, d, 5*time.Second)
-	if n != 0 {
-		t.Errorf("submitted %d requests after stop, want 0", n)
-	}
-	if finished {
-		t.Error("a tick after stop reported the run finishing again")
-	}
+	assert.Equal(t, 0, n, "submitted requests after stop")
+	assert.False(t, finished, "a tick after stop reported the run finishing again")
 }
 
-func TestEmptyInventoryDoesNotStartARun(t *testing.T) {
+func TestEmptyInventory_DoesNotStartARun(t *testing.T) {
 	// An engine that is up but has no model is the common case on a fresh
 	// install, and it must read as "install a model", not as a broken demo.
 	d := newDemoRunner()
@@ -256,15 +206,11 @@ func TestEmptyInventoryDoesNotStartARun(t *testing.T) {
 	d.status = demoPreparing
 	d.gen = 1
 
-	if d.armed(demoTargetsMsg{gen: 1}) {
-		t.Error("armed with no targets")
-	}
-	if d.status != demoIdle {
-		t.Errorf("status %v, want idle", d.status)
-	}
+	assert.False(t, d.armed(demoTargetsMsg{gen: 1}), "armed with no targets")
+	assert.Equal(t, demoIdle, d.status)
 }
 
-func TestStartRefusesWhenNoProxyIsListening(t *testing.T) {
+func TestStart_RefusesWhenNoProxyIsListening(t *testing.T) {
 	// The demo targets proxy ports, never an engine's own, so with no proxy up
 	// there is nowhere legitimate to send traffic. It must refuse rather than
 	// invent a port.
@@ -273,26 +219,22 @@ func TestStartRefusesWhenNoProxyIsListening(t *testing.T) {
 	d.executable = "/nonexistent/inference-dispatcher"
 
 	tracker := newProxyTracker()
-	if _, err := d.start(tracker); err == nil {
-		t.Fatal("start succeeded with both proxies down")
-	}
-	if d.status != demoIdle {
-		t.Errorf("status %v after a refused start, want idle", d.status)
-	}
+	_, err := d.start(tracker)
+	require.Error(t, err, "start succeeded with both proxies down")
+	assert.Equal(t, demoIdle, d.status, "status after a refused start")
 }
 
-func TestStartRefusesASecondConcurrentRun(t *testing.T) {
+func TestStart_RefusesASecondConcurrentRun(t *testing.T) {
 	d := armedRunner(t, 2)
 	tracker := newProxyTracker()
 	tracker.engines[0].ready = true
 	tracker.engines[0].port = 11434
 
-	if _, err := d.start(tracker); err == nil {
-		t.Error("a second demo started while one was running")
-	}
+	_, err := d.start(tracker)
+	assert.Error(t, err, "a second demo started while one was running")
 }
 
-func TestDispatcherEnvDropsTheWholeDispatcherNamespace(t *testing.T) {
+func TestDispatcherEnv_DropsTheWholeDispatcherNamespace(t *testing.T) {
 	// _CONFIG loads an arbitrary config, _LOOP runs past the ceiling, and the
 	// log variables write inference metadata to disk. Stripping the prefix
 	// rather than a list is what keeps a newly added variable from becoming a
@@ -307,54 +249,37 @@ func TestDispatcherEnvDropsTheWholeDispatcherNamespace(t *testing.T) {
 	var kept bool
 	for _, kv := range dispatcherEnv() {
 		name, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(strings.ToLower(name), "inference_dispatcher_") {
-			t.Errorf("child environment still carries %q", name)
-		}
+		assert.False(t, strings.HasPrefix(strings.ToLower(name), "inference_dispatcher_"), "child environment still carries %q", name)
 		if name == "PAIR_DEMO_KEEPME" {
 			kept = true
 		}
 	}
-	if !kept {
-		t.Error("stripping removed an unrelated variable")
-	}
-	if _, ok := os.LookupEnv("INFERENCE_DISPATCHER_LOOP"); !ok {
-		t.Error("this process's own environment was modified")
-	}
+	assert.True(t, kept, "stripping removed an unrelated variable")
+	_, ok := os.LookupEnv("INFERENCE_DISPATCHER_LOOP")
+	assert.True(t, ok, "this process's own environment was modified")
 }
 
-func TestGeneratesMirrorsTheDispatcher(t *testing.T) {
+func TestGenerates_MirrorsTheDispatcher(t *testing.T) {
 	// A model advertising neither a type nor capabilities gets the benefit of
 	// the doubt, because that is what the dispatcher itself does — being
 	// stricter here would silently exclude models the demo could have used.
-	cases := []struct {
-		name  string
-		model dispatcherModel
-		want  bool
-	}{
-		{"explicit llm", dispatcherModel{Type: "LLM"}, true},
-		{"explicit embedding", dispatcherModel{Type: "embeddings"}, false},
-		{"chat capability", dispatcherModel{Capabilities: []string{"vision", "chat"}}, true},
-		{"no generation capability", dispatcherModel{Capabilities: []string{"embedding"}}, false},
-		{"nothing declared", dispatcherModel{}, true},
-		{"type wins over capabilities", dispatcherModel{
-			Type: "embeddings", Capabilities: []string{"chat"}}, false},
-		// Verbatim from a live LM Studio: a real chat model whose advertised
-		// capabilities name neither chat nor completion. Checking capabilities
-		// ahead of the type would exclude the only usable model on the host, so
-		// the ordering above is load-bearing rather than arbitrary.
-		{"real llm with unrelated capabilities", dispatcherModel{
-			Type:         "llm",
-			Capabilities: []string{"trained_for_tool_use", "vision"},
-		}, true},
-		{"real embedding model", dispatcherModel{Type: "embedding"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.model.generates(); got != tc.want {
-				t.Errorf("generates() = %v, want %v", got, tc.want)
-			}
+	test := func(name string, model dispatcherModel, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, model.generates())
 		})
 	}
+	test("explicit llm", dispatcherModel{Type: "LLM"}, true)
+	test("explicit embedding", dispatcherModel{Type: "embeddings"}, false)
+	test("chat capability", dispatcherModel{Capabilities: []string{"vision", "chat"}}, true)
+	test("no generation capability", dispatcherModel{Capabilities: []string{"embedding"}}, false)
+	test("nothing declared", dispatcherModel{}, true)
+	test("type wins over capabilities", dispatcherModel{Type: "embeddings", Capabilities: []string{"chat"}}, false)
+	// Verbatim from a live LM Studio: a real chat model whose advertised
+	// capabilities name neither chat nor completion. Checking capabilities
+	// ahead of the type would exclude the only usable model on the host, so
+	// the ordering above is load-bearing rather than arbitrary.
+	test("real llm with unrelated capabilities", dispatcherModel{Type: "llm", Capabilities: []string{"trained_for_tool_use", "vision"}}, true)
+	test("real embedding model", dispatcherModel{Type: "embedding"}, false)
 }
 
 // fakeDispatcher writes an executable that records its arguments and prints the
@@ -368,13 +293,11 @@ func fakeDispatcher(t *testing.T, stdout string) (exe, argsFile string) {
 	exe = filepath.Join(dir, "inference-dispatcher")
 	argsFile = filepath.Join(dir, "args")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat <<'JSON'\n" + stdout + "\nJSON\n"
-	if err := os.WriteFile(exe, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(exe, []byte(script), 0o700))
 	return exe, argsFile
 }
 
-func TestProbeAsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing.T) {
+func TestProbe_AsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing.T) {
 	// This runs the real command path. A mistyped flag would otherwise show up
 	// only as a demo that always says no model is available — the failure mode
 	// least likely to be read as a bug in this code.
@@ -385,60 +308,38 @@ func TestProbeAsksTheDispatcherCorrectlyAndKeepsOnlyGenerativeModels(t *testing.
 		{"name":"","type":"llm"}
 	]`)
 
-	got := probeModels(context.Background(), exe, "ollama", 11434)
-
-	want := []string{"llama3.2:latest", "mystery-model"}
-	if len(got) != len(want) {
-		t.Fatalf("got %d targets %+v, want %d", len(got), got, len(want))
-	}
-	for i, model := range want {
-		if got[i].model != model {
-			t.Errorf("target %d is %q, want %q", i, got[i].model, model)
-		}
-		if got[i].backend != "ollama" || got[i].port != 11434 {
-			t.Errorf("target %d addressed %s:%d, want ollama:11434",
-				i, got[i].backend, got[i].port)
-		}
-	}
+	assert.Equal(t, []demoTarget{
+		{backend: "ollama", port: 11434, model: "llama3.2:latest"},
+		{backend: "ollama", port: 11434, model: "mystery-model"},
+	}, probeModels(context.Background(), exe, "ollama", 11434))
 
 	raw, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	args := strings.Fields(string(raw))
-	for _, want := range []string{"--backend", "ollama", "--port", "11434", "--list-models"} {
-		if !slices.Contains(args, want) {
-			t.Errorf("dispatcher was not passed %q; got %v", want, args)
-		}
-	}
+	assert.Contains(t, args, "--backend", "dispatcher argument")
+	assert.Contains(t, args, "ollama", "dispatcher argument")
+	assert.Contains(t, args, "--port", "dispatcher argument")
+	assert.Contains(t, args, "11434", "dispatcher argument")
+	assert.Contains(t, args, "--list-models", "dispatcher argument")
 }
 
-func TestProbeTreatsAnUnreachableEngineAsNoTargets(t *testing.T) {
+func TestProbe_TreatsAnUnreachableEngineAsNoTargets(t *testing.T) {
 	// An engine that is down is not a demo failure — it just is not a target.
-	if got := probeModels(context.Background(), "/nonexistent/dispatcher", "ollama", 1); got != nil {
-		t.Errorf("got %d targets from a missing dispatcher, want none", len(got))
-	}
+	assert.Empty(t, probeModels(context.Background(), "/nonexistent/dispatcher", "ollama", 1), "missing dispatcher must produce no targets")
 }
 
-func TestProbeIgnoresOutputThatIsNotAModelList(t *testing.T) {
+func TestProbe_IgnoresOutputThatIsNotAModelList(t *testing.T) {
 	exe, _ := fakeDispatcher(t, "Model query failed: connection refused")
-	if got := probeModels(context.Background(), exe, "ollama", 11434); got != nil {
-		t.Errorf("got %d targets from non-JSON output, want none", len(got))
-	}
+	assert.Empty(t, probeModels(context.Background(), exe, "ollama", 11434), "non-JSON output must produce no targets")
 }
 
-func TestNoteNamesTheKeyThatStopsIt(t *testing.T) {
+func TestNote_NamesTheKeyThatStopsIt(t *testing.T) {
 	// The note is the only place the stop key is stated while a demo runs, and
 	// the footer's label is derived from the same state — so an operator who
 	// wants it to stop has somewhere to look.
 	d := armedRunner(t, 2)
-	note := d.note()
-	if !strings.Contains(note, "press t to stop") {
-		t.Errorf("running note does not name the stop key: %q", note)
-	}
+	assert.Contains(t, d.note(), "press t to stop", "running note must name the stop key")
 
 	d.stop()
-	if got := d.note(); got != "" {
-		t.Errorf("idle runner still renders a note: %q", got)
-	}
+	assert.Empty(t, d.note(), "idle runner still renders a note")
 }

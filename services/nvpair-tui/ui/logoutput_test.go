@@ -8,74 +8,70 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestOwnLogReachesTheLogsTab checks this program's log goes where it can be
 // read. While the full-screen program runs, stderr is behind it; each line has
 // to arrive on the Logs channel instead, and pass through to stderr otherwise.
-func TestOwnLogReachesTheLogsTab(t *testing.T) {
+func TestOwnLog_ReachesTheLogsTab(t *testing.T) {
 	var stderr bytes.Buffer
 	out := &logOutput{fallback: &stderr}
 
-	_, _ = out.Write([]byte("before\n"))
-	if stderr.String() != "before\n" {
-		t.Errorf("a line before the program started did not reach stderr: %q", stderr.String())
-	}
+	_, err := out.Write([]byte("before\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "before\n", stderr.String(), "a line before the program started should reach stderr")
 
 	lines := make(chan string, 4)
 	out.attach(lines)
-	_, _ = out.Write([]byte("one\ntwo\n"))
+	_, err = out.Write([]byte("one\ntwo\n"))
+	require.NoError(t, err)
 	for _, want := range []string{"one", "two"} {
 		select {
 		case got := <-lines:
-			if got != want {
-				t.Errorf("Logs tab got %q, want %q", got, want)
-			}
+			assert.Equal(t, want, got, "Logs tab")
 		case <-time.After(time.Second):
-			t.Fatalf("%q never reached the Logs tab", want)
+			require.FailNowf(t, "line never reached the Logs tab", "%q", want)
 		}
 	}
 
 	out.detach()
-	_, _ = out.Write([]byte("after\n"))
-	if stderr.String() != "before\nafter\n" {
-		t.Errorf("a line after the program ended did not reach stderr: %q", stderr.String())
-	}
+	_, err = out.Write([]byte("after\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "before\nafter\n", stderr.String(), "a line after the program ended should reach stderr")
 }
 
 // TestOwnLogNeverBlocksOnAFullTab checks a full buffer drops a line rather
 // than waiting. The update loop that drains the channel also logs, so a
 // blocking write from there would wait on itself.
-func TestOwnLogNeverBlocksOnAFullTab(t *testing.T) {
+func TestOwnLog_NeverBlocksOnAFullTab(t *testing.T) {
 	out := &logOutput{fallback: &bytes.Buffer{}}
 	lines := make(chan string, 1)
 	out.attach(lines)
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = out.Write([]byte("fits\nfull\nstill full\n"))
+		_, err := out.Write([]byte("fits\nfull\nstill full\n"))
+		assert.NoError(t, err)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("writing to a full Logs tab blocked")
+		require.FailNow(t, "writing to a full Logs tab blocked")
 	}
 }
 
 // TestDecodeOrLogReportsAMismatch checks a shape the broker and this client
 // disagree about is reported rather than read as zero values.
-func TestDecodeOrLogReportsAMismatch(t *testing.T) {
+func TestDecodeOrLog_ReportsAMismatch(t *testing.T) {
 	var into struct {
 		Port int `json:"port"`
 	}
-	if decodeOrLog("test:method", json.RawMessage(`{"port":"not a number"}`), &into) {
-		t.Error("a payload that did not fit its type was reported as decoded")
-	}
-	if !decodeOrLog("test:method", json.RawMessage(`{"port":1234}`), &into) || into.Port != 1234 {
-		t.Errorf("a good payload did not decode: %+v", into)
-	}
-	if !decodeOrLog("test:method", nil, &into) {
-		t.Error("an empty payload, which carries nothing to decode, was reported as a failure")
-	}
+	assert.False(t, decodeOrLog("test:method", json.RawMessage(`{"port":"not a number"}`), &into), "a payload that did not fit its type was reported as decoded")
+	assert.True(t, decodeOrLog("test:method", json.RawMessage(`{"port":1234}`), &into), "a good payload should decode")
+	assert.Equal(t, 1234, into.Port)
+	assert.True(t, decodeOrLog("test:method", nil, &into), "an empty payload carries nothing to decode")
 }

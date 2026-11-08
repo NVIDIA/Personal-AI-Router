@@ -8,12 +8,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
+
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestSetPortPreservesOtherOverrides(t *testing.T) {
+func TestSetPort_PreservesOtherOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ollama.json")
 	host := runtime.GOOS + "/" + runtime.GOARCH
@@ -32,131 +35,99 @@ func TestSetPortPreservesOtherOverrides(t *testing.T) {
 			}},
 		},
 	}
-	if err := writeJSONAtomic(path, original); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeJSONAtomic(path, original))
 	ex := newBundledExecutor(t, dir)
 	for _, port := range []int{21003, 11434} {
-		if _, err := ex.SetPort(context.Background(), "ollama", port); err != nil {
-			t.Fatal(err)
-		}
+		_, err := ex.SetPort(context.Background(), "ollama", port)
+		require.NoError(t, err)
 		reg := loadWithOverrides(t, dir)
 		manifest, _ := reg.Get("ollama")
 		platform, _ := manifest.HostPlatform()
-		if platform.Runtime.Port != port {
-			t.Fatalf("restart restored %d instead of %d", platform.Runtime.Port, port)
-		}
-		if manifest.DisplayName != "Custom Ollama" ||
-			!reflect.DeepEqual(platform.Runtime.Args, []string{"serve", "--custom-option"}) ||
-			platform.Runtime.Env["CUSTOM_SETTING"] != "kept" ||
-			platform.Runtime.Env["HOST_SETTING"] != "kept" ||
-			platform.Runtime.Env["OLLAMA_HOST"] != "{host}:{port}" {
-			t.Fatalf("port change lost unrelated overrides or inherited defaults: %+v", platform.Runtime)
-		}
+		require.Equal(t, port, platform.Runtime.Port, "restart restored")
+		require.Equal(t, "Custom Ollama", manifest.DisplayName, "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, []string{"serve", "--custom-option"}, platform.Runtime.Args, "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, "kept", platform.Runtime.Env["CUSTOM_SETTING"], "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, "kept", platform.Runtime.Env["HOST_SETTING"], "port change lost unrelated overrides or inherited defaults")
+		require.Equal(t, "{host}:{port}", platform.Runtime.Env["OLLAMA_HOST"], "port change lost unrelated overrides or inherited defaults")
 	}
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var saved map[string]any
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatal(err)
-	}
-	if _, pinned := saved["runtime"].(map[string]any)["port"]; pinned {
-		t.Fatal("reset retained a shared port override")
-	}
+	require.NoError(t, json.Unmarshal(data, &saved))
+	require.NotContains(t, saved["runtime"].(map[string]any), "port", "reset retained a shared port override")
 	hostRuntime := saved["platforms"].(map[string]any)[host].(map[string]any)["runtime"].(map[string]any)
-	if _, pinned := hostRuntime["port"]; pinned {
-		t.Fatal("reset retained a host port override")
-	}
+	require.NotContains(t, hostRuntime, "port", "reset retained a host port override")
 	var exact map[string]json.RawMessage
-	if err := json.Unmarshal(data, &exact); err != nil || string(exact["custom_counter"]) != "9007199254740993" {
-		t.Fatalf("unrelated numeric setting lost precision: %s, %v", exact["custom_counter"], err)
-	}
+	require.NoError(t, json.Unmarshal(data, &exact), "unrelated numeric setting lost precision")
+	require.Equal(t, "9007199254740993", string(exact["custom_counter"]), "unrelated numeric setting lost precision")
 }
 
-func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
+func TestPersistPort_OverridesBundledPlatformPort(t *testing.T) {
 	host := runtime.GOOS + "/" + runtime.GOARCH
 	raw, err := json.Marshal(map[string]any{
 		"engine": "platform-engine", "display_name": "Platform engine", "manifest_version": 1,
 		"runtime":   map[string]any{"bin": "fake", "port": 22000},
 		"platforms": map[string]any{host: map[string]any{"runtime": map[string]any{"port": 22001}}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	reg := NewRegistry()
-	if _, err := reg.addManifest("test", raw); err != nil {
-		t.Fatal(err)
-	}
+	_, err = reg.addManifest("test", raw)
+	require.NoError(t, err)
 	reg.bundledRaw["platform-engine"] = raw
 	ex := NewExecutor(reg, NewReporter(nil), nil, t.TempDir())
 	ex.overrideDir = t.TempDir()
 	for _, port := range []int{22002, 22001} {
-		if err := ex.persistPort("platform-engine", port); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, ex.persistPort("platform-engine", port))
 		reloaded := NewRegistry()
-		if _, err := reloaded.addManifest("test", raw); err != nil {
-			t.Fatal(err)
-		}
+		_, err := reloaded.addManifest("test", raw)
+		require.NoError(t, err)
 		reloaded.bundledRaw["platform-engine"] = raw
-		if err := reloaded.LoadOverrideDir(ex.overrideDir); err != nil {
-			t.Fatal(err)
-		}
-		if got := hostPort(t, reloaded, "platform-engine"); got != port {
-			t.Fatalf("host default shadowed saved port: got %d, want %d", got, port)
-		}
+		require.NoError(t, reloaded.LoadOverrideDir(ex.overrideDir))
+		require.Equal(t, port, hostPort(t, reloaded, "platform-engine"), "host default shadowed saved port")
 	}
 }
 
-func TestPersistPortRefusesMalformedOverrideWithoutClobbering(t *testing.T) {
-	for _, data := range []string{
-		`{`, `null`, `[]`, `{}`, `{"runtime":{}}`, `{"engine":"another-engine"}`,
-		`{"engine":"ollama","runtime":null}`,
-		`{"engine":"ollama","platforms":[]}`,
-	} {
-		t.Run(data, func(t *testing.T) {
+func TestPersistPort_RefusesMalformedOverrideWithoutClobbering(t *testing.T) {
+	test := func(name, data string) {
+		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "ollama.json")
 			ex := newBundledExecutor(t, dir)
-			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := ex.SetPort(context.Background(), "ollama", 23001); err == nil {
-				t.Fatal("malformed override was overwritten")
-			}
+			require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+			_, err := ex.SetPort(context.Background(), "ollama", 23001)
+			require.Error(t, err, "malformed override was overwritten")
 			got, err := os.ReadFile(path)
-			if err != nil || string(got) != data {
-				t.Fatalf("invalid override changed: %q, %v", got, err)
-			}
-			if got, _ := ex.Status("ollama"); got.Port != 11434 {
-				t.Fatalf("failed persistence changed runtime port: %+v", got)
-			}
+			require.NoError(t, err, "read invalid override")
+			require.Equal(t, data, string(got), "invalid override changed")
+			status, err := ex.Status("ollama")
+			require.NoError(t, err)
+			require.Equal(t, 11434, status.Port, "failed persistence changed runtime port (%v)", status)
 		})
 	}
+	test("invalid JSON", `{`)
+	test("null override", `null`)
+	test("array override", `[]`)
+	test("missing engine", `{}`)
+	test("runtime without engine", `{"runtime":{}}`)
+	test("wrong engine", `{"engine":"another-engine"}`)
+	test("null runtime", `{"engine":"ollama","runtime":null}`)
+	test("array platforms", `{"engine":"ollama","platforms":[]}`)
 }
 
-func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
+func TestWriteJSONAtomic_ReplacesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	for _, port := range []int{24001, 24002} {
-		if err := writeJSONAtomic(path, map[string]int{"port": port}); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, writeJSONAtomic(path, map[string]int{"port": port}))
 		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		var got map[string]int
-		if err := json.Unmarshal(data, &got); err != nil || got["port"] != port {
-			t.Fatalf("replacement not readable: %q, %v", data, err)
-		}
+		require.NoError(t, json.Unmarshal(data, &got), "replacement not readable (%v)", data)
+		require.Equal(t, port, got["port"], "replacement not readable (%v)", data)
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("atomic writer left temporary files: %v, %v", entries, err)
-	}
+	require.NoError(t, err, "atomic writer left temporary files (%v, %v)", entries, err)
+	require.Len(t, entries, 1, "atomic writer left temporary files (%v, %v)", entries, err)
 }
 
 // bundledHostPlatform returns an engine's bundled platform for this host, or
@@ -164,9 +135,7 @@ func TestWriteJSONAtomicReplacesExistingFile(t *testing.T) {
 func bundledHostPlatform(t *testing.T, engine string) Platform {
 	t.Helper()
 	bundled, ok := buildBundledRegistry().Get(engine)
-	if !ok {
-		t.Fatalf("no bundled %s manifest", engine)
-	}
+	require.True(t, ok, "no bundled %s manifest", engine)
 	platform, ok := bundled.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	if !ok {
 		t.Skipf("%s has no manifest for this host", engine)
@@ -179,7 +148,7 @@ func bundledHostPlatform(t *testing.T, engine string) Platform {
 // moved it to, and takes nothing else from the override. The uninstaller runs
 // elevated on Windows, and the override is a file any process running as the
 // user can write.
-func TestUninstallerTakesOnlyLocationsFromAnOverride(t *testing.T) {
+func TestUninstaller_TakesOnlyLocationsFromAnOverride(t *testing.T) {
 	host := runtime.GOOS + "/" + runtime.GOARCH
 	want := bundledHostPlatform(t, "ollama")
 	dir := t.TempDir()
@@ -194,34 +163,24 @@ func TestUninstallerTakesOnlyLocationsFromAnOverride(t *testing.T) {
 			},
 		},
 	}
-	if err := writeJSONAtomic(filepath.Join(dir, "ollama.json"), override); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeJSONAtomic(filepath.Join(dir, "ollama.json"), override))
 
 	reg := buildBundledRegistry()
 	reg.applyLocationOverrides(dir)
 	got, ok := reg.Get("ollama")
-	if !ok {
-		t.Fatal("ollama vanished from the registry")
-	}
+	require.True(t, ok, "ollama vanished from the registry")
 	platform := got.Platforms[host]
 
-	if platform.Runtime.Port != 21002 {
-		t.Errorf("port %d, want the host platform's override, 21002", platform.Runtime.Port)
-	}
-	if platform.ModelsDir != "~/somewhere-else" {
-		t.Errorf("models_dir %q, want the override's store", platform.ModelsDir)
-	}
-	if !reflect.DeepEqual(platform.Uninstall, want.Uninstall) {
-		t.Errorf("took the uninstall commands from the override: %+v", platform.Uninstall)
-	}
+	assert.Equal(t, 21002, platform.Runtime.Port, "must use the host platform's port override")
+	assert.Equal(t, "~/somewhere-else", platform.ModelsDir, "must use the override's store")
+	assert.Equal(t, want.Uninstall, platform.Uninstall, "took the uninstall commands from the override")
 }
 
 // TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves checks an override
 // whose model store would contain a removal target is ignored whole, as startup
 // ignores it, rather than leaving the uninstaller with a store it must refuse
 // to remove around.
-func TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves(t *testing.T) {
+func TestUninstaller_IgnoresAnOverrideStoreHoldingWhatItRemoves(t *testing.T) {
 	host := runtime.GOOS + "/" + runtime.GOARCH
 	want := bundledHostPlatform(t, "lmstudio")
 	dir := t.TempDir()
@@ -230,20 +189,14 @@ func TestUninstallerIgnoresAnOverrideStoreHoldingWhatItRemoves(t *testing.T) {
 		"models_dir": "~",
 		"runtime":    map[string]any{"port": 21003},
 	}
-	if err := writeJSONAtomic(filepath.Join(dir, "lmstudio.json"), override); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeJSONAtomic(filepath.Join(dir, "lmstudio.json"), override))
 
 	reg := buildBundledRegistry()
 	reg.applyLocationOverrides(dir)
 	got, ok := reg.Get("lmstudio")
-	if !ok {
-		t.Fatal("lmstudio vanished from the registry")
-	}
+	require.True(t, ok, "lmstudio vanished from the registry")
 	platform := got.Platforms[host]
 
-	if platform.ModelsDir != want.ModelsDir || platform.Runtime.Port != want.Runtime.Port {
-		t.Errorf("applied an invalid override: models_dir %q, port %d; want the bundled %q, %d",
-			platform.ModelsDir, platform.Runtime.Port, want.ModelsDir, want.Runtime.Port)
-	}
+	assert.Equal(t, want.ModelsDir, platform.ModelsDir, "applied an invalid override")
+	assert.Equal(t, want.Runtime.Port, platform.Runtime.Port, "applied an invalid override")
 }
