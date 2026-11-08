@@ -128,6 +128,16 @@ const (
 // The first machine word of a COM object points at its method table; each
 // table slot is a function pointer. The implicit `this` (= iface) is
 // prepended to args automatically.
+//
+// Callers pass out-parameters as uintptr(unsafe.Pointer(&local)). Without the
+// directive below that conversion hides the pointer from escape analysis, so
+// the local stays on the goroutine stack; if the stack grows inside this call
+// (append, SyscallN) the runtime copies it and the system writes the result to
+// the old address, and the caller sees S_OK with its local still zero. The
+// directive moves such pointees to the heap and keeps them alive for the call,
+// as syscall.(*LazyProc).Call and x/sys/windows.(*Proc).Call do.
+//
+//go:uintptrescapes
 func vtableCall(iface unsafe.Pointer, index int, args ...uintptr) uintptr {
 	vtbl := *(**[64]uintptr)(iface)
 	fn := vtbl[index]
@@ -382,35 +392,38 @@ type adapterChangeSource interface {
 	Close()
 }
 
-// dxgiAdapterEvents is the production adapterChangeSource. It holds one
-// IDXGIFactory7 for its lifetime and registers an auto-reset event with
-// RegisterAdaptersChangedEvent, so DXGI itself says when an adapter appears,
-// disappears, or has its LUID reissued (driver update or restart, GPU timeout
-// and recovery, hot-plug) and nothing has to poll. A goroutine blocks in
-// WaitForMultipleObjects on that event plus a private stop event and forwards
-// each signal to the Changed channel.
+// dxgiAdapterEvents is the production adapterChangeSource. It registers an
+// auto-reset event with IDXGIFactory7::RegisterAdaptersChangedEvent, so DXGI
+// itself says when an adapter appears, disappears, or has its LUID reissued
+// (driver update or restart, GPU timeout and recovery, hot-plug) and nothing has
+// to poll. A goroutine blocks in WaitForMultipleObjects on that event plus a
+// private stop event and forwards each signal to the Changed channel.
 //
-// The factory is only used for the registration. Re-detection builds a fresh
-// factory (detectGPUs), because enumerating through a factory that has gone
-// stale would return the old adapter list.
+// After each signal the registration moves to a fresh factory: an adapter
+// change leaves the registering factory non-current (IsCurrent returns false),
+// and DXGI's guidance is to recreate a non-current factory, so the watcher does
+// not depend on a stale factory to keep signalling. The new registration is
+// made before the old one is dropped, so there is no window without one. The
+// factory is only used for the registration; re-detection builds its own
+// (detectGPUs). After open, only the waiter goroutine touches factory and
+// cookie, until Close has joined it.
 type dxgiAdapterEvents struct {
-	factory   unsafe.Pointer // IDXGIFactory7
+	factory   unsafe.Pointer // IDXGIFactory7 holding the current registration
+	cookie    uint32
 	event     windows.Handle // auto-reset, signaled by DXGI
 	stopEvent windows.Handle // manual-reset, signaled by Close
-	cookie    uint32
 	changed   chan struct{}
 	done      chan struct{}
 }
 
 func hrFailed(hr uintptr) bool { return int32(uint32(hr)) < 0 }
 
-// openDXGIAdapterEvents creates the factory and registers the event. It returns
-// an error when IDXGIFactory7 is unavailable (CreateDXGIFactory2 or the
-// interface is missing before Windows 10 1803) or any step fails; the caller
-// decides the fallback.
-func openDXGIAdapterEvents() (adapterChangeSource, error) {
+// registerAdapterEvent creates an IDXGIFactory7 and registers event with it. It
+// returns an error when IDXGIFactory7 is unavailable (no CreateDXGIFactory2, or
+// a Windows release before 10 1803) or the registration fails.
+func registerAdapterEvent(event windows.Handle) (unsafe.Pointer, uint32, error) {
 	if err := procCreateDXGIFactory2.Find(); err != nil {
-		return nil, fmt.Errorf("CreateDXGIFactory2 unavailable: %w", err)
+		return nil, 0, fmt.Errorf("CreateDXGIFactory2 unavailable: %w", err)
 	}
 	var base unsafe.Pointer
 	hr, _, _ := procCreateDXGIFactory2.Call(0,
@@ -418,7 +431,7 @@ func openDXGIAdapterEvents() (adapterChangeSource, error) {
 		uintptr(unsafe.Pointer(&base)),
 	)
 	if hrFailed(hr) || base == nil {
-		return nil, fmt.Errorf("CreateDXGIFactory2 failed: hr=0x%08x", uint32(hr))
+		return nil, 0, fmt.Errorf("CreateDXGIFactory2 failed: hr=0x%08x", uint32(hr))
 	}
 	var factory unsafe.Pointer
 	hr = vtableCall(base, vtblIUnknownQueryInterface,
@@ -427,47 +440,66 @@ func openDXGIAdapterEvents() (adapterChangeSource, error) {
 	)
 	comRelease(base)
 	if hrFailed(hr) || factory == nil {
-		return nil, fmt.Errorf("IDXGIFactory7 unavailable: hr=0x%08x", uint32(hr))
+		return nil, 0, fmt.Errorf("IDXGIFactory7 unavailable: hr=0x%08x", uint32(hr))
 	}
+	var cookie uint32
+	hr = vtableCall(factory, vtblIDXGIFactory7RegisterAdaptersChangedEvent,
+		uintptr(event),
+		uintptr(unsafe.Pointer(&cookie)),
+	)
+	if hrFailed(hr) {
+		comRelease(factory)
+		return nil, 0, fmt.Errorf("RegisterAdaptersChangedEvent failed: hr=0x%08x", uint32(hr))
+	}
+	return factory, cookie, nil
+}
 
+// unregisterAdapterEvent undoes registerAdapterEvent. A nil factory is a no-op.
+func unregisterAdapterEvent(factory unsafe.Pointer, cookie uint32) {
+	if factory == nil {
+		return
+	}
+	vtableCall(factory, vtblIDXGIFactory7UnregisterAdaptersChangedEvent, uintptr(cookie))
+	comRelease(factory)
+}
+
+// openDXGIAdapterEvents creates the two events and the first registration. Its
+// error means IDXGIFactory7 is unavailable or the registration failed; the
+// collector then falls back to a single deferred re-detection.
+func openDXGIAdapterEvents() (adapterChangeSource, error) {
 	event, err := windows.CreateEvent(nil, 0, 0, nil)
 	if err != nil {
-		comRelease(factory)
 		return nil, fmt.Errorf("CreateEvent: %w", err)
 	}
 	stopEvent, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
 		_ = windows.CloseHandle(event)
-		comRelease(factory)
 		return nil, fmt.Errorf("CreateEvent: %w", err)
 	}
+	factory, cookie, err := registerAdapterEvent(event)
+	if err != nil {
+		_ = windows.CloseHandle(event)
+		_ = windows.CloseHandle(stopEvent)
+		return nil, err
+	}
+	slog.Info("DXGI adapters-changed event registered", "cookie", cookie)
 
 	s := &dxgiAdapterEvents{
 		factory:   factory,
+		cookie:    cookie,
 		event:     event,
 		stopEvent: stopEvent,
 		changed:   make(chan struct{}, 1),
 		done:      make(chan struct{}),
 	}
-	hr = vtableCall(factory, vtblIDXGIFactory7RegisterAdaptersChangedEvent,
-		uintptr(event),
-		uintptr(unsafe.Pointer(&s.cookie)),
-	)
-	if hrFailed(hr) {
-		_ = windows.CloseHandle(event)
-		_ = windows.CloseHandle(stopEvent)
-		comRelease(factory)
-		return nil, fmt.Errorf("RegisterAdaptersChangedEvent failed: hr=0x%08x", uint32(hr))
-	}
-	slog.Info("DXGI adapters-changed event registered", "cookie", s.cookie)
-
 	go s.wait()
 	return s, nil
 }
 
 func (s *dxgiAdapterEvents) Changed() <-chan struct{} { return s.changed }
 
-// wait forwards each adapters-changed signal until Close signals the stop event.
+// wait forwards each adapters-changed signal until Close signals the stop
+// event, re-arming the registration after each one.
 func (s *dxgiAdapterEvents) wait() {
 	defer close(s.done)
 	handles := []windows.Handle{s.event, s.stopEvent}
@@ -484,14 +516,29 @@ func (s *dxgiAdapterEvents) wait() {
 		case s.changed <- struct{}{}:
 		default: // one change is already pending; the receiver will see it
 		}
+		s.rearm()
 	}
+}
+
+// rearm moves the registration to a fresh factory. If that fails the previous
+// registration is kept, so the watcher degrades to whatever the old factory
+// still signals instead of going silent.
+func (s *dxgiAdapterEvents) rearm() {
+	factory, cookie, err := registerAdapterEvent(s.event)
+	if err != nil {
+		slog.Warn("re-arming the DXGI adapters-changed event failed; keeping the previous registration", "err", err)
+		return
+	}
+	unregisterAdapterEvent(s.factory, s.cookie)
+	s.factory, s.cookie = factory, cookie
+	slog.Debug("DXGI adapters-changed event re-armed", "cookie", cookie)
 }
 
 func (s *dxgiAdapterEvents) Close() {
 	_ = windows.SetEvent(s.stopEvent)
 	<-s.done
-	vtableCall(s.factory, vtblIDXGIFactory7UnregisterAdaptersChangedEvent, uintptr(s.cookie))
-	comRelease(s.factory)
+	unregisterAdapterEvent(s.factory, s.cookie)
+	s.factory = nil
 	_ = windows.CloseHandle(s.event)
 	_ = windows.CloseHandle(s.stopEvent)
 }
