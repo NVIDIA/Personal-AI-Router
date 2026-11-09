@@ -86,12 +86,16 @@ func reportDownloadProgress() {
 	fmt.Printf("\r[====    ] %.2f%%", percent)
 }
 
-// awaitInterrupt blocks until this process is interrupted, the way `lms get`
-// waits while it downloads.
-func awaitInterrupt() {
+// downloadUntilInterrupted reports progress and then blocks until this process
+// is interrupted, the way `lms get` waits while it downloads. It listens for
+// the interrupt before reporting: the caller cancels as soon as it reads
+// progress, and an interrupt nothing is listening for ends the process before
+// it can answer, which is what a CLI that exits without confirming looks like.
+func downloadUntilInterrupted() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 	defer signal.Stop(signals)
+	reportDownloadProgress()
 	<-signals
 }
 
@@ -129,8 +133,7 @@ func main() {
 		// so the caller owns that number and can assert on the same constant it
 		// passed in.
 		case "canceldownload": // answers the prompt and confirms the cancellation
-			reportDownloadProgress()
-			awaitInterrupt()
+			downloadUntilInterrupted()
 			fmt.Fprint(os.Stderr, "Continue to download in the background? (Y/N): ")
 			answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 			if err != nil || strings.TrimSpace(answer) != "n" {
@@ -139,13 +142,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Download canceled.")
 			os.Exit(1)
 		case "downloadcompletes": // finishes as the interrupt lands
-			reportDownloadProgress()
-			awaitInterrupt()
+			downloadUntilInterrupted()
 			fmt.Fprintln(os.Stderr, "Download completed.")
 			return
 		case "downloadsilent": // exits without answering the prompt
-			reportDownloadProgress()
-			awaitInterrupt()
+			downloadUntilInterrupted()
 			os.Exit(1)
 		case "downloadignoresinterrupt": // never acknowledges, so it has to be killed
 			// Take delivery of the interrupt and do nothing with it. Calling

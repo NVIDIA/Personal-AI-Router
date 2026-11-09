@@ -168,7 +168,7 @@ func TestLMSDownloadOutput_KeepsNamedFilesAcrossResumedRuns(t *testing.T) {
 // killing it, because only an interrupted `lms get` asks the question whose
 // answer stops the daemon's transfer.
 func TestRunLMSDownloadCommand_InterruptsTheCLIWhenCancelled(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	progress := make(chan int, 1)
 	output := &lmsDownloadOutput{lastPercent: -1, progress: func(percent int) { progress <- percent }}
@@ -180,7 +180,11 @@ func TestRunLMSDownloadCommand_InterruptsTheCLIWhenCancelled(t *testing.T) {
 	select {
 	case percent := <-progress:
 		require.Equal(t, fakeDownloadPercent, percent, "the CLI's progress was misread")
-	case <-ctx.Done():
+	case err := <-done:
+		require.FailNow(t, "the download CLI ended before reporting progress", "%v", err)
+	// The broker-flags test runs this in a child that has just rebuilt the
+	// fake CLI, and starting it there under load has taken over ten seconds.
+	case <-time.After(30 * time.Second):
 		require.FailNow(t, "no progress from the download CLI")
 	}
 
