@@ -337,3 +337,29 @@ func TestOllamaPull_SucceedsOnOllamasSuccessRecord(t *testing.T) {
 	test("success is the last record", "pulling layer", "success")
 	test("a record follows success", "pulling layer", "success", "")
 }
+
+// Ollama ends every pull with a success or an error record. A stream that
+// closes without either was cut off — the daemon exited or dropped the
+// connection — so the model is not installed. Reporting success there left the
+// UI showing a download complete for a model the engine does not have.
+func TestOllamaPull_FailsWhenTheStreamEndsBeforeSuccess(t *testing.T) {
+	newOllamaBlobsDir(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, err := fmt.Fprintf(w, `{"status":"pulling layer","digest":%q,"total":100,"completed":25}`+"\n", digestA)
+		assert.NoError(t, err, "send pull progress")
+	}))
+	t.Cleanup(server.Close)
+	ex := newOllamaPullExecutor(t, server.URL, nil)
+	events, unsubscribe := ex.progress.subscribe("ollama")
+	defer unsubscribe()
+
+	_, err := ex.PullModelStream(context.Background(), "ollama", "demo", nil)
+
+	require.ErrorContains(t, err, "ended the download without reporting it complete")
+	frames := publishedFrames(events)
+	require.NotEmpty(t, frames, "the pull published no frames")
+	terminal := frames[len(frames)-1]
+	assert.Equal(t, "error", terminal.Stage, "the last frame must report the failure")
+	assert.Equal(t, -1, terminal.Percent)
+}

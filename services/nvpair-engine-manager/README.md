@@ -95,7 +95,8 @@ progress for a local model pull driven via `engine:action{action:"pull_model"}`
 — the local counterpart of `engine:remote-progress`; frames are coalesced to
 changes in stage/percent. Whichever engine runs it, a pull ends with exactly
 one terminal frame — `stage:"success", percent:100` once the model is
-installed, `stage:"cancelled"` when a cancel stopped it, or
+installed (an Ollama stream that closes before its success record is a failed
+pull), `stage:"cancelled"` when a cancel stopped it, or
 `stage:"error", percent:-1, message` with the reason — so a UI converges even
 if its synchronous call already timed out; a request that joins a download
 already in flight shares that download's frames rather than adding its own, as

@@ -301,6 +301,12 @@ func (e *Executor) pullModelNDJSON(
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("pull %q: %w", model, watchdog.resolveError(pullCtx, err))
 	}
+	// Ollama ends every pull with a success or an error record. A stream that
+	// closed without either was cut off — the daemon exited or dropped the
+	// connection — and the model is not installed.
+	if !completed {
+		return nil, fmt.Errorf("pull %q: the engine ended the download without reporting it complete", model)
+	}
 	return last, nil
 }
 
