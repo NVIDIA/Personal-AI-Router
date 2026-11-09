@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
+	"runtime"
 
 	"testing"
 	"time"
@@ -124,6 +126,43 @@ func TestStatusQueries_DoNotBlockMessageDispatchDuringEngineOperation(t *testing
 	}
 	test("status", "engine:status", json.RawMessage(`{"engine":"fake"}`))
 	test("get installed", "engine:get-installed", nil)
+}
+
+// The read loop claims a pull before it dispatches the pull's goroutine, and
+// engine:cancel-pull dispatches a goroutine of its own, so a cancel sent right
+// behind a pull can reach the executor before the download registers. It then
+// finds only the claim, which has to travel with the request to stop it.
+func TestManager_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
+	ex := newHTTPPullTestExecutor(t, stalledTransfer(t), Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+	managerConn, clientConn := net.Pipe()
+	defer managerConn.Close()
+	defer clientConn.Close()
+	m := NewManager(NewCodec(managerConn), ex, nil)
+	response := make(chan Message, 1)
+	go func() {
+		line, err := bufio.NewReader(clientConn).ReadBytes('\n')
+		var msg Message
+		if err == nil && json.Unmarshal(line, &msg) == nil {
+			response <- msg
+		}
+	}()
+	// With a single P, the goroutine handleMessage starts for the pull cannot
+	// run until this one blocks, so the cancel reaches the executor first.
+	previous := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+
+	id := json.RawMessage("1")
+	m.handleMessage(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
+		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"}}`)})
+	require.NoError(t, ex.CancelModelPull(context.Background(), "fake", "demo"))
+
+	select {
+	case msg := <-response:
+		require.Empty(t, msg.Error, "the pull should settle as cancelled, not fail")
+		assertPullStatus(t, msg.Result, "cancelled")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the pull kept running after its cancel was acknowledged")
+	}
 }
 
 func mustContain(t *testing.T, s, sub string) {

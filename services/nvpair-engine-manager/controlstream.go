@@ -123,10 +123,11 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The initiator's cancel arrives as its own request, so claim the pull
-	// before starting it: a cancel that beats the download to the executor is
-	// then held for it instead of being read as a cancel for nothing.
-	defer s.exec.claimPull(req.Engine, req.Model, true)()
-	s.streamOp(w, r, req.OpID, req.Engine, "pull", req.Model, func(ctx context.Context) (streamFrame, error) {
+	// before starting it: a cancel that beats the download to the executor then
+	// stops this request instead of being read as a cancel for nothing.
+	claimed, release := s.exec.claimPull(r.Context(), req.Engine, req.Model)
+	defer release()
+	s.streamOp(w, r.WithContext(claimed), req.OpID, req.Engine, "pull", req.Model, func(ctx context.Context) (streamFrame, error) {
 		res, err := s.exec.PullModelStream(ctx, req.Engine, req.Model, req.Params)
 		if err != nil {
 			msg := s.exec.reportPullFailed(req.Engine, req.Model, err)

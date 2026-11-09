@@ -277,13 +277,15 @@ background-download prompt is what aborts the daemon's task, so a CLI that
 exited without answering it may still be fetching, and nothing is deleted.
 
 A cancel can also arrive **before** the pull it names has registered, since the
-read loop dispatches each onto its own goroutine. That leaves a short-lived
-tombstone the pull consumes instead of starting, rather than a success report
-for a download that then runs on under a UI stuck on "Canceling". The tombstone
-is scoped to the accepted request, so it cannot be inherited by a later retry.
-On the remote path the same ordering is enforced by holding
-`engine:remote-cancel-pull` until the peer has accepted the matching
-`engine:remote-pull-model`.
+read loop dispatches each onto its own goroutine. So each pull request is
+claimed on the read loop, in the order the client sent it, and carries its
+claim to the executor. A cancel stops every request it finds claimed — one
+whose download has not registered yet then never starts it — and a retry
+accepted after the cancel downloads normally, whichever of the two reaches the
+executor first. A cancel that finds nothing claimed arrived after its download
+finished, and stops nothing. On the remote path the peer claims a pull before
+accepting it, and `engine:remote-cancel-pull` is held until the peer has
+accepted the matching `engine:remote-pull-model`.
 
 ## Remote engine management
 

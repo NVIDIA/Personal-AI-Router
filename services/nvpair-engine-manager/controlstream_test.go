@@ -7,9 +7,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -88,6 +91,58 @@ func TestStreamOpScopedToAModelDropsEveryOtherOperation(t *testing.T) {
 	if frames[1].Type != "result" {
 		t.Fatalf("bad result frame: %+v", frames[1])
 	}
+}
+
+// heldHeaderRecorder records a streamed response, holding the first flush —
+// the one that sends the stream's header — until released.
+type heldHeaderRecorder struct {
+	*httptest.ResponseRecorder
+	headerSent chan struct{}
+	release    chan struct{}
+	once       sync.Once
+}
+
+func (w *heldHeaderRecorder) Flush() {
+	w.once.Do(func() {
+		close(w.headerSent)
+		<-w.release
+	})
+	w.ResponseRecorder.Flush()
+}
+
+// The peer claims a pull before it sends the stream's header, and the
+// initiator holds its cancel until that header arrives, so the cancel always
+// finds the claim — though not always the download, which may not have
+// registered yet. The claim has to reach the executor with the request for
+// that cancel to stop it.
+func TestHandlePull_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
+	ex := newHTTPPullTestExecutor(t, stalledTransfer(t), Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+	w := &heldHeaderRecorder{ResponseRecorder: httptest.NewRecorder(), headerSent: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		(&controlServer{exec: ex}).handlePull(w, httptest.NewRequest(http.MethodPost, controlPullPath,
+			strings.NewReader(`{"opId":"op","engine":"fake","model":"demo"}`)).WithContext(ctx))
+	}()
+	select {
+	case <-w.headerSent:
+	case <-served:
+		require.FailNow(t, "the pull ended before its stream opened", w.Body.String())
+	}
+
+	// streamOp starts the download only after the header is out, so this
+	// cancel reaches the executor before the download can register.
+	require.NoError(t, ex.CancelModelPull(ctx, "fake", "demo"))
+	close(w.release)
+	<-served
+
+	frames := decodeFrames(t, w.Body.String())
+	require.NotEmpty(t, frames, "the pull kept running after its cancel was acknowledged")
+	terminal := frames[len(frames)-1]
+	require.Equal(t, "result", terminal.Type, "the pull should settle as cancelled, not fail: %+v", terminal)
+	assertPullStatus(t, terminal.Result, "cancelled")
 }
 
 // TestHandleInstallRejectsMissingEngine verifies request-body validation.

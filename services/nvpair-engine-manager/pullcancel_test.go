@@ -20,6 +20,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeDownloadPercent is the progress the fake CLI reports before it waits to
@@ -408,108 +411,119 @@ func TestCancelModelPullStopsWaitingWhenItsCallerGivesUp(t *testing.T) {
 	}
 }
 
+// stalledTransfer is a download endpoint that sends nothing until the request
+// is abandoned, so only a cancellation can end a pull made against it.
+func stalledTransfer(t *testing.T) *httptest.Server {
+	t.Helper()
+	stop := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-stop:
+		}
+	}))
+	t.Cleanup(func() {
+		close(stop)
+		server.Close()
+	})
+	return server
+}
+
+// claimedPull runs the download for a request claimed the way the read loop
+// claims one, reporting whether the download itself started.
+func claimedPull(t *testing.T, ex *Executor, request context.Context) (result json.RawMessage, ran bool) {
+	t.Helper()
+	result, err := ex.trackedPull(request, "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+		ran = true
+		return succeedingPull(ctx)
+	})
+	require.NoError(t, err)
+	return result, ran
+}
+
 // A cancel dispatched before its pull registers must stop the download rather
 // than report success while it runs on under a UI stuck on "Canceling". The
 // pull and the cancel each run on their own goroutine, so the read loop's
-// ordering does not settle which reaches the registry first.
-func TestCancelBeforePullRegistersStopsIt(t *testing.T) {
+// ordering does not settle which reaches the executor first.
+func TestCancelModelPull_StopsARequestThatHasNotRegisteredYet(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	// The read loop claims a pull before dispatching it, so this is the window
 	// in which the cancel's goroutine can reach the executor first.
-	release := ex.claimPull("ollama", "demo", true)
+	request, release := ex.claimPull(context.Background(), "ollama", "demo")
 	defer release()
-	if err := ex.CancelModelPull(context.Background(), "ollama", "demo"); err != nil {
-		t.Fatalf("cancel: %v", err)
-	}
-	result, err := ex.trackedPull(context.Background(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
-		t.Error("cancelled pull started its download")
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("pull: %v", err)
-	}
+
+	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	result, ran := claimedPull(t, ex, request)
+
+	assert.False(t, ran, "the cancelled request started its download")
 	assertPullStatus(t, result, "cancelled")
-
-	// The tombstone is consumed, so the same click cannot cancel a retry.
-	ran := false
-	if _, err := ex.trackedPull(context.Background(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
-		ran = true
-		return succeedingPull(context.Background())
-	}); err != nil {
-		t.Fatalf("retry: %v", err)
-	}
-	if !ran {
-		t.Fatal("retry after a consumed cancellation did not start")
-	}
 }
 
-// A cancel can also land just after the pull it targets finished, and that one
-// has nothing to stop. Holding it for the next pull of the same model made a
-// retry report "cancelled" without downloading anything.
-func TestCancelAfterPullCompletesLeavesTheRetryAlone(t *testing.T) {
+// Two requests for one model can be outstanding at once: an original the user
+// cancelled before it registered, and a retry accepted after the cancel. The
+// cancel belongs to the original whichever of the two reaches the executor
+// first. Keyed by engine and model alone, it was consumed by the retry, which
+// reported "cancelled" while the original went on to download.
+func TestCancelModelPull_StopsTheOriginalRequestEvenWhenItsRetryRegistersFirst(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	release := ex.claimPull("ollama", "demo", true)
-	if _, err := ex.trackedPull(context.Background(), "ollama", "demo", succeedingPull); err != nil {
-		t.Fatalf("first pull: %v", err)
-	}
-	release()
+	original, releaseOriginal := ex.claimPull(context.Background(), "ollama", "demo")
+	defer releaseOriginal()
+	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	retry, releaseRetry := ex.claimPull(context.Background(), "ollama", "demo")
+	defer releaseRetry()
 
-	if err := ex.CancelModelPull(context.Background(), "ollama", "demo"); err != nil {
-		t.Fatalf("cancel: %v", err)
-	}
+	retryResult, retryRan := claimedPull(t, ex, retry)
+	originalResult, originalRan := claimedPull(t, ex, original)
 
-	ran := false
-	result, err := ex.trackedPull(context.Background(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
-		ran = true
-		return succeedingPull(context.Background())
+	assert.True(t, retryRan, "the retry inherited the original request's cancellation")
+	assertPullStatus(t, retryResult, "success")
+	assert.False(t, originalRan, "the original request started after its cancellation was acknowledged")
+	assertPullStatus(t, originalResult, "cancelled")
+}
+
+// A cancel can find nothing outstanding: the download it targets already
+// finished, or none was ever requested. There is nothing to stop, and holding
+// the cancel for the next pull of the same model made a retry report
+// "cancelled" without downloading anything.
+func TestCancelModelPull_WithNothingOutstandingLeavesTheNextRequestAlone(t *testing.T) {
+	test := func(name string, before func(t *testing.T, ex *Executor)) {
+		t.Run(name, func(t *testing.T) {
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+			before(t, ex)
+
+			require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+			next, release := ex.claimPull(context.Background(), "ollama", "demo")
+			defer release()
+			result, ran := claimedPull(t, ex, next)
+
+			assert.True(t, ran, "the next request inherited a cancellation that had nothing to stop")
+			assertPullStatus(t, result, "success")
+		})
+	}
+	test("the download already finished", func(t *testing.T, ex *Executor) {
+		first, release := ex.claimPull(context.Background(), "ollama", "demo")
+		defer release()
+		_, ran := claimedPull(t, ex, first)
+		require.True(t, ran)
 	})
-	if err != nil {
-		t.Fatalf("retry: %v", err)
-	}
-	if !ran {
-		t.Fatal("retry inherited the cancellation of a download that had already finished")
-	}
-	assertPullStatus(t, result, "success")
+	test("no download was ever requested", func(*testing.T, *Executor) {})
 }
 
-// A pull can also end without ever consuming the cancel held for it — it
-// failed before registering, or never registered at all. That tombstone has to
-// go with the attempt rather than sit out its window.
-func TestPendingCancelDoesNotOutliveTheAttemptItWasHeldFor(t *testing.T) {
+// A request can end without ever registering its download — it failed
+// validation, or its context died first. The cancel that found it outstanding
+// stopped that request, and must not carry over to the next one.
+func TestCancelModelPull_DoesNotCarryOverToALaterRequest(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	release := ex.claimPull("ollama", "demo", true)
-	if err := ex.CancelModelPull(context.Background(), "ollama", "demo"); err != nil {
-		t.Fatalf("cancel: %v", err)
-	}
-	release()
+	_, releaseAbandoned := ex.claimPull(context.Background(), "ollama", "demo")
+	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	releaseAbandoned()
 
-	ran := false
-	result, err := ex.trackedPull(context.Background(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
-		ran = true
-		return succeedingPull(context.Background())
-	})
-	if err != nil {
-		t.Fatalf("pull: %v", err)
-	}
-	if !ran {
-		t.Fatal("a cancellation held for an abandoned attempt was inherited by the next pull")
-	}
+	next, release := ex.claimPull(context.Background(), "ollama", "demo")
+	defer release()
+	result, ran := claimedPull(t, ex, next)
+
+	assert.True(t, ran, "a cancellation of an abandoned request was inherited by the next one")
 	assertPullStatus(t, result, "success")
-}
-
-// An unclaimed engine and model has no download to stop, so the cancel is a
-// no-op rather than a tombstone.
-func TestCancelWithNoDownloadRequestedIsANoOp(t *testing.T) {
-	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	if err := ex.CancelModelPull(context.Background(), "ollama", "demo"); err != nil {
-		t.Fatalf("cancel: %v", err)
-	}
-	ex.pullMu.Lock()
-	pending := len(ex.pendingCancels)
-	ex.pullMu.Unlock()
-	if pending != 0 {
-		t.Fatalf("armed %d cancellation(s) for a download nobody requested", pending)
-	}
 }
 
 // A duplicate request joins the download already in flight and reports its

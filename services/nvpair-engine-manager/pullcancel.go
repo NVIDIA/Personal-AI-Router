@@ -12,9 +12,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type activePull struct {
@@ -47,65 +47,85 @@ type pullKey struct {
 
 func cancelledPull() json.RawMessage { return json.RawMessage(`{"status":"cancelled"}`) }
 
-// pendingCancelWindow bounds how long a cancel that arrived before its pull
-// registered stays armed. Both handlers are dispatched onto their own goroutine
-// from the same read loop, so this covers the scheduler running them out of
-// order — not a user cancelling a download that never starts.
-const pendingCancelWindow = 10 * time.Second
-
-// claimPull marks a pull request accepted and not yet finished, and returns
-// the release to run when it settles. The claim is what lets CancelModelPull
-// tell a pull that has not registered yet from one that is already over, so it
-// has to be taken where the request is accepted rather than where the download
-// starts. Claiming something that is not a pull is a no-op.
-func (e *Executor) claimPull(engine, model string, isPull bool) func() {
-	if !isPull || engine == "" || model == "" {
-		return func() {}
-	}
-	key := pullKey{engine: engine, model: model}
-	e.pullMu.Lock()
-	if e.pullClaims == nil {
-		e.pullClaims = make(map[pullKey]int)
-	}
-	e.pullClaims[key]++
-	e.pullMu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			e.pullMu.Lock()
-			defer e.pullMu.Unlock()
-			e.pullClaims[key]--
-			if e.pullClaims[key] > 0 {
-				return
-			}
-			delete(e.pullClaims, key)
-			// A cancel held for a pull that ended without consuming it has
-			// nothing left to stop. Drop it here rather than letting it sit
-			// out its window, where a retry would inherit the cancellation.
-			delete(e.pendingCancels, key)
-		})
-	}
+// pullClaim is one accepted pull request that has not finished.
+//
+// The pull and its cancel are dispatched onto separate goroutines, so a cancel
+// can reach the executor before the download it targets has registered. The
+// claim is what the cancel finds instead. It is taken where the request is
+// accepted, carried to trackedPull on the request's context, and released when
+// the request settles. Each request has its own, so a cancel stops exactly the
+// requests that were outstanding when it arrived: a retry accepted after it
+// downloads normally, whichever of the two reaches the executor first.
+type pullClaim struct {
+	key      pullKey
+	executor *Executor
+	// cancelled is set by a cancel that found this request outstanding, and
+	// stops it before it starts a download. Guarded by the executor's pullMu.
+	cancelled bool
+	once      sync.Once
 }
 
-// CancelModelPull waits for the transfer and its cleanup before acknowledging.
-// Cancellation must never delete a model.
+type pullClaimKey struct{}
+
+// claimPull marks a pull request accepted and not yet finished. It has to be
+// taken where the request is accepted, in the order the client sent it, rather
+// than where the download starts. The returned context carries the claim to
+// the request's trackedPull, and the returned function releases it once the
+// request settles. A request that names no engine and model is not a pull and
+// claims nothing.
+func (e *Executor) claimPull(ctx context.Context, engine, model string) (context.Context, func()) {
+	if engine == "" || model == "" {
+		return ctx, func() {}
+	}
+	claim := &pullClaim{key: pullKey{engine: engine, model: model}, executor: e}
+	e.pullMu.Lock()
+	if e.pullClaims == nil {
+		e.pullClaims = make(map[pullKey][]*pullClaim)
+	}
+	e.pullClaims[claim.key] = append(e.pullClaims[claim.key], claim)
+	e.pullMu.Unlock()
+	return context.WithValue(ctx, pullClaimKey{}, claim), claim.release
+}
+
+// release ends the claim. It is safe to call more than once.
+func (c *pullClaim) release() {
+	c.once.Do(func() {
+		e := c.executor
+		e.pullMu.Lock()
+		defer e.pullMu.Unlock()
+		claims := slices.DeleteFunc(e.pullClaims[c.key], func(other *pullClaim) bool { return other == c })
+		if len(claims) == 0 {
+			delete(e.pullClaims, c.key)
+			return
+		}
+		e.pullClaims[c.key] = claims
+	})
+}
+
+// CancelModelPull stops the download of model on engine, and acknowledges only
+// once the transfer and its cleanup are done. Cancellation must never delete a
+// model.
 //
-// A cancel can arrive before its pull has registered, because the pull and the
-// cancel are dispatched on separate goroutines. Acknowledging that as "already
-// complete" would leave the download running under a UI stuck on "Canceling",
-// so it leaves a tombstone the pull consumes instead of starting. That is only
-// right while the pull is still owed to someone: an unclaimed engine and model
-// has no download to stop, and a tombstone left there would cancel whatever
-// pull came next.
+// It stops every request for that download outstanding when it arrives: the
+// one downloading, any joined to it or queued behind another of the engine's
+// downloads, and any accepted but not yet registered, which then never starts.
+// A request accepted after the cancel is a retry, and is left alone.
+//
+// With nothing transferring there is nothing to wait for, so it returns at
+// once. That includes finding nothing outstanding at all. Requests are claimed
+// on the read loop in the order the client sent them, and the broker relays
+// the two in that order, so a cancel that finds no claim arrived after its
+// download had already finished.
 func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) error {
 	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
+	for _, claim := range e.pullClaims[key] {
+		claim.cancelled = true
+	}
 	p := e.pulls[key]
 	if p != nil {
 		p.requested.Store(true)
 		p.cancel()
-	} else if e.pullClaims[key] > 0 {
-		e.armPendingCancel(key)
 	}
 	e.pullMu.Unlock()
 	if p == nil {
@@ -119,32 +139,8 @@ func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) er
 	}
 }
 
-// armPendingCancel records a cancel for a pull that has not registered yet, and
-// drops the entries that have aged out. Callers hold pullMu.
-func (e *Executor) armPendingCancel(key pullKey) {
-	if e.pendingCancels == nil {
-		e.pendingCancels = make(map[pullKey]time.Time)
-	}
-	now := time.Now()
-	for pending, armed := range e.pendingCancels {
-		if now.Sub(armed) > pendingCancelWindow {
-			delete(e.pendingCancels, pending)
-		}
-	}
-	e.pendingCancels[key] = now
-}
-
-// takePendingCancel consumes a tombstone armed for this pull. Callers hold pullMu.
-func (e *Executor) takePendingCancel(key pullKey) bool {
-	armed, ok := e.pendingCancels[key]
-	if !ok {
-		return false
-	}
-	delete(e.pendingCancels, key)
-	return time.Since(armed) <= pendingCancelWindow
-}
-
 func (e *Executor) trackedPull(ctx context.Context, engine, model string, run func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
+	claim, _ := ctx.Value(pullClaimKey{}).(*pullClaim)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	p := &activePull{cancel: cancel, done: make(chan struct{})}
@@ -154,7 +150,10 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 	if e.pulls == nil {
 		e.pulls = make(map[pullKey]*activePull)
 	}
-	if e.takePendingCancel(key) {
+	// A cancel that arrived while this request was on its way here stops it
+	// before it starts. Only the request's own claim counts, so a cancel aimed
+	// at an earlier request for the same model cannot stop this one.
+	if claim != nil && claim.key == key && claim.cancelled {
 		e.pullMu.Unlock()
 		return cancelledPull(), nil
 	}

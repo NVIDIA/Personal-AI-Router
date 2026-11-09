@@ -49,14 +49,14 @@ type actionParam struct {
 }
 
 // pullClaimFrom reports the engine and model of an engine:action that starts a
-// download, for Executor.claimPull. Malformed params are left to the handler,
-// which owns the error response.
-func pullClaimFrom(params json.RawMessage) (engine, model string, isPull bool) {
+// download, for Executor.claimPull, and nothing for any other action.
+// Malformed params are left to the handler, which owns the error response.
+func pullClaimFrom(params json.RawMessage) (engine, model string) {
 	var p actionParam
 	if err := json.Unmarshal(params, &p); err != nil || p.Action != pullModelAction {
-		return "", "", false
+		return "", ""
 	}
-	return p.Engine, modelFromParams(p.Params), true
+	return p.Engine, modelFromParams(p.Params)
 }
 
 // setPortParam is the engine:set-port input: the engine whose server port to
@@ -303,10 +303,11 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		// engine:cancel-pull below each dispatch their own, so a cancel can
 		// reach the executor first; claiming on the read loop preserves the
 		// order the client sent them in.
-		release := m.exec.claimPull(pullClaimFrom(msg.Params))
+		engine, model := pullClaimFrom(msg.Params)
+		actionCtx, release := m.exec.claimPull(ctx, engine, model)
 		go func() {
 			defer release()
-			m.runAction(ctx, msg)
+			m.runAction(actionCtx, msg)
 		}()
 
 	case "engine:cancel-pull":

@@ -82,16 +82,10 @@ type engineState struct {
 type Executor struct {
 	pullMu sync.Mutex
 	pulls  map[pullKey]*activePull
-	// pendingCancels holds cancels that arrived before their pull registered,
-	// so the download aborts instead of running on under a UI that already
-	// shows "Canceling". Entries are consumed by the pull they name and expire
-	// after pendingCancelWindow.
-	pendingCancels map[pullKey]time.Time
-	// pullClaims counts the accepted pull requests per engine+model that have
-	// not finished, so a cancel can tell a pull that has not registered yet
-	// from one that already completed. Claimed where the request is accepted;
-	// see claimPull.
-	pullClaims       map[pullKey]int
+	// pullClaims holds the accepted pull requests per engine+model that have
+	// not finished, so a cancel can stop one that has not registered its
+	// download yet. Claimed where the request is accepted; see claimPull.
+	pullClaims       map[pullKey][]*pullClaim
 	settingsHub      settings.Hub
 	settingsParent   func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg              *Registry
