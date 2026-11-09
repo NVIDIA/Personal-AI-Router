@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"sync"
 	"time"
 )
@@ -50,8 +51,9 @@ func newOpID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// remotePullGate holds an engine:remote-cancel-pull until the
-// engine:remote-pull-model it targets has reached the peer.
+// remotePullGate holds an engine:remote-cancel-pull until every
+// engine:remote-pull-model of the same download sent before it has reached the
+// peer.
 //
 // Both methods dispatch their own goroutine from the same read loop, so nothing
 // downstream preserves the order the UI sent them in. A cancel that wins that
@@ -62,28 +64,34 @@ func newOpID() string {
 //
 // handlePull claims the pull before streamOp writes the stream's response
 // header, so that header arriving is proof the peer will recognize the cancel.
-// Registering the pull on the read loop, where the client's order still holds,
-// is what gives the cancel something to wait for.
+// Placing both requests on the read loop, where the client's order still holds,
+// is what gives the cancel something to wait for, and keeps a pull sent after
+// it — a retry — out of what it waits for.
+//
+// Each request is tracked on its own. The peer joins a duplicate onto the
+// download already in flight, but only once the duplicate gets there: a cancel
+// let go when the first request landed can overtake a second still on its way,
+// stop the download, and leave the second to start it over.
 type remotePullGate struct {
 	mu    sync.Mutex
-	pulls map[remotePullKey]*remotePullAttempt
+	pulls map[remotePullKey][]*remotePullRequest
 }
 
-type remotePullAttempt struct {
-	// accepted closes when the peer has taken the pull, or when the attempt
-	// ended without ever getting that far, so a waiting cancel proceeds either
+// remotePullRequest is one engine:remote-pull-model on its way to the peer.
+type remotePullRequest struct {
+	// landed closes when the peer has taken the request, or when the request
+	// ended without getting that far, so a cancel waiting on it proceeds either
 	// way rather than outliving the download it was chasing.
-	accepted chan struct{}
-	settle   sync.Once
-	// refs counts the requests sharing this attempt. The peer joins a duplicate
-	// pull onto the download already in flight, so two can be outstanding.
-	refs int
+	landed chan struct{}
+	settle sync.Once
 }
 
-// remotePullGateWindow is the backstop under a cancel waiting for its pull to
+func (r *remotePullRequest) land() { r.settle.Do(func() { close(r.landed) }) }
+
+// remotePullGateWindow is the backstop under a cancel waiting for its pulls to
 // reach the peer, not the mechanism. The two signals that actually free it
-// both close attempt.accepted: the peer taking the pull, or every request for
-// it ending. One of them always arrives, because the pull's own transport
+// both land a pull the cancel waits on: the peer taking it, or the request
+// ending. One of them always arrives, because the pull's own transport
 // gives up by itself — 30s to dial and 30s for the handshake, clustertrust's
 // fallback when no PeerClientOptions.Timeout is set, then
 // remoteResponseHeaderTimeout for the header, which is the point stream
@@ -110,11 +118,13 @@ type remotePullKey struct {
 	model  string
 }
 
-// remotePullClaimFrom reports the gate key of an engine:remote-pull-model
-// request. Malformed or incomplete params are left to runRemote, which owns the
-// error response.
-func remotePullClaimFrom(method string, params json.RawMessage) (remotePullKey, bool) {
-	if method != "engine:remote-pull-model" {
+// remotePullKeyFrom reports the download an engine:remote-pull-model or
+// engine:remote-cancel-pull names. A pull can name its model inside params, as
+// the peer reads it; a cancel names it at the top level, as runRemote sends it.
+// Malformed or incomplete params name none and are left to runRemote, which
+// owns the error response.
+func remotePullKeyFrom(method string, params json.RawMessage) (remotePullKey, bool) {
+	if method != "engine:remote-pull-model" && method != "engine:remote-cancel-pull" {
 		return remotePullKey{}, false
 	}
 	var p remoteParam
@@ -122,8 +132,10 @@ func remotePullClaimFrom(method string, params json.RawMessage) (remotePullKey, 
 		return remotePullKey{}, false
 	}
 	model := p.Model
-	if fromParams := modelFromParams(p.Params); fromParams != "" {
-		model = fromParams
+	if method == "engine:remote-pull-model" {
+		if fromParams := modelFromParams(p.Params); fromParams != "" {
+			model = fromParams
+		}
 	}
 	if p.Node == "" || p.Engine == "" || model == "" {
 		return remotePullKey{}, false
@@ -131,84 +143,102 @@ func remotePullClaimFrom(method string, params json.RawMessage) (remotePullKey, 
 	return remotePullKey{node: p.Node, engine: p.Engine, model: model}, true
 }
 
-// register records a remote pull for the cancel that may be chasing it, and
-// returns the release to run when the attempt ends. Registering anything that
-// is not a remote pull is a no-op.
-func (g *remotePullGate) register(key remotePullKey, isPull bool) func() {
-	if !isPull {
-		return func() {}
+// remoteOrder is an engine:remote-* request's place in remotePullGate. Only a
+// remote pull and a remote cancel take one; any other request's does nothing.
+type remoteOrder struct {
+	gate *remotePullGate
+	key  remotePullKey
+	// pull is a remote pull's own entry.
+	pull *remotePullRequest
+	// ahead are, for a cancel, the pulls of its download sent before it.
+	ahead []*remotePullRequest
+}
+
+// place puts a request in the gate: a remote pull joins the pulls of its
+// download, and a cancel notes the ones already there. It runs on the read
+// loop, where the client's order still holds.
+func (g *remotePullGate) place(method string, params json.RawMessage) remoteOrder {
+	key, ok := remotePullKeyFrom(method, params)
+	if !ok {
+		return remoteOrder{}
 	}
 	g.mu.Lock()
+	defer g.mu.Unlock()
+	order := remoteOrder{gate: g, key: key}
+	if method == "engine:remote-cancel-pull" {
+		order.ahead = slices.Clone(g.pulls[key])
+		return order
+	}
+	order.pull = &remotePullRequest{landed: make(chan struct{})}
 	if g.pulls == nil {
-		g.pulls = make(map[remotePullKey]*remotePullAttempt)
+		g.pulls = make(map[remotePullKey][]*remotePullRequest)
 	}
-	attempt := g.pulls[key]
-	if attempt == nil {
-		attempt = &remotePullAttempt{accepted: make(chan struct{})}
-		g.pulls[key] = attempt
-	}
-	attempt.refs++
-	g.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			g.mu.Lock()
-			attempt.refs--
-			last := attempt.refs == 0
-			if last {
-				delete(g.pulls, key)
-			}
-			g.mu.Unlock()
-			// An attempt that ended without the peer accepting it has nothing
-			// left for a cancel to chase — but only once every request sharing
-			// it has ended. One duplicate failing while another is still on
-			// its way to the peer is not the attempt ending, and freeing the
-			// cancel there sends it ahead of a pull that may still be
-			// accepted. Acceptance has its own closer and does not wait on
-			// this count.
-			if last {
-				attempt.settle.Do(func() { close(attempt.accepted) })
-			}
-		})
-	}
+	g.pulls[key] = append(g.pulls[key], order.pull)
+	return order
 }
 
-// accepted marks the peer as holding this pull, releasing any cancel waiting on
-// it. Returns a callback so the caller can hand it straight to remoteClient.stream.
-func (g *remotePullGate) accepted(key remotePullKey) func() {
-	return func() {
-		g.mu.Lock()
-		attempt := g.pulls[key]
-		g.mu.Unlock()
-		if attempt != nil {
-			attempt.settle.Do(func() { close(attempt.accepted) })
-		}
+// accepted is the callback remoteClient.stream runs once the peer has taken a
+// remote pull, freeing the cancels waiting on it. Nothing else has one.
+func (o remoteOrder) accepted() func() {
+	if o.pull == nil {
+		return nil
 	}
+	return o.pull.land
 }
 
-// awaitAccepted blocks until the pull this cancel targets has reached the peer,
-// the attempt ended, or the window elapses. A cancel for a download nobody
-// requested finds no attempt and proceeds immediately.
-func (g *remotePullGate) awaitAccepted(ctx context.Context, key remotePullKey) {
-	g.mu.Lock()
-	attempt := g.pulls[key]
-	g.mu.Unlock()
-	if attempt == nil {
+// awaitAhead holds a cancel until every pull it was sent after has reached the
+// peer or ended, or the window elapses. A cancel for a download nobody
+// requested has nothing ahead of it and proceeds at once.
+func (o remoteOrder) awaitAhead(ctx context.Context) {
+	if len(o.ahead) == 0 {
 		return
 	}
 	timer := time.NewTimer(remotePullGateWindow)
 	defer timer.Stop()
-	select {
-	case <-attempt.accepted:
-	case <-timer.C:
-	case <-ctx.Done():
+	for _, pull := range o.ahead {
+		select {
+		case <-pull.landed:
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
+}
+
+// end takes a remote pull out of the gate, freeing any cancel still waiting on
+// it — a pull that ended has nothing left for one to chase — and reports
+// whether it was the last pull of its download outstanding here. Only the
+// first call for a pull does anything.
+func (o remoteOrder) end() (last bool) {
+	if o.pull == nil {
+		return false
+	}
+	g := o.gate
+	g.mu.Lock()
+	pulls := g.pulls[o.key]
+	i := slices.Index(pulls, o.pull)
+	if i < 0 {
+		g.mu.Unlock()
+		return false
+	}
+	pulls = slices.Delete(pulls, i, i+1)
+	last = len(pulls) == 0
+	if last {
+		delete(g.pulls, o.key)
+	} else {
+		g.pulls[o.key] = pulls
+	}
+	g.mu.Unlock()
+	o.pull.land()
+	return last
 }
 
 // runRemote dispatches an engine:remote-* request. It runs on its own goroutine
 // (like the other long ops) so the read loop stays responsive during a
-// multi-minute remote install/pull.
-func (m *Manager) runRemote(ctx context.Context, msg *Message) {
+// multi-minute remote install/pull. order is the place the read loop gave the
+// request in remotePullGate.
+func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder) {
 	var p remoteParam
 	if !m.parse(msg, &p) {
 		return
@@ -256,19 +286,7 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 			m.codec.RespondError(msg.ID, -32602, "model or params is required")
 			return
 		}
-		opID := newOpID()
-		body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
-		key, isPull := remotePullClaimFrom(msg.Method, msg.Params)
-		var onAccepted func()
-		if isPull {
-			onAccepted = m.remotePulls.accepted(key)
-		}
-		terminal, err := client.stream(ctx, controlPullPath, body, m.remoteProgressFn(opID, peer.nodeID), onAccepted)
-		if err != nil {
-			m.codec.RespondError(msg.ID, -32000, err.Error())
-			return
-		}
-		m.codec.Respond(msg.ID, map[string]any{"opId": opID, "result": terminal.Result})
+		m.pullRemote(ctx, msg, client, peer.nodeID, p, order)
 
 	case "engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull":
 		if p.Engine == "" {
@@ -283,9 +301,9 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 		switch msg.Method {
 		case "engine:remote-cancel-pull":
 			path = controlCancelPullPath
-			// Let the download this cancel names reach the peer first; see
-			// remotePullGate.
-			m.remotePulls.awaitAccepted(ctx, remotePullKey{node: p.Node, engine: p.Engine, model: p.Model})
+			// Let the pulls this cancel was sent after reach the peer first;
+			// see remotePullGate.
+			order.awaitAhead(ctx)
 		case "engine:remote-unload-model":
 			path = controlUnloadPath
 		case "engine:remote-delete-model":
@@ -313,6 +331,52 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 	default:
 		m.codec.RespondError(msg.ID, -32601, "method not found: "+msg.Method)
 	}
+}
+
+// pullRemote streams a model pull from the peer, relaying its progress, and
+// settles the request with the peer's result.
+//
+// A download ends on a frame saying how, which is all a UI that stopped waiting
+// for the reply has to go on. The peer sends that frame through its progress
+// hub, which drops what a slow stream has no room for; the result travels
+// separately and always arrives. So a stream that carried no such frame gets
+// one built from the result, the way emitPullOutcome builds a local pull's.
+// The UIs know a download's frames by node, engine and model alone, so while
+// another pull of the same download is outstanding here its frames speak for
+// this one too, and only the last of them to end sends it.
+func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteClient, node string, p remoteParam, order remoteOrder) {
+	opID := newOpID()
+	body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
+	relay := m.remoteProgressFn(opID, node)
+	reported := false
+	terminal, err := client.stream(ctx, controlPullPath, body, func(f streamFrame) {
+		reported = reported || (f.Op == "pull" && isPullOutcome(f.Stage))
+		relay(f)
+	}, order.accepted())
+	if order.end() && !reported {
+		m.notifyRemotePullOutcome(opID, node, p.Engine, order.key.model, terminal, err)
+	}
+	if err != nil {
+		m.codec.RespondError(msg.ID, -32000, err.Error())
+		return
+	}
+	m.codec.Respond(msg.ID, map[string]any{"opId": opID, "result": terminal.Result})
+}
+
+// notifyRemotePullOutcome sends the engine:remote-progress frame a remote pull
+// ends on, from how its stream settled: "error" with the reason when it
+// failed, "cancelled" when the peer's result says so, "success" otherwise.
+func (m *Manager) notifyRemotePullOutcome(opID, node, engine, model string, terminal streamFrame, err error) {
+	p := remoteProgress{Model: model, OpID: opID, Node: node, Engine: engine, Op: "pull", Message: model}
+	switch {
+	case err != nil:
+		p.Stage, p.Percent, p.Message = "error", -1, err.Error()
+	case pullResultCancelled(terminal.Result):
+		p.Stage = "cancelled"
+	default:
+		p.Stage, p.Percent = "success", 100
+	}
+	_ = m.codec.Notify("engine:remote-progress", p)
 }
 
 // remoteProgressFn returns an onProgress callback that relays a peer's stream

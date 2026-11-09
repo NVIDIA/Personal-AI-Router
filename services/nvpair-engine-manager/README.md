@@ -74,7 +74,7 @@ Requests (caller → service):
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
-| `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result. Held until the peer has accepted the matching `engine:remote-pull-model`, so a cancel dispatched right behind a pull cannot reach the peer first |
+| `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result. Held until every `engine:remote-pull-model` of that download sent before it has been accepted by the peer or has ended, so a cancel dispatched right behind a pull, or behind a duplicate of it, cannot reach the peer first |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
@@ -101,13 +101,17 @@ pull), `stage:"cancelled"` when a cancel stopped it, or
 if its synchronous call already timed out; a request that joins a download
 already in flight shares that download's frames rather than adding its own, as
 does a request a cancel stopped before it started while another download of
-that model is still registered.
+that model is still registered. A peer's progress hub drops frames a slow
+stream has no room for, the terminal one included, so a remote initiator whose
+stream ended without it sends one built from the stream's result, unless
+another pull of the same download is still outstanding there.
 `model` names the download the frame belongs to, so a consumer can tell two
 pulls on one engine apart; a pull waiting on another of the same engine's
 downloads reports `stage:"queued"` until its turn),
 `engine:remote-progress{opId, node, engine, model, op, stage, percent?, message}`
 (relayed live progress for a remote install/pull, a pull's terminal frame
-included; `model` is carried through from the peer's frame for the same
+included, which the initiator sends itself when the peer's stream dropped it;
+`model` is carried through from the peer's frame for the same
 reason it appears on the local notification), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
@@ -295,8 +299,12 @@ whose download has not registered yet then never starts it — and a retry
 accepted after the cancel downloads normally, whichever of the two reaches the
 executor first. A cancel that finds nothing claimed arrived after its download
 finished, and stops nothing. On the remote path the peer claims a pull before
-accepting it, and `engine:remote-cancel-pull` is held until the peer has
-accepted the matching `engine:remote-pull-model`.
+accepting it, and `engine:remote-cancel-pull` is held until every
+`engine:remote-pull-model` of that download sent before it has been accepted by
+the peer or has ended. Each is waited on separately: the peer joins a duplicate
+onto the download only once it arrives, so a cancel let go when the first
+landed could stop the download and leave the second to start it over. A pull
+sent after the cancel is a retry and is not waited for.
 
 ## Remote engine management
 

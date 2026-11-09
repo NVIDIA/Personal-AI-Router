@@ -31,7 +31,10 @@ func wirePercentIncluded(pct int) bool {
 // publishes as the install/pull makes progress. Publishing must never block the
 // operation, so a slow or full subscriber simply drops frames — progress is
 // advisory, and the terminal result is delivered out-of-band (as the stream's
-// final frame / the RPC response), not through the hub.
+// final frame / the RPC response), not through the hub. The frame a pull ends
+// on (emitPullOutcome) is a hub frame like any other and can be dropped with
+// the rest, so a remote initiator whose stream carried none builds it from the
+// result; see Manager.pullRemote.
 //
 // Subscriptions are scoped by engine, not by operation id: a subscriber watching
 // "ollama" sees every ollama frame, so if a local pull and a remote ec pull of

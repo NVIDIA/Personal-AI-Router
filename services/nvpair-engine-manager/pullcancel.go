@@ -47,6 +47,14 @@ type pullKey struct {
 
 func cancelledPull() json.RawMessage { return json.RawMessage(`{"status":"cancelled"}`) }
 
+// pullResultCancelled reports whether a pull's result is cancelledPull's.
+func pullResultCancelled(result json.RawMessage) bool {
+	var r struct {
+		Status string `json:"status"`
+	}
+	return json.Unmarshal(result, &r) == nil && r.Status == "cancelled"
+}
+
 // pullClaim is one accepted pull request that has not finished.
 //
 // The pull and its cancel are dispatched onto separate goroutines, so a cancel
@@ -238,6 +246,16 @@ func (e *Executor) emitPullOutcome(engine, model string, cancelled bool, err err
 		ev.Stage, ev.Percent = "success", 100
 	}
 	e.emitPullProgress(ev)
+}
+
+// isPullOutcome reports whether a pull frame's stage is one emitPullOutcome
+// ends a download on.
+func isPullOutcome(stage string) bool {
+	switch stage {
+	case "success", "cancelled", "error":
+		return true
+	}
+	return false
 }
 
 // joinPull reports the outcome of a download already in flight, so a duplicate

@@ -84,8 +84,8 @@ type Manager struct {
 	// selects.
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
-	// remotePulls orders an engine:remote-cancel-pull behind the remote pull it
-	// targets, the way claimPull orders a local one.
+	// remotePulls orders an engine:remote-cancel-pull behind the remote pulls
+	// it targets, the way claimPull orders a local one.
 	remotePulls remotePullGate
 	// catalog answers engine:catalog: the models an engine can download, as
 	// opposed to the ones it already holds.
@@ -325,13 +325,15 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull",
 		"engine:remote-start", "engine:remote-stop":
-		// Register a remote pull here for the same reason engine:action claims a
-		// local one: engine:remote-cancel-pull dispatches its own goroutine, so
-		// a cancel can otherwise reach the peer first. See remotePullGate.
-		release := m.remotePulls.register(remotePullClaimFrom(msg.Method, msg.Params))
+		// Place a remote pull, and a cancel chasing one, here for the same
+		// reason engine:action claims a local pull: each dispatches its own
+		// goroutine, so a cancel can otherwise reach the peer first, and only
+		// here can it tell the pulls sent before it from a retry sent after.
+		// See remotePullGate.
+		order := m.remotePulls.place(msg.Method, msg.Params)
 		go func() {
-			defer release()
-			m.runRemote(ctx, msg)
+			defer order.end()
+			m.runRemote(ctx, msg, order)
 		}()
 
 	default:
