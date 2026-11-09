@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
 
@@ -20,46 +22,46 @@ import (
 // reaches every process sharing that console. The image check is what keeps the
 // signal inside the app, and the returned handle is what keeps the PID from
 // being recycled between that check and the attach.
-func TestOpenDownloadLauncherRejectsForeignProcesses(t *testing.T) {
-	handle, ok := openDownloadLauncher(uint32(os.Getpid()))
-	if !ok {
-		t.Fatal("this test binary was not recognized as its own image")
+func TestOpenDownloadLauncher_AcceptsOnlyThisAppsOwnImage(t *testing.T) {
+	t.Run("accepts this test binary", func(t *testing.T) {
+		handle, ok := openDownloadLauncher(uint32(os.Getpid()))
+		require.True(t, ok, "this test binary was not recognized as its own image")
+		assert.NotZero(t, handle, "an accepted launcher came back without a handle, so nothing holds its PID")
+		assert.NoError(t, windows.CloseHandle(handle))
+	})
+	reject := func(name string, pid uint32) {
+		t.Run(name, func(t *testing.T) {
+			handle, ok := openDownloadLauncher(pid)
+			if !assert.False(t, ok, "pid %d was accepted as a download launcher", pid) {
+				_ = windows.CloseHandle(handle)
+				return
+			}
+			// A rejection must not leak the handle it opened to look.
+			assert.Zero(t, handle)
+		})
 	}
-	if handle == 0 {
-		t.Error("accepted launcher came back without a handle, so nothing holds its PID")
-	}
-	if err := windows.CloseHandle(handle); err != nil {
-		t.Errorf("close launcher handle: %v", err)
-	}
-	// PID 4 is the Windows System process; a PID no process holds is also a
-	// reissue candidate.
-	for _, pid := range []uint32{4, 0xFFFFFFF0} {
-		handle, ok := openDownloadLauncher(pid)
-		if ok {
-			t.Errorf("pid %d was accepted as a download launcher", pid)
-			_ = windows.CloseHandle(handle)
-			continue
-		}
-		// A rejection must not leak the handle it opened to look.
-		if handle != 0 {
-			t.Errorf("pid %d was rejected but returned handle %v", pid, handle)
-		}
-	}
+	reject("rejects the Windows System process", 4)
+	// A PID no process holds is a reissue candidate too.
+	reject("rejects a pid no process holds", 0xFFFFFFF0)
 }
 
 // The broker launches engine-manager in a new process group, which disables
-// Ctrl+C and passes that setting to descendants, including a download CLI.
-func TestLMSDownloadInBrokerProcessGroup(t *testing.T) {
+// Ctrl+C and passes that setting to descendants, including a download CLI. The
+// interrupt has to reach the CLI anyway, so the cancellation test is run again
+// in a child process started the way the broker starts engine-manager.
+func TestRunLMSDownloadCommand_InterruptsTheCLIUnderTheBrokersProcessFlags(t *testing.T) {
+	const cancellation = "TestRunLMSDownloadCommand_InterruptsTheCLIWhenCancelled"
 	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestLMSDownloadInterruptsChild$", "-test.v")
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^"+cancellation+"$", "-test.v")
 	configureSysProcAttr(cmd)
 	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("download cancellation under broker process flags: %v\n%s", err, output)
-	}
+
+	output, err := cmd.CombinedOutput()
+
+	require.NoError(t, err, "download cancellation under the broker's process flags:\n%s", output)
+	// A pattern that matches no test also exits cleanly.
+	assert.Contains(t, string(output), "--- PASS: "+cancellation, "the cancellation test did not run in the child")
 }

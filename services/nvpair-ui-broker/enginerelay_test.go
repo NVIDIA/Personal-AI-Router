@@ -8,9 +8,15 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestRelayToEngineKeepsDownloadRequestsInOrder(t *testing.T) {
+// Engine requests are otherwise each relayed from a goroutine of their own,
+// which can reach the engine manager in any order. A cancel that overtakes the
+// pull it names finds nothing to stop, and the download then runs to
+// completion under a UI that shows it cancelled.
+func TestRelayToEngine_KeepsDownloadRequestsInOrder(t *testing.T) {
 	engineClient, engineServer := net.Pipe()
 	brokerClient, brokerServer := net.Pipe()
 	defer engineClient.Close()
@@ -60,11 +66,9 @@ func TestRelayToEngineKeepsDownloadRequestsInOrder(t *testing.T) {
 	for _, want := range sent {
 		select {
 		case got := <-received:
-			if got != want.method {
-				t.Fatalf("engine-manager received %s, want %s", got, want.method)
-			}
+			require.Equal(t, want.method, got, "the engine manager received the download requests out of order")
 		case <-time.After(2 * time.Second):
-			t.Fatalf("engine-manager never received %s", want.method)
+			require.FailNow(t, "the engine manager never received "+want.method)
 		}
 	}
 }

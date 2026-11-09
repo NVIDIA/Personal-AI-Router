@@ -5,11 +5,19 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -151,4 +159,181 @@ func TestCleanupOllamaAfterCancel_KeepsAPartialAnotherClientIsWriting(t *testing
 	require.NoError(t, cleanupOllamaAfterCancel(ctx, root, map[string]bool{digestC: true}, before))
 
 	assertPresent(t, shared)
+}
+
+// newOllamaPullExecutor wires an executor whose ollama pull_model action points
+// at a fake /api/pull server.
+func newOllamaPullExecutor(t *testing.T, serverURL string, emit func(method string, params any)) *Executor {
+	t.Helper()
+	_, portText, err := net.SplitHostPort(strings.TrimPrefix(serverURL, "http://"))
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err)
+	manifest := testEngineManifest(fakeEngineBin)
+	manifest.Engine = "ollama"
+	manifest.Actions[pullModelAction] = Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}}
+	reg := NewRegistry()
+	reg.engines["ollama"] = manifest
+	ex := NewExecutor(reg, NewReporter(nil), emit, t.TempDir())
+	st, err := ex.state("ollama")
+	require.NoError(t, err)
+	st.running = true
+	st.port = port
+	return ex
+}
+
+// newOllamaBlobsDir points the engine at an empty blobs directory. The partial
+// arrives once the download starts, the way a real one does, so the snapshot
+// the pull takes beforehand can attribute it.
+func newOllamaBlobsDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("OLLAMA_MODELS", root)
+	blobs := filepath.Join(root, "blobs")
+	require.NoError(t, os.MkdirAll(blobs, 0700))
+	return blobs
+}
+
+// ollamaTransfer serves an Ollama pull that writes the partial blob a transfer
+// would, streams statuses, and then holds the connection open until the client
+// lets go of it. The partial appears only once the pull has started, so it is
+// one the pull created.
+func ollamaTransfer(t *testing.T, partial string, statuses ...string) (server *httptest.Server, disconnected <-chan struct{}) {
+	t.Helper()
+	closed := make(chan struct{})
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(closed)
+		if !assert.NoError(t, os.WriteFile(partial, []byte("partial"), 0o600)) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		for _, status := range statuses {
+			_, err := fmt.Fprintf(w, `{"status":%q,"digest":%q,"total":100,"completed":25}`+"\n", status, digestA)
+			if !assert.NoError(t, err) {
+				return
+			}
+		}
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	return server, closed
+}
+
+// startOllamaPull runs a pull of "demo" against an Ollama transfer on its own
+// goroutine, and returns once the engine manager has read the transfer's first
+// status. By then the partial blob exists and the pull knows its digest, so
+// whatever stops the pull from here on finds a file the pull can claim.
+func startOllamaPull(t *testing.T, ctx context.Context, server *httptest.Server) (*Executor, <-chan outcome) {
+	t.Helper()
+	downloading := make(chan struct{})
+	var once sync.Once
+	ex := newOllamaPullExecutor(t, server.URL, func(method string, _ any) {
+		if method == "engine:pull-progress" {
+			once.Do(func() { close(downloading) })
+		}
+	})
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.PullModelStream(ctx, "ollama", "demo", nil)
+		done <- got
+	}()
+	select {
+	case <-downloading:
+	case <-ctx.Done():
+		require.FailNow(t, "the pull did not start")
+	}
+	return ex, done
+}
+
+// A cancel someone asked for stops Ollama's transfer and removes the partial
+// blob the pull created.
+func TestOllamaCancellation_StopsTheTransferAndRemovesItsPartial(t *testing.T) {
+	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
+	server, disconnected := ollamaTransfer(t, partial, "pulling layer")
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	ex, done := startOllamaPull(t, ctx, server)
+
+	require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+	got := <-done
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	select {
+	case <-disconnected:
+	case <-ctx.Done():
+		require.FailNow(t, "the HTTP transfer did not disconnect")
+	}
+	assertRemoved(t, partial)
+}
+
+// Cleanup that cannot finish is not a failed cancellation. The transfer has
+// already stopped, which is what was asked for, and the bytes left behind are
+// the vendor's to resume. Reporting the cleanup error as the pull's outcome
+// denied the one thing that did happen and left the row on "Canceling" over a
+// download that was already gone.
+func TestOllamaCancellation_SucceedsWhenCleanupCannotFinish(t *testing.T) {
+	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
+	server, _ := ollamaTransfer(t, partial, "pulling layer")
+	ctx, cancel := context.WithTimeout(settledContext(), 60*time.Second)
+	defer cancel()
+	ex, done := startOllamaPull(t, ctx, server)
+	// The partial exists and is attributable to this pull by now, so this is
+	// the point its removal can be made to fail.
+	blockPartialRemoval(t, partial)
+
+	require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+	got := <-done
+
+	require.NoError(t, got.err, "the cancellation should be reported as a cancellation")
+	assertPullStatus(t, got.result, "cancelled")
+	// Cleanup could not remove it, and saying so is the warning's job, not the
+	// cancel's. The file stays for the next attempt to resume.
+	assertPresent(t, partial)
+}
+
+// The pull's context also dies when PAIR quits mid-download, when a remote
+// initiator disconnects, and when the action timeout elapses. None of those
+// mean the user gave up on the bytes already on disk, so a resumable transfer
+// has to survive them instead of restarting from zero on the next attempt.
+func TestOllamaPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T) {
+	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
+	server, _ := ollamaTransfer(t, partial, "pulling layer")
+	ctx, cancel := context.WithCancel(settledContext())
+	defer cancel()
+	_, done := startOllamaPull(t, ctx, server)
+
+	cancel()
+	got := <-done
+
+	require.ErrorIs(t, got.err, context.Canceled)
+	data, err := os.ReadFile(partial)
+	require.NoError(t, err, "a resumable partial was deleted without a cancel request")
+	assert.Equal(t, "partial", string(data))
+}
+
+// Ollama's success record is its last: the model is installed. The pull
+// reports success on it even while the connection stays open, and a cancel
+// that lands afterwards finds nothing to stop and leaves the files alone.
+func TestOllamaPull_SucceedsOnOllamasSuccessRecord(t *testing.T) {
+	test := func(name string, statuses ...string) {
+		t.Run(name, func(t *testing.T) {
+			partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
+			server, _ := ollamaTransfer(t, partial, statuses...)
+			ex := newOllamaPullExecutor(t, server.URL, nil)
+			ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+			defer cancel()
+
+			result, err := ex.PullModelStream(ctx, "ollama", "demo", nil)
+			require.NoError(t, err)
+			require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+
+			assertPullStatus(t, result, "success")
+			assertPresent(t, partial)
+		})
+	}
+	test("success is the last record", "pulling layer", "success")
+	test("a record follows success", "pulling layer", "success", "")
 }

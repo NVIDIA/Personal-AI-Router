@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,7 +66,7 @@ func TestStreamOp_EmitsErrorFrame(t *testing.T) {
 // A subscription is per engine, so a pull stream also sees the engine's
 // install steps and any other model's pull. Only the requested model's
 // download belongs to the initiator that asked for it.
-func TestStreamOpScopedToAModelDropsEveryOtherOperation(t *testing.T) {
+func TestStreamOp_ScopedToAModelDropsEveryOtherOperation(t *testing.T) {
 	exec := &Executor{progress: newProgressHub()}
 	s := &controlServer{exec: exec}
 
@@ -82,15 +83,11 @@ func TestStreamOpScopedToAModelDropsEveryOtherOperation(t *testing.T) {
 	})
 
 	frames := decodeFrames(t, rec.Body.String())
-	if len(frames) != 2 {
-		t.Fatalf("expected the requested model's progress and the result, got %d frames: %s", len(frames), rec.Body.String())
-	}
-	if frames[0].Type != "progress" || frames[0].Model != "demo" || frames[0].Percent != 30 {
-		t.Fatalf("bad progress frame: %+v", frames[0])
-	}
-	if frames[1].Type != "result" {
-		t.Fatalf("bad result frame: %+v", frames[1])
-	}
+	require.Len(t, frames, 2, "want the requested model's progress and the result")
+	assert.Equal(t, "progress", frames[0].Type)
+	assert.Equal(t, "demo", frames[0].Model)
+	assert.Equal(t, 30, frames[0].Percent)
+	assert.Equal(t, "result", frames[1].Type)
 }
 
 // heldHeaderRecorder records a streamed response, holding the first flush —
