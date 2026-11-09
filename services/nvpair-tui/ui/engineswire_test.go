@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
+	"nvpair-tui/rpc"
 )
 
 // wireOf builds a model operation's envelope, failing the test if the engine
@@ -97,6 +99,26 @@ func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
 	require.True(t, ok, "result must be engineOpMsg")
 	require.NoError(t, op.err, "a still-running download must not be reported as failed")
 	assert.True(t, op.detached, "a still-running download must not be reported as complete")
+}
+
+// A pull's reply is the engine manager's result on this machine, and from a peer
+// it arrives wrapped beside the operation's id. A check that read only one
+// shape called the other's cancelled download complete.
+func TestPullWasCancelled_ReadsBothReplyShapes(t *testing.T) {
+	test := func(name, result string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, pullWasCancelled(&rpc.Message{Result: json.RawMessage(result)}))
+		})
+	}
+	test("this machine's cancelled download", `{"status":"cancelled"}`, true)
+	test("a peer's cancelled download", `{"opId":"op-1","result":{"status":"cancelled"}}`, true)
+	test("this machine's completed download", `{"status":"success"}`, false)
+	test("a peer's completed download", `{"opId":"op-1","result":{"status":"success"}}`, false)
+	test("an engine's reply that is not an object", `"downloaded"`, false)
+	test("a peer relaying such a reply", `{"opId":"op-1","result":"downloaded"}`, false)
+	t.Run("no reply", func(t *testing.T) {
+		assert.False(t, pullWasCancelled(nil))
+	})
 }
 
 // TestDeadlineLeniencyTracksOperationLength checks which operations are excused

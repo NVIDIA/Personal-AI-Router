@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,9 +53,10 @@ const (
 // were always available on the broker, but there was nowhere to put them.
 //
 // Local and remote nodes differ in what they permit. The engine manager has
-// remote install, start, stop, and the four model operations, but no remote
-// restart, uninstall, or port change — those need process ownership on the
-// target host — so those verbs are hidden rather than offered and then failed.
+// remote install, start, stop, the four model operations, and download
+// cancellation, but no remote restart, uninstall, or port change — those need
+// process ownership on the target host — so those verbs are hidden rather than
+// offered and then failed.
 type nodeDetail struct {
 	client *rpc.Client
 	node   nodeRow
@@ -88,6 +90,13 @@ type nodeDetail struct {
 	// because this list re-sorts underneath the cursor whenever a download
 	// finishes or a peer republishes its inventory.
 	pending *pendingDestructive
+
+	// downloads is every model download known to be in flight on this node,
+	// oldest first: the ones this screen started and any other its progress
+	// feed reports. It is what the cancel key chooses from, and it holds the
+	// model as well as the engine because an engine queues downloads rather
+	// than refusing them.
+	downloads []detailDownload
 
 	// settings is the last settings snapshot seen per engine, keyed by engine
 	// name. Fetched when the operator asks to edit rather than for every engine
@@ -171,6 +180,13 @@ type detailModelRow struct {
 	loadKnown bool
 }
 
+// detailDownload is one model download in flight, named the way a cancel
+// names it.
+type detailDownload struct {
+	engine string
+	model  string
+}
+
 type detailEnginesMsg struct {
 	engines []engineStatus
 	err     error
@@ -204,6 +220,9 @@ var (
 	detailLoadKey       = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "load"))
 	detailEjectKey      = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "eject"))
 	detailDeleteKey     = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete"))
+	// Beside the keys that start a download. The catalog browser's own c
+	// never collides with it: the browser holds every key while it is open.
+	detailCancelPullKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel download"))
 )
 
 // telemetryChains numbers polling chains so a screen only continues its own.
@@ -632,6 +651,14 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 
+	case pullDoneMsg:
+		d.settlePull(msg)
+		return nil, true
+
+	case cancelPullMsg:
+		d.settleCancel(msg)
+		return nil, true
+
 	case engineSettingsMsg:
 		if msg.err != nil {
 			d.settingsWanted = nil
@@ -874,6 +901,9 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			Error   string `json:"error"`
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
+		if d.promptArmed() {
+			return nil
+		}
 		if p.Stage == "failed" {
 			// An outcome, so it expires like one. An install that outlived its
 			// reply deadline has no other way to report that it failed.
@@ -900,6 +930,7 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		}
 		var p pullFrame
 		decodeOrLog(msg.Method, msg.Params, &p)
+		d.followDownload(p)
 		d.showPullProgress(p)
 
 	case "engine:remote-progress":
@@ -912,11 +943,15 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		if p.Node != d.node.key {
 			return nil
 		}
-		// A peer's pull ends on the same frames as this machine's, and a
-		// download that outlasted its reply has no other way to say how it
-		// went.
-		if p.Op == "pull" && p.ended() {
+		// A peer's pull reports on the same frames as this machine's, model
+		// and all, and a download that outlasted its reply has no other way
+		// to say how it went.
+		if p.Op == "pull" {
+			d.followDownload(p.pullFrame)
 			d.showPullProgress(p.pullFrame)
+			return nil
+		}
+		if d.promptArmed() {
 			return nil
 		}
 		d.status.busy("%s %s: %s%s", p.Op, d.engineLabel(p.Engine), p.Stage, progressPercent(p.Percent))
@@ -935,6 +970,7 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 // pullFrame is a model download's progress, this machine's or a peer's.
 type pullFrame struct {
 	Engine  string `json:"engine"`
+	Model   string `json:"model"`
 	Stage   string `json:"stage"`
 	Percent *int   `json:"percent"`
 	Message string `json:"message"`
@@ -956,21 +992,168 @@ func (p pullFrame) ended() bool {
 // pull look like nothing happened. The outcome a pull ends on expires like any
 // other, and reads as one rather than as "success (100%)" or "error". A late
 // outcome, arriving after the synchronous call timed out, still surfaces here.
+//
+// The model is named because an engine queues downloads: frames for two of
+// them interleave, and one's percent would otherwise read as the other's.
 func (d *nodeDetail) showPullProgress(p pullFrame) {
-	label := d.engineLabel(p.Engine)
+	if d.promptArmed() {
+		return
+	}
+	what := d.downloadLabel(p.Engine, p.Model)
 	switch p.Stage {
 	case "success":
-		d.status.ok("download %s: done", label)
+		d.status.ok("download %s: done", what)
 	case "cancelled":
-		d.status.ok("download %s: cancelled", label)
+		d.status.ok("download %s: cancelled", what)
 	case "error":
 		detail := p.Message
 		if detail == "" {
 			detail = "failed"
 		}
-		d.status.error("download %s failed: %s", label, detail)
+		d.status.error("download %s failed: %s", what, detail)
 	default:
-		d.status.busy("download %s: %s%s", label, p.Stage, progressPercent(p.Percent))
+		d.status.busy("download %s: %s%s", what, p.Stage, progressPercent(p.Percent))
+	}
+}
+
+// downloadLabel names a download for the status line: the model, and the
+// engine it is going into.
+func (d *nodeDetail) downloadLabel(engine, model string) string {
+	label := d.engineLabel(engine)
+	if model == "" {
+		return label
+	}
+	return fmt.Sprintf("%s (%s)", model, label)
+}
+
+// promptArmed reports whether the status line holds a question the next key
+// answers. Progress keeps arriving underneath one — for a cancellation, from
+// the very download it asks about — and replacing the prompt would leave that
+// key answering a question no longer on screen.
+func (d *nodeDetail) promptArmed() bool {
+	return d.pending != nil || d.settingsConfirm != nil
+}
+
+// followDownload keeps downloads current from a progress frame: a frame that
+// is still under way, queued included, marks its download in flight, and the
+// outcome a download ends on retires it. A frame naming no model cannot be
+// told apart from another download on its engine, so it is not followed.
+func (d *nodeDetail) followDownload(p pullFrame) {
+	dl := detailDownload{engine: p.Engine, model: p.Model}
+	if dl.engine == "" || dl.model == "" {
+		return
+	}
+	if p.ended() {
+		d.retireDownload(dl)
+		return
+	}
+	d.trackDownload(dl)
+}
+
+// trackDownload records a download as in flight, keeping the order downloads
+// were first seen in.
+func (d *nodeDetail) trackDownload(dl detailDownload) {
+	if !slices.Contains(d.downloads, dl) {
+		d.downloads = append(d.downloads, dl)
+	}
+}
+
+// retireDownload forgets a download that has ended. A cancellation armed
+// against it is withdrawn too: confirming it would stop nothing, and the
+// outcome is the thing to show.
+func (d *nodeDetail) retireDownload(dl detailDownload) {
+	d.downloads = slices.DeleteFunc(d.downloads, func(x detailDownload) bool { return x == dl })
+	if p := d.pending; p != nil && p.download != nil && *p.download == dl {
+		d.pending = nil
+	}
+}
+
+// downloadToCancel is the download the cancel key stops: the newest on the
+// highlighted engine, else the newest on the node. The confirmation names it,
+// so the choice is never made silently.
+func (d *nodeDetail) downloadToCancel() (detailDownload, bool) {
+	if len(d.downloads) == 0 {
+		return detailDownload{}, false
+	}
+	if e := d.selectedEngine(); e != nil {
+		for i := len(d.downloads) - 1; i >= 0; i-- {
+			if d.downloads[i].engine == e.Engine {
+				return d.downloads[i], true
+			}
+		}
+	}
+	return d.downloads[len(d.downloads)-1], true
+}
+
+// cancelDownload arms the cancellation of a download in flight on this node.
+//
+// Confirmed like a delete, because for Ollama and LM Studio it is one: the
+// engine manager removes the partial files the download wrote, which for a
+// large model is gigabytes to fetch again.
+func (d *nodeDetail) cancelDownload() tea.Cmd {
+	target, ok := d.downloadToCancel()
+	if !ok {
+		d.status.error("no download in progress on %s", d.node.name)
+		return nil
+	}
+	what := d.downloadLabel(target.engine, target.model)
+	d.pending = &pendingDestructive{
+		download: &target,
+		// "cancelled" would say the opposite of what happened.
+		dismissed: "still downloading " + what,
+		run: func() tea.Cmd {
+			d.status.busy("cancelling download %s...", what)
+			return d.own(cancelPullCmd(d.client, d.nodeArg(), target.engine, target.model))
+		},
+	}
+	d.status.arm("stop downloading %s into %s? press y to stop it, any other key to keep it",
+		target.model, d.engineLabel(target.engine))
+	return nil
+}
+
+// settlePull reports how a download this screen started settled.
+func (d *nodeDetail) settlePull(msg pullDoneMsg) {
+	what := d.downloadLabel(msg.engine, msg.model)
+	if msg.detached {
+		// Still running, so still cancellable; its frames report the end.
+		if !d.promptArmed() {
+			d.status.info("download %s is continuing in the background - watch for progress", what)
+		}
+		return
+	}
+	d.retireDownload(detailDownload{engine: msg.engine, model: msg.model})
+	if d.promptArmed() {
+		return
+	}
+	switch {
+	case msg.err != nil:
+		d.status.error("download %s failed: %s", what, msg.err)
+	case msg.cancelled:
+		d.status.ok("download %s: cancelled", what)
+	default:
+		d.status.ok("download %s: done", what)
+	}
+}
+
+// settleCancel reports how a cancellation settled. Only an acknowledged one
+// retires the download: one still being carried out, or one that failed —
+// llama.cpp's router not confirming the stop, say — may leave it running, and
+// the cancel key has to be able to try again.
+func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
+	what := d.downloadLabel(msg.engine, msg.model)
+	if msg.err == nil && !msg.detached {
+		d.retireDownload(detailDownload{engine: msg.engine, model: msg.model})
+	}
+	if d.promptArmed() {
+		return
+	}
+	switch {
+	case msg.detached:
+		d.status.info("download %s is still being cancelled - watch for progress", what)
+	case msg.err != nil:
+		d.status.error("cancel download %s failed: %s", what, msg.err)
+	default:
+		d.status.ok("download %s: cancelled", what)
 	}
 }
 
@@ -1214,6 +1397,8 @@ func (d *nodeDetail) handleModelKey(msg tea.KeyMsg) tea.Cmd {
 		return d.modelOp("unload")
 	case key.Matches(msg, detailDeleteKey):
 		return d.deleteSelectedModel()
+	case key.Matches(msg, detailCancelPullKey):
+		return d.cancelDownload()
 	}
 	var cmd tea.Cmd
 	d.modelTable, cmd = d.modelTable.Update(msg)
@@ -1237,8 +1422,7 @@ func (d *nodeDetail) submitInput() tea.Cmd {
 			d.status.error("no engine available to download into")
 			return nil
 		}
-		d.status.busy("download %s: %s...", d.engineLabel(engine), val)
-		return d.own(modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], val))
+		return d.startDownload(engine, val)
 
 	case detailInputEnginePort, detailInputProxyPort, detailInputLaunchArgs:
 		return d.submitSettings(mode, d.input.Value(), val)
@@ -1444,8 +1628,15 @@ func (d *nodeDetail) openCatalog() tea.Cmd {
 
 // downloadFromCatalog starts the download the operator picked in the browser.
 func (d *nodeDetail) downloadFromCatalog(engine, model string) tea.Cmd {
+	return d.startDownload(engine, model)
+}
+
+// startDownload sends a download and marks it in flight at once, so it can be
+// cancelled before its first progress frame arrives.
+func (d *nodeDetail) startDownload(engine, model string) tea.Cmd {
+	d.trackDownload(detailDownload{engine: engine, model: model})
 	d.status.busy("download %s: %s...", d.engineLabel(engine), model)
-	return d.own(modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], model))
+	return d.own(pullCmd(d.client, d.nodeArg(), engine, model))
 }
 
 func (d *nodeDetail) modelOp(op string) tea.Cmd {
@@ -1472,6 +1663,12 @@ func (d *nodeDetail) modelOp(op string) tea.Cmd {
 // against, so a list that re-sorts before the confirmation cannot redirect it.
 type pendingDestructive struct {
 	run func() tea.Cmd
+	// download is the download a cancellation was armed against, so the
+	// prompt is withdrawn if that download ends first.
+	download *detailDownload
+	// dismissed replaces "cancelled" as the answer to any other key, for a
+	// prompt whose own subject is a cancellation.
+	dismissed string
 }
 
 // arm holds a destructive action until the operator confirms it.
@@ -1584,6 +1781,10 @@ func (d *nodeDetail) resolvePending(msg tea.KeyMsg) tea.Cmd {
 		return act.run()
 	}
 	// Replaces the pinned prompt, which would otherwise stay on screen.
+	if act.dismissed != "" {
+		d.status.info("%s", act.dismissed)
+		return nil
+	}
 	d.status.info("cancelled")
 	return nil
 }
@@ -2108,8 +2309,12 @@ func (d *nodeDetail) Help() []key.Binding {
 		}
 		return bindings
 	}
-	return append(bindings,
+	bindings = append(bindings,
 		detailPullKey, detailPullByNameKey, detailLoadKey, detailEjectKey, detailDeleteKey)
+	if len(d.downloads) > 0 {
+		bindings = append(bindings, detailCancelPullKey)
+	}
+	return bindings
 }
 
 func yesNo(b bool) string {

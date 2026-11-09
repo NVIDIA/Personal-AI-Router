@@ -172,7 +172,7 @@ The facade is in the default broker and TUI set: local OpenAI-compatible clients
 use the broker-reported listener (normally `8080`) while the managed router runs
 on `8081`. Desktop and TUI expose install, lifecycle, download progress,
 inventory, load/unload, endpoint, routed state, and inference-demo workflows.
-Both also expose model deletion.
+Both also expose model deletion and download cancellation.
 Desktop browsing populates a six-hour cache from the 50 most-downloaded GGUF
 repositories for each approved publisher and can explicitly search up to 50
 public Hugging Face matches. Results are limited to pull-ready `Q4_K_M` IDs.

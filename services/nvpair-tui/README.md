@@ -95,10 +95,13 @@ ships in `cli-bin` and the app's updater replaces it.
   screen shows the engine port only, though `p` still writes that peer's proxy
   port.
 - **Models** — the inventory per engine with loaded state, plus browse-and-download
-  (`p`), download by name (`n`), load (`enter`), eject (`e`), and delete (`d`,
+  (`p`), download by name (`n`), load (`enter`), eject (`e`), delete (`d`,
+  confirmed with `y`), and, while a download is in flight, cancel it (`c`,
   confirmed with `y`). Every destructive key arms on the first press and acts
   only on `y`, against the target captured at arm time — these lists re-sort
-  under the cursor whenever a download finishes or a peer republishes.
+  under the cursor whenever a download finishes or a peer republishes. `c` stops
+  the newest download on the highlighted engine, or the newest on the node when
+  that engine has none, and its prompt names the model it will stop.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a

@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -216,31 +217,114 @@ func engineCmd(client *rpc.Client, node, engine, method, op, what string) tea.Cm
 	})
 }
 
+// modelRequest is the method and params of a model operation against a node:
+// the engine's own engine:action on this machine, or the remote method on a
+// peer. The remote methods take the operation in the method name, so the
+// engine's own action vocabulary stays on the target's side.
+func modelRequest(node, engine string, act modelAction, model string) (string, map[string]any, error) {
+	if node != "" {
+		return act.remote, map[string]any{"node": node, "engine": engine, "model": model}, nil
+	}
+	local, err := modelActionWire(engine, act.op, model)
+	return "engine:action", local, err
+}
+
 // modelCmd issues a model operation against a node.
-//
-// A download that outlasts callTimeout is reported as detached rather than
-// failed: a multi-gigabyte pull routinely exceeds the reply deadline while the
-// engine keeps working, and the engine:pull-progress feed carries the real
-// outcome. Reporting a failure there would be wrong — but so was the silence
-// this replaced, which left the operator with no acknowledgement that the
-// download had started at all, and nothing to distinguish it from a keystroke
-// that missed.
 func modelCmd(client *rpc.Client, node, engine string, act modelAction, model string) tea.Cmd {
 	what := act.what + " " + model
-	// The remote methods take the operation in the method name, so the
-	// engine's own action vocabulary stays on the target's side.
-	method := act.remote
-	params := map[string]any{"node": node, "engine": engine, "model": model}
-	if node == "" {
-		method = "engine:action"
-		local, err := modelActionWire(engine, act.op, model)
-		if err != nil {
-			return func() tea.Msg { return engineOpMsg{what: what, engine: engine, err: err} }
-		}
-		params = local
+	method, params, err := modelRequest(node, engine, act, model)
+	if err != nil {
+		return func() tea.Msg { return engineOpMsg{what: what, engine: engine, err: err} }
 	}
 	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
 		return classifyOpResult(what, engine, act.op, err)
+	})
+}
+
+// pullDoneMsg is how the request for a download settled.
+type pullDoneMsg struct {
+	engine string
+	model  string
+	err    error
+	// detached marks a download still running when its reply deadline passed.
+	detached bool
+	// cancelled marks a download that stopped because someone cancelled it,
+	// which the engine manager answers as a result rather than an error.
+	cancelled bool
+}
+
+// pullCmd starts a download on a node.
+//
+// A download that outlasts callTimeout is reported as detached rather than
+// failed: a multi-gigabyte pull routinely exceeds the reply deadline while the
+// engine keeps working, and the progress feed carries the real outcome.
+// Reporting a failure there would be wrong — but so was the silence this
+// replaced, which left the operator with no acknowledgement that the download
+// had started at all, and nothing to distinguish it from a keystroke that
+// missed.
+func pullCmd(client *rpc.Client, node, engine, model string) tea.Cmd {
+	act := modelActions["pull"]
+	method, params, err := modelRequest(node, engine, act, model)
+	if err != nil {
+		return func() tea.Msg { return pullDoneMsg{engine: engine, model: model, err: err} }
+	}
+	return call(client, method, params, func(reply *rpc.Message, err error) tea.Msg {
+		op, _ := classifyOpResult(act.what+" "+model, engine, act.op, err).(engineOpMsg)
+		return pullDoneMsg{
+			engine:    engine,
+			model:     model,
+			err:       op.err,
+			detached:  op.detached,
+			cancelled: err == nil && pullWasCancelled(reply),
+		}
+	})
+}
+
+// pullWasCancelled reports whether a download's reply says it was cancelled.
+// This machine's pull answers with the engine manager's result and a peer's
+// wraps the peer's result in "result", so both shapes are read.
+func pullWasCancelled(reply *rpc.Message) bool {
+	if reply == nil {
+		return false
+	}
+	var r struct {
+		Status string `json:"status"`
+		Result struct {
+			Status string `json:"status"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(reply.Result, &r) != nil {
+		return false
+	}
+	return r.Status == "cancelled" || r.Result.Status == "cancelled"
+}
+
+// cancelPullMsg is how a request to cancel a download settled.
+type cancelPullMsg struct {
+	engine string
+	model  string
+	err    error
+	// detached marks a cancellation still running when its reply deadline
+	// passed. The engine manager answers only once the transfer has stopped
+	// and its cleanup has settled, and gives a peer far longer than
+	// callTimeout to do that.
+	detached bool
+}
+
+// cancelPullCmd cancels a download on a node, naming it by engine and model
+// because an engine queues downloads rather than refusing them.
+func cancelPullCmd(client *rpc.Client, node, engine, model string) tea.Cmd {
+	method := "engine:cancel-pull"
+	params := map[string]any{"engine": engine, "model": model}
+	if node != "" {
+		method = "engine:remote-cancel-pull"
+		params["node"] = node
+	}
+	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return cancelPullMsg{engine: engine, model: model, detached: true}
+		}
+		return cancelPullMsg{engine: engine, model: model, err: err}
 	})
 }
 
