@@ -132,8 +132,10 @@ Commands return no state. Renderer stores update from
 
 The model-bearing commands — `pullModel`, `cancelModelPull`, `loadModel`,
 `unloadModel`, `deleteModel`, and `setModelExpiry` — carry the target in
-`model`. It is what lets a node run several downloads at once and have each
-one cancelled, and progress-tracked, on its own.
+`model`. A node can have several downloads outstanding, because each engine
+fetches one model at a time and queues the rest while different engines download
+side by side. Naming the model is what lets each one be cancelled, and
+progress-tracked, on its own.
 
 `cancelModelPull` reaches `engine:cancel-pull`, or `engine:remote-cancel-pull`
 when `nodeId` names a peer. The download is not cancelled when the command

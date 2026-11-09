@@ -40,7 +40,10 @@ type remoteClient struct {
 // waitsForEngineReadiness reports whether a peer may only answer after slow
 // work inside its own handler — an engine becoming healthy, an Ollama model
 // loading, or a download being stopped — which the ordinary 30s
-// response-header budget cannot cover.
+// response-header budget cannot cover. It only picks the client: the budgets
+// themselves are the pools NewManager builds, remoteHTTP with
+// remoteResponseHeaderTimeout and readyHTTP with
+// remoteReadyResponseHeaderTimeout.
 //
 // Cutting such a call off is worse than slow. The initiator's cancellation
 // propagates into the peer's in-flight handler, so bringUpCommand tears the

@@ -293,7 +293,8 @@ Load uses a separate 10/11-minute response-header budget:
 | `ollamaLoadResponseHeaderTimeout` (`executor.go`)             | 10min | Only Ollama's local `run_model` action gets the cold-load allowance.                                                                                                                                                          |
 | `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 12min | Ollama's Load control stays locked beyond the remote path's 11-minute header budget, while backend success or failure still clears it immediately.                                                                            |
 | `PENDING_TIMEOUT_MS`                                          | 60s   | Unchanged for every other command, including an Ollama delete.                                                                                                                                                                |
-| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 11min | Remote start/delete responses can wait on engine readiness, and a cold Ollama model load can withhold headers for minutes, so those calls use the readiness-sized client. Other model actions retain the ordinary 30s budget. |
+| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 11min | Start, settings apply, delete, Ollama load, and download cancel can answer only after slow work on the peer, so `waitsForEngineReadiness` sends them to the client pool `NewManager` (`manager.go`) creates with this budget. |
+| `remoteResponseHeaderTimeout` (`remoteclient.go`)             | 30s   | Every other remote call, a streamed pull or install included. It bounds only how long the peer takes to begin its answer, not how long the call runs.                                                                         |
 
 The net is a backstop, not the mechanism: a delete now ends the spinner on real
 backend truth either way. On success the refreshed `list_models` drops the model;
@@ -321,8 +322,11 @@ keying the frame to its optimistic pull entry by model and advancing that
 entry's percent in place, so a local pull shows "Pulling · N%"
 to completion just like a remote pull. The awaited action response owns
 completion (clearing the entry and refreshing the model list). LM Studio's CLI
-progress updates the same percentage display. A pull for an engine that already
-has one running is reported as `stage:"queued"` until its turn. Whichever engine
+progress updates the same percentage display. A pull for another model on an
+engine that is already downloading is reported as `stage:"queued"` until its
+turn. A request for the model that is already downloading is not queued and
+fetches nothing: it joins that download and settles with its outcome, so PAIR
+never downloads a model twice at once. Whichever engine
 runs it, a pull's last frame says how it ended — `success`, `cancelled`, or
 `error` with the reason — and reaches a remote initiator too, just before the
 reply.
@@ -411,7 +415,9 @@ measure, so it survives as well:
 ```mermaid
 flowchart TD
     Request["Model pull requested"] --> Tracked["Track by engine + model"]
-    Tracked --> Busy{"Another PAIR pull active<br/>for this engine?"}
+    Tracked --> Same{"This model already<br/>downloading?"}
+    Same -- Yes --> Join["Join that download and<br/>settle with its outcome"]
+    Same -- No --> Busy{"Another PAIR pull active<br/>for this engine?"}
 
     Busy -- No --> Snapshot["Ollama, LM Studio: record the<br/>partial files already on disk"]
     Busy -- Yes --> Queued["Show as queued"]

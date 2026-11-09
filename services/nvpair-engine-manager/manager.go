@@ -80,7 +80,8 @@ type Manager struct {
 	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
-	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
+	// carries the longer header budget, for the calls waitsForEngineReadiness
+	// selects.
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
 	// remotePulls orders an engine:remote-cancel-pull behind the remote pull it

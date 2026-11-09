@@ -159,11 +159,13 @@ remote control surface where supported.
 `engine:cancel-pull` stops a download on this node and
 `engine:remote-cancel-pull` stops one on a pinned peer. Both name their target
 with a `model` field, which is what distinguishes them from the engine-wide
-commands: an engine may have several downloads in flight, and the frames on
+commands. An engine fetches one model at a time, but downloads requested
+meanwhile wait in a queue behind it, so it can have several outstanding; a
+queued one that is cancelled ends without fetching anything. The frames on
 `engine:pull-progress` carry the same field so each one lands on its own row.
 
 Neither returns state. The backend answers only once the transfer has stopped
-and its partial files are settled, so the reply is an acknowledgement and the
+and its cleanup has settled, so the reply is an acknowledgement and the
 row clears from the pull's own settling, not from the cancel.
 
 That answer can outlive the desktop's budget. A peer is served by the engine

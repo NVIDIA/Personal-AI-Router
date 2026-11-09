@@ -87,10 +87,11 @@ func (w *pullProgressWatchdog) resolveError(ctx context.Context, fallback error)
 	return fallback
 }
 
-// modelFromParams extracts a human-readable model name from an engine:action
-// pull_model params object, preferring Ollama's "name" body key then the generic
-// {model} placeholder. Used only for the progress message — the params are still
-// passed through to the action verbatim.
+// modelFromParams extracts the model an engine:action pull_model params object
+// names, preferring Ollama's "name" body key then the generic {model}
+// placeholder. That model keys the download — the claim a cancel finds, the
+// queue, and the progress frames — while the params themselves still pass
+// through to the action verbatim.
 func modelFromParams(params json.RawMessage) string {
 	if len(params) == 0 {
 		return ""

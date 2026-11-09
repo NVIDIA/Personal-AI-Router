@@ -204,13 +204,20 @@ translation to and from the engine manager's own spelling lives.
 
 A download is started with `engine:action{pull_model}`, or
 `engine:remote-pull-model` for a pinned peer, and stopped with
-`engine:cancel-pull` or `engine:remote-cancel-pull`. All of them name their
-target in a `model` field: an engine can be downloading several models at once,
-and `engine:pull-progress` carries the same field so every frame lands on the
-row it belongs to.
+`engine:cancel-pull` or `engine:remote-cancel-pull`. Every one of them names the
+model, because a node can have several downloads outstanding: each engine
+fetches one model at a time and queues the rest, and different engines download
+side by side. A request for a model that is already downloading joins that
+download rather than starting a second one.
+
+The cancels, the remote pull, and `engine:pull-progress` carry the model in a
+top-level `model` field, so every frame lands on the row it belongs to.
+`engine:action{pull_model}` carries it in the engine's own `params` instead:
+`name` for Ollama, since those params become its `/api/pull` request body, and
+`model` for LM Studio and llama.cpp. The engine manager reads either spelling.
 
 Cancellation is a request, not a result. The engine manager stops the transfer
-and settles the partial files before answering, and the row clears when the
+and lets its cleanup settle before answering, and the row clears when the
 pull itself settles. A peer is given a much longer budget to answer than the
 desktop waits, on purpose — cutting a peer off part-way through a cancel is
 worse than waiting for it — so the desktop giving up first means the cancel is
