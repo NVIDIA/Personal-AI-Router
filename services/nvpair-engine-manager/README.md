@@ -98,7 +98,9 @@ one terminal frame — `stage:"success", percent:100` once the model is
 installed, `stage:"cancelled"` when a cancel stopped it, or
 `stage:"error", percent:-1, message` with the reason — so a UI converges even
 if its synchronous call already timed out; a request that joins a download
-already in flight shares that download's frames rather than adding its own.
+already in flight shares that download's frames rather than adding its own, as
+does a request a cancel stopped before it started while another download of
+that model is still registered.
 `model` names the download the frame belongs to, so a consumer can tell two
 pulls on one engine apart; a pull waiting on another of the same engine's
 downloads reports `stage:"queued"` until its turn),

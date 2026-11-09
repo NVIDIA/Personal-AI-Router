@@ -153,9 +153,18 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 	// A cancel that arrived while this request was on its way here stops it
 	// before it starts. Only the request's own claim counts, so a cancel aimed
 	// at an earlier request for the same model cannot stop this one.
+	//
+	// Frames name only the engine and model, so while a download of this model
+	// is registered — the cancelled one still settling, or a retry accepted
+	// after the cancel — the model's frames are that download's. It reports its
+	// own outcome; a "cancelled" frame from this request would repeat it, or
+	// tell every UI that a live retry had ended.
 	if claim != nil && claim.key == key && claim.cancelled {
+		_, registered := e.pulls[key]
 		e.pullMu.Unlock()
-		e.emitPullOutcome(engine, model, true, nil)
+		if !registered {
+			e.emitPullOutcome(engine, model, true, nil)
+		}
 		return cancelledPull(), nil
 	}
 	// The vendor caches can share partial files across models. Keep pulls for

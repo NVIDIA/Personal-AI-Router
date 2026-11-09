@@ -397,6 +397,104 @@ func TestTrackedPull_EndsEachDownloadWithOneTerminalFrame(t *testing.T) {
 	}, terminal("cancelled", 0, "demo"))
 }
 
+// publishedFrames drains the frames already published to a subscriber.
+func publishedFrames(events <-chan ProgressEvent) []ProgressEvent {
+	var frames []ProgressEvent
+	for len(events) > 0 {
+		frames = append(frames, <-events)
+	}
+	return frames
+}
+
+// A request the user cancelled before it registered can reach the executor
+// while a retry accepted after the cancel is downloading. Frames name only the
+// engine and model, so a "cancelled" frame from the original request reads as
+// the retry ending: UIs retired the row and disabled its Cancel button while
+// the retry's bytes were still arriving.
+func TestTrackedPull_CancelledRequestSendsNoFrameWhileARetryDownloads(t *testing.T) {
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	events, unsubscribe := ex.progress.subscribe("ollama")
+	defer unsubscribe()
+	original, releaseOriginal := ex.claimPull(context.Background(), "ollama", "demo")
+	defer releaseOriginal()
+	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	retry, releaseRetry := ex.claimPull(context.Background(), "ollama", "demo")
+	defer releaseRetry()
+	retryDownloading := make(chan struct{})
+	finishRetry := make(chan struct{})
+	retryDone := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(retry, "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+			close(retryDownloading)
+			<-finishRetry
+			return succeedingPull(ctx)
+		})
+		retryDone <- got
+	}()
+	<-retryDownloading
+
+	originalResult, originalRan := claimedPull(t, ex, original)
+	close(finishRetry)
+	retryGot := <-retryDone
+
+	assert.False(t, originalRan, "the cancelled request started its download")
+	assertPullStatus(t, originalResult, "cancelled")
+	require.NoError(t, retryGot.err)
+	assertPullStatus(t, retryGot.result, "success")
+	assert.Equal(t, []ProgressEvent{
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo"},
+	}, publishedFrames(events), "only the retry may report how the model's download ended")
+}
+
+// A duplicate request still on its way to the executor when the user cancels
+// is stopped along with the download it would have joined. That download
+// reports the cancellation itself, so the duplicate adds no second terminal
+// frame.
+func TestTrackedPull_CancelledDuplicateAddsNoSecondTerminalFrame(t *testing.T) {
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	events, unsubscribe := ex.progress.subscribe("ollama")
+	defer unsubscribe()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	downloading := make(chan struct{})
+	cleaningUp := make(chan struct{})
+	finishCleanup := make(chan struct{})
+	download := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(ctx, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+			close(downloading)
+			<-runCtx.Done()
+			close(cleaningUp)
+			<-finishCleanup
+			return nil, runCtx.Err()
+		})
+		download <- got
+	}()
+	<-downloading
+	duplicate, release := ex.claimPull(ctx, "ollama", "demo")
+	defer release()
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- ex.CancelModelPull(ctx, "ollama", "demo") }()
+	// The cancel marks the outstanding requests before it stops the download,
+	// so once cleanup starts the duplicate's request is already cancelled.
+	<-cleaningUp
+
+	duplicateResult, duplicateRan := claimedPull(t, ex, duplicate)
+	close(finishCleanup)
+	require.NoError(t, <-cancelled)
+	downloadGot := <-download
+
+	assert.False(t, duplicateRan, "the cancelled duplicate started a download")
+	assertPullStatus(t, duplicateResult, "cancelled")
+	require.NoError(t, downloadGot.err)
+	assertPullStatus(t, downloadGot.result, "cancelled")
+	assert.Equal(t, []ProgressEvent{
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo"},
+	}, publishedFrames(events), "a cancelled download ends with exactly one terminal frame")
+}
+
 // A request whose context has already ended — its caller gave up, or PAIR is
 // shutting down — must not start its download, and must leave nothing behind
 // that stops the next request for the same model.
