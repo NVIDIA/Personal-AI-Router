@@ -21,13 +21,19 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
@@ -166,13 +172,13 @@ func TestRemoteEngine_RejectsUntrusted(t *testing.T) {
 	t.Logf("unpinned caller correctly refused: %+v", resp.Error)
 }
 
-// TestRemoteEngineCancelPull drives engine:remote-cancel-pull from node A to
-// node B across the same pin-gated ec surface a download is started over.
-// Nothing is downloading on B, which is the case worth pinning: the gate that
-// holds a cancel behind the pull it names has no attempt to wait for, so it
-// must let the cancel through instead of parking it for its whole window, and
-// B must answer a cancel for nothing as a no-op rather than an error.
-func TestRemoteEngineCancelPull(t *testing.T) {
+// engine:remote-cancel-pull goes from node A to node B across the same
+// pin-gated ec surface a download is started over. Nothing is downloading on
+// B, which is the case worth pinning: the gate that holds a cancel behind the
+// pull it names has no attempt to wait for, so it must let the cancel through
+// instead of parking it for its whole window, and B must answer a cancel for
+// nothing as a no-op rather than an error.
+func TestRemoteEngineCancelPull_AnswersAtOnceWithNothingToStop(t *testing.T) {
 	dirA, dirB := t.TempDir(), t.TempDir()
 	const uuidA, uuidB = "cancel-node-a", "cancel-node-b"
 	certA := mintClusterIdentity(t, dirA, uuidA)
@@ -201,18 +207,8 @@ func TestRemoteEngineCancelPull(t *testing.T) {
 		// Comfortably inside the gate's window: were an absent pull to park the
 		// cancel there, this would time out rather than return.
 		resp := waitForResponse(t, aMsgs, 30*time.Second)
-		if resp.Error != nil {
-			t.Fatalf("remote-cancel-pull errored: %+v", resp.Error)
-		}
-		var res struct {
-			OK bool `json:"ok"`
-		}
-		if err := json.Unmarshal(resp.Result, &res); err != nil {
-			t.Fatalf("decode result %s: %v", resp.Result, err)
-		}
-		if !res.OK {
-			t.Fatalf("expected B to acknowledge the cancel, got %s", resp.Result)
-		}
+		require.Nil(t, resp.Error, "remote-cancel-pull errored")
+		assertCancelAcknowledged(t, resp)
 	})
 
 	// The model is what names the download, so a cancel without one has no
@@ -222,25 +218,211 @@ func TestRemoteEngineCancelPull(t *testing.T) {
 			`"params":{"node":"nodeB","engine":"ollama"}}`)
 
 		resp := waitForResponse(t, aMsgs, 15*time.Second)
-		if resp.Error == nil {
-			t.Fatalf("expected a cancel with no model to be refused, got result %s", resp.Result)
-		}
-		if resp.Error.Code != -32602 {
-			t.Fatalf("expected an invalid-params code, got %+v", resp.Error)
-		}
+		require.NotNil(t, resp.Error, "a cancel with no model was accepted: %s", resp.Result)
+		assert.Equal(t, -32602, resp.Error.Code, "a cancel with no model was refused for the wrong reason: %+v", resp.Error)
 	})
 }
 
+// A cancel from node A stops a download that is under way on node B. B's
+// engine stands in for Ollama: its pull writes a partial blob and then holds
+// the transfer open, so the cancel has a live transfer to stop and a file of
+// this download's to clean up. Both of A's requests settle on the download's
+// end — the cancel acknowledged, the pull reporting "cancelled" — and the
+// cancel is not acknowledged while the partial is still on disk.
+func TestRemoteEngineCancelPull_StopsTheDownloadAndRemovesItsPartial(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	const uuidA, uuidB = "active-cancel-a", "active-cancel-b"
+	certA := mintClusterIdentity(t, dirA, uuidA)
+	certB := mintClusterIdentity(t, dirB, uuidB)
+	writePin(t, dirA, uuidB, certB) // A trusts B
+	writePin(t, dirB, uuidA, certA) // B trusts A
+
+	// B adopts the daemon rather than launching it, so it looks for the blobs
+	// where its own OLLAMA_MODELS says they are.
+	models := t.TempDir()
+	blobs := filepath.Join(models, "blobs")
+	require.NoError(t, os.MkdirAll(blobs, 0o700))
+	ollama := startDownloadingOllama(t, blobs)
+	configB := t.TempDir()
+	writeUserManifest(t, configB, map[string]any{"engine": "ollama", "runtime": map[string]any{"port": ollama.port}})
+
+	portB := freePort(t)
+	_, bCleanup := startEngineManagerServer(t, dirB, portB,
+		"HOME="+configB, "XDG_CONFIG_HOME="+configB, "APPDATA="+configB, "LOCALAPPDATA="+configB, "USERPROFILE="+configB,
+		"OLLAMA_MODELS="+models)
+	t.Cleanup(bCleanup)
+	waitForPort(t, "127.0.0.1", portB, 10*time.Second)
+
+	aStdin, aMsgs, aCleanup := startEngineManagerStdio(t, dirA)
+	t.Cleanup(aCleanup)
+	waitForMethod(t, aMsgs, "engine:ready", 10*time.Second)
+	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
+		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
+	writeRawFrame(t, aStdin, snapshot)
+
+	// Reading B's engines is what has B probe the stand-in and adopt it as a
+	// running Ollama; until then a pull there is refused as not running.
+	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
+	installed := waitForResponseID(t, aMsgs, 1, 15*time.Second)
+	require.Nil(t, installed.Error, "remote-get-installed errored")
+	type engineRunning struct {
+		Engine  string `json:"engine"`
+		Running bool   `json:"running"`
+	}
+	var engines struct {
+		Engines []engineRunning `json:"engines"`
+	}
+	require.NoError(t, json.Unmarshal(installed.Result, &engines), "decode %s", installed.Result)
+	require.Contains(t, engines.Engines, engineRunning{Engine: "ollama", Running: true}, "B did not adopt the stand-in as a running Ollama")
+
+	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":2,"method":"engine:remote-pull-model",`+
+		`"params":{"node":"nodeB","engine":"ollama","model":"demo"}}`)
+	select {
+	case <-ollama.downloading:
+	case <-time.After(15 * time.Second):
+		require.FailNow(t, "B never started the download")
+	}
+	// The progress A relays names the model, which is what keys it to the row
+	// the user cancels from.
+	var progress struct {
+		Node  string `json:"node"`
+		Model string `json:"model"`
+	}
+	relayed := waitForMethod(t, aMsgs, "engine:remote-progress", 15*time.Second)
+	require.NoError(t, json.Unmarshal(relayed.Params, &progress), "decode %s", relayed.Params)
+	require.Equal(t, "nodeB", progress.Node, "progress was not attributed to the peer downloading")
+	require.Equal(t, "demo", progress.Model, "progress was not attributed to the model downloading")
+
+	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":3,"method":"engine:remote-cancel-pull",`+
+		`"params":{"node":"nodeB","engine":"ollama","model":"demo"}}`)
+	// The two replies race, since each settles when the download does.
+	replies := make(map[int]jsonrpc.Message)
+	var stages []string
+	var partialAtAck error
+	deadline := time.After(60 * time.Second)
+	for len(replies) < 2 {
+		select {
+		case msg, ok := <-aMsgs:
+			require.True(t, ok, "A exited before both requests settled")
+			switch {
+			case msg.Method == "engine:remote-progress":
+				var frame struct {
+					Model string `json:"model"`
+					Stage string `json:"stage"`
+				}
+				require.NoError(t, json.Unmarshal(msg.Params, &frame), "decode %s", msg.Params)
+				if frame.Model == "demo" {
+					stages = append(stages, frame.Stage)
+				}
+			case msg.Method == "" && idEquals(t, msg.ID, 3):
+				// Looked at on arrival: by the pull's reply, a cleanup still
+				// running behind an early acknowledgement could have finished.
+				_, partialAtAck = os.Stat(ollama.partial)
+				replies[3] = msg
+			case msg.Method == "" && idEquals(t, msg.ID, 2):
+				replies[2] = msg
+			}
+		case <-deadline:
+			require.FailNow(t, "the cancel and the pull did not both settle", "settled: %v", replies)
+		}
+	}
+
+	assert.ErrorIs(t, partialAtAck, os.ErrNotExist, "the cancel was acknowledged with the download's partial still on disk")
+	cancel := replies[3]
+	require.Nil(t, cancel.Error, "remote-cancel-pull errored")
+	assertCancelAcknowledged(t, cancel)
+	pull := replies[2]
+	require.Nil(t, pull.Error, "the pull failed instead of settling as cancelled")
+	var settled struct {
+		Result struct {
+			Status string `json:"status"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(pull.Result, &settled), "decode %s", pull.Result)
+	assert.Equal(t, "cancelled", settled.Result.Status, "the pull did not settle as cancelled")
+	assert.Contains(t, stages, "cancelled", "A never relayed how the download ended")
+	select {
+	case <-ollama.stopped:
+	case <-time.After(10 * time.Second):
+		assert.Fail(t, "the transfer was still open after the cancel was acknowledged")
+	}
+}
+
+// assertCancelAcknowledged checks a peer's answer to a cancel is its
+// acknowledgement.
+func assertCancelAcknowledged(t *testing.T, resp jsonrpc.Message) {
+	t.Helper()
+	var res struct {
+		OK bool `json:"ok"`
+	}
+	require.NoError(t, json.Unmarshal(resp.Result, &res), "decode %s", resp.Result)
+	assert.True(t, res.OK, "B did not acknowledge the cancel: %s", resp.Result)
+}
+
+// downloadingOllama stands in for an Ollama daemon. It answers the readiness
+// probe and the other polls with an empty success, and a pull writes a partial
+// blob, reports progress against its digest, then holds the transfer open
+// until the client drops it.
+type downloadingOllama struct {
+	port    int
+	partial string
+	// downloading closes once the partial is on disk and its progress is
+	// sent; stopped, once the client has dropped the transfer.
+	downloading, stopped chan struct{}
+}
+
+func startDownloadingOllama(t *testing.T, blobs string) *downloadingOllama {
+	t.Helper()
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	o := &downloadingOllama{
+		partial:     filepath.Join(blobs, strings.ReplaceAll(digest, ":", "-")+"-partial"),
+		downloading: make(chan struct{}),
+		stopped:     make(chan struct{}),
+	}
+	var downloading, stopped sync.Once
+	quit := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/pull", func(w http.ResponseWriter, r *http.Request) {
+		if !assert.NoError(t, os.WriteFile(o.partial, []byte("partial"), 0o600), "write the partial blob") {
+			return
+		}
+		_, err := fmt.Fprintf(w, `{"status":"pulling","digest":%q,"total":1000,"completed":10}`+"\n", digest)
+		if !assert.NoError(t, err, "send pull progress") {
+			return
+		}
+		w.(http.Flusher).Flush()
+		downloading.Do(func() { close(o.downloading) })
+		select {
+		case <-r.Context().Done():
+			stopped.Do(func() { close(o.stopped) })
+		case <-quit:
+		}
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	// Runs before Close, which would otherwise wait on a transfer nobody
+	// dropped.
+	t.Cleanup(func() { close(quit) })
+	o.port = server.Listener.Addr().(*net.TCPAddr).Port
+	return o
+}
+
 // startEngineManagerServer launches an engine-manager serving the ec surface on
-// controlPort with the given cluster dir. It keeps stdin open (so the process
-// stays alive) and drains stdout. Returns stdin and a cleanup.
-func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) (io.WriteCloser, func()) {
+// controlPort with the given cluster dir, adding env to the environment it
+// inherits. It keeps stdin open (so the process stays alive) and drains stdout.
+// Returns stdin and a cleanup.
+func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int, env ...string) (io.WriteCloser, func()) {
 	t.Helper()
 	cmd := exec.Command(engineMgrBin,
 		"--control-port", fmt.Sprintf("%d", controlPort),
 		"--cluster-dir", clusterDir,
 		"--log-level", "warn",
 	)
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err, "engine-manager stdin pipe")
