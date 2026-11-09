@@ -483,7 +483,7 @@ type modelInventoryResponse struct {
 func TestApplyModels_DoesNotRestoreRemovedNode(t *testing.T) {
 	d := newDirectory()
 
-	_, changed, ok := d.applyModels("ghost", "127.0.0.1", 14322, []string{"a"}, nil, nil)
+	_, changed, ok := d.applyModels("ghost", "127.0.0.1", 14322, modelInventory{models: []string{"a"}})
 	assert.False(t, ok)
 	assert.False(t, changed)
 	_, present := d.get("ghost")
@@ -501,7 +501,7 @@ func TestApplyModels_RejectsChangedEndpoint(t *testing.T) {
 				Models:   []string{"old"},
 			})
 
-			_, changed, ok := d.applyModels("peer-E", ip, port, []string{"new"}, nil, nil)
+			_, changed, ok := d.applyModels("peer-E", ip, port, modelInventory{models: []string{"new"}})
 
 			assert.False(t, ok)
 			assert.False(t, changed)

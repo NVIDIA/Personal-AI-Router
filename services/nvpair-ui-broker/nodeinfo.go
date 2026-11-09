@@ -69,7 +69,7 @@ func (b *Broker) acceptLocalInfo(params json.RawMessage, receivedAt time.Time) {
 	}
 	// Stamp before caching so replay through a restarted scanner remains the
 	// same display observation, independently of GPU sample age.
-	snapshot.Info = observeNodeInfo(snapshot.Info, receivedAt)
+	snapshot.Info = observeNodeInfo(snapshot.InfoAt(receivedAt), receivedAt)
 	observation := localInfoObservation{info: snapshot.Info, receivedAt: receivedAt}
 	b.localInfoMu.Lock()
 	b.localInfo = &observation

@@ -53,7 +53,7 @@ func (a *answering) askedAddresses() []string {
 }
 
 func testKey() hostKey {
-	return hostKey{hostUUID: "uuid-peer", service: noderec.ServiceNodeInfo}
+	return hostKey{recordKey: "uuid-peer", service: noderec.ServiceNodeInfo}
 }
 
 // TestAskRememberedAsksOnlyTheAddressThatAnswered is why the memory exists: the
@@ -84,7 +84,7 @@ func TestAskRemembered_AsksOnlyTheAddressThatAnswered(t *testing.T) {
 
 func TestAskRemembered_SkipsWithdrawnAddresses(t *testing.T) {
 	var memory hostMemory
-	key := hostKey{hostUUID: "peer", service: noderec.ServiceNodeInfo}
+	key := hostKey{recordKey: "peer", service: noderec.ServiceNodeInfo}
 	memory.set(key, "old-address")
 	host, _, ok := askRemembered(&memory, key, []string{"new-address"}, func(host string) (string, bool) { return host, true })
 	require.True(t, ok)

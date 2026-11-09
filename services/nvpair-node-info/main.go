@@ -177,14 +177,18 @@ func handlePeerMetadata(msg applog.StdinMessage, hostUUID string, metadata *peer
 }
 
 type infoUpdateParams struct {
-	Info NodeInfoResponse `json:"info"`
+	Info       NodeInfoResponse `json:"info"`
+	CapturedAt int64            `json:"capturedAt"`
 }
 
 // publishInfoUpdates sends inventory directly to the owning broker at startup
 // and on each tick until cancellation, using the same builder as public HTTP.
 func publishInfoUpdates(ctx context.Context, out *applog.Notifier, snapshot func() NodeInfoResponse, ticks <-chan time.Time) {
 	for {
-		if err := out.Notify(noderec.NotifyInfoUpdated, infoUpdateParams{Info: snapshot()}); err != nil {
+		// Capture before building or writing: the parent must age a frame even
+		// when stdout stalls after its measurements have been encoded.
+		capturedAt := time.Now().UnixMilli()
+		if err := out.Notify(noderec.NotifyInfoUpdated, infoUpdateParams{Info: snapshot(), CapturedAt: capturedAt}); err != nil {
 			slog.Warn("failed to publish local inventory", "err", err)
 		}
 		select {

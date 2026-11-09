@@ -202,9 +202,6 @@ func TestLocalNodeInfo_UsesMeasurementsFromLocalWorker(t *testing.T) {
 		MSSince:        137,
 	}
 	want.GPUs[0].UtilizationPercent = 61
-	type localInfoParams struct {
-		Info NodeInfoResponse `json:"info"`
-	}
 	test := func(name string, leftCluster bool) {
 		t.Run(name, func(t *testing.T) {
 			d := newSelfTestDaemon("self-uuid", "192.0.2.17")
@@ -213,7 +210,7 @@ func TestLocalNodeInfo_UsesMeasurementsFromLocalWorker(t *testing.T) {
 				d.reg.setIdentity("self-uuid", "", selfAddrs("192.0.2.17"))
 			}
 			d.reg.register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318})
-			params, err := json.Marshal(localInfoParams{Info: want})
+			params, err := json.Marshal(noderec.LocalNodeInfoParams{Info: want, CapturedAt: time.Now().UnixMilli()})
 			require.NoError(t, err)
 			var output bytes.Buffer
 			d.codec = NewCodec(&output)
@@ -340,10 +337,31 @@ func TestLocalNodeInfo_UsageChangesEmitMeasurementsWithoutDirectoryUpdates(t *te
 	assert.Equal(t, uint32(73), telemetry.GPUUtilizationPct)
 }
 
+func TestLocalNodeInfo_IncludesBrokerPipeWaitInGPUAge(t *testing.T) {
+	d := newSelfTestDaemon("self-uuid", "192.0.2.17")
+	// A timestamp twelve seconds ago models a blocked broker-to-scanner pipe
+	// without sleeping. Scheduling must see this sample as older than ten seconds.
+	params, err := json.Marshal(noderec.LocalNodeInfoParams{
+		Info:       noderec.NodeInfo{HostUUID: "self-uuid", TelemetryValid: true, MSSince: 137},
+		CapturedAt: time.Now().Add(-12 * time.Second).UnixMilli(),
+	})
+	require.NoError(t, err)
+	var output bytes.Buffer
+	d.codec = NewCodec(&output)
+
+	require.True(t, d.handle(&Message{Method: noderec.MethodLocalNodeInfo, Params: params}))
+
+	message := readTelemetryMessage(t, json.NewDecoder(&output))
+	var sample noderec.NodeTelemetry
+	require.NoError(t, json.Unmarshal(message.Params, &sample))
+	assert.True(t, sample.TelemetryValid)
+	assert.GreaterOrEqual(t, sample.MSSince, int64(12137))
+}
+
 // Local scheduling must reflect the busiest GPU, regardless of its list position.
 func TestLocalNodeInfo_ReportsHighestGPUUtilization(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.0.2.17")
-	params, err := json.Marshal(noderec.LocalNodeInfoParams{Info: noderec.NodeInfo{
+	params, err := json.Marshal(noderec.LocalNodeInfoParams{CapturedAt: time.Now().UnixMilli(), Info: noderec.NodeInfo{
 		HostUUID: "self-uuid", TelemetryValid: true,
 		GPUs: []GPUInfo{
 			{Name: "first GPU", UtilizationPercent: 12},
@@ -929,7 +947,7 @@ func TestDiscovery_DiscardsResultsInvalidatedDuringRead(t *testing.T) {
 			f.invalidateDuringRead(t, invalidate, func() { f.discover(t) })
 			_, present := f.daemon.dir.get("peer-uuid")
 			assert.False(t, present)
-			key := hostKey{hostUUID: nodeDiscoveryRecordID(f.raw), service: noderec.ServiceNodeInfo}
+			key := hostKey{recordKey: nodeDiscoveryRecordID(f.raw), service: noderec.ServiceNodeInfo}
 			assert.Empty(t, f.daemon.enrichHosts.get(key), "invalidated responses must not retain candidate address memory")
 		})
 	}
@@ -1080,7 +1098,7 @@ func TestDiscovery_ObservationExpiryClearsCandidateAndRetainsAvailablePeer(t *te
 	f.discover(t)
 	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-20 * time.Second)}
 	recordID := nodeDiscoveryRecordID(f.raw)
-	key := hostKey{hostUUID: recordID, service: noderec.ServiceNodeInfo}
+	key := hostKey{recordKey: recordID, service: noderec.ServiceNodeInfo}
 	require.NotEmpty(t, f.daemon.enrichHosts.get(key))
 
 	f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: f.raw})
@@ -1799,7 +1817,8 @@ func TestDiscovery_RejectsNodeInfoResponsesExceedingSizeLimit(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.respond = func(w http.ResponseWriter, _ *http.Request) bool {
 		assert.NoError(t, json.NewEncoder(w).Encode(f.info))
-		_, err := io.WriteString(w, strings.Repeat(" ", nodeInfoResponseDrainLimit))
+		// Valid JSON plus whitespace must still fit the complete-body limit.
+		_, err := io.WriteString(w, strings.Repeat(" ", 64<<10))
 		assert.NoError(t, err)
 		return true
 	}

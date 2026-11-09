@@ -110,6 +110,9 @@ verified inventory, routing, liveness, or scheduling. The broker caches each
 source with its receipt time, preserves sample age on query/replay, and clears
 hardware when its source or proof is invalidated. Internal scheduling snapshots
 omit the full display payload and use only accepted compact GPU telemetry.
+Private node-info-to-broker-to-scanner frames carry a local capture time so GPU
+age includes blocked pipe delivery as well as queue and cache time. This remains
+internal to the services and does not change the desktop's hardware payload.
 `info.observedAt` records local receipt of the whole display observation,
 independently of GPU sample age. Manual hardware retains the time assigned by
 the owned manual worker; other observations are stamped by the broker. Snapshots

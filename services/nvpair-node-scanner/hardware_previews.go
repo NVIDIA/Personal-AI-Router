@@ -96,7 +96,7 @@ func (d *daemon) refreshHardwarePreview(ctx context.Context, target noderec.Dire
 		info, ok := noderec.ReadHardwarePreview(readCtx, host, target.Services[noderec.ServiceNodeInfo].Port)
 		return previewSample{info: info, receivedAt: time.Now()}, ok
 	}
-	key := hostKey{hostUUID: target.DiscoveryRecordID, service: noderec.ServiceNodeInfo}
+	key := hostKey{recordKey: target.DiscoveryRecordID, service: noderec.ServiceNodeInfo}
 	_, sample, fetched := askRemembered(&d.previewHosts, key, target.CandidateIPs(), ask)
 	if !fetched {
 		return false
@@ -116,5 +116,5 @@ func (d *daemon) refreshHardwarePreview(ctx context.Context, target noderec.Dire
 
 func (d *daemon) forgetHardwarePreview(recordID string) {
 	d.previewRetries.forget(recordID)
-	d.previewHosts.forget(hostKey{hostUUID: recordID, service: noderec.ServiceNodeInfo})
+	d.previewHosts.forget(hostKey{recordKey: recordID, service: noderec.ServiceNodeInfo})
 }

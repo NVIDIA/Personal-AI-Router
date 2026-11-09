@@ -280,10 +280,10 @@ measurements when their record or authentication is no longer valid. Public
 previews update display fields only. They cannot establish identity or affect
 routing, node reachability, or scheduling.
 
-Scanner and manual-node node-info decoding reads at most 1 MiB, and their model
-inventory decoding reads at most 16 MiB. A JSON value that extends past its limit
-follows the existing enrichment or probe failure path. The Electron poller
-cancels node-info responses that exceed 1 MiB and treats them as failed polls.
+Scanner and manual-node workers accept complete node-info responses up to
+64 KiB, including public hardware previews. Their model inventory JSON decoders
+read at most 16 MiB. Oversized hardware responses or model JSON values that
+extend past their limit follow the existing enrichment or probe failure path.
 These bounds limit metadata parsing allocations independently of HTTP timeouts.
 
 Error synchronization likewise decodes at most 1 MiB of incoming JSON; a

@@ -325,14 +325,10 @@ func normalizeHost(address string) string {
 // discoveredPresence grades a node that appears in the broker's discovery
 // snapshot: reachable if it has somewhere to be reached.
 //
-// Deliberately no clock. Eviction is the backend's job and it does it properly —
-// roughly sixty seconds of unbroken mDNS silence, with a TCP probe to stop a
-// node flapping out on one missed announcement, and inference traffic from the
-// node counting as evidence too. A node that survives all that is still in the
-// snapshot, and a client second-guessing it with a timer can only be wrong.
-// The record's timestamp is no substitute: nvpair-node-scanner writes it only
-// when a node's advertisement changes, so a healthy peer's stays at first
-// discovery.
+// Scanner expires missed mDNS observations independently of verified peers,
+// which it retains using recent authenticated inventory or inference activity.
+// The broker owns presence, so this client follows its snapshot without another
+// expiry timer. lastSeen describes record changes rather than availability.
 //
 // This is also what the desktop app does, which matters because the two should
 // not disagree about whether a machine is up. Its rule is

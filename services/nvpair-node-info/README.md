@@ -25,14 +25,17 @@ membership state.
 
 ### Private inventory IPC
 
-`nodeinfo:info-updated {info}` publishes the hardware response at startup and
+`nodeinfo:info-updated {info, capturedAt}` publishes the hardware response at startup and
 every two seconds over stdout. The broker relays it as
-`discovery:local-node-info {info}` to its owned scanner for local inventory and
+`discovery:local-node-info {info, capturedAt}` to its owned scanner for local inventory and
 scheduling. These owned local measurements work in every membership state.
 Scanner emits full local hardware back to the broker for client snapshots and
 live updates as well as compact scheduling measurements.
-The broker adds cache and queue time to `info.msSince` on forwarding or replay;
-invalid samples remain invalid.
+`capturedAt` is Unix milliseconds on the shared local host clock, recorded before
+building or writing each private frame. Broker and scanner add elapsed delivery
+time to `info.msSince`; broker forwarding and replay also include cache and queue
+time. Invalid samples remain invalid, and a missing or future capture time makes
+GPU telemetry unavailable. Display receipt time `info.observedAt` stays separate.
 
 `nodeinfo:set-peer-metadata {hostUuid, clusterUuid, peer}` accepts the local
 scanner registry snapshot over stdin, with `{ok:true}` for an id-bearing request.

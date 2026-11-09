@@ -127,12 +127,15 @@ nothing to answer and the caller must not wait:
   id-bearing call would cost it a pending entry and a blocked goroutine per
   report in exchange for an ack nobody reads.
 - `log/set-level` (above).
-- `discovery:local-node-info` `{info}` — hardware received by the broker from its
+- `discovery:local-node-info` `{info, capturedAt}` — hardware received by the broker from its
   own node-info worker. Scanner attaches it only to the matching local registry
   record, updates inventory, and emits compact scheduling telemetry. Owned
   subprocess IPC establishes the measurement source. A browsed UUID or loopback
   address cannot enter this private path. Registration changes retain the owned
-  inventory; samples retain their elapsed age during worker silence.
+  inventory; samples retain their elapsed age during worker silence. The private
+  capture time uses Unix milliseconds on the local host clock, so blocked pipe
+  delivery counts toward GPU age. Missing or future capture times cannot supply
+  fresh GPU telemetry.
 
 ### Notifications (daemon → caller)
 

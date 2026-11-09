@@ -474,9 +474,14 @@ remain intact.
 
 The node-info worker started by the broker emits hardware at startup and every
 two seconds over stdio. The broker caches it with receipt time and forwards
-`discovery:local-node-info` to scanner. Scanner attaches it to this host's local
+`discovery:local-node-info {info, capturedAt}` to scanner. Scanner attaches it to this host's local
 registry record and emits a full `discovery:node-info` event alongside compact
-scheduling telemetry.
+scheduling telemetry. Both private hops carry a Unix-millisecond `capturedAt`
+from the shared local host clock, recorded before serialization and pipe writes.
+Broker and scanner include elapsed delivery time in GPU age. Missing or future
+capture times make GPU telemetry unavailable without withdrawing hardware
+inventory. This private timestamp is separate from display `info.observedAt`
+and is never accepted from a remote HTTP response.
 
 Scanner sends this host's name, addresses, and service ports through the broker
 to node-info using `nodeinfo:set-peer-metadata`. Remote announcements cannot

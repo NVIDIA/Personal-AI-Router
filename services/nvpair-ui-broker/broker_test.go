@@ -146,8 +146,9 @@ func TestDiscoveryHardware_IncludesClientWriteWaitInSampleAge(t *testing.T) {
 func TestLocalNodeInfo_PreservesAgeAcrossDiscoveryLockWait(t *testing.T) {
 	broker := &Broker{nodeID: "self"}
 	handler := broker.nodeInfoNotificationHandler(0)
+	params := localInfoPayload(t, noderec.NodeInfo{HostUUID: "self", TelemetryValid: true, MSSince: 137}, time.Now())
 	wait := holdDiscoveryNotification(t, &broker.discoveryMu, func() {
-		handler(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"self","telemetryValid":true,"msSince":137}}`))
+		handler(noderec.NotifyInfoUpdated, params)
 	})
 
 	require.NotNil(t, broker.localInfo)

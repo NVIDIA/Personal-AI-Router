@@ -137,9 +137,9 @@ collected by workers for unverified records.
 
 - Scanner runs on Windows, Linux, and macOS on x64 and arm64, without administrator
   privileges.
-- Node-info requests have deadlines and a 64 KiB response limit, and concurrent
+- Node-info requests have deadlines and a 64 KiB complete-body response limit.
+  Model requests have deadlines and a 16 MiB JSON decoding limit. Concurrent
   authentication, telemetry, preview, and model reads have separate limits.
-  Model requests have deadlines but currently decode bodies without a byte limit.
   A slow discovered node must not block telemetry reads from verified peers.
 - Scanner has few dependencies and reuses shared discovery and cluster-trust packages.
 - Tests are repeatable with simulated discovery and local HTTP/TLS test servers,
@@ -215,10 +215,13 @@ rejects an invalid level with `-32602` when sent as a request.
 `discovery:get-nodes` filters by service when one is supplied. An absent, empty,
 or unparseable filter returns all records. Results use a stable order.
 
-The broker also sends `discovery:local-node-info {info}` as a notification,
+The broker also sends `discovery:local-node-info {info, capturedAt}` as a notification,
 carrying measurements received from its own node-info worker over private
 stdio. Scanner attaches these samples to its locally owned registry record,
-independently of any identity or address advertised over mDNS.
+independently of any identity or address advertised over mDNS. The private
+`capturedAt` time is Unix milliseconds on the shared local host clock. Scanner
+includes elapsed pipe delivery in GPU age; a missing or future capture time makes
+GPU telemetry unavailable while retaining display inventory.
 
 Notifications (Scanner → caller):
 
@@ -335,10 +338,13 @@ Local hardware comes from the node-info process started by the broker through
 private worker IPC. Approved remote measurements require pinned mTLS. These
 channels establish the source of each service observation.
 
-Node-info publishes `nodeinfo:info-updated {info}` over its owned
+Node-info publishes `nodeinfo:info-updated {info, capturedAt}` over its owned
 stdio channel at startup and every two seconds. The broker forwards those
 snapshots as `discovery:local-node-info`, adding elapsed time to sample age when
-forwarding or replaying cached data. Scanner emits full local hardware back to
+forwarding or replaying cached data. Each hop captures its timestamp before
+serialization and pipe writes, and the receiver includes that delivery time in
+sample age. This private clock is separate from display `info.observedAt` and
+never uses a remote response timestamp. Scanner emits full local hardware back to
 the broker for client delivery. Local hardware and model inventory updates share
 serialization through directory mutation and full-node publication, so consumers
 receive those snapshots in the order they were applied. The public listener serves
@@ -498,7 +504,8 @@ and service ports (§7.1).
 - **Performance**: Scanner keeps discovery and two-second telemetry responsive by
   limiting simultaneous reads. Nodes awaiting authentication have separate
   identity and retry state from verified peers. Node-info reads have request
-  deadlines and response-size limits; model reads have deadlines but no body-size limit.
+  deadlines and a 64 KiB complete-body limit; model reads have deadlines and a
+  16 MiB JSON decoding limit.
   Waiting behind another node-info read must not consume a request's own timeout
   budget. Model-request deadlines allow engine-manager's bounded inventory
   collection to finish.

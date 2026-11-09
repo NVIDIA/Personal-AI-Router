@@ -34,8 +34,8 @@ func (inv modelInventory) applyTo(node *noderec.DirectoryNode) {
 // discovery record IDs to keep candidates separate from verified peers; model
 // reads use the canonical host UUID. Each service remembers its own working IP.
 type hostKey struct {
-	hostUUID string
-	service  noderec.ServiceKey
+	recordKey string
+	service   noderec.ServiceKey
 }
 
 // hostMemory remembers which published address answered, per node and service.
@@ -91,7 +91,7 @@ func askRemembered[T any](mem *hostMemory, key hostKey, hosts []string, ask func
 		}
 		mem.forget(key)
 		slog.Debug("enrichment: the remembered address stopped answering; trying the rest of the list",
-			"host_uuid", key.hostUUID, "service", key.service, "address", remembered)
+			"record_key", key.recordKey, "service", key.service, "address", remembered)
 		hosts = withoutHost(hosts, remembered)
 	}
 

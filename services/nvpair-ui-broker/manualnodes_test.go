@@ -334,7 +334,7 @@ func TestManualProxyBridge_DoesNotBlockDiscovery(t *testing.T) {
 
 			owned := make(chan struct{})
 			go func() {
-				b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"self"}}`))
+				b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, localInfoPayload(t, noderec.NodeInfo{HostUUID: "self"}, time.Now()))
 				close(owned)
 			}()
 			removed := make(chan struct{})

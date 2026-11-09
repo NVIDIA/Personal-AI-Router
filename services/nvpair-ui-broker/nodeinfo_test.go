@@ -17,6 +17,25 @@ import (
 	"nvpair-shared/noderec"
 )
 
+// The worker calculates GPU age before writing stdout. If the broker stops
+// draining that pipe, receipt must include the wait rather than revive an old
+// reading as fresh enough for scheduling.
+func TestLocalNodeInfo_IncludesWorkerPipeWaitInGPUAge(t *testing.T) {
+	broker := &Broker{nodeID: "owned-host"}
+	receivedAt := time.UnixMilli(1794500000000)
+	params, err := json.Marshal(noderec.LocalNodeInfoParams{
+		Info:       noderec.NodeInfo{HostUUID: "owned-host", TelemetryValid: true, MSSince: 137},
+		CapturedAt: receivedAt.Add(-12 * time.Second).UnixMilli(),
+	})
+	require.NoError(t, err)
+
+	broker.acceptLocalInfo(params, receivedAt)
+
+	require.NotNil(t, broker.localInfo)
+	assert.Equal(t, int64(12137), broker.localInfo.info.MSSince)
+	assert.Equal(t, receivedAt.UnixMilli(), broker.localInfo.info.ObservedAt)
+}
+
 func TestLocalNodeInfo_RelaysOwnedWorkerSamples(t *testing.T) {
 	// Follow an owned worker snapshot through the broker's notification handler
 	// and scanner relay. Hardware values, identity, validity, and sample age
@@ -25,7 +44,10 @@ func TestLocalNodeInfo_RelaysOwnedWorkerSamples(t *testing.T) {
 	sp, messages := localInfoScanner(t)
 	b.setScanner(sp)
 	beforeReceipt := time.Now()
-	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","GPUs":[{"name":"GPU","utilization_percent":61}],"telemetryValid":true,"msSince":137,"observedAt":1}}`))
+	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, localInfoPayload(t, noderec.NodeInfo{
+		HostUUID: "owned-host", GPUs: []GPUInfo{{Name: "GPU", UtilizationPercent: 61}},
+		TelemetryValid: true, MSSince: 137, ObservedAt: 1,
+	}, beforeReceipt))
 	info := readLocalInfo(t, messages)
 	afterReceipt := time.Now()
 	assert.Equal(t, "owned-host", info.HostUUID)
@@ -42,8 +64,9 @@ func TestLocalNodeInfo_ReplayPreservesObservationTimeAndGPUAge(t *testing.T) {
 	// Replaying it must age the GPU sample without giving the display observation
 	// a new timestamp when scanner restarts.
 	b := &Broker{nodeID: "owned-host"}
-	receivedAt := time.Now().Add(-3 * time.Second)
-	b.acceptLocalInfo(json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":137}}`), receivedAt)
+	// Match the private wire clock's millisecond precision for exact age bounds.
+	receivedAt := time.Now().Add(-3 * time.Second).Truncate(time.Millisecond)
+	b.acceptLocalInfo(localInfoPayload(t, noderec.NodeInfo{HostUUID: "owned-host", TelemetryValid: true, MSSince: 137}, receivedAt), receivedAt)
 	sp, messages := localInfoScanner(t)
 	beforeReplay := time.Now()
 	b.replayLocalInfo(sp)
@@ -69,23 +92,32 @@ func TestLocalNodeInfo_RejectsForeignWorkerIdentity(t *testing.T) {
 	// A snapshot naming another host must not enter the locally owned sample
 	// cache, even when it reports valid telemetry.
 	b := &Broker{nodeID: "owned-host"}
-	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"someone-else","telemetryValid":true}}`))
+	b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, localInfoPayload(t, noderec.NodeInfo{HostUUID: "someone-else", TelemetryValid: true}, time.Now()))
 	assert.Nil(t, b.localInfo)
 }
 
 func TestNodeInfoRestart_RejectsSnapshotsFromPreviousWorker(t *testing.T) {
 	b := &Broker{nodeID: "owned-host"}
 	previous := b.nodeInfoNotificationHandler(b.nodeInfoGeneration)
-	previous(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":137}}`))
+	previous(noderec.NotifyInfoUpdated, localInfoPayload(t, noderec.NodeInfo{HostUUID: "owned-host", TelemetryValid: true, MSSince: 137}, time.Now()))
 	require.NotNil(t, b.localInfo)
 	retained := *b.localInfo
 
 	b.clearNodeInfoState()
-	previous(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":0}}`))
+	previous(noderec.NotifyInfoUpdated, localInfoPayload(t, noderec.NodeInfo{HostUUID: "owned-host", TelemetryValid: true}, time.Now()))
 
 	assert.Equal(t, retained, *b.localInfo)
-	b.nodeInfoNotificationHandler(b.nodeInfoGeneration)(noderec.NotifyInfoUpdated, json.RawMessage(`{"info":{"hostUuid":"owned-host","telemetryValid":true,"msSince":42}}`))
-	assert.Equal(t, int64(42), b.localInfo.info.MSSince)
+	replacement := noderec.NodeInfo{HostUUID: "owned-host", CPU: &CPUInfo{UtilizationPercent: 42}}
+	b.nodeInfoNotificationHandler(b.nodeInfoGeneration)(noderec.NotifyInfoUpdated, localInfoPayload(t, replacement, time.Now()))
+	assert.Equal(t, replacement.CPU, b.localInfo.info.CPU)
+	assert.False(t, b.localInfo.info.TelemetryValid)
+}
+
+func localInfoPayload(t *testing.T, info noderec.NodeInfo, capturedAt time.Time) json.RawMessage {
+	t.Helper()
+	params, err := json.Marshal(noderec.LocalNodeInfoParams{Info: info, CapturedAt: capturedAt.UnixMilli()})
+	require.NoError(t, err)
+	return params
 }
 
 // localInfoScanner connects the broker's production relay to an in-memory
@@ -130,7 +162,8 @@ func readLocalInfo(t *testing.T, messages <-chan *Message) noderec.NodeInfo {
 		require.Equal(t, noderec.MethodLocalNodeInfo, msg.Method)
 		var params noderec.LocalNodeInfoParams
 		require.NoError(t, json.Unmarshal(msg.Params, &params))
-		return params.Info
+		assert.Positive(t, params.CapturedAt)
+		return params.InfoAt(time.Now())
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "owned snapshot did not reach the scanner")
 		return noderec.NodeInfo{}

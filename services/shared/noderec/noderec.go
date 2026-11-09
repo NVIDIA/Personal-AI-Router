@@ -512,6 +512,20 @@ func agedMilliseconds(valid bool, age int64, elapsed time.Duration) int64 {
 // from a discovered endpoint. The scanner anchors it to its local registry.
 type LocalNodeInfoParams struct {
 	Info NodeInfo `json:"info"`
+	// CapturedAt anchors Info's sample age before serialization and pipe writes.
+	// It uses the shared host clock, never a timestamp supplied by a remote node.
+	CapturedAt int64 `json:"capturedAt"`
+}
+
+// InfoAt includes time spent delivering an owned snapshot. An absent or future
+// capture time cannot establish GPU freshness, but hardware remains displayable.
+func (p LocalNodeInfoParams) InfoAt(at time.Time) NodeInfo {
+	info := p.Info
+	if p.CapturedAt <= 0 || p.CapturedAt > at.UnixMilli() {
+		info.TelemetryValid, info.MSSince = false, 0
+		return info
+	}
+	return info.Aged(at.Sub(time.UnixMilli(p.CapturedAt)))
 }
 
 // NodeInfoEvent carries owned local hardware, authenticated peer hardware, or a

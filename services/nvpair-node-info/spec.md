@@ -85,7 +85,7 @@ Scanner uses these observations to help choose reachable addresses.
 - Detect GPU adapters, CPU identity, and total physical memory at startup, per OS, degrading to fewer fields rather than failing.
 - Sample dynamic utilization on a background ticker and publish each pass atomically as one `statsSnapshot`.
 - Merge static identity with the latest snapshot per request and serve it as `application/json` at `/v1/node-info`.
-- Publish `nodeinfo:info-updated {info}` over owned stdio at startup and every two seconds. Broker forwarding and replay preserve validity and source age plus elapsed in-process time; time buffered in worker stdio before receipt is an accepted approximation.
+- Publish `nodeinfo:info-updated {info, capturedAt}` over owned stdio at startup and every two seconds. The capture time anchors GPU sample age before serialization and pipe writes. Broker forwarding and replay include elapsed delivery, queue, and cache time.
 - Accept `nodeinfo:set-peer-metadata {hostUuid, clusterUuid, peer}` from the owning broker, replace the complete snapshot, and require it to match current local identity before serving protected inventory.
 - Keep public HTTP available in every membership state. Service reads require exact-current-pin mTLS remotely and owned IPC locally; public data cannot supply scheduling, routing, availability, or verified metadata.
 - Mark a GPU pass usable only when at least one adapter yielded a utilization reading (a parsed 0 % counts); report `telemetryValid` and the usable sample's age as `msSince`, and keep the previous usable sample, timestamp included, when a pass fails.
@@ -185,11 +185,16 @@ Outbound, the service sends these notifications to its owning parent:
 | Notification | Params | Cadence |
 |--------------|--------|---------|
 | `nodeinfo:observed-addresses` | `{ addresses: string[] }` | every 30 s, unconditionally, including an empty list |
-| `nodeinfo:info-updated` | `{info: NodeInfoResponse}` | startup and every two seconds |
+| `nodeinfo:info-updated` | `{info: NodeInfoResponse, capturedAt: number}` | startup and every two seconds |
 
 Local snapshots carry hardware fields with owned-worker provenance over private
 broker/scanner IPC. Registry metadata is supplied separately through
 `nodeinfo:set-peer-metadata` and the protected inventory response.
+`capturedAt` is Unix milliseconds from the shared local host clock, captured
+before building or encoding the snapshot. Receivers include elapsed delivery
+time in GPU age. Missing or future capture times make GPU telemetry unavailable
+without discarding display inventory. This private timestamp is independent of
+the broker's display receipt time, `info.observedAt`, and never comes from HTTP.
 
 ### 7.1 Response schema
 `buildResponse` copies the static `[]GPUInfo` detected at startup, folds in any adapters the snapshot's own `GPUInventory` carries (`mergeGPUInventory` enriches a matching `statsKey` in place and appends an unseen one), and overlays the latest snapshot by `statsKey`. The resulting typed snapshot is encoded at the HTTP and IPC boundaries. Field semantics:
@@ -326,7 +331,7 @@ The broker starts `nvpair-node-info --log-level info --node-id 6b1f5c2a-… --cl
 
 One second later the collector's first real tick lands: `/proc/stat` deltas to 7 % busy, `/proc/meminfo` reports 12 GiB used, and `nvidia-smi --query-gpu=uuid,utilization.gpu,memory.used` reports the 4090 at 37 % with 8 GiB resident. Because a utilization value parsed, the pass is usable and stamps `GPUSampledAt`; from now on responses carry `telemetryValid: true` and an `msSince` of at most about a second. The snapshot is published atomically.
 
-The worker publishes the current hardware response privately at startup and every two seconds. Broker forwards it as `discovery:local-node-info` to the local scanner, including elapsed cache time. These local measurements work before joining and after leaving a cluster.
+The worker publishes the current hardware response privately at startup and every two seconds. Broker forwards it as `discovery:local-node-info {info, capturedAt}` to the local scanner, including elapsed cache time. Each private hop carries a capture time so blocked pipe writes also count toward GPU age. These local measurements work before joining and after leaving a cluster.
 
 An approved remote scanner treats mDNS addresses and `ni` port as connection candidates and sends `GET https://192.168.1.10:14318/v1/node-info` over pinned mTLS. The handler checks current client authorization, gathers hardware, checks authorization again, and adds matching owned metadata. The reader verifies the actual server certificate and both response identities before promoting the peer or caching its measurements. Failed authentication cannot replace an established peer or trigger an HTTP fallback.
 

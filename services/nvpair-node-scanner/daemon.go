@@ -486,7 +486,7 @@ func (d *daemon) authenticateCandidate(ctx context.Context, id string, candidate
 	defer d.peerMu.Unlock()
 	if d.candidates[id] != candidate {
 		if d.candidates[id] == nil {
-			d.enrichHosts.forget(hostKey{hostUUID: id, service: noderec.ServiceNodeInfo})
+			d.enrichHosts.forget(hostKey{recordKey: id, service: noderec.ServiceNodeInfo})
 		}
 		return false
 	}
@@ -569,7 +569,7 @@ func (d *daemon) readPeerInfo(ctx context.Context, node noderec.DirectoryNode) (
 	}
 	// Candidate address memory must never replace a verified host's target.
 	key := node.DiscoveryRecordID
-	_, sample, ok := askRemembered(&d.enrichHosts, hostKey{hostUUID: key, service: noderec.ServiceNodeInfo}, node.CandidateIPs(), ask)
+	_, sample, ok := askRemembered(&d.enrichHosts, hostKey{recordKey: key, service: noderec.ServiceNodeInfo}, node.CandidateIPs(), ask)
 	return sample, ok
 }
 
@@ -721,7 +721,7 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		delete(d.candidates, node.DiscoveryRecordID)
 		d.authRetries.forget(node.DiscoveryRecordID)
 		d.forgetHardwarePreview(node.DiscoveryRecordID)
-		d.enrichHosts.forget(hostKey{hostUUID: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
+		d.enrichHosts.forget(hostKey{recordKey: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
 		if d.dir.remove(node.DiscoveryRecordID) {
 			d.emit(noderec.NotifyNodeRemoved, node)
 		}
@@ -1477,7 +1477,7 @@ func (d *daemon) refreshNodeModels(target noderec.DirectoryNode) bool {
 	ask := func(host string) (modelInventory, bool) {
 		return d.fetchModels(host, emPort, clusterUUID)
 	}
-	key := hostKey{hostUUID: target.HostUUID, service: noderec.ServiceEngineManager}
+	key := hostKey{recordKey: target.HostUUID, service: noderec.ServiceEngineManager}
 	_, inventory, fetched := askRemembered(&d.enrichHosts, key, hosts, ask)
 	if !fetched {
 		return false
@@ -1514,10 +1514,10 @@ func (d *daemon) forget(hostUUID string) {
 	d.telemetryRetries.forget(hostUUID)
 	if d.dir != nil {
 		if node, present := d.dir.get(hostUUID); present {
-			d.enrichHosts.forget(hostKey{hostUUID: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
+			d.enrichHosts.forget(hostKey{recordKey: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
 		}
 	}
-	d.enrichHosts.forget(hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager})
+	d.enrichHosts.forget(hostKey{recordKey: hostUUID, service: noderec.ServiceEngineManager})
 	d.infoMu.Lock()
 	delete(d.nodeInfoStatus, hostUUID)
 	d.infoMu.Unlock()
@@ -1587,7 +1587,7 @@ func (d *daemon) handle(msg *Message) bool {
 			slog.Warn("invalid local node-info snapshot", "err", err)
 			return true
 		}
-		d.acceptLocalNodeInfo(params.Info)
+		d.acceptLocalNodeInfo(params.InfoAt(time.Now()))
 		return true
 
 	case noderec.MethodRegister, noderec.MethodUpdateTXT:

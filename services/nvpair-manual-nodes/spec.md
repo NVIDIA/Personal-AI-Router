@@ -203,6 +203,10 @@ Each probe cycle performs up to four HTTP GETs against the entered address, each
 - LM Studio: `GET http://<address>:1234/v1/models` must return `200`; the same response supplies `lmstudio_models` from `data[].id`.
 - node-info: `GET https://<address>:<port>/v1/node-info` must return `200`, fit within 64 KiB, and decode into `NodeInfoResponse`. Require an exact current pin, matching host and cluster response identities, and a remote identity distinct from this host.
 
+Ollama and LM Studio model-list JSON decoders read at most 16 MiB. A JSON value
+that extends past this limit follows the existing model-parse failure path.
+Hardware decoding requires the complete response body to fit within 64 KiB.
+
 `node_info_port` is `14318` unless `tls_port > 0` overrides it. Service hardware reads always use pinned mTLS. Engine legs remain explicitly configured plain HTTP. `reachable` is `ollama_up || lmstudio_up || node_info_up`, independent of public previews. Publish changed status and every accepted hardware snapshot so stable values do not stop refreshing the scheduling cache.
 
 ### 7.3 Probe transport and authenticated identity

@@ -709,8 +709,12 @@ func (s *scannerProcess) drainNodeActivity() {
 		case <-s.done:
 			return
 		case observation := <-s.localInfo:
-			info := observation.info.Aged(time.Since(observation.receivedAt))
-			if err := s.peer.Notify(noderec.MethodLocalNodeInfo, noderec.LocalNodeInfoParams{Info: info}); err != nil {
+			capturedAt := time.Now()
+			params := noderec.LocalNodeInfoParams{
+				Info:       observation.info.Aged(capturedAt.Sub(observation.receivedAt)),
+				CapturedAt: capturedAt.UnixMilli(),
+			}
+			if err := s.peer.Notify(noderec.MethodLocalNodeInfo, params); err != nil {
 				slog.Debug("relay local node-info to daemon failed", "err", err)
 			}
 		case report := <-s.activity:

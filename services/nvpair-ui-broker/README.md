@@ -79,10 +79,14 @@ There is **one supervisor per process, not per engine**. `nvpair-proxy` hosts a 
 
 Bidirectional newline-delimited JSON-RPC 2.0 — same conventions as every other NVPAIR subprocess. By default the broker reads stdin and writes stdout; with `--ipc <path>` it dials a Unix domain socket or Windows named pipe instead. The parent UI process owns the endpoint in both cases: it either spawns the broker with piped stdio, or sets up the pipe / socket beforehand and points the broker at it via `--ipc`. The broker always talks to exactly one peer.
 
-The owned node-info worker emits `nodeinfo:info-updated {info}` at startup and
+The owned node-info worker emits `nodeinfo:info-updated {info, capturedAt}` at startup and
 every two seconds. The broker retains the latest snapshot and sends it to scanner
-as `discovery:local-node-info {info}`, including after scanner restarts. Queue and
-cache time increase the reported sample age. The relay queue is bounded, and
+as `discovery:local-node-info {info, capturedAt}`, including after scanner restarts.
+Each hop uses the shared host clock to capture Unix milliseconds before writing;
+receivers include elapsed pipe delivery in GPU age. Missing or future capture
+times make GPU telemetry unavailable. Queue and cache time also increase the
+reported sample age. Display receipt time `info.observedAt` remains separate.
+The relay queue is bounded, and
 worker silence cannot make an old sample freshly idle. A snapshot naming a host
 other than this broker's host is rejected.
 

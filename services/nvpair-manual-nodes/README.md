@@ -7,9 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 
 A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
 
-Node-info JSON decoding reads at most 1 MiB. Ollama and LM Studio model-list
-decoding reads at most 16 MiB. A JSON value that extends past its limit follows
-the existing probe or model-parse failure path.
+Node-info responses, including public previews, must fit within a 64 KiB
+complete-body limit. Ollama and LM Studio model-list JSON decoding reads at most
+16 MiB. Oversized hardware responses or model JSON values that extend past their
+limit follow the existing probe or model-parse failure path.
 
 ## Communication
 

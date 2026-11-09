@@ -781,12 +781,15 @@ func TestDiscoveryStoreScannerProjection_Wins(t *testing.T) {
 func TestDiscoveryStore_CarriesEveryModelListFromTheScanner(t *testing.T) {
 	s := newDiscoveryStore()
 	s.Upsert(directoryToEnriched(noderec.DirectoryNode{
-		HostUUID:           "peer-uuid",
-		Name:               "peer",
-		Models:             []string{"qwen-api"},
-		ModelsByEngine:     map[string][]string{"vllm": {"qwen-api"}},
-		LoadedByEngine:     map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
-		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
+		DiscoveryRecordID:    "pin:peer-uuid",
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		HostUUID:             "peer-uuid",
+		Name:                 "peer",
+		Models:               []string{"qwen-api"},
+		ModelsByEngine:       map[string][]string{"vllm": {"qwen-api"}},
+		LoadedByEngine:       map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
+		DownloadedByEngine:   map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
 	}), sourceScanner)
 
 	snap := s.Snapshot()

@@ -13,6 +13,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestLocalNodeInfo_RequiresUsableCaptureTimeForGPUFreshness(t *testing.T) {
+	// Only processes on this host supply this clock. Without a usable time,
+	// retain inventory for display but do not report fresh GPU measurements.
+	at := time.UnixMilli(1794500000000)
+	test := func(name string, capturedAt int64, valid bool, wantAge int64) {
+		t.Run(name, func(t *testing.T) {
+			params := LocalNodeInfoParams{
+				Info:       NodeInfo{HostUUID: "self", GPUs: []GPUInfo{{Name: "GPU"}}, TelemetryValid: true, MSSince: 137},
+				CapturedAt: capturedAt,
+			}
+
+			info := params.InfoAt(at)
+
+			assert.Equal(t, valid, info.TelemetryValid)
+			assert.Equal(t, wantAge, info.MSSince)
+			assert.Equal(t, params.Info.GPUs, info.GPUs)
+		})
+	}
+	test("delayed delivery", at.Add(-12*time.Second).UnixMilli(), true, 12137)
+	test("missing capture time", 0, false, 0)
+	test("clock moved backward", at.Add(time.Second).UnixMilli(), false, 0)
+}
+
 func TestSampleAging_PreservesValidityAndFreshness(t *testing.T) {
 	// Aging must retain sample validity and add elapsed time without making
 	// negative ages, backward clock movement, or overflow produce fresh samples.

@@ -231,7 +231,10 @@ func TestInfoUpdates_PublishesStartupAndPeriodicSnapshots(t *testing.T) {
 	ticks <- time.Now()
 	var output bytes.Buffer
 	var calls int
+	beforePublication := time.Now().UnixMilli()
+	var collectedAt []int64
 	snapshot := func() NodeInfoResponse {
+		collectedAt = append(collectedAt, time.Now().UnixMilli())
 		calls++
 		if calls == 2 {
 			cancel()
@@ -248,6 +251,9 @@ func TestInfoUpdates_PublishesStartupAndPeriodicSnapshots(t *testing.T) {
 		assert.Equal(t, noderec.NotifyInfoUpdated, frame.Method, "snapshot %d", i)
 		assert.Equal(t, "owned-host", params.Info.HostUUID, "snapshot %d", i)
 		assert.False(t, params.Info.TelemetryValid, "snapshot %d", i)
+		// Capture time precedes collection and any later stdout blockage.
+		assert.GreaterOrEqual(t, params.CapturedAt, beforePublication)
+		assert.LessOrEqual(t, params.CapturedAt, collectedAt[i])
 	}
 	assert.Equal(t, 2, calls)
 	assert.False(t, decoder.More(), "only startup and one tick should publish")
