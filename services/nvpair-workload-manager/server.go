@@ -170,13 +170,23 @@ func (s *Server) handleLifecycle(w http.ResponseWriter, msg *Message) {
 	// discovery backfill), which intentionally re-asserts the same key and must
 	// reach the broker so its store can reconcile (e.g. un-stick a wrongly
 	// inferred failed). The store is idempotent, so bypassing dedup here is safe.
-	if !isResyncFrame(msg.Params) && s.dedup.seenOrAdd(keyLifecycle(wl)) {
+	//
+	// The key is recorded only after the broker emit succeeds. A failed emit
+	// leaves the key available for a retry; concurrent requests for the same key
+	// wait for that result rather than both emitting to the broker.
+	resync := isResyncFrame(msg.Params)
+	var duplicate bool
+	if !resync {
+		duplicate, err = s.dedup.emitOnce(keyLifecycle(wl), func() error { return s.emitUpsert(wl) })
+	} else {
+		err = s.emitUpsert(wl)
+	}
+	if duplicate {
 		slog.Debug("inter-node lifecycle deduplicated", "method", msg.Method, "id", wl.ID, "state", wl.State)
 		s.ok(w)
 		return
 	}
-
-	if err := s.emitUpsert(wl); err != nil {
+	if err != nil {
 		// A failed stdout write means the broker is gone; report a server
 		// error so the peer's retry budget can kick in, but the local
 		// interface severing is handled as a shutdown signal elsewhere.
@@ -204,13 +214,17 @@ func (s *Server) handleRemove(w http.ResponseWriter, msg *Message) {
 		return
 	}
 
-	if s.dedup.seenOrAdd(keyRemove(nodeID, workloadID)) {
+	// A failed emit leaves the key available for a retry. Concurrent requests
+	// for the same removal wait, so only one successful emit reaches the broker.
+	duplicate, err := s.dedup.emitOnce(keyRemove(nodeID, workloadID), func() error {
+		return s.emitRemove(workloadID, nodeID)
+	})
+	if duplicate {
 		slog.Debug("inter-node removal deduplicated", "workloadId", workloadID, "node", nodeID)
 		s.ok(w)
 		return
 	}
-
-	if err := s.emitRemove(workloadID, nodeID); err != nil {
+	if err != nil {
 		slog.Error("failed to emit workloads:remove", "workloadId", workloadID, "node", nodeID, "err", err)
 		http.Error(w, "broker unavailable", http.StatusInternalServerError)
 		return

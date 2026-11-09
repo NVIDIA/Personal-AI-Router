@@ -102,7 +102,7 @@ func (s *bundleSink) header() error {
 		return nil
 	}
 	s.wroteHeader = true
-	_, err := fmt.Fprintf(s.out, "# %s\n\n", "Personal AI Router Logs (sanitized)")
+	_, err := fmt.Fprintf(s.out, "# %s\n\n", "NVIDIA PAIR Logs (sanitized)")
 	return err
 }
 

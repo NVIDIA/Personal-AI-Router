@@ -72,8 +72,7 @@ describe('first launch', () => {
         initPlatform({
             getUserData: () => userData,
             getTemp: () => userData,
-            getResourcesPath: () => process.cwd(),
-            getAppName: () => 'Personal AI Router'
+            getResourcesPath: () => process.cwd()
         })
         loadUiConfig()
         expect(isFirstRun()).toBe(true)

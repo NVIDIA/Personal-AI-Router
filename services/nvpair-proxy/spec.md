@@ -81,6 +81,7 @@ is a genuine limitation, not a safety margin (§5.6).
 - One listener per enabled engine, serving loopback plaintext for local clients
   and pin-gated cluster mTLS for peers on the same port.
 - Model-owner filtering, target precedence, and retryable failover.
+- Aggregating the engine's model list across every routable candidate.
 - Per-request workload lifecycle events.
 - The process-wide reservation map that makes concurrent dispatch spread.
 - The persisted per-engine port a user chose through `set-port`.
@@ -98,17 +99,17 @@ The process starts with **no engine and no listener**. The broker then sends one
 `facade/enable` per engine, carrying that engine's port and any alias addresses.
 
 A flag cannot express this. The broker plans a different port for each engine —
-Ollama's managed facade wants `:11434` while LM Studio's wants `:1234`, and
-either may be absent so the child keeps its own persisted port — and a
-single-valued flag carries only one plan.
+Ollama's managed facade wants `:11434`, LM Studio's wants `:1234`, and
+llama.cpp's managed facade wants `:8080`; any may be absent so the child keeps
+its own persisted port — and a single-valued flag carries only one plan.
 
 ### 3.1 Why one process
 
 Between scheduler snapshots a facade takes short-lived **reservations** for work
 it has dispatched but that the scheduler has not yet observed. Those live in the
 process, and every facade shares them. If each engine had its own proxy
-process, neither could see the other's reservations, so simultaneous bursts of
-Ollama and LM Studio requests could both select the same node, each incorrectly
+process, none could see the others' reservations, so simultaneous bursts across
+Ollama, LM Studio, and llama.cpp could select the same node, each incorrectly
 believing it was idle.
 Sharing the map is the reason the engines share a process.
 
@@ -163,8 +164,8 @@ For a model-bearing inference request:
 
 1. Filter a request-local discovery snapshot to nodes whose per-engine inventory
    advertises the requested model. Ollama normalizes the implicit `:latest` tag;
-   LM Studio ids match exactly. An empty owner set returns a local `502` without
-   contacting an engine.
+   LM Studio and llama.cpp ids match exactly. An empty owner set returns a local
+   `502` without contacting an engine.
 2. Order the eligible owners: explicit `node/select` pin, then the scheduler's
    priority list, then deterministic default ordering.
 3. Reserve the least estimated-loaded scheduler-listed candidate and move it to
@@ -177,6 +178,12 @@ For a model-bearing inference request:
 
 An ineligible manual selection cannot override the capability gate, and failover
 never broadens to an excluded node.
+
+The llama.cpp facade exposes `GET /models` and `GET /v1/models` as aliases for
+the fleet's llama.cpp inventory. Both query every candidate's `GET /models`
+concurrently and merge duplicate model ids into an OpenAI list envelope
+(`{"object":"list","data":[...]}`). A selected node affects candidate ordering,
+not inventory scope. Its inference routes remain `/v1/*`.
 
 ### 5.1 Retry bounds
 
@@ -469,9 +476,9 @@ here.
 
 ### 5.7 Accepted behavior
 
-**An abandoned attempt may still run inside the engine.** Neither engine PAIR
-supports today exposes a way to withdraw a request it has accepted, and both
-queue internally, so a retried job can have more than one copy generating while
+**An abandoned attempt may still run inside the engine.** None of the engines
+PAIR supports today exposes a way to withdraw a request it has accepted, and all
+of them queue internally, so a retried job can have more than one copy generating while
 the abandoned copy keeps its node busy.
 
 Whether closing the connection cancels anything upstream is **unverified** —
@@ -498,6 +505,87 @@ Model inventories with an Origin require agreement from every responding engine:
 a denial yields 403, an invalid inventory yields 502 without a partial list. An
 invalid-inventory error retains CORS headers only when all responding engines
 approve. See README.md for the complete forwarding and intersection rules.
+
+### 5.9 Candidate resolution
+
+Resolution turns the eligible owners into dial targets. It re-reads membership
+and pins from the cluster directory first, so a peer paired or removed since the
+last request is reflected on this one. Each owner is then classified by where
+its address points:
+
+| Owner | Dialed as | Why |
+| --- | --- | --- |
+| This facade — its own listen port, or an alias address it bound | the local engine from `node/set-local-backend`, over loopback; dropped when none is set or it is unhealthy | this node advertises the facade under the engine's own key (e.g. `ol`, `lm`, `lc`), so dialing it would enter this node's own cluster ingress and recurse |
+| A peer this node holds a pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | the relayed `trusted` flag is the scanner's answer from the peer's last record change, so it is stale for a peer discovered before this node's pins existed |
+| A manual node from `node/add-manual` | plain HTTP to the address the user supplied | a deliberate, separately labelled bypass |
+| Anything else — an unpinned peer, or any peer while this node is unclustered | dropped | a peer's facade refuses plaintext from the LAN, so it is not reachable |
+
+A defensive check then drops any target that still resolves to this facade, and
+targets are de-duplicated by resolved host, so one engine known under two ids —
+a manual entry and its discovered record — is tried once. Order is §5 step 2's:
+an eligible `node/select` pin, then the scheduler's list, then every remaining
+owner by stable id, so an owner the scheduler has not ranked stays routable as a
+last resort.
+
+### 5.10 Model-list aggregation
+
+The model-list routes are the one exception among forwarded requests to
+sending a request to a single node; CORS preflights also fan out (§5.8). They
+resolve with no model, so no owner filter applies, and fan out concurrently to
+every resolved candidate, dialed as §5.9 describes, with
+redirects not followed. Each candidate is queried at the request's own path,
+except on the llama.cpp facade, where `GET /models` and `GET /v1/models` both
+query the candidate's `/models`.
+
+A candidate's answer counts only if it is `200`, at most 16 MiB
+(`maxModelListBytes`), carries its dialect's array (`models` native, `data`
+OpenAI), and gives every record an identity. A `5xx` or transport failure marks
+it unavailable, and a transport failure also forgets its confirmed address.
+
+Results merge in **candidate order, not completion order**, so which duplicate
+is kept is deterministic and a slow peer cannot hide a healthy one. The identity
+is `id` in the OpenAI dialect, and `model` falling back to `name` in Ollama's
+native list, normalized by the engine's naming rule so `llama3` and
+`llama3:latest` are one model. The first record for an identity wins; a later
+one whose `digest` differs is logged as a conflict and dropped.
+
+Without an `Origin` header, no usable list is a `503` `{"error":"model
+inventory unavailable"}`; a candidate answering with an empty list is a
+success. With one, the browser-origin gate in §5.8 runs first and answers `502`
+with the same body when no candidate answered — every candidate unreachable or
+`5xx`, or none resolved — or when any candidate answered unusably, such as a
+`404` or a `200` without a valid list, even if another returned a good one
+(§5.8). So the `503` arises only for a request without `Origin`. The
+aggregate is reported as one request with `target: "cluster"` and no node id.
+
+### 5.11 Discovery input
+
+Each facade subscribes to the broker's discovery relay for its engine's own
+service key (e.g. `ol`, `lm`, `lc`) and receives `discovery:nodes`, the full
+filtered set, on every change. Each snapshot **replaces** the facade's relay-fed
+overlay, so a departed node is simply absent from the next one and there is no
+state to drift.
+
+A directory node becomes a routable node only if it advertises that key and has
+an address:
+
+- its id is its `hostUuid`, so routing, `scheduledOn`, and the scheduler's list
+  agree on one identity that survives a rename;
+- its port is the one it advertises under the key, which is that peer's facade;
+- its addresses are its whole ranked list, so routing can fail over past a
+  direct-connect address this host cannot reach;
+- its models are its inventory for this engine alone, so a model a multi-engine
+  peer serves only through another engine does not make it an owner here. A
+  peer sending no per-engine attribution falls back to its flat list.
+
+The diff against the previous snapshot is emitted as `node/discovered`,
+`node/updated` — a model change counts, because inventory is routing data — and
+`node/removed`. A node dropping out also reports
+`<engine>-proxy:upstream-unreachable:<nodeId>` into the errors pipeline, cleared
+when it returns. Manual nodes are a separate overlay the snapshots never touch,
+and a manual node is shadowed by a relay node with the same id. A `node/select`
+pin on a node that has left both overlays is cleared with
+`node/selection-changed`.
 
 ## 6. Reservations
 
@@ -528,7 +616,16 @@ load below zero, which reads as permanently idle and attracts every subsequent
 dispatch.
 
 `node/set-priority` therefore carries a generation and is applied at most once;
-a redelivered snapshot must not clear live reservations.
+a redelivered snapshot must not clear live reservations. A generation of zero is
+rejected with `-32602`.
+
+A snapshot's contents are applied as follows. `nodes` is stored verbatim: an id
+discovery does not know is kept, since the node may appear later, and counts for
+nothing until it does. `ranks` supplies each node's `pending` and `gpuPressure`;
+an entry with no id is skipped, a negative value is floored at zero, and
+pressure is capped at `schedulerwire.MaxGPUPressure`. A nodes-only payload is
+valid and gives every node a zero baseline. An empty list clears the
+scheduler's influence and leaves stable-id ordering.
 
 ## 7. Listener personalities
 
@@ -542,6 +639,24 @@ One port per facade, demultiplexed on the connection's first byte:
 Membership and pins are re-derived per request and on a watch, so joining or
 leaving a cluster needs no restart.
 
+Each personality answers its own refusals with a small JSON body
+(`{"error", "code"}`) that never echoes the request or any generated output:
+
+| Personality | Condition | Status and code |
+| --- | --- | --- |
+| Plaintext | caller is not loopback; an unparseable address fails closed | `403 loopback-only` |
+| Plaintext | request carries `X-NVPAIR-Engine-Identity-Probe: 1` | `409 proxy-facade` |
+| Cluster mTLS | client certificate is not a pinned member | `403 cluster-auth` |
+| Cluster mTLS | no healthy local engine from `node/set-local-backend` | `503 no-local-backend` |
+| Cluster mTLS | the local engine fails the forward | `502 backend-error` |
+
+The `409` is a contract with `nvpair-engine-manager`, which marks its identity
+and action probes with that header so a facade on the engine's usual port can
+never be mistaken for the engine itself. The cluster ingress applies no route
+filtering — a pinned peer is treated like a local client toward the engine —
+and never consults candidate resolution (§5.9), so it is terminal: a peer's
+request cannot be routed onward or amplified.
+
 An engine with an inherited host variable (today Ollama alone) may also be given
 loopback-only **alias** addresses, so clients already using that variable enter
 the same routing path. An occupied alias is non-fatal: the existing owner is
@@ -549,12 +664,12 @@ untouched, the primary listener stays up, and a warning is reported.
 
 ## 8. Ports
 
-| | Ollama | LM Studio |
-| --- | --- | --- |
-| Engine's own client-facing port | 11434 | 1234 |
-| Where PAIR relocates the engine | 11435 | 1235 |
-| Standalone port, when `port` is omitted | 11435 | 1234 |
-| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` |
+| | Ollama | LM Studio | llama.cpp |
+| --- | --- | --- | --- |
+| Engine's own client-facing port | 11434 | 1234 | 8080 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 |
+| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 |
+| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` |
 
 A port chosen at runtime via `set-port` is persisted per engine and restored
 when that facade is enabled, taking precedence over the requested port, so the

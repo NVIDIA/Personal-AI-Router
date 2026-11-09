@@ -12,8 +12,37 @@ vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import {
     getModularSupervisor,
-    parseListModelNames
+    parseListModelNames,
+    pullModelParams
 } from '@/electron/service-bridge/modular-supervisor'
+
+describe('engine model wire formats', () => {
+    it('parses strict llama.cpp router inventories', () => {
+        expect(
+            parseListModelNames({
+                data: [
+                    { id: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M', status: { value: 'loaded' } },
+                    { id: 'bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_K_M' }
+                ]
+            })
+        ).toEqual([
+            'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M',
+            'bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_K_M'
+        ])
+        expect(parseListModelNames({ data: [] })).toEqual([])
+        expect(() => parseListModelNames({ data: null })).toThrow('missing its model array')
+        expect(() => parseListModelNames({ data: [{}] })).toThrow('no usable model names')
+        expect(() =>
+            parseListModelNames({ models: null, data: [{ id: 'must-not-mask-malformed-models' }] })
+        ).toThrow('missing its model array')
+    })
+
+    it('uses the manifest model field for llama.cpp pulls', () => {
+        expect(pullModelParams('ollama', 'demo')).toEqual({ name: 'demo' })
+        expect(pullModelParams('lmstudio', 'demo')).toEqual({ model: 'demo' })
+        expect(pullModelParams('llamacpp', 'demo')).toEqual({ model: 'demo' })
+    })
+})
 
 describe('LM Studio model reconciliation', () => {
     it('parses the native inventory and distinguishes explicit empty from unknown', () => {

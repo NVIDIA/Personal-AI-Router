@@ -6,15 +6,22 @@ package tests
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/appdir"
+	"nvpair-shared/engines"
 	"nvpair-shared/jsonrpc"
 )
 
@@ -30,6 +37,7 @@ var (
 	manualNodesBin  string
 	clusterMgrBin   string
 	schedulerBin    string
+	testsConfigBase string
 )
 
 func TestMain(m *testing.M) {
@@ -135,6 +143,19 @@ func TestMain(m *testing.M) {
 		log.Fatalf("build nvpair-job-scheduler: %v", err)
 	}
 
+	// Every child binary inherits this environment, so its persisted state
+	// (ports, workloads, settings) lands under tmpDir instead of the
+	// developer's real config. These are the variables appdir resolves
+	// through on each platform. They are set after the builds, because go
+	// derives its module and build caches from these variables.
+	testsConfigBase = filepath.Join(tmpDir, "config")
+	for _, key := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA", "LOCALAPPDATA"} {
+		if err := os.Setenv(key, testsConfigBase); err != nil {
+			os.RemoveAll(tmpDir)
+			log.Fatalf("set %s: %v", key, err)
+		}
+	}
+
 	code := m.Run()
 	os.RemoveAll(tmpDir)
 	os.Exit(code)
@@ -154,7 +175,8 @@ func goBuild(srcDir, output string) error {
 // nvpair-shared/jsonrpc types (jsonrpc.Message / jsonrpc.RPCError), so the
 // integration tests parse exactly what production emits.
 
-func startMsgReader(r io.Reader) <-chan jsonrpc.Message {
+func startMsgReader(t *testing.T, r io.Reader) <-chan jsonrpc.Message {
+	t.Helper()
 	ch := make(chan jsonrpc.Message, 64)
 	go func() {
 		defer close(ch)
@@ -162,9 +184,12 @@ func startMsgReader(r io.Reader) <-chan jsonrpc.Message {
 		scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
 		for scanner.Scan() {
 			var msg jsonrpc.Message
-			if json.Unmarshal(scanner.Bytes(), &msg) == nil {
+			if assert.NoError(t, json.Unmarshal(scanner.Bytes(), &msg)) {
 				ch <- msg
 			}
+		}
+		if err := scanner.Err(); !errors.Is(err, os.ErrClosed) {
+			assert.NoError(t, err)
 		}
 	}()
 	return ch
@@ -177,14 +202,12 @@ func waitForMethod(t *testing.T, ch <-chan jsonrpc.Message, method string, timeo
 	for {
 		select {
 		case msg, ok := <-ch:
-			if !ok {
-				t.Fatalf("stream closed before receiving %q", method)
-			}
+			require.True(t, ok, "stream closed before receiving (%v)", method)
 			if msg.Method == method {
 				return msg
 			}
 		case <-timer.C:
-			t.Fatalf("timed out (%s) waiting for method %q", timeout, method)
+			require.FailNowf(t, "timed out waiting for method", "%q after %s", method, timeout)
 		}
 	}
 	return jsonrpc.Message{}
@@ -197,15 +220,98 @@ func waitForResponse(t *testing.T, ch <-chan jsonrpc.Message, timeout time.Durat
 	for {
 		select {
 		case msg, ok := <-ch:
-			if !ok {
-				t.Fatal("stream closed before receiving response")
-			}
+			require.True(t, ok, "stream closed before receiving response")
 			if msg.ID != nil && msg.Method == "" {
 				return msg
 			}
 		case <-timer.C:
-			t.Fatal("timed out waiting for JSON-RPC response")
+			require.FailNow(t, "timed out waiting for JSON-RPC response")
 		}
 	}
 	return jsonrpc.Message{}
+}
+
+// codeFacadeBindFailed mirrors the constant of the same name in nvpair-proxy:
+// facade/enable answers with it when the port was taken before it could bind.
+const codeFacadeBindFailed = -32010
+
+// requestOnFreePort sends the request that build makes for a free port and
+// returns the port the proxy accepted. freePort closes its probe before the
+// proxy binds, so another process can take the port first. A request refused
+// for that reason is retried on a new port; any other error fails the test.
+func requestOnFreePort(t *testing.T, w io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration, build func(port int) map[string]any) int {
+	t.Helper()
+	for attempt := 0; attempt < 8; attempt++ {
+		port := freePort(t)
+		req := build(port)
+		sendLine(t, w, req)
+		resp := waitForResponse(t, msgs, timeout)
+		if resp.Error == nil {
+			return port
+		}
+		require.True(t, isBindRace(resp.Error))
+	}
+	require.FailNow(t, "every probed port was taken before the proxy could bind it")
+	return 0
+}
+
+// isBindRace reports a request the proxy refused only because the port was
+// taken. facade/enable says so with codeFacadeBindFailed; set-port has no
+// dedicated code, so its bind error is matched by message.
+func isBindRace(e *jsonrpc.RPCError) bool {
+	return e.Code == codeFacadeBindFailed || strings.HasPrefix(e.Message, "failed to bind port")
+}
+
+// TestLMStudioFacadeChildPersistsUnderPrivateBase proves a real proxy child
+// writes its persisted LM Studio port under the TestMain config base, so no
+// cross-process test can clobber the developer's saved port.
+func TestLMStudioFacadeChild_PersistsUnderPrivateBase(t *testing.T) {
+	cmd := exec.Command(proxyBin)
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	msgs := startMsgReader(t, stdout)
+
+	requestOnFreePort(t, stdin, msgs, 10*time.Second, func(port int) map[string]any {
+		return map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "facade/enable",
+			"params": map[string]any{
+				"engine":              "lmstudio",
+				"port":                port,
+				"ignorePersistedPort": true,
+			},
+		}
+	})
+
+	persistedPort := requestOnFreePort(t, stdin, msgs, 5*time.Second, func(port int) map[string]any {
+		return map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  engines.AddressMethod("lmstudio", "set-port"),
+			"params":  map[string]any{"port": port},
+		}
+	})
+
+	path, err := appdir.Path("lmstudio-proxy-port.json")
+	require.NoError(t, err)
+	rel, err := filepath.Rel(testsConfigBase, path)
+	require.NoError(t, err, "lmstudio port path (%v, %v)", path, testsConfigBase)
+	require.NotEqual(t, "..", rel, "lmstudio port path (%v, %v)", path, testsConfigBase)
+	require.False(t, strings.HasPrefix(rel, ".."+string(os.PathSeparator)), "lmstudio port path (%v, %v)", path, testsConfigBase)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "read persisted lmstudio port")
+	var saved struct {
+		Port int `json:"port"`
+	}
+	require.NoError(t, json.Unmarshal(data, &saved), "parse persisted lmstudio port")
+	require.Equal(t, persistedPort, saved.Port, "persisted lmstudio port")
 }

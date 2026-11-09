@@ -23,7 +23,7 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => []
 }))
-vi.mock('@/electron/model-hub', () => ({ getEngineHubModels: vi.fn() }))
+vi.mock('@/electron/service-bridge/model-catalog', () => ({ getEngineHubModels: vi.fn() }))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 
@@ -87,6 +87,44 @@ describe('local model load command', () => {
                 engine: 'lmstudio',
                 action: 'load_model',
                 params: { model: 'publisher/demo' }
+            },
+            expect.any(Function)
+        )
+    })
+
+    it('routes llama.cpp load and unload through its manifest actions', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'loadModel',
+            engineType: 'llama-cpp',
+            nodeId: 'local-node',
+            model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M'
+        })
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'unloadModel',
+            engineType: 'llama-cpp',
+            nodeId: 'local-node',
+            model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M'
+        })
+
+        expect(mocks.supervisor.sendProcess).toHaveBeenNthCalledWith(
+            1,
+            'broker',
+            'engine:action',
+            {
+                engine: 'llamacpp',
+                action: 'load_model',
+                params: { model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M' }
+            },
+            expect.any(Function)
+        )
+        expect(mocks.supervisor.sendProcess).toHaveBeenNthCalledWith(
+            2,
+            'broker',
+            'engine:action',
+            {
+                engine: 'llamacpp',
+                action: 'unload_model',
+                params: { model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M' }
             },
             expect.any(Function)
         )

@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -154,7 +155,7 @@ func (w *lmsDownloadOutput) disown() {
 func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, model string) (json.RawMessage, error) {
 	// A snapshot that could not be taken stays nil, so cancelling this
 	// download deletes nothing; the download itself does not depend on it.
-	before, err := lmsPartialFiles(lmstudioModelsDir(), model)
+	before, err := lmsPartialFiles(st.modelsDir, model)
 	if err != nil {
 		slog.Warn("could not snapshot partial downloads; cancelling this download will not remove its files",
 			"engine", engine, "model", model, "err", err)
@@ -182,7 +183,7 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 	if err != nil && cancelRequested(ctx) && cancelled {
 		// Cleanup outlives the cancellation that triggered it, so it runs on a
 		// context that keeps this one's values without its deadline.
-		if cleanupErr := cleanupLMSAfterCancel(context.WithoutCancel(ctx), lmstudioModelsDir(), model, before, output.namedFiles()); cleanupErr != nil {
+		if cleanupErr := cleanupLMSAfterCancel(context.WithoutCancel(ctx), st.modelsDir, model, before, output.namedFiles()); cleanupErr != nil {
 			// The download did stop, which is what was asked for. Leftover
 			// bytes are the vendor's to resume, so reporting a failed cancel
 			// here would deny the one outcome that did happen and leave the
@@ -477,6 +478,9 @@ func lmsModelQuant(model string) string {
 // holds no partials. cleanupLMSPartials deletes nothing on the former, so the
 // two must not be conflated.
 func lmsPartialFiles(root, model string) (map[string]os.FileInfo, error) {
+	if root == "" {
+		return nil, errors.New("engine declares no models directory")
+	}
 	owner, repo, ok := lmsOwnerName(model)
 	if !ok {
 		return nil, nil

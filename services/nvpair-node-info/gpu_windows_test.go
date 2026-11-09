@@ -8,6 +8,9 @@ package main
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestDXGIAdapterDesc1Size pins the in-Go layout of dxgiAdapterDesc1 to the
@@ -32,14 +35,12 @@ import (
 // If this assertion fires, a field has been reordered, retyped, or the build
 // has somehow targeted 32-bit Windows — none of which we want silently passing
 // garbage to DXGI.
-func TestDXGIAdapterDesc1Size(t *testing.T) {
+func TestDXGIAdapterDesc1_MatchesNativeStructureSize(t *testing.T) {
 	const expected = 312
-	if got := unsafe.Sizeof(dxgiAdapterDesc1{}); got != expected {
-		t.Fatalf("dxgiAdapterDesc1 size = %d, want %d", got, expected)
-	}
+	require.Equal(t, uintptr(expected), unsafe.Sizeof(dxgiAdapterDesc1{}), "dxgiAdapterDesc1 size")
 }
 
-func TestIsVirtualDisplayAdapter(t *testing.T) {
+func TestIsVirtualDisplayAdapter_RecognizesVirtualAdapters(t *testing.T) {
 	cases := []struct {
 		name string
 		want bool
@@ -57,52 +58,35 @@ func TestIsVirtualDisplayAdapter(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		if got := isVirtualDisplayAdapter(tc.name); got != tc.want {
-			t.Errorf("isVirtualDisplayAdapter(%q) = %v, want %v", tc.name, got, tc.want)
-		}
+		assert.Equal(t, tc.want, isVirtualDisplayAdapter(tc.name), "isVirtualDisplayAdapter")
 	}
 }
 
-func TestLuidUint64(t *testing.T) {
-	cases := []struct {
-		low  uint32
-		high int32
-		want uint64
-	}{
-		{0, 0, 0},
-		{0x54f0, 0, 0x54f0},
-		{0x000054f0, 0x00000001, 0x00000001000054f0},
-		{0xffffffff, -1, 0xffffffffffffffff},
+func TestLuidUint64_CombinesHighAndLowParts(t *testing.T) {
+	test := func(name string, low uint32, high int32, want uint64) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, luidUint64(low, high))
+		})
 	}
-	for _, tc := range cases {
-		if got := luidUint64(tc.low, tc.high); got != tc.want {
-			t.Errorf("luidUint64(%#x, %d) = %#x, want %#x", tc.low, tc.high, got, tc.want)
-		}
-	}
+	test("zero", 0, 0, 0)
+	test("low word", 0x54f0, 0, 0x54f0)
+	test("both words", 0x000054f0, 0x00000001, 0x00000001000054f0)
+	test("signed high word", 0xffffffff, -1, 0xffffffffffffffff)
 }
 
-func TestKeepPhysicalAdapter(t *testing.T) {
+func TestKeepPhysicalAdapter_FiltersByPhysicalAdapterIdentity(t *testing.T) {
 	physical := map[uint64]struct{}{
 		0x1000: {},
 		0x2000: {},
 	}
-	cases := []struct {
-		name     string
-		luid     uint64
-		physical map[uint64]struct{}
-		want     bool
-	}{
-		{"nil map keeps all", 0x9999, nil, true},
-		{"empty map keeps all", 0x9999, map[uint64]struct{}{}, true},
-		{"listed LUID kept", 0x1000, physical, true},
-		{"unlisted LUID dropped", 0x9999, physical, false},
-		{"second listed LUID kept", 0x2000, physical, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := keepPhysicalAdapter(tc.luid, tc.physical); got != tc.want {
-				t.Errorf("keepPhysicalAdapter(%#x) = %v, want %v", tc.luid, got, tc.want)
-			}
+	test := func(name string, luid uint64, physical map[uint64]struct{}, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, keepPhysicalAdapter(luid, physical))
 		})
 	}
+	test("nil map keeps all", 0x9999, nil, true)
+	test("empty map keeps all", 0x9999, map[uint64]struct{}{}, true)
+	test("listed LUID kept", 0x1000, physical, true)
+	test("unlisted LUID dropped", 0x9999, physical, false)
+	test("second listed LUID kept", 0x2000, physical, true)
 }

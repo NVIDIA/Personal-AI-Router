@@ -11,12 +11,28 @@ import type { EngineStatusData, EngineType } from '@/shared/types/engines'
 import type { EngineModels, EngineProgress, EngineUpdateAvailable } from '@/shared/types/engines'
 
 /**
- * One normalized model row returned by an engine-owned hub source (Ollama
- * library scrape, LM Studio community catalog). The Electron-main model-hub
- * module normalizes each upstream registry into this shape so the renderer
- * maps it to a display row without per-engine JSON parsing. `id`/`name` carry
- * the pull-ready identifier the engine's `pull_model` action expects.
+ * One normalized model row returned by an engine-owned hub source (a committed
+ * Ollama library list, the LM Studio community catalog, llama.cpp's Hugging Face
+ * GGUF catalog). `nvpair-engine-manager` owns every source and normalizes each
+ * upstream registry into this shape, so the desktop app and the terminal
+ * interface serve the same models and the renderer maps a row for display
+ * without per-engine JSON parsing. `id`/`name` carry the pull-ready identifier
+ * the engine's `pull_model` action expects.
  */
+/**
+ * One engine's outcome from `engine:uninstall-managed`, the backend sweep that
+ * removes the engines PAIR installed.
+ *
+ * Neither `removed` nor `error` means the engine was left alone because PAIR has
+ * no record of installing it — the expected result for a user's own install, and
+ * not a failure.
+ */
+export interface ManagedEngineUninstall {
+    engine: string
+    removed: boolean
+    error: string
+}
+
 export interface EngineHubModel {
     id: string
     name: string

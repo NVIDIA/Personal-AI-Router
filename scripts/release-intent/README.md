@@ -49,9 +49,11 @@ an ordering accident nobody did wrong.
 
 ## What apply writes
 
-Three files, in **one** commit built through the git data API:
+Four files, in **one** commit built through the git data API:
 
 - `desktop/package.json` — the release version, one PATCH forward
+- `desktop/package-lock.json` — the same version, at the top level and under
+  `packages[""]`, so the lockfile never names a different release
 - `services/versions.json` — the declared `services` and component bumps
 - `CHANGELOG.md` — a new section titled with the new release version, citing
   the pull request number
@@ -137,5 +139,5 @@ python3 scripts/release-intent/apply_pr.py \
 `--dry-run` **writes the working tree** despite the name. Restore afterwards:
 
 ```bash
-git restore desktop/package.json services/versions.json CHANGELOG.md
+git restore desktop/package.json desktop/package-lock.json services/versions.json CHANGELOG.md
 ```

@@ -3,11 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Apply a merged pull request's release-intent block to the version files.
 
-Writes three files in ONE commit via the git data API: desktop/package.json
-(the release version, patch-bumped), services/versions.json (declared services
-and component bumps), and CHANGELOG.md (a new section).
+Writes four files in ONE commit via the git data API: desktop/package.json
+and desktop/package-lock.json (the release version, patch-bumped),
+services/versions.json (declared services and component bumps), and
+CHANGELOG.md (a new section).
 
-The contents API would be one commit per file, which for three files means a
+The contents API would be one commit per file, which for four files means a
 release landing in pieces and a window where the changelog names a version that
 package.json does not yet carry. Building a tree and moving the ref once avoids
 that, and the ref update doubles as the concurrency check: a non-fast-forward
@@ -35,6 +36,7 @@ from lib import (  # noqa: E402
     BOT_COMMIT_PREFIX,
     CHANGELOG_PATH,
     PACKAGE_JSON_PATH,
+    PACKAGE_LOCK_PATH,
     REPO_ROOT,
     VERSIONS_PATH,
     apply_bumps,
@@ -47,21 +49,24 @@ from lib import (  # noqa: E402
     prepend_changelog,
     read_release_version,
     render_package_json,
+    render_package_lock,
     render_versions_json,
 )
 
 VERSIONS_REPO_PATH = str(VERSIONS_PATH.relative_to(REPO_ROOT))
 CHANGELOG_REPO_PATH = str(CHANGELOG_PATH.relative_to(REPO_ROOT))
 PACKAGE_REPO_PATH = str(PACKAGE_JSON_PATH.relative_to(REPO_ROOT))
+PACKAGE_LOCK_REPO_PATH = str(PACKAGE_LOCK_PATH.relative_to(REPO_ROOT))
 
 BLOB_MODE = '100644'
 
 
 @dataclass(frozen=True)
 class ReleaseUpdate:
-    """The three file bodies a release intent produces, and what to call it."""
+    """The four file bodies a release intent produces, and what to call it."""
 
     package: str
+    package_lock: str
     versions: str
     changelog: str
     release: str
@@ -69,6 +74,7 @@ class ReleaseUpdate:
     def as_paths(self) -> dict[str, str]:
         return {
             PACKAGE_REPO_PATH: self.package,
+            PACKAGE_LOCK_REPO_PATH: self.package_lock,
             VERSIONS_REPO_PATH: self.versions,
             CHANGELOG_REPO_PATH: self.changelog,
         }
@@ -156,12 +162,13 @@ def fetch_merged_pr(repo: str, sha: str, token: str) -> tuple[str, str] | None:
 
 def compute_release_update(
     package_text: str,
+    package_lock_text: str,
     versions_text: str,
     changelog_text: str,
     description: str,
     pr_ref: str,
 ) -> ReleaseUpdate | None:
-    """Apply the intent to three file bodies. None when nothing changes."""
+    """Apply the intent to four file bodies. None when nothing changes."""
     versions, raw = parse_versions(versions_text, VERSIONS_REPO_PATH)
     intent = parse_release_intent(
         description, versions.bump_keys, key_policy='reject-unknown'
@@ -187,6 +194,7 @@ def compute_release_update(
     )
     return ReleaseUpdate(
         package=render_package_json(package_text, release_after),
+        package_lock=render_package_lock(package_lock_text, release_after),
         versions=render_versions_json(updated, raw),
         changelog=prepend_changelog(changelog_text, entry),
         release=release_after,
@@ -202,7 +210,8 @@ def read_file_at(repo: str, token: str, path: str, ref: str) -> str:
     if not isinstance(payload, dict):
         raise SystemExit(f'Unexpected payload reading {path} at {ref}')
     content = payload.get('content')
-    if not isinstance(content, str):
+    # Above 1 MB the contents API sends encoding "none" and an empty content.
+    if payload.get('encoding') != 'base64' or not isinstance(content, str):
         raise SystemExit(f'Incomplete payload reading {path} at {ref}')
     return base64.b64decode(content).decode('utf-8')
 
@@ -289,6 +298,7 @@ def apply_release(
     if dry_run:
         update = compute_release_update(
             PACKAGE_JSON_PATH.read_text(encoding='utf-8'),
+            PACKAGE_LOCK_PATH.read_text(encoding='utf-8'),
             VERSIONS_PATH.read_text(encoding='utf-8'),
             CHANGELOG_PATH.read_text(encoding='utf-8'),
             description,
@@ -298,12 +308,14 @@ def apply_release(
             print('Dry-run: nothing to apply')
             return
         PACKAGE_JSON_PATH.write_text(update.package, encoding='utf-8')
+        PACKAGE_LOCK_PATH.write_text(update.package_lock, encoding='utf-8')
         VERSIONS_PATH.write_text(update.versions, encoding='utf-8')
         CHANGELOG_PATH.write_text(update.changelog, encoding='utf-8')
         print(
-            'Dry-run MODIFIED the working tree (package.json, versions.json, '
-            'CHANGELOG.md). Restore with: git restore '
-            f'{PACKAGE_REPO_PATH} {VERSIONS_REPO_PATH} {CHANGELOG_REPO_PATH}'
+            'Dry-run MODIFIED the working tree (package.json, package-lock.json, '
+            'versions.json, CHANGELOG.md). Restore with: git restore '
+            f'{PACKAGE_REPO_PATH} {PACKAGE_LOCK_REPO_PATH} '
+            f'{VERSIONS_REPO_PATH} {CHANGELOG_REPO_PATH}'
         )
         print(message)
         return
@@ -333,6 +345,7 @@ def apply_release(
 
         update = compute_release_update(
             read_file_at(repo, token, PACKAGE_REPO_PATH, head),
+            read_file_at(repo, token, PACKAGE_LOCK_REPO_PATH, head),
             read_file_at(repo, token, VERSIONS_REPO_PATH, head),
             read_file_at(repo, token, CHANGELOG_REPO_PATH, head),
             description,

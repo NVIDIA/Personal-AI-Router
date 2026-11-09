@@ -67,8 +67,14 @@ func Example() {
 
 	// Both sides now share an association and can derive a secret of any length.
 	const secretLen = 48
-	serverSecret, _ := srv.Export("my-application", nil, secretLen)
-	peerSecret, _ := peer.Export("my-application", nil, secretLen)
+	serverSecret, err := srv.Export("my-application", nil, secretLen)
+	if err != nil {
+		panic(err)
+	}
+	peerSecret, err := peer.Export("my-application", nil, secretLen)
+	if err != nil {
+		panic(err)
+	}
 
 	fmt.Println("registered:", srv.State() == eapnoob.StateRegistered)
 	fmt.Println("secret length:", len(serverSecret))

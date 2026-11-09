@@ -47,12 +47,6 @@
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
-- ⚠️ nvpair-ui-broker → lmstudio-proxy:get-status
-- ⚠️ nvpair-ui-broker → lmstudio-proxy:set-port
-- ⚠️ nvpair-ui-broker → lmstudio-proxy:unsubscribe
-- ⚠️ nvpair-ui-broker → ollama-proxy:get-status
-- ⚠️ nvpair-ui-broker → ollama-proxy:set-port
-- ⚠️ nvpair-ui-broker → ollama-proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
 
 ### Backend binaries not listed in `modular-binaries.ts`
@@ -98,6 +92,7 @@
 | `errors:report` | notification (we consume) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
 | `engine:cancel-pull` | request (we call) | ✅ yes |
+| `engine:catalog` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
@@ -107,7 +102,7 @@
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
 | `engine:models` | request (we call) | ✅ yes |
-| `engine:prepare-shutdown` | request (we call) | ✅ yes |
+| `engine:prepare-shutdown` | request (we call) | ➖ ignored |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-cancel-pull` | request (we call) | ✅ yes |
@@ -127,6 +122,7 @@
 | `engine:status` | request (we call) | ✅ yes |
 | `engine:stop` | request (we call) | ✅ yes |
 | `engine:uninstall` | request (we call) | ✅ yes |
+| `engine:uninstall-managed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
 
@@ -233,11 +229,21 @@
 | Method | Direction | In bridge? |
 |---|---|---|
 | `cluster:identity-changed` | request (we call) | ✅ yes |
+| `cluster:invite-canceled` | request (we call) | ✅ yes |
+| `cluster:invite-declined` | request (we call) | ✅ yes |
+| `cluster:invite-expired` | request (we call) | ✅ yes |
+| `cluster:invite-failed` | request (we call) | ✅ yes |
 | `cluster:invite-received` | request (we call) | ✅ yes |
+| `discovery:nodes-changed` | request (we call) | ✅ yes |
 | `engine:install-progress` | request (we call) | ✅ yes |
+| `engine:models-changed` | request (we call) | ✅ yes |
 | `engine:pull-progress` | request (we call) | ✅ yes |
+| `engine:remote-progress` | request (we call) | ✅ yes |
+| `engine:settings-changed` | request (we call) | ✅ yes |
+| `engine:settings-disconnected` | request (we call) | ✅ yes |
 | `engine:state-changed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
+| `errors:update` | request (we call) | ✅ yes |
 | `nodes:changed` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:upsert` | request (we call) | ✅ yes |
@@ -255,8 +261,6 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
-| `lmstudio-proxy:ready` | notification (we consume) | ➖ ignored |
-| `ollama-proxy:ready` | notification (we consume) | ➖ ignored |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
 | `connection/cluster-identity` | request (we call) | ✅ yes |
@@ -275,20 +279,12 @@
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:get-status` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:set-port` | request (we call) | ⚠️ not called |
-| `lmstudio-proxy:subscribe` | request (we call) | ✅ yes |
-| `lmstudio-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `node/add` | request (we call) | ✅ yes |
 | `node/discovered` | request (we call) | ✅ yes |
 | `node/remove` | request (we call) | ✅ yes |
 | `node/removed` | request (we call) | ✅ yes |
 | `node/updated` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
-| `ollama-proxy:get-status` | request (we call) | ⚠️ not called |
-| `ollama-proxy:set-port` | request (we call) | ⚠️ not called |
-| `ollama-proxy:subscribe` | request (we call) | ✅ yes |
-| `ollama-proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |

@@ -70,7 +70,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		// Escape hatch: vendor-script install with no checksum. Logged
 		// loudly so the weaker guarantee is never silent.
 		slog.Warn("running UNPINNED script install (no checksum verification)", "engine", engine)
-		e.emitInstallProgress(engine, "installing", 50)
+		e.emitInstallProgress(engine, "installing", 0)
 		argv, err := resolveArgs(inst.Script, vars)
 		if err != nil {
 			e.reportInstallFailed(engine, err)
@@ -94,10 +94,22 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			}
 			defer os.Remove(dp)
 			vars["download"] = dp
+			e.emitInstallProgress(engine, "verified", 0)
+		}
+		if len(inst.Artifacts) > 0 {
+			paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
+			defer removeDownloadedFiles(paths)
+			if err != nil {
+				e.reportInstallFailed(engine, err)
+				return err
+			}
+			for name, downloadPath := range artifactVars {
+				vars[name] = downloadPath
+			}
 			e.emitInstallProgress(engine, "verified", 50)
 		}
 		if len(inst.Run) > 0 {
-			e.emitInstallProgress(engine, "installing", 75)
+			e.emitInstallProgress(engine, "installing", 0)
 			args, err := resolveArgs(inst.Run, vars)
 			if err != nil {
 				e.reportInstallFailed(engine, err)
@@ -106,7 +118,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			for i := range args {
 				args[i] = expandPath(args[i])
 			}
-			if err := e.runCommand(ctx, args); err != nil {
+			if err := e.runCommandWithEnv(ctx, args, installCommandEnv(vars, inst.Artifacts)); err != nil {
 				werr := fmt.Errorf("install command failed: %w", err)
 				e.reportInstallFailed(engine, werr)
 				return werr
@@ -118,6 +130,11 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		err := fmt.Errorf("engine %q was not detected after install", engine)
 		e.reportInstallFailed(engine, err)
 		return err
+	}
+	// Claim the install now that it is real and detected. A failure to record it
+	// only costs the ability to uninstall later, so it must not fail the install.
+	if err := writeInstallMarker(st.installDir, engine); err != nil {
+		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
 	}
 	e.reporter.clear(installFailedID(engine))
 	e.emitInstallProgress(engine, "done", 100)
@@ -135,10 +152,14 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	if ok, _ := e.Detect(engine); !ok {
-		return e.setDesiredEnabled(engine, false) // already gone
+		// Already gone — by its own uninstaller, or by hand. Drop our ownership
+		// claim with it: left behind, it would authorise removing a copy the
+		// user installs later, which PAIR has no right to touch.
+		clearInstallMarker(st.installDir)
+		return e.setDesiredEnabled(engine, false)
 	}
 	un := st.plat.Uninstall
-	if un == nil || len(un.Run) == 0 {
+	if un == nil || (len(un.Run) == 0 && len(un.Remove) == 0) {
 		return fmt.Errorf("engine %q has no uninstall defined for this platform", engine)
 	}
 	st.mu.Lock()
@@ -146,6 +167,15 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.mu.Unlock()
 	if st.plat.Runtime.modeOrDefault() == "process" && !isManagedInstallPath(binPath, st.installDir) {
 		err := fmt.Errorf("cannot uninstall engine %q: its executable is outside NVPAIR's managed install directory (%s)", engine, binPath)
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		return err
+	}
+	// A command-mode engine's vendor script picks its own destination, so the
+	// managed-path test above can never vouch for one. Without the install
+	// marker this could be the copy the user installed themselves, holding the
+	// model library they built up in it — decline rather than guess.
+	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir) {
+		err := fmt.Errorf("cannot uninstall engine %q: NVIDIA PAIR has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
 	}
@@ -170,16 +200,37 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		return werr
 	}
 
-	args, err := resolveArgs(un.Run, map[string]string{"install_dir": st.installDir})
+	vars := st.pathVars()
+	args, err := resolveArgs(un.Run, vars)
 	if err != nil {
 		return err
 	}
 	for i := range args {
 		args[i] = expandPath(args[i])
 	}
+	targets, err := resolveArgs(un.Remove, vars)
+	if err != nil {
+		return err
+	}
+	// One attempt is the command followed by the declared removals, so a retry
+	// re-runs the process-stopping command before trying the tree again — which
+	// is what clears the case this retry loop exists for.
+	attemptUninstall := func() error {
+		if len(args) > 0 {
+			if err := e.runCommand(ctx, args); err != nil {
+				return err
+			}
+		}
+		for _, target := range targets {
+			if err := removeTreePreserving(target, st.modelsDir); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	var runErr error
 	for attempt := 1; attempt <= uninstallRetries; attempt++ {
-		if runErr = e.runCommand(ctx, args); runErr == nil {
+		if runErr = attemptUninstall(); runErr == nil {
 			break
 		}
 		if attempt < uninstallRetries {
@@ -191,19 +242,25 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 			}
 		}
 	}
-	if runErr != nil {
-		werr := fmt.Errorf("uninstall command failed after %d attempts: %w", uninstallRetries, runErr)
-		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: werr.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
-		return werr
-	}
+	// Detection is the verdict, not the delete errors. Removal is best-effort
+	// inside the tree, so a file the engine still holds open leaves a harmless
+	// remnant while the executable itself is gone — reporting that as a failure
+	// would tell the user to retry an uninstall that already worked.
 	if !e.waitDetect(engine, false, e.detectTimeout) {
 		uerr := fmt.Errorf("engine %q still detected after uninstall", engine)
-		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		if runErr != nil {
+			uerr = fmt.Errorf("uninstall failed after %d attempts: %w", uninstallRetries, runErr)
+		}
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: uerr.Error(), Severity: "error", Action: "retry", EngineType: engine, Operation: "uninstall"})
 		return uerr
+	}
+	if runErr != nil {
+		slog.Warn("engine removed, but some of its files could not be deleted", "engine", engine, "err", runErr)
 	}
 	st.mu.Lock()
 	st.binPath = ""
 	st.mu.Unlock()
+	clearInstallMarker(st.installDir)
 	e.reporter.clear(uninstallFailedID(engine))
 	e.emitState(engine)
 	return e.setDesiredEnabled(engine, false)
@@ -234,6 +291,9 @@ func validateDownloadURL(raw string) error {
 	if err != nil {
 		return fmt.Errorf("invalid download url %q: %w", raw, err)
 	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("download url %q must include a host", raw)
+	}
 	switch u.Scheme {
 	case "https":
 		return nil
@@ -248,6 +308,64 @@ func validateDownloadURL(raw string) error {
 }
 
 func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (string, error) {
+	return e.downloadWithProgress(ctx, engine, f, func(percent int) {
+		e.emitInstallProgress(engine, "downloading", percent)
+	})
+}
+
+func (e *Executor) downloadInstallArtifacts(
+	ctx context.Context,
+	engine string,
+	artifacts []InstallArtifact,
+) ([]string, map[string]string, error) {
+	paths := make([]string, 0, len(artifacts))
+	vars := make(map[string]string, len(artifacts))
+	e.emitInstallProgress(engine, "downloading", 0)
+	for index, artifact := range artifacts {
+		fetch := &Fetch{URL: artifact.URL, SHA256: artifact.SHA256}
+		downloadPath, err := e.downloadWithProgress(ctx, engine, fetch, func(percent int) {
+			e.emitInstallProgress(engine, "downloading", aggregateArtifactProgress(index, len(artifacts), percent))
+		})
+		if err != nil {
+			return paths, vars, fmt.Errorf("download artifact %q: %w", artifact.Name, err)
+		}
+		paths = append(paths, downloadPath)
+		vars["download_"+artifact.Name] = downloadPath
+		e.emitInstallProgress(engine, "downloading", aggregateArtifactProgress(index, len(artifacts), 100))
+	}
+	return paths, vars, nil
+}
+
+func aggregateArtifactProgress(index, count, percent int) int {
+	percent = max(0, min(percent, 100))
+	start := index * 50 / count
+	end := (index + 1) * 50 / count
+	return start + (end-start)*percent/100
+}
+
+func removeDownloadedFiles(paths []string) {
+	for _, downloadPath := range paths {
+		_ = os.Remove(downloadPath)
+	}
+}
+
+func installCommandEnv(vars map[string]string, artifacts []InstallArtifact) map[string]string {
+	env := map[string]string{"NVPAIR_INSTALL_DIR": vars["install_dir"]}
+	if downloadPath := vars["download"]; downloadPath != "" {
+		env["NVPAIR_INSTALL_DOWNLOAD"] = downloadPath
+	}
+	for _, artifact := range artifacts {
+		env["NVPAIR_INSTALL_DOWNLOAD_"+strings.ToUpper(artifact.Name)] = vars["download_"+artifact.Name]
+	}
+	return env
+}
+
+func (e *Executor) downloadWithProgress(
+	ctx context.Context,
+	engine string,
+	f *Fetch,
+	onProgress func(int),
+) (string, error) {
 	if err := validateDownloadURL(f.URL); err != nil {
 		return "", err
 	}
@@ -273,9 +391,7 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 	if err != nil {
 		return "", err
 	}
-	pw := &progressWriter{total: resp.ContentLength, onPct: func(p int) {
-		e.emitInstallProgress(engine, "downloading", p)
-	}}
+	pw := &progressWriter{total: resp.ContentLength, onPct: onProgress}
 	h := sha256.New()
 	// Read one byte past the cap so we can detect (and reject) overflow.
 	n, err := io.Copy(io.MultiWriter(tmp, h), io.TeeReader(io.LimitReader(resp.Body, maxDownloadBytes+1), pw))
@@ -310,10 +426,27 @@ func (e *Executor) download(ctx context.Context, engine string, f *Fetch) (strin
 // step), hiding the console window on Windows; on failure it returns the
 // combined output for diagnostics.
 func (e *Executor) runCommand(ctx context.Context, argv []string) error {
+	return runManifestCommand(ctx, argv, nil)
+}
+
+func (e *Executor) runCommandWithEnv(ctx context.Context, argv []string, environment map[string]string) error {
+	return runManifestCommand(ctx, argv, environment)
+}
+
+// runManifestCommand is independent of any Executor so the standalone
+// --uninstall-managed pass can run a manifest's uninstall command without
+// building the service's full runtime.
+func runManifestCommand(ctx context.Context, argv []string, environment map[string]string) error {
 	if len(argv) == 0 {
 		return nil
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if len(environment) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range environment {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
 	configureSysProcAttr(cmd) // hide the console window on Windows
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -323,8 +456,7 @@ func (e *Executor) runCommand(ctx context.Context, argv []string) error {
 }
 
 func (e *Executor) reportInstallFailed(engine string, err error) {
-	e.notify("engine:install-progress", map[string]any{"engine": engine, "stage": "failed", "percent": -1, "error": err.Error()})
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: "failed", Percent: -1, Message: err.Error()})
+	e.emitInstallFrame(engine, "failed", -1, err.Error())
 	e.reporter.report(serviceError{
 		ID: installFailedID(engine), Message: err.Error(),
 		Severity: "error", Action: "retry", EngineType: engine, Operation: "install",

@@ -17,6 +17,7 @@ from lib import (  # noqa: E402
     ALLOW_OWNED_FILES_MARKER,
     INTENT_END,
     INTENT_START,
+    PACKAGE_LOCK_PATH,
     VERSIONS_PATH,
     VersionsManifest,
     apply_bumps,
@@ -28,6 +29,7 @@ from lib import (  # noqa: E402
     prepend_changelog,
     read_release_version,
     render_package_json,
+    render_package_lock,
     render_versions_json,
 )
 
@@ -91,6 +93,69 @@ class ReleaseVersionTests(unittest.TestCase):
     def test_render_package_json_requires_a_version_field(self) -> None:
         with self.assertRaises(ValueError):
             render_package_json('{\n    "name": "pair"\n}\n', '0.1.2')
+
+    LOCK = (
+        '{\n'
+        '    "name": "pair",\n'
+        '    "version": "0.1.1",\n'
+        '    "lockfileVersion": 3,\n'
+        '    "requires": true,\n'
+        '    "packages": {\n'
+        '        "": {\n'
+        '            "name": "pair",\n'
+        '            "version": "0.1.1"\n'
+        '        },\n'
+        '        "node_modules/dep": {\n'
+        '            "version": "0.1.1"\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+
+    @staticmethod
+    def _changed_lines(before: str, after: str) -> list[tuple[str, str]]:
+        return [
+            pair for pair in zip(before.splitlines(), after.splitlines()) if pair[0] != pair[1]
+        ]
+
+    def test_render_package_lock_sets_both_root_versions(self) -> None:
+        rendered = render_package_lock(self.LOCK, '0.1.2')
+        parsed = json.loads(rendered)
+        self.assertEqual(parsed['version'], '0.1.2')
+        self.assertEqual(parsed['packages']['']['version'], '0.1.2')
+        # A dependency that happens to share the old version keeps it.
+        self.assertEqual(parsed['packages']['node_modules/dep']['version'], '0.1.1')
+        self.assertEqual(len(self._changed_lines(self.LOCK, rendered)), 2)
+
+    def test_render_package_lock_resyncs_a_drifted_lockfile(self) -> None:
+        drifted = self.LOCK.replace('"version": "0.1.1",', '"version": "0.1.0",', 1)
+        parsed = json.loads(render_package_lock(drifted, '0.1.2'))
+        self.assertEqual(parsed['version'], '0.1.2')
+        self.assertEqual(parsed['packages']['']['version'], '0.1.2')
+
+    def test_render_package_lock_requires_both_root_versions(self) -> None:
+        without_root = json.dumps({'name': 'pair', 'version': '0.1.1', 'packages': {}})
+        with self.assertRaises(ValueError):
+            render_package_lock(without_root, '0.1.2')
+
+    def test_render_package_lock_rejects_an_unexpected_layout(self) -> None:
+        """A top-level version written after packages cannot be set in place."""
+        reordered = json.dumps(
+            {
+                'name': 'pair',
+                'packages': {'': {'name': 'pair', 'version': '0.1.1'}},
+                'version': '0.1.1',
+            },
+            indent=4,
+        )
+        with self.assertRaises(ValueError):
+            render_package_lock(reordered, '0.1.2')
+
+    def test_render_repo_package_lock(self) -> None:
+        text = PACKAGE_LOCK_PATH.read_text(encoding='utf-8')
+        rendered = render_package_lock(text, '9.9.9')
+        self.assertEqual(len(self._changed_lines(text, rendered)), 2)
+        self.assertTrue(rendered.endswith('\n'))
 
     def test_missing_fences_rejected(self) -> None:
         with self.assertRaises(ValueError):

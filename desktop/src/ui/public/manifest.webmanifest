@@ -1,6 +1,6 @@
 {
-    "name": "Personal AI Router",
-    "short_name": "Personal AI Router",
+    "name": "NVIDIA PAIR",
+    "short_name": "NVIDIA PAIR",
     "description": "Access your inference cluster from anywhere.",
     "start_url": "./",
     "scope": "./",

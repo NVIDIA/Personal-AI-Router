@@ -232,7 +232,7 @@ export function BackendRow({
                 open={confirmUninstall}
                 onOpenChange={setConfirmUninstall}
                 title="Uninstall"
-                message={`Are you sure you want to uninstall ${backend.displayName}?`}
+                message={`Uninstall ${backend.displayName}? Your downloaded models are kept.`}
                 confirmLabel="Uninstall"
                 confirmColor="danger"
                 onConfirm={handleUninstall}

@@ -5,6 +5,10 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
+import {
+    getMacHelperRepairAttemptVersion,
+    setMacHelperRepairAttemptVersion
+} from '@/electron/config/ui-config'
 import { currentPlatform } from '@/shared/utils/platform'
 import { createStructuredLogger } from '@/shared/utils/log'
 
@@ -177,7 +181,8 @@ async function removeFirewall(): Promise<boolean> {
 /**
  * Drive the helper to the desired end state in one call (no UI). Registers the
  * daemon if missing, refreshes a stale daemon after an in-place app update
- * (version mismatch), and configures the firewall when the daemon is enabled.
+ * (version mismatch or unreachable), and configures the firewall when reachable.
+ * Replacement is attempted once per app version, persisted before unregistering.
  *
  * `forceFirewall` should be true on the first-run flow; the firewall is also
  * (re)configured automatically after a version refresh or fresh registration so
@@ -200,27 +205,42 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
 
     const stale =
         current.registration === 'enabled' &&
-        current.daemonVersion !== null &&
-        current.daemonVersion !== targetVersion
-    if (stale) {
+        (!current.reachable ||
+            (current.daemonVersion !== null && current.daemonVersion !== targetVersion))
+    const refresh = stale && getMacHelperRepairAttemptVersion() !== targetVersion
+    if (refresh) {
+        setMacHelperRepairAttemptVersion(targetVersion)
         log.info({
             sublevel: 'mac-helper',
-            message: `Refreshing helper ${current.daemonVersion} -> ${targetVersion}`
+            message: `Refreshing helper ${current.daemonVersion ?? 'unreachable'} -> ${targetVersion}`
         })
-        await uninstall()
-        await install()
-        current = await status()
-        reconfigureFirewall = true
+        if (!(await uninstall())) {
+            return {
+                supported: true,
+                registration: current.registration,
+                firewallConfigured: false,
+                firewallError: 'Could not unregister the stale privileged helper'
+            }
+        }
     }
 
     if (
+        refresh ||
         current.registration === 'notRegistered' ||
         current.registration === 'notFound' ||
         current.registration === 'unknown'
     ) {
-        await install()
+        const installation = await install()
         current = await status()
         reconfigureFirewall = true
+        if (!installation.ok) {
+            return {
+                supported: true,
+                registration: current.registration,
+                firewallConfigured: false,
+                firewallError: installation.error ?? 'Could not register the privileged helper'
+            }
+        }
     }
 
     if (current.registration !== 'enabled') {
@@ -229,6 +249,20 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
             registration: current.registration,
             firewallConfigured: false,
             firewallError: null
+        }
+    }
+
+    if (
+        !current.reachable ||
+        (current.daemonVersion !== null && current.daemonVersion !== targetVersion)
+    ) {
+        return {
+            supported: true,
+            registration: current.registration,
+            firewallConfigured: false,
+            firewallError: current.reachable
+                ? 'Privileged helper is still running a different version'
+                : 'Could not communicate with the privileged helper'
         }
     }
 

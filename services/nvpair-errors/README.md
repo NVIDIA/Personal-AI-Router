@@ -103,6 +103,7 @@ Starter ids:
 |---|---|---|
 | `ollama-proxy:upstream-unreachable:<node-id>` | ollama-proxy | an upstream node dropped out of discovery |
 | `lmstudio-proxy:upstream-unreachable:<node-id>` | lmstudio-proxy | an upstream node dropped out of discovery |
+| `llamacpp-proxy:upstream-unreachable:<node-id>` | llamacpp-proxy | an upstream node dropped out of discovery |
 | `manual-nodes:probe-failed:<node-id>` | nvpair-manual-nodes | a manual node has failed N consecutive probes |
 | `engine-manager:install-failed:<engine>` | nvpair-engine-manager | installing the engine failed |
 | `engine-manager:pull-failed:<engine>:<model>` | nvpair-engine-manager | pulling a model for the engine failed |

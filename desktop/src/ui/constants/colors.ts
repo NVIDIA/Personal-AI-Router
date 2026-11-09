@@ -3,9 +3,13 @@
 
 import type { BadgeColor } from '@/ui/types/types'
 
-// Color mapping for CSS
-export const WORKLOAD_COLOR_MAP: Record<BadgeColor, string> = {
-    yellow: '#F5A623',
+// The GPU chart's yellow, which in-flight jobs also use.
+const GPU_YELLOW = '#f9b400'
+
+// Color mapping for CSS. Values must stay six-digit hex: connection lines
+// append a two-digit alpha.
+export const WORKLOAD_COLOR_MAP: Record<BadgeColor, `#${string}`> = {
+    yellow: GPU_YELLOW,
     blue: '#4A90E2',
     green: '#7ED321',
     gray: '#9B9B9B',
@@ -44,7 +48,7 @@ export const CHART_COLORS = {
  */
 export const GPU_COLOR_PALETTE = [
     '#0074df', // GPU3 - Dark Blue
-    '#f9b400', // GPU2 - Yellow
+    GPU_YELLOW, // GPU2 - Yellow
     '#8689ff', // GPU1 - Blue
     '#ff8181' // GPU4 - Red
 ] as const

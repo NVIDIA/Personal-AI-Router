@@ -68,10 +68,13 @@ func Level() slog.Level {
 	return levelVar.Level()
 }
 
-// LevelString returns the current level as a lowercase string
-// ("debug"|"info"|"warn"|"error").
-func LevelString() string {
-	switch levelVar.Level() {
+// Levels are the levels a component can be set to, least to most severe.
+var Levels = []slog.Level{slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, slog.LevelError}
+
+// LevelName is a level's lowercase wire name ("debug"|"info"|"warn"|"error"),
+// the spelling ParseLevel and the log/set-level method accept.
+func LevelName(level slog.Level) string {
+	switch level {
 	case slog.LevelDebug:
 		return "debug"
 	case slog.LevelInfo:
@@ -81,8 +84,13 @@ func LevelString() string {
 	case slog.LevelError:
 		return "error"
 	default:
-		return levelVar.Level().String()
+		return level.String()
 	}
+}
+
+// LevelString returns the current level by its wire name.
+func LevelString() string {
+	return LevelName(levelVar.Level())
 }
 
 // ParseLevel converts a level string to slog.Level.
