@@ -31,7 +31,7 @@ type ollamaPartialsBefore map[string]bool
 // desktop app, the TUI's own engine-manager, or any other client on the daemon
 // — onto the very same partial file. A partial that was already there is
 // therefore not this download's to remove. It is either another client's
-// transfer, which may sit still for far longer than any settle window while it
+// transfer, which may sit still for far longer than any quiet period while it
 // waits on a slow server, or one PAIR deliberately kept when an earlier
 // attempt's context died without a cancel request. Only the files this pull
 // creates are unambiguously its own.
@@ -52,29 +52,33 @@ func ollamaPartialSnapshot(root string) (ollamaPartialsBefore, error) {
 	return before, nil
 }
 
-// cleanupOllamaPartials removes the partial blobs this pull both reported and
-// created. Completed blobs may be shared by installed models, and a partial
-// that predates this download belongs to someone else; both are deliberately
-// retained. A file this pull created can still be shared — another client can
-// coalesce onto it afterwards — so one that is still moving is left alone and
-// reported through busy, letting the caller look again.
-//
-// steady carries the consecutive-stillness count between passes of one
-// cancellation, and a candidate is removed only once it has reached
-// partialCleanupSteadyPasses.
-func cleanupOllamaPartials(
+// cleanupOllamaAfterCancel removes the partial blobs this pull created once
+// nothing is writing them. A file this pull created can still be shared —
+// another client can coalesce onto it afterwards — so the removal waits for it
+// to hold still; see removeQuiescentPartials. Without a snapshot nothing is
+// attributable to the pull, so nothing is removed.
+func cleanupOllamaAfterCancel(
 	ctx context.Context,
 	root string,
 	digests map[string]bool,
 	before ollamaPartialsBefore,
-	steady partialSteadyPasses,
-) (busy bool, err error) {
+) error {
 	if before == nil {
-		return false, nil
+		return nil
 	}
+	return removeQuiescentPartials(ctx, func() ([]string, error) {
+		return ollamaCreatedPartials(root, digests, before)
+	})
+}
+
+// ollamaCreatedPartials lists the partial blobs this pull both reported and
+// created. Completed blobs may be shared by installed models, and a partial
+// that predates this download belongs to someone else; both are deliberately
+// left out.
+func ollamaCreatedPartials(root string, digests map[string]bool, before ollamaPartialsBefore) ([]string, error) {
 	candidates, err := ollamaPartialPaths(root, digests)
-	if err != nil || len(candidates) == 0 {
-		return false, err
+	if err != nil {
+		return nil, err
 	}
 	created := make([]string, 0, len(candidates))
 	for _, path := range candidates {
@@ -82,7 +86,7 @@ func cleanupOllamaPartials(
 			created = append(created, path)
 		}
 	}
-	return removeSettledPartials(ctx, created, steady)
+	return created, nil
 }
 
 // ollamaPartialPaths lists the blob files matching any digest this pull
@@ -129,17 +133,4 @@ func ollamaBlobsDir(st *engineState) string {
 		root = "~/.ollama/models"
 	}
 	return filepath.Join(expandPath(root), "blobs")
-}
-
-// cleanupOllamaAfterCancel retries until every partial this pull created is
-// removed or confirmed to be another client's.
-func cleanupOllamaAfterCancel(
-	ctx context.Context,
-	root string,
-	digests map[string]bool,
-	before ollamaPartialsBefore,
-) error {
-	return retryPartialCleanup(func(steady partialSteadyPasses) (bool, error) {
-		return cleanupOllamaPartials(ctx, root, digests, before, steady)
-	})
 }

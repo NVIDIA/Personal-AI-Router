@@ -395,20 +395,24 @@ func lmsErrorDetail(text string) string {
 	return "…" + string(runes[len(runes)-lmsErrorDetailMax:])
 }
 
-// cleanupLMSAfterCancel retries until every partial this pull created is
-// removed or confirmed to be another client's.
+// cleanupLMSAfterCancel removes the partial files this `lms get` created once
+// nothing is writing them; see removeQuiescentPartials. No snapshot means the
+// inspection failed, not that the directory was empty, and nothing is
+// attributable without one.
 func cleanupLMSAfterCancel(ctx context.Context, root, model string, before map[string]os.FileInfo, named map[string]bool) error {
-	return retryPartialCleanup(func(steady partialSteadyPasses) (bool, error) {
-		return cleanupLMSPartials(ctx, root, model, before, named, steady)
+	if before == nil {
+		return nil
+	}
+	return removeQuiescentPartials(ctx, func() ([]string, error) {
+		return lmsCreatedPartials(root, model, before, named)
 	})
 }
 
-// cleanupLMSPartials runs one pass over the partial files this `lms get`
-// created, preserving completed shards. The LM Studio app and any other client
-// download into the same repository directory, so a file is deleted only when
-// it is this download's file, was absent from the snapshot taken before this
-// download started, and has stopped moving. Never delete a model directory or
-// follow a symlink outside the cache.
+// lmsCreatedPartials lists the partial files this `lms get` created, leaving
+// out completed shards. The LM Studio app and any other client download into
+// the same repository directory, so a file is a candidate only when it is this
+// download's file and was absent from the snapshot taken before this download
+// started. Never list a model directory or a symlink out of the cache.
 //
 // Which file is this download's comes from the pinned quantization when the
 // request names one, and otherwise from the files the CLI's output named. An
@@ -423,21 +427,10 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model string, before map[s
 // resumed download therefore keeps its partial through a cancellation, which
 // costs disk the vendor reuses on the next attempt; the alternative costs
 // another client its transfer.
-func cleanupLMSPartials(
-	ctx context.Context,
-	root, model string,
-	before map[string]os.FileInfo,
-	named map[string]bool,
-	steady partialSteadyPasses,
-) (busy bool, err error) {
-	// No snapshot means the inspection failed, not that the directory was
-	// empty, and nothing is attributable without one.
-	if before == nil {
-		return false, nil
-	}
+func lmsCreatedPartials(root, model string, before map[string]os.FileInfo, named map[string]bool) ([]string, error) {
 	files, err := lmsPartialFiles(root, model)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	pinned := lmsModelQuant(model) != ""
 	created := make([]string, 0, len(files))
@@ -450,7 +443,7 @@ func cleanupLMSPartials(
 		}
 		created = append(created, path)
 	}
-	return removeSettledPartials(ctx, created, steady)
+	return created, nil
 }
 
 // lmsPartialTarget is the model file a `downloading_<file>.part` partial is
@@ -475,8 +468,8 @@ func lmsModelQuant(model string) string {
 //
 // A nil map means the listing could not be made — the reference names no
 // repository — and is distinct from an empty one, which means the repository
-// holds no partials. cleanupLMSPartials deletes nothing on the former, so the
-// two must not be conflated.
+// holds no partials. cleanupLMSAfterCancel deletes nothing on the former, so
+// the two must not be conflated.
 func lmsPartialFiles(root, model string) (map[string]os.FileInfo, error) {
 	if root == "" {
 		return nil, errors.New("engine declares no models directory")
@@ -522,7 +515,7 @@ func lmsPartialFiles(root, model string) (map[string]os.FileInfo, error) {
 		// pinned one, only files carrying it can be this download's — pulling
 		// @Q4_K_M must not touch a @Q8_0 the LM Studio app is fetching beside
 		// it. Without a pinned quantization the CLI picks its own, so every
-		// partial is listed here and cleanupLMSPartials narrows them to the
+		// partial is listed here and lmsCreatedPartials narrows them to the
 		// files the CLI named.
 		if quant != "" && !strings.Contains(strings.ToUpper(entry.Name()), strings.ToUpper(quant)) {
 			continue
