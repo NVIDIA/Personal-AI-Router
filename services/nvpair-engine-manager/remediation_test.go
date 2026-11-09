@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 
 	"sync"
@@ -42,12 +43,7 @@ func (c *captured) emit(method string, _ any) {
 func (c *captured) has(method string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, m := range c.emits {
-		if m == method {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.emits, method)
 }
 
 func capturingExecutor(t *testing.T, m *Manifest) (*Executor, *captured) {
@@ -242,12 +238,10 @@ func TestConcurrentStart_IsSerialized(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			assert.NoError(t, ex.Start(context.Background(), "fake"))
-		}()
+		})
 	}
 	wg.Wait()
 	st, err := ex.Status("fake")

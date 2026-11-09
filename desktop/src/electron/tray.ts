@@ -37,13 +37,15 @@ class TrayManager {
         const iconsDir = join(__dirname, '../../resources/icons')
 
         if (currentPlatform() === 'darwin') {
-            let image = nativeImage.createFromPath(join(iconsDir, 'logo.png'))
-            image = image.resize({ width: 16, height: 16, quality: 'best' })
-            try {
-                image.setTemplateImage(true)
-            } catch {
-                /* not supported in test env */
-            }
+            const source = nativeImage.createFromPath(
+                join(__dirname, '../resources/icons/pairTrayTemplate.png')
+            )
+            const image = source.resize({ width: 18, height: 18, quality: 'best' })
+            image.addRepresentation({
+                scaleFactor: 2,
+                buffer: source.resize({ width: 36, height: 36, quality: 'best' }).toPNG()
+            })
+            image.setTemplateImage(true)
             return image
         }
 

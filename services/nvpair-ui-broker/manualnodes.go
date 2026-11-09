@@ -4,13 +4,14 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 
 	"nvpair-shared/appdir"
@@ -102,7 +103,9 @@ func loadPersistedManualNodes(path string) ([]persistedManualNode, error) {
 }
 
 func writePersistedManualNodes(path string, entries []persistedManualNode) error {
-	sort.Slice(entries, func(i, j int) bool { return entries[i].key() < entries[j].key() })
+	slices.SortFunc(entries, func(a, b persistedManualNode) int {
+		return cmp.Compare(a.key(), b.key())
+	})
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return err

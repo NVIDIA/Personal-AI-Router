@@ -516,13 +516,11 @@ func (b *Browser) probeLiveness(nodes []Node) []verdict {
 	slots := make(chan struct{}, probeConcurrency)
 	var wg sync.WaitGroup
 	for i, node := range nodes {
-		wg.Add(1)
 		slots <- struct{}{}
-		go func(i int, n Node) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-slots }()
-			verdicts[i] = verdict{node: n, alive: b.opt.liveness(n)}
-		}(i, node)
+			verdicts[i] = verdict{node: node, alive: b.opt.liveness(node)}
+		})
 	}
 	wg.Wait()
 	return verdicts

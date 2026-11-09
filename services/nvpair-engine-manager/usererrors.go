@@ -29,8 +29,8 @@ func unwrapPullCause(err error) string {
 	}
 	s := strings.TrimSpace(err.Error())
 	const actionFailed = "action command failed: "
-	if strings.HasPrefix(s, actionFailed) {
-		s = strings.TrimPrefix(s, actionFailed)
+	if after, ok := strings.CutPrefix(s, actionFailed); ok {
+		s = after
 	}
 	s = exitStatusPrefixRe.ReplaceAllString(s, "")
 	s = strings.TrimPrefix(s, "Error: ")

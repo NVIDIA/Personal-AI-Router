@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -308,12 +309,7 @@ func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
 	if err := json.Unmarshal(fv, &s); err != nil {
 		return false
 	}
-	for _, want := range m.In {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.In, s)
 }
 
 func resolveObjectPath(obj map[string]json.RawMessage, path string) (json.RawMessage, bool) {

@@ -33,7 +33,7 @@ func TestReporter_DeduplicatesCapsAndClearsErrors(t *testing.T) {
 
 	// Ring is bounded.
 	r2 := NewReporter(nil)
-	for i := 0; i < maxRecentErrors+25; i++ {
+	for i := range maxRecentErrors + 25 {
 		r2.report(serviceError{ID: fmt.Sprintf("e%d", i)})
 	}
 	require.LessOrEqual(t, len(r2.snapshot()), maxRecentErrors, "ring exceeded cap")

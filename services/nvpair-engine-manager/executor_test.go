@@ -955,8 +955,7 @@ func TestCommandMode_StartsReportsHealthAndStopsEngine(t *testing.T) {
 	// stopMarker) the daemon exits and its port stops accepting connections.
 	// waitUnavailable confirms a stop by an actual TCP refusal, not a 503 from a
 	// still-listening socket, so the stand-in must genuinely close its listener.
-	var closeOnce sync.Once
-	closeServer := func() { closeOnce.Do(srv.Close) }
+	closeServer := sync.OnceFunc(srv.Close)
 	defer closeServer()
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)

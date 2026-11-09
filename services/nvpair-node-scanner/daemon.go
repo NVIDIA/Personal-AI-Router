@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/httpcon"
 	"nvpair-shared/mdns"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
@@ -141,7 +142,7 @@ type daemon struct {
 // nodeInfoFetchTimeout bounds each node-info enrichment HTTP(S) GET, shared by
 // the plain and (opt-in) TLS clients.
 const nodeInfoFetchTimeout = 3 * time.Second
-const nodeInfoResponseDrainLimit = 64 << 10
+const nodeInfoMaxResponseBytes = 1 << 20
 
 // nodeInfoDialTimeout bounds only the TCP connect of that GET.
 //
@@ -177,6 +178,7 @@ func nodeInfoTransport(tlsConfig *tls.Config) *http.Transport {
 // own models-sweep cap (modelsTimeout, 5s) so the fetch waits for a bounded
 // sweep to finish instead of timing out partway through it.
 const modelsFetchTimeout = 6 * time.Second
+const modelsMaxResponseBytes = 16 << 20
 
 // peerRefreshInterval is the cadence of the mDNS-independent convergence loop
 // (refreshPeersLoop). The event-driven enrichment still handles fast initial
@@ -307,7 +309,7 @@ func telemetryTargetKey(hosts []string, port int) string {
 
 func telemetryRetryDelay(consecutiveFailures int) time.Duration {
 	delay := telemetryRefreshInterval
-	for failure := 0; failure < consecutiveFailures; failure++ {
+	for range consecutiveFailures {
 		if delay >= telemetryRetryMax/2 {
 			return telemetryRetryMax
 		}
@@ -1280,15 +1282,13 @@ func (d *daemon) fetchNodeInfoWithin(ctx context.Context, ip string, port int) (
 		slog.Debug("node-info fetch failed", "ip", ip, "url", url, "err", err)
 		return NodeInfoResponse{}, false
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nodeInfoResponseDrainLimit))
-		_ = resp.Body.Close()
-	}()
+	defer httpcon.DrainAndClose(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return NodeInfoResponse{}, false
 	}
 	var info NodeInfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	reader := io.LimitReader(resp.Body, nodeInfoMaxResponseBytes)
+	if err := json.NewDecoder(reader).Decode(&info); err != nil {
 		return NodeInfoResponse{}, false
 	}
 	return info, true
@@ -1372,7 +1372,7 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) (modelInve
 		slog.Debug("model enrichment failed", "ip", ip, "url", url, "err", err)
 		return modelInventory{}, false
 	}
-	defer resp.Body.Close()
+	defer httpcon.DrainAndClose(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return modelInventory{}, false
 	}
@@ -1382,7 +1382,8 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) (modelInve
 		LoadedByEngine     map[string][]string `json:"loadedByEngine"`
 		DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	reader := io.LimitReader(resp.Body, modelsMaxResponseBytes)
+	if err := json.NewDecoder(reader).Decode(&body); err != nil {
 		return modelInventory{}, false
 	}
 	return modelInventory{
@@ -1532,22 +1533,20 @@ func (d *daemon) dispatchTelemetry(
 			continue
 		}
 
-		workers.Add(1)
-		go func(hostUUID string, hosts []string, port int, token uint64, backoff bool) {
-			defer workers.Done()
+		workers.Go(func() {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				d.telemetryRetries.finish(hostUUID, token, true, time.Now())
+				d.telemetryRetries.finish(n.HostUUID, retryToken, true, time.Now())
 				return
 			}
-			ok := d.refreshNodeTelemetryCandidates(ctx, hostUUID, hosts, port)
-			if !backoff || ctx.Err() != nil {
+			ok := d.refreshNodeTelemetryCandidates(ctx, n.HostUUID, hosts, ni.Port)
+			if n.HostUUID == self || ctx.Err() != nil {
 				ok = true
 			}
-			d.telemetryRetries.finish(hostUUID, token, ok, time.Now())
-		}(n.HostUUID, hosts, ni.Port, retryToken, n.HostUUID != self)
+			d.telemetryRetries.finish(n.HostUUID, retryToken, ok, time.Now())
+		})
 	}
 }
 
@@ -1601,10 +1600,7 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 
 	age := int64(0)
 	if info.TelemetryValid {
-		age = info.MSSince
-		if age < 0 {
-			age = 0
-		}
+		age = max(info.MSSince, 0)
 		elapsed := time.Since(startedAt).Milliseconds()
 		if elapsed > maxTelemetryAge-age {
 			age = maxTelemetryAge
@@ -1660,14 +1656,12 @@ func (d *daemon) refreshClusterIdentityOnce() {
 		if !ok || n.IP == "" || n.HostUUID == self {
 			continue
 		}
-		wg.Add(1)
 		sem <- struct{}{}
 		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID string, hosts []string, port int) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
-			d.refreshNodeClusterIdentityCandidates(hostUUID, hosts, port)
-		}(n.HostUUID, hosts, ni.Port)
+			d.refreshNodeClusterIdentityCandidates(n.HostUUID, hosts, ni.Port)
+		})
 	}
 	wg.Wait()
 }
@@ -1743,14 +1737,12 @@ func (d *daemon) refreshModelsOnce() {
 		if !ok || n.IP == "" {
 			continue
 		}
-		wg.Add(1)
 		sem <- struct{}{}
 		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID, guardIP string, hosts []string, port int, clusterUUID string) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
-			d.refreshNodeModelsCandidates(hostUUID, guardIP, hosts, port, clusterUUID)
-		}(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+			d.refreshNodeModelsCandidates(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+		})
 	}
 	wg.Wait()
 }

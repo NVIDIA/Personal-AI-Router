@@ -6,7 +6,7 @@ package main
 import (
 	"context"
 	"maps"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -134,7 +134,7 @@ func (e *Executor) sweepModels(ctx context.Context, prev modelLists) (changed []
 			changed = append(changed, name)
 		}
 	}
-	sort.Strings(changed)
+	slices.Sort(changed)
 	return changed, next, res
 }
 
@@ -166,7 +166,7 @@ func changedEngines(prev, cur map[string][]string) []string {
 			changed = append(changed, name)
 		}
 	}
-	sort.Strings(changed)
+	slices.Sort(changed)
 	return changed
 }
 

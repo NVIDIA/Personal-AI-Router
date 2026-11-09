@@ -620,7 +620,7 @@ func TestSettingsErrors_UsesDeterministicOrder(t *testing.T) {
 		"proxyPort":  "port in use",
 	}
 	first := joinSettingsErrors(errs)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		require.Equal(t, first, joinSettingsErrors(errs), "attempt %d stays stable", i)
 	}
 	assert.Contains(t, first, "unbalanced quote", "every field's message")

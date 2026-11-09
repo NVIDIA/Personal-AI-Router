@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -273,9 +274,7 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		}
 	}
 	vars["port"] = strconv.Itoa(port)
-	for name, value := range st.pathVars() {
-		vars[name] = value
-	}
+	maps.Copy(vars, st.pathVars())
 	if cli := st.plat.Runtime.CLI; cli != "" {
 		vars["cli"] = expandPath(cli)
 	}

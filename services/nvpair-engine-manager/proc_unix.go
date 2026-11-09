@@ -64,7 +64,7 @@ func lsofPID(port int) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	for _, field := range strings.Fields(string(out)) {
+	for field := range strings.FieldsSeq(string(out)) {
 		if p, err := strconv.Atoi(field); err == nil && p > 0 {
 			return p, true
 		}
@@ -81,11 +81,10 @@ func ssPID(port int) (int, bool) {
 		return 0, false
 	}
 	s := string(out)
-	idx := strings.Index(s, "pid=")
-	if idx < 0 {
+	_, rest, ok := strings.Cut(s, "pid=")
+	if !ok {
 		return 0, false
 	}
-	rest := s[idx+len("pid="):]
 	end := strings.IndexAny(rest, ",)")
 	if end < 0 {
 		return 0, false

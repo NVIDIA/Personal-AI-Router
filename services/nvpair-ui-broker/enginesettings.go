@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -537,9 +538,7 @@ func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, ca
 	record := b.engineSettings[p.Engine]
 	previous := *record
 	previous.Receipts = make(map[string]settingsReceipt, len(record.Receipts))
-	for k, v := range record.Receipts {
-		previous.Receipts[k] = v
-	}
+	maps.Copy(previous.Receipts, record.Receipts)
 	if preview.Settings == record.Snapshot.Settings && record.Snapshot.Phase != "failed" {
 		record.Snapshot.RequestID = p.RequestID
 		record.Snapshot.Phase = "succeeded"

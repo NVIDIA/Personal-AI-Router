@@ -271,11 +271,11 @@ func writeE2EManifest(t *testing.T, dir string, manifest *Manifest) {
 func overrideEnv(over map[string]string) []string {
 	var out []string
 	for _, kv := range os.Environ() {
-		eq := strings.IndexByte(kv, '=')
-		if eq < 0 {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
 			continue
 		}
-		key := strings.ToUpper(kv[:eq])
+		key = strings.ToUpper(key)
 		if _, ok := over[key]; ok {
 			continue
 		}

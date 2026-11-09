@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -380,12 +381,7 @@ func (b *Broker) proxyEnabled(p engineProxyProfile) bool {
 	if b.proxyPath == "" {
 		return false
 	}
-	for _, name := range b.proxyEngines {
-		if name == p.Name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(b.proxyEngines, p.Name)
 }
 
 // prepareEnabledFacades prepares port ownership for the engines the broker is

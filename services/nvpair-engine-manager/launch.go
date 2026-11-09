@@ -5,9 +5,9 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -107,7 +107,7 @@ func formatLaunchParts(environment map[string]string, args []string) (string, er
 	for key := range environment {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	tokens := make([]string, 0, len(keys)+1)
 	for _, key := range keys {
 		// Quote assignment values consistently, including simple values, so
@@ -139,9 +139,7 @@ func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (l
 	}
 	// Resolution must not change the caller's context (in particular {bin}).
 	resolvedVars := make(map[string]string, len(vars)+1)
-	for key, value := range vars {
-		resolvedVars[key] = value
-	}
+	maps.Copy(resolvedVars, vars)
 	resolvedVars["bin"] = binPath
 	args, err := resolveArgs(rt.Args, resolvedVars)
 	if err != nil {

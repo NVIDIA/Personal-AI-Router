@@ -4,17 +4,19 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -461,10 +463,8 @@ func (r *Registry) Get(name string) (*Manifest, bool) {
 // Names returns all known engine names, sorted for stable output.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.engines))
-	for n := range r.engines {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names = slices.AppendSeq(names, maps.Keys(r.engines))
+	slices.Sort(names)
 	return names
 }
 
@@ -501,7 +501,9 @@ func (r *Registry) LoadDir(dir string) error {
 		}
 		return fmt.Errorf("read manifest dir %s: %w", dir, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
 			continue
@@ -525,7 +527,9 @@ func (r *Registry) LoadFS(fsys fs.FS, root string) error {
 	if err != nil {
 		return fmt.Errorf("read embedded manifests %s: %w", root, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(path.Ext(e.Name()), ".json") {
 			continue
@@ -579,7 +583,9 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 		}
 		return fmt.Errorf("read override dir %s: %w", dir, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
 			continue
@@ -767,9 +773,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 // win); arrays and scalars are replaced by override.
 func deepMerge(base, override map[string]any) map[string]any {
 	out := make(map[string]any, len(base))
-	for k, v := range base {
-		out[k] = v
-	}
+	maps.Copy(out, base)
 	for k, ov := range override {
 		if bv, ok := out[k]; ok {
 			if bm, ok1 := bv.(map[string]any); ok1 {
@@ -1218,10 +1222,8 @@ func validatePlaceholderStrings(templates []string, allowed map[string]bool) err
 
 func placeholderList(placeholders map[string]bool) []string {
 	out := make([]string, 0, len(placeholders))
-	for k := range placeholders {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out = slices.AppendSeq(out, maps.Keys(placeholders))
+	slices.Sort(out)
 	return out
 }
 

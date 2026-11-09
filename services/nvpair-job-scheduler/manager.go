@@ -170,10 +170,7 @@ func (m *Manager) handleMessage(msg *Message) {
 			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"interval_ms\": <positive int>}")
 			return
 		}
-		d := time.Duration(p.IntervalMs) * time.Millisecond
-		if d < intervalFloor {
-			d = intervalFloor
-		}
+		d := max(time.Duration(p.IntervalMs)*time.Millisecond, intervalFloor)
 		m.mu.Lock()
 		m.interval = d
 		m.mu.Unlock()

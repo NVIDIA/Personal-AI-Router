@@ -82,7 +82,7 @@ func TestRemoteClient_ReusesPeerConnections(t *testing.T) {
 	require.NoError(t, err)
 
 	const rounds = 5
-	for i := 0; i < rounds; i++ {
+	for i := range rounds {
 		_, gerr := client.getEngines(context.Background())
 		require.NoError(t, gerr, "round (%v, %v)", i, gerr)
 	}

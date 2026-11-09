@@ -4,8 +4,9 @@
 package main
 
 import (
+	"cmp"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -158,7 +159,9 @@ func (d *directory) supersedeCandidates(n noderec.DirectoryNode, selfUUID string
 		}
 		candidates = append(candidates, other)
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].HostUUID < candidates[j].HostUUID })
+	slices.SortFunc(candidates, func(a, b noderec.DirectoryNode) int {
+		return cmp.Compare(a.HostUUID, b.HostUUID)
+	})
 	return candidates
 }
 
@@ -185,7 +188,9 @@ func (d *directory) upsertEvicting(n noderec.DirectoryNode, proven []noderec.Dir
 		delete(d.nodes, old.HostUUID)
 		evicted = append(evicted, current)
 	}
-	sort.Slice(evicted, func(i, j int) bool { return evicted[i].HostUUID < evicted[j].HostUUID })
+	slices.SortFunc(evicted, func(a, b noderec.DirectoryNode) int {
+		return cmp.Compare(a.HostUUID, b.HostUUID)
+	})
 	d.nodes[n.HostUUID] = n
 	return evicted
 }
@@ -220,7 +225,9 @@ func (d *directory) snapshot(filter noderec.ServiceKey) []noderec.DirectoryNode 
 		out = append(out, n)
 	}
 	d.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].HostUUID < out[j].HostUUID })
+	slices.SortFunc(out, func(a, b noderec.DirectoryNode) int {
+		return cmp.Compare(a.HostUUID, b.HostUUID)
+	})
 	return out
 }
 

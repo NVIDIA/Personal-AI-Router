@@ -52,9 +52,8 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 
 	mp := &managedProc{cmd: cmd, done: make(chan struct{})}
 	var scanWg sync.WaitGroup
-	scanWg.Add(2)
-	go func() { defer scanWg.Done(); scanLines(stdout, "stdout", onLine) }()
-	go func() { defer scanWg.Done(); scanLines(stderr, "stderr", onLine) }()
+	scanWg.Go(func() { scanLines(stdout, "stdout", onLine) })
+	scanWg.Go(func() { scanLines(stderr, "stderr", onLine) })
 	go func() {
 		// Drain stdout/stderr fully before Wait: Wait closes the pipes on
 		// exit, which would otherwise truncate the final captured lines.

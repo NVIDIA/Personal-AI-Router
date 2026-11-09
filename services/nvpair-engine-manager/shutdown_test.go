@@ -322,8 +322,7 @@ func TestStopAll_StopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 		_ = daemon.Serve(ln)
 	}()
 
-	watchCtx, cancelWatch := context.WithCancel(context.Background())
-	defer cancelWatch()
+	watchCtx := t.Context()
 	go func() {
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()

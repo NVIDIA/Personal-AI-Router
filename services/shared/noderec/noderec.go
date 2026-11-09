@@ -30,7 +30,7 @@ package noderec
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -204,7 +204,7 @@ func ParseTXT(txt []string) NodeRecord {
 			// room for roughly sixteen IPv4 literals — every one of which a dialer
 			// would walk, at its own per-candidate timeout, before giving up on
 			// the node.
-			for _, part := range strings.Split(val, IPsSeparator) {
+			for part := range strings.SplitSeq(val, IPsSeparator) {
 				if len(r.IPs) >= MaxAdvertisedIPs {
 					break
 				}
@@ -270,7 +270,7 @@ func (r NodeRecord) TXT() []string {
 			extra = append(extra, string(s)+"="+strconv.Itoa(port))
 		}
 	}
-	sort.Strings(extra)
+	slices.Sort(extra)
 	txt = append(txt, extra...)
 	return txt
 }
@@ -599,12 +599,7 @@ func (p SubscribeParams) Matches(n DirectoryNode) bool {
 	if len(p.Services) == 0 {
 		return true
 	}
-	for _, s := range p.Services {
-		if n.HasService(s) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(p.Services, n.HasService)
 }
 
 // GetNodesParams optionally filters discovery:get-nodes to a single service.

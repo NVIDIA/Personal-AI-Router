@@ -18,7 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -91,7 +91,7 @@ func (o *addressObserver) addresses() []string {
 		}
 		addrs = append(addrs, addr)
 	}
-	sort.Strings(addrs)
+	slices.Sort(addrs)
 	return addrs
 }
 
