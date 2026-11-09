@@ -46,7 +46,9 @@ type lmsDownloadOutput struct {
 	// named holds the model files the CLI's output has mentioned. Without a
 	// pinned quantization it is the only evidence of which file `lms get`
 	// chose, and so of which partial is this download's. It is collected as
-	// the output arrives because text only keeps a bounded tail.
+	// the output arrives because text only keeps a bounded tail, and kept
+	// across the request's attempts because a resumed run can fail before it
+	// names the file an earlier run started.
 	named    map[string]bool
 	stdin    io.Writer
 	progress func(int)
@@ -128,9 +130,9 @@ func (w *lmsDownloadOutput) namedFiles() map[string]bool {
 	return named
 }
 
-// reset clears the previous run's output. It is called before the process
-// starts, where nothing is writing yet, but takes the lock anyway: an earlier
-// disowned process may still hold this writer.
+// reset clears the previous run's output, keeping the files it named. It is
+// called before the process starts, where nothing is writing yet, but takes the
+// lock anyway: an earlier disowned process may still hold this writer.
 func (w *lmsDownloadOutput) reset(stdin io.Writer) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -139,7 +141,6 @@ func (w *lmsDownloadOutput) reset(stdin io.Writer) {
 	w.cancelled = false
 	w.completed = false
 	w.answered = false
-	w.named = nil
 }
 
 // disown withdraws this writer's cancellation confirmation for good, for a
@@ -179,8 +180,14 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 	// context also dies when PAIR quits mid-download, when a remote initiator
 	// disconnects, and when the action timeout elapses — and `lms get` is built
 	// to resume every one of those on the next attempt.
+	//
+	// The cancellation stopped the download when the CLI confirmed it, or when
+	// it found no CLI running — before the first started, between candidate
+	// sources, or while a failed transfer waited to be resumed. Only those
+	// cases come back as context.Canceled: a running CLI that did not confirm
+	// is reported as its own failure, since its download may still be going.
 	cancelled, _, _ := output.state()
-	if err != nil && cancelRequested(ctx) && cancelled {
+	if err != nil && cancelRequested(ctx) && (cancelled || errors.Is(err, context.Canceled)) {
 		// Cleanup outlives the cancellation that triggered it, so it runs on a
 		// context that keeps this one's values without its deadline.
 		if cleanupErr := cleanupLMSAfterCancel(context.WithoutCancel(ctx), st.modelsDir, model, before, output.namedFiles()); cleanupErr != nil {

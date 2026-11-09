@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -236,6 +237,22 @@ func main() {
 			}
 			fmt.Println("downloaded")
 			return
+		case "downloadstalls": // stand in for an `lms get` whose transfer times
+			// out: write the partial file it names, the way a real download
+			// leaves one, then fail with LM Studio's transient "Download
+			// failed" so the runner waits to resume it.
+			// args: downloadstalls <partial> <model...>
+			if len(os.Args) < 3 {
+				fmt.Fprintln(os.Stderr, "downloadstalls: need <partial>")
+				os.Exit(2)
+			}
+			partial := os.Args[2]
+			if os.MkdirAll(filepath.Dir(partial), 0o755) != nil || os.WriteFile(partial, []byte("partial"), 0o644) != nil {
+				os.Exit(2)
+			}
+			fmt.Printf("Downloading %s\n", strings.TrimSuffix(strings.TrimPrefix(filepath.Base(partial), "downloading_"), ".part"))
+			fmt.Fprintln(os.Stderr, "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.")
+			os.Exit(1)
 		}
 	}
 

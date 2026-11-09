@@ -282,7 +282,10 @@ installed model.
 
 LM Studio additionally requires the CLI to confirm: declining its
 background-download prompt is what aborts the daemon's task, so a CLI that
-exited without answering it may still be fetching, and nothing is deleted.
+exited without answering it may still be fetching, and nothing is deleted. A
+cancel that finds no CLI running — before the first starts, between candidate
+sources, or while a timed-out transfer waits to be resumed — has nothing left
+fetching, so it settles as cancelled and cleans up the same way.
 
 A cancel can also arrive **before** the pull it names has registered, since the
 read loop dispatches each onto its own goroutine. So each pull request is

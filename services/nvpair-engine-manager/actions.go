@@ -365,14 +365,25 @@ func (e *Executor) runWithResume(ctx context.Context, argv []string) (string, er
 		if err == nil {
 			return out, nil
 		}
-		if attempt >= lmsGetResumeAttempts || ctx.Err() != nil || !isLMSTransientDownloadError(err) {
+		if !isLMSTransientDownloadError(err) {
+			return out, err
+		}
+		// The CLI exited on a failure `lms get` resumes on re-run, so nothing
+		// is downloading until the next attempt starts. A context that ends
+		// before then — a cancel, shutdown, the action timeout — is what
+		// settles the pull, and a cancel must read as the cancellation it was
+		// rather than as the failure it interrupted.
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if attempt >= lmsGetResumeAttempts {
 			return out, err
 		}
 		slog.Warn("lms get download failed transiently; resuming",
 			"attempt", attempt, "of", lmsGetResumeAttempts, "err", err)
 		select {
 		case <-ctx.Done():
-			return out, err
+			return out, ctx.Err()
 		case <-time.After(lmsGetResumeBackoff):
 		}
 	}

@@ -7,10 +7,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,6 +146,20 @@ func TestLMSDownloadOutput_CollectsTheModelFilesTheCLINames(t *testing.T) {
 		_, err := output.Write([]byte(chunk))
 		require.NoError(t, err)
 	}
+
+	assert.Equal(t, map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true}, output.namedFiles())
+}
+
+// A transfer that fails transiently is resumed by running `lms get` again, and
+// the resumed run can fail before it prints the file name. The name an earlier
+// run printed still identifies this download's partial, so starting the next
+// run must not forget it.
+func TestLMSDownloadOutput_KeepsNamedFilesAcrossResumedRuns(t *testing.T) {
+	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
+	_, err := output.Write([]byte("Downloading lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"))
+	require.NoError(t, err)
+
+	output.reset(io.Discard)
 
 	assert.Equal(t, map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true}, output.namedFiles())
 }
@@ -278,6 +296,78 @@ func TestStopLMSDownload_FailsAnUndeliverableInterruptUnlessTheRunCompleted(t *t
 		assert.ErrorContains(t, err, "could not confirm LM Studio cancellation")
 		assert.Empty(t, text)
 	})
+}
+
+// resumeWaitHandler reports when the LM Studio runner logs that it is waiting
+// to resume a failed transfer, a point at which no CLI is running.
+type resumeWaitHandler struct {
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (*resumeWaitHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *resumeWaitHandler) Handle(_ context.Context, record slog.Record) error {
+	if record.Message == "lms get download failed transiently; resuming" {
+		h.once.Do(func() { close(h.waiting) })
+	}
+	return nil
+}
+
+func (h *resumeWaitHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *resumeWaitHandler) WithGroup(string) slog.Handler      { return h }
+
+// `lms get` resumes a transfer that timed out by running again after a pause,
+// and no CLI runs during that pause. A cancel landing there found nothing to
+// interrupt and reported the timeout instead: the cancel failed, a retry error
+// was filed for a download the user had stopped, and its partial stayed behind.
+func TestLMSPull_CancelWhileWaitingToResumeStopsTheDownload(t *testing.T) {
+	// An hour-long pause guarantees the cancel lands in it, after the first
+	// run has exited and before a second one starts.
+	defer setResumeBudget(t, 3, time.Hour)()
+	waiting := make(chan struct{})
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(&resumeWaitHandler{waiting: waiting}))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	modelsDir := t.TempDir()
+	partial := filepath.Join(modelsDir, "owner", "repo", "downloading_repo-Q4_K_M.gguf.part")
+	manifest := testEngineManifest(fakeEngineBin)
+	platformKey := runtime.GOOS + "/" + runtime.GOARCH
+	platform := manifest.Platforms[platformKey]
+	platform.ModelsDir = modelsDir
+	manifest.Platforms[platformKey] = platform
+	manifest.Actions[pullModelAction] = Action{
+		Cmd:             []string{fakeEngineBin, "downloadstalls", partial, "{model}"},
+		ModelResolution: modelResolutionLMSGet,
+	}
+	ex := newTestExecutor(t, manifest)
+	events, unsubscribe := ex.progress.subscribe("fake")
+	defer unsubscribe()
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	pull := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.PullModelStream(ctx, "fake", "owner/repo", nil)
+		pull <- got
+	}()
+	select {
+	case <-waiting:
+	case <-ctx.Done():
+		require.FailNow(t, "the download never waited to resume")
+	}
+
+	require.NoError(t, ex.CancelModelPull(ctx, "fake", "owner/repo"))
+	got := <-pull
+
+	require.NoError(t, got.err, "the cancellation should settle the pull as cancelled")
+	assertPullStatus(t, got.result, "cancelled")
+	// The request pins no quantization, so the file the CLI named is what
+	// makes this partial attributable to the download.
+	assertRemoved(t, partial)
+	frames := publishedFrames(events)
+	require.NotEmpty(t, frames, "the pull published no frames")
+	assert.Equal(t, "cancelled", frames[len(frames)-1].Stage, "the last frame must report the cancellation")
 }
 
 func TestCleanupLMSAfterCancel_RemovesThePartialButKeepsCompletedShards(t *testing.T) {

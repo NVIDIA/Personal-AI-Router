@@ -385,7 +385,10 @@ removed. That file is identified by the requested quantization when the request
 pins one, and otherwise by the file names the CLI printed; an unpinned pull
 whose output named no file removes nothing. Completed model files, other
 quantizations, and unrelated downloads are retained, and a cancellation the CLI
-never confirmed deletes nothing. llama.cpp's router is asked to stop the
+never confirmed deletes nothing. A cancel that finds no CLI running — before the
+first starts, between the sources PAIR tries, or while a timed-out transfer
+waits to be resumed — has nothing left to stop, so it settles as cancelled and
+removes the same files. llama.cpp's router is asked to stop the
 download and keeps what it already fetched, for llama.cpp to resume or
 replace; if the router does not confirm the stop, the cancellation fails, since
 the download may still be running. Only a cancellation someone requested
