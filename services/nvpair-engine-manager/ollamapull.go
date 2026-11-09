@@ -142,8 +142,12 @@ func ollamaPartialPaths(root string, digests map[string]bool) ([]string, error) 
 // is read back from the process rather than rebuilt from settings that may have
 // changed since. A daemon that was already running when PAIR adopted it was
 // started by someone else, in an environment PAIR cannot see. The engine
-// manager's own environment is the best guess there, and a wrong guess only
-// finds no partial this pull created.
+// manager's own environment is the best guess there. A wrong guess usually
+// finds nothing, since no partial of this pull's layers appears there after
+// the snapshot. It does when the guess lands on another live Ollama cache, such
+// as a second daemon's pulling the same layers: a partial that daemon creates
+// after the snapshot, and leaves still for the quiet period, reads as this
+// pull's own and is removed with the progress it held.
 //
 // The value is read the way Ollama reads it: surrounding spaces and quotes are
 // trimmed, and "~" is not expanded. A relative path would resolve against the

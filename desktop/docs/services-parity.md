@@ -405,7 +405,11 @@ engine-manager's own environment stands in for the daemon's. A cancellation on
 an install whose models live elsewhere — a relocated LM Studio models
 directory, or an adopted Ollama daemon started with a different
 `OLLAMA_MODELS` — stops the download but leaves its partial files for the
-engine to resume or remove.
+engine to resume or remove. The exception is a guess that lands on another
+live Ollama cache, such as a second daemon pulling the same layers there: a
+partial that daemon creates after the download started, and leaves still for
+the cleanup's quiet period, cannot be told from the download's own and is
+removed.
 
 Ollama and LM Studio each funnel every client on the machine into one cache, so naming a file
 is not the same as owning it — Ollama blobs are content-addressed, and the LM
