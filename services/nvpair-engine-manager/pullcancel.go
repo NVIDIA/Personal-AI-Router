@@ -12,7 +12,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,7 +39,11 @@ func cancelRequested(ctx context.Context) bool {
 	return ok && p.requested.Load()
 }
 
-func pullKey(engine, model string) string { return engine + "\x00" + model }
+// pullKey identifies a download: one engine fetching one model.
+type pullKey struct {
+	engine string
+	model  string
+}
 
 func cancelledPull() json.RawMessage { return json.RawMessage(`{"status":"cancelled"}`) }
 
@@ -59,10 +62,10 @@ func (e *Executor) claimPull(engine, model string, isPull bool) func() {
 	if !isPull || engine == "" || model == "" {
 		return func() {}
 	}
-	key := pullKey(engine, model)
+	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
 	if e.pullClaims == nil {
-		e.pullClaims = make(map[string]int)
+		e.pullClaims = make(map[pullKey]int)
 	}
 	e.pullClaims[key]++
 	e.pullMu.Unlock()
@@ -95,7 +98,7 @@ func (e *Executor) claimPull(engine, model string, isPull bool) func() {
 // has no download to stop, and a tombstone left there would cancel whatever
 // pull came next.
 func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) error {
-	key := pullKey(engine, model)
+	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
 	p := e.pulls[key]
 	if p != nil {
@@ -118,9 +121,9 @@ func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) er
 
 // armPendingCancel records a cancel for a pull that has not registered yet, and
 // drops the entries that have aged out. Callers hold pullMu.
-func (e *Executor) armPendingCancel(key string) {
+func (e *Executor) armPendingCancel(key pullKey) {
 	if e.pendingCancels == nil {
-		e.pendingCancels = make(map[string]time.Time)
+		e.pendingCancels = make(map[pullKey]time.Time)
 	}
 	now := time.Now()
 	for pending, armed := range e.pendingCancels {
@@ -132,7 +135,7 @@ func (e *Executor) armPendingCancel(key string) {
 }
 
 // takePendingCancel consumes a tombstone armed for this pull. Callers hold pullMu.
-func (e *Executor) takePendingCancel(key string) bool {
+func (e *Executor) takePendingCancel(key pullKey) bool {
 	armed, ok := e.pendingCancels[key]
 	if !ok {
 		return false
@@ -146,10 +149,10 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 	defer cancel()
 	p := &activePull{cancel: cancel, done: make(chan struct{})}
 	ctx = context.WithValue(ctx, activePullKey{}, p)
-	key := pullKey(engine, model)
+	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
 	if e.pulls == nil {
-		e.pulls = make(map[string]*activePull)
+		e.pulls = make(map[pullKey]*activePull)
 	}
 	if e.takePendingCancel(key) {
 		e.pullMu.Unlock()
@@ -159,7 +162,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 	// an engine serialized so cleanup cannot remove another PAIR pull's data.
 	var predecessors []<-chan struct{}
 	for activeKey, active := range e.pulls {
-		if !strings.HasPrefix(activeKey, engine+"\x00") {
+		if activeKey.engine != engine {
 			continue
 		}
 		if activeKey == key {

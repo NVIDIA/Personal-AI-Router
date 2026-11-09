@@ -66,7 +66,7 @@ func newOpID() string {
 // is what gives the cancel something to wait for.
 type remotePullGate struct {
 	mu    sync.Mutex
-	pulls map[string]*remotePullAttempt
+	pulls map[remotePullKey]*remotePullAttempt
 }
 
 type remotePullAttempt struct {
@@ -102,41 +102,45 @@ type remotePullAttempt struct {
 // the cheaper error, because a pull that never lands releases this itself.
 const remotePullGateWindow = 90 * time.Second
 
-func remotePullKey(node, engine, model string) string {
-	return node + "\x00" + engine + "\x00" + model
+// remotePullKey identifies a download on a peer: one node's engine fetching one
+// model.
+type remotePullKey struct {
+	node   string
+	engine string
+	model  string
 }
 
 // remotePullClaimFrom reports the gate key of an engine:remote-pull-model
 // request. Malformed or incomplete params are left to runRemote, which owns the
 // error response.
-func remotePullClaimFrom(method string, params json.RawMessage) (string, bool) {
+func remotePullClaimFrom(method string, params json.RawMessage) (remotePullKey, bool) {
 	if method != "engine:remote-pull-model" {
-		return "", false
+		return remotePullKey{}, false
 	}
 	var p remoteParam
 	if err := json.Unmarshal(params, &p); err != nil {
-		return "", false
+		return remotePullKey{}, false
 	}
 	model := p.Model
 	if fromParams := modelFromParams(p.Params); fromParams != "" {
 		model = fromParams
 	}
 	if p.Node == "" || p.Engine == "" || model == "" {
-		return "", false
+		return remotePullKey{}, false
 	}
-	return remotePullKey(p.Node, p.Engine, model), true
+	return remotePullKey{node: p.Node, engine: p.Engine, model: model}, true
 }
 
 // register records a remote pull for the cancel that may be chasing it, and
 // returns the release to run when the attempt ends. Registering anything that
 // is not a remote pull is a no-op.
-func (g *remotePullGate) register(key string, isPull bool) func() {
+func (g *remotePullGate) register(key remotePullKey, isPull bool) func() {
 	if !isPull {
 		return func() {}
 	}
 	g.mu.Lock()
 	if g.pulls == nil {
-		g.pulls = make(map[string]*remotePullAttempt)
+		g.pulls = make(map[remotePullKey]*remotePullAttempt)
 	}
 	attempt := g.pulls[key]
 	if attempt == nil {
@@ -171,7 +175,7 @@ func (g *remotePullGate) register(key string, isPull bool) func() {
 
 // accepted marks the peer as holding this pull, releasing any cancel waiting on
 // it. Returns a callback so the caller can hand it straight to remoteClient.stream.
-func (g *remotePullGate) accepted(key string) func() {
+func (g *remotePullGate) accepted(key remotePullKey) func() {
 	return func() {
 		g.mu.Lock()
 		attempt := g.pulls[key]
@@ -185,7 +189,7 @@ func (g *remotePullGate) accepted(key string) func() {
 // awaitAccepted blocks until the pull this cancel targets has reached the peer,
 // the attempt ended, or the window elapses. A cancel for a download nobody
 // requested finds no attempt and proceeds immediately.
-func (g *remotePullGate) awaitAccepted(ctx context.Context, key string) {
+func (g *remotePullGate) awaitAccepted(ctx context.Context, key remotePullKey) {
 	g.mu.Lock()
 	attempt := g.pulls[key]
 	g.mu.Unlock()
@@ -281,7 +285,7 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 			path = controlCancelPullPath
 			// Let the download this cancel names reach the peer first; see
 			// remotePullGate.
-			m.remotePulls.awaitAccepted(ctx, remotePullKey(p.Node, p.Engine, p.Model))
+			m.remotePulls.awaitAccepted(ctx, remotePullKey{node: p.Node, engine: p.Engine, model: p.Model})
 		case "engine:remote-unload-model":
 			path = controlUnloadPath
 		case "engine:remote-delete-model":

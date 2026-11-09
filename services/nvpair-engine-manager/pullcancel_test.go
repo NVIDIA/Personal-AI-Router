@@ -522,7 +522,7 @@ func TestDuplicatePullJoinsTheActiveDownload(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 			active := &activePull{cancel: func() {}, done: make(chan struct{})}
-			ex.pulls = map[string]*activePull{pullKey("ollama", "demo"): active}
+			ex.pulls = map[pullKey]*activePull{{engine: "ollama", model: "demo"}: active}
 
 			joined := make(chan outcome, 1)
 			go func() {
@@ -787,9 +787,9 @@ func TestQueuedModelPullCancelsBeforePredecessorsFinish(t *testing.T) {
 					queued <- struct{}{}
 				}
 			}, t.TempDir())
-			ex.pulls = make(map[string]*activePull)
+			ex.pulls = make(map[pullKey]*activePull)
 			for i := 0; i < predecessorCount; i++ {
-				ex.pulls[pullKey("ollama", fmt.Sprintf("predecessor-%d", i))] = &activePull{done: make(chan struct{})}
+				ex.pulls[pullKey{engine: "ollama", model: fmt.Sprintf("predecessor-%d", i)}] = &activePull{done: make(chan struct{})}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -825,7 +825,7 @@ func TestQueuedModelPullCancelsBeforePredecessorsFinish(t *testing.T) {
 			}
 			ex.pullMu.Lock()
 			remaining := len(ex.pulls)
-			_, stillQueued := ex.pulls[pullKey("ollama", "queued")]
+			_, stillQueued := ex.pulls[pullKey{engine: "ollama", model: "queued"}]
 			ex.pullMu.Unlock()
 			if stillQueued || remaining != predecessorCount {
 				t.Fatalf("registry after cancellation: queued=%v, remaining=%d", stillQueued, remaining)
