@@ -215,10 +215,7 @@ func telemetryStatus(sampledAt, now time.Time) (bool, int64) {
 	if sampledAt.IsZero() {
 		return false, 0
 	}
-	age := now.Sub(sampledAt)
-	if age < 0 {
-		age = 0
-	}
+	age := max(now.Sub(sampledAt), 0)
 	return true, age.Milliseconds()
 }
 

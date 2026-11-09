@@ -4,9 +4,10 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -99,7 +100,9 @@ func newStartupOutput(args []string, env map[string]string) *startupOutput {
 	for _, value := range env {
 		values = append(values, value)
 	}
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	slices.SortFunc(values, func(a, b string) int {
+		return cmp.Compare(len(b), len(a))
+	})
 	o := &startupOutput{}
 	patterns := make([]string, 0, len(values))
 	for _, value := range values {

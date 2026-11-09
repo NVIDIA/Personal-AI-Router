@@ -65,8 +65,7 @@ func TestHandleHTTP_PublishesWorkloadBeforeFirstResponseByte(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		received := make(chan struct{}, 1)
 		release := make(chan struct{})
-		var releaseOnce sync.Once
-		doRelease := func() { releaseOnce.Do(func() { close(release) }) }
+		doRelease := sync.OnceFunc(func() { close(release) })
 
 		slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			select {

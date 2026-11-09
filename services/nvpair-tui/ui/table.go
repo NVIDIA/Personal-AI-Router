@@ -162,18 +162,20 @@ func flexCol(title string, min, weight int) column {
 // unreadable columns.
 func layoutColumns(total int, cols []column) []table.Column {
 	out := make([]table.Column, len(cols))
+	// Bound widths to at least minCellWidth, so a narrow terminal never
+	// produces negative/zero column widths.
 	for i, c := range cols {
-		out[i] = table.Column{Title: c.title, Width: clampWidth(c.width, minCellWidth)}
+		out[i] = table.Column{Title: c.title, Width: max(c.width, minCellWidth)}
 	}
 
 	budget := total - cellPadding*len(cols)
 	var fixed, flexMin, weight int
 	for _, c := range cols {
 		if c.flex > 0 {
-			flexMin += clampWidth(c.width, minCellWidth)
+			flexMin += max(c.width, minCellWidth)
 			weight += c.flex
 		} else {
-			fixed += clampWidth(c.width, minCellWidth)
+			fixed += max(c.width, minCellWidth)
 		}
 	}
 	if weight == 0 || budget <= fixed+flexMin {
@@ -244,15 +246,6 @@ func newStaticTable(cols []table.Column) table.Model {
 	t.SetStyles(s)
 	t.Blur()
 	return t
-}
-
-// clampWidth returns w bounded to at least min, so a narrow terminal never
-// produces negative/zero column widths.
-func clampWidth(w, min int) int {
-	if w < min {
-		return min
-	}
-	return w
 }
 
 // truncate shortens s to at most max characters, marking a cut with an ellipsis.

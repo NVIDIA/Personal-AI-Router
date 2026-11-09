@@ -170,21 +170,18 @@ func TestAttemptClaim_AllowsOneWinnerUnderContention(t *testing.T) {
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			if claim.commit() {
 				commits.Add(1)
 			}
-		}()
-		go func() {
-			defer wg.Done()
+		})
+		wg.Go(func() {
 			<-start
 			if claim.abandon() {
 				abandons.Add(1)
 			}
-		}()
+		})
 		close(start)
 		wg.Wait()
 

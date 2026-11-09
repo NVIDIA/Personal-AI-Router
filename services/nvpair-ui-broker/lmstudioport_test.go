@@ -626,7 +626,7 @@ func TestUnmanagedLMStudioProxyCollision_RebindsBeforeGate(t *testing.T) {
 	localBackend := make(chan proxyLocalBackend, 1)
 	go func() {
 		codec := NewCodec(proxyServer)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			msg, err := codec.Read()
 			if !assertRPCRead(t, err) {
 				return
@@ -689,7 +689,7 @@ func TestUnmanagedLMStudioCollision_RebindsBeforeStatusProbe(t *testing.T) {
 	order := make(chan string, 3)
 	go func() {
 		codec := NewCodec(proxyServer)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			msg, err := codec.Read()
 			if !assertRPCRead(t, err) {
 				return
@@ -748,7 +748,7 @@ func TestUnknownLMStudioBackend_MovesProxyBeforeStatusProbe(t *testing.T) {
 	fallbackPort := make(chan int, 1)
 	go func() {
 		codec := NewCodec(proxyServer)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			msg, err := codec.Read()
 			if !assertRPCRead(t, err) {
 				return
@@ -799,7 +799,7 @@ func TestUnknownCustomBackend_KeepsRestoreGatedAfterStatusFailure(t *testing.T) 
 
 	statusCalls := make(chan struct{}, 2)
 	go func() {
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			msg, err := engineCodec.Read()
 			if !assertRPCRead(t, err) {
 				return
@@ -821,7 +821,7 @@ func TestUnknownCustomBackend_KeepsRestoreGatedAfterStatusFailure(t *testing.T) 
 		}
 	}()
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":12400}`))
 		select {
 		case <-statusCalls:
@@ -893,7 +893,7 @@ func TestEngineManagerRespawn_ReconcilesUnknownCustomBackendBeforeRestore(t *tes
 	}()
 	go func() {
 		codec := NewCodec(proxyServer)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			msg, err := codec.Read()
 			if !assertRPCRead(t, err) {
 				return

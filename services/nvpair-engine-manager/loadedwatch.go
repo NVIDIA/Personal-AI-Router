@@ -5,7 +5,8 @@ package main
 
 import (
 	"context"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -88,12 +89,8 @@ func (e *Executor) sweepLoaded(ctx context.Context, prevLoaded map[string][]stri
 	res = e.ModelsResult(ctx)
 	changed = changedEngines(prevLoaded, res.LoadedByEngine)
 	next = make(map[string][]string, len(prevLoaded)+len(res.LoadedByEngine))
-	for name, ld := range prevLoaded {
-		next[name] = ld
-	}
-	for name, ld := range res.LoadedByEngine {
-		next[name] = ld
-	}
+	maps.Copy(next, prevLoaded)
+	maps.Copy(next, res.LoadedByEngine)
 	return changed, next, res
 }
 
@@ -125,7 +122,7 @@ func changedEngines(prev, cur map[string][]string) []string {
 			changed = append(changed, name)
 		}
 	}
-	sort.Strings(changed)
+	slices.Sort(changed)
 	return changed
 }
 

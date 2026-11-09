@@ -67,9 +67,9 @@ func startNodeSettings(t *testing.T, settingsPath string) (io.WriteCloser, <-cha
 // nextID hands out a monotonically increasing JSON-RPC ID per process
 // run. Tests in the same package may run in parallel via t.Run, so
 // atomic is required even though most callers are single-goroutine.
-var rpcIDCounter int64
+var rpcIDCounter atomic.Int64
 
-func newRPCID() int64 { return atomic.AddInt64(&rpcIDCounter, 1) }
+func newRPCID() int64 { return rpcIDCounter.Add(1) }
 
 // callRPC sends a JSON-RPC request and blocks until the response for
 // that ID arrives or the timeout fires. It deliberately re-implements

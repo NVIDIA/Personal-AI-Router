@@ -4,9 +4,10 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"strings"
 
 	"nvpair-tui/rpc"
@@ -464,7 +465,9 @@ func (v *jobsView) visible() []workload {
 			out = append(out, w)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	slices.SortStableFunc(out, func(a, b workload) int {
+		return cmp.Compare(b.CreatedAt, a.CreatedAt)
+	})
 	return out
 }
 

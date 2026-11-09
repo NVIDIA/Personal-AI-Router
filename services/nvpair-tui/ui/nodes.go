@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -172,7 +171,7 @@ func (v *nodesView) feedWarning() string {
 	for name := range v.feedFailures {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	// One representative reason: the failures almost always share a cause (the
 	// worker behind them is down), and repeating it per feed would push the
 	// table off a short terminal.

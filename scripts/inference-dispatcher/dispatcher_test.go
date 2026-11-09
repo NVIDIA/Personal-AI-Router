@@ -291,14 +291,14 @@ func TestInvalidConfiguration_DoesNotSendRequests(t *testing.T) {
 func TestCancellation_StopsInFlightRequestCleanly(t *testing.T) {
 	requestStarted := make(chan struct{})
 	releaseServer := make(chan struct{})
-	var once sync.Once
+	notifyStarted := sync.OnceFunc(func() { close(requestStarted) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
 			_, err := w.Write([]byte(`{"models":[{"name":"available"}]}`))
 			assert.NoError(t, err, "write engine response")
 		case "/api/generate":
-			once.Do(func() { close(requestStarted) })
+			notifyStarted()
 			<-releaseServer
 		}
 	}))

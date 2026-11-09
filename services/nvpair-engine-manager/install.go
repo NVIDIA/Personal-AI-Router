@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -103,9 +104,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 				e.reportInstallFailed(engine, err)
 				return err
 			}
-			for name, downloadPath := range artifactVars {
-				vars[name] = downloadPath
-			}
+			maps.Copy(vars, artifactVars)
 			e.emitInstallProgress(engine, "verified", 50)
 		}
 		if len(inst.Run) > 0 {

@@ -88,7 +88,7 @@ func TestPeerClientPool_ReusesOneConnection(t *testing.T) {
 	pool := NewPeerClientPool(selfMesh, 5*time.Second)
 	defer pool.CloseIdle()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		client, ok := pool.Client("uuid-peer")
 		require.True(t, ok, "request %d", i)
 		resp, err := client.Get(srv.URL)
