@@ -404,9 +404,10 @@ func TestActionPullModel_StreamsProgress(t *testing.T) {
 
 // TestActionPullModelCmdMarkerAndResult covers the CLI fallback
 // pull path through the same engine:action routing: a Cmd-based pull_model can't
-// expose structured line progress, so it emits a single "pulling" marker and
-// returns the command's terminal result — the counterpart to the HTTP streaming
-// path in TestActionPullModelStreamsProgress.
+// expose structured line progress, so it emits a "pulling" marker, then the
+// terminal success frame every pull ends with, and returns the command's
+// result — the counterpart to the HTTP streaming path in
+// TestActionPullModelStreamsProgress.
 func TestActionPullModel_ReturnsCommandResultAndProgressMarker(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{Cmd: []string{fakeEngineBin, "echo", "pulled:{model}"}}
@@ -439,12 +440,15 @@ func TestActionPullModel_ReturnsCommandResultAndProgressMarker(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, pulls, 1, "expected exactly one pulling marker for a CLI pull")
+	require.Len(t, pulls, 2, "expected a pulling marker and the terminal frame for a CLI pull")
 	require.Equal(t, "pull", pulls[0]["op"], "unexpected CLI pull marker")
 	require.Equal(t, "pulling", pulls[0]["stage"], "unexpected CLI pull marker")
 	require.Equal(t, "demo:1b", pulls[0]["message"], "unexpected CLI pull marker")
 	require.Equal(t, "demo:1b", pulls[0]["model"], "CLI pull marker must name its model")
 	require.NotContains(t, pulls[0], "percent", "CLI pull marker must omit indeterminate percent")
+	require.Equal(t, "success", pulls[1]["stage"], "unexpected terminal frame")
+	require.Equal(t, 100, pulls[1]["percent"], "unexpected terminal frame")
+	require.Equal(t, "demo:1b", pulls[1]["model"], "the terminal frame must name its model")
 	select {
 	case event := <-progress:
 		require.Equal(t, "demo:1b", event.Model, "CLI pull hub frame must name its model")

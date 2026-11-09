@@ -1855,13 +1855,12 @@ class ModularSupervisor {
 
     /**
      * Download a model on a remote peer via `engine:remote-pull-model`
-     * (`nvpair-engine-manager` ec surface). Unlike a local pull, the backend emits
-     * **no** terminal `engine:remote-progress` for a remote pull — the peer's
-     * terminal stream frame becomes this RPC's reply
-     * (`nvpair-engine-manager/controlstream.go`), never a notification. So the
-     * awaited RPC settling is the *only* completion signal; we clear the
-     * optimistic entry here on resolve/reject. Fire-and-forget for the caller
-     * (`void`-ed) so the UI command returns immediately.
+     * (`nvpair-engine-manager` ec surface). As for a local pull, the last
+     * `engine:remote-progress` names how the download ended, but the peer's
+     * result and error arrive only as this RPC's reply
+     * (`nvpair-engine-manager/controlstream.go`), so we clear the optimistic
+     * entry here on resolve/reject. Fire-and-forget for the caller (`void`-ed)
+     * so the UI command returns immediately.
      */
     async pullModelRemote(
         nodeId: string,

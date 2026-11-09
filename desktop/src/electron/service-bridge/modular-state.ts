@@ -1458,11 +1458,11 @@ class ModularBridgeState {
 
     /**
      * Clear the optimistic remote pull entry once the awaited
-     * `engine:remote-pull-model` RPC settles. The backend emits **no** terminal
-     * `engine:remote-progress` for a pull (the peer's terminal stream frame
-     * becomes the JSON-RPC reply, never a notification —
-     * `nvpair-engine-manager/controlstream.go`), so this awaited-completion clear
-     * is the only signal that removes the spinner.
+     * `engine:remote-pull-model` RPC settles. The peer's last
+     * `engine:remote-progress` for a pull names how it ended (`success`,
+     * `cancelled`, or `error`), but only the reply carries the result and the
+     * error to report, so this awaited-completion clear is what removes the
+     * spinner.
      */
     finishRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })

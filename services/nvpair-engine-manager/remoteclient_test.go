@@ -76,12 +76,13 @@ func TestRemoteReadinessBudget_CoversEngineStartupAllowance(t *testing.T) {
 	test("Ollama load waits", controlLoadPath, "ollama", true)
 	test("LM Studio load does not wait", controlLoadPath, "lmstudio", false)
 	// Cancelling is the peer stopping a live transfer, not answering a
-	// question: it interrupts the CLI, waits for the acknowledgement, and
+	// question: it stops the download, waits for that to be confirmed, and
 	// cleans up before writing a header. That can outlast the ordinary
 	// budget, and being cut off there reports a cancel that succeeded as
 	// failed.
 	test("LM Studio cancel waits", controlCancelPullPath, "lmstudio", true)
 	test("Ollama cancel waits", controlCancelPullPath, "ollama", true)
+	test("llama.cpp cancel waits", controlCancelPullPath, "llamacpp", true)
 	test("stop does not wait", controlStopPath, "ollama", false)
 	test("unload does not wait", controlUnloadPath, "ollama", false)
 	test("listing does not wait", controlEnginesPath, "", false)

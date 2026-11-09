@@ -1014,6 +1014,35 @@ func TestProgressWithoutAPercent_ShowsNone(t *testing.T) {
 	assert.Contains(t, got, "failed: disk full", "failed install")
 }
 
+// A download that outlasts its reply is reported as detached, which leaves the
+// frame its pull ends on as the only word of how it went. Held sticky like
+// progress, a cancellation sat on screen for good as if still under way, on
+// this machine's screen and on a peer's.
+func TestPullOutcome_ExpiresLikeAnyOtherOutcome(t *testing.T) {
+	test := func(name string, frame map[string]any, wantKind toastKind, want string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			local := localDetail()
+			local.update(progressPush(t, "engine:pull-progress", frame))
+			frame["node"] = "peer"
+			peer := remoteDetail()
+			peer.update(progressPush(t, "engine:remote-progress", frame))
+
+			for screen, d := range map[string]*nodeDetail{"this machine": local, "a peer": peer} {
+				assert.Equal(t, wantKind, d.status.kind, screen)
+				assert.False(t, d.status.sticky, "%s: the outcome stays on screen as if the download were running", screen)
+				got := d.status.render()
+				assert.Contains(t, got, want, screen)
+				assert.NotContains(t, got, "%", "%s: an outcome read as progress", screen)
+			}
+		})
+	}
+
+	test("completed", map[string]any{"engine": "ollama", "op": "pull", "stage": "success", "percent": 100, "message": "demo"}, toastOK, "done")
+	test("cancelled", map[string]any{"engine": "ollama", "op": "pull", "stage": "cancelled", "message": "demo"}, toastOK, "cancelled")
+	test("failed", map[string]any{"engine": "ollama", "op": "pull", "stage": "error", "percent": -1, "message": "disk full"}, toastError, "failed: disk full")
+}
+
 // TestHiddenListsRefuseTheirKeys is the regression guard for keys acting on a
 // list the frame had no room to show: on a short terminal a delete could be
 // armed against a model the operator could not see.

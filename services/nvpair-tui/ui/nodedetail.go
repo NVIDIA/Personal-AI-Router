@@ -898,30 +898,28 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		if d.remote() {
 			return nil
 		}
-		// An in-progress frame keeps the note sticky, so a download that stalls
-		// leaves its last reported percentage on screen instead of the line
-		// quietly expiring and making a stuck pull look like nothing happened.
-		// Only the terminal frames — done, failed — go back to expiring.
-		kind, format, args := progressToast(msg.Params, d.engineLabel)
-		if kind == toastInfo {
-			d.status.busy(format, args...)
-			return nil
-		}
-		d.status.set(kind, format, args...)
+		var p pullFrame
+		decodeOrLog(msg.Method, msg.Params, &p)
+		d.showPullProgress(p)
 
 	case "engine:remote-progress":
 		var p struct {
-			Node    string `json:"node"`
-			Engine  string `json:"engine"`
-			Op      string `json:"op"`
-			Stage   string `json:"stage"`
-			Percent *int   `json:"percent"`
-			Message string `json:"message"`
+			pullFrame
+			Node string `json:"node"`
+			Op   string `json:"op"`
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
-		if p.Node == d.node.key {
-			d.status.busy("%s %s: %s%s", p.Op, d.engineLabel(p.Engine), p.Stage, progressPercent(p.Percent))
+		if p.Node != d.node.key {
+			return nil
 		}
+		// A peer's pull ends on the same frames as this machine's, and a
+		// download that outlasted its reply has no other way to say how it
+		// went.
+		if p.Op == "pull" && p.ended() {
+			d.showPullProgress(p.pullFrame)
+			return nil
+		}
+		d.status.busy("%s %s: %s%s", p.Op, d.engineLabel(p.Engine), p.Stage, progressPercent(p.Percent))
 
 	default:
 		// A proxy rebinding its listener changes the proxy port shown against
@@ -934,29 +932,45 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 	return nil
 }
 
-// progressToast renders an engine:pull-progress frame. Terminal stages carry no
-// meaningful percent (success is implicitly complete, error uses -1), so they
-// read as outcomes rather than a misleading "success (0%)". A late failure that
-// arrives after the synchronous call timed out still surfaces here.
-func progressToast(params []byte, label func(string) string) (toastKind, string, []any) {
-	var p struct {
-		Engine  string `json:"engine"`
-		Stage   string `json:"stage"`
-		Percent *int   `json:"percent"`
-		Message string `json:"message"`
+// pullFrame is a model download's progress, this machine's or a peer's.
+type pullFrame struct {
+	Engine  string `json:"engine"`
+	Stage   string `json:"stage"`
+	Percent *int   `json:"percent"`
+	Message string `json:"message"`
+}
+
+// ended reports whether the frame is the outcome its pull ended on. Every pull
+// ends on exactly one, whichever engine ran it.
+func (p pullFrame) ended() bool {
+	switch p.Stage {
+	case "success", "cancelled", "error":
+		return true
 	}
-	decodeOrLog("engine:pull-progress", params, &p)
+	return false
+}
+
+// showPullProgress puts a pull's frame on the status line. An in-progress frame
+// keeps the note sticky, so a download that stalls leaves its last reported
+// percentage on screen instead of the line quietly expiring and making a stuck
+// pull look like nothing happened. The outcome a pull ends on expires like any
+// other, and reads as one rather than as "success (100%)" or "error". A late
+// outcome, arriving after the synchronous call timed out, still surfaces here.
+func (d *nodeDetail) showPullProgress(p pullFrame) {
+	label := d.engineLabel(p.Engine)
 	switch p.Stage {
 	case "success":
-		return toastOK, "download %s: done", []any{label(p.Engine)}
+		d.status.ok("download %s: done", label)
+	case "cancelled":
+		d.status.ok("download %s: cancelled", label)
 	case "error":
 		detail := p.Message
 		if detail == "" {
 			detail = "failed"
 		}
-		return toastError, "download %s failed: %s", []any{label(p.Engine), detail}
+		d.status.error("download %s failed: %s", label, detail)
 	default:
-		return toastInfo, "download %s: %s%s", []any{label(p.Engine), p.Stage, progressPercent(p.Percent)}
+		d.status.busy("download %s: %s%s", label, p.Stage, progressPercent(p.Percent))
 	}
 }
 

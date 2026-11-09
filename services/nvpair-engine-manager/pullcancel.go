@@ -3,11 +3,11 @@
 
 package main
 
-// pullcancel.go owns the engine-neutral cancellation lifecycle: tracking the
-// pull in flight for an engine and model, stopping it, and serializing an
-// engine's pulls. Removing the files a cancelled download left behind is
-// separate — see partials.go for the shared safety test and ollamapull.go /
-// lmspull.go for each engine's own.
+// pullcancel.go owns the engine-neutral pull lifecycle: tracking the pull in
+// flight for an engine and model, stopping it, serializing an engine's pulls,
+// and reporting how each one ended. Removing the files a cancelled download
+// left behind is separate — see partials.go for the shared safety test and
+// ollamapull.go / lmspull.go for each engine's own.
 
 import (
 	"context"
@@ -155,6 +155,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 	// at an earlier request for the same model cannot stop this one.
 	if claim != nil && claim.key == key && claim.cancelled {
 		e.pullMu.Unlock()
+		e.emitPullOutcome(engine, model, true, nil)
 		return cancelledPull(), nil
 	}
 	// The vendor caches can share partial files across models. Keep pulls for
@@ -193,18 +194,41 @@ waitForPredecessors:
 	} else {
 		result, err = run(ctx)
 	}
-	e.pullMu.Lock()
-	delete(e.pulls, key)
 	// "Cancelled" is a successful outcome only for a cancellation someone asked
 	// for. A context that died on its own leaves a transfer the next attempt
 	// resumes, which is a failure to report rather than a request fulfilled.
-	if p.requested.Load() && ctx.Err() == context.Canceled && err == context.Canceled {
+	cancelled := p.requested.Load() && ctx.Err() == context.Canceled && err == context.Canceled
+	if cancelled {
 		result, err = cancelledPull(), nil
 	}
+	// Reported while the download is still registered: a request for the model
+	// arriving now joins this outcome, rather than starting a download whose
+	// frames this one's would land among.
+	e.emitPullOutcome(engine, model, cancelled, err)
+	e.pullMu.Lock()
+	delete(e.pulls, key)
 	p.result, p.err = result, err
 	close(p.done)
 	e.pullMu.Unlock()
 	return result, err
+}
+
+// emitPullOutcome sends a download's terminal frame: "success", "cancelled",
+// or "error" with the reason. A long download can outlast the client's
+// synchronous call, so the reply alone cannot reach a UI that stopped waiting;
+// this frame tells every subscriber how the download ended, whichever engine
+// ran it, and engines report only the progress before it.
+func (e *Executor) emitPullOutcome(engine, model string, cancelled bool, err error) {
+	ev := ProgressEvent{Engine: engine, Model: model, Op: "pull", Message: model}
+	switch {
+	case err != nil:
+		ev.Stage, ev.Percent, ev.Message = "error", -1, formatEnginePullError(e.engineDisplayName(engine), err)
+	case cancelled:
+		ev.Stage = "cancelled"
+	default:
+		ev.Stage, ev.Percent = "success", 100
+	}
+	e.emitPullProgress(ev)
 }
 
 // joinPull reports the outcome of a download already in flight, so a duplicate

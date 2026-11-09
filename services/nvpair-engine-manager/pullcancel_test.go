@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -535,6 +536,8 @@ func TestDuplicatePullJoinsTheActiveDownload(t *testing.T) {
 	test := func(name string, activeResult json.RawMessage, wantStatus string) {
 		t.Run(name, func(t *testing.T) {
 			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+			events, unsubscribe := ex.progress.subscribe("ollama")
+			defer unsubscribe()
 			active := &activePull{cancel: func() {}, done: make(chan struct{})}
 			ex.pulls = map[pullKey]*activePull{{engine: "ollama", model: "demo"}: active}
 
@@ -551,16 +554,70 @@ func TestDuplicatePullJoinsTheActiveDownload(t *testing.T) {
 			// however the two goroutines are scheduled.
 			active.result = activeResult
 			close(active.done)
-
 			got := <-joined
-			if got.err != nil {
-				t.Fatalf("joined request: %v", got.err)
-			}
+
+			require.NoError(t, got.err)
 			assertPullStatus(t, got.result, wantStatus)
+			// The download's owner reports how it ended to every subscriber,
+			// so a frame from the joiner would announce that outcome twice.
+			assert.Empty(t, events, "the joined request reported an outcome of its own")
 		})
 	}
 	test("completed download", json.RawMessage(`{"status":"success"}`), "success")
 	test("cancelled download", cancelledPull(), "cancelled")
+}
+
+// Every download ends with exactly one terminal frame, whichever engine ran it
+// and however it ended, because a UI that stopped waiting on the RPC converges
+// on that frame alone. LM Studio's downloads reported their progress but never
+// their end.
+func TestTrackedPull_EndsEachDownloadWithOneTerminalFrame(t *testing.T) {
+	test := func(name string, pull func(t *testing.T, ex *Executor), want ProgressEvent) {
+		t.Run(name, func(t *testing.T) {
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+			events, unsubscribe := ex.progress.subscribe("ollama")
+			defer unsubscribe()
+
+			pull(t, ex)
+			var frames []ProgressEvent
+			for len(events) > 0 {
+				frames = append(frames, <-events)
+			}
+
+			assert.Equal(t, []ProgressEvent{want}, frames)
+		})
+	}
+	terminal := func(stage string, percent int, message string) ProgressEvent {
+		return ProgressEvent{Engine: "ollama", Model: "demo", Op: "pull", Stage: stage, Percent: percent, Message: message}
+	}
+	test("a download that completes", func(t *testing.T, ex *Executor) {
+		_, err := ex.trackedPull(context.Background(), "ollama", "demo", succeedingPull)
+		require.NoError(t, err)
+	}, terminal("success", 100, "demo"))
+	test("a download that fails", func(t *testing.T, ex *Executor) {
+		_, err := ex.trackedPull(context.Background(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
+			return nil, errors.New("disk full")
+		})
+		require.Error(t, err)
+	}, terminal("error", -1, "ollama experienced an error while downloading a model: disk full"))
+	test("a download someone cancelled", func(t *testing.T, ex *Executor) {
+		cancelled := make(chan error, 1)
+		_, err := ex.trackedPull(context.Background(), "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+			go func() { cancelled <- ex.CancelModelPull(context.Background(), "ollama", "demo") }()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		require.NoError(t, err)
+		require.NoError(t, <-cancelled)
+	}, terminal("cancelled", 0, "demo"))
+	test("a request cancelled before its download started", func(t *testing.T, ex *Executor) {
+		request, release := ex.claimPull(context.Background(), "ollama", "demo")
+		defer release()
+		require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+		result, ran := claimedPull(t, ex, request)
+		require.False(t, ran)
+		assertPullStatus(t, result, "cancelled")
+	}, terminal("cancelled", 0, "demo"))
 }
 
 func TestCancelledModelPullAllowsRetry(t *testing.T) {
@@ -658,75 +715,93 @@ func TestUnrequestedCancellationKeepsPartials(t *testing.T) {
 	}
 }
 
-func TestOllamaCancellationHandlesCompletion(t *testing.T) {
-	test := func(name string, statuses []string, wantStatus string) {
-		t.Run(name, func(t *testing.T) {
-			blobs := newOllamaBlobsDir(t)
-			partial := filepath.Join(blobs, blobA+"-partial")
-			started := make(chan struct{})
-			disconnected := make(chan struct{})
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				writePartial(t, partial, "partial")
-				w.Header().Set("Content-Type", "application/x-ndjson")
-				for _, status := range statuses {
-					if _, err := fmt.Fprintf(w, `{"status":%q,"digest":%q,"total":100,"completed":25}`+"\n", status, digestA); err != nil {
-						t.Error(err)
-						return
-					}
-				}
-				w.(http.Flusher).Flush()
-				<-r.Context().Done()
-				close(disconnected)
-			}))
-			defer server.Close()
-			progressFrames := 0
-			ex := newOllamaPullExecutor(t, server.URL, func(method string, _ any) {
-				if method == "engine:pull-progress" {
-					progressFrames++
-					if progressFrames == len(statuses) {
-						close(started)
-					}
-				}
-			})
-			ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
-			defer cancel()
-			done := make(chan outcome, 1)
-			go func() {
-				var got outcome
-				got.result, got.err = ex.PullModelStream(ctx, "ollama", "demo", nil)
-				done <- got
-			}()
-			select {
-			case <-started:
-			case <-ctx.Done():
-				t.Fatal("pull did not start")
-			}
-			if err := ex.CancelModelPull(ctx, "ollama", "demo"); err != nil {
-				t.Fatalf("cancel: %v", err)
-			}
-			got := <-done
-			if got.err != nil {
-				t.Fatalf("pull: %v", got.err)
-			}
-			assertPullStatus(t, got.result, wantStatus)
-			select {
-			case <-disconnected:
-			case <-ctx.Done():
-				t.Fatal("HTTP transfer did not disconnect")
-			}
-			if wantStatus == "success" {
-				data, err := os.ReadFile(partial)
-				if err != nil || string(data) != "partial" {
-					t.Fatalf("late cancellation changed partial file after completion: data=%q, err=%v", data, err)
-				}
+// ollamaTransfer serves an Ollama pull that writes the partial blob a transfer
+// would, streams statuses, and then holds the connection open until the client
+// lets go of it. The partial appears only once the pull has started, so it is
+// one the pull created.
+func ollamaTransfer(t *testing.T, partial string, statuses ...string) (server *httptest.Server, disconnected <-chan struct{}) {
+	t.Helper()
+	closed := make(chan struct{})
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(closed)
+		if !assert.NoError(t, os.WriteFile(partial, []byte("partial"), 0o600)) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		for _, status := range statuses {
+			_, err := fmt.Fprintf(w, `{"status":%q,"digest":%q,"total":100,"completed":25}`+"\n", status, digestA)
+			if !assert.NoError(t, err) {
 				return
 			}
-			assertRemoved(t, partial)
+		}
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	return server, closed
+}
+
+// A cancel someone asked for stops Ollama's transfer and removes the partial
+// blob the pull created.
+func TestOllamaCancellation_StopsTheTransferAndRemovesItsPartial(t *testing.T) {
+	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
+	server, disconnected := ollamaTransfer(t, partial, "pulling layer")
+	downloading := make(chan struct{})
+	var once sync.Once
+	ex := newOllamaPullExecutor(t, server.URL, func(method string, _ any) {
+		if method == "engine:pull-progress" {
+			once.Do(func() { close(downloading) })
+		}
+	})
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.PullModelStream(ctx, "ollama", "demo", nil)
+		done <- got
+	}()
+	select {
+	case <-downloading:
+	case <-ctx.Done():
+		require.FailNow(t, "the pull did not start")
+	}
+
+	require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+	got := <-done
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	select {
+	case <-disconnected:
+	case <-ctx.Done():
+		require.FailNow(t, "the HTTP transfer did not disconnect")
+	}
+	assertRemoved(t, partial)
+}
+
+// Ollama's success record is its last: the model is installed. The pull
+// reports success on it even while the connection stays open, and a cancel
+// that lands afterwards finds nothing to stop and leaves the files alone.
+func TestOllamaPull_SucceedsOnOllamasSuccessRecord(t *testing.T) {
+	test := func(name string, statuses ...string) {
+		t.Run(name, func(t *testing.T) {
+			partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
+			server, _ := ollamaTransfer(t, partial, statuses...)
+			ex := newOllamaPullExecutor(t, server.URL, nil)
+			ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+			defer cancel()
+
+			result, err := ex.PullModelStream(ctx, "ollama", "demo", nil)
+			require.NoError(t, err)
+			require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+
+			assertPullStatus(t, result, "success")
+			assertPresent(t, partial)
 		})
 	}
-	test("active transfer is canceled and cleaned", []string{"pulling layer"}, "cancelled")
-	test("success survives late cancellation", []string{"pulling layer", "success"}, "success")
-	test("success survives later frame and cancellation", []string{"pulling layer", "success", ""}, "success")
+	test("success is the last record", "pulling layer", "success")
+	test("a record follows success", "pulling layer", "success", "")
 }
 
 // Cleanup that cannot finish is not a failed cancellation. The transfer has

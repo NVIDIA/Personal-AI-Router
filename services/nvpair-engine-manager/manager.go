@@ -448,13 +448,7 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 		model := modelFromParams(p.Params)
 		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)
 		if err != nil {
-			// A pull can fail after the client's synchronous call has already
-			// timed out (long downloads), so the RPC error alone can't reach a
-			// UI that stopped waiting. Emit one terminal engine:pull-progress
-			// error frame so a local subscriber converges off "pulling" even in
-			// that case, mirroring install's failed progress step.
 			userMsg := m.exec.reportPullFailed(p.Engine, model, err)
-			m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Model: model, Op: "pull", Stage: "error", Percent: -1, Message: userMsg})
 			m.codec.RespondError(msg.ID, -32000, userMsg)
 			return
 		}

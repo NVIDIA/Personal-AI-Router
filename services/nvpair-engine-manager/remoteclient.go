@@ -53,8 +53,9 @@ func waitsForEngineReadiness(path, engine string) bool {
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
 	//
-	// controlCancelPullPath: the peer interrupts the CLI, waits for it to
-	// acknowledge, and removes partial files before writing a header. The
+	// controlCancelPullPath: the peer stops the download — interrupting LM
+	// Studio's CLI and waiting for it to acknowledge, or having llama.cpp's
+	// router stop it — and removes partial files before writing a header. The
 	// ordinary budget can expire while that is still in progress. Here the
 	// cancellation is already latched before the peer starts waiting, so being
 	// cut off does not undo it — the damage is that the initiator reports a

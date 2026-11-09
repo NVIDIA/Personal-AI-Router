@@ -281,7 +281,11 @@ func (e *Executor) pullModelNDJSON(
 		progress := decodeOllamaPullLine(line)
 		watchdog.recordProgress(progress.progressKey(), progress.Completed)
 		if progress.Status == "success" {
+			// Ollama's last record: the model is installed. Waiting for the
+			// stream to close would only hold back the outcome, whose terminal
+			// frame is trackedPull's to send.
 			completed = true
+			break
 		}
 		if progress.Digest != "" {
 			digests[progress.Digest] = true
@@ -323,7 +327,10 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	sseReq.Header.Set("Accept", "text/event-stream")
 	sseResp, err := e.client.Do(sseReq)
 	if err != nil {
-		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, watchdog.resolveError(ctx, err))
+		if ctx.Err() != nil {
+			return nil, llamaCPPStopped(ctx, model)
+		}
+		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, err)
 	}
 	defer sseResp.Body.Close()
 	if sseResp.StatusCode < 200 || sseResp.StatusCode >= 300 {
@@ -335,8 +342,8 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	if err != nil {
 		return nil, err
 	}
-	if cause := context.Cause(ctx); cause != nil {
-		return nil, fmt.Errorf("pull %q: %w", model, cause)
+	if ctx.Err() != nil {
+		return nil, llamaCPPStopped(ctx, model)
 	}
 	// Cancelling POST /models does not cancel the router's download child. Keep
 	// the bounded handshake alive so cancellation cannot discard its acceptance.
@@ -377,17 +384,20 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		if terminal {
 			return
 		}
-		if cause := context.Cause(ctx); cause != nil {
-			pullErr = fmt.Errorf("pull %q: %w", model, cause)
+		if ctx.Err() != nil {
+			pullErr = llamaCPPStopped(ctx, model)
 		}
+		// Partial files are left for llama.cpp itself to resume or replace.
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), e.pullCleanupTimeout)
 		defer cancelCleanup()
 		if err := e.stopLlamaCPPDownload(cleanupCtx, baseURL, model); err != nil {
+			// The download may still be running, so even a cancel someone
+			// asked for has not done what it was asked to.
 			pullErr = errors.Join(pullErr, fmt.Errorf("pull %q: could not confirm download stopped: %w", model, err))
 		}
 	}()
-	if cause := context.Cause(ctx); cause != nil {
-		return nil, fmt.Errorf("pull %q: %w", model, cause)
+	if ctx.Err() != nil {
+		return nil, llamaCPPStopped(ctx, model)
 	}
 
 	lastPct := -1
@@ -412,7 +422,6 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 			}
 		case "download_finished":
 			terminal = true
-			e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "success", Percent: 100, Message: model})
 			return json.RawMessage(startData), nil
 		case "download_failed":
 			terminal = true
@@ -423,6 +432,17 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		return nil, fmt.Errorf("pull %q: progress stream: %w", model, watchdog.resolveError(ctx, err))
 	}
 	return nil, fmt.Errorf("pull %q: progress stream ended before completion", model)
+}
+
+// llamaCPPStopped is the error for a pull its context stopped. A plain
+// cancellation comes back bare, the way every engine returns one, so that
+// trackedPull can tell a cancel someone asked for from a context that died on
+// its own. Any other cause, such as the progress watchdog's, is a failure.
+func llamaCPPStopped(ctx context.Context, model string) error {
+	if cause := context.Cause(ctx); cause != context.Canceled {
+		return fmt.Errorf("pull %q: %w", model, cause)
+	}
+	return context.Canceled
 }
 
 // A lost acknowledgement gives us no ownership of a router download: another

@@ -93,17 +93,19 @@ terminal `failed` frame),
 `engine:pull-progress{engine, model, op, stage, percent?, message}` (live
 progress for a local model pull driven via `engine:action{action:"pull_model"}`
 — the local counterpart of `engine:remote-progress`; frames are coalesced to
-changes in stage/percent, the engine's terminal success surfaces as
-`stage:"success"`, and a failed pull emits a terminal
-`stage:"error", percent:-1, message` frame so a UI converges even if its
-synchronous call already timed out. `model` names the download the frame
-belongs to, so a consumer can tell two pulls on one engine apart; a pull
-waiting on another of the same engine's downloads reports `stage:"queued"`
-until its turn),
+changes in stage/percent. Whichever engine runs it, a pull ends with exactly
+one terminal frame — `stage:"success", percent:100` once the model is
+installed, `stage:"cancelled"` when a cancel stopped it, or
+`stage:"error", percent:-1, message` with the reason — so a UI converges even
+if its synchronous call already timed out; a request that joins a download
+already in flight shares that download's frames rather than adding its own.
+`model` names the download the frame belongs to, so a consumer can tell two
+pulls on one engine apart; a pull waiting on another of the same engine's
+downloads reports `stage:"queued"` until its turn),
 `engine:remote-progress{opId, node, engine, model, op, stage, percent?, message}`
-(relayed live progress for a remote install/pull; `model` is carried through
-from the peer's frame for the same reason it appears on the local
-notification), and — for the error
+(relayed live progress for a remote install/pull, a pull's terminal frame
+included; `model` is carried through from the peer's frame for the same
+reason it appears on the local notification), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
 
