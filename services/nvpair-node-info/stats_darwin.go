@@ -73,9 +73,8 @@ func newDarwinStatsCollector(
 	}
 	c.latest.Store(initialDarwinMemorySnapshot(readMemory))
 	c.prevCPU = readCPU()
-	c.done.Add(2)
-	go c.runSystem(ctx)
-	go c.runGPU(ctx)
+	c.done.Go(func() { c.runSystem(ctx) })
+	c.done.Go(func() { c.runGPU(ctx) })
 	return c
 }
 
@@ -88,7 +87,6 @@ func initialDarwinMemorySnapshot(readMemory func() (uint64, bool)) *statsSnapsho
 }
 
 func (c *statsCollector) runSystem(ctx context.Context) {
-	defer c.done.Done()
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 	for {
@@ -102,7 +100,6 @@ func (c *statsCollector) runSystem(ctx context.Context) {
 }
 
 func (c *statsCollector) runGPU(ctx context.Context) {
-	defer c.done.Done()
 	for {
 		c.collectGPU(ctx)
 		timer := time.NewTimer(c.interval)

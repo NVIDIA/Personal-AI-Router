@@ -437,7 +437,7 @@ func TestRefreshOnce_PollsSlowPeersConcurrently(t *testing.T) {
 
 	// Both handlers must be entered before either is released; only a concurrent
 	// sweep can reach this point.
-	for i := 0; i < peers; i++ {
+	for i := range peers {
 		select {
 		case <-entered:
 		case <-time.After(5 * time.Second):

@@ -250,9 +250,9 @@ func TestWorkloadEvents_RefusesUnauthenticatedRequests(t *testing.T) {
 // must not fan workload events out in the clear. The stub peer records any
 // request that arrives; the broadcaster must never reach it.
 func TestBroadcast_UnclusteredNodeSendsNothing(t *testing.T) {
-	var hits int32
+	var hits atomic.Int32
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
+		hits.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer peer.Close()
@@ -264,5 +264,5 @@ func TestBroadcast_UnclusteredNodeSendsNothing(t *testing.T) {
 	b := NewBroadcaster(peers, clustertrust.Open(t.TempDir()))
 	b.Broadcast(context.Background(), []byte(`{"jsonrpc":"2.0","method":"workload:started"}`))
 
-	assert.Zero(t, atomic.LoadInt32(&hits), "unclustered broadcasts must not reach peers")
+	assert.Zero(t, hits.Load(), "unclustered broadcasts must not reach peers")
 }

@@ -4,7 +4,6 @@
 package clustertrust
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -33,8 +32,7 @@ func TestWatch_ReportsTransitionAConcurrentCallerAlreadyObserved(t *testing.T) {
 	m := Open(dir)
 	assert.False(t, m.Clustered(), "an empty cluster dir must start unclustered")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	changed := make(chan bool, 1)
 	go m.Watch(ctx, func(clustered bool) {

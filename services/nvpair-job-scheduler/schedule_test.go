@@ -51,7 +51,7 @@ func (r *capRW) priorities(t *testing.T, engine string) []schedulePriorityParams
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []schedulePriorityParams
-	for _, line := range strings.Split(string(r.b), "\n") {
+	for line := range strings.SplitSeq(string(r.b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -485,7 +485,7 @@ func TestRecomputeAll_SerializesOlderAndNewerResults(t *testing.T) {
 func TestFeedbackBurst_BalancesPastDepthThree(t *testing.T) {
 	m := mgrWith(nopRW{}, []string{"a", "b", "c"})
 	depths := map[string]int{"a": 0, "b": 0, "c": 0}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		order, _ := m.rank()
 		target := order[0]
 		engine := schedulerEngines[i%len(schedulerEngines)]

@@ -11,6 +11,15 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.14 — Simplify Go concurrency and collections with standard library helpers (#195)
+
+- Refresh internal service concurrency and collection code while preserving intended application behavior.
+- Apply `go fix` across the repo
+
+## 1.0.13 — Limit JSON reads for node metadata and peer messages (#167)
+
+- Limit JSON memory usage when processing input for node telemetry, model inventories, error synchronization, and remote engine progress. Improve connection reuse when fetching node metadata and model inventories.
+
 ## 1.0.12 — Restore macOS privileged helper communication after upgrades (#192)
 
 - Preserve the helper-specific signing identifier needed to communicate with the macOS background helper and complete setup.

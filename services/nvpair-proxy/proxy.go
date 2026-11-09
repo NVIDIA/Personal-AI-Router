@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -15,12 +16,13 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -569,10 +571,7 @@ func backoffFor(dispatches int, remaining time.Duration) time.Duration {
 	if len(retryBackoff) == 0 || remaining <= 0 {
 		return 0
 	}
-	i := dispatches - 1
-	if i < 0 {
-		i = 0
-	}
+	i := max(dispatches-1, 0)
 	if i >= len(retryBackoff) {
 		i = len(retryBackoff) - 1
 	}
@@ -979,10 +978,8 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 			client.Transport = p.candidateTransport(cand)
 		}
 
-		wg.Add(1)
-		go func(i int, cand candidate, req *http.Request, client *http.Client) {
-			defer wg.Done()
-			resp, err := client.Do(req)
+		wg.Go(func() {
+			resp, err := client.Do(upstream)
 			if err != nil {
 				f.targets.Forget(cand.id)
 				results[i] = modelListResult{unavailable: true, err: err}
@@ -1055,7 +1052,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 				items = append(items, modelListItem{key: key, digest: identity.Digest, raw: raw})
 			}
 			results[i] = modelListResult{items: items, ok: true, headers: responseHeaders}
-		}(i, cand, upstream, client)
+		})
 	}
 	wg.Wait()
 
@@ -1092,9 +1089,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 		combinedHeaders, allowed = cors.Combine(r, headers)
 		if invalidInventory {
 			if allowed {
-				for key, values := range combinedHeaders {
-					w.Header()[key] = values
-				}
+				maps.Copy(w.Header(), combinedHeaders)
 			}
 			writeJSON(http.StatusBadGateway, []byte(`{"error":"model inventory unavailable"}`))
 			return http.StatusBadGateway, fmt.Errorf("model inventory unavailable")
@@ -1149,9 +1144,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 		writeJSON(http.StatusInternalServerError, []byte(`{"error":"failed to encode model inventory"}`))
 		return http.StatusInternalServerError, err
 	}
-	for key, values := range combinedHeaders {
-		w.Header()[key] = values
-	}
+	maps.Copy(w.Header(), combinedHeaders)
 	writeJSON(http.StatusOK, body)
 	return http.StatusOK, nil
 }
@@ -1986,7 +1979,9 @@ func (f *facade) resolveCandidates(model string) []candidate {
 	// iterates a map, whose order is randomized per call, which otherwise bounced
 	// back-to-back requests between nodes. The ID sort is also the
 	// fallback order for nodes the scheduler's priority list doesn't mention.
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	slices.SortFunc(nodes, func(a, b Node) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	byID := make(map[string]Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n

@@ -5,6 +5,7 @@ package cors
 import (
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -128,9 +129,7 @@ func TestFanout_StripsCredentials(t *testing.T) {
 		assert.Empty(t, r.Header.Get("Cookie"), "fan-out shared caller credentials")
 		assert.Equal(t, "http://app.test", r.Header.Get("Origin"), "fan-out lost CORS inputs")
 		assert.Equal(t, "Content-Type, Authorization", r.Header.Get("Access-Control-Request-Headers"), "fan-out lost CORS inputs")
-		for key, values := range policy() {
-			w.Header()[key] = values
-		}
+		maps.Copy(w.Header(), policy())
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
@@ -150,9 +149,7 @@ func TestPreflight_CombinesTargetResponses(t *testing.T) {
 				assert.Equal(t, "test=1", r.URL.RawQuery, "request changed")
 				assert.Equal(t, "PUT", r.Header.Get("Access-Control-Request-Method"), "request changed")
 				if withPolicy {
-					for k, v := range policy() {
-						w.Header()[k] = v
-					}
+					maps.Copy(w.Header(), policy())
 				}
 				w.Header().Set("Location", "/redirect-target")
 				w.WriteHeader(status)
@@ -224,7 +221,7 @@ func TestCORSFanout_BoundsConcurrentRequestsAndHonorsCancellation(t *testing.T) 
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() { ServePreflight(rec, preflight().WithContext(ctx), targets); close(done) }()
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		select {
 		case <-started:
 		case <-time.After(time.Second):

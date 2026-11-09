@@ -56,8 +56,7 @@ func TestEngineAvailability_WaitsForBothProxyOutcomes(t *testing.T) {
 		}
 	}()
 	advertised := make(chan string, 3)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	done := make(chan bool, 1)
 	go func() {
 		done <- b.runEngineAvailabilityAfterPortGates(

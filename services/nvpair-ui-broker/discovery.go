@@ -4,13 +4,14 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -285,7 +286,9 @@ func (s *discoveryStore) Snapshot() []AvailableNode {
 		out = append(out, sn.toAvailable())
 	}
 	s.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b AvailableNode) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	return out
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -74,8 +75,7 @@ func TestLoopbackAlias_UsesPrimaryRouterAndSurvivesPrimaryRebind(t *testing.T) {
 	p := newTestProxy(ollamaOnlyProfile(t), NewCodec(rec), disc, primaryPort)
 	require.NoError(t, p.soleFacade().setLoopbackAlias(fmt.Sprintf("127.0.0.1:%d", aliasPort)))
 	p.soleFacade().bindLoopbackAlias()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	p.soleFacade().serveHTTP(ctx, primary)
 	p.soleFacade().serveLoopbackAlias()
 	defer p.shutdown(context.Background())
@@ -123,8 +123,7 @@ func TestOccupiedLoopbackAlias_LeavesOwnerAndPrimaryRunning(t *testing.T) {
 	p.soleFacade().bindLoopbackAlias()
 	primary, err := net.Listen("tcp", fmt.Sprintf(":%d", primaryPort))
 	require.NoError(t, err)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	p.soleFacade().serveHTTP(ctx, primary)
 	p.soleFacade().serveLoopbackAlias()
 	defer p.shutdown(context.Background())
@@ -229,9 +228,7 @@ func TestAliasSelfTarget_TreatsLocalhostAsCanonicalIPv6Loopback(t *testing.T) {
 func TestIPv6AliasCandidate_PreservesAddressForSelfCheck(t *testing.T) {
 	localAddrsMu.RLock()
 	original := make(map[string]bool, len(localAddrs))
-	for address, local := range localAddrs {
-		original[address] = local
-	}
+	maps.Copy(original, localAddrs)
 	localAddrsMu.RUnlock()
 	t.Cleanup(func() { setLocalAddrs(original) })
 	setLocalAddrs(map[string]bool{"::1": true})

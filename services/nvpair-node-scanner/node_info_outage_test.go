@@ -125,13 +125,11 @@ func TestNodeInfoFetches_UseIndependentRequestBudgets(t *testing.T) {
 	results := make(chan bool, 2)
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			_, ok := d.fetchNodeInfo(serverURL.Hostname(), port)
 			results <- ok
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

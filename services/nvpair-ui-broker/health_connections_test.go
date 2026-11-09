@@ -35,7 +35,7 @@ func TestHealthChecks_ReuseConnections(t *testing.T) {
 						assert.NoError(t, writeErr)
 					}))
 					const rounds = 32
-					for i := 0; i < rounds; i++ {
+					for i := range rounds {
 						require.Equal(t, i%2 == 0, checkEngineHealth(profile, client, 1), "poll %d", i)
 					}
 					require.Equal(t, int32(1), connections.Count(), "HTTP/1 connections for %d polls", rounds)

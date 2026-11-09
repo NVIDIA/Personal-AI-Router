@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"sort"
 	"sync"
 
 	"nvpair-shared/applog"
@@ -244,11 +244,8 @@ func (m *Manager) clearByID(id string) bool {
 // relies on for cheap diff-by-position) then by nodeId so entries that
 // share an id across nodes have a stable, deterministic order.
 func sortServiceErrors(out []ServiceError) {
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].ID != out[j].ID {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].NodeID < out[j].NodeID
+	slices.SortFunc(out, func(a, b ServiceError) int {
+		return cmp.Or(cmp.Compare(a.ID, b.ID), cmp.Compare(a.NodeID, b.NodeID))
 	})
 }
 

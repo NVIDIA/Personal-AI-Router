@@ -41,8 +41,7 @@ func newStalledEngine(t *testing.T) stalledEngine {
 	t.Helper()
 	var n atomic.Int32
 	releaseCh := make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(releaseCh) }) }
+	release := sync.OnceFunc(func() { close(releaseCh) })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n.Add(1)

@@ -10,6 +10,7 @@ package main
 // server side enforces with a 403.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -25,6 +26,7 @@ import (
 const (
 	remoteResponseHeaderTimeout      = 30 * time.Second
 	remoteReadyResponseHeaderTimeout = 11 * time.Minute
+	remoteStreamFrameBytes           = maxFrameBytes
 )
 
 // remoteClient talks to one peer's ec surface.
@@ -205,15 +207,17 @@ func (c *remoteClient) stream(
 		onAccepted()
 	}
 
-	dec := json.NewDecoder(resp.Body)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), remoteStreamFrameBytes)
 	var result streamFrame
 	haveResult := false
-	for {
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
 		var f streamFrame
-		if derr := dec.Decode(&f); derr != nil {
-			if derr == io.EOF {
-				break
-			}
+		if derr := json.Unmarshal(line, &f); derr != nil {
 			return streamFrame{}, fmt.Errorf("remote %s: decode frame: %w", path, derr)
 		}
 		switch f.Type {
@@ -227,6 +231,9 @@ func (c *remoteClient) stream(
 		case "error":
 			return streamFrame{}, fmt.Errorf("%s", f.Message)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return streamFrame{}, fmt.Errorf("remote %s: read frame: %w", path, err)
 	}
 	if !haveResult {
 		return streamFrame{}, fmt.Errorf("remote %s: stream ended without a result", path)

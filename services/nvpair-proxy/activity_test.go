@@ -64,8 +64,7 @@ func TestStreamedBytes_ReportNodeActivity(t *testing.T) {
 func TestNodeActivity_IsNotReportedWithoutUpstreamBytes(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, tc engineCase) {
 		release := make(chan struct{})
-		var releaseOnce sync.Once
-		doRelease := func() { releaseOnce.Do(func() { close(release) }) }
+		doRelease := sync.OnceFunc(func() { close(release) })
 
 		received := make(chan struct{}, 1)
 		silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +118,7 @@ func TestRepeatedChunks_AreCoalescedIntoOneReport(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			w.WriteHeader(http.StatusOK)
-			for i := 0; i < chunks; i++ {
+			for range chunks {
 				_, err := w.Write([]byte(`{"response":"x"}` + "\n"))
 				assert.NoError(t, err)
 				if f, ok := w.(http.Flusher); ok {
