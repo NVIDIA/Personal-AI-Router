@@ -5,6 +5,7 @@ import { Button, Flex, ProgressBar, Stack, Text } from '@nvidia/foundations-reac
 import type { ModelItem } from '@/ui/types/engine-info'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import type { EngineProgress } from '@/shared/types/engines'
+import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
 
 export function TransientModelStatusRow({
     transientModel,
@@ -48,11 +49,12 @@ export function TransientModelStatusRow({
                     // its budget stops being awaited while the download keeps
                     // running, and this row is the only handle on it. The
                     // bridge ignores a click while a cancel is genuinely
-                    // outstanding, so asking again is free.
+                    // outstanding, so asking again is free. A download that
+                    // has ended, however it ended, has nothing left to stop.
                     <Button
                         size="small"
                         kind="secondary"
-                        disabled={!pullProgress || ['idle', 'error'].includes(pullProgress.status)}
+                        disabled={!isEnginePullInProgress(pullProgress)}
                         onClick={onCancel}
                     >
                         {canceling ? 'Canceling…' : 'Cancel download'}

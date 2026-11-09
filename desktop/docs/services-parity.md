@@ -329,7 +329,11 @@ fetches nothing: it joins that download and settles with its outcome, so PAIR
 never downloads a model twice at once. Whichever engine
 runs it, a pull's last frame says how it ended — `success`, `cancelled`, or
 `error` with the reason — and reaches a remote initiator too, just before the
-reply.
+reply; the initiator sends it itself when the peer's stream dropped it. The
+Model Manager treats a row on one of those statuses as finished, with no
+spinner and no Cancel, while the awaited pull refreshes the model list and
+clears it. Progress for a download whose row has already cleared is ignored on
+both paths, since a row rebuilt from it would be one nothing clears.
 
 The pull request itself stays pending for the whole download, so it is the
 request's own response that reports the outcome — a completion or a

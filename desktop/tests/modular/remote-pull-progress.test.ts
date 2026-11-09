@@ -158,6 +158,24 @@ describe('remote pull progress', () => {
         expect(progress.at(-1)).toMatchObject({ model: 'llama3.1:8b', status: 'pulling' })
         expect(progress.at(-1)?.percent).toBeUndefined()
     })
+
+    // The awaited pull clears the row, and a download can go on being reported
+    // after that: one that outlived the request's timeout, or its own late last
+    // frame. Rebuilt from such a frame, the row was one nothing cleared, and a
+    // retry of the model on that node was silently ignored.
+    it('ignores a frame for a download whose row has cleared', () => {
+        const state = getModularBridgeState()
+        const frame = { node: 'remote-node', engine: 'ollama', model: 'llama3.1:8b', op: 'pull' }
+        state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        state.finishRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        const progress = capturePullProgress()
+
+        state.applyRemoteEngineProgress({ ...frame, stage: 'downloading', percent: 80 })
+        state.applyRemoteEngineProgress({ ...frame, stage: 'success', percent: 100 })
+
+        expect(progress).toEqual([])
+        expect(state.isRemoteModelPullActive('remote-node', 'ollama', 'llama3.1:8b')).toBe(false)
+    })
 })
 
 describe('local pull progress', () => {

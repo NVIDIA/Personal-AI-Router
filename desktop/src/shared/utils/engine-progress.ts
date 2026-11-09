@@ -49,12 +49,17 @@ export function emptyEngineProgress(at: {
     return entry
 }
 
+/**
+ * Statuses of a pull that is not running. A pull's last frame names how it
+ * ended (`success`, `cancelled`, or `error`), and its row stays on that status
+ * until the awaited pull has refreshed the model list.
+ */
+const settledPullStatuses = new Set(['idle', 'complete', 'success', 'cancelled', 'error'])
+
 /** Whether UI should treat this progress as an active pull (show cancel, spinner, etc.). */
 export function isEnginePullInProgress(
     p: Pick<EngineProgress, 'operation' | 'status'> | undefined
 ): boolean {
     if (!p || p.operation !== 'pull') return false
-    if (p.status === 'idle') return false
-    const s = p.status.toLowerCase()
-    return s !== 'complete' && s !== 'error'
+    return !settledPullStatuses.has(p.status.toLowerCase())
 }

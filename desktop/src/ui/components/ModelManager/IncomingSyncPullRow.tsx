@@ -4,6 +4,7 @@
 import { Button, Flex, ProgressBar, Stack, Text } from '@nvidia/foundations-react-core'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
+import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
 
 export function IncomingSyncPullRow({
     row,
@@ -45,7 +46,7 @@ export function IncomingSyncPullRow({
                 <Button
                     size="small"
                     kind="secondary"
-                    disabled={['idle', 'error'].includes(row.status)}
+                    disabled={!isEnginePullInProgress({ operation: 'pull', status: row.status })}
                     onClick={onCancel}
                 >
                     {canceling ? 'Canceling…' : 'Cancel download'}

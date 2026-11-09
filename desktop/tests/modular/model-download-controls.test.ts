@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { IncomingSyncPullRow } from '@/ui/components/ModelManager/IncomingSyncPullRow'
 import { TransientModelStatusRow } from '@/ui/components/ModelManager/TransientModelStatusRow'
+import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
 import type { ModelItem } from '@/ui/types/engine-info'
 
 const model: ModelItem = {
@@ -62,6 +63,8 @@ for (const row of rows) {
             { status: 'downloading', disabled: false },
             { status: 'canceling', disabled: false },
             { status: 'idle', disabled: true },
+            { status: 'success', disabled: true },
+            { status: 'cancelled', disabled: true },
             { status: 'error', disabled: true }
         ])('cancellation availability during $status', ({ status, disabled }) => {
             const html = renderToStaticMarkup(row.render(status))
@@ -72,3 +75,21 @@ for (const row of rows) {
         })
     })
 }
+
+// A pull's last frame names how it ended, and its row stays on that status
+// while the model list refreshes. Read as a download still running, it kept a
+// spinner and an enabled Cancel on one that had finished.
+describe('a pull in progress', () => {
+    it.each([
+        { status: 'pulling', inProgress: true },
+        { status: 'queued', inProgress: true },
+        { status: 'downloading', inProgress: true },
+        { status: 'canceling', inProgress: true },
+        { status: 'idle', inProgress: false },
+        { status: 'success', inProgress: false },
+        { status: 'cancelled', inProgress: false },
+        { status: 'error', inProgress: false }
+    ])('during $status', ({ status, inProgress }) => {
+        expect(isEnginePullInProgress({ operation: 'pull', status })).toBe(inProgress)
+    })
+})

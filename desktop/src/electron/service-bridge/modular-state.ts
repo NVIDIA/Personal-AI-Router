@@ -1524,6 +1524,13 @@ class ModularBridgeState {
                 ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
                 : ''
         const existingPull = pullKey ? this.activePulls.get(pullKey) : undefined
+        // Only a download this app is awaiting has a row, and the awaited pull
+        // clears it ({@link finishRemoteModelPull}), as on the local path. A
+        // frame after that, from a download that outlived the request's
+        // timeout or the download's own late last frame, has nothing to
+        // update. A row rebuilt from it is one nothing clears, and a retry of
+        // that model on that node is ignored while it stands.
+        if (operation === 'pull' && !existingPull) return
         const percent =
             operation === 'pull'
                 ? mergePullProgressPercent(numberValue(obj.percent), existingPull?.percent)
