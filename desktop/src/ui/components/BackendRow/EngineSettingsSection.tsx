@@ -255,21 +255,56 @@ export function EngineSettingsSection({
                     </FormField>
                 </Flex>
                 <FormField slotLabel="Engine arguments">
-                    <TextArea
-                        size="small"
-                        aria-label="Engine arguments"
-                        placeholder="Engine arguments; optional NAME=value assignments first"
-                        value={draft.launchText}
-                        onValueChange={value => change('launchText', value)}
-                        onBlur={() => {
-                            if (dirty) void check()
-                        }}
-                        resizeable="auto"
-                        rows={4}
-                        maxLength={16384}
-                        disabled={locked}
-                        className="font-mono"
-                    />
+                    <Stack gap="2">
+                        <Flex align="center" justify="between" wrap="wrap" gap="2">
+                            <Text kind="body/regular/xs" className="text-subtle-color">
+                                Context tokens:
+                            </Text>
+                            <Flex gap="1">
+                                {[
+                                    { label: '2K', val: 2048 },
+                                    { label: '4K', val: 4096 },
+                                    { label: '8K', val: 8192 },
+                                    { label: '16K', val: 16384 },
+                                    { label: '32K', val: 32768 }
+                                ].map(preset => (
+                                    <Button
+                                        key={preset.val}
+                                        size="small"
+                                        kind="secondary"
+                                        disabled={locked}
+                                        onClick={() => {
+                                            const flag = `--ctx-size ${preset.val}`
+                                            let next = draft.launchText
+                                            if (next.includes('--ctx-size')) {
+                                                next = next.replace(/--ctx-size\s+\d+/, flag)
+                                            } else {
+                                                next = next.trim() ? `${next.trim()} ${flag}` : flag
+                                            }
+                                            change('launchText', next)
+                                        }}
+                                    >
+                                        {preset.label}
+                                    </Button>
+                                ))}
+                            </Flex>
+                        </Flex>
+                        <TextArea
+                            size="small"
+                            aria-label="Engine arguments"
+                            placeholder="Engine arguments; optional NAME=value assignments first"
+                            value={draft.launchText}
+                            onValueChange={value => change('launchText', value)}
+                            onBlur={() => {
+                                if (dirty) void check()
+                            }}
+                            resizeable="auto"
+                            rows={4}
+                            maxLength={16384}
+                            disabled={locked}
+                            className="font-mono"
+                        />
+                    </Stack>
                 </FormField>
                 <Flex gap="2" justify="end">
                     <Button kind="secondary" size="small" disabled={applying} onClick={reloadDraft}>

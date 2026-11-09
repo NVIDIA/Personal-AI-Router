@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Divider, Flex, Stack, Text } from '@nvidia/foundations-react-core'
+import { Button, Divider, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { ModelEntry, SortState } from '@/ui/types/model-hub'
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualList } from '@/ui/hooks/useVirtualList'
@@ -65,6 +65,7 @@ type ModelHubListProps = {
     className?: string
     multiple: boolean
     disabled: boolean
+    onOpenCustomModel?: () => void
 }
 
 const ESTIMATE_ROW_HEIGHT = 80
@@ -77,7 +78,8 @@ export const ModelHubList = ({
     onToggleSelectModel,
     sort,
     className,
-    multiple
+    multiple,
+    onOpenCustomModel
 }: ModelHubListProps) => {
     const sortedModels = useMemo(() => {
         const copy = [...models]
@@ -216,10 +218,15 @@ export const ModelHubList = ({
             )}
 
             {!loading && sortedModels.length === 0 && (
-                <Stack align="center" justify="center" gap="2" className="grow min-h-0 p-4">
-                    <Text kind="body/regular/sm" className="text-center">
+                <Stack align="center" justify="center" gap="3" className="grow min-h-0 p-4">
+                    <Text kind="body/regular/sm" className="text-center text-subtle-color">
                         No models found
                     </Text>
+                    {onOpenCustomModel && (
+                        <Button size="small" kind="secondary" onClick={onOpenCustomModel}>
+                            Add custom model from machine
+                        </Button>
+                    )}
                 </Stack>
             )}
         </Stack>

@@ -18,7 +18,9 @@ export function ModelRowSecondaryRow({
     busyLabel,
     hasExpiry,
     expiryDd,
-    onExpiryChange
+    onExpiryChange,
+    tokens,
+    onTokensClick
 }: {
     model: ModelItem
     progress?: EngineProgress
@@ -27,6 +29,8 @@ export function ModelRowSecondaryRow({
     hasExpiry: boolean
     expiryDd: ModelRowDropdownControl
     onExpiryChange: (modelName: string, value: ModelExpiry) => void
+    tokens?: number
+    onTokensClick?: () => void
 }) {
     const expiryItems: DropdownEntry[] = useMemo(
         () =>
@@ -79,7 +83,19 @@ export function ModelRowSecondaryRow({
             ) : (
                 <span />
             )}
-            <Flex align="center" gap="1" className="shrink-0">
+            <Flex align="center" gap="2" className="shrink-0">
+                {model.downloaded && onTokensClick && (
+                    <button
+                        type="button"
+                        onClick={onTokensClick}
+                        className="text-subtle-color hover:text-white transition-colors cursor-pointer text-xs px-1.5 py-0.5 rounded border border-white/10 hover:border-white/30 whitespace-nowrap bg-white/5"
+                        title="Click to configure context token limit"
+                    >
+                        {tokens && tokens >= 1024
+                            ? `${Math.round(tokens / 1024)}K tokens`
+                            : `${tokens ?? 2048} tokens`}
+                    </button>
+                )}
                 {hasExpiry && (
                     <Dropdown
                         items={expiryItems}

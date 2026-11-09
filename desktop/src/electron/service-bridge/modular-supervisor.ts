@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { app } from 'electron'
 import {
@@ -352,6 +353,7 @@ class ModularSupervisor {
     private logLevel: ModularLogLevel = MODULAR_DEFAULT_LOG_LEVEL
     private brokerReady = false
     private isReady = false
+    private cancelledPulls = new Set<string>()
     // True only while stop() is intentionally tearing down the subprocess tree.
     // Used to tell a deliberate broker shutdown (SIGKILL / stdin close) apart
     // from an unexpected broker crash so we don't fire the crash callback on a
@@ -1649,6 +1651,7 @@ class ModularSupervisor {
         if (state.isModelPullActive(engineType, model)) return
 
         state.beginModelPull(engineType, model)
+        const cancelKey = `${engineType}:${model}`
         try {
             const result = await this.callProcess(
                 'broker',
@@ -1656,6 +1659,9 @@ class ModularSupervisor {
                 { engine, action: 'pull_model', params: pullModelParams(engine, model) },
                 PULL_TIMEOUT_MS
             )
+            if (this.cancelledPulls.has(cancelKey)) {
+                return
+            }
             const failure = pullResultError(result)
             if (failure) {
                 this.reportError(failure, 'error', `engine-pull:${engine}:${model}`, {
@@ -1668,6 +1674,9 @@ class ModularSupervisor {
                 await this.refreshEngineModels(engine, engineType)
             }
         } catch (err) {
+            if (this.cancelledPulls.has(cancelKey)) {
+                return
+            }
             const message = getErrorString(err) ?? ''
             const pullError = resolvePullCatchError(message)
             if (pullError) {
@@ -1678,6 +1687,151 @@ class ModularSupervisor {
                     action: 'retry'
                 })
             }
+        } finally {
+            this.cancelledPulls.delete(cancelKey)
+            state.finishModelPull(engineType, model)
+        }
+    }
+
+    /**
+     * Cancel an in-progress model download on the local node.
+     * Clears optimistic progress state immediately, notifies the engine to abort/delete,
+     * and clears any error reports associated with the pull.
+     */
+    async cancelPull(engine: string, engineType: EngineType, model: string): Promise<void> {
+        const cancelKey = `${engineType}:${model}`
+        this.cancelledPulls.add(cancelKey)
+        const state = getModularBridgeState()
+        state.finishModelPull(engineType, model)
+        state.clearError(`engine-pull:${engine}:${model}`)
+
+        if (!this.brokerReady) return
+        void this.callProcess('broker', 'errors:clear', {
+            id: `engine-pull:${engine}:${model}`
+        }).catch(() => {})
+        try {
+            if (engineType === 'llama-cpp') {
+                try {
+                    await this.callProcess(
+                        'broker',
+                        'engine:action',
+                        { engine, action: 'unload_model', params: { model } },
+                        MODULAR_MODEL_ACTION_TIMEOUT_MS
+                    )
+                } catch {
+                    // Ignored: download might not be registered as loaded or already stopped
+                }
+            }
+            await this.callProcess(
+                'broker',
+                'engine:action',
+                { engine, action: 'delete_model', params: deleteModelParams(engine, model) },
+                MODULAR_MODEL_ACTION_TIMEOUT_MS
+            )
+        } catch {
+            // Ignored: cancelling an incomplete download can return 404 or an abort error
+        } finally {
+            await this.refreshEngineModels(engine, engineType)
+        }
+    }
+
+    /**
+     * Import a local model file (.gguf, .bin, .safetensors) from the host machine into
+     * an engine's managed store or register it via the engine's model creation API.
+     */
+    async importLocalModel(
+        engine: string,
+        engineType: EngineType,
+        model: string,
+        filePath: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        if (state.isModelPullActive(engineType, model)) return
+
+        state.beginModelPull(engineType, model)
+        try {
+            if (!fs.existsSync(filePath)) {
+                throw new Error(`Model file not found on disk: ${filePath}`)
+            }
+
+            if (engineType === 'ollama') {
+                const proxyPort = state.getProxyPort('ollama') ?? 11434
+                const bridge = this.getLocalBridge('ollama')
+                const targetPort = bridge.running && bridge.port > 0 ? bridge.port : proxyPort
+                const url = `http://127.0.0.1:${targetPort}/api/create`
+
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model, from: filePath })
+                })
+
+                if (!response.ok) {
+                    const text = await response.text()
+                    let msg = `Ollama model creation failed with status ${response.status}`
+                    try {
+                        const parsed: JsonValue = JSON.parse(text)
+                        const errText = stringValue(objectValue(parsed)?.error).trim()
+                        if (errText) msg = errText
+                    } catch {
+                        if (text.trim().length > 0) msg = text
+                    }
+                    throw new Error(msg)
+                }
+
+                if (response.body) {
+                    const reader = response.body.getReader()
+                    let streamDone = false
+                    while (!streamDone) {
+                        const chunk = await reader.read()
+                        streamDone = chunk.done
+                    }
+                }
+
+                await this.refreshEngineModels(engine, engineType)
+            } else if (engineType === 'llama-cpp') {
+                const llamaDir = path.join(os.homedir(), '.llamacpp')
+                await fs.promises.mkdir(llamaDir, { recursive: true })
+                const ext = path.extname(filePath) || '.gguf'
+                const targetPath = path.join(llamaDir, `${model}${ext}`)
+
+                try {
+                    await fs.promises.link(filePath, targetPath)
+                } catch {
+                    try {
+                        await fs.promises.symlink(filePath, targetPath)
+                    } catch {
+                        await fs.promises.copyFile(filePath, targetPath)
+                    }
+                }
+
+                await this.refreshEngineModels(engine, engineType)
+            } else if (engineType === 'lm-studio') {
+                const lmsDir = path.join(os.homedir(), '.lmstudio', 'models', 'custom', model)
+                await fs.promises.mkdir(lmsDir, { recursive: true })
+                const fileName = path.basename(filePath)
+                const targetPath = path.join(lmsDir, fileName)
+
+                try {
+                    await fs.promises.link(filePath, targetPath)
+                } catch {
+                    try {
+                        await fs.promises.symlink(filePath, targetPath)
+                    } catch {
+                        await fs.promises.copyFile(filePath, targetPath)
+                    }
+                }
+
+                await this.refreshEngineModels(engine, engineType)
+            }
+        } catch (err) {
+            const message = getErrorString(err)
+            this.reportError(message, 'error', `engine-import:${engine}:${model}`, {
+                engineType,
+                operation: 'pull',
+                modelName: model,
+                action: 'retry'
+            })
         } finally {
             state.finishModelPull(engineType, model)
         }
@@ -1791,6 +1945,7 @@ class ModularSupervisor {
         const state = getModularBridgeState()
         if (state.isRemoteModelPullActive(nodeId, engineType, model)) return
         state.beginRemoteModelPull(nodeId, engineType, model)
+        const cancelKey = `${nodeId}:${engineType}:${model}`
         try {
             await this.callProcess(
                 'broker',
@@ -1798,11 +1953,17 @@ class ModularSupervisor {
                 { node: nodeId, engine, model },
                 PULL_TIMEOUT_MS
             )
+            if (this.cancelledPulls.has(cancelKey)) {
+                return
+            }
             // The peer's /v1/models re-enriches into discovery asynchronously;
             // refresh its authoritative status now so a just-installed engine
             // does not read stale.
             await this.refreshRemoteEngineStatus(nodeId)
         } catch (err) {
+            if (this.cancelledPulls.has(cancelKey)) {
+                return
+            }
             const message = getErrorString(err) ?? ''
             const pullError = resolvePullCatchError(message)
             if (pullError) {
@@ -1820,7 +1981,54 @@ class ModularSupervisor {
                 )
             }
         } finally {
+            this.cancelledPulls.delete(cancelKey)
             state.finishRemoteModelPull(nodeId, engineType, model)
+        }
+    }
+
+    /**
+     * Cancel an in-progress model download on a remote peer.
+     * Clears optimistic progress state immediately and requests peer to delete the model.
+     */
+    async cancelPullRemote(
+        nodeId: string,
+        engine: string,
+        engineType: EngineType,
+        model: string
+    ): Promise<void> {
+        const cancelKey = `${nodeId}:${engineType}:${model}`
+        this.cancelledPulls.add(cancelKey)
+        const state = getModularBridgeState()
+        state.finishRemoteModelPull(nodeId, engineType, model)
+        state.clearError(`engine-remote-pull:${nodeId}:${engine}:${model}`)
+
+        if (!this.brokerReady) return
+        void this.callProcess('broker', 'errors:clear', {
+            id: `engine-remote-pull:${nodeId}:${engine}:${model}`
+        }).catch(() => {})
+        try {
+            if (engineType === 'llama-cpp') {
+                try {
+                    await this.callProcess(
+                        'broker',
+                        'engine:remote-unload-model',
+                        { node: nodeId, engine, model },
+                        MODULAR_MODEL_ACTION_TIMEOUT_MS
+                    )
+                } catch {
+                    // Ignored
+                }
+            }
+            await this.callProcess(
+                'broker',
+                'engine:remote-delete-model',
+                { node: nodeId, engine, model },
+                MODULAR_MODEL_ACTION_TIMEOUT_MS
+            )
+        } catch {
+            // Ignored: cancelling an incomplete download can return an error
+        } finally {
+            await this.refreshRemoteEngineStatus(nodeId)
         }
     }
 
@@ -1953,7 +2161,7 @@ class ModularSupervisor {
      * it. Awaitable (so {@link pullModel} can land the new model in the list
      * before clearing its spinner) and never throws — a failed refresh just logs.
      */
-    private async refreshEngineModels(engine: string, engineType: EngineType): Promise<void> {
+    async refreshEngineModels(engine: string, engineType: EngineType): Promise<void> {
         if (this.stoppedModelEngines.has(engineType)) return
         const generation = this.beginModelRefresh(engineType)
         try {

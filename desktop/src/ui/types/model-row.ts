@@ -28,4 +28,6 @@ export interface ModelRowProps {
     displayName: (name: string) => string
     onAction: (modelName: string, action: string) => void
     onExpiryChange: (modelName: string, value: ModelExpiry) => void
+    tokens?: number
+    onTokensClick?: (modelName: string) => void
 }

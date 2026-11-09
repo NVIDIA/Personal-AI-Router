@@ -66,7 +66,8 @@ const MODEL_COMMANDS: ReadonlySet<EngineCommandType> = new Set<EngineCommandType
     'pullModel',
     'loadModel',
     'unloadModel',
-    'deleteModel'
+    'deleteModel',
+    'importLocalModel'
 ])
 
 /**
@@ -175,6 +176,16 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
         if (connectorStatus === 'disconnected') return
 
         const { command, engineType, nodeId, model } = payload
+
+        if (command === 'cancelPull') {
+            if (model) {
+                const next = new Map(get().pending)
+                next.delete(modelKey(nodeId, engineType, model))
+                set({ pending: next })
+            }
+            return
+        }
+
         const expiresAt = Date.now() + timeoutFor(command, engineType)
 
         if (LIFECYCLE_COMMANDS.has(command)) {
@@ -280,7 +291,10 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                             const loaded = statuses.get(p.model) === 'loaded'
                             if (p.action === 'deleteModel' && !present) {
                                 toClear.push(key)
-                            } else if (p.action === 'pullModel' && present) {
+                            } else if (
+                                (p.action === 'pullModel' || p.action === 'importLocalModel') &&
+                                present
+                            ) {
                                 toClear.push(key)
                             } else if (p.action === 'loadModel' && loaded) {
                                 toClear.push(key)

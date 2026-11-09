@@ -33,7 +33,9 @@ function ModelRowInner({
     pendingAction,
     displayName,
     onAction,
-    onExpiryChange
+    onExpiryChange,
+    tokens,
+    onTokensClick
 }: ModelRowProps) {
     const dropdown = useDropdownClickable()
     const expiryDd = dropdown.get(`expiry-${model.name}`)
@@ -65,6 +67,11 @@ function ModelRowInner({
         if (capabilities.hasDeleteModel) {
             items.push({ id: 'delete', children: 'Delete', danger: true, disabled: busy })
         }
+        items.push({
+            id: 'tokens',
+            children: 'Set Context Tokens...',
+            disabled: busy || !model.downloaded
+        })
         return items
     }, [
         capabilities.hasEject,
@@ -99,6 +106,8 @@ function ModelRowInner({
                     hasExpiry={capabilities.hasExpiry}
                     expiryDd={expiryDd}
                     onExpiryChange={onExpiryChange}
+                    tokens={tokens}
+                    onTokensClick={onTokensClick ? () => onTokensClick(model.name) : undefined}
                 />
             </Stack>
             <Divider style={{ borderColor: '#ffffff22' }} />
