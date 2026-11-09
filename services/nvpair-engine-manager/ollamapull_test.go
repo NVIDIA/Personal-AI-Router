@@ -5,9 +5,13 @@ package main
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,6 +32,58 @@ func writeBlob(t *testing.T, root, name string) string {
 	path := filepath.Join(root, name)
 	writePartial(t, path, "data")
 	return path
+}
+
+// Cleanup has to look where the daemon actually writes. For a daemon PAIR
+// launched, that is the OLLAMA_MODELS it was launched with, which a user's
+// launch override can set, rather than whatever the engine manager's own
+// environment says.
+func TestOllamaBlobsDir_FollowsTheEnvironmentOllamaRunsIn(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	ollamaDefault := filepath.Join(home, ".ollama", "models", "blobs")
+	launchedDir := filepath.Join(t.TempDir(), "launched")
+	overrideDir := filepath.Join(t.TempDir(), "override")
+	inheritedDir := filepath.Join(t.TempDir(), "inherited")
+	t.Setenv("OLLAMA_MODELS", inheritedDir)
+	launchedWith := func(env ...string) *engineState {
+		return &engineState{proc: &managedProc{cmd: &exec.Cmd{Env: env}}}
+	}
+	test := func(name string, st *engineState, want string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, ollamaBlobsDir(st))
+		})
+	}
+
+	test("a launched daemon uses the value it was launched with",
+		launchedWith("OLLAMA_MODELS="+launchedDir), filepath.Join(launchedDir, "blobs"))
+	test("a launch override assigned after the inherited value wins",
+		launchedWith("OLLAMA_MODELS="+inheritedDir, "OLLAMA_MODELS="+overrideDir), filepath.Join(overrideDir, "blobs"))
+	test("surrounding spaces and quotes are trimmed as Ollama trims them",
+		launchedWith(`OLLAMA_MODELS= "`+launchedDir+`" `), filepath.Join(launchedDir, "blobs"))
+	test("a launched daemon without the variable uses Ollama's default",
+		launchedWith("OLLAMA_HOST=127.0.0.1:11434"), ollamaDefault)
+	test("an empty value uses Ollama's default", launchedWith("OLLAMA_MODELS="), ollamaDefault)
+	test("an adopted daemon is assumed to share the engine manager's environment",
+		&engineState{}, filepath.Join(inheritedDir, "blobs"))
+	test("a relative value is refused rather than resolved against an unknown directory",
+		launchedWith("OLLAMA_MODELS=models"), "")
+	test("a home-relative value is refused, because Ollama does not expand it",
+		launchedWith("OLLAMA_MODELS=~/models"), "")
+	if runtime.GOOS == "windows" {
+		test("names compare case-insensitively on Windows",
+			launchedWith("ollama_models="+launchedDir), filepath.Join(launchedDir, "blobs"))
+	}
+}
+
+// An unknown blobs directory must not be read as the current directory, where
+// a snapshot that found nothing would let cleanup delete files named like
+// blobs relative to wherever the engine manager happens to run.
+func TestOllamaPartialSnapshot_RefusesAnUnknownBlobsDirectory(t *testing.T) {
+	before, err := ollamaPartialSnapshot("")
+
+	assert.Error(t, err)
+	assert.Nil(t, before, "a snapshot that was not taken must stay distinct from an empty one")
 }
 
 // Cancelling a download removes the partial blobs that download created and

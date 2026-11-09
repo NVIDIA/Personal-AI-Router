@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,7 +36,13 @@ type ollamaPartialsBefore map[string]bool
 // waits on a slow server, or one PAIR deliberately kept when an earlier
 // attempt's context died without a cancel request. Only the files this pull
 // creates are unambiguously its own.
+//
+// An empty root is a blobs directory that could not be determined, and is
+// refused rather than read: the current directory is not Ollama's cache.
 func ollamaPartialSnapshot(root string) (ollamaPartialsBefore, error) {
+	if root == "" {
+		return nil, errors.New("the Ollama blobs directory is unknown")
+	}
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return ollamaPartialsBefore{}, nil
@@ -124,13 +131,57 @@ func ollamaPartialPaths(root string, digests map[string]bool) ([]string, error) 
 	return paths, nil
 }
 
+// ollamaBlobsDir is where the Ollama daemon writes blobs: under the
+// OLLAMA_MODELS of the environment it runs in, or Ollama's own default in the
+// user's home directory. Empty when that cannot be known, which leaves cleanup
+// nothing to attribute and so nothing to delete.
+//
+// A daemon this engine manager launched runs in the environment it was handed —
+// the one the engine manager inherited, then the manifest's env, then the
+// user's launch overrides, with the last assignment of a name winning — so that
+// is read back from the process rather than rebuilt from settings that may have
+// changed since. A daemon that was already running when PAIR adopted it was
+// started by someone else, in an environment PAIR cannot see. The engine
+// manager's own environment is the best guess there, and a wrong guess only
+// finds no partial this pull created.
+//
+// The value is read the way Ollama reads it: surrounding spaces and quotes are
+// trimmed, and "~" is not expanded. A relative path would resolve against the
+// daemon's working directory, so it is refused rather than guessed at.
 func ollamaBlobsDir(st *engineState) string {
-	root := st.plat.Runtime.Env["OLLAMA_MODELS"]
-	if root == "" {
-		root = os.Getenv("OLLAMA_MODELS")
+	st.mu.Lock()
+	var launched []string
+	if st.proc != nil && st.proc.cmd != nil {
+		launched = st.proc.cmd.Env
 	}
-	if root == "" {
-		root = "~/.ollama/models"
+	st.mu.Unlock()
+	value := os.Getenv("OLLAMA_MODELS")
+	if launched != nil {
+		value = environmentValue(launched, "OLLAMA_MODELS")
 	}
-	return filepath.Join(expandPath(root), "blobs")
+	root := strings.Trim(strings.TrimSpace(value), `"'`)
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		root = filepath.Join(home, ".ollama", "models")
+	}
+	if !filepath.IsAbs(root) {
+		return ""
+	}
+	return filepath.Join(root, "blobs")
+}
+
+// environmentValue is the value a process started with env sees for key: the
+// last assignment wins, and names compare the way the platform compares them.
+func environmentValue(env []string, key string) string {
+	value := ""
+	for _, assignment := range env {
+		name, assigned, ok := strings.Cut(assignment, "=")
+		if ok && environmentKey(name) == environmentKey(key) {
+			value = assigned
+		}
+	}
+	return value
 }

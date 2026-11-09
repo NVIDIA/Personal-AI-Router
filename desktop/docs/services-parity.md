@@ -380,10 +380,14 @@ never confirmed deletes nothing. Only a cancellation someone requested removes
 files: a pull interrupted by app shutdown, a dropped remote connection, or the
 action timeout leaves its partial data resumable.
 
-Cleanup looks for partial files only in the default model directories:
-`~/.lmstudio/models` for LM Studio, and for Ollama the `OLLAMA_MODELS` the
-engine-manager launches it with (`~/.ollama/models` by default). A cancellation
-on an install whose models live elsewhere — a relocated LM Studio models
+Cleanup looks for partial files only where the engine-manager knows the engine
+writes them. For LM Studio that is the manifest's `models_dir`
+(`~/.lmstudio/models`). For Ollama it is the `OLLAMA_MODELS` of the environment
+the engine-manager launched the daemon with, including a user's launch
+override, or Ollama's own `~/.ollama/models` when that is unset. A relative
+value is ignored. An adopted Ollama daemon was started by someone else, so the
+engine-manager's own environment stands in for the daemon's. A cancellation on
+an install whose models live elsewhere — a relocated LM Studio models
 directory, or an adopted Ollama daemon started with a different
 `OLLAMA_MODELS` — stops the download but leaves its partial files for the
 engine to resume or remove.

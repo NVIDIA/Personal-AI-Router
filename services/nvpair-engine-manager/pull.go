@@ -190,11 +190,18 @@ func (e *Executor) pullModelNDJSON(
 	// what keeps a cancellation off another client's transfer and off a partial
 	// an earlier attempt deliberately left resumable. A snapshot that could not
 	// be taken stays nil, and cleanup then deletes nothing rather than guess.
+	// The directory is resolved once, so the snapshot and the cleanup cannot
+	// disagree about which cache they are looking at.
+	var blobs string
 	var before ollamaPartialsBefore
 	if engine == "ollama" {
-		if snapshot, snapshotErr := ollamaPartialSnapshot(ollamaBlobsDir(st)); snapshotErr == nil {
-			before = snapshot
+		blobs = ollamaBlobsDir(st)
+		snapshot, snapshotErr := ollamaPartialSnapshot(blobs)
+		if snapshotErr != nil {
+			slog.Warn("could not snapshot partial downloads; cancelling this download will not remove its files",
+				"engine", engine, "model", model, "err", snapshotErr)
 		}
+		before = snapshot
 	}
 	defer func() {
 		if ctx.Err() != context.Canceled {
@@ -213,7 +220,7 @@ func (e *Executor) pullModelNDJSON(
 			// Cleanup outlives the cancellation that triggered it, so it runs
 			// on a context that keeps this one's values without its deadline.
 			cleanupCtx := context.WithoutCancel(ctx)
-			if err := cleanupOllamaAfterCancel(cleanupCtx, ollamaBlobsDir(st), digests, before); err != nil {
+			if err := cleanupOllamaAfterCancel(cleanupCtx, blobs, digests, before); err != nil {
 				// The download did stop, which is what was asked for. Leftover
 				// blobs are Ollama's to resume, so reporting a failed cancel
 				// here would deny the one outcome that did happen and leave
