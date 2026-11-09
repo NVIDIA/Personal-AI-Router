@@ -1187,9 +1187,9 @@ func TestDownloadCancel_ForgetsADownloadOnceItEnds(t *testing.T) {
 }
 
 // A reply that missed its deadline says nothing about the download, which runs
-// on, and neither does a cancel still being carried out or one that failed —
-// llama.cpp's router not confirming the stop leaves the download running. Each
-// must leave the download cancellable, or there is no way to try again.
+// on, and neither does a cancel still being carried out or one that never
+// reached it — a peer that could not be asked. Each must leave the download
+// cancellable, or there is no way to try again.
 func TestDownloadCancel_KeepsADownloadThatMayStillBeRunning(t *testing.T) {
 	test := func(name string, reply tea.Msg, want string) {
 		t.Run(name, func(t *testing.T) {
@@ -1206,8 +1206,48 @@ func TestDownloadCancel_KeepsADownloadThatMayStillBeRunning(t *testing.T) {
 		"download llama3.2 (Ollama) is continuing in the background")
 	test("a cancel past its reply deadline", cancelPullMsg{engine: "ollama", model: "llama3.2", detached: true},
 		"download llama3.2 (Ollama) is still being cancelled")
-	test("a cancel that failed", cancelPullMsg{engine: "ollama", model: "llama3.2", err: errors.New("the router did not stop it")},
-		"cancel download llama3.2 (Ollama) failed: the router did not stop it")
+	test("a cancel that never reached the download", cancelPullMsg{engine: "ollama", model: "llama3.2", err: errors.New("peer did not answer")},
+		"cancel download llama3.2 (Ollama) failed: peer did not answer")
+}
+
+// A cancel can reach the download and still fail: llama.cpp's router not
+// confirming the stop ends the pull with that error. Its error frame arrives
+// before the reply and retires the download, which the engine manager no longer
+// tracks either, so the cancel key has nothing left to offer.
+func TestDownloadCancel_StopTheRouterDidNotConfirmEndsTheDownload(t *testing.T) {
+	d := localDetail()
+	d.pane = detailModels
+	d.update(pullFramePush(t, d, "llamacpp", "owner/repo", "downloading"))
+
+	d.update(pullFramePush(t, d, "llamacpp", "owner/repo", "error"))
+	d.update(detailReply{node: d.node.key, msg: cancelPullMsg{
+		engine: "llamacpp", model: "owner/repo", err: errors.New("could not confirm download stopped"),
+	}})
+
+	assert.Empty(t, d.downloads, "a download the engine manager stopped tracking was kept to cancel again")
+	assert.Contains(t, d.status.render(), "failed: could not confirm download stopped")
+}
+
+// A cancel's acknowledgement says the download settled, not how. One that
+// finished or failed just as the cancel arrived has already reported that on
+// its own frame, and calling it cancelled afterwards said the opposite.
+func TestDownloadCancel_KeepsTheOutcomeOfADownloadThatEndedFirst(t *testing.T) {
+	test := func(name, stage, want string) {
+		t.Run(name, func(t *testing.T) {
+			d := localDetail()
+			d.pane = detailModels
+			d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+
+			d.update(pullFramePush(t, d, "ollama", "llama3.2", stage))
+			d.update(detailReply{node: d.node.key, msg: cancelPullMsg{engine: "ollama", model: "llama3.2"}})
+
+			got := d.status.render()
+			assert.Contains(t, got, want)
+			assert.NotContains(t, got, "cancelled")
+		})
+	}
+	test("a download that completed", "success", "download llama3.2 (Ollama): done")
+	test("a download that failed", "error", "download llama3.2 (Ollama) failed")
 }
 
 // The download a cancel prompt asks about goes on reporting progress while the
@@ -1267,6 +1307,46 @@ func TestPullReply_SaysHowTheDownloadEnded(t *testing.T) {
 		"download llama3.2 (Ollama): cancelled")
 	test("failed", pullDoneMsg{engine: "ollama", model: "llama3.2", err: errors.New("no such model")}, toastError,
 		"download llama3.2 (Ollama) failed: no such model")
+}
+
+// The engine manager announces changes to the loaded set, not to the inventory,
+// so a download that finishes on this machine is announced only by its success
+// frame. Without a re-read there, the model it installed stayed missing from
+// the list until the screen was opened again.
+func TestPullOutcome_RereadsThisMachinesModelsOnlyOnSuccess(t *testing.T) {
+	frameCmd := func(t *testing.T, stage string) (tea.Cmd, <-chan removalCall) {
+		t.Helper()
+		client, calls := removalBroker(t, "")
+		d := newNodeDetail(client, nodeRow{key: "self", name: "this-host", self: true, presence: presenceOnline})
+		d.SetSize(100, 30)
+		cmd, _ := d.update(pullFramePush(t, d, "ollama", "llama3.2", stage))
+		return cmd, calls
+	}
+	rereads := func(name, stage string) {
+		t.Run(name, func(t *testing.T) {
+			cmd, calls := frameCmd(t, stage)
+			require.NotNil(t, cmd, "the frame requested nothing")
+
+			cmd()
+
+			select {
+			case c := <-calls:
+				assert.Equal(t, "engine:models", c.method)
+			case <-time.After(2 * time.Second):
+				require.FailNow(t, "the broker received no request")
+			}
+		})
+	}
+	ignores := func(name, stage string) {
+		t.Run(name, func(t *testing.T) {
+			cmd, _ := frameCmd(t, stage)
+			assert.Nil(t, cmd, "a frame that installed nothing re-read the models")
+		})
+	}
+	rereads("a completed download", "success")
+	ignores("progress", "downloading")
+	ignores("a cancelled download", "cancelled")
+	ignores("a failed download", "error")
 }
 
 // TestHiddenListsRefuseTheirKeys is the regression guard for keys acting on a

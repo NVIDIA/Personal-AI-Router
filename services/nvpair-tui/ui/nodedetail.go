@@ -928,6 +928,12 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		decodeOrLog(msg.Method, msg.Params, &p)
 		d.followDownload(p)
 		d.showPullProgress(p)
+		// engine:models-changed follows the loaded set, not the inventory, so a
+		// finished download is announced only here. A peer's inventory arrives
+		// with discovery instead.
+		if p.Stage == "success" {
+			return d.modelsCmd()
+		}
 
 	case "engine:remote-progress":
 		var p struct {
@@ -1132,13 +1138,22 @@ func (d *nodeDetail) settlePull(msg pullDoneMsg) {
 }
 
 // settleCancel reports how a cancellation settled. Only an acknowledged one
-// retires the download: one still being carried out, or one that failed —
-// llama.cpp's router not confirming the stop, say — may leave it running, and
-// the cancel key has to be able to try again.
+// retires the download. One still being carried out, or one that never reached
+// the download — a peer that could not be asked — leaves it in flight, so the
+// cancel key can try again. A cancel that reached the download and failed, such
+// as llama.cpp's router not confirming the stop, has ended it already: the
+// pull's error frame retires it, and the engine manager stops tracking a
+// download it could not confirm stopped.
+//
+// An acknowledgement says the download settled, not how. One that finished, or
+// failed, just as the cancel arrived is acknowledged too, after its outcome
+// frame has retired it and said what happened; that outcome stays on screen.
 func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
 	what := d.downloadLabel(msg.engine, msg.model)
+	dl := detailDownload{engine: msg.engine, model: msg.model}
+	inFlight := slices.Contains(d.downloads, dl)
 	if msg.err == nil && !msg.detached {
-		d.retireDownload(detailDownload{engine: msg.engine, model: msg.model})
+		d.retireDownload(dl)
 	}
 	if d.promptArmed() {
 		return
@@ -1148,7 +1163,7 @@ func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
 		d.status.info("download %s is still being cancelled - watch for progress", what)
 	case msg.err != nil:
 		d.status.error("cancel download %s failed: %s", what, msg.err)
-	default:
+	case inFlight:
 		d.status.ok("download %s: cancelled", what)
 	}
 }
