@@ -16,7 +16,6 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,14 +33,14 @@ const fakeDownloadPercent = 25
 // answer an interrupt, so a case that models a CLI ignoring one still runs
 // quickly. reap stays generous: it covers a real kill and the pipe closing
 // behind it.
-var testLMSCancelGraces = lmsCancelGraces{
+var testLMSCancelGraces = downloadStopGraces{
 	interrupt: 500 * time.Millisecond,
 	retry:     500 * time.Millisecond,
 	reap:      30 * time.Second,
 }
 
-func withLMSCancelGraces(ctx context.Context, graces lmsCancelGraces) context.Context {
-	return context.WithValue(ctx, lmsCancelGracesKey{}, graces)
+func withDownloadStopGraces(ctx context.Context, graces downloadStopGraces) context.Context {
+	return context.WithValue(ctx, downloadStopGracesKey{}, graces)
 }
 
 // fakeDownloadArgv builds the argv for one of the fake engine's download
@@ -234,7 +233,7 @@ func TestRunLMSDownloadCommand_ConfirmsACancellationOnlyWhenTheCLIDoes(t *testin
 	// returns whether the CLI confirmed the cancellation and how the run ended.
 	interrupt := func(t *testing.T, subcommand string) (bool, error) {
 		t.Helper()
-		ctx, cancel := context.WithCancel(withLMSCancelGraces(context.Background(), testLMSCancelGraces))
+		ctx, cancel := context.WithCancel(withDownloadStopGraces(context.Background(), testLMSCancelGraces))
 		defer cancel()
 		progress := make(chan int, 1)
 		output := &lmsDownloadOutput{lastPercent: -1, progress: func(percent int) {
@@ -305,15 +304,14 @@ func TestStopLMSDownload_FailsAnUndeliverableInterruptUnlessTheRunCompleted(t *t
 		cmd.WaitDelay = downloadWaitDelay
 		require.NoError(t, configureDownloadProcess(cmd))
 		require.NoError(t, cmd.Start(), "start the fake CLI")
-		finished := make(chan error, 1)
-		finished <- cmd.Wait()
+		runErr := cmd.Wait()
 		// The process is reaped, which is exactly the state that must not be
 		// signalled: its PID is free for the OS to reissue, and both signals
 		// reach more than the CLI.
-		var reaped atomic.Bool
-		reaped.Store(true)
+		exited := make(chan struct{})
+		close(exited)
 		output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}, completed: completed, text: "transcript"}
-		return stopLMSDownload(testLMSCancelGraces, cmd, finished, &reaped, output)
+		return stopLMSDownload(testLMSCancelGraces, lmsDownloadProcess(cmd, exited), func() error { return runErr }, output)
 	}
 
 	t.Run("the run had already completed", func(t *testing.T) {
