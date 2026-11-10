@@ -306,9 +306,9 @@ func TestTrackedPull_DownloadsARetryOnceTheCancelledDownloadHasStopped(t *testin
 		assert.Fail(t, "the retry never downloaded")
 	}
 	assert.Equal(t, []ProgressEvent{
-		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo"},
-		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo"},
-	}, publishedFrames(events), "the retry's frames must follow the cancelled download's outcome")
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo", Download: 1},
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo", Download: 2},
+	}, publishedFrames(events), "the retry's frames must follow the cancelled download's outcome, as a download of its own")
 }
 
 // A stop the engine could not confirm leaves a download that may still be
@@ -478,8 +478,9 @@ func TestTrackedPull_EndsEachDownloadWithOneTerminalFrame(t *testing.T) {
 			assert.Equal(t, []ProgressEvent{want}, frames)
 		})
 	}
+	// Each case's executor runs one download, its first.
 	terminal := func(stage string, percent int, message string) ProgressEvent {
-		return ProgressEvent{Engine: "ollama", Model: "demo", Op: "pull", Stage: stage, Percent: percent, Message: message}
+		return ProgressEvent{Engine: "ollama", Model: "demo", Op: "pull", Stage: stage, Percent: percent, Message: message, Download: 1}
 	}
 	test("a download that completes", func(t *testing.T, ex *Executor) {
 		_, err := ex.trackedPull(context.Background(), "ollama", "demo", succeedingPull)
@@ -569,7 +570,7 @@ func TestTrackedPull_CancelledRequestSendsNoFrameWhileARetryDownloads(t *testing
 	require.NoError(t, retryGot.err)
 	assertPullStatus(t, retryGot.result, "success")
 	assert.Equal(t, []ProgressEvent{
-		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo"},
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo", Download: 1},
 	}, publishedFrames(events), "only the retry may report how the model's download ended")
 }
 
@@ -617,7 +618,7 @@ func TestTrackedPull_CancelledDuplicateAddsNoSecondTerminalFrame(t *testing.T) {
 	require.NoError(t, downloadGot.err)
 	assertPullStatus(t, downloadGot.result, "cancelled")
 	assert.Equal(t, []ProgressEvent{
-		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo"},
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo", Download: 1},
 	}, publishedFrames(events), "a cancelled download ends with exactly one terminal frame")
 }
 
@@ -641,7 +642,7 @@ func TestTrackedPull_RequestsCancelledBeforeAnyRegistersSendOneTerminalFrame(t *
 	assertPullStatus(t, firstResult, "cancelled")
 	assertPullStatus(t, secondResult, "cancelled")
 	assert.Equal(t, []ProgressEvent{
-		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo"},
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo", Download: 1},
 	}, publishedFrames(events), "the model's download ended once")
 }
 
@@ -668,7 +669,7 @@ func TestTrackedPull_CancelledDuplicateOfAFinishedDownloadSettlesOnItsSuccess(t 
 	assert.False(t, duplicateRan, "the cancelled duplicate started a download")
 	assertPullStatus(t, duplicateResult, "success")
 	assert.Equal(t, []ProgressEvent{
-		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo"},
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo", Download: 1},
 	}, publishedFrames(events), "the model's download ended once")
 }
 
@@ -743,7 +744,7 @@ func TestTrackedPull_RetryCancelledWhileItWaitsAddsNoSecondTerminalFrame(t *test
 	default:
 	}
 	assert.Equal(t, []ProgressEvent{
-		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo"},
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo", Download: 1},
 	}, publishedFrames(events), "the model's download ended once")
 }
 

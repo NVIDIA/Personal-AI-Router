@@ -16,6 +16,10 @@ type ProgressEvent struct {
 	Stage   string `json:"stage,omitempty"`
 	Percent int    `json:"percent"`
 	Message string `json:"message,omitempty"`
+	// Download is the ID of the download a pull frame is from, which the ec
+	// stream of a peer's pull request filters on; see activePull.id. A UI
+	// never sees it.
+	Download uint64 `json:"-"`
 }
 
 // wirePercentIncluded reports whether an install or pull progress percent should
@@ -37,11 +41,13 @@ func wirePercentIncluded(pct int) bool {
 // result; see Manager.pullRemote.
 //
 // Subscriptions are scoped by engine, not by operation id: a subscriber watching
-// "ollama" sees every ollama frame, so if a local pull and a remote ec pull of
-// the same engine run concurrently, the remote initiator's stream may interleave
-// the local pull's advisory frames. That's intentional and harmless — each
-// stream's authoritative terminal result is the out-of-band final frame, never a
-// hub frame — and installs (emitInstallProgress) already have this property.
+// "ollama" sees every ollama frame. A pull's ec stream passes on only the
+// frames of the download its request runs as, by the ID emitPullProgress
+// stamps on each. An install's stream passes on all of them, so if a local
+// pull and a remote ec install of the same engine run concurrently, the
+// initiator's install stream may interleave the pull's advisory frames. That's
+// harmless — each stream's authoritative terminal result is the out-of-band
+// final frame, never a hub frame.
 type progressHub struct {
 	mu   sync.Mutex
 	next int

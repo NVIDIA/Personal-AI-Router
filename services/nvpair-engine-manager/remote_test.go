@@ -255,10 +255,59 @@ func TestRemotePullGate_EndsEachPullOnceAndNamesTheLast(t *testing.T) {
 	assert.True(t, second.end(), "no other pull of the download is outstanding")
 	assert.False(t, second.end(), "a pull ended twice")
 	assert.False(t, placed(t, &gate, "engine:remote-install").end(), "a request that is not a pull ended one")
+	placeCancel(t, &gate).end()
 
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
 	assert.Empty(t, gate.pulls, "the gate should forget a download once every pull of it has ended")
+	assert.Empty(t, gate.generations, "the gate should forget a download's cancels once no request for it is outstanding")
+}
+
+// A retry sent after a cancel is held until the cancel has ended, and on the
+// peer it waits for the cancelled download to stop before it runs as a
+// download of its own. Counted as another pull of the cancelled download, it
+// withheld that download's outcome, and the row stayed on "Canceling" for as
+// long as the retry ran.
+func TestRemotePullGate_NamesACancelledPullLastWhileOnlyItsRetryIsOutstanding(t *testing.T) {
+	var gate remotePullGate
+	pull := placePull(t, &gate)
+	duplicate := placePull(t, &gate)
+	cancel := placeCancel(t, &gate)
+	retry := placePull(t, &gate)
+	defer retry.end()
+	cancel.end()
+
+	assert.False(t, pull.end(), "a duplicate sent before the cancel shares the download")
+	assert.True(t, duplicate.end(), "only the retry, sent after the cancel, is outstanding")
+}
+
+// The peer names the download each pull runs as, and that settles which pulls
+// share one: a retry the peer joined onto the download a failed cancel left
+// running shares it, and a duplicate the peer ran as a download of its own,
+// because the first had finished by the time it arrived, does not.
+func TestRemotePullGate_GoesByTheDownloadsThePeerNamed(t *testing.T) {
+	t.Run("a retry joined onto the download it was sent to replace", func(t *testing.T) {
+		var gate remotePullGate
+		pull := placePull(t, &gate)
+		cancel := placeCancel(t, &gate)
+		retry := placePull(t, &gate)
+		cancel.end()
+		pull.runsAs(1)
+		retry.runsAs(1)
+
+		assert.False(t, pull.end(), "the retry is reporting on the same download")
+		assert.True(t, retry.end())
+	})
+	t.Run("a duplicate run as a download of its own", func(t *testing.T) {
+		var gate remotePullGate
+		first := placePull(t, &gate)
+		second := placePull(t, &gate)
+		defer second.end()
+		first.runsAs(1)
+		second.runsAs(2)
+
+		assert.True(t, first.end(), "the second pull is reporting on another download")
+	})
 }
 
 // sentUp is what a remote pull sent this node's UI: its engine:remote-progress
@@ -391,11 +440,46 @@ func TestRemotePull_SendsOneOutcomeForADownloadItsDuplicatesShare(t *testing.T) 
 	test("only the first stream carries it", carried, dropped)
 }
 
-// A retry's stream opens while the download it replaces is still stopping, so
-// it can carry that download's "cancelled" before its own frames. If the hub
-// then drops the retry's own outcome, passing on the copy it holds would report
-// the retry cancelled. The result is the retry's own, so the frame it ends on
-// says what the result says.
+// downloadFrame is a frame of the peer's download with the given ID.
+func downloadFrame(f streamFrame, download uint64) streamFrame {
+	f.Download = download
+	return f
+}
+
+// A cancelled pull's retry, still waiting to set off, will report on a download
+// of its own, so the cancelled pull sends its outcome rather than leave it to
+// the retry.
+func TestRemotePull_SendsTheCancelledOutcomeWhileItsRetryWaits(t *testing.T) {
+	var gate remotePullGate
+	pull := placePull(t, &gate)
+	cancel := placeCancel(t, &gate)
+	retry := placePull(t, &gate)
+	defer retry.end()
+	cancel.end()
+
+	sent := pullRemoteOver(t, pull, pullFrame("downloading"), pullFrame("cancelled"), pullResult(`{"status":"cancelled"}`))
+
+	assert.Equal(t, []string{"downloading", "cancelled"}, sent.stages())
+}
+
+// A pull learns from its stream which of the peer's downloads it runs as, so
+// a duplicate the peer ran as another download leaves it the last of its own.
+func TestRemotePull_SendsTheOutcomeOfADownloadNoOtherPullRunsAs(t *testing.T) {
+	var gate remotePullGate
+	first := placePull(t, &gate)
+	second := placePull(t, &gate)
+	defer second.end()
+	second.runsAs(2)
+
+	sent := pullRemoteOver(t, first, downloadFrame(pullFrame("downloading"), 1), downloadFrame(pullFrame("success"), 1),
+		downloadFrame(pullResult(`{"status":"success"}`), 1))
+
+	assert.Equal(t, []string{"downloading", "success"}, sent.stages())
+}
+
+// The frame a pull ends on says what its result says. The result is the
+// authority, so a copy held from the stream that disagrees with it is not
+// passed on.
 func TestRemotePull_EndsOnTheOutcomeItsResultReports(t *testing.T) {
 	var gate remotePullGate
 

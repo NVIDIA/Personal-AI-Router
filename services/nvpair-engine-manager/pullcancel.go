@@ -19,6 +19,11 @@ import (
 )
 
 type activePull struct {
+	// id tells this download apart from every other the executor runs,
+	// another download of the same model included: a cancelled download still
+	// settling and the retry waiting on it name the same engine and model.
+	// emitPullProgress stamps it on the download's frames.
+	id     uint64
 	cancel context.CancelFunc
 	done   chan struct{}
 	result json.RawMessage
@@ -98,10 +103,59 @@ type pullClaim struct {
 	reported  bool
 	installed bool
 	result    json.RawMessage
-	once      sync.Once
+	// download is the ID of the download the request runs as, once it has
+	// registered one, joined one, or reported its cancellation as a
+	// placeholder: the download whose frames are this request's. A request
+	// stopped before it started without a frame of its own has none. Guarded
+	// by the executor's pullMu.
+	download uint64
+	once     sync.Once
 }
 
 type pullClaimKey struct{}
+
+// claimedDownload returns a function that reports the ID of the download the
+// request claimed on ctx runs as, or zero while it runs as none.
+func (e *Executor) claimedDownload(ctx context.Context) func() uint64 {
+	claim, _ := ctx.Value(pullClaimKey{}).(*pullClaim)
+	return func() uint64 {
+		if claim == nil {
+			return 0
+		}
+		e.pullMu.Lock()
+		defer e.pullMu.Unlock()
+		return claim.download
+	}
+}
+
+// runsAs records that the claim's request runs as download p of key. Called
+// with pullMu held.
+func (c *pullClaim) runsAs(key pullKey, p *activePull) {
+	if c != nil && c.key == key {
+		c.download = p.id
+	}
+}
+
+// registerPull registers p as the download of key, under an ID of its own,
+// and records it as the download claim's request runs as. Called with pullMu
+// held.
+func (e *Executor) registerPull(key pullKey, p *activePull, claim *pullClaim) {
+	e.downloads++
+	p.id = e.downloads
+	e.pulls[key] = p
+	claim.runsAs(key, p)
+}
+
+// registeredDownload reports the ID of the download registered for engine and
+// model, or zero when none is.
+func (e *Executor) registeredDownload(engine, model string) uint64 {
+	e.pullMu.Lock()
+	defer e.pullMu.Unlock()
+	if p := e.pulls[pullKey{engine: engine, model: model}]; p != nil {
+		return p.id
+	}
+	return 0
+}
 
 // claimPull marks a pull request accepted and not yet finished. It has to be
 // taken where the request is accepted, in the order the client sent it, rather
@@ -238,7 +292,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 			// "cancelled" would land after.
 			p.placeholder = true
 			p.requested.Store(true)
-			e.pulls[key] = p
+			e.registerPull(key, p, claim)
 			e.pullOutcomeReported(key, false, nil)
 			e.pullMu.Unlock()
 			e.emitPullOutcome(engine, model, true, nil)
@@ -257,6 +311,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 			// A second request for a download already in flight joins it. An
 			// error here would be reported against the live pull's own model,
 			// and a terminal error frame disables that row's Cancel button.
+			claim.runsAs(key, active)
 			e.pullMu.Unlock()
 			return joinPull(ctx, active)
 		}
@@ -283,7 +338,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 			predecessors = append(predecessors, active.done)
 		}
 	}
-	e.pulls[key] = p
+	e.registerPull(key, p, claim)
 	// This download supersedes one whose stop was never confirmed: from here a
 	// cancel reports this one.
 	delete(e.stopsUnconfirmed, key)

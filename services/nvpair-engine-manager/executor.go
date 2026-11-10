@@ -93,6 +93,9 @@ type engineState struct {
 type Executor struct {
 	pullMu sync.Mutex
 	pulls  map[pullKey]*activePull
+	// downloads counts the downloads registered so far, so each has an ID of
+	// its own; see activePull.id.
+	downloads uint64
 	// stopsUnconfirmed holds, per engine+model, the failure of the last
 	// download whose engine could not confirm it stopped, until the next
 	// download of that model registers. See stopUnconfirmed.
@@ -325,6 +328,12 @@ func (e *Executor) emitPullProgress(ev ProgressEvent) {
 		params["percent"] = ev.Percent
 	}
 	e.notify("engine:pull-progress", params)
+	// A download publishes frames only while it is registered, and no other
+	// download of its model registers until it has settled, so the one
+	// registered is the one this frame is from.
+	if ev.Model != "" {
+		ev.Download = e.registeredDownload(ev.Engine, ev.Model)
+	}
 	e.progress.publish(ev)
 }
 
