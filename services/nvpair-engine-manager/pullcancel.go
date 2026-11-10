@@ -86,6 +86,13 @@ type pullClaim struct {
 	// cancelled is set by a cancel that found this request outstanding, and
 	// stops it before it starts a download. Guarded by the executor's pullMu.
 	cancelled bool
+	// reported is set once the model's terminal frame goes out while this
+	// request is outstanding, so its client has heard how the model's download
+	// ended. installed and result keep that download's result if it installed
+	// the model. Guarded by the executor's pullMu.
+	reported  bool
+	installed bool
+	result    json.RawMessage
 	once      sync.Once
 }
 
@@ -187,12 +194,26 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// model is registered — the cancelled one still settling, or a retry
 		// accepted after the cancel — the model's frames are that download's.
 		// It reports its own outcome; a "cancelled" frame from this request
-		// would repeat it, or tell every UI that a live retry had ended.
+		// would repeat it, or tell every UI that a live retry had ended. Once
+		// the model's terminal frame has gone out while this request was
+		// outstanding, from a download or from another request stopped like
+		// this one, a frame from this request would repeat that too. And if
+		// that download installed the model, its result is this request's, as
+		// though the request had joined it: "cancelled" would say the model is
+		// not there.
 		if claim != nil && claim.key == key && claim.cancelled {
 			_, registered := e.pulls[key]
+			reports := !registered && !claim.reported
+			if reports {
+				e.pullOutcomeReported(key, false, nil)
+			}
+			installed, result := claim.installed, claim.result
 			e.pullMu.Unlock()
-			if !registered {
+			if reports {
 				e.emitPullOutcome(engine, model, true, nil)
+			}
+			if installed {
+				return result, nil
 			}
 			return cancelledPull(), nil
 		}
@@ -266,6 +287,7 @@ waitForPredecessors:
 	e.emitPullOutcome(engine, model, cancelled, err)
 	e.pullMu.Lock()
 	delete(e.pulls, key)
+	e.pullOutcomeReported(key, err == nil && !pullResultCancelled(result), result)
 	if errors.As(err, new(stopUnconfirmedError)) {
 		if e.stopsUnconfirmed == nil {
 			e.stopsUnconfirmed = make(map[pullKey]error)
@@ -276,6 +298,20 @@ waitForPredecessors:
 	close(p.done)
 	e.pullMu.Unlock()
 	return result, err
+}
+
+// pullOutcomeReported records, on every request for key still outstanding, that
+// the model's terminal frame has gone out, and the result if the download
+// installed the model. A later outcome that did not install it leaves an
+// earlier install in place, since a cancel never deletes a model. Called with
+// pullMu held.
+func (e *Executor) pullOutcomeReported(key pullKey, installed bool, result json.RawMessage) {
+	for _, claim := range e.pullClaims[key] {
+		claim.reported = true
+		if installed {
+			claim.installed, claim.result = true, result
+		}
+	}
 }
 
 // emitPullOutcome sends a download's terminal frame: "success", "cancelled",
