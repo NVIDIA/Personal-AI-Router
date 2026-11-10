@@ -44,10 +44,7 @@ func (m *Manager) applyTelemetryAt(value noderec.NodeTelemetry, receivedAt time.
 	}
 	ageAtReceipt := normalizedTelemetryAge(value.MSSince)
 	incomingFresh := value.TelemetryValid && ageAtReceipt <= gpuTelemetryFreshness
-	utilization := value.GPUUtilizationPct
-	if utilization > 100 {
-		utilization = 100
-	}
+	utilization := min(value.GPUUtilizationPct, 100)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -91,10 +88,7 @@ func telemetryFreshAt(state gpuTelemetryState, now time.Time) bool {
 	if !state.valid {
 		return false
 	}
-	elapsed := now.Sub(state.receivedAt)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(now.Sub(state.receivedAt), 0)
 	return state.ageAtReceipt+elapsed <= gpuTelemetryFreshness
 }
 

@@ -107,7 +107,7 @@ func newModelScopeHandler(client *http.Client, endpoint string) http.Handler {
 		if metadata {
 			parts = parts[2:]
 		}
-		if len(parts) < 3 || !llamaCPPRepoPattern.MatchString(parts[0]+"/"+parts[1]) {
+		if len(parts) < 3 || !hfRepoPattern.MatchString(parts[0]+"/"+parts[1]) {
 			http.NotFound(w, r)
 			return
 		}

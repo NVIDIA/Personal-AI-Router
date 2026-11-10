@@ -109,9 +109,7 @@ func (d *dispatcher) dispatch(ctx context.Context, jobs []DispatchJob) []Dispatc
 	sem := make(chan struct{}, limit)
 	var wg sync.WaitGroup
 	for i, job := range jobs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -120,7 +118,7 @@ func (d *dispatcher) dispatch(ctx context.Context, jobs []DispatchJob) []Dispatc
 				return
 			}
 			results[i] = d.send(ctx, job)
-		}()
+		})
 	}
 	wg.Wait()
 	return results

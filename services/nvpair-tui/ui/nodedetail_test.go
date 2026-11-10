@@ -105,6 +105,84 @@ func TestUnreportedLoadState_IsUnknown(t *testing.T) {
 	}
 }
 
+// modelRowStates maps each model row to its LOADED column.
+func modelRowStates(d *nodeDetail) map[string]string {
+	got := map[string]string{}
+	for _, row := range d.modelTable.Rows() {
+		got[row[0]] = row[2]
+	}
+	return got
+}
+
+// Ejecting a vLLM model stops the engine, so it advertises nothing. Its
+// downloaded models must keep their rows, so they can still be loaded or deleted.
+func TestRemoteDetail_KeepsTheDownloadedModelsOfAStoppedVLLMPeer(t *testing.T) {
+	d := remoteDetail()
+
+	d.update(discoveryPush(t, availableNode{
+		HostUUID:           "peer",
+		Name:               "peer-host",
+		LoadedByEngine:     map[string][]string{"vllm": {}},
+		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
+	}))
+
+	assert.Equal(t, map[string]string{
+		"Qwen/Qwen3.5-4B":                        "no",
+		"mistralai/Ministral-3-3B-Instruct-2512": "no",
+	}, modelRowStates(d))
+}
+
+// With --served-model-name, vLLM answers to the alias, but the model manager
+// lists the cached repository, which the loaded list names. The repository row
+// shows as loaded and the alias gets no row of its own.
+func TestModelRows_MarkTheCachedModelLoadedWhenVLLMServesItUnderAnAlias(t *testing.T) {
+	d := localDetail()
+	d.models = modelsResult{
+		Models:             []string{"qwen-api"},
+		ModelsByEngine:     map[string][]string{"vllm": {"qwen-api"}},
+		LoadedByEngine:     map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
+		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
+	}
+	d.refreshModels()
+
+	assert.Equal(t, map[string]string{
+		"Qwen/Qwen3.5-4B":                        "yes",
+		"mistralai/Ministral-3-3B-Instruct-2512": "no",
+	}, modelRowStates(d))
+}
+
+// A model vLLM serves from a local path is not in the cache, but it is loaded
+// and still gets a row.
+func TestModelRows_ListAServedModelThatIsNotInTheDownloadedList(t *testing.T) {
+	d := localDetail()
+	d.models = modelsResult{
+		ModelsByEngine:     map[string][]string{"vllm": {"/models/qwen"}},
+		LoadedByEngine:     map[string][]string{"vllm": {"/models/qwen"}},
+		DownloadedByEngine: map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
+	}
+	d.refreshModels()
+
+	assert.Equal(t, map[string]string{"/models/qwen": "yes", "Qwen/Qwen3.5-4B": "no"}, modelRowStates(d))
+}
+
+// "Nothing downloaded" is said only when an engine read its inventory and found
+// it empty. A peer whose inventory could not be read is not described that way.
+func TestEmptyModelsHint_SaysNothingIsDownloadedOnlyWhenTheInventoryWasRead(t *testing.T) {
+	hintFor := func(downloaded map[string][]string) string {
+		d := remoteDetail()
+		d.node.membership = membershipMember
+		d.models = modelsResult{DownloadedByEngine: downloaded}
+		d.refreshModels()
+		return d.emptyModelsHint()
+	}
+	t.Run("inventory read and empty", func(t *testing.T) {
+		assert.Contains(t, hintFor(map[string][]string{"vllm": {}}), "No models downloaded")
+	})
+	t.Run("inventory not read", func(t *testing.T) {
+		assert.NotContains(t, hintFor(nil), "downloaded")
+	})
+}
+
 // TestLocalDetailIgnoresDiscoveryModels checks this machine keeps using the
 // authoritative engine:models RPC rather than the discovery summary.
 func TestLocalDetail_IgnoresDiscoveryModels(t *testing.T) {
@@ -218,7 +296,7 @@ func TestProxyIndexForEngine_NormalizesNamesAndRejectsUnknownEngine(t *testing.T
 	assert.Equal(t, 1, p.indexForEngine("lmstudio"))
 	// Case and padding must not decide whether a port renders.
 	assert.Equal(t, 0, p.indexForEngine("  OLLAMA "), "normalisation")
-	assert.Equal(t, -1, p.indexForEngine("vllm"), "unknown engine")
+	assert.Equal(t, -1, p.indexForEngine("nosuchengine"), "unknown engine")
 }
 
 // seedSettings puts a settings snapshot in the cache, as a fetch or a push
@@ -542,7 +620,7 @@ func TestSettingsErrors_UsesDeterministicOrder(t *testing.T) {
 		"proxyPort":  "port in use",
 	}
 	first := joinSettingsErrors(errs)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		require.Equal(t, first, joinSettingsErrors(errs), "attempt %d stays stable", i)
 	}
 	assert.Contains(t, first, "unbalanced quote", "every field's message")
@@ -1441,4 +1519,31 @@ func TestServiceTab_OmitsPortSettings(t *testing.T) {
 	for _, it := range v.items {
 		assert.NotContains(t, strings.ToLower(it.label), "port", "Service tab still offers %q; ports belong on the node", it.label)
 	}
+}
+
+// vLLM downloads into the Hugging Face cache without its server, as the desktop
+// app allows, so a stopped vLLM can take a download when it is highlighted. An
+// engine that downloads through its server still needs to be running.
+func TestPullTargetEngine_AcceptsAStoppedEngineThatDownloadsWithoutItsServer(t *testing.T) {
+	test := func(name string, highlighted engineStatus, want string) {
+		t.Run(name, func(t *testing.T) {
+			d := localDetail()
+			d.engines = []engineStatus{highlighted}
+			d.refreshEngines()
+			assert.Equal(t, want, d.pullTargetEngine())
+		})
+	}
+	test("a stopped vLLM", engineStatus{Engine: "vllm", Installed: true}, "vllm")
+	test("a vLLM that is not installed", engineStatus{Engine: "vllm"}, "")
+	test("a stopped Ollama", engineStatus{Engine: "ollama", Installed: true}, "")
+	test("a running Ollama", engineStatus{Engine: "ollama", Installed: true, Running: true}, "ollama")
+}
+
+// A vLLM start can download and load for minutes. It is shown as starting,
+// not as not running.
+func TestEngineTable_ShowsAnEngineThatIsStarting(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "vllm", DisplayName: "vLLM", Installed: true, Starting: true}}
+	d.refreshEngines()
+	assert.Contains(t, d.View(), "starting")
 }

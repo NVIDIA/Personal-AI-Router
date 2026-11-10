@@ -99,12 +99,11 @@ func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertr
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       clustertrust.PeerListenerIdleTimeout,
 	}
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
-	}()
+	})
 	slog.Info("serving engine control surface (mTLS)",
 		"addr", addr, "path", controlEnginesPath, "clustered", mesh.Clustered())
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

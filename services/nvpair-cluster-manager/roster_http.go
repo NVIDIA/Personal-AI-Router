@@ -367,9 +367,7 @@ func (m *Manager) reconcilePeersAndMaybeSelfRemove() {
 		peers++
 		addrs := m.resolvePeerAddrs(n)
 		uuid := n.NodeUUID
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			outcome, provenRemoval := m.reconcileWith(addrs, uuid)
 			if outcome != reconcileRejected {
 				return
@@ -382,7 +380,7 @@ func (m *Manager) reconcilePeersAndMaybeSelfRemove() {
 				bareRejected = append(bareRejected, n)
 			}
 			mu.Unlock()
-		}()
+		})
 	}
 	wg.Wait()
 	if proven == 0 && len(bareRejected) > 0 {

@@ -16,7 +16,8 @@
 package relay
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"sync"
 
 	"nvpair-shared/noderec"
@@ -68,7 +69,9 @@ func (c *RegistrationCache) Snapshot() []noderec.RegisterParams {
 		out = append(out, p)
 	}
 	c.mu.Unlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	slices.SortFunc(out, func(a, b noderec.RegisterParams) int {
+		return cmp.Compare(a.Service, b.Service)
+	})
 	return out
 }
 
@@ -156,7 +159,9 @@ func (d *Directory) filteredLocked(f noderec.SubscribeParams) []noderec.Director
 			out = append(out, n)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].HostUUID < out[j].HostUUID })
+	slices.SortFunc(out, func(a, b noderec.DirectoryNode) int {
+		return cmp.Compare(a.HostUUID, b.HostUUID)
+	})
 	return out
 }
 
@@ -207,6 +212,8 @@ func (d *Directory) Snapshot(filter noderec.ServiceKey) []noderec.DirectoryNode 
 		out = append(out, n)
 	}
 	d.mu.Unlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].HostUUID < out[j].HostUUID })
+	slices.SortFunc(out, func(a, b noderec.DirectoryNode) int {
+		return cmp.Compare(a.HostUUID, b.HostUUID)
+	})
 	return out
 }

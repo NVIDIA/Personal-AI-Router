@@ -11,6 +11,44 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.17 — Stalled candidates yield to their peers for one deadline (#144)
+
+- A candidate that used up a full first-byte deadline without producing content is ranked behind its peers for one deadline.
+
+## 1.0.16 — Local node figures stay current in discovery (#5)
+
+- The scanner republishes its own entry on every peer refresh, so GPU, CPU and memory figures follow the node instead of freezing at daemon start.
+
+## 1.0.15 — vLLM engine support (#181)
+
+- vLLM can now be installed and managed from PAIR like the other engines.
+- vLLM can download, load, eject and delete models from the local Hugging Face cache; loading another model restarts vLLM on it, and the previous model is restored if it fails.
+- vLLM picks the right tool-call parser for each model, so agent clients work with Qwen, Granite and other models.
+- vLLM uses the Hugging Face cache (or its `--download-dir`), mirror, token and offline settings set in its launch settings, and downloads only the weights it loads.
+- vLLM is shown as starting while it downloads and loads a model, and Stop or Eject works during that time.
+- A download that vLLM could not load is refused before anything is downloaded, and Add model shows who published each model.
+- On a Mac, FP8 models that vLLM-Metal cannot run are refused with a message to choose the BF16 version.
+- The terminal interface shows a downloaded or deleted model straight away, and can download into a stopped vLLM.
+- vLLM is no longer offered on Windows, where it cannot run.
+
+## 1.0.14 — Simplify Go concurrency and collections with standard library helpers (#195)
+
+- Refresh internal service concurrency and collection code while preserving intended application behavior.
+- Apply `go fix` across the repo
+
+## 1.0.13 — Limit JSON reads for node metadata and peer messages (#167)
+
+- Limit JSON memory usage when processing input for node telemetry, model inventories, error synchronization, and remote engine progress. Improve connection reuse when fetching node metadata and model inventories.
+
+## 1.0.12 — Restore macOS privileged helper communication after upgrades (#192)
+
+- Preserve the helper-specific signing identifier needed to communicate with the macOS background helper and complete setup.
+- Replace an enabled but unreachable helper once per app version after an upgrade, and keep setup incomplete until helper communication and firewall configuration succeed.
+
+## 1.0.11 — Use the PAIR symbol in the macOS menu bar (#194)
+
+- Replace the opaque app tile with a transparent PAIR house-and-network symbol, with Retina support.
+
 ## 1.0.10 — Background services shut down in parallel (#173)
 
 - The background services now shut down in parallel rather than one at a time, so a busy machine no longer pays each service's shutdown in turn.

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/httpcon"
 	"nvpair-shared/mdns"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
@@ -91,24 +92,16 @@ type daemon struct {
 	// ignores our own uuid — so this is the sole self-key writer lock.
 	selfMu sync.Mutex
 
-	// lastInfo / lastModels cache each node's last successful enrichment (keyed by
-	// hostUuid) — GPU/CPU/memory from node-info and the model list from
-	// engine-manager — so a transient fetch failure reuses the prior values
-	// instead of blanking the node card. Same resilience the legacy scanner path
-	// had via its own lastInfo cache.
-	infoMu     sync.Mutex
-	lastInfo   map[string]NodeInfoResponse
-	lastInfoAt map[string]time.Time
-	lastModels map[string][]string
-	// lastModelsByEngine caches the per-engine attribution (engine name ->
-	// models) alongside the flat lastModels union, so a transient /v1/models
-	// miss reuses both rather than blanking the per-engine card. Keyed by
-	// hostUuid like the other enrichment caches.
-	lastModelsByEngine map[string]map[string][]string
-	// lastLoadedByEngine caches the per-engine loaded (in-memory) set from the
-	// same /v1/models fetch, so a transient miss reuses it rather than blanking
-	// a remote node's loaded state. Keyed by hostUuid.
-	lastLoadedByEngine map[string]map[string][]string
+	// lastInfo / lastInventory cache each node's last successful enrichment
+	// (keyed by hostUuid) — GPU/CPU/memory from node-info and the whole
+	// /v1/models answer from engine-manager (the flat union, the per-engine
+	// attribution, and the loaded and downloaded sets) — so a transient fetch
+	// failure reuses the prior values instead of blanking the node card. Same
+	// resilience the legacy scanner path had via its own lastInfo cache.
+	infoMu        sync.Mutex
+	lastInfo      map[string]NodeInfoResponse
+	lastInfoAt    map[string]time.Time
+	lastInventory map[string]modelInventory
 	// nodeInfoDown holds the nodes whose last node-info enrichment failed, so
 	// the outage is reported when it starts and when it ends rather than once
 	// per sweep. Guarded by infoMu with the caches it explains: the reason a
@@ -149,7 +142,7 @@ type daemon struct {
 // nodeInfoFetchTimeout bounds each node-info enrichment HTTP(S) GET, shared by
 // the plain and (opt-in) TLS clients.
 const nodeInfoFetchTimeout = 3 * time.Second
-const nodeInfoResponseDrainLimit = 64 << 10
+const nodeInfoMaxResponseBytes = 1 << 20
 
 // nodeInfoDialTimeout bounds only the TCP connect of that GET.
 //
@@ -185,6 +178,7 @@ func nodeInfoTransport(tlsConfig *tls.Config) *http.Transport {
 // own models-sweep cap (modelsTimeout, 5s) so the fetch waits for a bounded
 // sweep to finish instead of timing out partway through it.
 const modelsFetchTimeout = 6 * time.Second
+const modelsMaxResponseBytes = 16 << 20
 
 // peerRefreshInterval is the cadence of the mDNS-independent convergence loop
 // (refreshPeersLoop). The event-driven enrichment still handles fast initial
@@ -315,7 +309,7 @@ func telemetryTargetKey(hosts []string, port int) string {
 
 func telemetryRetryDelay(consecutiveFailures int) time.Duration {
 	delay := telemetryRefreshInterval
-	for failure := 0; failure < consecutiveFailures; failure++ {
+	for range consecutiveFailures {
 		if delay >= telemetryRetryMax/2 {
 			return telemetryRetryMax
 		}
@@ -350,24 +344,22 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string, tlsHTTP
 
 	instance, _ := os.Hostname()
 	d := &daemon{
-		codec:              codec,
-		mesh:               mesh,
-		reg:                reg,
-		instance:           instance,
-		baseDir:            baseDir,
-		clusterDir:         clusterDir,
-		dir:                newDirectory(),
-		http:               &http.Client{Timeout: nodeInfoFetchTimeout, Transport: nodeInfoTransport(nil)},
-		modelsHTTP:         &http.Client{Timeout: modelsFetchTimeout},
-		modelsClients:      clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
-		tlsHTTP:            tlsHTTP,
-		lastInfo:           make(map[string]NodeInfoResponse),
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
-		nodeInfoDown:       make(map[string]bool),
-		lastActivityAt:     make(map[string]time.Time),
+		codec:          codec,
+		mesh:           mesh,
+		reg:            reg,
+		instance:       instance,
+		baseDir:        baseDir,
+		clusterDir:     clusterDir,
+		dir:            newDirectory(),
+		http:           &http.Client{Timeout: nodeInfoFetchTimeout, Transport: nodeInfoTransport(nil)},
+		modelsHTTP:     &http.Client{Timeout: modelsFetchTimeout},
+		modelsClients:  clustertrust.NewPeerClientPool(mesh, modelsFetchTimeout),
+		tlsHTTP:        tlsHTTP,
+		lastInfo:       make(map[string]NodeInfoResponse),
+		lastInfoAt:     make(map[string]time.Time),
+		lastInventory:  make(map[string]modelInventory),
+		nodeInfoDown:   make(map[string]bool),
+		lastActivityAt: make(map[string]time.Time),
 	}
 	// Anti-flap: before evicting a node that's missed the mDNS threshold,
 	// confirm it still answers on node-info (or engine-manager as fallback).
@@ -818,20 +810,12 @@ func (d *daemon) dropSelf(oldHostUUID, newHostUUID string) {
 	if at, ok := d.lastInfoAt[oldHostUUID]; ok {
 		d.lastInfoAt[newHostUUID] = at
 	}
-	if models, ok := d.lastModels[oldHostUUID]; ok {
-		d.lastModels[newHostUUID] = models
-	}
-	if byEngine, ok := d.lastModelsByEngine[oldHostUUID]; ok {
-		d.lastModelsByEngine[newHostUUID] = byEngine
-	}
-	if loaded, ok := d.lastLoadedByEngine[oldHostUUID]; ok {
-		d.lastLoadedByEngine[newHostUUID] = loaded
+	if inventory, ok := d.lastInventory[oldHostUUID]; ok {
+		d.lastInventory[newHostUUID] = inventory
 	}
 	delete(d.lastInfo, oldHostUUID)
 	delete(d.lastInfoAt, oldHostUUID)
-	delete(d.lastModels, oldHostUUID)
-	delete(d.lastModelsByEngine, oldHostUUID)
-	delete(d.lastLoadedByEngine, oldHostUUID)
+	delete(d.lastInventory, oldHostUUID)
 	d.infoMu.Unlock()
 	if existed {
 		d.emit(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: oldHostUUID, Name: node.Name})
@@ -1298,15 +1282,13 @@ func (d *daemon) fetchNodeInfoWithin(ctx context.Context, ip string, port int) (
 		slog.Debug("node-info fetch failed", "ip", ip, "url", url, "err", err)
 		return NodeInfoResponse{}, false
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nodeInfoResponseDrainLimit))
-		_ = resp.Body.Close()
-	}()
+	defer httpcon.DrainAndClose(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return NodeInfoResponse{}, false
 	}
 	var info NodeInfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	reader := io.LimitReader(resp.Body, nodeInfoMaxResponseBytes)
+	if err := json.NewDecoder(reader).Decode(&info); err != nil {
 		return NodeInfoResponse{}, false
 	}
 	return info, true
@@ -1334,52 +1316,42 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 		return
 	}
 	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, em.Port, node.ClusterUUID)
-		if !fetched {
-			return modelInventory{}, false
-		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
+		return d.fetchModels(host, em.Port, node.ClusterUUID)
 	}
 	key := hostKey{hostUUID: node.HostUUID, service: noderec.ServiceEngineManager}
 	if _, inventory, ok := askRemembered(&d.enrichHosts, key, hosts, ask); ok {
 		d.infoMu.Lock()
-		if d.lastModels == nil {
-			d.lastModels = make(map[string][]string)
-		}
-		if d.lastModelsByEngine == nil {
-			d.lastModelsByEngine = make(map[string]map[string][]string)
-		}
-		if d.lastLoadedByEngine == nil {
-			d.lastLoadedByEngine = make(map[string]map[string][]string)
-		}
-		d.lastModels[node.HostUUID] = inventory.models
-		d.lastModelsByEngine[node.HostUUID] = inventory.byEngine
-		d.lastLoadedByEngine[node.HostUUID] = inventory.loadedByEngine
+		d.cacheInventory(node.HostUUID, inventory)
 		d.infoMu.Unlock()
-		node.Models = inventory.models
-		node.ModelsByEngine = inventory.byEngine
-		node.LoadedByEngine = inventory.loadedByEngine
+		inventory.applyTo(node)
 		return
 	}
 	d.infoMu.Lock()
-	cached, had := d.lastModels[node.HostUUID]
-	cachedByEngine := d.lastModelsByEngine[node.HostUUID]
-	cachedLoaded := d.lastLoadedByEngine[node.HostUUID]
+	cached, had := d.lastInventory[node.HostUUID]
 	d.infoMu.Unlock()
 	if had {
-		node.Models = cached
-		node.ModelsByEngine = cachedByEngine
-		node.LoadedByEngine = cachedLoaded
+		cached.applyTo(node)
 	}
+}
+
+// cacheInventory records a node's last-good /v1/models answer. The caller holds
+// infoMu.
+func (d *daemon) cacheInventory(hostUUID string, inventory modelInventory) {
+	if d.lastInventory == nil {
+		d.lastInventory = make(map[string]modelInventory)
+	}
+	d.lastInventory[hostUUID] = inventory
 }
 
 // fetchModels does one GET of a node's /v1/models, returning the
 // flat model-name union, the per-engine attribution (engine name -> models),
-// the per-engine loaded (in-memory) set, and whether it succeeded. Shape:
-// {"models":["name",...],"modelsByEngine":{"ollama":[...]},"loadedByEngine":{"ollama":[...]}}.
-// modelsByEngine and loadedByEngine are additive (omitempty on the wire); a peer
-// that doesn't send them yields nil maps, and the flat union still enriches the
-// node. A present engine key with [] is a successful empty inventory.
+// the per-engine loaded (in-memory) set, the per-engine downloaded inventory of
+// an engine that advertises only what it serves, and whether it succeeded. Shape:
+// {"models":["name",...],"modelsByEngine":{"ollama":[...]},"loadedByEngine":{"ollama":[...]},
+// "downloadedByEngine":{"vllm":[...]}}. The three maps are additive (omitempty on
+// the wire); a peer that doesn't send them yields nil maps, and the flat union
+// still enriches the node. A present engine key with [] is a successful empty
+// inventory.
 // A peer's model inventory is cluster data, so a peer is fetched over cluster
 // mTLS keyed on the cluster principal it advertises (clusterUUID, from its
 // cluster-uuid= TXT): this node must hold a pin for that principal, or there is
@@ -1387,32 +1359,39 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 // dialed over loopback (both callers force that for self), which stays plain and
 // therefore keeps working when this node belongs to no cluster — a standalone
 // machine still has to show its own models.
-func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string, map[string][]string, map[string][]string, bool) {
+func (d *daemon) fetchModels(ip string, port int, clusterUUID string) (modelInventory, bool) {
 	client, scheme, ok := d.modelsClient(ip, clusterUUID)
 	if !ok {
 		slog.Debug("model enrichment skipped: peer is not a pinned cluster member",
 			"ip", ip, "clusterUuid", clusterUUID)
-		return nil, nil, nil, false
+		return modelInventory{}, false
 	}
 	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/models"
 	resp, err := client.Get(url)
 	if err != nil {
 		slog.Debug("model enrichment failed", "ip", ip, "url", url, "err", err)
-		return nil, nil, nil, false
+		return modelInventory{}, false
 	}
-	defer resp.Body.Close()
+	defer httpcon.DrainAndClose(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, nil, false
+		return modelInventory{}, false
 	}
 	var body struct {
-		Models         []string            `json:"models"`
-		ModelsByEngine map[string][]string `json:"modelsByEngine"`
-		LoadedByEngine map[string][]string `json:"loadedByEngine"`
+		Models             []string            `json:"models"`
+		ModelsByEngine     map[string][]string `json:"modelsByEngine"`
+		LoadedByEngine     map[string][]string `json:"loadedByEngine"`
+		DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, nil, nil, false
+	reader := io.LimitReader(resp.Body, modelsMaxResponseBytes)
+	if err := json.NewDecoder(reader).Decode(&body); err != nil {
+		return modelInventory{}, false
 	}
-	return body.Models, body.ModelsByEngine, body.LoadedByEngine, true
+	return modelInventory{
+		models:             body.Models,
+		byEngine:           body.ModelsByEngine,
+		loadedByEngine:     body.LoadedByEngine,
+		downloadedByEngine: body.DownloadedByEngine,
+	}, true
 }
 
 // modelsClient picks the transport for a model fetch: the plain client over
@@ -1467,6 +1446,9 @@ func (d *daemon) refreshPeersLoop(ctx context.Context) {
 			}
 			d.refreshClusterIdentityOnce()
 			d.refreshModelsOnce()
+			// Self needs its own pull: onBrowse skips our uuid and publishSelf
+			// only runs when the registry moves. See refreshSelfInfoOnce.
+			d.refreshSelfInfoOnce()
 		}
 	}
 }
@@ -1554,22 +1536,20 @@ func (d *daemon) dispatchTelemetry(
 			continue
 		}
 
-		workers.Add(1)
-		go func(hostUUID string, hosts []string, port int, token uint64, backoff bool) {
-			defer workers.Done()
+		workers.Go(func() {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				d.telemetryRetries.finish(hostUUID, token, true, time.Now())
+				d.telemetryRetries.finish(n.HostUUID, retryToken, true, time.Now())
 				return
 			}
-			ok := d.refreshNodeTelemetryCandidates(ctx, hostUUID, hosts, port)
-			if !backoff || ctx.Err() != nil {
+			ok := d.refreshNodeTelemetryCandidates(ctx, n.HostUUID, hosts, ni.Port)
+			if n.HostUUID == self || ctx.Err() != nil {
 				ok = true
 			}
-			d.telemetryRetries.finish(hostUUID, token, ok, time.Now())
-		}(n.HostUUID, hosts, ni.Port, retryToken, n.HostUUID != self)
+			d.telemetryRetries.finish(n.HostUUID, retryToken, ok, time.Now())
+		})
 	}
 }
 
@@ -1623,10 +1603,7 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 
 	age := int64(0)
 	if info.TelemetryValid {
-		age = info.MSSince
-		if age < 0 {
-			age = 0
-		}
+		age = max(info.MSSince, 0)
 		elapsed := time.Since(startedAt).Milliseconds()
 		if elapsed > maxTelemetryAge-age {
 			age = maxTelemetryAge
@@ -1682,14 +1659,12 @@ func (d *daemon) refreshClusterIdentityOnce() {
 		if !ok || n.IP == "" || n.HostUUID == self {
 			continue
 		}
-		wg.Add(1)
 		sem <- struct{}{}
 		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID string, hosts []string, port int) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
-			d.refreshNodeClusterIdentityCandidates(hostUUID, hosts, port)
-		}(n.HostUUID, hosts, ni.Port)
+			d.refreshNodeClusterIdentityCandidates(n.HostUUID, hosts, ni.Port)
+		})
 	}
 	wg.Wait()
 }
@@ -1765,16 +1740,62 @@ func (d *daemon) refreshModelsOnce() {
 		if !ok || n.IP == "" {
 			continue
 		}
-		wg.Add(1)
 		sem <- struct{}{}
 		hosts := append([]string(nil), n.CandidateIPs()...)
-		go func(hostUUID, guardIP string, hosts []string, port int, clusterUUID string) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
-			d.refreshNodeModelsCandidates(hostUUID, guardIP, hosts, port, clusterUUID)
-		}(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+			d.refreshNodeModelsCandidates(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+		})
 	}
 	wg.Wait()
+}
+
+// refreshSelfInfoOnce re-reads our own node-info over loopback, applies just the
+// GPU, CPU and memory figures to the directory entry for this host, and
+// republishes the entry.
+//
+// Self is the odd one out in the refresh loops. onBrowse returns early on our own
+// uuid, so self never gets the per-browse re-enrichment every peer gets, and
+// publishSelf is otherwise only called when the registry moves — a service
+// (un)register, an identity or address change. refreshPeersLoop refreshes
+// advertised addresses, the mesh, models and cluster identity, none of which touch
+// the local hardware figures. They therefore stayed at whatever they were when the
+// daemon started: observed on an RTX 3060, the card filled to 9.1 GB while the
+// directory kept reporting the 0.12 GB it held at startup, with node-info serving
+// the true value every two seconds the whole time.
+//
+// This is deliberately narrower than calling publishSelf on a timer. It pulls the
+// same loopback node-info a peer would and moves three fields through applyInfo;
+// the rest of the self record — identity, addresses, services, models — stays
+// with the paths that own it. The entry is republished on every tick, unchanged
+// figures included: a repeated node-updated carrying the same three facets is
+// harmless to its consumers and spares a compare. Returns whether the entry was
+// refreshed, which the tests assert on.
+func (d *daemon) refreshSelfInfoOnce() bool {
+	rec := d.reg.record()
+	if rec.HostUUID == "" {
+		return false // no identity resolved yet — nothing to anchor self on
+	}
+	node, present := d.dir.get(rec.HostUUID)
+	if !present {
+		return false // not published yet; publishSelf seeds the entry first
+	}
+	ni, has := node.Services[noderec.ServiceNodeInfo]
+	if !has {
+		return false
+	}
+	// Enrich over loopback, never the advertised LAN ip: a first-run Windows
+	// firewall block on inbound to our own LAN address must not blank the local
+	// node's metrics (the "no metrics" failure mode publishSelfLocked guards too).
+	probe := node
+	d.enrichInfoCandidates(&probe, []string{loopbackHost})
+
+	updated, valid := d.dir.applyInfo(rec.HostUUID, node.IP, ni.Port, probe.GPUs, probe.CPU, probe.Memory)
+	if !valid {
+		return false
+	}
+	d.emit(noderec.NotifyNodeUpdated, updated)
+	return true
 }
 
 // refreshNodeModels fetches one peer's /v1/models and, on success, applies it to
@@ -1809,42 +1830,26 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 		hosts = []string{loopbackHost}
 	}
 	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, emPort, clusterUUID)
-		if !fetched {
-			return modelInventory{}, false
-		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
+		return d.fetchModels(host, emPort, clusterUUID)
 	}
 	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager}
 	_, inventory, fetched := askRemembered(&d.enrichHosts, key, hosts, ask)
 	if !fetched {
 		return false
 	}
-	models, byEngine, loadedByEngine := inventory.models, inventory.byEngine, inventory.loadedByEngine
 	// Refresh the enrichment cache BEFORE touching the directory: the caches
 	// (infoMu) and the directory (dir.mu) are guarded by different locks, so if
 	// the directory were updated first, a concurrent onBrowse->enrichModelsAt whose
-	// own fetch fails would fall back to a still-stale lastModels and upsert the
+	// own fetch fails would fall back to a still-stale lastInventory and upsert the
 	// old inventory, reverting this update. Writing the cache first means that
 	// fallback reads the fresh value. The only side effect — caching a value for
 	// a node applyModels then finds removed — is benign (it is the last-known-good
 	// value the cache exists to preserve, and forget() clears it on eviction).
 	d.infoMu.Lock()
-	if d.lastModels == nil {
-		d.lastModels = make(map[string][]string)
-	}
-	if d.lastModelsByEngine == nil {
-		d.lastModelsByEngine = make(map[string]map[string][]string)
-	}
-	if d.lastLoadedByEngine == nil {
-		d.lastLoadedByEngine = make(map[string]map[string][]string)
-	}
-	d.lastModels[hostUUID] = models
-	d.lastModelsByEngine[hostUUID] = byEngine
-	d.lastLoadedByEngine[hostUUID] = loadedByEngine
+	d.cacheInventory(hostUUID, inventory)
 	d.infoMu.Unlock()
 
-	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, models, byEngine, loadedByEngine)
+	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, inventory)
 	if !valid {
 		return false
 	}
@@ -1861,9 +1866,7 @@ func (d *daemon) forget(hostUUID string) {
 	d.infoMu.Lock()
 	delete(d.lastInfo, hostUUID)
 	delete(d.lastInfoAt, hostUUID)
-	delete(d.lastModels, hostUUID)
-	delete(d.lastModelsByEngine, hostUUID)
-	delete(d.lastLoadedByEngine, hostUUID)
+	delete(d.lastInventory, hostUUID)
 	delete(d.nodeInfoDown, hostUUID)
 	d.infoMu.Unlock()
 	d.activityMu.Lock()

@@ -33,7 +33,7 @@ func credentials(h http.Header, origin string) bool {
 func tokens(values []string) ([]string, bool) {
 	var out []string
 	for _, value := range values {
-		for _, token := range strings.Split(value, ",") {
+		for token := range strings.SplitSeq(value, ",") {
 			token = strings.TrimSpace(token)
 			if token == "" {
 				continue
@@ -125,7 +125,7 @@ func Combine(r *http.Request, responses []http.Header) (http.Header, bool) {
 func EndToEndHeaders(h http.Header) http.Header {
 	out := h.Clone()
 	for _, value := range out.Values("Connection") {
-		for _, name := range strings.Split(value, ",") {
+		for name := range strings.SplitSeq(value, ",") {
 			out.Del(strings.TrimSpace(name))
 		}
 	}

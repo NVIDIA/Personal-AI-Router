@@ -131,6 +131,7 @@ const (
 	NameOllama   = "ollama"
 	NameLMStudio = "lmstudio"
 	NameLlamaCPP = "llamacpp"
+	NameVLLM     = "vllm"
 )
 
 // all is the ordered engine set. Ollama is first; see the package comment.
@@ -158,6 +159,14 @@ var all = []Engine{
 		FacadePort:       8080,
 		EnginePortBase:   8081,
 		PortFile:         "llamacpp-proxy-port.json",
+	},
+	{
+		Name:             NameVLLM,
+		DisplayName:      "vLLM",
+		DiscoveryService: noderec.ServiceVLLM,
+		FacadePort:       8000,
+		EnginePortBase:   8001,
+		PortFile:         "vllm-proxy-port.json",
 	},
 }
 

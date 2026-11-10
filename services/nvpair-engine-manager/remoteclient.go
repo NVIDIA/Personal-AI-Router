@@ -10,6 +10,7 @@ package main
 // server side enforces with a 403.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -25,6 +26,7 @@ import (
 const (
 	remoteResponseHeaderTimeout      = 30 * time.Second
 	remoteReadyResponseHeaderTimeout = 11 * time.Minute
+	remoteStreamFrameBytes           = maxFrameBytes
 )
 
 // remoteClient talks to one peer's ec surface.
@@ -38,8 +40,8 @@ type remoteClient struct {
 }
 
 // waitsForEngineReadiness reports whether a peer may only answer after an
-// engine is healthy or an Ollama model is loaded, which the ordinary 30s
-// response-header budget cannot cover.
+// engine is healthy or an Ollama or vLLM model is loaded, which the ordinary
+// 30s response-header budget cannot cover.
 //
 // Cutting such a call off is worse than slow. The initiator's cancellation
 // propagates into the peer's in-flight handler, so bringUpCommand tears the
@@ -51,8 +53,10 @@ func waitsForEngineReadiness(path, engine string) bool {
 	}
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
+	// vLLM's load_model restarts the engine on the new model and replies once
+	// it is ready.
 	if path == controlLoadPath {
-		return engine == "ollama"
+		return engine == "ollama" || engine == "vllm"
 	}
 	return path == controlStartPath || path == controlDeletePath
 }
@@ -178,15 +182,17 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 		return streamFrame{}, fmt.Errorf("remote %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 
-	dec := json.NewDecoder(resp.Body)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), remoteStreamFrameBytes)
 	var result streamFrame
 	haveResult := false
-	for {
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
 		var f streamFrame
-		if derr := dec.Decode(&f); derr != nil {
-			if derr == io.EOF {
-				break
-			}
+		if derr := json.Unmarshal(line, &f); derr != nil {
 			return streamFrame{}, fmt.Errorf("remote %s: decode frame: %w", path, derr)
 		}
 		switch f.Type {
@@ -200,6 +206,9 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 		case "error":
 			return streamFrame{}, fmt.Errorf("%s", f.Message)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return streamFrame{}, fmt.Errorf("remote %s: read frame: %w", path, err)
 	}
 	if !haveResult {
 		return streamFrame{}, fmt.Errorf("remote %s: stream ended without a result", path)

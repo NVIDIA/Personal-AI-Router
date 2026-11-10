@@ -137,7 +137,8 @@ func TestRunCatalog_UsesRequestedSourceInsteadOfLocalSelection(t *testing.T) {
 	test := func(name, localSource, peerSource, expectedURL string) {
 		t.Run(name, func(t *testing.T) {
 			var output bytes.Buffer
-			manager := NewManager(NewCodec(&output), &Executor{}, nil)
+			executor := NewExecutor(loadWithOverrides(t, t.TempDir()), NewReporter(nil), func(string, any) {}, t.TempDir())
+			manager := NewManager(NewCodec(&output), executor, nil)
 			manager.catalog.baseURL, manager.catalog.modelScopeEndpoint = server.URL, server.URL
 			manager.catalog.llamaSource = func() (string, error) { return localSource, nil }
 			params, err := json.Marshal(catalogParams{Engine: "llamacpp", Query: "absent", ModelSource: peerSource})

@@ -52,9 +52,8 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 
 	mp := &managedProc{cmd: cmd, done: make(chan struct{})}
 	var scanWg sync.WaitGroup
-	scanWg.Add(2)
-	go func() { defer scanWg.Done(); scanLines(stdout, "stdout", onLine) }()
-	go func() { defer scanWg.Done(); scanLines(stderr, "stderr", onLine) }()
+	scanWg.Go(func() { scanLines(stdout, "stdout", onLine) })
+	scanWg.Go(func() { scanLines(stderr, "stderr", onLine) })
 	go func() {
 		// Drain stdout/stderr fully before Wait: Wait closes the pipes on
 		// exit, which would otherwise truncate the final captured lines.
@@ -90,8 +89,13 @@ func (mp *managedProc) stop(grace time.Duration) {
 		return // already exited
 	default:
 	}
+	pid := mp.cmd.Process.Pid
+	// However the process we started exits, an engine that forks helpers (vLLM's
+	// EngineCore) can leave them behind, holding GPU memory, when its main
+	// process goes down mid-start. Nothing else will ever clean them up.
+	defer killGroupRemnants(pid)
 	if grace <= 0 {
-		_ = signalPID(mp.cmd.Process.Pid, true)
+		_ = signalPID(pid, true)
 		<-mp.done
 		return
 	}
@@ -103,7 +107,7 @@ func (mp *managedProc) stop(grace time.Duration) {
 		return
 	case <-timer.C:
 	}
-	_ = signalPID(mp.cmd.Process.Pid, true)
+	_ = signalPID(pid, true)
 	<-mp.done
 }
 

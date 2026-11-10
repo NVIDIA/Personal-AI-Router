@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -21,8 +22,11 @@ type engineStatus struct {
 	DisplayName string `json:"display_name"`
 	Installed   bool   `json:"installed"`
 	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port"`
+	// Starting is true while a start is launching the engine and waiting for
+	// it to become ready, which for vLLM can be minutes.
+	Starting bool `json:"starting"`
+	Healthy  bool `json:"healthy"`
+	Port     int  `json:"port"`
 }
 
 func (e engineStatus) label() string {
@@ -35,11 +39,15 @@ func (e engineStatus) label() string {
 // modelsResult mirrors nvpair-engine-manager's ModelsResult, the engine:models
 // reply and the engine:models-changed payload. LoadedByEngine names the models
 // currently resident in memory, which the engine-manager polls for and pushes —
-// so a client never has to poll to know what is loaded.
+// so a client never has to poll to know what is loaded. DownloadedByEngine is
+// the inventory of an engine that advertises only the model it is serving
+// (vLLM): ModelsByEngine then holds just that one, and this holds every model it
+// can load, even while it is stopped.
 type modelsResult struct {
-	Models         []string            `json:"models"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine"`
+	Models             []string            `json:"models"`
+	ModelsByEngine     map[string][]string `json:"modelsByEngine"`
+	LoadedByEngine     map[string][]string `json:"loadedByEngine"`
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
 }
 
 // engineOp is one lifecycle request and how to describe it to the operator.
@@ -133,6 +141,21 @@ var modelWires = map[string]modelWire{
 		"delete": modelOnly("delete_model"),
 		"pull":   modelOnly("pull_model"),
 	},
+	// vLLM takes the model under "model" alone. It serves one model per
+	// process, so load restarts it on the model and unload stops it.
+	engines.NameVLLM: {
+		"load":   modelOnly("load_model"),
+		"unload": modelOnly("unload_model"),
+		"delete": modelOnly("delete_model"),
+		"pull":   modelOnly("pull_model"),
+	},
+}
+
+// pullsWhileStopped are the engines whose download does not go through their
+// server: vLLM downloads into the Hugging Face cache with its own tool. It
+// mirrors the desktop's modelOpsWhenStopped capability.
+var pullsWhileStopped = map[string]bool{
+	engines.NameVLLM: true,
 }
 
 // downloadExamples show what a download name looks like for each engine. The
@@ -142,6 +165,7 @@ var downloadExamples = map[string]string{
 	engines.NameOllama:   "llama3.2",
 	engines.NameLMStudio: "lmstudio-community/Qwen3-8B-GGUF",
 	engines.NameLlamaCPP: "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+	engines.NameVLLM:     "Qwen/Qwen3.5-4B",
 }
 
 // downloadPrompt is the placeholder for the download-by-name field, with an
@@ -193,6 +217,10 @@ type engineOpMsg struct {
 	// running on the engine. Distinct from both success and failure: nothing
 	// went wrong, and nothing has finished either.
 	detached bool
+	// stopped marks a Load that a Stop or Eject ended before the model was
+	// served. The user asked for that, so it is not a failure, and the model
+	// did not load either.
+	stopped bool
 }
 
 // engineCmd issues a lifecycle request against a node. An empty node means this
@@ -239,9 +267,24 @@ func modelCmd(client *rpc.Client, node, engine string, act modelAction, model st
 		}
 		params = local
 	}
-	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
-		return classifyOpResult(what, engine, act.op, err)
+	return call(client, method, params, func(msg *rpc.Message, err error) tea.Msg {
+		return classifyModelOpResult(what, engine, act.op, msg, err)
 	})
+}
+
+// classifyModelOpResult is classifyOpResult for a model operation, which can
+// also have been stopped: vLLM's Load starts the engine, and a Stop or Eject
+// during it ends the Load with "stopped" in the reply.
+func classifyModelOpResult(what, engine, op string, msg *rpc.Message, err error) engineOpMsg {
+	if err == nil && msg != nil && op == "load" {
+		var reply struct {
+			Stopped bool `json:"stopped"`
+		}
+		if json.Unmarshal(msg.Result, &reply) == nil && reply.Stopped {
+			return engineOpMsg{what: what, engine: engine, stopped: true}
+		}
+	}
+	return classifyOpResult(what, engine, op, err)
 }
 
 // longRunningOps are the operations whose real duration is set by how much data
@@ -276,7 +319,7 @@ var longRunningOps = map[string]bool{
 }
 
 // classifyOpResult reports an operation as done, failed, or still running.
-func classifyOpResult(what, engine, op string, err error) tea.Msg {
+func classifyOpResult(what, engine, op string, err error) engineOpMsg {
 	if err != nil && longRunningOps[op] && errors.Is(err, context.DeadlineExceeded) {
 		return engineOpMsg{what: what, engine: engine, detached: true}
 	}

@@ -52,7 +52,7 @@ rm -rf "$HOME/Library/Application Support/Nvidia Corporation/Personal AI Router"
 ```
 
 Downloaded models are not in either directory. Each engine keeps them in its own
-store — `~/.ollama`, `~/.lmstudio/models`, and `~/.llamacpp` — so deleting the
+store — `~/.ollama`, `~/.lmstudio/models`, `~/.llamacpp`, and `~/.cache/huggingface` (vLLM) — so deleting the
 bundle or the configuration directory leaves them in place.
 
 ## Requirements
@@ -81,9 +81,9 @@ xattr -dr com.apple.quarantine /path/to/NVIDIA-Personal-AI-Router-<version>
   advertising. Run the broker with `--log-level debug` to see live discovery
   logs on stderr.
 - **"Bind: address already in use"**: the proxies listen on `11434` (Ollama),
-  `1234` (LM Studio), and `8080` (llama.cpp); another instance of the proxy or
+  `1234` (LM Studio), `8080` (llama.cpp), and `8000` (vLLM); another instance of the proxy or
   another process is holding one of them. Find the offender with
-  `lsof -nP -iTCP:11434 -iTCP:1234 -iTCP:8080 -sTCP:LISTEN` and stop it.
+  `lsof -nP -iTCP:11434 -iTCP:1234 -iTCP:8080 -iTCP:8000 -sTCP:LISTEN` and stop it.
 
 Report issues at the project's tracker. Include the broker's `--log-level debug`
 output and your macOS version (`sw_vers`) and architecture (`uname -m`).

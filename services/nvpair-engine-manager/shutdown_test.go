@@ -213,7 +213,7 @@ func TestStopAll_RetriesAFailedStopCommand(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, ex.Start(context.Background(), "daemon"))
+	require.NoError(t, ex.Start(t.Context(), "daemon"))
 	ex.StopAll()
 	st, err := ex.Status("daemon")
 	require.NoError(t, err)
@@ -325,8 +325,7 @@ func TestStopAll_StopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 		_ = daemon.Serve(ln)
 	}()
 
-	watchCtx, cancelWatch := context.WithCancel(context.Background())
-	defer cancelWatch()
+	watchCtx := t.Context()
 	go func() {
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()

@@ -58,7 +58,7 @@ func TestReconcile_ReusesPeerConnections(t *testing.T) {
 
 	addr := ts.Listener.Addr().String()
 	const rounds = 5
-	for i := 0; i < rounds; i++ {
+	for i := range rounds {
 		outcome, _ := m.reconcileWith([]string{addr}, peerUUID)
 		require.Equal(t, reconcileAccepted, outcome, "round (%v)", i)
 	}

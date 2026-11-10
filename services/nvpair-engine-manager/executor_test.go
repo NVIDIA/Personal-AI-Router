@@ -63,6 +63,20 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
 }
 
+// The readiness allowance counts from when the start began, so time spent
+// before the engine launched is not granted a second time.
+func TestWaitReady_CountsTheAllowanceFromWhenTheStartBegan(t *testing.T) {
+	e := newTestExecutor(t, &Manifest{Engine: "test"})
+	probe := &Probe{TCP: "127.0.0.1:{port}", TimeoutS: 60}
+	began := time.Now().Add(-61 * time.Second)
+
+	finished := time.Now()
+	err := e.waitReady(t.Context(), probe, 1, began)
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(finished), 10*time.Second, "the allowance had already run out")
+}
+
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 	t.Helper()
 	transport, ok := client.Transport.(*http.Transport)
@@ -406,6 +420,29 @@ func TestGetInstalled_AdoptsExternallyRunningEngineWithoutDetectPath(t *testing.
 	require.True(t, statuses[0].Installed, "expected get-installed to adopt the external engine (%v)", statuses)
 	require.True(t, statuses[0].Running, "expected get-installed to adopt the external engine (%v)", statuses)
 	require.True(t, statuses[0].Healthy, "expected get-installed to adopt the external engine (%v)", statuses)
+}
+
+// An engine whose manifest has no block for this OS and CPU, the way vLLM has
+// none for Windows, can never be installed here, so it is not offered.
+func TestGetInstalled_OmitsEnginesThisHostCannotRun(t *testing.T) {
+	runsHere := testEngineManifest(fakeEngineBin)
+	elsewhere := &Manifest{
+		Engine: "elsewhere", DisplayName: "Elsewhere", ManifestVersion: 1,
+		Platforms: map[string]Platform{"plan9/mips": {Runtime: Runtime{Bin: "elsewhere", Port: 1}}},
+	}
+	reg := NewRegistry()
+	reg.engines[runsHere.Engine] = runsHere
+	reg.engines[elsewhere.Engine] = elsewhere
+	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+
+	var listed []string
+	for _, st := range ex.GetInstalled() {
+		listed = append(listed, st.Engine)
+	}
+	assert.Equal(t, []string{runsHere.Engine}, listed)
+
+	_, err := ex.Status("elsewhere")
+	require.ErrorContains(t, err, "Elsewhere is not supported on "+runtime.GOOS+"/"+runtime.GOARCH)
 }
 
 func TestInstall_AdoptsExternalServiceWithoutDownloading(t *testing.T) {
@@ -918,8 +955,7 @@ func TestCommandMode_StartsReportsHealthAndStopsEngine(t *testing.T) {
 	// stopMarker) the daemon exits and its port stops accepting connections.
 	// waitUnavailable confirms a stop by an actual TCP refusal, not a 503 from a
 	// still-listening socket, so the stand-in must genuinely close its listener.
-	var closeOnce sync.Once
-	closeServer := func() { closeOnce.Do(srv.Close) }
+	closeServer := sync.OnceFunc(srv.Close)
 	defer closeServer()
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
@@ -1043,4 +1079,39 @@ func rmCmd(path string) []string {
 		return []string{"cmd", "/c", "del", "/q", path}
 	}
 	return []string{"rm", "-f", path}
+}
+
+// A start that takes a minute (vLLM loading weights) holds the engine's
+// lifecycle lock for that minute. Status and the installed-engines listing are
+// what the UI polls and what a toggle awaits with a short timeout, so they must
+// answer from what is already known instead of queueing behind the operation.
+func TestStatus_AnswersWithoutWaitingForARunningLifecycleOperation(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	st, err := ex.state("fake")
+	require.NoError(t, err)
+	st.opMu.Lock() // an operation is in flight
+	defer st.opMu.Unlock()
+
+	answered := make(chan EngineStatus, 2)
+	go func() {
+		status, err := ex.Status("fake")
+		assert.NoError(t, err)
+		answered <- status
+	}()
+	go func() {
+		for _, status := range ex.GetInstalled() {
+			if status.Engine == "fake" {
+				answered <- status
+			}
+		}
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case status := <-answered:
+			assert.Equal(t, "fake", status.Engine)
+			assert.NotEmpty(t, status.DisplayName)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "status waited for a running lifecycle operation")
+		}
+	}
 }

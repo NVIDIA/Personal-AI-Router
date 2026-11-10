@@ -5,6 +5,7 @@ package cors
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -47,9 +48,7 @@ func ServePreflight(w http.ResponseWriter, r *http.Request, targets []Target) {
 	querySlots := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	for i, target := range targets {
-		wg.Add(1)
-		go func(i int, target Target) {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case querySlots <- struct{}{}:
 				defer func() { <-querySlots }()
@@ -79,7 +78,7 @@ func ServePreflight(w http.ResponseWriter, r *http.Request, targets []Target) {
 			// drop silence without dropping a refusal.
 			unavailable[i] = resp.StatusCode >= 500
 			denied[i] = !unavailable[i] && (resp.StatusCode < 200 || resp.StatusCode >= 300)
-		}(i, target)
+		})
 	}
 	wg.Wait()
 	for _, rejected := range denied {
@@ -107,8 +106,6 @@ func ServePreflight(w http.ResponseWriter, r *http.Request, targets []Target) {
 		http.Error(w, "engines do not all permit this preflight", http.StatusForbidden)
 		return
 	}
-	for key, values := range headers {
-		w.Header()[key] = values
-	}
+	maps.Copy(w.Header(), headers)
 	w.WriteHeader(http.StatusNoContent)
 }

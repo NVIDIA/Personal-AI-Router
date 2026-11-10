@@ -38,8 +38,11 @@ type EngineStatus struct {
 	DisplayName string `json:"display_name"`
 	Installed   bool   `json:"installed"`
 	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port,omitempty"`
+	// Starting is true while a start is launching the engine and waiting for
+	// it to become ready. Running is false until it is.
+	Starting bool `json:"starting,omitempty"`
+	Healthy  bool `json:"healthy"`
+	Port     int  `json:"port,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -60,19 +63,27 @@ type engineState struct {
 	// never takes opMu.
 	opMu sync.Mutex
 
-	mu         sync.Mutex
-	installed  bool
-	running    bool
-	healthy    bool
-	stopping   bool
+	mu        sync.Mutex
+	installed bool
+	running   bool
+	healthy   bool
+	stopping  bool
+	// starting is true while a start launches the engine and waits for it to
+	// become ready, after the checks that can refuse it.
+	starting   bool
 	adopted    bool  // started externally; we can't stop it
 	gen        int64 // bumped each start; gates stale health loops
 	port       int
 	binPath    string
 	proc       *managedProc
 	healthStop context.CancelFunc
-	// startCancel lets StopAll unblock doStart before waiting on opMu.
+	// startCancel lets StopAll, Stop and Eject unblock doStart before waiting
+	// on opMu.
 	startCancel context.CancelFunc
+	// stopsWaiting counts Stop and Eject calls waiting for opMu. While it is
+	// above zero no start begins, and a model switch that a stop cancelled
+	// puts its previous launch back without starting it.
+	stopsWaiting int
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
@@ -235,7 +246,7 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	}
 	plat, ok := m.HostPlatform()
 	if !ok {
-		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("%s is not supported on %s/%s", m.DisplayName, runtime.GOOS, runtime.GOARCH)
 	}
 	st := &engineState{
 		manifest:   m,

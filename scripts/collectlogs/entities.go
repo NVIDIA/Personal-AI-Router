@@ -4,10 +4,11 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"net"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -600,11 +601,8 @@ func versionContext(path string) bool {
 // identifiers share that label, so one machine reads as node-a throughout
 // instead of as three unrelated tokens.
 func (d *discovery) allocate() {
-	sort.SliceStable(d.nodes, func(i, j int) bool {
-		if d.nodes[i].FirstSeen != d.nodes[j].FirstSeen {
-			return d.nodes[i].FirstSeen < d.nodes[j].FirstSeen
-		}
-		return d.nodes[i].seq < d.nodes[j].seq
+	slices.SortStableFunc(d.nodes, func(a, b *Node) int {
+		return cmp.Or(cmp.Compare(a.FirstSeen, b.FirstSeen), cmp.Compare(a.seq, b.seq))
 	})
 
 	for i, n := range d.nodes {
@@ -697,11 +695,8 @@ func (d *discovery) sortedEntities() []*Entity {
 	for _, e := range d.entities {
 		out = append(out, e)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].FirstSeen != out[j].FirstSeen {
-			return out[i].FirstSeen < out[j].FirstSeen
-		}
-		return out[i].Value < out[j].Value
+	slices.SortStableFunc(out, func(a, b *Entity) int {
+		return cmp.Or(cmp.Compare(a.FirstSeen, b.FirstSeen), cmp.Compare(a.Value, b.Value))
 	})
 	return out
 }
@@ -809,10 +804,8 @@ func collect(v any, fn func(string)) {
 }
 
 func appendUnique(list []string, v string) []string {
-	for _, existing := range list {
-		if existing == v {
-			return list
-		}
+	if slices.Contains(list, v) {
+		return list
 	}
 	return append(list, v)
 }
@@ -822,6 +815,6 @@ func sortedKeys(m map[string]bool) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

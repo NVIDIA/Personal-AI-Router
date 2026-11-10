@@ -12,6 +12,7 @@ import { mergeModelHubResults, searchEngineHub } from '@/ui/utils/model-hub-sear
 import { resolveStoredSort, writeStoredSort } from '@/ui/utils/model-hub-content-storage'
 import { isHubEntryDownloaded } from '@/ui/utils/match-downloaded-model'
 import { EngineType } from '@/shared/types/engines'
+import type { EngineHubSearchResponse } from '@/shared/types/engine-api'
 import type { ModelItem } from '@/ui/types/engine-info'
 import getErrorString from '@/shared/utils/get-error-string'
 
@@ -41,7 +42,11 @@ export const ModelHubContent = ({
 }: ModelHubContentProps) => {
     const [disabledListClick, setDisabledListClick] = useState(false)
     const [loading, setLoading] = useState(true)
-    const [allModels, setAllModels] = useState<ModelEntry[]>([])
+    const [catalog, setCatalog] = useState<EngineHubSearchResponse<ModelEntry>>({
+        models: [],
+        searchable: null
+    })
+    const allModels = catalog.models
     const [remoteModels, setRemoteModels] = useState<ModelEntry[]>([])
     const [query, setQuery] = useState('')
     const [composingQuery, setComposingQuery] = useState(false)
@@ -54,7 +59,7 @@ export const ModelHubContent = ({
 
     // Per-engine browse cache keeps local filtering immediate while upstream
     // searches wait for a pause in typing.
-    const cacheRef = useRef<Map<EngineType, ModelEntry[]>>(new Map())
+    const cacheRef = useRef<Map<EngineType, EngineHubSearchResponse<ModelEntry>>>(new Map())
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
     const fetchGenRef = useRef(0)
@@ -64,17 +69,18 @@ export const ModelHubContent = ({
     const loadModels = useCallback(async (backend: EngineType) => {
         const cached = cacheRef.current.get(backend)
         if (cached) {
-            setAllModels(cached)
+            setCatalog(cached)
             setLoading(false)
             return
         }
         const gen = ++fetchGenRef.current
         setLoading(true)
+        setCatalog({ models: [], searchable: null })
         try {
             const result = await searchEngineHub(backend)
             if (fetchGenRef.current !== gen) return
-            cacheRef.current.set(backend, result)
-            setAllModels(result)
+            if (result.searchable !== null) cacheRef.current.set(backend, result)
+            setCatalog(result)
             setLoading(false)
         } catch (error) {
             if (fetchGenRef.current !== gen) return
@@ -83,7 +89,7 @@ export const ModelHubContent = ({
                 ...prev,
                 { id: performance.now().toString(), message: getErrorString(error) }
             ])
-            setAllModels([])
+            setCatalog({ models: [], searchable: null })
             setLoading(false)
         }
     }, [])
@@ -94,7 +100,7 @@ export const ModelHubContent = ({
         setComposingQuery(false)
         submittedQueryRef.current = ''
         if (!engine) {
-            setAllModels([])
+            setCatalog({ models: [], searchable: null })
             setQuery('')
             setSort({ ...SORT_DEFAULT_STATE })
             return
@@ -186,7 +192,9 @@ export const ModelHubContent = ({
         async (nextQuery: string) => {
             const normalized = nextQuery.trim()
             setQuery(nextQuery)
-            if (engine !== 'llama-cpp' || normalized.length === 0) return
+            // An unread catalog leaves support unknown, so an explicit query
+            // can still recover from a failed initial browse.
+            if (!engine || catalog.searchable === false || normalized.length === 0) return
 
             const generation = ++searchGenRef.current
             submittedQueryRef.current = normalized
@@ -195,7 +203,7 @@ export const ModelHubContent = ({
             try {
                 const result = await searchEngineHub(engine, normalized)
                 if (searchGenRef.current !== generation) return
-                setRemoteModels(result)
+                setRemoteModels(result.searchable ? result.models : [])
             } catch (error) {
                 if (searchGenRef.current !== generation) return
                 setErrors(prev => [
@@ -206,17 +214,17 @@ export const ModelHubContent = ({
                 if (searchGenRef.current === generation) setSearching(false)
             }
         },
-        [engine]
+        [engine, catalog.searchable]
     )
 
     useEffect(() => {
-        if (engine !== 'llama-cpp' || composingQuery || !query.trim()) return
+        if (!engine || catalog.searchable === false || composingQuery || !query.trim()) return
         const timer = setTimeout(() => {
             // Enter or the search button may already have submitted this text.
             if (query.trim() !== submittedQueryRef.current) void handleSearch(query)
         }, 300)
         return () => clearTimeout(timer)
-    }, [engine, query, composingQuery, handleSearch])
+    }, [engine, catalog.searchable, query, composingQuery, handleSearch])
 
     return (
         <Stack gap="0" className="overflow-hidden min-h-0 min-w-0 grow w-full">

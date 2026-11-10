@@ -109,7 +109,7 @@ func isNvidiaSmiNA(s string) bool {
 func parseNvidiaStatic(out string) ([]GPUInfo, bool) {
 	var gpus []GPUInfo
 	var unifiedMemory bool
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		fields := splitCSVRow(line)
 		if len(fields) < 3 {
 			continue

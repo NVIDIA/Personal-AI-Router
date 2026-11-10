@@ -73,7 +73,7 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 		if len(entry.Tasks) > 0 {
 			row.PipelineTag = entry.Tasks[0]
 		}
-		if row.Private || string(row.Gated) != "false" || !llamaCPPRepoPattern.MatchString(row.ID) || !hasTag(row.Tags, "gguf") || !isGenerative(row) {
+		if row.Private || string(row.Gated) != "false" || !hfRepoPattern.MatchString(row.ID) || !hasTag(row.Tags, "gguf") || !isGenerative(row) {
 			continue
 		}
 		wg.Add(1)
@@ -97,7 +97,7 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
-	models := normalizeLlamaCPPRows(rows)
+	models := normalizeListing(rows, llamaCPPModel)
 	for i := range models {
 		repo, _, _ := strings.Cut(models[i].ID, ":")
 		models[i].URL = modelScopeURL + "/models/" + repo

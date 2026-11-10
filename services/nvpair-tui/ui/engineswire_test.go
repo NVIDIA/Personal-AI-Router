@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
+	"nvpair-tui/rpc"
 )
 
 // wireOf builds a model operation's envelope, failing the test if the engine
@@ -91,10 +93,7 @@ func TestOllamaUnload_SendsKeepAlive(t *testing.T) {
 // was too, leaving the operator unable to tell a started download from a
 // keystroke that missed.
 func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
-	msg := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
-	require.NotNil(t, msg, "a pull that outran its deadline produced no message at all")
-	op, ok := msg.(engineOpMsg)
-	require.True(t, ok, "result must be engineOpMsg")
+	op := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
 	require.NoError(t, op.err, "a still-running download must not be reported as failed")
 	assert.True(t, op.detached, "a still-running download must not be reported as complete")
 }
@@ -117,8 +116,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// reply rather than a failed start.
 	longRunning := func(name, op string) {
 		t.Run(name, func(t *testing.T) {
-			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-			require.True(t, ok, "result must be engineOpMsg")
+			result := classifyOpResult("x", "ollama", op, context.DeadlineExceeded)
 			assert.True(t, result.detached, "a timed-out long operation must be reported as still running")
 			require.NoError(t, result.err, "operation is still running")
 		})
@@ -132,8 +130,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 
 	quick := func(name, op string) {
 		t.Run(name, func(t *testing.T) {
-			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-			require.True(t, ok, "result must be engineOpMsg")
+			result := classifyOpResult("x", "ollama", op, context.DeadlineExceeded)
 			assert.False(t, result.detached, "a quick operation that times out has really failed")
 			assert.Error(t, result.err, "a timeout must not be reported as success")
 		})
@@ -143,7 +140,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	quick("stop times out", "stop")
 
 	// A real error is still an error, however long the operation usually takes.
-	result, _ := classifyOpResult("x", "ollama", "pull", errors.New("no such model")).(engineOpMsg)
+	result := classifyOpResult("x", "ollama", "pull", errors.New("no such model"))
 	assert.False(t, result.detached, "a genuine pull error must not be detached")
 	assert.Error(t, result.err, "a genuine pull error must be reported")
 }
@@ -191,7 +188,7 @@ func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 		assert.Contains(t, downloadExamples, e.Name, "every engine needs a download example")
 	}
 	assert.Contains(t, downloadPrompt(engines.NameLlamaCPP, "llama.cpp"), ":Q4_K_M", "llama.cpp prompt must show the quantization suffix")
-	assert.Equal(t, "model name for vLLM", downloadPrompt("vllm", "vLLM"))
+	assert.Equal(t, "model name for No Such Engine", downloadPrompt("nosuchengine", "No Such Engine"))
 }
 
 // TestEveryEngineHasAModelWire is what makes adding an engine a matter of
@@ -205,7 +202,7 @@ func TestEveryEngine_HasAModelWire(t *testing.T) {
 			require.NoError(t, err, "%s must have a local wire for %s", e.Name, op)
 		}
 	}
-	_, err := modelActionWire("vllm", "load", "m")
+	_, err := modelActionWire("nosuchengine", "load", "m")
 	assert.Error(t, err, "an engine with no wire must not be given one")
 }
 
@@ -247,4 +244,28 @@ func TestLifecycleRemoteCoverage_MatchesManager(t *testing.T) {
 	for _, name := range []string{"install", "start", "stop"} {
 		assert.False(t, engineOps[name].localOnly, "%s has a remote variant and should not be local-only", name)
 	}
+}
+
+// A vLLM Load that a Stop or Eject ended replies with stopped set. That is what
+// the user asked for, so it must not read as a failure, nor as a model loaded.
+func TestModelOpResult_ReportsAStoppedLoadAsStopped(t *testing.T) {
+	test := func(name, op, result string, want engineOpMsg) {
+		t.Run(name, func(t *testing.T) {
+			msg := classifyModelOpResult("load org/m", "vllm", op, &rpc.Message{Result: json.RawMessage(result)}, nil)
+			assert.Equal(t, want, msg)
+		})
+	}
+	test("a stopped Load", "load", `{"model":"org/m","restarted":false,"stopped":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm", stopped: true})
+	test("a Load that finished", "load", `{"model":"org/m","restarted":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+	test("another engine's Load result", "load", `{"ok":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+	test("only a Load can be stopped", "delete", `{"stopped":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+
+	d := localDetail()
+	d.update(engineOpMsg{what: "load org/m", engine: "vllm", stopped: true})
+	assert.Contains(t, d.status.render(), "was stopped before it finished")
+	assert.NotContains(t, d.status.render(), "failed")
 }

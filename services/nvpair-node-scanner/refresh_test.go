@@ -91,14 +91,12 @@ func portFromURL(t *testing.T, raw string) int {
 // TestRefreshSelfDialsLoopback).
 func newRefreshTestDaemon() *daemon {
 	return &daemon{
-		reg:                newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
-		dir:                newDirectory(),
-		modelsHTTP:         &http.Client{Timeout: modelsFetchTimeout},
-		lastInfo:           make(map[string]NodeInfoResponse),
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
+		reg:           newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
+		dir:           newDirectory(),
+		modelsHTTP:    &http.Client{Timeout: modelsFetchTimeout},
+		lastInfo:      make(map[string]NodeInfoResponse),
+		lastInfoAt:    make(map[string]time.Time),
+		lastInventory: make(map[string]modelInventory),
 	}
 }
 
@@ -263,9 +261,9 @@ func TestRefreshFetchFailure_RetainsInventory(t *testing.T) {
 	assert.Equal(t, []string{"keep-me"}, got.Models, "Models after failure")
 	assert.Equal(t, map[string][]string{"ollama": {"keep-me"}}, got.ModelsByEngine, "ModelsByEngine after failure")
 	d.infoMu.Lock()
-	cachedFlat := d.lastModels["peer-C"]
-	cachedByEngine := d.lastModelsByEngine["peer-C"]
+	cached := d.lastInventory["peer-C"]
 	d.infoMu.Unlock()
+	cachedFlat, cachedByEngine := cached.models, cached.byEngine
 	assert.Equal(t, []string{"keep-me"}, cachedFlat, "cached flat inventory")
 	assert.Equal(t, map[string][]string{"ollama": {"keep-me"}}, cachedByEngine, "cached per-engine inventory")
 }
@@ -352,9 +350,38 @@ func TestRefreshModels_RetainsLoadedModelsAfterFetchFailure(t *testing.T) {
 	got, _ := d.dir.get("peer-N")
 	assert.Equal(t, map[string][]string{"ollama": {"keep-me"}}, got.LoadedByEngine, "LoadedByEngine after failure")
 	d.infoMu.Lock()
-	cachedLoaded := d.lastLoadedByEngine["peer-N"]
+	cachedLoaded := d.lastInventory["peer-N"].loadedByEngine
 	d.infoMu.Unlock()
 	assert.Equal(t, map[string][]string{"ollama": {"keep-me"}}, cachedLoaded, "cached loaded inventory")
+}
+
+// A stopped vLLM peer advertises no model for routing but still reports what it
+// has downloaded. That inventory reaches the directory, a change to it alone is
+// reported (an Eject or a Delete on the peer), and a failed fetch keeps it.
+func TestRefreshModels_CarriesTheDownloadedModelsOfAStoppedVLLMPeer(t *testing.T) {
+	d := newRefreshTestDaemon()
+	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
+		"models":             []string{},
+		"downloadedByEngine": map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}},
+	})
+	seedEMNode(d, "peer-V", "127.0.0.1", port)
+	require.True(t, d.refreshNodeModels("peer-V", "127.0.0.1", port, ""), "initial populate should report a change")
+	got, _ := d.dir.get("peer-V")
+	assert.Equal(t, map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}}, got.DownloadedByEngine)
+	assert.Empty(t, got.ModelsByEngine, "nothing advertised for routing")
+
+	stub.set(http.StatusOK, map[string]any{
+		"models":             []string{},
+		"downloadedByEngine": map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}},
+	})
+	require.True(t, d.refreshNodeModels("peer-V", "127.0.0.1", port, ""), "a downloaded-only change should report a change")
+	got, _ = d.dir.get("peer-V")
+	assert.Equal(t, map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}}, got.DownloadedByEngine, "after the peer deleted a model")
+
+	stub.set(http.StatusInternalServerError, nil)
+	assert.False(t, d.refreshNodeModels("peer-V", "127.0.0.1", port, ""), "a failed fetch should not report a change")
+	got, _ = d.dir.get("peer-V")
+	assert.Equal(t, map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}}, got.DownloadedByEngine, "after a failed fetch")
 }
 
 // TestApplyModelsGuard covers requirement 6 at the directory layer: a completed
@@ -365,7 +392,7 @@ func TestApplyModels_RejectsRemovedNodeAndStaleAddress(t *testing.T) {
 	d := newDirectory()
 
 	// Removed mid-sweep: node absent -> not resurrected.
-	_, changed, ok := d.applyModels("ghost", "127.0.0.1", 14322, []string{"a"}, nil, nil)
+	_, changed, ok := d.applyModels("ghost", "127.0.0.1", 14322, modelInventory{models: []string{"a"}})
 	assert.False(t, ok, "applyModels on an absent node = (changed (%v, %v)", changed, ok)
 	assert.False(t, changed, "applyModels on an absent node = (changed (%v, %v)", changed, ok)
 	_, present := d.get("ghost")
@@ -378,11 +405,11 @@ func TestApplyModels_RejectsRemovedNodeAndStaleAddress(t *testing.T) {
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14322}},
 		Models:   []string{"old"},
 	})
-	_, changed, ok = d.applyModels("peer-E", "127.0.0.1", 14322, []string{"new"}, nil, nil)
+	_, changed, ok = d.applyModels("peer-E", "127.0.0.1", 14322, modelInventory{models: []string{"new"}})
 	assert.False(t, ok, "applyModels with a stale IP = (changed (%v, %v)", changed, ok)
 	assert.False(t, changed, "applyModels with a stale IP = (changed (%v, %v)", changed, ok)
 	// em port changed -> also discarded.
-	_, changed, ok = d.applyModels("peer-E", "10.0.0.9", 99999, []string{"new"}, nil, nil)
+	_, changed, ok = d.applyModels("peer-E", "10.0.0.9", 99999, modelInventory{models: []string{"new"}})
 	assert.False(t, ok, "applyModels with a stale em port = (changed (%v, %v)", changed, ok)
 	assert.False(t, changed, "applyModels with a stale em port = (changed (%v, %v)", changed, ok)
 	got, _ := d.get("peer-E")
@@ -437,7 +464,7 @@ func TestRefreshOnce_PollsSlowPeersConcurrently(t *testing.T) {
 
 	// Both handlers must be entered before either is released; only a concurrent
 	// sweep can reach this point.
-	for i := 0; i < peers; i++ {
+	for i := range peers {
 		select {
 		case <-entered:
 		case <-time.After(5 * time.Second):

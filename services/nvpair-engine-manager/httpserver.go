@@ -76,14 +76,13 @@ func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust
 	plainSrv := &http.Server{Handler: plainMux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: clustertrust.PeerListenerIdleTimeout}
 	tlsSrv := &http.Server{Handler: tlsMux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: clustertrust.PeerListenerIdleTimeout}
 
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = plainSrv.Shutdown(shutCtx)
 		_ = tlsSrv.Shutdown(shutCtx)
 		_ = split.Close()
-	}()
+	})
 	slog.Info("serving engine model surface", "addr", addr, "path", modelsPath,
 		"clustered", mesh.Clustered())
 	go serveOrWarn(tlsSrv, tls.NewListener(split.TLS(), mesh.ServerTLSConfig()))

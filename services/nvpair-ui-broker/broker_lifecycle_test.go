@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"path/filepath"
 	"sync"
@@ -56,8 +57,7 @@ func TestEngineAvailability_WaitsForBothProxyOutcomes(t *testing.T) {
 		}
 	}()
 	advertised := make(chan string, 3)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	done := make(chan bool, 1)
 	go func() {
 		done <- b.runEngineAvailabilityAfterPortGates(
@@ -254,4 +254,69 @@ func TestUnbindableLMStudioFacade_FinishesWithoutRestartingTheProcess(t *testing
 	// asserting on a slot that was never populated would pass no matter what.
 	assert.Same(t, proxy, b.getLMStudioProxy(), "a facade port failure replaced the shared proxy handle")
 	assert.Same(t, proxy, b.getProxy(), "a facade port failure disturbed the other engine's handle on the same process")
+}
+
+// A Stop has to reach the engine manager while a Start is still waiting for
+// readiness: cancelling that Start is what it is for. It used to wait for the
+// lock the Start holds, so it arrived only after the Start finished by itself.
+func TestRelayToEngine_DeliversAStopWhileAStartIsWaitingForReadiness(t *testing.T) {
+	worker, engineManager := newTestRPCWorkerPipe(t)
+	brokerConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = brokerConn.Close()
+		_ = clientConn.Close()
+	})
+	b := &Broker{codec: NewCodec(brokerConn)}
+	b.setEngineMgr(worker)
+	replies := make(chan *Message, 2)
+	go func() {
+		client := NewCodec(clientConn)
+		for {
+			msg, err := client.Read()
+			if err != nil {
+				return
+			}
+			replies <- msg
+		}
+	}()
+
+	stopArrived := make(chan struct{})
+	go func() {
+		var start *Message
+		for {
+			request, err := engineManager.Read()
+			if err != nil {
+				return
+			}
+			switch request.Method {
+			case "engine:start":
+				start = request // held: the engine is still loading
+			case "engine:stop":
+				close(stopArrived)
+				_ = engineManager.Respond(request.ID, map[string]any{"engine": "vllm", "running": false})
+				if start != nil {
+					_ = engineManager.RespondError(start.ID, -32000, "start cancelled")
+				}
+				return
+			}
+		}
+	}()
+
+	startID, stopID := json.RawMessage(`1`), json.RawMessage(`2`)
+	b.relayToEngine(&Message{JSONRPC: "2.0", ID: &startID, Method: "engine:start", Params: json.RawMessage(`{"engine":"vllm"}`)})
+	time.Sleep(100 * time.Millisecond) // the Start is in flight and holds the lock
+	b.relayToEngine(&Message{JSONRPC: "2.0", ID: &stopID, Method: "engine:stop", Params: json.RawMessage(`{"engine":"vllm"}`)})
+
+	select {
+	case <-stopArrived:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the Stop did not reach the engine manager while the Start was in flight")
+	}
+	for range 2 {
+		select {
+		case <-replies:
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "the Start and the Stop were not both answered")
+		}
+	}
 }
