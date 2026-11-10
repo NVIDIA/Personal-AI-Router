@@ -11,6 +11,13 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.19 — Launch at login and start minimized to the tray (#97)
+
+- New Startup section in Settings > Service with two switches: launch at login, and start minimized to the tray.
+- A launch by the login item stays in the tray and opens the Overview from the tray menu; a launch by hand still opens the window.
+- Launch at login shows what the operating system will do. If you disable or remove PAIR's startup entry outside the app (Windows Task Manager or startup apps settings, macOS System Settings, or your Linux desktop's startup settings), PAIR leaves it off and the switch shows off; turning the switch on again enables it.
+- Supported on Windows, macOS and Linux. Off by default: nothing is registered until launch at login is enabled.
+
 ## 1.0.18 — Choose ModelScope for llama.cpp model downloads (#186)
 
 - Select Hugging Face or ModelScope in llama.cpp Settings. The saved choice controls model browsing, search, and downloads on that device; Hugging Face remains the default.
