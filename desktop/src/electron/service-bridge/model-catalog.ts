@@ -85,10 +85,9 @@ export async function getEngineHubModels(
     const engine = engineManagerName(engineType)
     const search = query?.trim()
     try {
-        // No target machine is named. The hub only ever installs to this
-        // machine, which is also the one answering, and omitting the target is
-        // how the backend is told to filter for itself — operating system and
-        // CPU both, since an Intel Mac cannot install what Apple Silicon can.
+        // The catalog is currently filtered for the broker's host. This API
+        // does not yet pass the destination's platform and architecture.
+        // Omit modelSource too: the manager uses this device's saved selection.
         const result = await getModularSupervisor().callProcess(
             'broker',
             'engine:catalog',
@@ -101,13 +100,13 @@ export async function getEngineHubModels(
             sublevel: 'catalog',
             message: `${engineType} catalog: ${models.length} models`
         })
-        return { models }
+        return { models, searchable: isObject(result) && result.searchable === true }
     } catch (err) {
         log.warn({
             sublevel: 'catalog',
             message: `${engineType} catalog fetch failed: ${getErrorString(err)}`
         })
-        return { models: [] }
+        return { models: [], searchable: null }
     }
 }
 
@@ -124,4 +123,5 @@ export async function getEngineHubModels(
 export function warmEngineHubs(): void {
     void getEngineHubModels('lm-studio')
     void getEngineHubModels('llama-cpp')
+    void getEngineHubModels('vllm')
 }

@@ -18,7 +18,7 @@ vi.mock('node:fs', async importOriginal => {
     return {
         ...original,
         existsSync: (file: fs.PathLike) =>
-            file.toString().endsWith('/nvpair-helper-ctl') || original.existsSync(file)
+            path.basename(file.toString()) === 'nvpair-helper-ctl' || original.existsSync(file)
     }
 })
 vi.mock('node:child_process', () => ({

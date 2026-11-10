@@ -73,7 +73,7 @@ parameter, because one flag cannot carry multiple engines' plans.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `engine` | *(required)* | Which engine to front: `ollama`, `lmstudio`, or `llamacpp`. An unknown name is rejected with the accepted values. |
+| `engine` | *(required)* | Which engine to front: `ollama`, `lmstudio`, `llamacpp`, or `vllm`. An unknown name is rejected with the accepted values. |
 | `port` | per engine, see below | HTTP listen port for request forwarding. Must be 1–65535, or omitted for the engine's standalone default. `0` means "the default" rather than "pick an ephemeral port", and any other out-of-range value is rejected, because the facade announces the requested port in its `ready` notification and the broker would be told `0`. |
 | `aliasAddresses` | *(empty)* | Optional secondary `host:port` values for the same routing handler, one per loopback family so `localhost` resolves either way. Only literal loopback addresses are accepted; the broker uses this for a safe inherited local `OLLAMA_HOST`, and the aliases are not advertised to peers. Accepted only for an engine with an inherited host variable — today Ollama alone — and rejected for any other. |
 | `ignorePersistedPort` | `false` | Use `port` even when a saved port exists (used by broker-managed startup) |
@@ -83,10 +83,10 @@ parameter, because one flag cannot carry multiple engines' plans.
 Everything engine-specific is one entry in `engines.go`, plus the shared
 identity in `nvpair-shared/engines`.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` |
-|---|---|---|---|
-| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` |
-| Discovery service key | `ol` | `lm` | `lc` |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` |
+|---|---|---|---|---|
+| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` | `vllm-proxy` |
+| Discovery service key | `ol` | `lm` | `lc` | `vl` |
 
 The **log component, supervisor label, and TUI health crash key are not in that
 table**: they name the process (`nvpair-proxy`), not a facade, because one
@@ -95,17 +95,17 @@ Facade-scoped log records carry an `engine` field instead. The supervisor label
 and the health crash key are matched against each other, so they move together
 — see `nvpair-shared/engines` and `spec.md` §9.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` |
-|---|---|---|---|
-| Engine's own client-facing port | 11434 | 1234 | 8080 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 |
-| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 |
-| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` |
-| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) |
-| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below |
-| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` |
+|---|---|---|---|---|
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
+| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
+| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
+| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) |
+| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below |
+| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte |
 
-All three facades classify these OpenAI-compatible POST routes as inference:
+All four facades classify these OpenAI-compatible POST routes as inference:
 
 - `/v1/chat/completions` — [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - `/v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
@@ -119,8 +119,8 @@ The route table is a **classifier, not an allowlist**. An unlisted path is
 forwarded verbatim, which is how `/api/show`, `/api/pull`, `/api/ps`,
 `/api/version` and `OPTIONS` preflights keep working.
 
-The broker enables all three facades by default. Local llama.cpp-compatible
-clients use `8080`, while the managed `llama-server` stays on `8081`.
+The broker enables all four facades by default. Local llama.cpp-compatible
+clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM clients use `8000`, while the managed `vllm serve` stays on `8001`.
 `--proxy-engines` can restrict a standalone broker or TUI to a subset.
 
 ### HTTP Reverse Proxy

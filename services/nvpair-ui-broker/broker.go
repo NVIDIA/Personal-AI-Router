@@ -114,6 +114,14 @@ type AvailableNode struct {
 	// consumer show which of a remote node's models are loaded. Omitted
 	// when no engine reports loaded state.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// DownloadedByEngine lists every model an engine can load when that engine
+	// advertises only the one it is serving (vLLM), so ModelsByEngine holds just
+	// that one. It is reported even while the engine is stopped, so a remote
+	// node's model manager keeps its Load and Delete rows, and its LoadedByEngine
+	// entry names models the same way. An engine key with an empty list means the
+	// inventory was read and is empty; a missing key means it was not read.
+	// Omitted when no engine reports one.
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
 }
 
 // GetNodesResult is the response to "discovery:get-nodes". Wrapped in an
@@ -3472,7 +3480,20 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	}
 
 	requestedEngine, requestedPort, isEnginePortAssignment := enginePortAssignmentRequest(msg.Method, msg.Params)
-	if isEnginePortAssignment || msg.Method == "engine:stop" || msg.Method == "engine:start" || msg.Method == "engine:restart" {
+	switch {
+	case msg.Method == "engine:stop":
+		// A Stop must reach the engine manager while a Start is still waiting for
+		// readiness, which can take minutes, because cancelling that Start is
+		// what it is for. The Start holds the lock for that whole time, so a
+		// Stop that waited for it would only arrive after the Start had finished
+		// on its own. A Stop changes no launch settings, so it takes the lock
+		// only afterwards, to reconcile, once its reply is sent.
+		defer func() {
+			b.engineConfigMu.Lock()
+			defer b.engineConfigMu.Unlock()
+			b.reconcileLegacySettingsLocked()
+		}()
+	case isEnginePortAssignment || msg.Method == "engine:start" || msg.Method == "engine:restart":
 		b.engineConfigMu.Lock()
 		defer b.engineConfigMu.Unlock()
 		defer b.reconcileLegacySettingsLocked()

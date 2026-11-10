@@ -6,6 +6,7 @@ export interface EngineSettingsConfig {
     proxyPort: number
     /** Arguments and leading environment assignments, without an executable/subcommand. */
     launchText: string
+    modelSource?: 'huggingface' | 'modelscope'
 }
 
 import type { EngineManagerName } from '@/shared/types/engines'

@@ -11,6 +11,32 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.18 — Choose ModelScope for llama.cpp model downloads (#186)
+
+- Select Hugging Face or ModelScope in llama.cpp Settings. The saved choice controls model browsing, search, and downloads on that device; Hugging Face remains the default.
+- ModelScope verifies complete download sizes and SHA-256 checksums. Interrupted downloads restart from the beginning.
+- Model search runs automatically after two characters and a short typing pause. Searches run one at a time, with only the latest query continuing next; Enter and the search button bypass the pause.
+
+## 1.0.17 — Stalled candidates yield to their peers for one deadline (#144)
+
+- A candidate that used up a full first-byte deadline without producing content is ranked behind its peers for one deadline.
+
+## 1.0.16 — Local node figures stay current in discovery (#5)
+
+- The scanner republishes its own entry on every peer refresh, so GPU, CPU and memory figures follow the node instead of freezing at daemon start.
+
+## 1.0.15 — vLLM engine support (#181)
+
+- vLLM can now be installed and managed from PAIR like the other engines.
+- vLLM can download, load, eject and delete models from the local Hugging Face cache; loading another model restarts vLLM on it, and the previous model is restored if it fails.
+- vLLM picks the right tool-call parser for each model, so agent clients work with Qwen, Granite and other models.
+- vLLM uses the Hugging Face cache (or its `--download-dir`), mirror, token and offline settings set in its launch settings, and downloads only the weights it loads.
+- vLLM is shown as starting while it downloads and loads a model, and Stop or Eject works during that time.
+- A download that vLLM could not load is refused before anything is downloaded, and Add model shows who published each model.
+- On a Mac, FP8 models that vLLM-Metal cannot run are refused with a message to choose the BF16 version.
+- The terminal interface shows a downloaded or deleted model straight away, and can download into a stopped vLLM.
+- vLLM is no longer offered on Windows, where it cannot run.
+
 ## 1.0.14 — Simplify Go concurrency and collections with standard library helpers (#195)
 
 - Refresh internal service concurrency and collection code while preserving intended application behavior.

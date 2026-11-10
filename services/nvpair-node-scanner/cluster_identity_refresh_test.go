@@ -76,14 +76,12 @@ func startNodeInfoStub(t *testing.T, body string) (*nodeInfoStub, int) {
 // node is treated as a peer.
 func newIdentityRefreshTestDaemon() *daemon {
 	return &daemon{
-		reg:                newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
-		dir:                newDirectory(),
-		mesh:               clustertrust.Open(""),
-		http:               &http.Client{Timeout: nodeInfoFetchTimeout},
-		lastInfo:           make(map[string]NodeInfoResponse),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
+		reg:           newRegistry("self-node-uuid", "", selfAddrs("127.0.0.1")),
+		dir:           newDirectory(),
+		mesh:          clustertrust.Open(""),
+		http:          &http.Client{Timeout: nodeInfoFetchTimeout},
+		lastInfo:      make(map[string]NodeInfoResponse),
+		lastInventory: make(map[string]modelInventory),
 	}
 }
 

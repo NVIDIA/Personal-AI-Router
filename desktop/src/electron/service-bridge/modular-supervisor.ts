@@ -13,6 +13,7 @@ import {
     type JsonRpcNotification,
     type JsonValue
 } from './json-rpc-subprocess'
+import { EnginesListingModelsWhenStopped } from '@/shared/constants/engines'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
@@ -1088,8 +1089,8 @@ class ModularSupervisor {
             const result = await this.callProcess('broker', 'engine:get-installed')
             const obj = objectValue(result)
             if (!obj || !Array.isArray(obj.engines)) return
+            getModularBridgeState().applyEngineManagerList(result)
             for (const engine of obj.engines) {
-                getModularBridgeState().applyEngineManagerStatus(engine)
                 this.refreshManagedEngineModels(engine)
             }
         } catch (err) {
@@ -1988,7 +1989,8 @@ class ModularSupervisor {
      * message distinguishes the two cases exactly as the local path does. The
      * error is stamped with the *peer's* nodeId (not our selfId) plus
      * `engineType`/`modelName` so `pending-actions.store` clears the right row's
-     * spinner instead of leaving it to the safety-net timeout.
+     * spinner instead of leaving it to the safety-net timeout. Resolves with the
+     * peer's reply, or undefined once a failure has been reported.
      */
     async modelActionRemote(
         nodeId: string,
@@ -1996,7 +1998,7 @@ class ModularSupervisor {
         engineType: EngineType,
         model: string,
         command: 'loadModel' | 'unloadModel' | 'deleteModel'
-    ): Promise<void> {
+    ): Promise<JsonValue | undefined> {
         const method =
             command === 'loadModel'
                 ? 'engine:remote-load-model'
@@ -2004,13 +2006,14 @@ class ModularSupervisor {
                   ? 'engine:remote-unload-model'
                   : 'engine:remote-delete-model'
         try {
-            await this.callProcess(
+            const result = await this.callProcess(
                 'broker',
                 method,
                 { node: nodeId, engine, model },
                 PULL_TIMEOUT_MS
             )
             await this.refreshRemoteEngineStatus(nodeId)
+            return result
         } catch (err) {
             const verb =
                 command === 'loadModel' ? 'load' : command === 'unloadModel' ? 'unload' : 'delete'
@@ -2025,6 +2028,7 @@ class ModularSupervisor {
                 { nodeId, engineType, operation: verb, modelName: model }
             )
             if (restartFailed) await this.refreshRemoteEngineStatus(nodeId)
+            return undefined
         }
     }
 
@@ -2069,7 +2073,11 @@ class ModularSupervisor {
         const engineType = getModularBridgeState().modelPullTarget(engine)
         if (!engineType) return
 
-        if (!booleanValue(obj.running)) {
+        // An engine whose list is on disk keeps it while stopped: read it like a
+        // running engine's instead of clearing it.
+        // vLLM, the one engine whose Load restarts it, is among these, so a model
+        // switch passing through stopped never clears its list.
+        if (!booleanValue(obj.running) && !EnginesListingModelsWhenStopped.includes(engineType)) {
             this.beginModelRefresh(engineType)
             this.stoppedModelEngines.add(engineType)
             this.stoppedModelSentinels.add(engineType)

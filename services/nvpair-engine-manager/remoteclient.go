@@ -40,8 +40,8 @@ type remoteClient struct {
 }
 
 // waitsForEngineReadiness reports whether a peer may only answer after slow
-// work inside its own handler — an engine becoming healthy, an Ollama model
-// loading, or a download being stopped — which the ordinary 30s
+// work inside its own handler — an engine becoming healthy, an Ollama or vLLM
+// model loading, or a download being stopped — which the ordinary 30s
 // response-header budget cannot cover. It only picks the client: the budgets
 // themselves are the pools NewManager builds, remoteHTTP with
 // remoteResponseHeaderTimeout and readyHTTP with
@@ -66,8 +66,11 @@ func waitsForEngineReadiness(path, engine string) bool {
 	// cut off does not undo it — the damage is that the initiator reports a
 	// cancel that is succeeding as failed, and the row rolls back to
 	// "Downloading" under a transfer that is stopping.
+	//
+	// vLLM's load_model restarts the engine on the new model and replies once
+	// it is ready.
 	if path == controlLoadPath {
-		return engine == "ollama"
+		return engine == "ollama" || engine == "vllm"
 	}
 	return path == controlStartPath || path == controlDeletePath || path == controlCancelPullPath
 }

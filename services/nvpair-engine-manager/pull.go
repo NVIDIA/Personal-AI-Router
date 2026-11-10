@@ -146,6 +146,13 @@ func (e *Executor) pullModelStream(ctx context.Context, engine, model string, pa
 		return e.pullLMSModel(actionCtx, st, engine, model)
 	}
 
+	// Hugging Face repository (vLLM): download with the engine's own `hf` tool and
+	// report progress from the bytes landing in the cache. It needs no running
+	// engine, so a model can be fetched before it is first served.
+	if act.HFPull != nil {
+		return e.pullHFModel(ctx, st, engine, model, act)
+	}
+
 	// Other CLI actions without a progress adapter emit a start
 	// marker and return the final result via the existing runner.
 	if len(act.Cmd) > 0 {
