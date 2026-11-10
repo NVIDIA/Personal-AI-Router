@@ -4,8 +4,9 @@
 package main
 
 import (
+	"cmp"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -48,11 +49,8 @@ func newRewriter(entities []*Entity) *rewriter {
 		}
 		ordered = append(ordered, e)
 	}
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if len(ordered[i].Value) != len(ordered[j].Value) {
-			return len(ordered[i].Value) > len(ordered[j].Value)
-		}
-		return ordered[i].Value < ordered[j].Value
+	slices.SortStableFunc(ordered, func(a, b *Entity) int {
+		return cmp.Or(cmp.Compare(len(b.Value), len(a.Value)), cmp.Compare(a.Value, b.Value))
 	})
 
 	alts := make([]string, 0, len(ordered))
@@ -258,7 +256,9 @@ func legend(entities []*Entity, nodes []*Node, warnings []string) string {
 	sb.WriteString("| Token | Kind | Class | Occurrences |\n")
 	sb.WriteString("| --- | --- | --- | --- |\n")
 	shown := append([]*Entity{}, entities...)
-	sort.SliceStable(shown, func(i, j int) bool { return shown[i].Token < shown[j].Token })
+	slices.SortStableFunc(shown, func(a, b *Entity) int {
+		return cmp.Compare(a.Token, b.Token)
+	})
 	for _, e := range shown {
 		if e.Token == e.Value {
 			continue
@@ -284,7 +284,9 @@ func legend(entities []*Entity, nodes []*Node, warnings []string) string {
 		sb.WriteString("that say nothing about a person or a network, and they are the primary\n")
 		sb.WriteString("key in most payloads, so replacing them would cost far more in\n")
 		sb.WriteString("readability than it gains.\n\n")
-		sort.SliceStable(kept, func(i, j int) bool { return kept[i].Value < kept[j].Value })
+		slices.SortStableFunc(kept, func(a, b *Entity) int {
+			return cmp.Compare(a.Value, b.Value)
+		})
 		for _, e := range kept {
 			sb.WriteString("- `" + e.Value + "` (" + e.Class + ")\n")
 		}

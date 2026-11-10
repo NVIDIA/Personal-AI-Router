@@ -80,7 +80,7 @@ func TestSelfRemoval_IgnoresRejectionFromPreviousMembership(t *testing.T) {
 
 			entered := make(chan struct{})
 			release := make(chan struct{})
-			var once sync.Once
+			notifyEntered := sync.OnceFunc(func() { close(entered) })
 			// The peer rejects us with authenticated proof of removal (a signed
 			// tombstone naming mA, scoped to cluster-1). That makes the unanimous
 			// rejection *actionable*, so this test exercises the stale-verdict
@@ -90,7 +90,7 @@ func TestSelfRemoval_IgnoresRejectionFromPreviousMembership(t *testing.T) {
 			proofBody := selfRemovalProof(t, peer, mA, "cluster-1")
 			mux := http.NewServeMux()
 			mux.HandleFunc(rosterPath, func(w http.ResponseWriter, r *http.Request) {
-				once.Do(func() { close(entered) })
+				notifyEntered()
 				<-release
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)

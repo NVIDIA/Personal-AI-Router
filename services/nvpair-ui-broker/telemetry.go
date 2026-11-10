@@ -4,8 +4,9 @@
 package main
 
 import (
+	"cmp"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -125,7 +126,9 @@ func (c *telemetryCache) Snapshot(now time.Time) []noderec.NodeTelemetry {
 		}
 	}
 	c.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].HostUUID < out[j].HostUUID })
+	slices.SortFunc(out, func(a, b noderec.NodeTelemetry) int {
+		return cmp.Compare(a.HostUUID, b.HostUUID)
+	})
 	return out
 }
 

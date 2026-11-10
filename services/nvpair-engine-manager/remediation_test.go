@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 
 	"sync"
@@ -41,12 +43,7 @@ func (c *captured) emit(method string, _ any) {
 func (c *captured) has(method string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, m := range c.emits {
-		if m == method {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.emits, method)
 }
 
 func capturingExecutor(t *testing.T, m *Manifest) (*Executor, *captured) {
@@ -241,12 +238,10 @@ func TestConcurrentStart_IsSerialized(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			assert.NoError(t, ex.Start(context.Background(), "fake"))
-		}()
+		})
 	}
 	wg.Wait()
 	st, err := ex.Status("fake")
@@ -474,4 +469,34 @@ func TestStop_ClearsUnhealthy(t *testing.T) {
 		require.FailNow(t, "stop command did not close the test endpoint")
 	}
 	require.False(t, hasErr(ex.Errors(), unhealthyID("d")), "stop must clear the lingering unhealthy error")
+}
+
+// A start refused before the engine is launched changes no state, so a client
+// that sends Start without waiting for the reply, as the desktop does, learns of
+// the refusal only from the start-failed error.
+func TestStart_ReportsARefusalAsAFailedStart(t *testing.T) {
+	test := func(name string, executor func(t *testing.T) *Executor, wantErr string) {
+		t.Run(name, func(t *testing.T) {
+			e := executor(t)
+			require.ErrorContains(t, e.Start(t.Context(), "fake"), wantErr)
+			assert.True(t, hasErr(e.Errors(), startFailedID("fake")), "the refusal is reported as a failed start")
+		})
+	}
+	test("an engine whose model is a launch argument, with no model selected", func(t *testing.T) *Executor {
+		e := settingsExecutor(t, false)
+		m, _ := e.reg.Get("fake")
+		m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
+		require.NoError(t, m.Validate())
+		return e
+	}, "no model selected")
+	test("a port taken by a service that is not the engine", func(t *testing.T) *Executor {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = l.Close() })
+		e := settingsExecutor(t, false)
+		st, err := e.state("fake")
+		require.NoError(t, err)
+		st.port = l.Addr().(*net.TCPAddr).Port
+		return e
+	}, "occupied")
 }

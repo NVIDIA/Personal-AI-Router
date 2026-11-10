@@ -425,6 +425,19 @@ func TestBroker_RelaysEngineRequests(t *testing.T) {
 	t.Logf("engine:get-installed returned %d engine(s)", len(result.Engines))
 }
 
+func TestBroker_PreservesCatalogSourceParameter(t *testing.T) {
+	stdin, msgs, _, cleanup := startBrokerWith(t, "--engine-manager-path", engineMgrBin)
+	t.Cleanup(cleanup)
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	// Rejecting the explicit source proves the relay preserved it, without
+	// fetching a live provider or silently selecting this node's default.
+	_, err := io.WriteString(stdin, `{"jsonrpc":"2.0","id":701,"method":"engine:catalog","params":{"engine":"llamacpp","modelSource":"unsupported"}}`+"\n")
+	require.NoError(t, err)
+	reply := waitForResponse(t, msgs, 5*time.Second)
+	require.NotNil(t, reply.Error)
+	require.Equal(t, "unsupported model download source", reply.Error.Message)
+}
+
 // proxyStatus queries ollama-proxy:get-status through the broker and returns the
 // proxy's readiness + bound port (the broker's captured view of the proxy's
 // last "ready").

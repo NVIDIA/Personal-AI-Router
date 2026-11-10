@@ -119,7 +119,7 @@ func TestPreInviteSessions_ExpireAndEnforceSessionLimit(t *testing.T) {
 	_, ok := m.getSession(expired.inviteID)
 	require.False(t, ok, "pre-invite session survived its TTL")
 
-	for i := 0; i < maxPreInviteSessions; i++ {
+	for i := range maxPreInviteSessions {
 		m.putSession(&pairingSession{
 			inviteID: "bounded-" + strconv.Itoa(i), role: roleJoiner,
 			createdAt: time.Now().UnixMilli(),

@@ -4,17 +4,19 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -44,7 +46,17 @@ var allowedPlaceholders = map[string]bool{
 	"models_dir":  true,
 }
 
+// hfHubCachePlaceholder is the Hugging Face hub cache the engine itself uses,
+// resolved from its launch environment the way huggingface_hub resolves it
+// (see hfEnv.hubCache). It is available only in the dir of an hf_cache or
+// hf_pull action, whose files must be the ones the engine reads.
+const hfHubCachePlaceholder = "hf_hub_cache"
+
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+// resultFieldNameRe matches one element field name, such as "root".
+var resultFieldNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
 var resultMatchFieldPathRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*(?:\.[a-zA-Z_][a-zA-Z0-9_-]*)*$`)
 var artifactNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 var sha256Re = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -63,6 +75,12 @@ type Manifest struct {
 	ManifestVersion int                 `json:"manifest_version"`
 	Platforms       map[string]Platform `json:"platforms"`
 	Actions         map[string]Action   `json:"actions,omitempty"`
+	// AdvertisedModels says which models this node tells its peers and its own
+	// proxy it can serve: "list" (the default) advertises list_models, "loaded"
+	// advertises loaded_models. An engine that serves one model per process
+	// can list many models it has on disk but only answer for the one it is
+	// running, and the proxy sends a request to any node advertising its model.
+	AdvertisedModels string `json:"advertised_models,omitempty"`
 }
 
 // Platform is the per-`<goos>/<goarch>` block. Variance lives here
@@ -142,6 +160,8 @@ type InstallArtifact struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
+	// ModelSource selects llama.cpp's model catalogue and download provider.
+	ModelSource string `json:"model_source,omitempty"`
 	// EditableLaunch declares which startup arguments and environment controls
 	// PAIR can safely expose through engine settings.
 	EditableLaunch *EditableLaunch `json:"editable_launch,omitempty"`
@@ -150,6 +170,14 @@ type Runtime struct {
 	// a non-nil empty slice keeps only fixed and managed arguments. Use
 	// omitzero to omit nil while preserving explicit empty arrays in JSON.
 	LaunchArgs []string `json:"launch_args,omitzero"`
+	// AutoLaunch lets the manager add startup arguments that depend on the model
+	// being served and the machine, at every start. Arguments the user saved
+	// always win, and nothing added here is written back to saved settings.
+	AutoLaunch *AutoLaunch `json:"auto_launch,omitempty"`
+	// UnsupportedWeights names weight formats this platform's engine cannot
+	// load. A start or download of such a model is refused with its reason,
+	// before the engine spends minutes downloading or loading it only to fail.
+	UnsupportedWeights *UnsupportedWeights `json:"unsupported_weights,omitempty"`
 	// Mode selects the lifecycle model: "process" means PAIR owns the launched
 	// foreground process; "command" means PAIR invokes commands that manage a
 	// separate daemon. Empty defaults to "process".
@@ -187,6 +215,39 @@ type Runtime struct {
 	// Health is the periodic availability probe for a running engine.
 	Health *Probe `json:"health,omitempty"`
 }
+
+// AutoLaunch configures start-time launch arguments. The only kind is
+// "hf_context": read the model's config.json from the Hugging Face cache and
+// set the context length, any rope scaling it needs, and the GPU memory share.
+type AutoLaunch struct {
+	Kind string `json:"kind"`
+	// ContextTokens is the context window to aim for. Models that natively
+	// support less are extended where that is safe; models that support more are
+	// capped here so the KV cache stays affordable.
+	ContextTokens int `json:"context_tokens"`
+	// MaxNumSeqs caps how many requests the engine runs at once
+	// (--max-num-seqs). vLLM's default of 256 suits a server; on a desktop GPU a
+	// hybrid model such as Qwen3.5 cannot fit one state block per sequence for
+	// 256 of them and refuses to start. 0 leaves the engine's default.
+	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
+}
+
+const autoLaunchHFContext = "hf_context"
+
+// UnsupportedWeights is a weight format a platform's engine cannot load, read
+// from a Hugging Face checkpoint the way vLLM reads it (see weightFormat).
+type UnsupportedWeights struct {
+	// Formats are the refused formats. The only one is "fp8": FP8 weights or an
+	// FP8 KV cache.
+	Formats []string `json:"formats"`
+	// ExceptModelTypes are config.json model_type values the engine loads in
+	// these formats anyway.
+	ExceptModelTypes []string `json:"except_model_types,omitempty"`
+	// Reason is what the refusal tells the user, including what to choose instead.
+	Reason string `json:"reason"`
+}
+
+const weightFormatFP8 = "fp8"
 
 type EditableLaunch struct {
 	FixedArgs  []string        `json:"fixed_args"`
@@ -257,6 +318,21 @@ type Action struct {
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
 	Cmd         []string          `json:"cmd,omitempty"`
 	RemovePath  *ActionRemovePath `json:"remove_path,omitempty"`
+	// HFCache lists the models in a Hugging Face hub cache directory. It reads
+	// the disk and needs no running engine, so an engine that serves one model
+	// per process can still show everything it could be switched to.
+	HFCache *ActionHFCache `json:"hf_cache,omitempty"`
+	// LaunchModel makes the action switch the model an engine is serving, for an
+	// engine that has no load call because the model is a launch argument.
+	LaunchModel *ActionLaunchModel `json:"launch_model,omitempty"`
+	// HFPull downloads a Hugging Face repository into the hub cache with the
+	// engine's own `hf` tool, reporting byte progress. Only pull_model uses it.
+	HFPull *ActionHFPull `json:"hf_pull,omitempty"`
+	// StopEngine makes the action stop the engine. It is how an engine that serves
+	// one model per process ejects that model: the process cannot drop its model
+	// and keep running, but stopping it frees all of its GPU memory. Only
+	// unload_model may set it.
+	StopEngine bool `json:"stop_engine,omitempty"`
 	// ProgressProtocol selects a narrowly defined streaming adapter for an
 	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
 	// behavior; named protocols are validated so a typo cannot silently fall
@@ -293,6 +369,13 @@ type ActionResult struct {
 	// field) rather than returning a presence-only list (Ollama's /api/ps,
 	// every row of which is resident and so needs no Match).
 	Match *ResultMatch `json:"match,omitempty"`
+	// InventoryField, valid only on the loaded_models action of an engine with
+	// advertised_models "loaded", names the element field that identifies each
+	// loaded model the way list_models does. vLLM's /v1/models gives the name a
+	// request uses as "id" (a --served-model-name alias when one is set) and the
+	// model it loaded as "root" (its --model): peers and the proxy are told the
+	// id, and the loaded marker on the model list uses the root.
+	InventoryField string `json:"inventory_field,omitempty"`
 }
 
 // ResultMatch is the optional row filter on an ActionResult. Exactly one of
@@ -312,6 +395,36 @@ type ResultMatch struct {
 type ActionRemovePath struct {
 	Path string `json:"path"`
 	Root string `json:"root"`
+}
+
+// ActionHFCache names the Hugging Face hub cache directory to list. Dir is
+// templated, normally "{hf_hub_cache}", the cache the engine itself uses. The result is {"data":[{"id","size"}]},
+// which the ordinary result extractor reads with array "data" and field "id".
+type ActionHFCache struct {
+	Dir string `json:"dir"`
+	// Delete turns the action into the removal of one model, named by the
+	// caller's {"model": "<org/name>"} param, from that cache. Only a
+	// delete_model action may set it, and it needs Tool.
+	Delete bool `json:"delete,omitempty"`
+	// Tool is the file name of the Hugging Face CLI that performs a delete
+	// (`hf cache rm`), looked up beside the engine binary as for hf_pull.
+	Tool string `json:"tool,omitempty"`
+}
+
+// ActionHFPull downloads a model repository. Tool is the file name of the
+// Hugging Face CLI, looked up in the directory that holds the engine binary
+// (a vLLM virtualenv ships `hf` beside `vllm`). Dir is the hub cache directory,
+// normally "{hf_hub_cache}", the cache the engine itself uses.
+type ActionHFPull struct {
+	Tool string `json:"tool"`
+	Dir  string `json:"dir"`
+}
+
+// ActionLaunchModel names the launch flag that selects the engine's model, such
+// as "--model". The action takes {"model": "<id>"}, writes it into the saved
+// launch settings and restarts a running engine on it.
+type ActionLaunchModel struct {
+	Flag string `json:"flag"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -352,10 +465,8 @@ func (r *Registry) Get(name string) (*Manifest, bool) {
 // Names returns all known engine names, sorted for stable output.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.engines))
-	for n := range r.engines {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names = slices.AppendSeq(names, maps.Keys(r.engines))
+	slices.Sort(names)
 	return names
 }
 
@@ -392,7 +503,9 @@ func (r *Registry) LoadDir(dir string) error {
 		}
 		return fmt.Errorf("read manifest dir %s: %w", dir, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
 			continue
@@ -416,7 +529,9 @@ func (r *Registry) LoadFS(fsys fs.FS, root string) error {
 	if err != nil {
 		return fmt.Errorf("read embedded manifests %s: %w", root, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(path.Ext(e.Name()), ".json") {
 			continue
@@ -470,7 +585,9 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 		}
 		return fmt.Errorf("read override dir %s: %w", dir, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
 			continue
@@ -658,9 +775,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 // win); arrays and scalars are replaced by override.
 func deepMerge(base, override map[string]any) map[string]any {
 	out := make(map[string]any, len(base))
-	for k, v := range base {
-		out[k] = v
-	}
+	maps.Copy(out, base)
 	for k, ov := range override {
 		if bv, ok := out[k]; ok {
 			if bm, ok1 := bv.(map[string]any); ok1 {
@@ -716,6 +831,19 @@ func (m *Manifest) Validate() error {
 		// process is spawned, the reply races the engine's own startup, and the
 		// caller can still be handed the pre-restart state. Fail at load rather
 		// than ship a guarantee the manifest cannot keep.
+		// launch_model rewrites the saved launch settings and restarts the engine,
+		// so every platform needs editable launch settings and a readiness probe
+		// for the same reason as restart_after.
+		if a.LaunchModel != nil {
+			for key, p := range m.Platforms {
+				if p.Runtime.EditableLaunch == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.editable_launch", name, key)
+				}
+				if p.Runtime.Ready == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.ready", name, key)
+				}
+			}
+		}
 		if a.RestartAfter {
 			for key, p := range m.Platforms {
 				if p.Runtime.Ready == nil {
@@ -724,10 +852,52 @@ func (m *Manifest) Validate() error {
 			}
 		}
 	}
+	switch m.AdvertisedModels {
+	case "", advertisedModelsList:
+	case advertisedModelsLoaded:
+		if _, ok := m.Actions["loaded_models"]; !ok {
+			return fmt.Errorf("advertised_models %q requires a loaded_models action", m.AdvertisedModels)
+		}
+	default:
+		return fmt.Errorf("advertised_models %q invalid (want %q or %q)", m.AdvertisedModels, advertisedModelsList, advertisedModelsLoaded)
+	}
+	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded {
+		return fmt.Errorf("action %q: result.inventory_field requires advertised_models %q", "loaded_models", advertisedModelsLoaded)
+	}
 	return m.validatePlaceholders()
 }
 
+// advertisedModels values for Manifest.AdvertisedModels.
+const (
+	advertisedModelsList   = "list"
+	advertisedModelsLoaded = "loaded"
+)
+
 func (p *Platform) validate(key string) error {
+	if source := p.Runtime.ModelSource; source != "" && source != "huggingface" && source != "modelscope" {
+		return fmt.Errorf("platform %q: invalid model_source", key)
+	}
+	if auto := p.Runtime.AutoLaunch; auto != nil {
+		if auto.Kind != autoLaunchHFContext || auto.ContextTokens < 1024 {
+			return fmt.Errorf("platform %q: auto_launch needs kind %q and context_tokens of at least 1024", key, autoLaunchHFContext)
+		}
+		if auto.MaxNumSeqs < 0 {
+			return fmt.Errorf("platform %q: auto_launch max_num_seqs must not be negative", key)
+		}
+		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
+			return fmt.Errorf("platform %q: auto_launch requires a process-mode runtime with editable_launch", key)
+		}
+	}
+	if rule := p.Runtime.UnsupportedWeights; rule != nil {
+		if len(rule.Formats) == 0 || strings.TrimSpace(rule.Reason) == "" {
+			return fmt.Errorf("platform %q: unsupported_weights needs formats and a reason", key)
+		}
+		for _, format := range rule.Formats {
+			if format != weightFormatFP8 {
+				return fmt.Errorf("platform %q: unsupported_weights format %q is not one of [%s]", key, format, weightFormatFP8)
+			}
+		}
+	}
 	if policy := p.Runtime.EditableLaunch; policy != nil {
 		if policy.StartIndex < 0 || (p.Runtime.modeOrDefault() == "command" && policy.StartIndex >= len(p.Runtime.Start)) {
 			return fmt.Errorf("platform %q: invalid editable launch definition", key)
@@ -883,6 +1053,9 @@ func (a *Action) validate(name string) error {
 	hasHTTP := a.HTTP != nil
 	hasCmd := len(a.Cmd) > 0
 	hasRemovePath := a.RemovePath != nil
+	hasHFCache := a.HFCache != nil
+	hasLaunchModel := a.LaunchModel != nil
+	hasHFPull := a.HFPull != nil
 	kinds := 0
 	if hasHTTP {
 		kinds++
@@ -893,8 +1066,44 @@ func (a *Action) validate(name string) error {
 	if hasRemovePath {
 		kinds++
 	}
+	if hasHFCache {
+		kinds++
+	}
+	if hasLaunchModel {
+		kinds++
+	}
+	if hasHFPull {
+		kinds++
+	}
+	if a.StopEngine {
+		kinds++
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, or remove_path is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine is required", name)
+	}
+	if a.StopEngine && name != "unload_model" {
+		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)
+	}
+	if hasHFPull {
+		tool := a.HFPull.Tool
+		if name != pullModelAction || tool == "" || tool != filepath.Base(tool) || strings.TrimSpace(a.HFPull.Dir) == "" {
+			return fmt.Errorf("action %q: hf_pull belongs to pull_model and needs a tool file name and a dir", name)
+		}
+	}
+	if hasLaunchModel {
+		flag := a.LaunchModel.Flag
+		if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+			return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+		}
+	}
+	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
+		return fmt.Errorf("action %q: hf_cache.dir is required", name)
+	}
+	if hasHFCache && a.HFCache.Delete && name != "delete_model" {
+		return fmt.Errorf("action %q: hf_cache.delete belongs to delete_model", name)
+	}
+	if hasHFCache && a.HFCache.Delete != (strings.TrimSpace(a.HFCache.Tool) != "") {
+		return fmt.Errorf("action %q: hf_cache.delete and hf_cache.tool go together", name)
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {
@@ -921,6 +1130,14 @@ func (a *Action) validate(name string) error {
 	}
 	if a.Result != nil && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
 		return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)
+	}
+	if a.Result != nil && a.Result.InventoryField != "" {
+		if name != "loaded_models" {
+			return fmt.Errorf("action %q: result.inventory_field is only valid on loaded_models", name)
+		}
+		if !resultFieldNameRe.MatchString(a.Result.InventoryField) {
+			return fmt.Errorf("action %q: result.inventory_field %q is not a valid field name", name, a.Result.InventoryField)
+		}
 	}
 	if a.Result != nil && a.Result.Match != nil {
 		m := a.Result.Match
@@ -972,7 +1189,29 @@ func (m *Manifest) validatePlaceholders() error {
 			return fmt.Errorf("platform %q: %w", key, err)
 		}
 	}
-	return validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders)
+	if err := validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders); err != nil {
+		return err
+	}
+	hfAllowed := map[string]bool{hfHubCachePlaceholder: true}
+	for name := range allowedPlaceholders {
+		hfAllowed[name] = true
+	}
+	return validatePlaceholderStrings(m.hfActionDirs(), hfAllowed)
+}
+
+// hfActionDirs are the dirs of the hf_cache and hf_pull actions, which may also
+// name {hf_hub_cache}.
+func (m *Manifest) hfActionDirs() []string {
+	var out []string
+	for _, act := range m.Actions {
+		if act.HFPull != nil {
+			out = append(out, act.HFPull.Dir)
+		}
+		if act.HFCache != nil {
+			out = append(out, act.HFCache.Dir)
+		}
+	}
+	return out
 }
 
 func validatePlaceholderStrings(templates []string, allowed map[string]bool) error {
@@ -988,10 +1227,8 @@ func validatePlaceholderStrings(templates []string, allowed map[string]bool) err
 
 func placeholderList(placeholders map[string]bool) []string {
 	out := make([]string, 0, len(placeholders))
-	for k := range placeholders {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out = slices.AppendSeq(out, maps.Keys(placeholders))
+	slices.Sort(out)
 	return out
 }
 
@@ -1032,7 +1269,7 @@ func (m *Manifest) actionTemplatedStrings() []string {
 			// Path may template caller params (e.g. {model}); validated at call time.
 		}
 	}
-	// Action http.path / cmd are resolved from runtime params (e.g.
+	// hf_cache and hf_pull dirs are checked by hfActionDirs. Action http.path / cmd are resolved from runtime params (e.g.
 	// {model}), so they're validated at call time, not statically here.
 	return out
 }

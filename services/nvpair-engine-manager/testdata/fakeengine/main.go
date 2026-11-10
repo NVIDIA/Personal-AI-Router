@@ -73,7 +73,7 @@ func bstr(m map[string]any, k string) string {
 func main() {
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
-		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST"} {
+		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST", "MODEL_ENDPOINT"} {
 			values[key] = os.Getenv(key)
 		}
 		data, _ := json.Marshal(values)
@@ -81,11 +81,31 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	// "--fail-launch", or a model named org/fails-to-load, stands in for a launch
+	// the engine rejects, such as a model that does not fit in GPU memory.
 	for _, arg := range os.Args[1:] {
-		if arg == "--fail-launch" {
+		if arg == "--fail-launch" || arg == "org/fails-to-load" {
 			fmt.Fprintln(os.Stderr, "invalid launch", os.Args[1:])
 			os.Exit(2)
 		}
+	}
+	// Like vLLM, a server started with --model serves that one model and no
+	// other.
+	for i, arg := range os.Args[1:] {
+		served, ok := strings.CutPrefix(arg, "--model=")
+		if arg == "--model" && i+2 < len(os.Args) {
+			served, ok = os.Args[i+2], true
+		}
+		if ok {
+			models = map[string]bool{served: true}
+			loaded = map[string]bool{served: true}
+		}
+	}
+	// FAKE_SERVE_MODEL stands in for a server someone started on another model
+	// than the saved launch arguments name, which PAIR then adopted.
+	if served := os.Getenv("FAKE_SERVE_MODEL"); served != "" {
+		models = map[string]bool{served: true}
+		loaded = map[string]bool{served: true}
 	}
 	if path := os.Getenv("FAKE_START_LOG"); path != "" {
 		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
@@ -287,11 +307,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"models": ms})
 	})
-	// LM Studio-shape (OpenAI-compatible).
+	// LM Studio-shape (OpenAI-compatible). Each row also carries vLLM's root
+	// (the model it loaded). FAKE_SERVED_MODEL_NAME stands in for vLLM's
+	// --served-model-name: the id becomes that alias while root keeps the model.
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		data := make([]map[string]string, 0)
 		for _, n := range modelNames() {
-			data = append(data, map[string]string{"id": n, "object": "model"})
+			id := n
+			if alias := os.Getenv("FAKE_SERVED_MODEL_NAME"); alias != "" {
+				id = alias
+			}
+			data = append(data, map[string]string{"id": id, "root": n, "object": "model"})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

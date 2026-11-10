@@ -8,7 +8,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 */}
 
-Open a device's Ollama, LM Studio, or llama.cpp row and expand **Settings**.
+Open a device's Ollama, LM Studio, llama.cpp, or vLLM row and expand **Settings**.
 Edit the server port, proxy port, and engine arguments, then select the green **Apply** button.
 A paired device that supports settings can be edited from another device in the
 cluster.
@@ -18,6 +18,30 @@ vendor options can fail at startup.
 
 For installing, starting, and uninstalling engines, refer to
 [Managing engines](engine-lifecycle.mdx).
+
+## Model Download Source
+
+For llama.cpp, choose **Hugging Face** (the default) or **ModelScope** in
+**Model download source**, then select **Apply**. A running engine asks to restart
+before changing sources; a stopped engine stays stopped. The choice is saved
+on the device running the engine and also selects the source used by the model
+browser and search. Public GGUF repositories use the same `owner/repository:quant`
+names, with `Q4_K_M` offered in the browser. Repository availability can differ
+between sources. Downloaded files stay in llama.cpp's existing cache.
+
+PAIR sets llama.cpp's `MODEL_ENDPOINT` only for ModelScope. Hugging Face keeps
+existing endpoint settings, including custom mirrors. ModelScope downloads do
+not forward Hugging Face credentials; private or gated ModelScope models are
+not supported. An engine adopted from another application keeps its original
+download endpoint; PAIR cannot change the environment of an already-running
+process. This setting stays read-only until that engine is stopped in its own
+application and takes effect when PAIR launches it. A paired device must report
+support for source selection before the dropdown is editable; other settings
+can still be changed on devices that support settings editing.
+
+ModelScope downloads verify the complete file's size and SHA-256 before reporting
+success. Interrupted downloads restart from the beginning so cached partial
+data cannot bypass verification.
 
 ## Argument Notation
 
@@ -85,6 +109,7 @@ configuration consistent:
 | Ollama | `OLLAMA_HOST=127.0.0.1:<port>` | The host in `OLLAMA_HOST` | `OLLAMA_ORIGINS` |
 | LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
 | llama.cpp | `--port` | `--host` | `--cors-origins` |
+| vLLM | `--port` | `--host` | Not managed |
 
 For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235`, and `-p=1235`
 all synchronize the same server-port field. Conflicting repetitions and invalid
@@ -94,6 +119,35 @@ Add or remove the switch locally. Origin lists are normalized before validation,
 and conflicting repeated lists are rejected. Other vendor options remain opaque.
 llama.cpp must remain in router mode. Model-selection arguments such as `-m`
 or `-hf` switch it to an incompatible single-model server and fail readiness.
+vLLM always serves one model: its launch arguments name that model with
+`--model <Hugging Face id>`, and changing it restarts the engine. At every start
+PAIR sizes the rest for that model: a 64K context (`--max-model-len`, shrunk if
+the free GPU memory cannot hold it), YaRN rope scaling when the model's own window
+is smaller (for example Qwen3-8B's 40,960 tokens), a GPU memory share just large
+enough for the weights and that context, so other engines can run alongside it,
+and a limit of 32 requests at a time (`--max-num-seqs`).
+Memory sizing is left to the engine when CUDA device visibility is configured,
+more than one physical GPU is reported, or the launch explicitly sets `--dtype`
+or `--kv-cache-dtype`. This avoids sizing a different device or storage format
+from the one the engine uses. A model that is not
+downloaded yet, such as the default on a fresh install, has its configuration
+and chat template fetched first and is then set up the same way, tool calling
+included, before vLLM downloads its weights. Hugging Face settings in vLLM's
+launch settings apply to PAIR's own requests, downloads and deletes too:
+`HF_HUB_OFFLINE` or `TRANSFORMERS_OFFLINE`, `HF_TOKEN` (not sent when
+`HF_HUB_DISABLE_IMPLICIT_TOKEN` is set), a mirror in `HF_ENDPOINT`, and a cache folder in
+`HF_HUB_CACHE` or `HF_HOME`, or `--download-dir` in the launch text, which the model list
+then shows. Arguments you add to the launch text,
+such as your own `--max-model-len`, `--gpu-memory-utilization` or
+`--max-num-seqs`, take precedence, and a launch with
+`--tensor-parallel-size` or `--pipeline-parallel-size` is left as written. PAIR
+also turns on tool calling, which agent clients require: it checks how the
+model's chat template writes a tool call and picks the vLLM parser that reads
+that format (for example `hermes` for Qwen3, `qwen3_coder` for Qwen3.5 and
+Granite 4.2). For a model no vLLM parser can read, such as Nemotron Nano v2,
+tool calling stays off and vLLM answers a request that asks for tool calls with an
+error. To choose a parser yourself, add `--tool-call-parser <name>` to the
+launch text.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation

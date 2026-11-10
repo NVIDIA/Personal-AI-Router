@@ -38,17 +38,15 @@ func selfAddrs(ip string) []string {
 // nil-safe; publishSelf skips re-advertise when the responder is nil).
 func newSelfTestDaemon(hostUUID, ip string) *daemon {
 	return &daemon{
-		mesh:               clustertrust.Open(""),
-		reg:                newRegistry(hostUUID, "", selfAddrs(ip)),
-		instance:           "myhost",
-		dir:                newDirectory(),
-		http:               &http.Client{Timeout: nodeInfoFetchTimeout},
-		modelsHTTP:         &http.Client{Timeout: modelsFetchTimeout},
-		lastInfo:           make(map[string]NodeInfoResponse),
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
+		mesh:          clustertrust.Open(""),
+		reg:           newRegistry(hostUUID, "", selfAddrs(ip)),
+		instance:      "myhost",
+		dir:           newDirectory(),
+		http:          &http.Client{Timeout: nodeInfoFetchTimeout},
+		modelsHTTP:    &http.Client{Timeout: modelsFetchTimeout},
+		lastInfo:      make(map[string]NodeInfoResponse),
+		lastInfoAt:    make(map[string]time.Time),
+		lastInventory: make(map[string]modelInventory),
 	}
 }
 
@@ -61,15 +59,13 @@ func newSelfTestDaemon(hostUUID, ip string) *daemon {
 func TestReloadIdentity_AdoptsClusterPrincipal(t *testing.T) {
 	base := t.TempDir()
 	d := &daemon{
-		mesh:               clustertrust.Open(""), // unclustered: no cluster dir -> no clusterUuid
-		reg:                newRegistry("scanner-minted-X", "", selfAddrs("127.0.0.1")),
-		dir:                newDirectory(),
-		baseDir:            base,
-		lastInfo:           make(map[string]NodeInfoResponse),
-		lastInfoAt:         make(map[string]time.Time),
-		lastModels:         make(map[string][]string),
-		lastModelsByEngine: make(map[string]map[string][]string),
-		lastLoadedByEngine: make(map[string]map[string][]string),
+		mesh:          clustertrust.Open(""), // unclustered: no cluster dir -> no clusterUuid
+		reg:           newRegistry("scanner-minted-X", "", selfAddrs("127.0.0.1")),
+		dir:           newDirectory(),
+		baseDir:       base,
+		lastInfo:      make(map[string]NodeInfoResponse),
+		lastInfoAt:    make(map[string]time.Time),
+		lastInventory: make(map[string]modelInventory),
 		// codec/responder nil: emit is nil-safe; reloadIdentity skips re-advertise.
 	}
 	// Simulate this node already having been browsed under its scanner-minted uuid.

@@ -4,12 +4,13 @@
 package workloadstore
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -161,8 +162,8 @@ func (s *Store) historyInfosLocked() []json.RawMessage {
 			recs = append(recs, r)
 		}
 	}
-	sort.Slice(recs, func(i, j int) bool {
-		return completionOrder(recs[i]) < completionOrder(recs[j])
+	slices.SortFunc(recs, func(a, b Record) int {
+		return cmp.Compare(completionOrder(a), completionOrder(b))
 	})
 	out := make([]json.RawMessage, len(recs))
 	for i, r := range recs {
@@ -197,8 +198,8 @@ func (s *Store) pruneLocked(now int64) {
 	if len(term) <= s.historyCap {
 		return
 	}
-	sort.Slice(term, func(i, j int) bool {
-		return term[i].ord < term[j].ord // oldest first
+	slices.SortFunc(term, func(a, b termEntry) int {
+		return cmp.Compare(a.ord, b.ord) // oldest first
 	})
 	for i := 0; i < len(term)-s.historyCap; i++ {
 		delete(s.records, term[i].key)

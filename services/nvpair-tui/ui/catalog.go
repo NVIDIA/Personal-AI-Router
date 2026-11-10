@@ -4,10 +4,12 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
+	"nvpair-shared/enginesettings"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -98,6 +100,7 @@ type catalogBrowser struct {
 	// from a peer's detail screen as well as this machine's, and a heading that
 	// does not say which one invites downloading gigabytes to the wrong host.
 	nodeLabel string
+	nodeID    string
 
 	all       []catalogModel
 	shown     []catalogModel
@@ -175,7 +178,7 @@ func (b *catalogBrowser) load() tea.Cmd {
 	if b.query != "" {
 		params["query"] = b.query
 	}
-	return call(b.client, "engine:catalog", params,
+	request := call(b.client, "engine:catalog", params,
 		func(msg *rpc.Message, err error) tea.Msg {
 			if err != nil {
 				return catalogLoadedMsg{engine: engine, gen: gen, err: err}
@@ -202,6 +205,27 @@ func (b *catalogBrowser) load() tea.Cmd {
 				target:     target,
 				searchable: r.Searchable,
 			}
+		})
+	if b.nodeID == "" || engine != "llamacpp" {
+		return request
+	}
+	// A peer's saved source can differ from this machine's, which serves the
+	// catalog. Read it for each browse/search rather than reuse a stale snapshot.
+	return call(b.client, "engine:get-settings",
+		map[string]string{"nodeId": b.nodeID, "engine": engine},
+		func(msg *rpc.Message, err error) tea.Msg {
+			var snapshot enginesettings.Snapshot
+			if err == nil {
+				err = decodeParams(msg.Result, &snapshot)
+			}
+			if err != nil {
+				return catalogLoadedMsg{engine: engine, gen: gen, err: fmt.Errorf("read peer model source: %w", err)}
+			}
+			if snapshot.Settings.ModelSource == "" {
+				return catalogLoadedMsg{engine: engine, gen: gen, err: fmt.Errorf("peer does not report its model source; update PAIR on that device")}
+			}
+			params["modelSource"] = snapshot.Settings.ModelSource
+			return request()
 		})
 }
 
@@ -397,14 +421,14 @@ func catalogMatches(m catalogModel, needle string) bool {
 func (b *catalogBrowser) sortShown() {
 	switch b.sortBy {
 	case catalogSortName:
-		sort.SliceStable(b.shown, func(i, j int) bool {
-			return strings.ToLower(b.shown[i].Name) < strings.ToLower(b.shown[j].Name)
+		slices.SortStableFunc(b.shown, func(a, b catalogModel) int {
+			return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 		})
 	case catalogSortSize:
 		// Largest first, and models with no reported size sink rather than
 		// leading the list as if they were empty.
-		sort.SliceStable(b.shown, func(i, j int) bool {
-			return b.shown[i].Size > b.shown[j].Size
+		slices.SortStableFunc(b.shown, func(a, b catalogModel) int {
+			return cmp.Compare(b.Size, a.Size)
 		})
 	default:
 		// The backend's order is already the intended default.

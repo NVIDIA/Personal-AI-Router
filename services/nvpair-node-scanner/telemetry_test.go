@@ -573,7 +573,7 @@ func TestTelemetryLoop_BoundsConcurrentWorkAcrossTicks(t *testing.T) {
 	const nodeCount = telemetryRefreshConcurrency + 1
 	entered := make(chan struct{}, nodeCount)
 	releaseWork := make(chan struct{})
-	var releaseOnce sync.Once
+	release := sync.OnceFunc(func() { close(releaseWork) })
 	var active atomic.Int32
 	var maxActive atomic.Int32
 	d := &daemon{
@@ -609,9 +609,7 @@ func TestTelemetryLoop_BoundsConcurrentWorkAcrossTicks(t *testing.T) {
 			},
 		})
 	}
-	t.Cleanup(func() {
-		releaseOnce.Do(func() { close(releaseWork) })
-	})
+	t.Cleanup(release)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -624,7 +622,7 @@ func TestTelemetryLoop_BoundsConcurrentWorkAcrossTicks(t *testing.T) {
 		select {
 		case <-entered:
 		case <-time.After(2 * time.Second):
-			releaseOnce.Do(func() { close(releaseWork) })
+			release()
 			cancel()
 			<-done
 			require.FailNow(t, "telemetry loop did not fill its concurrency allowance")
@@ -637,7 +635,7 @@ func TestTelemetryLoop_BoundsConcurrentWorkAcrossTicks(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	releaseOnce.Do(func() { close(releaseWork) })
+	release()
 	if !overflowed {
 		select {
 		case <-entered:

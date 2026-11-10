@@ -29,6 +29,8 @@ import { createStructuredLogger } from '@/shared/utils/log'
 const log = createStructuredLogger('mac-helper')
 
 const CTL_BINARY_NAME = 'nvpair-helper-ctl'
+const MANUAL_RECOVERY_URL =
+    'https://github.com/NVIDIA/Personal-AI-Router/blob/develop/desktop/docs/macos-privileged-helper.md#manual-recovery'
 const MAX_REPAIR_ATTEMPTS = 2
 const MAX_REGISTRATION_RETRIES = 2
 const REGISTRATION_RETRY_WAIT_MS = 2000
@@ -235,7 +237,7 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
                     supported: true,
                     registration: current.registration,
                     firewallConfigured: false,
-                    firewallError: 'Could not unregister the stale privileged helper'
+                    firewallError: `Could not unregister the stale privileged helper. For manual recovery, see ${MANUAL_RECOVERY_URL}`
                 }
             }
         }
@@ -296,8 +298,8 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
             registration: current.registration,
             firewallConfigured: false,
             firewallError: current.reachable
-                ? 'Privileged helper is still running a different version'
-                : 'Could not communicate with the privileged helper'
+                ? `Privileged helper is still running a different version. For manual recovery, see ${MANUAL_RECOVERY_URL}`
+                : `Could not communicate with the privileged helper. For manual recovery, see ${MANUAL_RECOVERY_URL}`
         }
     }
 

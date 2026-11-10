@@ -103,8 +103,12 @@ ships in `cli-bin` and the app's updater replaces it.
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a
 source that cannot search, such as Ollama's list of thousands of entries. For
-one whose reply says it is `searchable` — llama.cpp's, a slice of Hugging Face —
+one whose reply says it is `searchable` — llama.cpp's selected model source —
 `/` sends the query upstream instead, and `c` returns to the browse list.
+For a peer's llama.cpp engine, each browse/search reads that peer's saved
+`modelSource` through `engine:get-settings` and passes it to `engine:catalog`.
+A failed read or a peer that does not report its source fails the catalog load
+instead of displaying this machine's source.
 
 Both panes work on remote cluster peers through the engine manager's
 `engine:remote-*` methods. Restart and uninstall need process ownership on the

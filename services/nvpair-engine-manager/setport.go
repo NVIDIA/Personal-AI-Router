@@ -101,13 +101,13 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 // A host-platform port is updated too, when present, because platform values
 // take precedence over shared runtime defaults at load time.
 func (e *Executor) persistPort(engine string, port int) error {
-	return e.persistRuntimeConfig(engine, port, nil, nil)
+	return e.persistRuntimeConfig(engine, port, nil, nil, nil)
 }
 
 // persistRuntimeConfig writes the port override plus, when non-nil, the launch
 // argument and environment overrides. A nil slice pointer leaves that override
 // exactly as it is on disk; an empty slice clears it to "declared, but empty".
-func (e *Executor) persistRuntimeConfig(engine string, port int, args, environment *[]string) error {
+func (e *Executor) persistRuntimeConfig(engine string, port int, args, environment *[]string, modelSource *string) error {
 	if e.overrideDir == "" {
 		return fmt.Errorf("no config directory available to persist the port")
 	}
@@ -183,6 +183,9 @@ func (e *Executor) persistRuntimeConfig(engine string, port int, args, environme
 	}
 	if environment != nil {
 		hostRuntime["launch_env"] = append([]string{}, (*environment)...)
+	}
+	if modelSource != nil && *modelSource != "" {
+		hostRuntime["model_source"] = *modelSource
 	}
 	setOverrideObject(platform, "runtime", hostRuntime)
 	setOverrideObject(platforms, host, platform)
