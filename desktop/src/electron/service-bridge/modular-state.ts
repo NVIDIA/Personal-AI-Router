@@ -32,7 +32,7 @@ import {
     isEngineType,
     unsupportedEngineStatus
 } from '@/shared/utils/engines'
-import { engineProgressKey } from '@/shared/utils/engine-progress'
+import { engineProgressKey, isEnginePullOutcome } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
@@ -1003,6 +1003,12 @@ class ModularBridgeState {
      * replay it after a UI refresh mid-download.
      */
     private activePulls = new Map<string, EngineProgress>()
+    /**
+     * Pulls shown as "Canceling", keyed like {@link activePulls}, each with the
+     * status it had before, which a rejected cancel restores. The frame a
+     * download ends on clears its entry: it says how the download ended,
+     * however the cancel goes, so it is shown as is and left in place.
+     */
     private cancelingPulls = new Map<string, string>()
     /**
      * Authoritative remote-engine facts keyed by {@link remoteOpKey}
@@ -1625,6 +1631,7 @@ class ModularBridgeState {
             operation === 'pull'
                 ? mergePullProgressPercent(numberValue(obj.percent), existingPull?.percent)
                 : measuredPercent(obj.percent)
+        if (isEnginePullOutcome({ operation, status: stage })) this.cancelingPulls.delete(pullKey)
         const progress: EngineProgress = {
             engineType,
             nodeId,
@@ -2269,11 +2276,12 @@ class ModularBridgeState {
         if (!existing) return
 
         const percent = numberValue(obj.percent)
+        const stage = stringValue(obj.stage) || existing.status
+        if (isEnginePullOutcome({ operation: 'pull', status: stage }))
+            this.cancelingPulls.delete(key)
         const progress: EngineProgress = {
             ...existing,
-            status: this.cancelingPulls.has(key)
-                ? 'canceling'
-                : stringValue(obj.stage) || existing.status,
+            status: this.cancelingPulls.has(key) ? 'canceling' : stage,
             percent: mergePullProgressPercent(percent, existing.percent)
         }
         this.activePulls.set(key, progress)

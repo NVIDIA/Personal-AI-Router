@@ -18,6 +18,7 @@ afterEach(() => {
     const state = getModularBridgeState()
     state.finishRemoteModelPull('peer', 'ollama', 'demo')
     state.finishRemoteModelPull('peer', 'lm-studio', 'owner/model')
+    state.finishModelPull('vllm', 'Qwen/Test')
 })
 
 describe('model download cancellation', () => {
@@ -108,5 +109,71 @@ describe('model download cancellation', () => {
         })
         expect(events.at(-1)).toMatchObject({ status: 'downloading', percent: 10 })
         expect(state.setModelPullCanceling('ollama', 'demo', true, 'peer')).toBe(true)
+    })
+
+    // A download can end while its cancel is under way: it finished first, or
+    // its engine could not confirm it stopped. Its last frame says which, so
+    // it shows as that rather than "Canceling", and a cancel rejected after it
+    // has no status from before to put back over it.
+    it('shows how a download ended while its cancel was under way', () => {
+        const state = getModularBridgeState()
+        const events: EngineProgress[] = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload)
+        })
+        state.beginRemoteModelPull('peer', 'ollama', 'demo')
+        state.applyRemoteEngineProgress({
+            node: 'peer',
+            engine: 'ollama',
+            model: 'demo',
+            op: 'pull',
+            stage: 'downloading',
+            percent: 30
+        })
+        state.setModelPullCanceling('ollama', 'demo', true, 'peer')
+        state.applyRemoteEngineProgress({
+            node: 'peer',
+            engine: 'ollama',
+            model: 'demo',
+            op: 'pull',
+            stage: 'error',
+            percent: -1,
+            message: 'the download may still be running'
+        })
+        expect(events.at(-1)).toMatchObject({ status: 'error' })
+
+        state.setModelPullCanceling('ollama', 'demo', false, 'peer')
+        expect(events.at(-1)).toMatchObject({ status: 'error' })
+    })
+
+    it('shows how a local download ended while its cancel was under way', () => {
+        const state = getModularBridgeState()
+        state.setSelfId('local-node')
+        const events: EngineProgress[] = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload)
+        })
+        state.beginModelPull('vllm', 'Qwen/Test')
+        state.setModelPullCanceling('vllm', 'Qwen/Test', true)
+        state.applyLocalEngineProgress({
+            engine: 'vllm',
+            model: 'Qwen/Test',
+            op: 'pull',
+            stage: 'downloading',
+            percent: 99
+        })
+        expect(events.at(-1)).toMatchObject({ status: 'canceling', percent: 99 })
+
+        state.applyLocalEngineProgress({
+            engine: 'vllm',
+            model: 'Qwen/Test',
+            op: 'pull',
+            stage: 'success',
+            percent: 100
+        })
+        expect(events.at(-1)).toMatchObject({ status: 'success', percent: 100 })
+
+        state.setModelPullCanceling('vllm', 'Qwen/Test', false)
+        expect(events.at(-1)).toMatchObject({ status: 'success', percent: 100 })
     })
 })
