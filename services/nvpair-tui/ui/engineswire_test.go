@@ -191,6 +191,7 @@ func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 		assert.Contains(t, downloadExamples, e.Name, "every engine needs a download example")
 	}
 	assert.Contains(t, downloadPrompt(engines.NameLlamaCPP, "llama.cpp"), ":Q4_K_M", "llama.cpp prompt must show the quantization suffix")
+	assert.Contains(t, downloadPrompt(engines.NameColibri, "Colibri"), "/", "Colibri prompt must show a repository id")
 	assert.Equal(t, "model name for vLLM", downloadPrompt("vllm", "vLLM"))
 }
 
@@ -201,11 +202,20 @@ func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 func TestEveryEngine_HasAModelWire(t *testing.T) {
 	for _, e := range engines.All() {
 		for op := range modelActions {
+			build, declared := modelWires[e.Name][op]
+			if !assert.True(t, declared, "%s has no local wire for %s", e.Name, op) {
+				continue
+			}
+			// A nil entry is a deliberate refusal, and must say so.
 			_, err := modelActionWire(e.Name, op, "m")
-			require.NoError(t, err, "%s must have a local wire for %s", e.Name, op)
+			assert.Equal(t, build == nil, err != nil, "%s %s: wire error %v does not match its declaration", e.Name, op, err)
 		}
 	}
-	_, err := modelActionWire("vllm", "load", "m")
+	_, err := modelActionWire(engines.NameColibri, "unload", "o/r")
+	if assert.Error(t, err, "colibri eject must be refused") {
+		assert.Contains(t, err.Error(), "cannot eject", "the refusal names the operation")
+	}
+	_, err = modelActionWire("vllm", "load", "m")
 	assert.Error(t, err, "an engine with no wire must not be given one")
 }
 

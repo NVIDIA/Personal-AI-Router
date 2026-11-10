@@ -122,6 +122,8 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `manifest_version` | int | yes | Must be `1`. A higher value is rejected (asks for behavior this binary lacks). Unknown optional fields within a supported version are ignored, so the schema can grow additively. |
 | `platforms` | object | yes | Map of `"<goos>/<goarch>"` → platform block (e.g. `"windows/amd64"`, `"darwin/arm64"`, `"linux/amd64"`). At least one entry. The runner selects the block matching the host. |
 | `actions` | object | no | Map of action name → action (see below). |
+| `catalog` | array | no | Models listed by repository, for an engine with an `hf_snapshot` pull. See Listed models. |
+| `model_types` | array | no | The root `config.json` `model_type` values the engine runs, lowercase. See Listed models. |
 | `detect` / `install` / `uninstall` / `models_dir` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
 
 **Shared defaults & per-platform overrides.** The platform-level fields `detect`, `install`, `uninstall`, `models_dir`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
@@ -221,6 +223,7 @@ applies to the host the test runs on.
 | `env` | object | no | Extra environment (merged over the inherited env). Use `{host}`/`{port}` for the listen address, e.g. `"OLLAMA_HOST": "{host}:{port}"`. |
 | `port` | int | no | Fixed port, or `0` to auto-assign a free loopback port. |
 | `bind` | string | no | Listen address, substituted as `{host}`. Empty ⇒ `127.0.0.1` (the safe default); an inference engine that serves the cluster sets `"0.0.0.0"` (Ollama does), overridable per call via `engine:start {bind}`. Probes always target loopback. |
+| `model` | string | no | The persisted launch model of a single-model engine, available to `args` and `env` as `{model}`. Written to the per-user override by a `launch_model` action (and by the first `hf_snapshot` download); a bundled manifest never sets it. See Single-model engines. |
 | `start` | string[][] | command mode | Ordered bring-up commands (each an argv) for `command` mode, e.g. `[["{cli}","server","start","--port","{port}"]]`. |
 | `cli` | string | no | The engine's control-CLI path for this platform, referenced as `{cli}` by start/stop/actions so the manifest's **global** actions resolve to the correct per-OS binary. |
 | `ready` | probe | no | Readiness probe; `start` waits for it before reporting Running. |
@@ -238,7 +241,9 @@ probes.
 ### Actions
 
 Each action is a config-declared operation exposed over `engine:action`.
-Exactly one of `http`, `cmd`, or `remove_path`:
+Exactly one of `http`, `cmd`, `remove_path`, `scan_dir`, `launch_model`, or
+`hf_snapshot` (the last three serve directory model stores; see Single-model
+engines):
 
 - **`http`** — call the engine's loopback control API. The caller's
   `params` are sent as the JSON request body by default. Set
@@ -362,6 +367,97 @@ The rules the runner enforces:
 Actions target the engine's control plane — **not** inference endpoints
 (those stay with the proxy).
 
+### Single-model engines and directory stores
+
+Some engines read a model as a directory and serve one model per process
+(Colibri). Three action kinds and one placeholder cover them with no
+engine-specific code:
+
+- **`scan_dir`** — `{ "root": "{models_dir}", "marker": "config.json", "depth": 2 }`
+  lists every directory at most `depth` levels below `root` that contains
+  `marker`, as `{"models":[{"name":"owner/repo"}]}` for a
+  `{"array":"models","field":"name"}` result; a model directory is not searched
+  for further models. Hidden directories, links and downloads in progress
+  (`*.partial`) are skipped. It also defines the store's layout: a model id is
+  one to `depth` plain path segments, and a `remove_path` delete on such a store
+  removes only a directory that holds `marker`, never the store or a folder of
+  models.
+- **`launch_model`** — `{ "path": "{models_dir}/{model}", "marker": "config.json" }`
+  checks the model is downloaded and saves it as `runtime.model`. Declare
+  `restart_after` with it so a running engine restarts onto the model.
+- **`hf_snapshot`** — `{ "dest": "{models_dir}/{model}" }`, valid only as
+  `pull_model` and never with `restart_after`. Downloads every file of an open
+  Hugging Face repository (`{model}` is `owner/repo`) into `dest`, through a
+  `dest.partial` directory renamed into place when complete. It refuses
+  private, gated and marker-less repositories and unsafe file names, checks free
+  disk space, resumes `.part` files with HTTP ranges, and reports progress. It
+  needs no running engine.
+- **`{model}`** — accepted only in `runtime.args`, `runtime.env`,
+  `launch_model.path` and `hf_snapshot.dest`. At launch it is the saved
+  `runtime.model` while that model is on disk, else the first model `scan_dir`
+  finds; with none, a start is refused. It is deliberately not one of the
+  runner-owned placeholders, so `cmd` and `remove_path` actions still receive a
+  caller's `model` param. Put it in `env` rather than `args`: the launch editor
+  turns default arguments into saved literals, which would pin the model.
+
+```json
+"runtime": {
+  "args": ["serve", "--host", "{host}", "--port", "{port}"],
+  "env": { "COLI_MODEL": "{models_dir}/{model}", "COLI_MODEL_ID": "{model}" }
+},
+"actions": {
+  "list_models": { "scan_dir": { "root": "{models_dir}", "marker": "config.json", "depth": 2 }, "result": { "array": "models", "field": "name" } },
+  "pull_model": { "hf_snapshot": { "dest": "{models_dir}/{model}" } },
+  "load_model": { "launch_model": { "path": "{models_dir}/{model}", "marker": "config.json" }, "restart_after": true },
+  "delete_model": { "remove_path": { "root": "{models_dir}", "path": "{models_dir}/{model}" } }
+}
+```
+
+#### Listed models
+
+A tag search only finds what publishers tag. An engine whose maintainers name
+models by repository, such as Colibri's own `coli setup` list, which points at
+vendors' original checkpoints, declares them in a top-level `catalog`.
+`engine:catalog` shows the listed models first, with the repository's live
+downloads, likes and last change, and drops a tagged duplicate. An `hf_snapshot`
+pull of a listed repository follows the entry's rules:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `repo` | yes | The `owner/name` repository, which is also the model id and its store path. |
+| `name` | yes | Display name. |
+| `parameters` | no | Display label such as `"284B"`. |
+| `size_gb` | no | Download size in gigabytes (10^9 bytes), for display. The pull measures the real size. |
+| `revision` | no | A full commit id to download instead of `main`. A branch or tag is refused because it can move. |
+| `exclude` | no | Repository paths not downloaded, as `fnmatch` patterns: `*` also matches `/`, as in the engine's own downloader. |
+| `after_download` | no | `[{ "python": "tools/x.py", "creates": "file" }]`: once the files are in, and before the model is listed, run each script from the install directory with the model directory as its argument, unless its file already exists. |
+
+An `after_download` step needs the engine installed, because the script ships
+with it. It also needs Python 3.10 or newer, found the way Colibri's launcher
+finds it: `py -3`, then `python`, then `python3` on Windows, and `python3`
+then `python` elsewhere. A failed step leaves the download as `dest.partial`,
+so the store does not list a model its engine cannot read, and the next pull
+resumes it. A model already in the store that lacks a step's file gets the step
+on its next pull, with no new download.
+
+An engine that picks its code from the root `config.json` `model_type`, as
+Colibri's family registry does, declares the values it runs in `model_types`.
+`engine:catalog` then offers a tagged repository only when the hub reports one
+of them for it, and an `hf_snapshot` pull of an unlisted repository is refused
+before any file is written when its `model_type` is missing or not listed. A
+listed repository is the engine's own choice and is not checked. Values are
+compared lowercased and trimmed, as Colibri compares them. Keep the list in
+step with the engine release the manifest pins.
+
+```json
+"catalog": [
+  { "repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "name": "DeepSeek V4 Flash", "parameters": "284B", "size_gb": 166.9 },
+  { "repo": "Qwen/Qwen3.8-Flash-Next-FP8", "name": "Qwen3.8-Flash-Next", "revision": "bcd9f01ddc9cff2316eb84281bebcd5b058bddce" },
+  { "repo": "XiaomiMiMo/MiMo-V2.6-Flash-MOPD", "name": "MiMo-V2.6 Flash", "exclude": ["dflash/*", "model_mtp.safetensors"] },
+  { "repo": "moonshotai/Kimi-K3", "name": "Kimi K3", "after_download": [{ "python": "tools/k3_tokenizer.py", "creates": "tokenizer.json" }] }
+]
+```
+
 ## Placeholders
 
 Resolved by the runner at execution time; any other `{token}` fails
@@ -377,6 +473,7 @@ validation at load:
 | `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
 | `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
 | `{models_dir}` | The platform's `models_dir`, expanded | `detect`, runtime args/env, `uninstall.run`, actions. **Not** `install`, which resolves only `{install_dir}` and the download paths — and not `uninstall.remove`, where naming the store is rejected at load. Unset when the platform declares no store, so a template referencing it then fails to resolve rather than silently becoming a path under `/` |
+| `{model}` | The launch model of a single-model engine (`runtime.model`, else the first model in the store) | runtime `args`/`env`, `launch_model.path`, `hf_snapshot.dest`. Rejected anywhere else at load |
 
 A `cmd` action additionally templates the action's own `params` as
 placeholders (e.g. `{model}`), resolved at call time. HTTP actions send
@@ -398,7 +495,19 @@ path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
 is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),
 an action sets none or more than one of
-`http`/`cmd`/`remove_path`, a `remove_path` action omits `root` or
+`http`/`cmd`/`remove_path`/`scan_dir`/`launch_model`/`hf_snapshot`, a
+`scan_dir` omits `root` or `marker` or sets a `depth` outside 1–4, a
+`launch_model` omits `path` or `marker`, a marker is not a plain file name, an
+`hf_snapshot` is declared on any action but `pull_model` or with
+`restart_after`, a `catalog` is declared without an `hf_snapshot` pull or lists
+a repository twice, a `catalog` entry has an invalid `repo`, no `name`, a
+negative `size_gb`, a `revision` that is not a full commit id, an `exclude`
+pattern that is absolute or climbs out of the repository, or an
+`after_download` step whose `python` is not a `.py` path inside the install
+directory or whose `creates` is not a plain file name, `model_types` is declared
+without an `hf_snapshot` pull or holds a value that is not a lowercase
+`model_type` or appears twice, a `remove_path` action
+omits `root` or
 `path`, `http.params_in` is not `body` or `query`, a `result` is set without
 both `array` and `field` (or a
 `result.match` without both `match.field` and a non-empty `match.in`), or
@@ -518,6 +627,7 @@ GPU selection, and auth.
 | **Ollama** | strong (env-first) | `ollama serve` (foreground) | env: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MAX_QUEUE`, `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_FLASH_ATTENTION` | HTTP `/api/tags`, `/api/pull`; CLI `ollama pull/ls/ps/stop` |
 | **llama.cpp** | strong (env+flags) — **reference design** | `llama-server --host 127.0.0.1 --port {port}` (foreground) | flags + `LLAMA_ARG_*` (host/port, ctx-size, n-parallel, cont-batching, flash-attn, device, n-gpu-layers, tensor-split, main-gpu, api-key, models-dir/max) | HTTP `/v1/models`, `/models` download/delete, `/models/load`, `/models/unload`, `/health`, `/slots` |
 | **LM Studio** | command / daemon | `lms daemon up` → `lms server start --port {port}` | small env (`LMS_SERVER_HOST`, `LM_API_TOKEN`); most config is flags/API/settings (`lms load --context-length/--gpu/--ttl`) | HTTP `/api/v1/models[/download\|load\|unload]`; CLI `lms ls/get/load/unload/ps` |
+| **Colibri** | single-model, directory store | `coli serve --host 127.0.0.1 --port {port}` (Python launcher, foreground) | env: `COLI_MODEL`, `COLI_MODEL_ID`, `COLI_API_KEY`, `COLI_KV_SLOTS`, `COLI_GPU(S)`, `COLI_METAL`/`COLI_VULKAN`/`COLI_CUDA`; flags `--kv-slots`, `--gpu`, `--vram`, `--ctx` | HTTP `/health`, `/v1/models`; models are Hugging Face `colibri` repos and the `catalog` of Colibri's own list (`hf_snapshot`); switch model = restart |
 | **vLLM** | flags-first — **Linux/WSL only** | `vllm serve <model> --host 127.0.0.1 --port {port}` | flags (host/port/api-key); `HF_HOME` for cache. `VLLM_PORT`/`VLLM_HOST_IP` are **not** the API bind | OpenAI `/v1/models`; one model per process (unload = restart) |
 | **Jan** | hybrid (on llama.cpp router) | `jan serve <model> --port {port}` (CLI) | forwards `LLAMA_ARG_*`; perf settings are router-preset-driven | `jan serve` auto-downloads HF repos |
 | **GPT4All** | weak (GUI app) | none (Local API Server toggled in the GUI, `:4891`) | desktop settings / Python SDK — not env | OpenAI `/v1` once enabled in-app |

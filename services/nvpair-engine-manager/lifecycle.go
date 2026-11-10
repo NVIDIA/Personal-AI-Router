@@ -103,6 +103,30 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	return e.setDesiredEnabled(engine, true)
 }
 
+// StartAfterInstall starts a freshly installed engine, unless it serves one
+// model per process and none is downloaded yet. Such an engine cannot run
+// before its first model arrives, and right after an install that is the
+// expected state rather than a failed start: it stays stopped, nothing is
+// reported, and its saved ON/OFF intent is left alone, so the first start after
+// a download is the user's. An explicit engine:start still refuses with the
+// "no model is downloaded" error.
+func (e *Executor) StartAfterInstall(ctx context.Context, engine string, opts startOpts) error {
+	st, err := e.state(engine)
+	if err != nil {
+		return err
+	}
+	st.mu.Lock()
+	rt := st.plat.Runtime
+	st.mu.Unlock()
+	if runtimeReferencesModel(rt) {
+		if _, err := st.launchModel(rt); errors.Is(err, errNoLaunchModel) {
+			slog.Info("installed; the engine starts once a model is downloaded", "engine", engine)
+			return nil
+		}
+	}
+	return e.StartWith(ctx, engine, opts)
+}
+
 // doStart performs the start. Callers must hold st.opMu.
 func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, opts startOpts) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -175,11 +199,12 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
-	vars := st.pathVars()
-	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
-	vars["port"] = strconv.Itoa(port)
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	vars, err := st.launchVars(rt, effectiveBind(rt.Bind, opts.Bind), port)
+	if err != nil {
+		werr := fmt.Errorf("cannot start %s: %w", st.manifest.DisplayName, err)
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
+		e.emitState(engine)
+		return werr
 	}
 
 	st.mu.Lock()

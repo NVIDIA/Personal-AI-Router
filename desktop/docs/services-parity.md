@@ -34,7 +34,7 @@ history.
 | Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                           |
 | Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none |
 | Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                            |
-| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp         |
+| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio, llama.cpp and Colibri catalogs, and searches Hugging Face for llama.cpp and Colibri |
 
 ## Supervision
 
@@ -267,15 +267,17 @@ restart is entirely backend-owned: PAIR sends the same `deleteModel` command as
 for any other engine and never issues `engine:restart` itself, so the bundled
 `nvpair` terminal UI and a remote peer's deletion get the same behavior.
 
-**The full engine restart is LM Studio only.** Ollama and llama.cpp reflect a
-deletion in-process, so their manifests omit `restart_after` and their capability
-entries omit `restartsOnModelDelete`: no engine bounce and no restart
-confirmation. llama.cpp may stop the selected model while removing its cache
+**The full engine restart is LM Studio only.** Ollama, llama.cpp and Colibri
+reflect a deletion without one (Colibri lists its store from disk), so their
+`delete_model` actions omit `restart_after` and their capability entries omit
+`restartsOnModelDelete`: no engine bounce and no restart confirmation. Colibri's
+`load_model` does restart: it serves one model per process, so switching models
+is a restart onto the new one. llama.cpp may stop the selected model while removing its cache
 entry, but the router and its other models stay up. Those manifest and
 capability facts have to stay in step across Go and TypeScript, which nothing in
 either type system enforces — so
 `tests/modular/delete-model-restart.test.ts` reads the shipped manifests and
-asserts the pair agrees, and `TestBundledManifestsRestartOnlyLMStudio` guards the
+asserts the pair agrees, and `TestBundledManifestsRestartOnlyWhereNeeded` guards the
 same thing from the Go side.
 
 Several model-action timeouts have to be ordered correctly. For a
@@ -346,8 +348,8 @@ safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 name-set, not structured details.
 
 The model catalogue is owned by the backend: `engine:catalog` on
-`nvpair-engine-manager` serves the curated Ollama, LM Studio, and llama.cpp
-lists, and searches Hugging Face for llama.cpp, and both the desktop app and
+`nvpair-engine-manager` serves the curated Ollama, LM Studio, llama.cpp, and
+Colibri lists, and searches Hugging Face for llama.cpp and Colibri, and both the desktop app and
 the terminal interface browse it. Electron only relays the call and maps rows
 for the renderer.
 

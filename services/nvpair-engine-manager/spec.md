@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 1. Purpose
 A declarative, config-driven control plane for **local inference engines**
-(currently Ollama, LM Studio, and llama.cpp). It owns an engine's entire
+(currently Ollama, LM Studio, llama.cpp, and Colibri). It owns an engine's entire
 lifecycle *except serving inference* — locate, install, launch, stop, restart,
 health, and config-declared actions — so one uniform API manages any engine
 across OSes with no per-engine code. A third party drops in a JSON manifest and
@@ -35,7 +35,10 @@ extensibility story for an open-source product.
   `chat`, `unload_model`, and `delete_model` (`remove_path` with
   `lms-disk-path` resolution);
   llama.cpp declares list, loaded-list, pull, load, unload, and native cache
-  delete with exact model ids. `loaded_models` reports
+  delete with exact model ids; Colibri declares a `scan_dir` list of its
+  directory store, a loaded-list from `GET /v1/models`, an `hf_snapshot` pull, a
+  `launch_model` load that restarts the server onto the chosen model, and a
+  `remove_path` delete. `loaded_models` reports
   models currently resident in memory, name-extracted via the same declarative
   `result` spec with optional nested-path and row filters: Ollama uses
   `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
@@ -48,6 +51,18 @@ extensibility story for an open-source product.
   `/props` to report `role:"router"`; a single-model listener is incompatible
   and must not be started or adopted because its `/models` contract does not
   expose router residency state.
+- Single-model engines (Colibri): the `{model}` launch placeholder resolves to
+  the persisted `runtime.model` while it is on disk, else the first model in the
+  store; with no model a start is refused. Settings display and preview resolve
+  it the same way, so an unchanged save never pins the model as literal
+  environment.
+- Hugging Face snapshot downloads (`hf_snapshot`) of open repositories into a
+  model store: free-space check, per-file HTTP range resume, a `.partial`
+  directory renamed into place only when complete, progress through
+  `engine:pull-progress` and the `ec` stream, and refusal of private, gated,
+  unsafe-path and marker-less repositories. A repository the manifest's
+  `catalog` lists is downloaded at its pinned revision, without its excluded
+  files, and finished by its `after_download` Python steps before it is listed.
 - Per-engine stdout/stderr log capture and structured operational error records, surfaced via the errors pipeline.
 - A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls the loaded set and pushes `engine:models-changed` when it changes (explicit load/unload, JIT auto-load, TTL/idle eviction).
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
@@ -148,7 +163,7 @@ Requests (caller → service):
 | `engine:action` | `{ engine, action, params }` | the engine's raw response |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:catalog` | `{ engine, platform?, arch?, query? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. One curated source per engine: Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. Only llama.cpp's is `searchable`: a `query` searches all of Hugging Face for GGUF repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:catalog` | `{ engine, platform?, arch?, query? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. One curated source per engine: Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`, and Colibri's is the models its manifest `catalog` lists by repository (Colibri v2.1.0's own `coli setup` list, vendors' original checkpoints among them), first, then every open Hugging Face repository tagged `colibri` with a root `config.json` whose `model_type` the manifest's `model_types` lists (the SpeedyColibri and peng ports' builds excluded), both fetched live and cached, offered as `owner/repo`; a listed repository appears once, and one since gated or unreadable is left out. llama.cpp's and Colibri's are `searchable`: a `query` searches Hugging Face for GGUF repos or within the `colibri` tag (and Colibri's listed models by repository or name) respectively, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` from the remote node |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status }` after the remote install |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull |
@@ -208,7 +223,7 @@ fails it with the peer's error message.
   `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on
   macOS) plus bundled `manifests/*.json`. Each engine's model store is declared
   as `models_dir` outside that data dir (`~/.ollama`, `~/.llamacpp`,
-  `~/.lmstudio/models`) so neither an engine uninstall nor the app-level data
+  `~/.lmstudio/models`, `~/colibri-models`) so neither an engine uninstall nor the app-level data
   purge removes downloaded models; clearing one is the user's own choice, made
   per model through `delete_model`.
 

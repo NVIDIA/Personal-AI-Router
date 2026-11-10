@@ -208,7 +208,7 @@ The daemon emits five notifications and never sends a request to its parent. **`
 
 `registry` is this node's view of its own advertised services: a `ServiceKey → port` map plus the daemon-stamped identity. It is the only input to the advertised record.
 
-The canonical service keys are exactly nine, in the order they are emitted into TXT:
+The canonical service keys are exactly ten, in the order they are emitted into TXT:
 
 | Key | Service | Port in the product | Derived transport |
 |-----|---------|--------------------|-------------------|
@@ -216,6 +216,7 @@ The canonical service keys are exactly nine, in the order they are emitted into 
 | `ol` | `nvpair-proxy` Ollama facade ingress | the facade's listen port | plain |
 | `lm` | `nvpair-proxy` LM Studio facade ingress | the facade's listen port | plain |
 | `lc` | `nvpair-proxy` llama.cpp facade ingress | the facade's listen port | plain |
+| `co` | `nvpair-proxy` Colibri facade ingress | the facade's listen port | plain |
 | `er` | `nvpair-errors` cross-node ingest | `14319` | cluster mTLS when the target is clustered |
 | `wl` | `nvpair-workload-manager` event ingest | `14320` | cluster mTLS when the target is clustered |
 | `cl` | `nvpair-cluster-manager` pairing + trusted plane | `14321` | split channel — pairing plain, trusted endpoints mTLS |
@@ -224,7 +225,7 @@ The canonical service keys are exactly nine, in the order they are emitted into 
 
 Transport is **not** advertised. A consumer derives it from `ServiceKey.Transport()` plus whether the target node is clustered, because transport is global policy every same-version binary already knows rather than per-instance data. A key absent from TXT means the service is absent on that node. An unknown key parses as a service port and round-trips through the record, so a future service is carried, not dropped.
 
-In practice all registrations come from `nvpair-ui-broker`, which caches them (`relay.RegistrationCache`) and pushes each down as an id-bearing `discovery:register` when it starts the owning worker: `ni` when node-info spawns, `wl`, `er`, `em` likewise, `ec` only when a cluster dir is configured, `cl` when cluster-manager spawns, and `ol` / `lm` / `lc` from its engine reconcilers at the matching `nvpair-proxy` facade's listen port — never the engine's own port — with an `unregister` whenever the engine goes unhealthy or its facade is down. Because the broker owns the cache, it replays the whole set on every scanner spawn, so a scanner restart needs no reconnect logic anywhere else.
+In practice all registrations come from `nvpair-ui-broker`, which caches them (`relay.RegistrationCache`) and pushes each down as an id-bearing `discovery:register` when it starts the owning worker: `ni` when node-info spawns, `wl`, `er`, `em` likewise, `ec` only when a cluster dir is configured, `cl` when cluster-manager spawns, and `ol` / `lm` / `lc` / `co` from its engine reconcilers at the matching `nvpair-proxy` facade's listen port — never the engine's own port — with an `unregister` whenever the engine goes unhealthy or its facade is down. Because the broker owns the cache, it replays the whole set on every scanner spawn, so a scanner restart needs no reconnect logic anywhere else.
 
 `register` and `unregister` report whether the record actually changed. Only on a change does the daemon call `Responder.UpdateTXT` (which swaps the TXT and re-announces immediately) and refresh its own directory entry. The refresh runs on its own goroutine so a startup burst of registrations cannot serialize the read loop behind a loopback enrichment fetch.
 

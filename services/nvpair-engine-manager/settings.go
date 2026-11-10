@@ -104,12 +104,9 @@ func resolveRuntimeCommand(rt Runtime, index int, vars map[string]string) (launc
 // settings read probes ports, starts processes or writes configuration.
 func launchForState(st *engineState, port int) (launchCommand, error) {
 	rt := st.plat.Runtime
-	vars := st.pathVars()
-	vars["host"] = effectiveBind(rt.Bind, "")
-	vars["port"] = strconv.Itoa(port)
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
-	}
+	// A missing launch model must not hide the settings: the display resolves
+	// {model} empty, and only a start refuses.
+	vars, _ := st.launchVars(rt, effectiveBind(rt.Bind, ""), port)
 	st.mu.Lock()
 	bin := st.binPath
 	st.mu.Unlock()
@@ -267,9 +264,10 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		return fail("Cannot resolve the engine executable.")
 	}
 	host := effectiveBind(rt.Bind, "")
-	vars := st.pathVars()
-	vars["host"] = host
-	vars["port"] = strconv.Itoa(request.Settings.ServerPort)
+	// The same placeholders as a launch, {model} included, so a manifest
+	// environment default that names the model is recognised as a default and
+	// not pinned as a literal user value.
+	vars, _ := st.launchVars(rt, host, request.Settings.ServerPort)
 	vars["bin"] = base.Bin
 	vars["cli"] = expandPath(rt.CLI)
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
@@ -422,7 +420,7 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 		}
 	}
 	if changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, preview.Env) {
-		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env); err != nil {
+		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env, nil); err != nil {
 			return e.launchStateLocked(p.Engine, st), err
 		}
 	}

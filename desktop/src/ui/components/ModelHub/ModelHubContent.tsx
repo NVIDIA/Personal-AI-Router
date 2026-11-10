@@ -11,6 +11,7 @@ import { ModelHubList } from './ModelHubList'
 import { mergeModelHubResults, searchEngineHub } from '@/ui/utils/model-hub-search'
 import { resolveStoredSort, writeStoredSort } from '@/ui/utils/model-hub-content-storage'
 import { isHubEntryDownloaded } from '@/ui/utils/match-downloaded-model'
+import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { EngineType } from '@/shared/types/engines'
 import type { ModelItem } from '@/ui/types/engine-info'
 import getErrorString from '@/shared/utils/get-error-string'
@@ -184,7 +185,12 @@ export const ModelHubContent = ({
         async (nextQuery: string) => {
             const normalized = nextQuery.trim()
             setQuery(nextQuery)
-            if (engine !== 'llama-cpp' || normalized.length === 0) return
+            if (
+                !engine ||
+                !EngineCapabilities[engine].engineHub?.searchable ||
+                normalized.length === 0
+            )
+                return
 
             const generation = ++searchGenRef.current
             submittedQueryRef.current = normalized

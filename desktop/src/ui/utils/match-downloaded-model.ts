@@ -43,7 +43,9 @@ const matchExactName: DownloadedMatcher = (hubEntry, downloaded) => downloaded.n
 const MATCHERS: Partial<Record<EngineType, DownloadedMatcher>> = {
     ollama: matchOllama,
     'lm-studio': matchHfPullKeyOrName,
-    'llama-cpp': matchExactName
+    'llama-cpp': matchExactName,
+    // Both the catalog id and the downloaded model are the owner/repository id.
+    colibri: matchExactName
 }
 
 export function isHubEntryDownloaded(

@@ -35,8 +35,9 @@ inference. Two or more on the same local network let you try pairing and routing
 
 Nothing else has to be in place first:
 
-- **Engines.** PAIR installs and starts Ollama, LM Studio, or llama.cpp for you
-  in step 4. Existing Ollama and LM Studio installations can also be detected
+- **Engines.** PAIR installs and starts Ollama, LM Studio, llama.cpp, or
+  Colibri for you in step 4. Colibri also needs Python 3.10 or newer on the
+  machine. Existing Ollama and LM Studio installations can also be detected
   and used.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
   eligible node, so a single node holding the model is enough. Prepare the same
@@ -103,7 +104,8 @@ builds and for running the services directly.
 
 On first launch, PAIR opens a setup window that can install available inference
 engines on the local system. PAIR preselects Ollama, LM Studio, and llama.cpp when they are
-available for your platform.
+available for your platform. Colibri is listed but not preselected, because its
+models are much larger.
 
 1. Review the available engines.
 2. Select the engines to install, or skip installation if they are already
@@ -177,6 +179,17 @@ list is populated from popular GGUF repositories published by `ggml-org`,
 repositories. PAIR offers one verified `Q4_K_M` option for each result.
 **Load**, **Eject**, and **Delete** use that same exact model ID. **Delete**
 removes the selected entry from llama.cpp's persistent cache.
+
+Colibri's Add model list is every public Hugging Face repository tagged
+`colibri`, most downloaded first; pressing Enter searches within that tag. Each
+entry is a whole repository, such as
+`Justvugg/Qwen3-Coder-30B-A3B-colibri-int4`, downloaded into
+`~/colibri-models/<owner>/<repository>`. These models are large — from about
+20 GB to more than 400 GB — so PAIR checks free disk space first, and an
+interrupted download resumes where it stopped. Colibri serves one model at a
+time: the first model you download is the one it starts with, and **Load**
+restarts it onto another model. There is no **Eject**. Delete removes the
+model's directory.
 
 Refer to [Managing engines](engine-lifecycle.mdx) for details about:
 
@@ -265,7 +278,7 @@ curl <PAIR_BASE_URL>/chat/completions \
 
 ### Ollama-Style Request (Ollama Endpoint Only)
 
-Sending this to the LM Studio or llama.cpp endpoint fails, because those engines
+Sending this to the LM Studio, llama.cpp, or Colibri endpoint fails, because those engines
 do not implement Ollama's API. The `-N` flag tells `curl` not to buffer, so it
 displays the response stream as it is generated.
 
@@ -416,8 +429,8 @@ official installer: `~/.lmstudio/bin/lms`, or
 port. Otherwise, the CLI connects to `11434`, which is PAIR's proxy, and
 `ollama list` returns the cluster's view instead of the local machine's. Use the
 **Server port** value in the engine's **Settings** section to address the local
-engine directly. It defaults to `11435` for Ollama, `1235` for LM Studio, and
-`8081` for llama.cpp.
+engine directly. It defaults to `11435` for Ollama, `1235` for LM Studio,
+`8081` for llama.cpp, and `8001` for Colibri.
 
 Use the proxy port to check what your cluster can serve. Use the engine port to
 check what is installed on the local machine.
@@ -438,6 +451,14 @@ CLI, so query the router over HTTP on its engine port instead:
 curl http://127.0.0.1:8081/models
 ```
 
+**Colibri** is installed the same way, under `engine-bin/colibri` (its
+launcher is `coli.cmd` on Windows and `coli` elsewhere), and keeps its models in
+`~/colibri-models`. Query the running server on its engine port:
+
+```bash
+curl http://127.0.0.1:8001/v1/models
+```
+
 PAIR does not put these binaries on `PATH` yet. Until then, use the full path or
 add an alias yourself.
 
@@ -455,8 +476,9 @@ relative to the proxy URL, before the `/v1` suffix:
 | Ollama | `http://127.0.0.1:11434` | Ollama's own API (`/api/chat`, `/api/generate`, `/api/embed`, and `/api/tags`), plus the OpenAI-compatible and Anthropic APIs listed below |
 | LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible and Anthropic APIs listed below |
 | llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible API listed below, plus `/models` for model listings |
+| Colibri | `http://127.0.0.1:8000` | The OpenAI-compatible and Anthropic APIs listed below |
 
-All three endpoints expose these OpenAI-compatible paths:
+All four endpoints expose these OpenAI-compatible paths:
 
 - `POST /v1/chat/completions` — [Conversations](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - `POST /v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
@@ -464,7 +486,7 @@ All three endpoints expose these OpenAI-compatible paths:
 - `POST /v1/responses` — [Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
 - `GET /v1/models` — [available models](https://developers.openai.com/api/reference/resources/models/methods/list)
 
-Ollama and LM Studio support the following Anthropic APIs:
+Ollama, LM Studio, and Colibri support the following Anthropic APIs:
 - `POST /v1/messages` — [Messages](https://platform.claude.com/docs/en/api/messages/create)
 
 **Endpoints** includes `/v1` in the displayed and copied URL, so you can paste it

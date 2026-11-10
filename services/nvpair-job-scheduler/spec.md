@@ -55,7 +55,7 @@ capacity, model locality, latency, and affinity can grow later behind the same
 - **Simultaneous local burst**: before each auto-routed inference forward, the
   proxy atomically increments a local reservation for its chosen node. Concurrent
   requests therefore see one another even before workload feedback completes.
-- **Cross-engine contention**: Ollama, LM Studio, and llama.cpp workloads all
+- **Cross-engine contention**: Ollama, LM Studio, llama.cpp, and Colibri workloads all
   consume the destination node's execution resources, so any one of them changes
   every engine output.
 - **Periodic reconciliation**: the runtime-adjustable timer recomputes the same

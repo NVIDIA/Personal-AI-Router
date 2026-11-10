@@ -17,7 +17,7 @@ For model-bearing inference, each facade first filters a request-local discovery
 snapshot to nodes whose per-engine inventory advertises the requested model.
 Empty and non-matching inventories are ineligible; an empty owner set returns a
 local `502` without contacting an engine. Ollama normalizes the implicit
-`:latest` tag; LM Studio and llama.cpp IDs match exactly.
+`:latest` tag; LM Studio, llama.cpp and Colibri IDs match exactly.
 
 Within that eligible owner set, proxy target precedence is:
 
