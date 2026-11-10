@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 )
+
+// withDownloadStopGraces installs the graces a download's tool is given on
+// ctx, in place of the tool's own.
+func withDownloadStopGraces(ctx context.Context, graces downloadStopGraces) context.Context {
+	return context.WithValue(ctx, downloadStopGracesKey{}, graces)
+}
 
 // fakeDownloadProcess records the signals stopDownload sends it, and exits on
 // the one its case names.

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -380,6 +382,103 @@ func TestPullHFModel_CancelStopsTheToolAndKeepsItsPartialFiles(t *testing.T) {
 	assertPullStatus(t, got.result, "cancelled")
 	assert.FileExists(t, partial, "the cancel deleted the partial download")
 	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "cancelled"}}, pullOutcomes(*events))
+}
+
+// testHFStopGraces shrinks the hf tool's graces, so a case that models a tool
+// the kill cannot reclaim gives up on it quickly.
+var testHFStopGraces = downloadStopGraces{interrupt: 200 * time.Millisecond, reap: 500 * time.Millisecond}
+
+// fakeHFDownloadWithAnEscapedHelper starts a download whose helper leaves the
+// tool's process group still holding the tool's output open, as a grandchild
+// of a real tool can, so no signal to the group closes the pipe and the tool
+// is never reaped. The helper writes its PID once it has left.
+const fakeHFDownloadWithAnEscapedHelper = `
+repo="$(echo "$@" | sed 's/.*--cache-dir //')/models--Qwen--Test"
+mkdir -p "$repo/blobs"
+head -c 4 /dev/zero > "$repo/blobs/w.incomplete"
+perl -e 'setpgrp(0, 0); open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 30' "$(dirname "$0")/helper.pid" &
+exec sleep 30
+`
+
+// A tool that cannot be reaped is given up on once killed, rather than waited
+// on for good with the cancel's reply and every download queued behind it. It
+// may still be transferring, so the cancel fails as LM Studio's does, deletes
+// nothing, and a cancel sent once the download has settled says so again.
+func TestPullHFModel_CancelFailsWhenTheToolCannotBeReaped(t *testing.T) {
+	e, hub, events := hfPullFixture(t, oneFileRepo, http.StatusOK, fakeHFDownloadWithAnEscapedHelper)
+	ctx, cancel := context.WithTimeout(withDownloadStopGraces(t.Context(), testHFStopGraces), 30*time.Second)
+	defer cancel()
+	partial := filepath.Join(hub, "models--Qwen--Test", "blobs", "w.incomplete")
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(helperPID)
+		if err != nil {
+			return
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+			if helper, err := os.FindProcess(pid); err == nil {
+				_ = helper.Kill()
+			}
+		}
+	})
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(helperPID)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the download never started")
+
+	cancelErr := e.CancelModelPull(ctx, "vllm", "Qwen/Test")
+	got := awaitOutcome(t, ctx, done)
+
+	assert.ErrorContains(t, cancelErr, "may still be running")
+	assert.ErrorContains(t, got.err, "may still be running")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "error", Percent: -1}}, pullOutcomes(*events))
+	assert.FileExists(t, partial, "the cancel deleted the partial download")
+	assert.ErrorContains(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"), "may still be running",
+		"a cancel sent after the download settled reported it stopped")
+}
+
+// fakeHFDownloadFinishingAsItIsStopped stalls until it is asked to stop, then
+// completes the download and exits cleanly: a tool that finishes in the
+// instant it is stopped.
+const fakeHFDownloadFinishingAsItIsStopped = `
+trap 'finished=1' TERM
+touch "$(dirname "$0")/started"
+while [ -z "$finished" ]; do sleep 0.1; done
+` + fakeHFDownload
+
+// A download that finished as it was being cancelled stands, as LM Studio's
+// does: the model is installed, so the cancel has nothing left to stop.
+func TestPullHFModel_CancelKeepsADownloadThatFinishedAsItWasStopped(t *testing.T) {
+	e, hub, events := hfPullFixture(t, oneFileRepo, http.StatusOK, fakeHFDownloadFinishingAsItIsStopped)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(filepath.Dir(hub), "started"))
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the download never started")
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	var result struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(got.result, &result))
+	assert.Equal(t, "Qwen/Test", result.Model)
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "success", Percent: 100}}, pullOutcomes(*events))
 }
 
 // A vllm on PATH is often a link into the environment it was installed in, as

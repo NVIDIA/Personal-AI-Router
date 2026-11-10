@@ -39,10 +39,6 @@ var testLMSCancelGraces = downloadStopGraces{
 	reap:      30 * time.Second,
 }
 
-func withDownloadStopGraces(ctx context.Context, graces downloadStopGraces) context.Context {
-	return context.WithValue(ctx, downloadStopGracesKey{}, graces)
-}
-
 // fakeDownloadArgv builds the argv for one of the fake engine's download
 // subcommands. Each takes the percentage to report before it waits for its
 // interrupt, and optionally the partial file to write first.
