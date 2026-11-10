@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.20 — Recover stale macOS helper registrations after upgrades (#201)
+
+- Allow a delayed, bounded retry when macOS retains the privileged helper's old signing identity after an upgrade.
+- Preserve the retry limit across application restarts and pending background-item approval.
+
 ## 1.0.19 — Launch at login and start minimized to the tray (#97)
 
 - New Startup section in Settings > Service with two switches: launch at login, and start minimized to the tray.
