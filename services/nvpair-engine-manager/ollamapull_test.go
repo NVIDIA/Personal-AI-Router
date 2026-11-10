@@ -100,11 +100,14 @@ func TestOllamaPartialSnapshot_RefusesAnUnknownBlobsDirectory(t *testing.T) {
 func TestCleanupOllamaAfterCancel_RemovesOnlyPartialsThisPullCreated(t *testing.T) {
 	root := t.TempDir()
 	completedLayer := writeBlob(t, root, blobA)
-	otherTransfer := writeBlob(t, root, blobB+"-partial")
 	before, err := ollamaPartialSnapshot(root)
 	require.NoError(t, err)
 	created := writeBlob(t, root, blobA+"-partial")
 	createdChunk := writeBlob(t, root, blobA+"-partial-0")
+	// A transfer another client started during this pull postdates the
+	// snapshot too, so only the digests this pull reported set its partial
+	// apart.
+	otherTransfer := writeBlob(t, root, blobB+"-partial")
 	// "../escape" stands for a digest the engine never could have reported; it
 	// must not be turned into a path.
 	digests := map[string]bool{digestA: true, "../escape": true}
