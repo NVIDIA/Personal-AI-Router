@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -150,6 +151,7 @@ func hfPullFixture(t *testing.T, siblings []hfSibling, apiStatus int, script str
 			return
 		}
 		ev := ProgressEvent{Stage: fields["stage"].(string)}
+		ev.Model, _ = fields["model"].(string)
 		if pct, ok := fields["percent"].(int); ok {
 			ev.Percent = pct
 		}
@@ -189,7 +191,14 @@ func TestPullHFModel_DownloadsAndReportsSuccess(t *testing.T) {
 	require.Len(t, models, 1, "the downloaded model must show in the cache list")
 	assert.Equal(t, "Qwen/Test", models[0].ID)
 	require.NotEmpty(t, *events)
-	assert.Equal(t, ProgressEvent{Stage: "success", Percent: 100}, (*events)[len(*events)-1])
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "success", Percent: 100}}, pullOutcomes(*events),
+		"the download ends on one frame, naming its model")
+	assert.Equal(t, "success", (*events)[len(*events)-1].Stage, "a frame followed the download's outcome")
+}
+
+// pullOutcomes are the frames among events that say how a download ended.
+func pullOutcomes(events []ProgressEvent) []ProgressEvent {
+	return slices.DeleteFunc(slices.Clone(events), func(ev ProgressEvent) bool { return !isPullOutcome(ev.Stage) })
 }
 
 // fakeHFDownloadWithIndex records each run's files and lays them out in the
@@ -334,6 +343,43 @@ func TestPullHFModel_StopsPromptlyWhenCancelled(t *testing.T) {
 
 	assert.Error(t, err, "a cancelled download must fail")
 	assert.LessOrEqual(t, time.Since(start), 10*time.Second, "a cancelled download must stop promptly")
+}
+
+// fakeHFStalledDownload starts a download the way `hf download` does, with an
+// incomplete blob in the cache, and then stalls until it is stopped.
+const fakeHFStalledDownload = `
+repo="$(echo "$@" | sed 's/.*--cache-dir //')/models--Qwen--Test"
+mkdir -p "$repo/blobs"
+head -c 4 /dev/zero > "$repo/blobs/w.incomplete"
+exec sleep 30
+`
+
+// A cancel someone asked for stops the hf tool and settles the download as
+// cancelled, as every engine's does, on one frame naming the model. The partial
+// files stay for the next download of the model to resume, as llama.cpp's do.
+func TestPullHFModel_CancelStopsTheToolAndKeepsItsPartialFiles(t *testing.T) {
+	e, hub, events := hfPullFixture(t, oneFileRepo, http.StatusOK, fakeHFStalledDownload)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	partial := filepath.Join(hub, "models--Qwen--Test", "blobs", "w.incomplete")
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(partial)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the download never started")
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assert.FileExists(t, partial, "the cancel deleted the partial download")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "cancelled"}}, pullOutcomes(*events))
 }
 
 // A vllm on PATH is often a link into the environment it was installed in, as

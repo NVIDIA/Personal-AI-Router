@@ -440,15 +440,18 @@ the CLI never confirmed deletes nothing and fails, since the download may still
 be running. A cancel that finds no CLI running — before the first starts,
 between the sources PAIR tries, or while a timed-out transfer waits to be
 resumed — has nothing left to stop, so it settles as cancelled and removes the
-same files. llama.cpp's router is asked to stop the
-download and keeps what it already fetched, for llama.cpp to resume or
-replace; if the router does not confirm the stop, the cancellation fails, since
-the download may still be running. A stop that could not be confirmed, on
-either engine, keeps failing: cancelling that model again reports the same
-failure, rather than answering as a cancel for nothing, until the model is
-requested again. Only a cancellation someone requested
-removes files: a pull interrupted by app shutdown, a dropped remote connection,
-or the action timeout leaves its partial data resumable.
+same files. llama.cpp's router is asked to stop the download and keeps what it
+already fetched, for llama.cpp to resume or replace; if the router does not
+confirm the stop, the cancellation fails, since the download may still be
+running. vLLM's `hf` tool is stopped, and killed if it has not exited 3 seconds
+after being asked; its partial files stay in the Hugging Face cache, shared
+with vLLM's own downloads and every other Hugging Face client, for the next
+download to resume. A stop that could not be confirmed, on LM Studio or
+llama.cpp, keeps failing: cancelling that model again reports the same failure,
+rather than answering as a cancel for nothing, until the model is requested
+again. Only a cancellation someone requested removes files: a pull interrupted
+by app shutdown, a dropped remote connection, or the action timeout leaves its
+partial data resumable.
 
 Cleanup looks for partial files only where the engine-manager knows the engine
 writes them. For LM Studio that is the manifest's `models_dir`
@@ -508,6 +511,9 @@ flowchart TD
     Engine -- llama.cpp --> LlamaStop["Ask the router to<br/>stop the download"]
     LlamaStop --> LlamaKeep["Leave its files for<br/>llama.cpp to resume or replace"]
 
+    Engine -- vLLM --> VLLMStop["Stop the hf tool,<br/>killing it after 3s"]
+    VLLMStop --> VLLMKeep["Leave its files in the<br/>Hugging Face cache to resume"]
+
     OllamaCandidates --> Owned{"Absent from<br/>the snapshot?"}
     LMSCandidates --> Owned
     Owned -- No --> Preserve["Preserve completed,<br/>shared, and unrelated files"]
@@ -518,6 +524,7 @@ flowchart TD
     Delete --> Settle["Settle pull and refresh models"]
     Preserve --> Settle
     LlamaKeep --> Settle
+    VLLMKeep --> Settle
     Complete --> Settle
     NeverStarted --> Settle
     Settle --> Next["Allow next queued pull to start"]

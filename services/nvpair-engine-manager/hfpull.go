@@ -519,7 +519,17 @@ func hfToolPath(st *engineState, name string) (string, error) {
 // engine's `hf` tool. Progress is the share of the repository's bytes that has
 // landed in the cache, which stays honest across resumed and parallel files.
 // A download that makes no progress for the pull timeout is abandoned.
-func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, model string, act Action) (json.RawMessage, error) {
+//
+// A cancelled download stops the tool, killing it after hfStopGrace, and
+// deletes nothing. The partial files are the next download's to resume, and the
+// hub cache is shared with vLLM's own downloads and every other Hugging Face
+// client, so nothing in it can be attributed to this download alone.
+func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, model string, act Action) (result json.RawMessage, resultErr error) {
+	defer func() {
+		if resultErr != nil && ctx.Err() != nil {
+			resultErr = pullStopped(ctx, model)
+		}
+	}()
 	id := strings.TrimSpace(model)
 	if !hfModelIDRe.MatchString(id) {
 		return nil, fmt.Errorf("pull %q: not a valid Hugging Face model id (use org/name)", model)
@@ -535,7 +545,7 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}
 
-	e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: id})
+	e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "pulling", Message: id})
 	env := engineHFEnv(st)
 	siblings, err := e.hfRepoFiles(ctx, id, "main", env)
 	if err != nil {
@@ -606,7 +616,6 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 			if _, _, complete := completeHFSnapshot(snapshot); !ok || !complete {
 				return nil, fmt.Errorf("pull %q: the download finished but the model in the cache is incomplete", id)
 			}
-			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: id})
 			return json.Marshal(map[string]any{"model": id, "bytes": total})
 		case <-pullCtx.Done():
 			proc.stop(hfStopGrace)
@@ -623,7 +632,7 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 			}
 			if pct != lastPct && pct > 0 {
 				lastPct = pct
-				e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "downloading", Percent: pct, Message: id})
+				e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "downloading", Percent: pct, Message: id})
 			}
 		}
 	}

@@ -194,10 +194,12 @@ The cache listing judges such a model complete on those files. Other formats in 
 repository are not fetched; a full `hf download` adds them to the same cache
 without downloading the rest again. Progress is the
 share of those bytes that has landed in the cache, a download that makes no
-progress for the pull timeout is abandoned, and a cancelled one is stopped. It
-needs no running engine. A gated repo needs its terms accepted and `HF_TOKEN`
-(or a prior `hf auth login`), in the service's environment or the engine's launch
-settings.
+progress for the pull timeout is abandoned, and a cancelled one is stopped —
+the `hf` tool is killed if it has not exited 3 seconds after being asked — and
+settles as cancelled, keeping its partial files for the next download to resume
+(see "Cancelling a pull"). It needs no running engine. A gated repo needs its
+terms accepted and `HF_TOKEN` (or a prior `hf auth login`), in the service's
+environment or the engine's launch settings.
 
 On Apple Silicon, vLLM-Metal stores the KV cache in the model's dtype and
 refuses an FP8 KV cache, and its loader has no FP8 path for most model families.
@@ -492,15 +494,22 @@ LM Studio keeps every quantization of a repository side by side, so its
 cleanup also considers only the quantization this pull fetched: the one the
 request pins, or for a request that pins none, the one the CLI announced in its
 download plan. A pin that is not a quantization name, such as `@GGUF` or `@8B`,
-counts as none. The quantization is matched as a whole name token, so `Q4_K` never claims
-`Q4_K_M`'s files, and an unpinned pull whose plan announced none removes
-nothing. LM Studio additionally requires the CLI to confirm: declining its
-background-download prompt is what aborts the daemon's task, so a CLI that
+counts as none. The quantization is matched as a whole name token, so `Q4_K`
+never claims `Q4_K_M`'s files, and an unpinned pull whose plan announced none
+removes nothing. LM Studio additionally requires the CLI to confirm: declining
+its background-download prompt is what aborts the daemon's task, so a CLI that
 exited without answering it may still be fetching, nothing is deleted, and the
 cancel fails. A cancel that finds no CLI running — before the first starts,
 between candidate sources, or while a timed-out transfer waits to be resumed —
 has nothing left fetching, so it settles as cancelled and cleans up the same
 way.
+
+llama.cpp and vLLM delete nothing. llama.cpp's router is asked to stop the
+download and keeps what it fetched for llama.cpp to resume or replace. vLLM's
+`hf` tool is stopped, and killed if it has not exited 3 seconds after being
+asked; its partial files stay in the Hugging Face cache, which vLLM's own
+downloads and every other Hugging Face client share, for the next download of
+the model to resume.
 
 A stop that could not be confirmed — that one, or a llama.cpp download the
 router did not confirm stopping — keeps failing: cancelling that model again

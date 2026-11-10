@@ -342,7 +342,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	sseResp, err := e.client.Do(sseReq)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, llamaCPPStopped(ctx, model)
+			return nil, pullStopped(ctx, model)
 		}
 		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, err)
 	}
@@ -357,7 +357,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		return nil, err
 	}
 	if ctx.Err() != nil {
-		return nil, llamaCPPStopped(ctx, model)
+		return nil, pullStopped(ctx, model)
 	}
 	// Cancelling POST /models does not cancel the router's download child. Keep
 	// the bounded handshake alive so cancellation cannot discard its acceptance.
@@ -399,7 +399,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 			return
 		}
 		if ctx.Err() != nil {
-			pullErr = llamaCPPStopped(ctx, model)
+			pullErr = pullStopped(ctx, model)
 		}
 		// Partial files are left for llama.cpp itself to resume or replace.
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), e.pullCleanupTimeout)
@@ -411,7 +411,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		}
 	}()
 	if ctx.Err() != nil {
-		return nil, llamaCPPStopped(ctx, model)
+		return nil, pullStopped(ctx, model)
 	}
 
 	lastPct := -1
@@ -448,11 +448,11 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	return nil, fmt.Errorf("pull %q: progress stream ended before completion", model)
 }
 
-// llamaCPPStopped is the error for a pull its context stopped. A plain
+// pullStopped is the error for a pull its context stopped. A plain
 // cancellation comes back bare, the way every engine returns one, so that
 // trackedPull can tell a cancel someone asked for from a context that died on
 // its own. Any other cause, such as the progress watchdog's, is a failure.
-func llamaCPPStopped(ctx context.Context, model string) error {
+func pullStopped(ctx context.Context, model string) error {
 	if cause := context.Cause(ctx); cause != context.Canceled {
 		return fmt.Errorf("pull %q: %w", model, cause)
 	}
