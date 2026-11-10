@@ -11,6 +11,12 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.18 — Choose ModelScope for llama.cpp model downloads (#186)
+
+- Select Hugging Face or ModelScope in llama.cpp Settings. The saved choice controls model browsing, search, and downloads on that device; Hugging Face remains the default.
+- ModelScope verifies complete download sizes and SHA-256 checksums. Interrupted downloads restart from the beginning.
+- Model search runs automatically after two characters and a short typing pause. Searches run one at a time, with only the latest query continuing next; Enter and the search button bypass the pause.
+
 ## 1.0.17 — Stalled candidates yield to their peers for one deadline (#144)
 
 - A candidate that used up a full first-byte deadline without producing content is ranked behind its peers for one deadline.
