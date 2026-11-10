@@ -252,15 +252,21 @@ func TestLlamaCPPPullCancelledBeforeStart_DoesNotDownload(t *testing.T) {
 func TestLlamaCPPPull_ReportsARequestedCancellationAsCancelled(t *testing.T) {
 	test := func(name string, cancelWhen func(f *llamaCPPPullFixture) <-chan struct{}, wantUnloads int32) {
 		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 			f := newLlamaCPPPullFixture(t)
 			reached := cancelWhen(f)
 			cancelled := make(chan error, 1)
 			go func() {
-				<-reached
-				cancelled <- f.ex.CancelModelPull(context.Background(), "fake", llamaCPPPullTestModel)
+				select {
+				case <-reached:
+					cancelled <- f.ex.CancelModelPull(ctx, "fake", llamaCPPPullTestModel)
+				case <-ctx.Done():
+					cancelled <- ctx.Err()
+				}
 			}()
 
-			result, err := f.ex.PullModelStream(context.Background(), "fake", llamaCPPPullTestModel, nil)
+			result, err := f.ex.PullModelStream(ctx, "fake", llamaCPPPullTestModel, nil)
 
 			require.NoError(t, err)
 			assertPullStatus(t, result, "cancelled")
@@ -286,17 +292,23 @@ func TestLlamaCPPPull_ReportsARequestedCancellationAsCancelled(t *testing.T) {
 // even a cancel someone asked for is reported as the failure it is, and the
 // cancel fails with it.
 func TestLlamaCPPPull_FailsARequestedCancellationTheRouterDidNotConfirm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	f := newLlamaCPPPullFixture(t)
 	f.unload = func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "busy", http.StatusInternalServerError)
 	}
 	cancelled := make(chan error, 1)
 	go func() {
-		<-f.started
-		cancelled <- f.ex.CancelModelPull(context.Background(), "fake", llamaCPPPullTestModel)
+		select {
+		case <-f.started:
+			cancelled <- f.ex.CancelModelPull(ctx, "fake", llamaCPPPullTestModel)
+		case <-ctx.Done():
+			cancelled <- ctx.Err()
+		}
 	}()
 
-	_, err := f.ex.PullModelStream(context.Background(), "fake", llamaCPPPullTestModel, nil)
+	_, err := f.ex.PullModelStream(ctx, "fake", llamaCPPPullTestModel, nil)
 
 	require.ErrorContains(t, err, "could not confirm download stopped")
 	assert.ErrorContains(t, <-cancelled, "could not confirm download stopped")

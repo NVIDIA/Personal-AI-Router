@@ -102,13 +102,15 @@ func TestCancelModelPull_AnswersOnlyOnceCleanupHasSettled(t *testing.T) {
 // to end that wait. The download still stops; only the acknowledgement is
 // abandoned.
 func TestCancelModelPull_StopsWaitingWhenItsCallerGivesUp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	downloading := make(chan struct{})
 	finishCleanup := make(chan struct{})
 	pull := make(chan outcome, 1)
 	go func() {
 		var got outcome
-		got.result, got.err = ex.trackedPull(context.Background(), "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+		got.result, got.err = ex.trackedPull(ctx, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
 			close(downloading)
 			<-runCtx.Done()
 			<-finishCleanup
@@ -117,14 +119,8 @@ func TestCancelModelPull_StopsWaitingWhenItsCallerGivesUp(t *testing.T) {
 		pull <- got
 	}()
 	<-downloading
-	// Let the download settle after the assertion, so the executor is not left
-	// with a pull in flight when the case ends.
-	defer func() {
-		close(finishCleanup)
-		<-pull
-	}()
 
-	abandoned, abandon := context.WithCancel(context.Background())
+	abandoned, abandon := context.WithCancel(ctx)
 	waited := make(chan error, 1)
 	go func() { waited <- ex.CancelModelPull(abandoned, "ollama", "demo") }()
 	abandon()
@@ -132,9 +128,13 @@ func TestCancelModelPull_StopsWaitingWhenItsCallerGivesUp(t *testing.T) {
 	select {
 	case err := <-waited:
 		assert.ErrorIs(t, err, context.Canceled)
-	case <-time.After(30 * time.Second):
+	case <-ctx.Done():
 		require.FailNow(t, "the cancel kept waiting after its own caller gave up")
 	}
+	close(finishCleanup)
+	got := awaitOutcome(t, ctx, pull)
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
 }
 
 // stalledTransfer is a download endpoint that sends nothing until the request
@@ -425,31 +425,43 @@ func publishedFrames(events <-chan ProgressEvent) []ProgressEvent {
 // the retry ending: UIs retired the row and disabled its Cancel button while
 // the retry's bytes were still arriving.
 func TestTrackedPull_CancelledRequestSendsNoFrameWhileARetryDownloads(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
 	defer unsubscribe()
-	original, releaseOriginal := ex.claimPull(context.Background(), "ollama", "demo")
+	original, releaseOriginal := ex.claimPull(ctx, "ollama", "demo")
 	defer releaseOriginal()
-	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
-	retry, releaseRetry := ex.claimPull(context.Background(), "ollama", "demo")
+	require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+	retry, releaseRetry := ex.claimPull(ctx, "ollama", "demo")
 	defer releaseRetry()
 	retryDownloading := make(chan struct{})
 	finishRetry := make(chan struct{})
 	retryDone := make(chan outcome, 1)
 	go func() {
 		var got outcome
-		got.result, got.err = ex.trackedPull(retry, "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+		got.result, got.err = ex.trackedPull(retry, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
 			close(retryDownloading)
-			<-finishRetry
-			return succeedingPull(ctx)
+			select {
+			case <-finishRetry:
+				return succeedingPull(runCtx)
+			case <-runCtx.Done():
+				return nil, runCtx.Err()
+			}
 		})
 		retryDone <- got
 	}()
-	<-retryDownloading
+	select {
+	case <-retryDownloading:
+	case got := <-retryDone:
+		require.FailNow(t, "the retry ended before its download started", "result %s, error %v", got.result, got.err)
+	case <-ctx.Done():
+		require.FailNow(t, "the retry's download did not start")
+	}
 
 	originalResult, originalRan := claimedPull(t, ex, original)
 	close(finishRetry)
-	retryGot := <-retryDone
+	retryGot := awaitOutcome(t, ctx, retryDone)
 
 	assert.False(t, originalRan, "the cancelled request started its download")
 	assertPullStatus(t, originalResult, "cancelled")
