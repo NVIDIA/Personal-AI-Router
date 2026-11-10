@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.17 — Stalled candidates yield to their peers for one deadline (#144)
+
+- A candidate that used up a full first-byte deadline without producing content is ranked behind its peers for one deadline.
+
 ## 1.0.16 — Local node figures stay current in discovery (#5)
 
 - The scanner republishes its own entry on every peer refresh, so GPU, CPU and memory figures follow the node instead of freezing at daemon start.
