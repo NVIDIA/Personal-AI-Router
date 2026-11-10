@@ -23,6 +23,19 @@ type outcome struct {
 	err    error
 }
 
+// awaitOutcome waits for a pull running on another goroutine to return, and
+// fails the test rather than hanging if ctx ends first.
+func awaitOutcome(t *testing.T, ctx context.Context, done <-chan outcome) outcome {
+	t.Helper()
+	select {
+	case got := <-done:
+		return got
+	case <-ctx.Done():
+		require.FailNow(t, "the pull did not return before the test's deadline")
+		return outcome{}
+	}
+}
+
 func assertPullStatus(t *testing.T, result json.RawMessage, want string) {
 	t.Helper()
 	var terminal struct {

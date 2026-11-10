@@ -45,7 +45,7 @@ func withLMSCancelGraces(ctx context.Context, graces lmsCancelGraces) context.Co
 
 // fakeDownloadArgv builds the argv for one of the fake engine's download
 // subcommands. Each takes the percentage to report before it waits for its
-// interrupt.
+// interrupt, and optionally the partial file to write first.
 func fakeDownloadArgv(subcommand string) []string {
 	return []string{fakeEngineBin, subcommand, strconv.Itoa(fakeDownloadPercent)}
 }
@@ -321,6 +321,19 @@ func (h *resumeWaitHandler) Handle(_ context.Context, record slog.Record) error 
 func (h *resumeWaitHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *resumeWaitHandler) WithGroup(string) slog.Handler      { return h }
 
+// newLMSPullExecutor returns an executor whose fake engine downloads models
+// into modelsDir by running cmd in place of `lms get`.
+func newLMSPullExecutor(t *testing.T, modelsDir string, cmd ...string) *Executor {
+	t.Helper()
+	manifest := testEngineManifest(fakeEngineBin)
+	platformKey := runtime.GOOS + "/" + runtime.GOARCH
+	platform := manifest.Platforms[platformKey]
+	platform.ModelsDir = modelsDir
+	manifest.Platforms[platformKey] = platform
+	manifest.Actions[pullModelAction] = Action{Cmd: cmd, ModelResolution: modelResolutionLMSGet}
+	return newTestExecutor(t, manifest)
+}
+
 // `lms get` resumes a transfer that timed out by running again after a pause,
 // and no CLI runs during that pause. A cancel landing there found nothing to
 // interrupt and reported the timeout instead: the cancel failed, a retry error
@@ -335,16 +348,7 @@ func TestLMSPull_CancelWhileWaitingToResumeStopsTheDownload(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	modelsDir := t.TempDir()
 	partial := filepath.Join(modelsDir, "owner", "repo", "downloading_repo-Q4_K_M.gguf.part")
-	manifest := testEngineManifest(fakeEngineBin)
-	platformKey := runtime.GOOS + "/" + runtime.GOARCH
-	platform := manifest.Platforms[platformKey]
-	platform.ModelsDir = modelsDir
-	manifest.Platforms[platformKey] = platform
-	manifest.Actions[pullModelAction] = Action{
-		Cmd:             []string{fakeEngineBin, "downloadstalls", partial, "{model}"},
-		ModelResolution: modelResolutionLMSGet,
-	}
-	ex := newTestExecutor(t, manifest)
+	ex := newLMSPullExecutor(t, modelsDir, fakeEngineBin, "downloadstalls", partial, "{model}")
 	events, unsubscribe := ex.progress.subscribe("fake")
 	defer unsubscribe()
 	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
@@ -372,6 +376,88 @@ func TestLMSPull_CancelWhileWaitingToResumeStopsTheDownload(t *testing.T) {
 	frames := publishedFrames(events)
 	require.NotEmpty(t, frames, "the pull published no frames")
 	assert.Equal(t, "cancelled", frames[len(frames)-1].Stage, "the last frame must report the cancellation")
+}
+
+// startLMSDownload pulls owner/repo through a fake `lms get` running
+// subcommand, which writes and names a partial file before it waits to be
+// interrupted. It returns once the CLI has reported progress, by which point
+// the partial is one cleanup would attribute to this pull.
+func startLMSDownload(t *testing.T, ctx context.Context, subcommand string) (*Executor, string, <-chan outcome) {
+	t.Helper()
+	modelsDir := t.TempDir()
+	partial := filepath.Join(modelsDir, "owner", "repo", "downloading_repo-Q4_K_M.gguf.part")
+	ex := newLMSPullExecutor(t, modelsDir, append(fakeDownloadArgv(subcommand), partial, "{model}")...)
+	events, unsubscribe := ex.progress.subscribe("fake")
+	defer unsubscribe()
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.PullModelStream(ctx, "fake", "owner/repo", nil)
+		done <- got
+	}()
+	for {
+		select {
+		case ev := <-events:
+			if ev.Stage == "downloading" {
+				return ex, partial, done
+			}
+		case got := <-done:
+			require.FailNow(t, "the download ended before reporting progress", "%v", got.err)
+		case <-ctx.Done():
+			require.FailNow(t, "no progress from the download CLI")
+		}
+	}
+}
+
+// A cancel someone asked for interrupts the running CLI, which declines to
+// continue in the background and confirms. That is the stop that may delete
+// the partial, and the pull settles as the cancellation that was asked for.
+func TestLMSCancellation_StopsTheDownloadAndRemovesItsPartial(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	ex, partial, done := startLMSDownload(t, ctx, "canceldownload")
+
+	require.NoError(t, ex.CancelModelPull(ctx, "fake", "owner/repo"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assertRemoved(t, partial)
+}
+
+// The pull's context also ends when PAIR quits mid-download, when a remote
+// initiator disconnects, and when the action timeout elapses. The CLI confirms
+// that interrupt like any other, but nobody gave up on the bytes already on
+// disk, and `lms get` resumes them on the next attempt.
+func TestLMSPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	pullCtx, stopPull := context.WithCancel(ctx)
+	defer stopPull()
+	_, partial, done := startLMSDownload(t, pullCtx, "canceldownload")
+
+	stopPull()
+	got := awaitOutcome(t, ctx, done)
+
+	assert.ErrorIs(t, got.err, context.Canceled)
+	assertPresent(t, partial)
+}
+
+// Only a cancellation the CLI confirmed is known to have stopped LM Studio's
+// transfer: a CLI that exited without answering the background-download prompt
+// may have left the daemon fetching. Reporting that as "cancelled" would tell
+// the user the download stopped, so the cancel fails, and the partial stays for
+// whatever is still writing it.
+func TestLMSPull_FailsARequestedCancellationTheCLIDidNotConfirm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	ex, partial, done := startLMSDownload(t, ctx, "downloadsilent")
+
+	assert.ErrorContains(t, ex.CancelModelPull(ctx, "fake", "owner/repo"), "exited without confirming download cancellation")
+	got := awaitOutcome(t, ctx, done)
+
+	assert.ErrorContains(t, got.err, "exited without confirming download cancellation")
+	assertPresent(t, partial)
 }
 
 func TestCleanupLMSAfterCancel_RemovesThePartialButKeepsCompletedShards(t *testing.T) {

@@ -86,15 +86,30 @@ func reportDownloadProgress() {
 	fmt.Printf("\r[====    ] %.2f%%", percent)
 }
 
+// writeNamedPartial writes the partial file a transfer leaves and names it the
+// way `lms get` announces the file it is fetching, which is what lets a pull
+// that pins no quantization attribute the partial to itself.
+func writeNamedPartial(partial string) {
+	if os.MkdirAll(filepath.Dir(partial), 0o755) != nil || os.WriteFile(partial, []byte("partial"), 0o644) != nil {
+		os.Exit(2)
+	}
+	fmt.Printf("Downloading %s\n", strings.TrimSuffix(strings.TrimPrefix(filepath.Base(partial), "downloading_"), ".part"))
+}
+
 // downloadUntilInterrupted reports progress and then blocks until this process
-// is interrupted, the way `lms get` waits while it downloads. It listens for
-// the interrupt before reporting: the caller cancels as soon as it reads
-// progress, and an interrupt nothing is listening for ends the process before
-// it can answer, which is what a CLI that exits without confirming looks like.
+// is interrupted, the way `lms get` waits while it downloads. A partial file
+// named in os.Args[3] is written first, as a transfer under way would have. It
+// listens for the interrupt before reporting: the caller cancels as soon as it
+// reads progress, and an interrupt nothing is listening for ends the process
+// before it can answer, which is what a CLI that exits without confirming
+// looks like.
 func downloadUntilInterrupted() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 	defer signal.Stop(signals)
+	if len(os.Args) > 3 {
+		writeNamedPartial(os.Args[3])
+	}
 	reportDownloadProgress()
 	<-signals
 }
@@ -131,7 +146,7 @@ func main() {
 		// The four download subcommands stand in for `lms get` and cover the
 		// ways it can answer an interrupt. Each takes the percentage to report
 		// so the caller owns that number and can assert on the same constant it
-		// passed in.
+		// passed in, then optionally the partial file its transfer leaves.
 		case "canceldownload": // answers the prompt and confirms the cancellation
 			downloadUntilInterrupted()
 			fmt.Fprint(os.Stderr, "Continue to download in the background? (Y/N): ")
@@ -247,11 +262,7 @@ func main() {
 				fmt.Fprintln(os.Stderr, "downloadstalls: need <partial>")
 				os.Exit(2)
 			}
-			partial := os.Args[2]
-			if os.MkdirAll(filepath.Dir(partial), 0o755) != nil || os.WriteFile(partial, []byte("partial"), 0o644) != nil {
-				os.Exit(2)
-			}
-			fmt.Printf("Downloading %s\n", strings.TrimSuffix(strings.TrimPrefix(filepath.Base(partial), "downloading_"), ".part"))
+			writeNamedPartial(os.Args[2])
 			fmt.Fprintln(os.Stderr, "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.")
 			os.Exit(1)
 		}
