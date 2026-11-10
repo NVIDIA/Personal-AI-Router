@@ -24,6 +24,8 @@ interface UiConfig {
     startHidden: boolean
     /** Last app version that attempted to replace an enabled but stale helper. */
     macHelperRepairAttemptVersion: string
+    /** Replacement attempts for that version, including interrupted attempts. */
+    macHelperRepairAttemptCount: number
 }
 
 const DEFAULTS: UiConfig = {
@@ -32,7 +34,8 @@ const DEFAULTS: UiConfig = {
     macHelperSetupComplete: false,
     launchAtLogin: false,
     startHidden: true,
-    macHelperRepairAttemptVersion: ''
+    macHelperRepairAttemptVersion: '',
+    macHelperRepairAttemptCount: 0
 }
 
 let config: UiConfig = { ...DEFAULTS }
@@ -165,12 +168,15 @@ export function setMacHelperSetupComplete(value: boolean): void {
     save()
 }
 
-export function getMacHelperRepairAttemptVersion(): string {
-    return config.macHelperRepairAttemptVersion
+export function getMacHelperRepairAttempts(version: string): number {
+    if (config.macHelperRepairAttemptVersion !== version) return 0
+    // A saved version without a count already consumed its first attempt.
+    return Math.max(1, config.macHelperRepairAttemptCount)
 }
 
 /** Record the attempt and invalidate completed setup before replacing the helper. */
-export function setMacHelperRepairAttemptVersion(value: string): void {
+export function recordMacHelperRepairAttempt(value: string): void {
+    config.macHelperRepairAttemptCount = getMacHelperRepairAttempts(value) + 1
     config.macHelperRepairAttemptVersion = value
     config.macHelperSetupComplete = false
     save()
