@@ -18,8 +18,9 @@ package main
 //     hands removeQuiescentPartials.
 //  2. Quiescence — is anyone still writing it? A file this pull created can
 //     still be shared, because both vendors coalesce a concurrent download of
-//     the same content onto the same file. That test is the same for every
-//     engine, so it lives here.
+//     the same content onto the same file, so one that moves once this pull's
+//     transfer has had time to stop is someone else's. That test is the same
+//     for every engine, so it lives here.
 //
 // Deletion requires both. Every ambiguous case resolves toward keeping the
 // file: a partial left behind costs disk space the vendor's own cleanup
@@ -45,12 +46,20 @@ import (
 // makes one write anywhere in that run enough to spare the file, which is the
 // error to prefer. Attribution does the real work; this is the backstop for the
 // one case attribution cannot settle, a file two clients are writing at once.
-// Engines release their writers asynchronously once a transfer stops, so a
-// Windows sharing violation and a file that has not stopped moving yet both
-// tend to resolve within the budget; a file still moving when it runs out
-// belongs to someone else.
+//
+// Engines release their writers asynchronously once a transfer stops, so the
+// first partialGraceSamples samples (about a second) belong to the stopped
+// transfer: a write then only restarts the file's wait. After that this pull's
+// writer is gone, so a candidate that changes or first appears is another
+// client's download, kept however still it holds afterwards — a pause longer
+// than the quiet period is no sign that it finished. What remains is a shared
+// transfer that stalls within the grace and stays stalled through the quiet
+// period, which nothing on disk tells apart from one that stopped. A Windows
+// sharing violation on the unlink, the engine still holding the file, is
+// retried at every sample.
 const (
 	partialSampleInterval = 250 * time.Millisecond
+	partialGraceSamples   = 4
 	partialQuietSamples   = 6
 	partialCleanupSamples = 20
 )
@@ -100,30 +109,34 @@ func (o observation) changedFrom(baseline os.FileInfo) bool {
 // quietFile is a candidate's baseline — how it looked when it last changed —
 // and how many samples in a row have found it exactly so. It is kept for the
 // whole cleanup rather than taken afresh at intervals, so a write landing
-// between any two samples restarts the count: a writer that pauses and then
-// resumes is seen at the next sample instead of handed a new chance to look
-// finished.
+// between any two samples is seen at the next one: within the grace it
+// restarts the count, and after it marks the file as another client's, rather
+// than handing a writer that paused a new chance to look finished.
 type quietFile struct {
 	baseline os.FileInfo
 	still    int
 }
 
 // removeQuiescentPartials deletes the files candidates lists once each has held
-// still for partialQuietSamples samples in a row, and leaves the rest in place
-// when partialCleanupSamples run out.
+// still for partialQuietSamples samples in a row, and leaves the rest in place:
+// a file that changes or first appears after the stopped transfer's grace at
+// once, and any other when partialCleanupSamples run out.
 //
 // candidates is the engine's attribution: the partial files this pull created.
-// It is asked again at every sample, because a candidate can appear late (a
-// writer flushing its first bytes after the transfer stopped) or vanish (the
+// It is asked again at every sample, because a candidate can appear late (this
+// pull's writer flushing its first bytes as the transfer stops) or vanish (the
 // engine discarding its own partial).
 //
 // Only a failure is an error: a removal that kept failing, or candidates that
-// could not be listed, at the last sample. A file still moving or unreadable
-// when the samples run out is another client's, and leaving it is the safe
-// outcome rather than a failed cleanup. One candidate that cannot be removed
-// does not strand the others; each is tried at every sample.
+// could not be listed, at the last sample. A file another client is writing,
+// or one still unreadable when the samples run out, is left in place as the
+// safe outcome rather than a failed cleanup. One candidate that cannot be
+// removed does not strand the others; each is tried at every sample.
 func removeQuiescentPartials(ctx context.Context, candidates func() ([]string, error)) error {
 	watched := make(map[string]*quietFile)
+	// shared holds the candidates seen changing, or first seen, after the
+	// grace: other clients' downloads, left to them.
+	shared := make(map[string]bool)
 	var failure error
 	for sample := range partialCleanupSamples {
 		if sample > 0 {
@@ -139,6 +152,9 @@ func removeQuiescentPartials(ctx context.Context, candidates func() ([]string, e
 		listed := make(map[string]bool, len(paths))
 		for _, path := range paths {
 			listed[path] = true
+			if shared[path] {
+				continue
+			}
 			now := observe(path)
 			watch, seen := watched[path]
 			switch {
@@ -152,6 +168,13 @@ func removeQuiescentPartials(ctx context.Context, candidates func() ([]string, e
 				pending = true
 				continue
 			case !seen || now.changedFrom(watch.baseline):
+				if sample >= partialGraceSamples {
+					// This pull's writer has had its grace, so whoever wrote
+					// this is still downloading it.
+					delete(watched, path)
+					shared[path] = true
+					continue
+				}
 				watched[path] = &quietFile{baseline: now.info}
 				pending = true
 				continue

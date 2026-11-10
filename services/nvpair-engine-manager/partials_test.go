@@ -110,8 +110,8 @@ func TestRemoveQuiescentPartials_RemovesFilesThatHoldStill(t *testing.T) {
 
 // Both vendors coalesce a concurrent download of the same content onto the
 // same partial file, so one still growing after this transfer stopped is
-// shared. Leaving it is the safe outcome rather than a failed cleanup, and the
-// sample budget is what stops the cancel from waiting on it indefinitely.
+// shared. Leaving it is the safe outcome rather than a failed cleanup, and
+// cleanup stops watching it once the grace shows the writer is not this pull's.
 func TestRemoveQuiescentPartials_KeepsAFileAnotherClientIsWriting(t *testing.T) {
 	shared := filepath.Join(t.TempDir(), "shared.part")
 	writePartial(t, shared, "data")
@@ -124,27 +124,25 @@ func TestRemoveQuiescentPartials_KeepsAFileAnotherClientIsWriting(t *testing.T) 
 	require.NoError(t, removeQuiescentPartials(ctx, listing(shared)))
 
 	assertPresent(t, shared)
-	assert.Equal(t, partialCleanupSamples-1, waits, "cleanup should give up once its samples run out")
+	assert.Equal(t, partialGraceSamples, waits, "cleanup should stop watching a file that moves after the grace")
 }
 
-// The sequence a review raised against an earlier design, which took a fresh
-// baseline for each of several passes: a write landing between two passes was
-// invisible to the second, which went on to delete the file. A baseline kept
-// for the whole cleanup sees that write at the next sample, so the file must
-// then hold still for a full quiet period again.
-func TestRemoveQuiescentPartials_RestartsTheWaitWhenAFileChangesBetweenSamples(t *testing.T) {
-	partial := filepath.Join(t.TempDir(), "resumed.part")
+// Engines release their writers asynchronously, so the transfer this pull
+// stopped can land a few last writes as cleanup starts. One of those restarts
+// the wait rather than sparing the file, which goes once it has held still for
+// a full quiet period after it.
+func TestRemoveQuiescentPartials_WaitsOutTheStoppedTransfersLastWrites(t *testing.T) {
+	partial := filepath.Join(t.TempDir(), "stopped.part")
 	writePartial(t, partial, "data")
 	waits := 0
 	presentAFullQuietPeriodLater := false
 	ctx := withPartialSettle(context.Background(), func() {
 		waits++
 		switch waits {
-		case partialQuietSamples:
-			// The file has matched its baseline at every sample but the one
-			// that would have cleared it for removal.
+		case partialGraceSamples - 1:
+			// The grace's last sample sees this write.
 			growFile(t, partial)
-		case 2 * partialQuietSamples:
+		case partialGraceSamples - 1 + partialQuietSamples:
 			// The last wait before that write's quiet period completes.
 			_, err := os.Stat(partial)
 			presentAFullQuietPeriodLater = err == nil
@@ -153,14 +151,36 @@ func TestRemoveQuiescentPartials_RestartsTheWaitWhenAFileChangesBetweenSamples(t
 
 	require.NoError(t, removeQuiescentPartials(ctx, listing(partial)))
 
-	assert.True(t, presentAFullQuietPeriodLater, "a write between samples should restart the file's quiet period")
+	assert.True(t, presentAFullQuietPeriodLater, "a write during the grace should restart the file's quiet period")
 	assertRemoved(t, partial)
 }
 
+// Once the grace is over this pull's writer has stopped, so a write is another
+// client resuming the file: both vendors coalesce a new download onto a partial
+// already there. Holding still again afterwards proves nothing, since a
+// transfer waiting on a slow server pauses for longer than any quiet period.
+func TestRemoveQuiescentPartials_KeepsAFileThatChangesAfterTheGrace(t *testing.T) {
+	partial := filepath.Join(t.TempDir(), "resumed.part")
+	writePartial(t, partial, "data")
+	waits := 0
+	ctx := withPartialSettle(context.Background(), func() {
+		waits++
+		if waits == partialQuietSamples {
+			// The file has matched its baseline at every sample but the one
+			// that would have cleared it for removal.
+			growFile(t, partial)
+		}
+	})
+
+	require.NoError(t, removeQuiescentPartials(ctx, listing(partial)))
+
+	assertPresent(t, partial)
+}
+
 // A transfer does not write continuously. A client sharing this partial can
-// pause for most of a quiet period and then resume, again and again; each
-// write has to restart the wait, or the file is likeliest to be deleted
-// precisely when cleanup has been watching it longest.
+// pause for most of a quiet period and then resume, again and again. Restarting
+// the wait at each write would leave the file likeliest to be deleted precisely
+// when cleanup has been watching it longest.
 func TestRemoveQuiescentPartials_KeepsAFileAnIntermittentWriterResumes(t *testing.T) {
 	shared := filepath.Join(t.TempDir(), "shared.part")
 	writePartial(t, shared, "data")
@@ -178,7 +198,8 @@ func TestRemoveQuiescentPartials_KeepsAFileAnIntermittentWriterResumes(t *testin
 }
 
 // The candidates are listed again at every sample, so a partial whose first
-// bytes are flushed after the transfer stopped is still this pull's to remove.
+// bytes are flushed as the transfer stops, within the grace, is still this
+// pull's to remove.
 func TestRemoveQuiescentPartials_RemovesACandidateThatAppearsLate(t *testing.T) {
 	root := t.TempDir()
 	early := filepath.Join(root, "early.part")
@@ -203,6 +224,35 @@ func TestRemoveQuiescentPartials_RemovesACandidateThatAppearsLate(t *testing.T) 
 
 	assertRemoved(t, early)
 	assertRemoved(t, late)
+}
+
+// Once the grace is over this pull's writer is gone, so a partial first
+// appearing after it is another client starting the same download rather than
+// this pull's late flush.
+func TestRemoveQuiescentPartials_KeepsACandidateThatFirstAppearsAfterTheGrace(t *testing.T) {
+	root := t.TempDir()
+	early := filepath.Join(root, "early.part")
+	late := filepath.Join(root, "late.part")
+	writePartial(t, early, "data")
+	waits := 0
+	ctx := withPartialSettle(context.Background(), func() {
+		waits++
+		if waits == partialGraceSamples {
+			writePartial(t, late, "data")
+		}
+	})
+	candidates := func() ([]string, error) {
+		paths := []string{early}
+		if _, err := os.Stat(late); err == nil {
+			paths = append(paths, late)
+		}
+		return paths, nil
+	}
+
+	require.NoError(t, removeQuiescentPartials(ctx, candidates))
+
+	assertRemoved(t, early)
+	assertPresent(t, late)
 }
 
 // A file that cannot be read is not a file that is gone. Treating the two

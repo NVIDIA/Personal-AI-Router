@@ -86,14 +86,18 @@ func reportDownloadProgress() {
 	fmt.Printf("\r[====    ] %.2f%%", percent)
 }
 
-// writeNamedPartial writes the partial file a transfer leaves and names it the
-// way `lms get` announces the file it is fetching, which is what lets a pull
-// that pins no quantization attribute the partial to itself.
-func writeNamedPartial(partial string) {
-	if os.MkdirAll(filepath.Dir(partial), 0o755) != nil || os.WriteFile(partial, []byte("partial"), 0o644) != nil {
+// writeAnnouncedPartial writes the partial file a transfer leaves and prints the
+// download plan line `lms get` shows for it. The plan names the quantization
+// the CLI chose, never the file, and that quantization is what lets a pull that
+// pins none attribute the partial to itself. Here it is the part of the
+// partial's name after its last hyphen.
+func writeAnnouncedPartial(partial string) {
+	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(partial), "downloading_"), ".gguf.part")
+	cut := strings.LastIndex(name, "-")
+	if cut < 0 || os.MkdirAll(filepath.Dir(partial), 0o755) != nil || os.WriteFile(partial, []byte("partial"), 0o644) != nil {
 		os.Exit(2)
 	}
-	fmt.Printf("Downloading %s\n", strings.TrimSuffix(strings.TrimPrefix(filepath.Base(partial), "downloading_"), ".part"))
+	fmt.Printf("\r ↓ To download: %s %s [GGUF] - 4.68 GB\x1b[0K\n", name[:cut], name[cut+1:])
 }
 
 // downloadUntilInterrupted reports progress and then blocks until this process
@@ -108,7 +112,7 @@ func downloadUntilInterrupted() {
 	signal.Notify(signals, os.Interrupt)
 	defer signal.Stop(signals)
 	if len(os.Args) > 3 {
-		writeNamedPartial(os.Args[3])
+		writeAnnouncedPartial(os.Args[3])
 	}
 	reportDownloadProgress()
 	<-signals
@@ -254,15 +258,15 @@ func main() {
 			fmt.Println("downloaded")
 			return
 		case "downloadstalls": // stand in for an `lms get` whose transfer times
-			// out: write the partial file it names, the way a real download
-			// leaves one, then fail with LM Studio's transient "Download
-			// failed" so the runner waits to resume it.
+			// out: write the partial file its plan announces, the way a real
+			// download leaves one, then fail with LM Studio's transient
+			// "Download failed" so the runner waits to resume it.
 			// args: downloadstalls <partial> <model...>
 			if len(os.Args) < 3 {
 				fmt.Fprintln(os.Stderr, "downloadstalls: need <partial>")
 				os.Exit(2)
 			}
-			writeNamedPartial(os.Args[2])
+			writeAnnouncedPartial(os.Args[2])
 			fmt.Fprintln(os.Stderr, "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.")
 			os.Exit(1)
 		}

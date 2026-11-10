@@ -208,7 +208,9 @@ A download is started with `engine:action{pull_model}`, or
 model, because a node can have several downloads outstanding: each engine
 fetches one model at a time and queues the rest, and different engines download
 side by side. A request for a model that is already downloading joins that
-download rather than starting a second one.
+download rather than starting a second one, unless that download is being
+cancelled: then the request waits for it to stop and clean up, and downloads
+anew.
 
 The cancels, the remote pull, and `engine:pull-progress` carry the model in a
 top-level `model` field, so every frame lands on the row it belongs to.

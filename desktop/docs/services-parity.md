@@ -326,13 +326,15 @@ progress updates the same percentage display. A pull for another model on an
 engine that is already downloading is reported as `stage:"queued"` until its
 turn. A request for the model that is already downloading is not queued and
 fetches nothing: it joins that download and settles with its outcome, so PAIR
-never downloads a model twice at once. Whichever engine
+never downloads a model twice at once. A request made after that download was
+cancelled is a retry instead: it waits for the cancelled download to stop and
+clean up, then downloads anew. Whichever engine
 runs it, a pull's last frame says how it ended — `success`, `cancelled`, or
 `error` with the reason — and reaches a remote initiator too, just before the
 reply; the initiator sends it itself when the peer's stream dropped it. The
 Model Manager treats a row on one of those statuses as finished, with no
-spinner and no Cancel, while the awaited pull refreshes the model list and
-clears it. Progress for a download whose row has already cleared is ignored on
+spinner, progress bar, or Cancel, while the awaited pull refreshes the model
+list and clears it. Progress for a download whose row has already cleared is ignored on
 both paths, since a row rebuilt from it would be one nothing clears.
 
 The pull request itself stays pending for the whole download, so it is the
@@ -385,17 +387,22 @@ so the row is not dropped back to "Downloading". Ollama closes the pull request
 and removes partial blobs named by its progress digests; LM Studio receives
 Ctrl+C and a negative answer to its background-download prompt, and after
 acknowledgement the partial files of the model file it was fetching are
-removed. That file is identified by the requested quantization when the request
-pins one, and otherwise by the file names the CLI printed; an unpinned pull
-whose output named no file removes nothing. Completed model files, other
-quantizations, and unrelated downloads are retained, and a cancellation the CLI
-never confirmed deletes nothing. A cancel that finds no CLI running — before the
-first starts, between the sources PAIR tries, or while a timed-out transfer
-waits to be resumed — has nothing left to stop, so it settles as cancelled and
-removes the same files. llama.cpp's router is asked to stop the
+removed. That file is identified by the quantization the request pins or, when
+it pins none, the one the CLI announced in its download plan, matched as a
+whole name token so `Q4_K` never claims `Q4_K_M`'s files; an unpinned pull
+whose plan announced no quantization removes nothing. Completed model files,
+other quantizations, and unrelated downloads are retained, and a cancellation
+the CLI never confirmed deletes nothing and fails, since the download may still
+be running. A cancel that finds no CLI running — before the first starts,
+between the sources PAIR tries, or while a timed-out transfer waits to be
+resumed — has nothing left to stop, so it settles as cancelled and removes the
+same files. llama.cpp's router is asked to stop the
 download and keeps what it already fetched, for llama.cpp to resume or
 replace; if the router does not confirm the stop, the cancellation fails, since
-the download may still be running. Only a cancellation someone requested
+the download may still be running. A stop that could not be confirmed, on
+either engine, keeps failing: cancelling that model again reports the same
+failure, rather than answering as a cancel for nothing, until the model is
+requested again. Only a cancellation someone requested
 removes files: a pull interrupted by app shutdown, a dropped remote connection,
 or the action timeout leaves its partial data resumable.
 
@@ -411,23 +418,27 @@ directory, or an adopted Ollama daemon started with a different
 `OLLAMA_MODELS` — stops the download but leaves its partial files for the
 engine to resume or remove. The exception is a guess that lands on another
 live Ollama cache, such as a second daemon pulling the same layers there: a
-partial that daemon creates after the download started, and leaves still for
-the cleanup's quiet period, cannot be told from the download's own and is
-removed.
+partial that daemon creates after the download started and before the
+cleanup's grace ends, and then leaves still for its quiet period, cannot be
+told from the download's own and is removed.
 
 Ollama and LM Studio each funnel every client on the machine into one cache, so naming a file
 is not the same as owning it — Ollama blobs are content-addressed, and the LM
 Studio app downloads into the same repository directory. Each pull therefore
 records the partial files already present before it starts, and cancelling it
-considers only the ones that appeared afterwards. A file that is still growing
-once the transfer has stopped is shared with another client even by that
+considers only the ones that appeared afterwards. The stopped transfer gets a
+short grace for its last writes to land, and a file that still changes after
+that, or first appears after it, is shared with another client even by that
 measure, so it survives as well:
 
 ```mermaid
 flowchart TD
     Request["Model pull requested"] --> Tracked["Track by engine + model"]
     Tracked --> Same{"This model already<br/>downloading?"}
-    Same -- Yes --> Join["Join that download and<br/>settle with its outcome"]
+    Same -- Yes --> Stopping{"That download<br/>being canceled?"}
+    Stopping -- No --> Join["Join that download and<br/>settle with its outcome"]
+    Stopping -- Yes --> AwaitStop["Wait for it to stop<br/>and clean up"]
+    AwaitStop --> Same
     Same -- No --> Busy{"Another PAIR pull active<br/>for this engine?"}
 
     Busy -- No --> Snapshot["Ollama, LM Studio: record the<br/>partial files already on disk"]
@@ -448,7 +459,7 @@ flowchart TD
 
     Engine -- LM Studio --> LMSStop["Send Ctrl+C"]
     LMSStop --> LMSPrompt["Answer no to background download"]
-    LMSPrompt --> LMSCandidates[".part files of the pinned<br/>quantization or a file the CLI named"]
+    LMSPrompt --> LMSCandidates[".part files of the pinned<br/>or announced quantization"]
 
     Engine -- llama.cpp --> LlamaStop["Ask the router to<br/>stop the download"]
     LlamaStop --> LlamaKeep["Leave its files for<br/>llama.cpp to resume or replace"]
@@ -456,7 +467,7 @@ flowchart TD
     OllamaCandidates --> Owned{"Absent from<br/>the snapshot?"}
     LMSCandidates --> Owned
     Owned -- No --> Preserve["Preserve completed,<br/>shared, and unrelated files"]
-    Owned -- Yes --> Quiet{"Held still across<br/>repeated checks?"}
+    Owned -- Yes --> Quiet{"Held still across repeated<br/>checks after a short grace?"}
     Quiet -- No --> Preserve
     Quiet -- Yes --> Delete["Remove the partial file"]
 

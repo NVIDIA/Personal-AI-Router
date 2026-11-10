@@ -5,7 +5,7 @@ import { Button, Flex, ProgressBar, Stack, Text } from '@nvidia/foundations-reac
 import type { ModelItem } from '@/ui/types/engine-info'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import type { EngineProgress } from '@/shared/types/engines'
-import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
+import { isEnginePullInProgress, isEnginePullOutcome } from '@/shared/utils/engine-progress'
 
 export function TransientModelStatusRow({
     transientModel,
@@ -18,19 +18,25 @@ export function TransientModelStatusRow({
     pullProgress: EngineProgress | undefined
     onCancel: () => void
 }) {
-    const pulling = transientModel.status === 'pulling'
+    // A pull's last frame names how it ended, and the row stays on it until the
+    // awaited pull refreshes the model list. Nothing is running by then, so the
+    // row shows no activity and offers nothing to stop.
+    const ended = transientModel.status === 'pulling' && isEnginePullOutcome(pullProgress)
+    const pulling = transientModel.status === 'pulling' && !ended
     const canceling = pullProgress?.status === 'canceling'
     const percent = pullProgress?.percent
     return (
         <Stack gap="2">
             <Flex align="center" justify="between" gap="2" className="mt-2 min-w-0">
                 <Flex align="center" gap="1" className="min-w-0">
-                    <span
-                        className="spinner-element"
-                        role="status"
-                        aria-label=""
-                        style={{ margin: 0 }}
-                    />
+                    {!ended && (
+                        <span
+                            className="spinner-element"
+                            role="status"
+                            aria-label=""
+                            style={{ margin: 0 }}
+                        />
+                    )}
                     <Text kind="body/semibold/sm" className="truncate">
                         {transientModel.status === 'loading' &&
                             `Loading ${displayName(transientModel.name)}...`}
@@ -49,8 +55,8 @@ export function TransientModelStatusRow({
                     // its budget stops being awaited while the download keeps
                     // running, and this row is the only handle on it. The
                     // bridge ignores a click while a cancel is genuinely
-                    // outstanding, so asking again is free. A download that
-                    // has ended, however it ended, has nothing left to stop.
+                    // outstanding, so asking again is free. Until the
+                    // download's first frame arrives there is nothing to stop.
                     <Button
                         size="small"
                         kind="secondary"

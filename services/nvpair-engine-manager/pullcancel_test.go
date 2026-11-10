@@ -235,6 +235,103 @@ func TestCancelModelPull_WithNothingOutstandingLeavesTheNextRequestAlone(t *test
 	test("no download was ever requested", func(*testing.T, *Executor) {})
 }
 
+// A retry can be accepted while the download it replaces is still stopping,
+// which takes seconds when cleanup has partial files to wait on. The cancel
+// came before the retry, so it is not the retry's: joined to the cancelled
+// download, the retry reported "cancelled" without downloading anything. It
+// waits for that download to stop instead — its transfer must not run under
+// that download's cleanup — and then downloads, its frames after the
+// cancelled download's outcome.
+func TestTrackedPull_DownloadsARetryOnceTheCancelledDownloadHasStopped(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	events, unsubscribe := ex.progress.subscribe("ollama")
+	defer unsubscribe()
+	downloading := make(chan struct{})
+	cleaningUp := make(chan struct{})
+	finishCleanup := make(chan struct{})
+	original := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(ctx, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+			close(downloading)
+			<-runCtx.Done()
+			close(cleaningUp)
+			<-finishCleanup
+			return nil, runCtx.Err()
+		})
+		original <- got
+	}()
+	<-downloading
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- ex.CancelModelPull(ctx, "ollama", "demo") }()
+	<-cleaningUp
+	retry, release := ex.claimPull(ctx, "ollama", "demo")
+	defer release()
+	retryDownloading := make(chan struct{})
+	retryDone := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(retry, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+			close(retryDownloading)
+			return succeedingPull(runCtx)
+		})
+		retryDone <- got
+	}()
+	select {
+	case <-retryDownloading:
+		require.FailNow(t, "the retry downloaded under the cancelled download's cleanup")
+	case got := <-retryDone:
+		require.FailNow(t, "the retry settled before the cancelled download had stopped", "result %s, error %v", got.result, got.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(finishCleanup)
+	require.NoError(t, <-cancelled)
+	originalGot := awaitOutcome(t, ctx, original)
+	retryGot := awaitOutcome(t, ctx, retryDone)
+
+	require.NoError(t, originalGot.err)
+	assertPullStatus(t, originalGot.result, "cancelled")
+	require.NoError(t, retryGot.err)
+	assertPullStatus(t, retryGot.result, "success")
+	select {
+	case <-retryDownloading:
+	default:
+		assert.Fail(t, "the retry never downloaded")
+	}
+	assert.Equal(t, []ProgressEvent{
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo"},
+		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo"},
+	}, publishedFrames(events), "the retry's frames must follow the cancelled download's outcome")
+}
+
+// A stop the engine could not confirm leaves a download that may still be
+// running. Asked about once the pull has settled, a cancel would find nothing
+// registered and answer as though the download had stopped, which the UI reads
+// as safe to download again. It reports the failure instead, until the model's
+// next download replaces it.
+func TestCancelModelPull_ReportsAStopNeverConfirmedUntilTheNextDownload(t *testing.T) {
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	unconfirmed := stopUnconfirmed(errors.New("the engine did not confirm the download stopped"))
+	cancelled := make(chan error, 1)
+	_, err := ex.trackedPull(context.Background(), "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+		go func() { cancelled <- ex.CancelModelPull(context.Background(), "ollama", "demo") }()
+		<-ctx.Done()
+		return nil, unconfirmed
+	})
+	require.ErrorIs(t, err, unconfirmed)
+	require.ErrorIs(t, <-cancelled, unconfirmed, "the cancel that asked for the stop")
+
+	assert.ErrorIs(t, ex.CancelModelPull(context.Background(), "ollama", "demo"), unconfirmed, "a cancel asking after the pull settled")
+
+	result, err := ex.trackedPull(context.Background(), "ollama", "demo", succeedingPull)
+	require.NoError(t, err)
+	assertPullStatus(t, result, "success")
+	assert.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"), "a cancel after the next download completed")
+}
+
 // A request can end without ever registering its download — it failed
 // validation, or its context died first. The cancel that found it outstanding
 // stopped that request, and must not carry over to the next one.

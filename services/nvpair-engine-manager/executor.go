@@ -82,6 +82,10 @@ type engineState struct {
 type Executor struct {
 	pullMu sync.Mutex
 	pulls  map[pullKey]*activePull
+	// stopsUnconfirmed holds, per engine+model, the failure of the last
+	// download whose engine could not confirm it stopped, until the next
+	// download of that model registers. See stopUnconfirmed.
+	stopsUnconfirmed map[pullKey]error
 	// pullClaims holds the accepted pull requests per engine+model that have
 	// not finished, so a cancel can stop one that has not registered its
 	// download yet. Claimed where the request is accepted; see claimPull.

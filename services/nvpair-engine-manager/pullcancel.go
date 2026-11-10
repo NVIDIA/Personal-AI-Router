@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,20 @@ type pullKey struct {
 	model  string
 }
 
+// stopUnconfirmedError is a download failure stopUnconfirmed marked.
+type stopUnconfirmedError struct{ err error }
+
+func (e stopUnconfirmedError) Error() string { return e.err.Error() }
+func (e stopUnconfirmedError) Unwrap() error { return e.err }
+
+// stopUnconfirmed marks err as an engine's failure to confirm that a download
+// it was told to stop has stopped. The vendor may still be transferring, so a
+// cancel waiting on that download fails with it — and so does one that asks
+// after the download has settled, which would otherwise find nothing
+// registered and answer as if it had stopped. The model's next download
+// replaces the failure.
+func stopUnconfirmed(err error) error { return stopUnconfirmedError{err: err} }
+
 func cancelledPull() json.RawMessage { return json.RawMessage(`{"status":"cancelled"}`) }
 
 // pullResultCancelled reports whether a pull's result is cancelledPull's.
@@ -63,7 +78,8 @@ func pullResultCancelled(result json.RawMessage) bool {
 // accepted, carried to trackedPull on the request's context, and released when
 // the request settles. Each request has its own, so a cancel stops exactly the
 // requests that were outstanding when it arrived: a retry accepted after it
-// downloads normally, whichever of the two reaches the executor first.
+// downloads normally, whichever of the two reaches the executor first — once
+// the cancelled download has stopped and cleaned up, if it is still doing so.
 type pullClaim struct {
 	key      pullKey
 	executor *Executor
@@ -117,13 +133,16 @@ func (c *pullClaim) release() {
 // It stops every request for that download outstanding when it arrives: the
 // one downloading, any joined to it or queued behind another of the engine's
 // downloads, and any accepted but not yet registered, which then never starts.
-// A request accepted after the cancel is a retry, and is left alone.
+// A request accepted after the cancel is a retry, and is left alone: it waits
+// for the cancelled download to stop and clean up, then downloads.
 //
 // With nothing transferring there is nothing to wait for, so it returns at
 // once. That includes finding nothing outstanding at all. Requests are claimed
 // on the read loop in the order the client sent them, and the broker relays
 // the two in that order, so a cancel that finds no claim arrived after its
-// download had already finished.
+// download had already finished. The one exception is a download whose engine
+// could not confirm it stopped: it may still be running, so the cancel reports
+// that failure again rather than an all-clear. See stopUnconfirmed.
 func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) error {
 	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
@@ -135,9 +154,10 @@ func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) er
 		p.requested.Store(true)
 		p.cancel()
 	}
+	unconfirmed := e.stopsUnconfirmed[key]
 	e.pullMu.Unlock()
 	if p == nil {
-		return nil
+		return unconfirmed
 	}
 	select {
 	case <-p.done:
@@ -158,40 +178,62 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 	if e.pulls == nil {
 		e.pulls = make(map[pullKey]*activePull)
 	}
-	// A cancel that arrived while this request was on its way here stops it
-	// before it starts. Only the request's own claim counts, so a cancel aimed
-	// at an earlier request for the same model cannot stop this one.
-	//
-	// Frames name only the engine and model, so while a download of this model
-	// is registered — the cancelled one still settling, or a retry accepted
-	// after the cancel — the model's frames are that download's. It reports its
-	// own outcome; a "cancelled" frame from this request would repeat it, or
-	// tell every UI that a live retry had ended.
-	if claim != nil && claim.key == key && claim.cancelled {
-		_, registered := e.pulls[key]
-		e.pullMu.Unlock()
-		if !registered {
-			e.emitPullOutcome(engine, model, true, nil)
+	for {
+		// A cancel that arrived while this request was on its way here stops
+		// it before it starts. Only the request's own claim counts, so a cancel
+		// aimed at an earlier request for the same model cannot stop this one.
+		//
+		// Frames name only the engine and model, so while a download of this
+		// model is registered — the cancelled one still settling, or a retry
+		// accepted after the cancel — the model's frames are that download's.
+		// It reports its own outcome; a "cancelled" frame from this request
+		// would repeat it, or tell every UI that a live retry had ended.
+		if claim != nil && claim.key == key && claim.cancelled {
+			_, registered := e.pulls[key]
+			e.pullMu.Unlock()
+			if !registered {
+				e.emitPullOutcome(engine, model, true, nil)
+			}
+			return cancelledPull(), nil
 		}
-		return cancelledPull(), nil
-	}
-	// The vendor caches can share partial files across models. Keep pulls for
-	// an engine serialized so cleanup cannot remove another PAIR pull's data.
-	var predecessors []<-chan struct{}
-	for activeKey, active := range e.pulls {
-		if activeKey.engine != engine {
-			continue
+		active := e.pulls[key]
+		if active == nil {
+			break
 		}
-		if activeKey == key {
+		if !active.requested.Load() {
 			// A second request for a download already in flight joins it. An
 			// error here would be reported against the live pull's own model,
 			// and a terminal error frame disables that row's Cancel button.
 			e.pullMu.Unlock()
 			return joinPull(ctx, active)
 		}
-		predecessors = append(predecessors, active.done)
+		// A cancel is stopping this model's download, and this request was not
+		// outstanding when it arrived: it is a retry. Joining would hand it
+		// the cancellation it came after, and starting now would put its
+		// transfer under the cancelled download's cleanup. So it waits for that
+		// download to stop and clean up, sending no frame meanwhile — the
+		// model's frames are still the cancelled download's — and then looks
+		// again, since a cancel or another request can reach it first.
+		e.pullMu.Unlock()
+		select {
+		case <-active.done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		e.pullMu.Lock()
+	}
+	// The vendor caches can share partial files across models. Keep pulls for
+	// an engine serialized so cleanup cannot remove another PAIR pull's data.
+	var predecessors []<-chan struct{}
+	for activeKey, active := range e.pulls {
+		if activeKey.engine == engine {
+			predecessors = append(predecessors, active.done)
+		}
 	}
 	e.pulls[key] = p
+	// This download supersedes one whose stop was never confirmed: from here a
+	// cancel reports this one.
+	delete(e.stopsUnconfirmed, key)
 	e.pullMu.Unlock()
 	var result json.RawMessage
 	var err error
@@ -218,12 +260,18 @@ waitForPredecessors:
 	if cancelled {
 		result, err = cancelledPull(), nil
 	}
-	// Reported while the download is still registered: a request for the model
-	// arriving now joins this outcome, rather than starting a download whose
-	// frames this one's would land among.
+	// Reported while the download is still registered, so no request for the
+	// model starts a download whose frames this one's would land among: one
+	// arriving now joins this outcome, or, after a cancel, waits for it.
 	e.emitPullOutcome(engine, model, cancelled, err)
 	e.pullMu.Lock()
 	delete(e.pulls, key)
+	if errors.As(err, new(stopUnconfirmedError)) {
+		if e.stopsUnconfirmed == nil {
+			e.stopsUnconfirmed = make(map[pullKey]error)
+		}
+		e.stopsUnconfirmed[key] = err
+	}
 	p.result, p.err = result, err
 	close(p.done)
 	e.pullMu.Unlock()

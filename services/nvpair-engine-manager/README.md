@@ -73,7 +73,7 @@ Requests (caller → service):
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
-| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
+| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`). Held until every `engine:remote-cancel-pull` of that download sent before it has ended, so a retry cannot reach the peer ahead of the cancel it follows and be stopped by it |
 | `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result. Held until every `engine:remote-pull-model` of that download sent before it has been accepted by the peer or has ended, so a cancel dispatched right behind a pull, or behind a duplicate of it, cannot reach the peer first |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
@@ -278,18 +278,31 @@ CLI, its desktop app, another engine-manager, any client on the daemon — onto
 the very same content-addressed partial, and the LM Studio app downloads into
 the same repository directory. So each pull records the partial files already
 present before it starts, and cancelling it considers only the ones that
-appeared afterwards. A file that is still growing once the transfer has stopped
-is shared by that measure too, and also survives; cleanup retries within a
-bounded budget and leaves anything still busy at the deadline, which is not a
-failure. Completed model files are never candidates — they may be layers of an
-installed model.
+appeared afterwards. The stopped transfer gets a short grace for its last
+writes to land; a file that still changes after that, or first appears after
+it, is shared by that measure too, and also survives. A file is removed once it
+has held still across repeated checks; cleanup retries one it could not remove
+within a bounded budget and leaves anything still busy at the deadline, which
+is not a failure. Completed model files are never candidates — they may be
+layers of an installed model.
 
-LM Studio additionally requires the CLI to confirm: declining its
+LM Studio keeps every quantization of a repository side by side, so its
+cleanup also considers only the quantization this pull fetched: the one the
+request pins, or for a request that pins none, the one the CLI announced in its
+download plan. It is matched as a whole name token, so `Q4_K` never claims
+`Q4_K_M`'s files, and an unpinned pull whose plan announced none removes
+nothing. LM Studio additionally requires the CLI to confirm: declining its
 background-download prompt is what aborts the daemon's task, so a CLI that
-exited without answering it may still be fetching, and nothing is deleted. A
-cancel that finds no CLI running — before the first starts, between candidate
-sources, or while a timed-out transfer waits to be resumed — has nothing left
-fetching, so it settles as cancelled and cleans up the same way.
+exited without answering it may still be fetching, nothing is deleted, and the
+cancel fails. A cancel that finds no CLI running — before the first starts,
+between candidate sources, or while a timed-out transfer waits to be resumed —
+has nothing left fetching, so it settles as cancelled and cleans up the same
+way.
+
+A stop that could not be confirmed — that one, or a llama.cpp download the
+router did not confirm stopping — keeps failing: cancelling that model again
+reports the same failure, rather than answering as a cancel for nothing, until
+the model is requested again.
 
 A cancel can also arrive **before** the pull it names has registered, since the
 read loop dispatches each onto its own goroutine. So each pull request is
@@ -297,14 +310,19 @@ claimed on the read loop, in the order the client sent it, and carries its
 claim to the executor. A cancel stops every request it finds claimed — one
 whose download has not registered yet then never starts it — and a retry
 accepted after the cancel downloads normally, whichever of the two reaches the
-executor first. A cancel that finds nothing claimed arrived after its download
-finished, and stops nothing. On the remote path the peer claims a pull before
-accepting it, and `engine:remote-cancel-pull` is held until every
+executor first. A retry that finds the cancelled download still stopping does
+not join it: it waits for that download to stop and clean up, then downloads
+anew. A cancel that finds nothing claimed arrived after its download finished,
+and stops nothing. On the remote path the peer claims a pull before accepting
+it, and `engine:remote-cancel-pull` is held until every
 `engine:remote-pull-model` of that download sent before it has been accepted by
 the peer or has ended. Each is waited on separately: the peer joins a duplicate
 onto the download only once it arrives, so a cancel let go when the first
 landed could stop the download and leave the second to start it over. A pull
-sent after the cancel is a retry and is not waited for.
+sent after the cancel is a retry, which the cancel does not wait for; the retry
+waits for the cancel to end instead, because the peer's cancel stops every
+request for the download it holds when it lands, a retry that got there first
+included.
 
 ## Remote engine management
 

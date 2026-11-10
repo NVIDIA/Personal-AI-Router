@@ -135,34 +135,59 @@ func TestLMSDownloadOutput_ToleratesConcurrentAccess(t *testing.T) {
 	<-writing
 }
 
-// Without a pinned quantization, the file names `lms get` prints are the only
-// evidence of which partial is this download's. A name can arrive split across
-// writes and run straight into a redraw.
-func TestLMSDownloadOutput_CollectsTheModelFilesTheCLINames(t *testing.T) {
-	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
-	for _, chunk := range []string{
-		"Downloading lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4",
-		"_K_M.gguf\r\x1b[2K[====>    ] 12.5%",
-	} {
-		_, err := output.Write([]byte(chunk))
-		require.NoError(t, err)
-	}
+// Without a pinned quantization, the download plan `lms get` prints is the only
+// evidence of which partial is this download's: it names the quantization the
+// CLI chose, and never the file. A pipe can split a plan line partway through
+// that name, so only a finished line counts, and only a GGUF line whose
+// quantization LM Studio knew names one at all.
+func TestLMSDownloadOutput_ReadsTheQuantizationItsPlanAnnounces(t *testing.T) {
+	test := func(name string, chunks []string, want []string) {
+		t.Run(name, func(t *testing.T) {
+			output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
+			for _, chunk := range chunks {
+				_, err := output.Write([]byte(chunk))
+				require.NoError(t, err)
+			}
 
-	assert.Equal(t, map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true}, output.namedFiles())
+			assert.Equal(t, want, output.announcedQuants())
+		})
+	}
+	test("a plan line split across writes", []string{
+		"\r ↓ To download: Qwen3 8B Q4",
+		"_K_M [GGUF] - 5.03 GB\x1b[0K\n",
+	}, []string{"Q4_K_M"})
+	test("the model a hub artifact depends on", []string{
+		"\r ↓ To download: model qwen/qwen3-8b - 5.03 GB\x1b[0K\n",
+		"\r └─ ↓ To download: Qwen3 8B Q8_0 [GGUF] - 8.71 GB\x1b[0K\n",
+	}, []string{"Q8_0"})
+	test("a plan redrawn while it resolves", []string{
+		"\r ↓ To download: Qwen3 8B Q4_K_M [GGUF] - 5.03 GB\x1b[0K\n",
+		"\r ↓ To download: Qwen3 8B Q4_K_M [GGUF] - 5.03 GB\x1b[0K\n",
+	}, []string{"Q4_K_M"})
+	test("a plan line the CLI has not finished", []string{"\r ↓ To download: Qwen3 8B Q4"}, nil)
+	test("an MLX model, whose files carry no quantization", []string{
+		"\r ↓ To download: Qwen3 8B 4bit [MLX] - 4.62 GB\x1b[0K\n",
+	}, nil)
+	test("a plan line without a quantization", []string{
+		"\r ↓ To download: Qwen3 8B [GGUF] - 5.03 GB\x1b[0K\n",
+	}, nil)
+	test("a file name outside the plan", []string{
+		"lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf\n",
+	}, nil)
 }
 
 // A transfer that fails transiently is resumed by running `lms get` again, and
-// the resumed run can fail before it prints the file name. The name an earlier
-// run printed still identifies this download's partial, so starting the next
-// run must not forget it.
-func TestLMSDownloadOutput_KeepsNamedFilesAcrossResumedRuns(t *testing.T) {
+// the resumed run can fail before it prints its plan. The quantization an
+// earlier run announced still identifies this download's partial, so starting
+// the next run must not forget it.
+func TestLMSDownloadOutput_KeepsAnnouncedQuantizationsAcrossResumedRuns(t *testing.T) {
 	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
-	_, err := output.Write([]byte("Downloading lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"))
+	_, err := output.Write([]byte("\r ↓ To download: Qwen3 8B Q4_K_M [GGUF] - 5.03 GB\x1b[0K\n"))
 	require.NoError(t, err)
 
 	output.reset(io.Discard)
 
-	assert.Equal(t, map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true}, output.namedFiles())
+	assert.Equal(t, []string{"Q4_K_M"}, output.announcedQuants())
 }
 
 // Cancelling the download interrupts the CLI the way Ctrl+C would rather than
@@ -377,8 +402,8 @@ func TestLMSPull_CancelWhileWaitingToResumeStopsTheDownload(t *testing.T) {
 
 	require.NoError(t, got.err, "the cancellation should settle the pull as cancelled")
 	assertPullStatus(t, got.result, "cancelled")
-	// The request pins no quantization, so the file the CLI named is what
-	// makes this partial attributable to the download.
+	// The request pins no quantization, so the one the CLI's plan announced is
+	// what makes this partial attributable to the download.
 	assertRemoved(t, partial)
 	frames := publishedFrames(events)
 	require.NotEmpty(t, frames, "the pull published no frames")
@@ -386,9 +411,9 @@ func TestLMSPull_CancelWhileWaitingToResumeStopsTheDownload(t *testing.T) {
 }
 
 // startLMSDownload pulls owner/repo through a fake `lms get` running
-// subcommand, which writes and names a partial file before it waits to be
-// interrupted. It returns once the CLI has reported progress, by which point
-// the partial is one cleanup would attribute to this pull.
+// subcommand, which writes a partial file and announces its quantization before
+// it waits to be interrupted. It returns once the CLI has reported progress, by
+// which point the partial is one cleanup would attribute to this pull.
 func startLMSDownload(t *testing.T, ctx context.Context, subcommand string) (*Executor, string, <-chan outcome) {
 	t.Helper()
 	modelsDir := t.TempDir()
@@ -465,6 +490,10 @@ func TestLMSPull_FailsARequestedCancellationTheCLIDidNotConfirm(t *testing.T) {
 
 	assert.ErrorContains(t, got.err, "exited without confirming download cancellation")
 	assertPresent(t, partial)
+	// The daemon may still be fetching after the pull settled, so a cancel
+	// asking again cannot be answered as though the download had stopped.
+	assert.ErrorContains(t, ex.CancelModelPull(ctx, "fake", "owner/repo"), "exited without confirming download cancellation",
+		"a cancel asking after the pull settled")
 }
 
 func TestCleanupLMSAfterCancel_RemovesThePartialButKeepsCompletedShards(t *testing.T) {
@@ -487,27 +516,26 @@ func TestCleanupLMSAfterCancel_RemovesThePartialButKeepsCompletedShards(t *testi
 func TestCleanupLMSAfterCancel_KeepsPartialsOlderThanThePull(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "owner", "repo")
-	olderPartial := filepath.Join(target, "downloading_other.gguf.part")
+	olderPartial := filepath.Join(target, "downloading_other-Q4_K_M.gguf.part")
 	writePartial(t, olderPartial, "other download")
 	before, err := lmsPartialFiles(root, "owner/repo")
 	require.NoError(t, err)
-	newPartial := filepath.Join(target, "downloading_selected.gguf.part")
+	newPartial := filepath.Join(target, "downloading_selected-Q4_K_M.gguf.part")
 	writePartial(t, newPartial, "new download")
-	named := map[string]bool{"selected.gguf": true, "other.gguf": true}
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, "owner/repo", before, named))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, "owner/repo", before, []string{"Q4_K_M"}))
 
 	assertPresent(t, olderPartial)
 	assertRemoved(t, newPartial)
 }
 
 // An unpinned request lets the CLI choose the quantization, so a partial that
-// appeared since the snapshot is only this download's when the CLI named its
-// file. One it did not name can be the LM Studio app fetching another
+// appeared since the snapshot is only this download's when it carries the one
+// the CLI announced. Another can be the LM Studio app fetching a different
 // quantization of the same repository, even though it is new and holding still.
-func TestCleanupLMSAfterCancel_UnpinnedRequestRemovesOnlyFilesTheCLINamed(t *testing.T) {
+func TestCleanupLMSAfterCancel_UnpinnedRequestRemovesOnlyTheAnnouncedQuantization(t *testing.T) {
 	const model = "lmstudio-community/Qwen3-8B-GGUF"
-	test := func(name string, named map[string]bool, wantOursRemoved bool) {
+	test := func(name string, announced []string, wantOursRemoved bool) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			target := filepath.Join(root, "lmstudio-community", "Qwen3-8B-GGUF")
@@ -519,7 +547,7 @@ func TestCleanupLMSAfterCancel_UnpinnedRequestRemovesOnlyFilesTheCLINamed(t *tes
 			writePartial(t, ours, "our download")
 			writePartial(t, theirs, "the app's download, stalled")
 
-			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, named))
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, announced))
 
 			if wantOursRemoved {
 				assertRemoved(t, ours)
@@ -529,8 +557,8 @@ func TestCleanupLMSAfterCancel_UnpinnedRequestRemovesOnlyFilesTheCLINamed(t *tes
 			assertPresent(t, theirs)
 		})
 	}
-	test("removes the named file and keeps the other", map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true}, true)
-	test("deletes nothing when the CLI named no file", nil, false)
+	test("removes the announced quantization and keeps the other", []string{"Q4_K_M"}, true)
+	test("deletes nothing when the CLI announced none", nil, false)
 }
 
 // The LM Studio app downloads into the same repository directory PAIR does, so
@@ -544,7 +572,6 @@ func TestCleanupLMSAfterCancel_KeepsOtherQuantizations(t *testing.T) {
 	const model = "lmstudio-community/Qwen3-8B-GGUF@Q4_K_M"
 	before, err := lmsPartialFiles(root, model)
 	require.NoError(t, err)
-	require.Empty(t, before, "another quantization was captured as this pull's")
 	appeared := filepath.Join(target, "downloading_Qwen3-8B-Q6_K.gguf.part")
 	ours := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M.gguf.part")
 	writePartial(t, growing, "app download, now longer")
@@ -556,6 +583,37 @@ func TestCleanupLMSAfterCancel_KeepsOtherQuantizations(t *testing.T) {
 	assertPresent(t, growing)
 	assertPresent(t, appeared)
 	assertRemoved(t, ours)
+}
+
+// Quantization names nest: F16 is part of BF16, and Q6_K part of Q6_K_L. A
+// partial is this download's only when it carries the requested name whole, or
+// cancelling one quantization removes another that the LM Studio app is
+// fetching beside it.
+func TestCleanupLMSAfterCancel_KeepsQuantizationsWhoseNamesContainTheRequestedOne(t *testing.T) {
+	test := func(name, quant, ours, theirs string) {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "lmstudio-community", "Qwen3-8B-GGUF")
+			require.NoError(t, os.MkdirAll(target, 0700))
+			model := "lmstudio-community/Qwen3-8B-GGUF@" + quant
+			before, err := lmsPartialFiles(root, model)
+			require.NoError(t, err)
+			oursPath := filepath.Join(target, "downloading_"+ours+".part")
+			theirsPath := filepath.Join(target, "downloading_"+theirs+".part")
+			writePartial(t, oursPath, "our download")
+			writePartial(t, theirsPath, "the app's download")
+
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, nil))
+
+			assertRemoved(t, oursPath)
+			assertPresent(t, theirsPath)
+		})
+	}
+	test("F16 beside BF16", "F16", "Qwen3-8B-F16.gguf", "Qwen3-8B-BF16.gguf")
+	test("Q6_K beside Q6_K_L", "Q6_K", "Qwen3-8B-Q6_K.gguf", "Qwen3-8B-Q6_K_L.gguf")
+	test("Q4_0 beside Q4_0_4_4", "Q4_0", "Qwen3-8B-Q4_0.gguf", "Qwen3-8B-Q4_0_4_4.gguf")
+	test("a pin in lower case", "q6_k", "Qwen3-8B-Q6_K.gguf", "Qwen3-8B-Q6_K_L.gguf")
+	test("shards of split downloads", "Q4_K", "Qwen3-8B-Q4_K-00001-of-00002.gguf", "Qwen3-8B-Q4_K_M-00001-of-00002.gguf")
 }
 
 // The app can also be fetching the very quantization PAIR asked for, into the
@@ -582,9 +640,9 @@ func TestCleanupLMSAfterCancel_KeepsTheRequestedQuantizationWhileAnotherClientWr
 // looks exactly like one that finished, so a partial already present when this
 // pull started stays another client's however many bytes it gained meanwhile.
 //
-// The model hub pulls unpinned ids, so no quantization filter excludes
-// anything — every partial in the repository reaches this rule, which is why it
-// has to be the strict one.
+// The model hub pulls unpinned ids, and the app fetching the quantization the
+// CLI then announces writes the very file this pull would — so nothing but the
+// snapshot excludes it, which is why that rule has to be the strict one.
 func TestCleanupLMSAfterCancel_KeepsAPreexistingPartialThatGrew(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "lmstudio-community", "Qwen3-8B-GGUF")
@@ -598,7 +656,7 @@ func TestCleanupLMSAfterCancel_KeepsAPreexistingPartialThatGrew(t *testing.T) {
 	// perfectly still by the time cleanup observes it.
 	growFile(t, theirs)
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true}))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, []string{"Q4_K_M"}))
 
 	assertPresent(t, theirs)
 }
@@ -612,16 +670,15 @@ func TestCleanupLMSAfterCancel_LeavesAResumedDownloadsPartial(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "lmstudio-community", "Qwen3-8B-GGUF")
 	const model = "lmstudio-community/Qwen3-8B-GGUF"
-	resuming := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M.gguf.part")
+	resuming := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M-00001-of-00002.gguf.part")
 	writePartial(t, resuming, "bytes the attempt being resumed left behind")
 	before, err := lmsPartialFiles(root, model)
 	require.NoError(t, err)
 	growFile(t, resuming)
-	fresh := filepath.Join(target, "downloading_Qwen3-8B-Q6_K.gguf.part")
+	fresh := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M-00002-of-00002.gguf.part")
 	writePartial(t, fresh, "a shard this pull started from nothing")
-	named := map[string]bool{"Qwen3-8B-Q4_K_M.gguf": true, "Qwen3-8B-Q6_K.gguf": true}
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, named))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, []string{"Q4_K_M"}))
 
 	assertPresent(t, resuming)
 	assertRemoved(t, fresh)

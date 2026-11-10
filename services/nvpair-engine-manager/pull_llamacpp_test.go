@@ -290,7 +290,7 @@ func TestLlamaCPPPull_ReportsARequestedCancellationAsCancelled(t *testing.T) {
 
 // A stop the router did not confirm may have left the download running, so
 // even a cancel someone asked for is reported as the failure it is, and the
-// cancel fails with it.
+// cancel fails with it — as does a cancel asking again once the pull settled.
 func TestLlamaCPPPull_FailsARequestedCancellationTheRouterDidNotConfirm(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -312,6 +312,8 @@ func TestLlamaCPPPull_FailsARequestedCancellationTheRouterDidNotConfirm(t *testi
 
 	require.ErrorContains(t, err, "could not confirm download stopped")
 	assert.ErrorContains(t, <-cancelled, "could not confirm download stopped")
+	assert.ErrorContains(t, f.ex.CancelModelPull(ctx, "fake", llamaCPPPullTestModel), "could not confirm download stopped",
+		"a cancel asking after the pull settled")
 }
 
 func TestLlamaCPPPull_RejectsInvalidModelParamsBeforeStarting(t *testing.T) {

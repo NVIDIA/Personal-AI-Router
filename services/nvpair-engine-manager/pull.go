@@ -400,7 +400,7 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		if err := e.stopLlamaCPPDownload(cleanupCtx, baseURL, model); err != nil {
 			// The download may still be running, so even a cancel someone
 			// asked for has not done what it was asked to.
-			pullErr = errors.Join(pullErr, fmt.Errorf("pull %q: could not confirm download stopped: %w", model, err))
+			pullErr = errors.Join(pullErr, stopUnconfirmed(fmt.Errorf("pull %q: could not confirm download stopped: %w", model, err)))
 		}
 	}()
 	if ctx.Err() != nil {
@@ -454,9 +454,9 @@ func llamaCPPStopped(ctx context.Context, model string) error {
 
 // A lost acknowledgement gives us no ownership of a router download: another
 // caller may already be downloading this ID. Preserve the cause without blindly
-// unloading somebody else's model.
+// unloading somebody else's model, and without reporting the download stopped.
 func llamaCPPUnconfirmedStartError(ctx context.Context, model string, err error) error {
-	return fmt.Errorf("pull %q: download acceptance and cancellation could not be confirmed: %w", model, errors.Join(context.Cause(ctx), err))
+	return stopUnconfirmed(fmt.Errorf("pull %q: download acceptance and cancellation could not be confirmed: %w", model, errors.Join(context.Cause(ctx), err)))
 }
 
 // stopLlamaCPPDownload uses the same router as the start request. Inventory is

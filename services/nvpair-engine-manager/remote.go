@@ -53,7 +53,7 @@ func newOpID() string {
 
 // remotePullGate holds an engine:remote-cancel-pull until every
 // engine:remote-pull-model of the same download sent before it has reached the
-// peer.
+// peer, and a pull sent after a cancel until that cancel has ended.
 //
 // Both methods dispatch their own goroutine from the same read loop, so nothing
 // downstream preserves the order the UI sent them in. A cancel that wins that
@@ -72,13 +72,24 @@ func newOpID() string {
 // download already in flight, but only once the duplicate gets there: a cancel
 // let go when the first request landed can overtake a second still on its way,
 // stop the download, and leave the second to start it over.
+//
+// The order holds the other way too. The peer's cancel stops every request for
+// the download it holds when it lands, so a retry that overtook it there — the
+// cancel still held here, or slower on its own connection — would be stopped
+// along with the download it was sent to replace. A pull therefore waits for
+// every cancel of its download sent before it to end, which also leaves the
+// peer to finish stopping and cleaning up before the retry arrives.
 type remotePullGate struct {
-	mu    sync.Mutex
-	pulls map[remotePullKey][]*remotePullRequest
+	mu      sync.Mutex
+	pulls   map[remotePullKey][]*remotePullRequest
+	cancels map[remotePullKey][]*remoteCancelRequest
 }
 
 // remotePullRequest is one engine:remote-pull-model on its way to the peer.
 type remotePullRequest struct {
+	// cancelsAhead are the cancels of its download sent before it, which it
+	// lets finish before it sets off for the peer.
+	cancelsAhead []*remoteCancelRequest
 	// landed closes when the peer has taken the request, or when the request
 	// ended without getting that far, so a cancel waiting on it proceeds either
 	// way rather than outliving the download it was chasing.
@@ -87,6 +98,31 @@ type remotePullRequest struct {
 }
 
 func (r *remotePullRequest) land() { r.settle.Do(func() { close(r.landed) }) }
+
+// awaitCancelsAhead waits until every cancel the request was sent after has
+// ended, or the request has landed or ended without them, reporting false if
+// ctx ended first. It has no window of its own: each cancel ends by itself,
+// once the peer answers or its transport gives up, and letting the request go
+// sooner would hand that cancel the retry to stop.
+func (r *remotePullRequest) awaitCancelsAhead(ctx context.Context) bool {
+	for _, cancel := range r.cancelsAhead {
+		select {
+		case <-cancel.ended:
+		case <-r.landed:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
+// remoteCancelRequest is one engine:remote-cancel-pull that has not ended.
+type remoteCancelRequest struct {
+	// ended closes once the cancel has its answer from the peer, or has given
+	// up on getting one.
+	ended chan struct{}
+}
 
 // remotePullGateWindow is the backstop under a cancel waiting for its pulls to
 // reach the peer, not the mechanism. The two signals that actually free it
@@ -101,7 +137,8 @@ func (r *remotePullRequest) land() { r.settle.Do(func() { close(r.landed) }) }
 // cannot actually reach: getting as far as the header wait means the dial and
 // the handshake each finished inside their own 30s, putting the failure
 // strictly under this. The cancel's timer then starts later still, when the
-// cancel arrives rather than when the pull did.
+// cancel arrives rather than when the pull did — and for a pull held behind an
+// earlier cancel, only once that cancel has ended and the pull has set off.
 //
 // A timer that fires first is the bug rather than the safety net: it frees the
 // cancel while the pull is still legitimately in flight, and a cancel arriving
@@ -150,13 +187,16 @@ type remoteOrder struct {
 	key  remotePullKey
 	// pull is a remote pull's own entry.
 	pull *remotePullRequest
+	// cancel is a remote cancel's own entry.
+	cancel *remoteCancelRequest
 	// ahead are, for a cancel, the pulls of its download sent before it.
 	ahead []*remotePullRequest
 }
 
 // place puts a request in the gate: a remote pull joins the pulls of its
-// download, and a cancel notes the ones already there. It runs on the read
-// loop, where the client's order still holds.
+// download and notes the cancels already there, and a cancel joins the cancels
+// and notes the pulls. It runs on the read loop, where the client's order
+// still holds.
 func (g *remotePullGate) place(method string, params json.RawMessage) remoteOrder {
 	key, ok := remotePullKeyFrom(method, params)
 	if !ok {
@@ -167,9 +207,14 @@ func (g *remotePullGate) place(method string, params json.RawMessage) remoteOrde
 	order := remoteOrder{gate: g, key: key}
 	if method == "engine:remote-cancel-pull" {
 		order.ahead = slices.Clone(g.pulls[key])
+		order.cancel = &remoteCancelRequest{ended: make(chan struct{})}
+		if g.cancels == nil {
+			g.cancels = make(map[remotePullKey][]*remoteCancelRequest)
+		}
+		g.cancels[key] = append(g.cancels[key], order.cancel)
 		return order
 	}
-	order.pull = &remotePullRequest{landed: make(chan struct{})}
+	order.pull = &remotePullRequest{cancelsAhead: slices.Clone(g.cancels[key]), landed: make(chan struct{})}
 	if g.pulls == nil {
 		g.pulls = make(map[remotePullKey][]*remotePullRequest)
 	}
@@ -193,6 +238,13 @@ func (o remoteOrder) awaitAhead(ctx context.Context) {
 	if len(o.ahead) == 0 {
 		return
 	}
+	// A pull still held behind an earlier cancel has not set off for the peer,
+	// so the window starts once every pull ahead is free to go.
+	for _, pull := range o.ahead {
+		if !pull.awaitCancelsAhead(ctx) {
+			return
+		}
+	}
 	timer := time.NewTimer(remotePullGateWindow)
 	defer timer.Stop()
 	for _, pull := range o.ahead {
@@ -206,11 +258,24 @@ func (o remoteOrder) awaitAhead(ctx context.Context) {
 	}
 }
 
-// end takes a remote pull out of the gate, freeing any cancel still waiting on
-// it — a pull that ended has nothing left for one to chase — and reports
-// whether it was the last pull of its download outstanding here. Only the
-// first call for a pull does anything.
+// awaitCancelsAhead holds a pull until every cancel of its download sent before
+// it has ended.
+func (o remoteOrder) awaitCancelsAhead(ctx context.Context) {
+	if o.pull != nil {
+		o.pull.awaitCancelsAhead(ctx)
+	}
+}
+
+// end takes a request out of the gate. A pull that ended frees any cancel
+// still waiting on it — it has nothing left for one to chase — and end reports
+// whether it was the last pull of its download outstanding here. A cancel that
+// ended frees the pulls sent after it. Only the first call for a request does
+// anything.
 func (o remoteOrder) end() (last bool) {
+	if o.cancel != nil {
+		o.gate.endCancel(o.key, o.cancel)
+		return false
+	}
 	if o.pull == nil {
 		return false
 	}
@@ -232,6 +297,24 @@ func (o remoteOrder) end() (last bool) {
 	g.mu.Unlock()
 	o.pull.land()
 	return last
+}
+
+// endCancel takes a cancel out of the gate and frees the pulls waiting on it.
+func (g *remotePullGate) endCancel(key remotePullKey, cancel *remoteCancelRequest) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cancels := g.cancels[key]
+	i := slices.Index(cancels, cancel)
+	if i < 0 {
+		return
+	}
+	cancels = slices.Delete(cancels, i, i+1)
+	if len(cancels) == 0 {
+		delete(g.cancels, key)
+	} else {
+		g.cancels[key] = cancels
+	}
+	close(cancel.ended)
 }
 
 // runRemote dispatches an engine:remote-* request. It runs on its own goroutine
@@ -345,6 +428,9 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder
 // another pull of the same download is outstanding here its frames speak for
 // this one too, and only the last of them to end sends it.
 func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteClient, node string, p remoteParam, order remoteOrder) {
+	// Let the cancels this pull was sent after finish first; see
+	// remotePullGate.
+	order.awaitCancelsAhead(ctx)
 	opID := newOpID()
 	body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
 	relay := m.remoteProgressFn(opID, node)
