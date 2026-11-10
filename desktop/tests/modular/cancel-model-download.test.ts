@@ -87,11 +87,26 @@ describe('model download cancellation', () => {
 
     it('clears cancellation state when the pull finishes and allows retry', () => {
         const state = getModularBridgeState()
+        const events: EngineProgress[] = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload)
+        })
         state.beginRemoteModelPull('peer', 'ollama', 'demo')
         state.setModelPullCanceling('ollama', 'demo', true, 'peer')
         state.finishRemoteModelPull('peer', 'ollama', 'demo')
         expect(state.isRemoteModelPullActive('peer', 'ollama', 'demo')).toBe(false)
+
+        // A retry's progress must not show the finished download's "Canceling".
         state.beginRemoteModelPull('peer', 'ollama', 'demo')
+        state.applyRemoteEngineProgress({
+            node: 'peer',
+            engine: 'ollama',
+            model: 'demo',
+            op: 'pull',
+            stage: 'downloading',
+            percent: 10
+        })
+        expect(events.at(-1)).toMatchObject({ status: 'downloading', percent: 10 })
         expect(state.setModelPullCanceling('ollama', 'demo', true, 'peer')).toBe(true)
     })
 })
