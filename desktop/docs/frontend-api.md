@@ -210,6 +210,9 @@ Commands return no state. Renderer stores update from
 - window, tray, and clipboard operations;
 - service start, stop, restart, status, logging, versions, and licenses;
 - first-run completion;
+- macOS background Dock visibility (`getHideDockIconInBackground()` /
+  `setHideDockIconInBackground(enabled)`), stored in local UI configuration and
+  applied immediately; the setter rejects non-macOS calls;
 - wipe all PAIR-owned app data (`getWipePlan()` / `wipeAppData()` — packaged builds
   stop, delete, and relaunch; unpackaged builds stop, delete, and quit with a
   prompt to restart manually);
