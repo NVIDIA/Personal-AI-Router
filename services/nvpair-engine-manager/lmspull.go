@@ -532,13 +532,18 @@ func lmsPartialTarget(path string) string {
 }
 
 // lmsModelQuant is the quantization a model reference pins with "@quant", or
-// empty when it pins none.
+// empty when it pins none. A pin that is not a quantization name pins none:
+// cleanup matches the pin against file names as a whole token, and "@GGUF" or
+// "@8B" would match one every quantization's file carries.
 func lmsModelQuant(model string) string {
 	_, repo, ok := lmsOwnerName(model)
 	if !ok {
 		return ""
 	}
 	_, quant, _ := strings.Cut(repo, "@")
+	if !lmsPlanQuantPattern.MatchString(quant) {
+		return ""
+	}
 	return quant
 }
 

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 
 	"testing"
@@ -37,6 +38,7 @@ func TestManager_ReturnsProtocolErrorsForInvalidRequests(t *testing.T) {
 	test("missing engine", "engine:start", `{}`, "engine is required", (*Manager).runOp)
 	test("invalid params", "engine:start", `{bad}`, "invalid params", (*Manager).runOp)
 	test("missing action", "engine:action", `{"engine":"x"}`, "engine and action are required", (*Manager).runAction)
+	test("pull naming no model", "engine:action", `{"engine":"x","action":"pull_model","params":{}}`, "model is required", (*Manager).runAction)
 }
 
 func TestRunOp_RejectsBadPort(t *testing.T) {
@@ -164,6 +166,62 @@ func TestManager_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
 		assertPullStatus(t, msg.Result, "cancelled")
 	case <-time.After(10 * time.Second):
 		require.FailNow(t, "the pull kept running after its cancel was acknowledged")
+	}
+}
+
+// A cancel stops the requests the client sent before it, so a retry sent right
+// behind it downloads. engine:action claims its pull on the read loop, and a
+// cancel left to act from a goroutine of its own would find the retry already
+// claimed and stop it too: the retry would answer "cancelled" without
+// downloading.
+func TestManager_DownloadsARetrySentRightAfterACancel(t *testing.T) {
+	transfer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success"}` + "\n"))
+	}))
+	t.Cleanup(transfer.Close)
+	ex := newHTTPPullTestExecutor(t, transfer, Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+	managerConn, clientConn := net.Pipe()
+	defer managerConn.Close()
+	defer clientConn.Close()
+	m := NewManager(NewCodec(managerConn), ex, nil)
+	replies := make(chan *Message, 2)
+	go func() {
+		client := NewCodec(clientConn)
+		for {
+			msg, err := client.Read()
+			if err != nil {
+				return
+			}
+			if msg.ID != nil {
+				replies <- msg
+			}
+		}
+	}()
+	// With a single P, neither goroutine handleMessage dispatches can run until
+	// this one blocks, so the retry is claimed before a cancel acting from its
+	// own goroutine could reach the executor.
+	previous := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+
+	cancelID, retryID := json.RawMessage("1"), json.RawMessage("2")
+	m.handleMessage(context.Background(), &Message{JSONRPC: "2.0", ID: &cancelID, Method: "engine:cancel-pull",
+		Params: json.RawMessage(`{"engine":"fake","model":"demo"}`)})
+	m.handleMessage(context.Background(), &Message{JSONRPC: "2.0", ID: &retryID, Method: "engine:action",
+		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"}}`)})
+
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case reply := <-replies:
+			if string(*reply.ID) != string(retryID) {
+				continue
+			}
+			require.Empty(t, reply.Error, "the retry should download, not fail")
+			assertPullStatus(t, reply.Result, "success")
+			return
+		case <-timeout:
+			require.FailNow(t, "the retry never answered")
+		}
 	}
 }
 

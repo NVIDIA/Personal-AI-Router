@@ -29,6 +29,11 @@ type activePull struct {
 	// timeout elapsing — and none of them mean the user gave up on the bytes
 	// already on disk. Only a requested cancellation may delete partial files.
 	requested atomic.Bool
+	// placeholder marks a request a cancel stopped before it started, held
+	// registered only while it reports that, so a retry of the model waits for
+	// the frame. It transfers nothing, so no other download queues behind it,
+	// and a cancel that finds it answers as one finding nothing would.
+	placeholder bool
 }
 
 type activePullKey struct{}
@@ -144,13 +149,24 @@ func (c *pullClaim) release() {
 // for the cancelled download to stop and clean up, then downloads.
 //
 // With nothing transferring there is nothing to wait for, so it returns at
-// once. That includes finding nothing outstanding at all. Requests are claimed
-// on the read loop in the order the client sent them, and the broker relays
-// the two in that order, so a cancel that finds no claim arrived after its
-// download had already finished. The one exception is a download whose engine
-// could not confirm it stopped: it may still be running, so the cancel reports
-// that failure again rather than an all-clear. See stopUnconfirmed.
+// once. That includes finding nothing outstanding at all. The manager claims
+// requests and latches cancels on its read loop, in the order the client sent
+// them, and the broker relays the two in that order, so a cancel that finds no
+// claim arrived after its download had already finished. The one exception is
+// a download whose engine could not confirm it stopped: it may still be
+// running, so the cancel reports that failure again rather than an all-clear.
+// See stopUnconfirmed.
 func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) error {
+	return e.latchPullCancel(engine, model)(ctx)
+}
+
+// latchPullCancel is the first half of CancelModelPull: it stops the requests
+// for model on engine that are outstanding now, and returns the wait for the
+// download to stop and clean up. The manager latches a cancel on its read
+// loop, where engine:action claims its pulls, so the cancel stops exactly the
+// requests read before it, and a retry read after it is left alone however
+// the goroutines that carry them are scheduled.
+func (e *Executor) latchPullCancel(engine, model string) func(context.Context) error {
 	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
 	for _, claim := range e.pullClaims[key] {
@@ -163,14 +179,19 @@ func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) er
 	}
 	unconfirmed := e.stopsUnconfirmed[key]
 	e.pullMu.Unlock()
-	if p == nil {
-		return unconfirmed
-	}
-	select {
-	case <-p.done:
+	return func(ctx context.Context) error {
+		if p == nil {
+			return unconfirmed
+		}
+		select {
+		case <-p.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if p.placeholder {
+			return unconfirmed
+		}
 		return p.err
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }
 
@@ -202,19 +223,30 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// though the request had joined it: "cancelled" would say the model is
 		// not there.
 		if claim != nil && claim.key == key && claim.cancelled {
-			_, registered := e.pulls[key]
-			reports := !registered && !claim.reported
-			if reports {
-				e.pullOutcomeReported(key, false, nil)
+			if _, registered := e.pulls[key]; registered || claim.reported {
+				installed, result := claim.installed, claim.result
+				e.pullMu.Unlock()
+				if installed {
+					return result, nil
+				}
+				return cancelledPull(), nil
 			}
-			installed, result := claim.installed, claim.result
+			// Nothing has reported how the model's download ended, so this
+			// request does. It stays registered until its frame is out, as a
+			// download does while reporting its outcome: a retry accepted after
+			// the cancel waits for it rather than sending a first frame this
+			// "cancelled" would land after.
+			p.placeholder = true
+			p.requested.Store(true)
+			e.pulls[key] = p
+			e.pullOutcomeReported(key, false, nil)
 			e.pullMu.Unlock()
-			if reports {
-				e.emitPullOutcome(engine, model, true, nil)
-			}
-			if installed {
-				return result, nil
-			}
+			e.emitPullOutcome(engine, model, true, nil)
+			e.pullMu.Lock()
+			delete(e.pulls, key)
+			p.result = cancelledPull()
+			close(p.done)
+			e.pullMu.Unlock()
 			return cancelledPull(), nil
 		}
 		active := e.pulls[key]
@@ -247,7 +279,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 	// an engine serialized so cleanup cannot remove another PAIR pull's data.
 	var predecessors []<-chan struct{}
 	for activeKey, active := range e.pulls {
-		if activeKey.engine == engine {
+		if activeKey.engine == engine && !active.placeholder {
 			predecessors = append(predecessors, active.done)
 		}
 	}

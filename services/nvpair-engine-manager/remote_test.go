@@ -366,3 +366,40 @@ func TestRemotePull_LeavesTheOutcomeToTheLastPullOfTheDownload(t *testing.T) {
 	sent = pullRemoteOver(t, second, pullFrame("downloading"), pullResult(`{"status":"success"}`))
 	assert.Equal(t, []string{"downloading", "success"}, sent.stages(), "the last pull to end")
 }
+
+// Every pull's stream carries the peer's outcome frame for the download they
+// share, so passing each copy on would tell the UI the download ended once per
+// pull. Only the last pull to end sends one, whether its own stream carried it
+// or the hub dropped it there.
+func TestRemotePull_SendsOneOutcomeForADownloadItsDuplicatesShare(t *testing.T) {
+	test := func(name string, firstStream, lastStream []streamFrame) {
+		t.Run(name, func(t *testing.T) {
+			var gate remotePullGate
+			first := placePull(t, &gate)
+			last := placePull(t, &gate)
+
+			sentByFirst := pullRemoteOver(t, first, firstStream...)
+			sentByLast := pullRemoteOver(t, last, lastStream...)
+
+			assert.Equal(t, []string{"downloading"}, sentByFirst.stages(), "the first pull to end")
+			assert.Equal(t, []string{"downloading", "success"}, sentByLast.stages(), "the last pull to end")
+		})
+	}
+	carried := []streamFrame{pullFrame("downloading"), pullFrame("success"), pullResult(`{"status":"success"}`)}
+	dropped := []streamFrame{pullFrame("downloading"), pullResult(`{"status":"success"}`)}
+	test("both streams carry the outcome", carried, carried)
+	test("only the first stream carries it", carried, dropped)
+}
+
+// A retry's stream opens while the download it replaces is still stopping, so
+// it can carry that download's "cancelled" before its own frames. If the hub
+// then drops the retry's own outcome, passing on the copy it holds would report
+// the retry cancelled. The result is the retry's own, so the frame it ends on
+// says what the result says.
+func TestRemotePull_EndsOnTheOutcomeItsResultReports(t *testing.T) {
+	var gate remotePullGate
+
+	sent := pullRemoteOver(t, placePull(t, &gate), pullFrame("cancelled"), pullFrame("downloading"), pullResult(`{"status":"success"}`))
+
+	assert.Equal(t, []string{"downloading", "success"}, sent.stages())
+}

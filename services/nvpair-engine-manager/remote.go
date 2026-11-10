@@ -420,13 +420,18 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder
 // settles the request with the peer's result.
 //
 // A download ends on a frame saying how, which is all a UI that stopped waiting
-// for the reply has to go on. The peer sends that frame through its progress
-// hub, which drops what a slow stream has no room for; the result travels
-// separately and always arrives. So a stream that carried no such frame gets
-// one built from the result, the way emitPullOutcome builds a local pull's.
-// The UIs know a download's frames by node, engine and model alone, so while
-// another pull of the same download is outstanding here its frames speak for
-// this one too, and only the last of them to end sends it.
+// for the reply has to go on. The UIs know a download's frames by node, engine
+// and model alone, so while another pull of the same download is outstanding
+// here its frames speak for this one too, and only the last of them to end
+// sends that frame. Every pull's stream carries the peer's copy, so each holds
+// its copy until it knows whether it is the last.
+//
+// The last sends the copy only if it agrees with its own result. The peer's
+// progress hub drops what a slow stream has no room for, the outcome included,
+// and a retry's stream opens while the download it replaces is still stopping,
+// so the copy it holds can be that download's. The result travels separately
+// and always arrives, so otherwise the frame is built from it, the way
+// emitPullOutcome builds a local pull's.
 func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteClient, node string, p remoteParam, order remoteOrder) {
 	// Let the cancels this pull was sent after finish first; see
 	// remotePullGate.
@@ -434,13 +439,20 @@ func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteCl
 	opID := newOpID()
 	body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
 	relay := m.remoteProgressFn(opID, node)
-	reported := false
+	var outcome *streamFrame
 	terminal, err := client.stream(ctx, controlPullPath, body, func(f streamFrame) {
-		reported = reported || (f.Op == "pull" && isPullOutcome(f.Stage))
+		if f.Op == "pull" && isPullOutcome(f.Stage) {
+			outcome = &f
+			return
+		}
 		relay(f)
 	}, order.accepted())
-	if order.end() && !reported {
-		m.notifyRemotePullOutcome(opID, node, p.Engine, order.key.model, terminal, err)
+	if order.end() {
+		if outcome != nil && outcome.Stage == remotePullOutcomeStage(terminal, err) {
+			relay(*outcome)
+		} else {
+			m.notifyRemotePullOutcome(opID, node, p.Engine, order.key.model, terminal, err)
+		}
 	}
 	if err != nil {
 		m.codec.RespondError(msg.ID, -32000, err.Error())
@@ -449,18 +461,30 @@ func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteCl
 	m.codec.Respond(msg.ID, map[string]any{"opId": opID, "result": terminal.Result})
 }
 
-// notifyRemotePullOutcome sends the engine:remote-progress frame a remote pull
-// ends on, from how its stream settled: "error" with the reason when it
-// failed, "cancelled" when the peer's result says so, "success" otherwise.
-func (m *Manager) notifyRemotePullOutcome(opID, node, engine, model string, terminal streamFrame, err error) {
-	p := remoteProgress{Model: model, OpID: opID, Node: node, Engine: engine, Op: "pull", Message: model}
+// remotePullOutcomeStage is the stage of the frame a remote pull ends on, from
+// how its stream settled: "error" when it failed, "cancelled" when the peer's
+// result says so, "success" otherwise.
+func remotePullOutcomeStage(terminal streamFrame, err error) string {
 	switch {
 	case err != nil:
-		p.Stage, p.Percent, p.Message = "error", -1, err.Error()
+		return "error"
 	case pullResultCancelled(terminal.Result):
-		p.Stage = "cancelled"
+		return "cancelled"
 	default:
-		p.Stage, p.Percent = "success", 100
+		return "success"
+	}
+}
+
+// notifyRemotePullOutcome sends the engine:remote-progress frame a remote pull
+// ends on, built from how its stream settled; a failure carries its reason.
+func (m *Manager) notifyRemotePullOutcome(opID, node, engine, model string, terminal streamFrame, err error) {
+	p := remoteProgress{Model: model, OpID: opID, Node: node, Engine: engine, Op: "pull", Message: model,
+		Stage: remotePullOutcomeStage(terminal, err)}
+	switch p.Stage {
+	case "error":
+		p.Percent, p.Message = -1, err.Error()
+	case "success":
+		p.Percent = 100
 	}
 	_ = m.codec.Notify("engine:remote-progress", p)
 }

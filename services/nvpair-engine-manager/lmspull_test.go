@@ -616,6 +616,39 @@ func TestCleanupLMSAfterCancel_KeepsQuantizationsWhoseNamesContainTheRequestedOn
 	test("shards of split downloads", "Q4_K", "Qwen3-8B-Q4_K-00001-of-00002.gguf", "Qwen3-8B-Q4_K_M-00001-of-00002.gguf")
 }
 
+// The TUI's download prompt sends whatever follows "@" as typed. Matched as a
+// token, a pin that names no quantization — "@GGUF", "@8B" — is one every
+// quantization's file in the repository carries, so it pins none, and a partial
+// is this download's only when it carries the quantization the CLI announced.
+func TestCleanupLMSAfterCancel_TreatsAPinThatNamesNoQuantizationAsNone(t *testing.T) {
+	test := func(name, pin string, announced []string, wantOursRemoved bool) {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "lmstudio-community", "Meta-Llama-3.1-8B-Instruct-GGUF")
+			require.NoError(t, os.MkdirAll(target, 0700))
+			model := "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF@" + pin
+			before, err := lmsPartialFiles(root, model)
+			require.NoError(t, err)
+			ours := filepath.Join(target, "downloading_Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf.part")
+			theirs := filepath.Join(target, "downloading_Meta-Llama-3.1-8B-Instruct-Q8_0.gguf.part")
+			writePartial(t, ours, "our download")
+			writePartial(t, theirs, "the app's download")
+
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, announced))
+
+			if wantOursRemoved {
+				assertRemoved(t, ours)
+			} else {
+				assertPresent(t, ours)
+			}
+			assertPresent(t, theirs)
+		})
+	}
+	test("@GGUF removes the announced quantization", "GGUF", []string{"Q4_K_M"}, true)
+	test("@8B removes the announced quantization", "8B", []string{"Q4_K_M"}, true)
+	test("@8B deletes nothing when the CLI announced none", "8B", nil, false)
+}
+
 // The app can also be fetching the very quantization PAIR asked for, into the
 // same file. Carrying the requested quantization in its name is what makes a
 // partial a candidate, not what makes it this download's, so one still growing

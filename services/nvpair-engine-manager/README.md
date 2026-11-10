@@ -65,7 +65,7 @@ Requests (caller → service):
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind) |
-| `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
+| `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). It must name its model in `params.name` or `params.model`, which keys the download's frames and its cancel; one that names none is refused with `-32602`. An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:cancel-pull` | `{ engine, model }` | `null`, once the transfer has stopped **and** its cleanup has settled — so a UI can hold "Canceling" until the backend is genuinely done. See "Cancelling a pull" below |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
@@ -105,9 +105,11 @@ that model is still registered, or once the model's outcome has been reported
 while the request was outstanding. Such a request answers `cancelled`, unless
 a download installed the model meanwhile, in which case it answers with that
 download's result. A peer's progress hub drops frames a slow
-stream has no room for, the terminal one included, so a remote initiator whose
-stream ended without it sends one built from the stream's result, unless
-another pull of the same download is still outstanding there.
+stream has no room for, the terminal one included, and streams one download's
+frames to every pull that shares it. So a remote initiator holds back the
+terminal frame a stream carries, and only the last of the download's pulls
+outstanding there sends one: the frame it held when that agrees with its
+result, or else one built from the result.
 `model` names the download the frame belongs to, so a consumer can tell two
 pulls on one engine apart; a pull waiting on another of the same engine's
 downloads reports `stage:"queued"` until its turn),
@@ -292,7 +294,8 @@ layers of an installed model.
 LM Studio keeps every quantization of a repository side by side, so its
 cleanup also considers only the quantization this pull fetched: the one the
 request pins, or for a request that pins none, the one the CLI announced in its
-download plan. It is matched as a whole name token, so `Q4_K` never claims
+download plan. A pin that is not a quantization name, such as `@GGUF` or `@8B`,
+counts as none. The quantization is matched as a whole name token, so `Q4_K` never claims
 `Q4_K_M`'s files, and an unpinned pull whose plan announced none removes
 nothing. LM Studio additionally requires the CLI to confirm: declining its
 background-download prompt is what aborts the daemon's task, so a CLI that
@@ -310,13 +313,16 @@ the model is requested again.
 A cancel can also arrive **before** the pull it names has registered, since the
 read loop dispatches each onto its own goroutine. So each pull request is
 claimed on the read loop, in the order the client sent it, and carries its
-claim to the executor. A cancel stops every request it finds claimed — one
-whose download has not registered yet then never starts it — and a retry
-accepted after the cancel downloads normally, whichever of the two reaches the
-executor first. A retry that finds the cancelled download still stopping does
-not join it: it waits for that download to stop and clean up, then downloads
-anew. A cancel that finds nothing claimed arrived after its download finished,
-and stops nothing. On the remote path the peer claims a pull before accepting
+claim to the executor, and a cancel takes effect on the read loop too; only its
+wait for the download to stop and clean up runs on a goroutine. A cancel stops
+every request claimed before it — one whose download has not registered yet
+then never starts it — and a retry sent after the cancel downloads normally,
+whichever of the two reaches the executor first. A retry that finds the
+cancelled download still stopping does not join it: it waits for that download
+to stop and clean up, then downloads anew. It likewise waits while a request
+the cancel stopped before it started reports the model's `cancelled`, so that
+frame never lands after the retry's first. A cancel that finds nothing claimed
+arrived after its download finished, and stops nothing. On the remote path the peer claims a pull before accepting
 it, and `engine:remote-cancel-pull` is held until every
 `engine:remote-pull-model` of that download sent before it has been accepted by
 the peer or has ended. Each is waited on separately: the peer joins a duplicate

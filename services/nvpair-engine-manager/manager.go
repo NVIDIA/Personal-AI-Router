@@ -300,10 +300,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		m.codec.Respond(msg.ID, map[string]int{"port": p.Port})
 
 	case "engine:action":
-		// Claim a pull here rather than in the goroutine. This case and
-		// engine:cancel-pull below each dispatch their own, so a cancel can
-		// reach the executor first; claiming on the read loop preserves the
-		// order the client sent them in.
+		// Claim a pull here rather than in the goroutine, as engine:cancel-pull
+		// below latches its cancel here. Each dispatches its own goroutine, so
+		// only the read loop sees the two in the order the client sent them.
 		engine, model := pullClaimFrom(msg.Params)
 		actionCtx, release := m.exec.claimPull(ctx, engine, model)
 		go func() {
@@ -320,7 +319,11 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 			m.codec.RespondError(msg.ID, -32602, "engine and model are required")
 			return
 		}
-		go func() { m.respondOrErr(msg, nil, m.exec.CancelModelPull(ctx, p.Engine, p.Model)) }()
+		// Latched here so the cancel stops the requests read before it and
+		// leaves a retry read after it alone. Only the wait for the download
+		// to stop and clean up runs off the read loop.
+		wait := m.exec.latchPullCancel(p.Engine, p.Model)
+		go func() { m.respondOrErr(msg, nil, wait(ctx)) }()
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull",
@@ -449,6 +452,12 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 	var err error
 	if p.Action == pullModelAction {
 		model := modelFromParams(p.Params)
+		// The model keys the download: one naming none could not be cancelled,
+		// and its frames could not be told apart from the engine's others.
+		if model == "" {
+			m.codec.RespondError(msg.ID, -32602, "model is required")
+			return
+		}
 		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)
 		if err != nil {
 			userMsg := m.exec.reportPullFailed(p.Engine, model, err)

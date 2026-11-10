@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -743,6 +745,178 @@ func TestTrackedPull_RetryCancelledWhileItWaitsAddsNoSecondTerminalFrame(t *test
 	assert.Equal(t, []ProgressEvent{
 		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo"},
 	}, publishedFrames(events), "the model's download ended once")
+}
+
+// slowCancelledFrame stands in for an executor's client. It records the pull
+// frames sent to it as "model stage", and holds the first "cancelled" frame
+// before recording it, as a slow write to the client would, until release is
+// closed. holding closes once that frame is held.
+type slowCancelledFrame struct {
+	holding chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	frames  []string
+}
+
+func newSlowCancelledFrame() *slowCancelledFrame {
+	return &slowCancelledFrame{holding: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (c *slowCancelledFrame) emit(method string, params any) {
+	frame, ok := params.(map[string]any)
+	if !ok || method != "engine:pull-progress" {
+		return
+	}
+	model, _ := frame["model"].(string)
+	stage, _ := frame["stage"].(string)
+	if stage == "cancelled" {
+		held := false
+		c.once.Do(func() { held = true })
+		if held {
+			close(c.holding)
+			<-c.release
+		}
+	}
+	c.mu.Lock()
+	c.frames = append(c.frames, model+" "+stage)
+	c.mu.Unlock()
+}
+
+func (c *slowCancelledFrame) sent() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.frames)
+}
+
+// awaitHeld waits for the cancelled request to start reporting its
+// cancellation, failing the test if ctx ends first.
+func (c *slowCancelledFrame) awaitHeld(t *testing.T, ctx context.Context) {
+	t.Helper()
+	select {
+	case <-c.holding:
+	case <-ctx.Done():
+		require.FailNow(t, "the cancelled request never reported its cancellation")
+	}
+}
+
+// startCancelledBeforeItRegisters runs a request for demo that a cancel stopped
+// before it reached the executor, so it reports the model's "cancelled" itself.
+func startCancelledBeforeItRegisters(t *testing.T, ctx context.Context, ex *Executor) <-chan outcome {
+	t.Helper()
+	request, release := ex.claimPull(ctx, "ollama", "demo")
+	t.Cleanup(release)
+	require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(request, "ollama", "demo", func(context.Context) (json.RawMessage, error) {
+			return nil, errors.New("the cancelled request started its download")
+		})
+		done <- got
+	}()
+	return done
+}
+
+// A request a cancel stopped before it started reports the model's "cancelled"
+// itself when no download of the model has. Frames name only the engine and
+// model, so a retry accepted after the cancel waits until that frame is out:
+// a "cancelled" landing after the retry's first frame would tell every UI that
+// the retry had ended.
+func TestTrackedPull_RetryWaitsForTheCancelledFrameOfARequestThatNeverStarted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := newSlowCancelledFrame()
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())
+	original := startCancelledBeforeItRegisters(t, ctx, ex)
+	retry, releaseRetry := ex.claimPull(ctx, "ollama", "demo")
+	defer releaseRetry()
+	client.awaitHeld(t, ctx)
+
+	retryStarted := make(chan struct{})
+	retryDone := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(retry, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+			close(retryStarted)
+			return succeedingPull(runCtx)
+		})
+		retryDone <- got
+	}()
+	select {
+	case <-retryStarted:
+		assert.Fail(t, "the retry started while the cancelled request was still reporting")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(client.release)
+	originalGot := awaitOutcome(t, ctx, original)
+	retryGot := awaitOutcome(t, ctx, retryDone)
+
+	require.NoError(t, originalGot.err)
+	assertPullStatus(t, originalGot.result, "cancelled")
+	require.NoError(t, retryGot.err)
+	assertPullStatus(t, retryGot.result, "success")
+	assert.Equal(t, []string{"demo cancelled", "demo success"}, client.sent())
+}
+
+// A request reporting a cancellation that stopped it before it started holds
+// its model only while that frame goes out, and transfers nothing, so another
+// model's download on the engine has nothing to queue behind.
+func TestTrackedPull_StartsAnotherModelAtOnceWhileACancelledRequestReports(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := newSlowCancelledFrame()
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())
+	original := startCancelledBeforeItRegisters(t, ctx, ex)
+	client.awaitHeld(t, ctx)
+
+	// Bounded, so a download wrongly queued behind the held report fails here
+	// rather than at the test's deadline.
+	otherCtx, cancelOther := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelOther()
+	result, err := ex.trackedPull(otherCtx, "ollama", "other", succeedingPull)
+	close(client.release)
+	awaitOutcome(t, ctx, original)
+
+	require.NoError(t, err)
+	assertPullStatus(t, result, "success")
+	assert.Equal(t, []string{"other success", "demo cancelled"}, client.sent())
+}
+
+// A request reporting a cancellation that stopped it before it started
+// transferred nothing, so a cancel that finds it answers as one finding nothing
+// would: with the failure of a stop the engine never confirmed, if the model's
+// last download ended on one, because that download may still be running.
+func TestCancelModelPull_ReportsAnUnconfirmedStopWhileACancelledRequestReports(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := newSlowCancelledFrame()
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())
+	unconfirmed := stopUnconfirmed(errors.New("the router did not confirm the download stopped"))
+	_, err := ex.trackedPull(ctx, "llamacpp", "demo", func(context.Context) (json.RawMessage, error) {
+		return nil, unconfirmed
+	})
+	require.ErrorIs(t, err, unconfirmed, "setup: the download did not end on an unconfirmed stop")
+	request, release := ex.claimPull(ctx, "llamacpp", "demo")
+	defer release()
+	require.ErrorIs(t, ex.CancelModelPull(ctx, "llamacpp", "demo"), unconfirmed, "setup")
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(request, "llamacpp", "demo", func(context.Context) (json.RawMessage, error) {
+			return nil, errors.New("the cancelled request started its download")
+		})
+		done <- got
+	}()
+	client.awaitHeld(t, ctx)
+
+	wait := ex.latchPullCancel("llamacpp", "demo")
+	close(client.release)
+
+	assert.ErrorIs(t, wait(ctx), unconfirmed)
+	got := awaitOutcome(t, ctx, done)
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
 }
 
 // A request whose context has already ended — its caller gave up, or PAIR is
