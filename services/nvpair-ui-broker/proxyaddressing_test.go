@@ -197,7 +197,7 @@ func TestReadiness_IsTrackedPerEngine(t *testing.T) {
 
 	// An engine that never announced itself is not ready, rather than
 	// inheriting a sibling's port.
-	ready, port := p.Status("vllm")
+	ready, port := p.Status("nosuchengine")
 	assert.False(t, ready, "an unannounced engine reported ready")
 	assert.Equal(t, 0, port, "an unannounced engine reported a port")
 }

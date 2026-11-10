@@ -125,9 +125,10 @@ type nodeRow struct {
 	nodeInfoTLS     bool
 	probedTelemetry *nodeTelemetry
 
-	models         []string
-	modelsByEngine map[string][]string
-	loadedByEngine map[string][]string
+	models             []string
+	modelsByEngine     map[string][]string
+	loadedByEngine     map[string][]string
+	downloadedByEngine map[string][]string
 }
 
 // modelCount is the number of distinct models the node advertises.
@@ -175,6 +176,7 @@ func mergeNodes(in nodeFeeds) []nodeRow {
 		row.models = d.Models
 		row.modelsByEngine = d.ModelsByEngine
 		row.loadedByEngine = d.LoadedByEngine
+		row.downloadedByEngine = d.DownloadedByEngine
 		row.presence = discoveredPresence(d)
 		switch {
 		case d.Trusted:

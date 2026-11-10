@@ -214,13 +214,14 @@ func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {
 	test("hyphenated llama.cpp", "llama-cpp", "llamacpp")
 	test("dotted llama.cpp", "llama.cpp", "llamacpp")
 	test("other engine preserved", "vllm", "vllm")
+	test("unknown engine preserved", "nosuchengine", "nosuchengine")
 }
 
 // TestCatalogRejectsUnknownEngine checks an engine with no curated source errors
 // rather than returning an empty list that reads as "nothing available".
 func TestCatalog_RejectsUnknownEngine(t *testing.T) {
 	c := newCatalogService()
-	_, err := c.Catalog(t.Context(), "vllm", "linux", "amd64", "")
+	_, err := c.Catalog(t.Context(), "nosuchengine", "linux", "amd64", "")
 	assert.Error(t, err, "unknown engine returned a catalog")
 }
 
@@ -394,7 +395,7 @@ func TestNormalizeLlamaCPPRows_KeepsOnlyDownloadableModels(t *testing.T) {
 		ggufRow("../escape", 1),
 		ggufRow("a/has space", 1),
 	}
-	got := normalizeLlamaCPPRows(rows)
+	got := normalizeListing(rows, llamaCPPModel)
 	ids := make([]string, len(got))
 	for i, m := range got {
 		ids[i] = m.ID
@@ -411,7 +412,7 @@ func TestNormalizeLlamaCPPRows_KeepsOnlyDownloadableModels(t *testing.T) {
 // TestNormalizeLlamaCPPRowsDedupesAcrossPublishers checks a repo listed twice,
 // as it is when a search and a publisher page overlap, yields one row.
 func TestNormalizeLlamaCPPRows_DedupesAcrossPublishers(t *testing.T) {
-	got := normalizeLlamaCPPRows([]hfModelRow{ggufRow("a/model", 1), ggufRow("a/model", 7)})
+	got := normalizeListing([]hfModelRow{ggufRow("a/model", 1), ggufRow("a/model", 7)}, llamaCPPModel)
 	if assert.Len(t, got, 1, "one row must carry the later entry") {
 		assert.Equal(t, 7, got[0].Downloads)
 	}
@@ -558,10 +559,10 @@ func TestSearchAtTheLengthLimit_IsAnswered(t *testing.T) {
 func TestLlamaCPPSearch_BoundsConcurrentQueries(t *testing.T) {
 	c := newCatalogService()
 	first := c.llamaCPPSearch("first")
-	for i := range llamaCPPSearchCacheLimit {
+	for i := range searchCacheLimit {
 		c.llamaCPPSearch(fmt.Sprint("query ", i))
 	}
-	assert.Len(t, c.llamaSearches, llamaCPPSearchCacheLimit)
+	assert.Len(t, c.searches, searchCacheLimit)
 	assert.NotSame(t, first, c.llamaCPPSearch("first"), "the least recently used search was not evicted")
 }
 

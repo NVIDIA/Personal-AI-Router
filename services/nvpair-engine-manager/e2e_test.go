@@ -131,7 +131,9 @@ func TestEngineManager_PreservesDesiredStateAcrossShutdown(t *testing.T) {
 
 	second := startE2EManager(t, cfg, home)
 	notify(t, second.stdin, restoreEnabledMethod, nil)
-	waitNotify(t, second.frames, "engine:state-changed", 20*time.Second)
+	// The restore pushes a state when the start begins (starting) and when the
+	// engine is up (running).
+	waitRunning(t, second.frames, 20*time.Second)
 	send(t, second.stdin, 1, "engine:status", map[string]any{"engine": "fake"})
 	require.Contains(t, string(waitResult(t, second.frames, "1", 5*time.Second)), `"running":true`, "saved ON state was not restored")
 	send(t, second.stdin, 2, "engine:stop", map[string]any{"engine": "fake"})
@@ -358,6 +360,23 @@ func waitNotify(t *testing.T, frames <-chan frame, method string, timeout time.D
 			}
 		case <-deadline:
 			require.FailNowf(t, "timed out waiting for notification", "%q", method)
+		}
+	}
+}
+
+// waitRunning waits for an engine:state-changed that reports the engine running.
+func waitRunning(t *testing.T, frames <-chan frame, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case f := <-frames:
+			var status EngineStatus
+			if f.Method == "engine:state-changed" && json.Unmarshal(f.Params, &status) == nil && status.Running {
+				return
+			}
+		case <-deadline:
+			require.FailNow(t, "timed out waiting for the engine to report running")
 		}
 	}
 }

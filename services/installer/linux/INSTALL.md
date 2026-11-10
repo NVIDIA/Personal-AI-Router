@@ -66,7 +66,7 @@ The workers store configuration in `~/.config/Nvidia Corporation/Personal AI Rou
 that directory too if you want a fully clean slate.
 
 Downloaded models are not in either directory. Each engine keeps them in its own
-store — `~/.ollama`, `~/.lmstudio/models`, and `~/.llamacpp` — so deleting the
+store — `~/.ollama`, `~/.lmstudio/models`, `~/.llamacpp`, and `~/.cache/huggingface` (vLLM) — so deleting the
 bundle or the configuration directory leaves them in place.
 
 ## Requirements
@@ -84,9 +84,9 @@ bundle or the configuration directory leaves them in place.
   that other machines on the LAN are actually advertising. Run the broker with
   `--log-level debug` to see live discovery logs on stderr.
 - **"Bind: address already in use"**: the proxies listen on `11434` (Ollama),
-  `1234` (LM Studio), and `8080` (llama.cpp); another instance of the proxy or
+  `1234` (LM Studio), `8080` (llama.cpp), and `8000` (vLLM); another instance of the proxy or
   another process is holding one of them. Find the offender with
-  `ss -tlnp | grep -E ':(11434|1234|8080)\b'` and stop or kill it.
+  `ss -tlnp | grep -E ':(11434|1234|8080|8000)\b'` and stop or kill it.
 
 Report issues at the project's tracker. Include the broker's `--log-level debug`
 output and your distro / kernel version.

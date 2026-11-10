@@ -72,6 +72,11 @@ type EnrichedNode struct {
 	// peer's engine-manager /v1/models loadedByEngine field. Carried through to
 	// AvailableNode so a remote node's cards can reflect loaded state.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// DownloadedByEngine is the downloaded inventory of an engine that advertises
+	// only the model it is serving (vLLM), enriched by the daemon from the peer's
+	// engine-manager /v1/models downloadedByEngine field. Carried through to
+	// AvailableNode so a remote node's model manager keeps its rows.
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
 }
 
 // directoryToEnriched projects the promoted daemon's DirectoryNode onto the
@@ -96,20 +101,21 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		port = ni.Port
 	}
 	return EnrichedNode{
-		ID:             n.Name,
-		HostUUID:       n.HostUUID,
-		Host:           n.Name,
-		Port:           port,
-		Addresses:      addrs,
-		TXT:            txt,
-		GPUs:           n.GPUs,
-		CPU:            n.CPU,
-		Memory:         n.Memory,
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered(),
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
+		ID:                 n.Name,
+		HostUUID:           n.HostUUID,
+		Host:               n.Name,
+		Port:               port,
+		Addresses:          addrs,
+		TXT:                txt,
+		GPUs:               n.GPUs,
+		CPU:                n.CPU,
+		Memory:             n.Memory,
+		Trusted:            n.Trusted,
+		Clustered:          n.Clustered(),
+		Models:             n.Models,
+		ModelsByEngine:     n.ModelsByEngine,
+		LoadedByEngine:     n.LoadedByEngine,
+		DownloadedByEngine: n.DownloadedByEngine,
 	}
 }
 
@@ -314,18 +320,19 @@ func (sn storedNode) toAvailable() AvailableNode {
 		candidates = nil
 	}
 	return AvailableNode{
-		ID:             n.ID,
-		Name:           n.ID,
-		HostUUID:       n.HostUUID,
-		IPAddress:      primary,
-		IPAddresses:    candidates,
-		Port:           n.Port,
-		LastSeen:       sn.lastSeen.Unix(),
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered,
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
+		ID:                 n.ID,
+		Name:               n.ID,
+		HostUUID:           n.HostUUID,
+		IPAddress:          primary,
+		IPAddresses:        candidates,
+		Port:               n.Port,
+		LastSeen:           sn.lastSeen.Unix(),
+		Trusted:            n.Trusted,
+		Clustered:          n.Clustered,
+		Models:             n.Models,
+		ModelsByEngine:     n.ModelsByEngine,
+		LoadedByEngine:     n.LoadedByEngine,
+		DownloadedByEngine: n.DownloadedByEngine,
 	}
 }
 
