@@ -101,7 +101,9 @@ ships in `cli-bin` and the app's updater replaces it.
   only on `y`, against the target captured at arm time — these lists re-sort
   under the cursor whenever a download finishes or a peer republishes. `c` stops
   the newest download on the highlighted engine, or the newest on the node when
-  that engine has none, and its prompt names the model it will stop.
+  that engine has none, and its prompt names the model it will stop. A model
+  already downloading, or still being cancelled, cannot be downloaded again
+  until that download ends.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a

@@ -1644,8 +1644,18 @@ func (d *nodeDetail) downloadFromCatalog(engine, model string) tea.Cmd {
 
 // startDownload sends a download and marks it in flight at once, so it can be
 // cancelled before its first progress frame arrives.
+//
+// A model already in flight is refused, as the desktop app refuses it.
+// Downloads are told apart by engine and model alone, so the replies of the one
+// in flight, or of a cancel stopping it, would retire the second too, leaving
+// it running with nothing on screen to cancel.
 func (d *nodeDetail) startDownload(engine, model string) tea.Cmd {
-	d.trackDownload(detailDownload{engine: engine, model: model})
+	dl := detailDownload{engine: engine, model: model}
+	if slices.Contains(d.downloads, dl) {
+		d.status.error("download %s is already in progress", d.downloadLabel(engine, model))
+		return nil
+	}
+	d.trackDownload(dl)
 	d.status.busy("download %s: %s...", d.engineLabel(engine), model)
 	return d.own(pullCmd(d.client, d.nodeArg(), engine, model))
 }

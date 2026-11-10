@@ -1119,6 +1119,40 @@ func TestDownloadCancel_ReachesADownloadBeforeItsFirstFrame(t *testing.T) {
 	assert.Equal(t, &detailDownload{engine: "ollama", model: "llama3.2"}, d.pending.download)
 }
 
+// Downloads are told apart by engine and model alone, so a second request for a
+// model in flight would share its entry. The replies of the first, or of a
+// cancel stopping it, retire that entry while the second is still queued behind
+// it, leaving nothing on screen to cancel. Retrying during a cancel is an
+// ordinary thing to try, since an LM Studio cancel can take tens of seconds.
+func TestDownloadStart_RefusesAModelAlreadyInFlight(t *testing.T) {
+	test := func(name string, inFlight func(t *testing.T, d *nodeDetail)) {
+		t.Run(name, func(t *testing.T) {
+			d := localDetail()
+			d.pane = detailModels
+			inFlight(t, d)
+
+			assert.Nil(t, d.startDownload("ollama", "llama3.2"), "a second download of the model was sent")
+			assert.Contains(t, d.status.render(), "download llama3.2 (Ollama) is already in progress")
+			assert.Equal(t, []detailDownload{{engine: "ollama", model: "llama3.2"}}, d.downloads)
+		})
+	}
+	test("one this screen sent", func(t *testing.T, d *nodeDetail) {
+		require.NotNil(t, d.startDownload("ollama", "llama3.2"), "setup: the first download was not sent")
+	})
+	test("one the feed reports", func(t *testing.T, d *nodeDetail) {
+		d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+	})
+}
+
+func TestDownloadStart_SendsAModelWhoseDownloadEnded(t *testing.T) {
+	d := localDetail()
+	d.pane = detailModels
+	d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+	d.update(pullFramePush(t, d, "ollama", "llama3.2", "cancelled"))
+
+	assert.NotNil(t, d.startDownload("ollama", "llama3.2"), "the retry was refused")
+}
+
 // A download in flight has no row in the model list to select, so the cancel
 // key picks one: the newest on the highlighted engine, else the newest anywhere.
 // A queued download counts, since cancelling one before it starts loses nothing.
