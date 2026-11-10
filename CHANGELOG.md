@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.16 — Local node figures stay current in discovery (#5)
+
+- The scanner republishes its own entry on every peer refresh, so GPU, CPU and memory figures follow the node instead of freezing at daemon start.
+
 ## 1.0.15 — vLLM engine support (#181)
 
 - vLLM can now be installed and managed from PAIR like the other engines.
