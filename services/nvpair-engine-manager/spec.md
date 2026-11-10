@@ -67,6 +67,34 @@ extensibility story for an open-source product.
 - **Edge case — checksum mismatch**: install fails before `run`, is reported, and never executes an unverified payload.
 - **Edge case — readiness timeout / crash**: failed readiness returns to Stopped; a later crash flips health and is reported.
 
+### llama.cpp model sources
+
+The node-owned engine settings `modelSource` field selects `huggingface` (default)
+or `modelscope` for llama.cpp catalogue queries and downloads. It is saved as
+host-platform `runtime.model_source` and included in launch snapshots. Changing
+the source uses the existing preview/apply, revision, restart and paired-device
+settings protocol; stopped engines stay stopped. Omitting the source in a
+settings request preserves the current choice. Adopted process engines expose
+read-only settings and reject source changes. Other engines omit the field.
+The `engine:catalog` request accepts `modelSource` for a peer's saved choice.
+Omitting it uses this node's setting. Only `huggingface` and `modelscope` are
+accepted for llama.cpp; each source keeps its own browse/search cache.
+
+ModelScope's public GGUF catalogue is normalized through the same quantization
+and generative-model filters as Hugging Face. A loopback-only adapter translates
+ModelScope metadata and streams file requests without forwarding Hugging Face
+credentials. Requests must match the listener's exact Host and include a random
+256-bit path token, which is redacted from engine output. Streams are bounded to
+the accepted file size and must match the metadata SHA-256. The adapter advertises
+`Accept-Ranges: none` and ignores Range/If-Range, returning complete files so
+retries cannot accept unverified cached prefixes. Interrupted downloads restart
+from zero. A transfer's final byte is withheld until size and checksum validation
+succeeds. The pinned llama.cpp router remains
+responsible for GGUF selection, cache layout, split files, progress and
+cancellation. Its `MODEL_ENDPOINT` is overridden only for ModelScope; existing
+Hugging Face endpoint configuration is preserved. No TypeScript download
+implementation is used.
+
 ## 4. Open Questions / Risks
 - **`engine:*` method stability**: the Broker forwards the namespace verbatim; evolve it additively and preserve `engine:get-installed` as the installed-engine query.
 - **`severity` / `action` enums**: current wire values are `info|warning|error` and `dismiss|retry|none`; coordinate any future shared-enum expansion without changing existing values.
@@ -148,7 +176,7 @@ Requests (caller → service):
 | `engine:action` | `{ engine, action, params }` | the engine's raw response |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:catalog` | `{ engine, platform?, arch?, query? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. One curated source per engine: Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. Only llama.cpp's is `searchable`: a `query` searches all of Hugging Face for GGUF repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` from the remote node |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status }` after the remote install |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull |

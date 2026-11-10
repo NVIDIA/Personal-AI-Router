@@ -32,6 +32,7 @@ vi.mock('@/electron/service-bridge/model-catalog', () => ({ getEngineHubModels: 
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
+import type { EngineSettingsConfig } from '@/shared/types/engine-settings'
 
 const baseline = {
     nodeId: 'local-node',
@@ -112,5 +113,78 @@ describe('unified settings bridge', () => {
                 engine: 'ollama'
             })
         ).rejects.toThrow()
+    })
+
+    it.each(['huggingface', 'modelscope'])(
+        'preserves the %s model source in snapshots',
+        async source => {
+            mocks.supervisor.callProcess.mockResolvedValue({
+                ...baseline,
+                engine: 'llamacpp',
+                settings: { ...baseline.settings, modelSource: source }
+            })
+            const snapshot = await handleServiceBridgeInvoke('engines:get-settings', {
+                nodeId: 'local-node',
+                engine: 'llamacpp'
+            })
+            expect(snapshot.settings.modelSource).toBe(source)
+        }
+    )
+
+    it('preserves settings that omit a model source', async () => {
+        const snapshot = await handleServiceBridgeInvoke('engines:get-settings', {
+            nodeId: 'local-node',
+            engine: 'ollama'
+        })
+        expect(snapshot.settings).toEqual(baseline.settings)
+    })
+
+    it('relays a source-only change through preview and apply', async () => {
+        const settings: EngineSettingsConfig = {
+            serverPort: 8081,
+            proxyPort: 8080,
+            launchText: '--host 127.0.0.1 --port 8081',
+            modelSource: 'modelscope'
+        }
+        mocks.supervisor.callProcess.mockResolvedValueOnce({
+            settings,
+            revision: 4,
+            errors: {},
+            restart: true,
+            rebind: false
+        })
+        const request = {
+            nodeId: 'local-node',
+            engine: 'llamacpp',
+            expectedRevision: 4,
+            settings
+        } satisfies Parameters<typeof window.pairApi.engines.previewSettings>[0]
+        const preview = await handleServiceBridgeInvoke('engines:preview-settings', request)
+        expect(preview.settings).toEqual(settings)
+        await handleServiceBridgeInvoke('engines:apply-settings', {
+            ...request,
+            settings: preview.settings,
+            requestId: 'source-change'
+        })
+        expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
+            'broker',
+            'engine:apply-settings',
+            { ...request, requestId: 'source-change' },
+            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+        )
+    })
+
+    it('rejects an unsupported model source from a device', async () => {
+        mocks.supervisor.callProcess.mockResolvedValue({
+            ...baseline,
+            engine: 'llamacpp',
+            settings: { ...baseline.settings, modelSource: 'unrecognized' }
+        })
+        await expect(
+            handleServiceBridgeInvoke('engines:get-settings', {
+                nodeId: 'local-node',
+                engine: 'llamacpp'
+            })
+        ).rejects.toThrow('Invalid model download source.')
     })
 })

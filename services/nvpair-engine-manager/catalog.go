@@ -30,8 +30,7 @@ import (
 // holds, but not what its upstream offers.
 //
 // It lives here rather than in a client so both the desktop app and the terminal
-// interface see the same catalogue. Each engine has exactly one curated source,
-// and they are deliberately different in kind:
+// interface see the same catalogue. Sources differ by engine:
 //
 //   - Ollama has no public library API, only a client-rendered web page. A live
 //     scrape was fragile and broke whenever the markup changed, so the list is a
@@ -40,10 +39,10 @@ import (
 //   - LM Studio's catalogue *is* a Hugging Face org (`lmstudio-community`), whose
 //     repo ids are exactly the strings `lms get` accepts. That has a real API, so
 //     it is fetched live and cached.
-//   - llama.cpp downloads any GGUF repo on Hugging Face as `repo:quantization`.
-//     The browse list is the GGUF repos of a few approved publishers, fetched
-//     live and cached; a query searches all of Hugging Face, each query cached
-//     on its own.
+//   - llama.cpp downloads GGUF repos from its selected Hugging Face or ModelScope
+//     source as `repo:quantization`.
+//     Hugging Face browses approved publishers; ModelScope browses popular
+//     repositories. Both fetch live, with each source and search cached separately.
 
 // catalogSourceKind distinguishes how an engine's catalogue is obtained.
 type catalogSourceKind int
@@ -114,10 +113,11 @@ type CatalogResult struct {
 // Query searches the upstream, for a source that reports Searchable. Any other
 // source ignores it and returns its whole list for the client to filter.
 type catalogParams struct {
-	Engine   string `json:"engine"`
-	Platform string `json:"platform"`
-	Arch     string `json:"arch"`
-	Query    string `json:"query"`
+	Engine      string `json:"engine"`
+	Platform    string `json:"platform"`
+	Arch        string `json:"arch"`
+	Query       string `json:"query"`
+	ModelSource string `json:"modelSource"` // Peer selection; omitted uses this node's setting.
 }
 
 //go:embed catalog/ollama-models.json
@@ -251,7 +251,9 @@ type catalogService struct {
 	// baseURL overrides the listing endpoint in tests. Empty means the real one;
 	// the caching and coalescing around the fetch is the part worth testing, and
 	// it cannot be exercised against the live API.
-	baseURL string
+	baseURL            string
+	modelScopeEndpoint string
+	llamaSource        func() (string, error)
 }
 
 // listingCache holds one fetched catalogue. It serves from memory while the
@@ -301,7 +303,7 @@ func newCatalogService() *catalogService {
 // Catalog returns the downloadable models for an engine, filtered for the
 // machine they will be installed on, or the results of a query for a source
 // that can search.
-func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, query string) (CatalogResult, error) {
+func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, query, selectedSource string) (CatalogResult, error) {
 	platform, arch = catalogTarget(platform, arch)
 	switch normalizeCatalogEngine(engine) {
 	case "ollama":
@@ -329,6 +331,25 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		query, err := catalogQuery(query)
 		if err != nil {
 			return CatalogResult{}, err
+		}
+		if selectedSource == "" && c.llamaSource != nil {
+			selectedSource, err = c.llamaSource()
+			if err != nil {
+				return CatalogResult{}, err
+			}
+		}
+		switch selectedSource {
+		case "modelscope":
+			models, fetchedAt, err := c.searchCache("modelscope:"+strings.ToLower(query), "ModelScope catalog", func(ctx context.Context) ([]CatalogModel, error) {
+				return c.fetchModelScope(ctx, query)
+			}).get(ctx)
+			if err != nil {
+				return CatalogResult{}, err
+			}
+			return CatalogResult{Models: models, Source: modelScopeURL + "/models", Platform: platform, Arch: arch, FetchedAt: fetchedAt.UTC().Format(time.RFC3339), Searchable: true, Query: query}, nil
+		case "", "huggingface":
+		default:
+			return CatalogResult{}, errors.New("unsupported model download source")
 		}
 		models, fetchedAt, err := c.llamaCPPCatalog(ctx, query)
 		if err != nil {

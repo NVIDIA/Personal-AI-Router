@@ -73,7 +73,7 @@ func bstr(m map[string]any, k string) string {
 func main() {
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
-		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST"} {
+		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST", "MODEL_ENDPOINT"} {
 			values[key] = os.Getenv(key)
 		}
 		data, _ := json.Marshal(values)

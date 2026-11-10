@@ -87,6 +87,7 @@ export async function getEngineHubModels(
     try {
         // The catalog is currently filtered for the broker's host. This API
         // does not yet pass the destination's platform and architecture.
+        // Omit modelSource too: the manager uses this device's saved selection.
         const result = await getModularSupervisor().callProcess(
             'broker',
             'engine:catalog',

@@ -170,11 +170,13 @@ A node is eligible for a request only when it is online, a compatible engine is
 running, and the requested model is available there. To test routing across
 multiple nodes, prepare the same model on each of those nodes.
 
-llama.cpp downloads use exact `owner/repository:quantization` IDs. Its **Add model**
-list is populated from popular GGUF repositories published by `ggml-org`,
-`bartowski`, and `unsloth`. Typing filters those results locally. Pressing
-**Enter** or selecting the search button searches public Hugging Face
-repositories. PAIR offers one verified `Q4_K_M` option for each result.
+llama.cpp downloads use exact `owner/repository:quantization` IDs. With Hugging
+Face selected, its **Add model** list starts with popular GGUF repositories
+published by `ggml-org`, `bartowski`, and `unsloth`. Typing filters visible results
+immediately and searches public repositories on the selected download source
+after two characters and a short pause. **Enter** or the search button submits
+without the pause. If a search is still running, only the latest query runs next.
+PAIR offers one verified `Q4_K_M` option for each result.
 **Load**, **Eject**, and **Delete** use that same exact model ID. **Delete**
 removes the selected entry from llama.cpp's persistent cache.
 

@@ -160,6 +160,8 @@ type InstallArtifact struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
+	// ModelSource selects llama.cpp's model catalogue and download provider.
+	ModelSource string `json:"model_source,omitempty"`
 	// EditableLaunch declares which startup arguments and environment controls
 	// PAIR can safely expose through engine settings.
 	EditableLaunch *EditableLaunch `json:"editable_launch,omitempty"`
@@ -872,6 +874,9 @@ const (
 )
 
 func (p *Platform) validate(key string) error {
+	if source := p.Runtime.ModelSource; source != "" && source != "huggingface" && source != "modelscope" {
+		return fmt.Errorf("platform %q: invalid model_source", key)
+	}
 	if auto := p.Runtime.AutoLaunch; auto != nil {
 		if auto.Kind != autoLaunchHFContext || auto.ContextTokens < 1024 {
 			return fmt.Errorf("platform %q: auto_launch needs kind %q and context_tokens of at least 1024", key, autoLaunchHFContext)

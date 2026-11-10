@@ -52,7 +52,7 @@ func TestVLLMCatalog_KeepsOpenSafetensorsChatModels(t *testing.T) {
 	c := newCatalogService()
 	c.baseURL = srv.URL
 
-	res, err := c.Catalog(t.Context(), "vllm", "", "", "")
+	res, err := c.Catalog(t.Context(), "vllm", "", "", "", "")
 
 	require.NoError(t, err)
 	var ids []string
@@ -92,7 +92,7 @@ func TestVLLMCatalog_SearchesWithTheTrimmedQuery(t *testing.T) {
 	c := newCatalogService()
 	c.baseURL = srv.URL
 
-	res, err := c.Catalog(t.Context(), "vllm", "", "", "  llama  ")
+	res, err := c.Catalog(t.Context(), "vllm", "", "", "  llama  ", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "llama", res.Query)
@@ -100,7 +100,7 @@ func TestVLLMCatalog_SearchesWithTheTrimmedQuery(t *testing.T) {
 	assert.Equal(t, "someone/Llama-Chat", res.Models[0].ID)
 	require.NotEmpty(t, searches)
 	assert.Equal(t, "llama", searches[0], "the upstream must be searched with the trimmed query")
-	_, err = c.Catalog(t.Context(), "vllm", "", "", string(make([]byte, maxCatalogQuery+1)))
+	_, err = c.Catalog(t.Context(), "vllm", "", "", string(make([]byte, maxCatalogQuery+1)), "")
 	assert.Error(t, err, "an over-long query is refused")
 }
 
