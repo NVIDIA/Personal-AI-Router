@@ -174,7 +174,8 @@ llama.cpp downloads use exact `owner/repository:quantization` IDs. With Hugging
 Face selected, its **Add model** list starts with popular GGUF repositories
 published by `ggml-org`, `bartowski`, and `unsloth`. Typing filters visible results
 immediately and searches public repositories on the selected download source
-after a short pause. **Enter** or the search button starts the search immediately.
+after two characters and a short pause. **Enter** or the search button submits
+without the pause. If a search is still running, only the latest query runs next.
 PAIR offers one verified `Q4_K_M` option for each result.
 **Load**, **Eject**, and **Delete** use that same exact model ID. **Delete**
 removes the selected entry from llama.cpp's persistent cache.
