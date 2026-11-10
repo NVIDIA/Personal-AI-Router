@@ -224,7 +224,8 @@ pull itself settles. A peer is given a much longer budget to answer than the
 desktop waits, on purpose — cutting a peer off part-way through a cancel is
 worse than waiting for it — so the desktop giving up first means the cancel is
 still running, not that it failed. The row stays in Canceling and the cancel
-can be issued again.
+can be issued again. A download that ends while its cancel is under way shows
+how it ended instead, because its last frame says so.
 
 ### Engine settings
 

@@ -297,10 +297,15 @@ while the request was outstanding. Such a request answers `cancelled`, unless
 a download installed the model meanwhile, in which case it answers with that
 download's result. A peer's progress hub drops frames a slow
 stream has no room for, the terminal one included, and streams one download's
-frames to every pull that shares it. So a remote initiator holds back the
-terminal frame a stream carries, and only the last of the download's pulls
-outstanding there sends one: the frame it held when that agrees with its
-result, or else one built from the result.
+frames to every pull that shares it, and to no other. So a remote initiator
+holds back the terminal frame a stream carries, and only the last of the
+download's pulls outstanding there sends one: the frame it held when that
+agrees with its result, or else one built from the result. The peer names the
+download on a pull's progress frames and on its result, and the initiator takes
+two pulls for one download when the peer named the same download for both or,
+until it has named both, when no cancel was sent between them. A retry sent
+after a cancel is therefore a download of its own, and the cancelled download
+still sends its outcome while the retry is outstanding.
 `model` names the download the frame belongs to, so a consumer can tell two
 pulls on one engine apart; a pull waiting on another of the same engine's
 downloads reports `stage:"queued"` until its turn),
@@ -316,7 +321,9 @@ Streaming HTTP pulls have a 30-minute **inactivity** watchdog. Each increase in
 an Ollama layer's or llama.cpp file's completed byte count refreshes that
 watchdog, so an active download may run longer than 30 minutes; duplicate
 progress frames and heartbeats do not extend a stalled pull. CLI-driven pulls
-without structured byte progress retain the fixed 30-minute action timeout.
+without structured byte progress retain the fixed 30-minute action timeout, and
+a pull stopped by that timeout fails saying the download did not finish within
+it.
 
 For llama.cpp, an accepted pull that ends before a matching `download_finished`
 or `download_failed` event stops the active download. This includes caller
@@ -490,31 +497,50 @@ within a bounded budget and leaves anything still busy at the deadline, which
 is not a failure. Completed model files are never candidates — they may be
 layers of an installed model.
 
+Ollama writes its partials under the `OLLAMA_MODELS` of the environment its
+daemon runs in, or under Ollama's default in the user's home directory when
+that is unset. For a daemon engine-manager launched, that environment is read
+back from the process. A daemon that was already running when PAIR adopted it
+was started in an environment engine-manager cannot see, so engine-manager's
+own stands in for it. A wrong guess usually finds nothing, which leaves the
+download's partials for Ollama to resume or remove. A guess that lands on
+another live Ollama cache can find a partial a second daemon created there
+after the snapshot and before the grace ended; if that partial then holds still
+across the checks, it cannot be told from this pull's and is removed. A
+relative `OLLAMA_MODELS` names no directory engine-manager can resolve, so
+cleanup removes nothing.
+
 LM Studio keeps every quantization of a repository side by side, so its
 cleanup also considers only the quantization this pull fetched: the one the
 request pins, or for a request that pins none, the one the CLI announced in its
 download plan. A pin that is not a quantization name, such as `@GGUF` or `@8B`,
 counts as none. The quantization is matched as a whole name token, so `Q4_K`
 never claims `Q4_K_M`'s files, and an unpinned pull whose plan announced none
-removes nothing. LM Studio additionally requires the CLI to confirm: declining
-its background-download prompt is what aborts the daemon's task, so a CLI that
-exited without answering it may still be fetching, nothing is deleted, and the
-cancel fails. A cancel that finds no CLI running — before the first starts,
-between candidate sources, or while a timed-out transfer waits to be resumed —
-has nothing left fetching, so it settles as cancelled and cleans up the same
-way.
+removes nothing. Cancelling an MLX download removes nothing, pinned or not: its
+plan names no GGUF quantization, and a pin such as `@4bit` is not a
+quantization name. LM Studio additionally requires the CLI to confirm:
+declining its background-download prompt is what aborts the daemon's task, so
+a CLI that exited without answering it may still be fetching, nothing is
+deleted, and the cancel fails. A cancel that finds no CLI running — before the
+first starts, between candidate sources, or while a timed-out transfer waits to
+be resumed — has nothing left fetching, so it settles as cancelled and cleans
+up the same way.
 
 llama.cpp and vLLM delete nothing. llama.cpp's router is asked to stop the
 download and keeps what it fetched for llama.cpp to resume or replace. vLLM's
 `hf` tool is stopped, and killed if it has not exited 3 seconds after being
 asked; its partial files stay in the Hugging Face cache, which vLLM's own
 downloads and every other Hugging Face client share, for the next download of
-the model to resume.
+the model to resume. A tool still running 10 seconds after the kill is
+abandoned rather than waited on, and the cancel fails, since the download may
+still be running. A download the tool finished as it was being stopped stands,
+and its pull reports the model installed.
 
-A stop that could not be confirmed — that one, or a llama.cpp download the
-router did not confirm stopping — keeps failing: cancelling that model again
-reports the same failure, rather than answering as a cancel for nothing, until
-the model is requested again.
+A stop that could not be confirmed — an LM Studio download its CLI did not
+confirm stopping, a llama.cpp download its router did not confirm stopping, or
+a vLLM `hf` tool that outlived its kill — keeps failing: cancelling that model
+again reports the same failure, rather than answering as a cancel for nothing,
+until the model is requested again.
 
 A cancel can also arrive **before** the pull it names has registered, since the
 read loop dispatches each onto its own goroutine. So each pull request is
@@ -574,6 +600,9 @@ Endpoints (all under `/v1`):
 
 The streaming routes emit zero or more `{"type":"progress",...}` frames followed
 by exactly one terminal `{"type":"result",...}` or `{"type":"error",...}` frame.
+A pull's stream carries only the frames of the download its request runs as —
+the one it started, or the one it shares — and its progress frames and result
+name that download in `download`, the peer's ID for it.
 The initiating node's engine-manager consumes that stream, relays each progress
 frame up as `engine:remote-progress`, and settles the originating
 `engine:remote-*` request on the terminal frame — so a UI gets one synchronous

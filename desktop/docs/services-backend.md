@@ -176,6 +176,11 @@ worse than waiting for it. A timeout therefore means "still cancelling", not
 and the cancel can be issued again. Only an explicit rejection restores the
 previous status and reports an error.
 
+The download's last frame overrides both. It says how the download ended — it
+may have finished before the stop reached it, or its engine could not confirm
+the stop — so the row shows that whatever the cancel is doing, and a rejection
+that comes after it reports its error but leaves the row as it is.
+
 ### Engine settings
 
 Ports and the engine arguments are one authoritative, revisioned record owned by

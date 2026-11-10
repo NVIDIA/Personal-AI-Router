@@ -153,7 +153,10 @@ progress-tracked, on its own.
 when `nodeId` names a peer. The download is not cancelled when the command
 returns: the row moves to Canceling and clears when the pull itself settles. A
 cancel whose request outlives its budget leaves the row in Canceling, because
-the backend is still working on it, and stays available to issue again.
+the backend is still working on it, and stays available to issue again. A
+download that ends while its cancel is under way — one that finished first, or
+whose engine could not confirm the stop — shows how it ended rather than
+Canceling.
 
 ### `pairApi.workloads`
 

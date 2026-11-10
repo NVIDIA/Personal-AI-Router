@@ -427,17 +427,22 @@ sequenceDiagram
 `engine:cancel-pull` and `engine:remote-cancel-pull` cancel the selected model
 download. The UI keeps "Canceling…" visible until the pull settles, including
 when the cancel RPC's own budget elapses first — the backend is still working,
-so the row is not dropped back to "Downloading". Ollama closes the pull request
-and removes partial blobs named by its progress digests; LM Studio receives
-Ctrl+C and a negative answer to its background-download prompt, and after
-acknowledgement the partial files of the model file it was fetching are
-removed. That file is identified by the quantization the request pins or, when
-it pins none, the one the CLI announced in its download plan, matched as a
-whole name token so `Q4_K` never claims `Q4_K_M`'s files; an unpinned pull
-whose plan announced no quantization removes nothing. Completed model files,
-other quantizations, and unrelated downloads are retained, and a cancellation
-the CLI never confirmed deletes nothing and fails, since the download may still
-be running. A cancel that finds no CLI running — before the first starts,
+so the row is not dropped back to "Downloading". The download's last frame is
+the exception: it says how the download ended — it may have finished before
+the stop reached it, or its engine could not confirm the stop — so the row
+shows that instead, and a cancel rejected after it leaves it there. Ollama
+closes the pull request and removes partial blobs named by its progress
+digests; LM Studio receives Ctrl+C and a negative answer to its
+background-download prompt, and after acknowledgement the partial files of the
+model file it was fetching are removed. That file is identified by the
+quantization the request pins or, when it pins none, the one the CLI announced
+in its download plan, matched as a whole name token so `Q4_K` never claims
+`Q4_K_M`'s files; an unpinned pull whose plan announced no quantization removes
+nothing, and neither does an MLX download, pinned or not, since its plan names
+no GGUF quantization and a pin such as `@4bit` is not one. Completed model
+files, other quantizations, and unrelated downloads are retained, and a
+cancellation the CLI never confirmed deletes nothing and fails, since the
+download may still be running. A cancel that finds no CLI running — before the first starts,
 between the sources PAIR tries, or while a timed-out transfer waits to be
 resumed — has nothing left to stop, so it settles as cancelled and removes the
 same files. llama.cpp's router is asked to stop the download and keeps what it
@@ -446,12 +451,14 @@ confirm the stop, the cancellation fails, since the download may still be
 running. vLLM's `hf` tool is stopped, and killed if it has not exited 3 seconds
 after being asked; its partial files stay in the Hugging Face cache, shared
 with vLLM's own downloads and every other Hugging Face client, for the next
-download to resume. A stop that could not be confirmed, on LM Studio or
-llama.cpp, keeps failing: cancelling that model again reports the same failure,
-rather than answering as a cancel for nothing, until the model is requested
-again. Only a cancellation someone requested removes files: a pull interrupted
-by app shutdown, a dropped remote connection, or the action timeout leaves its
-partial data resumable.
+download to resume. A tool still running 10 seconds after the kill is
+abandoned and the cancellation fails, since the download may still be running;
+a download the tool finished as it was being stopped stands. A stop that could
+not be confirmed, on LM Studio, llama.cpp, or vLLM, keeps failing: cancelling
+that model again reports the same failure, rather than answering as a cancel
+for nothing, until the model is requested again. Only a cancellation someone
+requested removes files: a pull interrupted by app shutdown, a dropped remote
+connection, or the action timeout leaves its partial data resumable.
 
 Cleanup looks for partial files only where the engine-manager knows the engine
 writes them. For LM Studio that is the manifest's `models_dir`
