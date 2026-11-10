@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -343,9 +344,15 @@ func TestLMSPull_CancelWhileWaitingToResumeStopsTheDownload(t *testing.T) {
 	// run has exited and before a second one starts.
 	defer setResumeBudget(t, 3, time.Hour)()
 	waiting := make(chan struct{})
-	previousLogger := slog.Default()
+	previousLogger, previousOutput, previousFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(&resumeWaitHandler{waiting: waiting}))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	// Installing a handler also redirects the log package, and restoring the
+	// default logger does not point it back.
+	t.Cleanup(func() {
+		slog.SetDefault(previousLogger)
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
 	modelsDir := t.TempDir()
 	partial := filepath.Join(modelsDir, "owner", "repo", "downloading_repo-Q4_K_M.gguf.part")
 	ex := newLMSPullExecutor(t, modelsDir, fakeEngineBin, "downloadstalls", partial, "{model}")

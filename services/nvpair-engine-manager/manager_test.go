@@ -138,13 +138,12 @@ func TestManager_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
 	defer managerConn.Close()
 	defer clientConn.Close()
 	m := NewManager(NewCodec(managerConn), ex, nil)
-	response := make(chan Message, 1)
+	response := make(chan []byte, 1)
+	readErr := make(chan error, 1)
 	go func() {
 		line, err := bufio.NewReader(clientConn).ReadBytes('\n')
-		var msg Message
-		if err == nil && json.Unmarshal(line, &msg) == nil {
-			response <- msg
-		}
+		readErr <- err
+		response <- line
 	}()
 	// With a single P, the goroutine handleMessage starts for the pull cannot
 	// run until this one blocks, so the cancel reaches the executor first.
@@ -157,7 +156,10 @@ func TestManager_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
 	require.NoError(t, ex.CancelModelPull(context.Background(), "fake", "demo"))
 
 	select {
-	case msg := <-response:
+	case line := <-response:
+		require.NoError(t, <-readErr)
+		var msg Message
+		require.NoError(t, json.Unmarshal(line, &msg), "decode response %s", line)
 		require.Empty(t, msg.Error, "the pull should settle as cancelled, not fail")
 		assertPullStatus(t, msg.Result, "cancelled")
 	case <-time.After(10 * time.Second):
