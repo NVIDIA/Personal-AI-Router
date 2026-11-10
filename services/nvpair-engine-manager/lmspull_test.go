@@ -469,6 +469,29 @@ func TestLMSPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T) {
 	assertPresent(t, partial)
 }
 
+// A download the action timeout stopped says so. The CLI confirms that
+// interrupt as it does a cancel's, and the frame the download ended on used to
+// give the bare "context canceled" it was stopped with as the reason.
+func TestLMSPull_ReportsTheActionTimeoutThatStoppedIt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	modelsDir := t.TempDir()
+	partial := filepath.Join(modelsDir, "owner", "repo", "downloading_repo-Q4_K_M.gguf.part")
+	ex := newLMSPullExecutor(t, modelsDir, append(fakeDownloadArgv("canceldownload"), partial, "{model}")...)
+	ex.actionTimeout = 2 * time.Second
+	events, unsubscribe := ex.progress.subscribe("fake")
+	defer unsubscribe()
+
+	_, err := ex.PullModelStream(ctx, "fake", "owner/repo", nil)
+
+	assert.ErrorContains(t, err, "the download did not finish within 2s")
+	assert.NotErrorIs(t, err, context.Canceled)
+	frames := publishedFrames(events)
+	require.NotEmpty(t, frames, "the pull published no frames")
+	assert.Equal(t, "error", frames[len(frames)-1].Stage)
+	assert.Contains(t, frames[len(frames)-1].Message, "the download did not finish within 2s")
+}
+
 // Only a cancellation the CLI confirmed is known to have stopped LM Studio's
 // transfer: a CLI that exited without answering the background-download prompt
 // may have left the daemon fetching. Reporting that as "cancelled" would tell

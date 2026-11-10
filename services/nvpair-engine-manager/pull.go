@@ -141,7 +141,7 @@ func (e *Executor) pullModelStream(ctx context.Context, engine, model string, pa
 	}
 
 	if act.ModelResolution == modelResolutionLMSGet {
-		actionCtx, cancel := context.WithTimeout(ctx, e.actionTimeout)
+		actionCtx, cancel := context.WithTimeoutCause(ctx, e.actionTimeout, fmt.Errorf("the download did not finish within %s", e.actionTimeout))
 		defer cancel()
 		return e.pullLMSModel(actionCtx, st, engine, model)
 	}

@@ -233,6 +233,12 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 		}
 		return nil, context.Canceled
 	}
+	// A context that died on its own reports why — above all the action
+	// timeout — rather than the bare cancellation the CLI was stopped with. A
+	// stop the CLI did not confirm keeps its own report.
+	if err != nil && ctx.Err() != nil && !cancelRequested(ctx) && !errors.As(err, new(stopUnconfirmedError)) {
+		return nil, pullStopped(ctx, model)
+	}
 	return result, err
 }
 
