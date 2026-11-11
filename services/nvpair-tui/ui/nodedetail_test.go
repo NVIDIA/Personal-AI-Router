@@ -1340,22 +1340,34 @@ func TestDownloadCancel_StopTheRouterDidNotConfirmEndsTheDownload(t *testing.T) 
 	assert.Contains(t, d.status.render(), "failed: could not confirm download stopped")
 }
 
-// A cancel's acknowledgement says the download settled, not how. One that
-// finished or failed just as the cancel arrived has already reported that on
-// its own frame, and calling it cancelled afterwards said the opposite.
+// A cancel's acknowledgement says the download settled, not how, and a cancel
+// past its reply deadline says nothing about it. One that finished or failed
+// just as the cancel arrived has already reported that on its own frame, and
+// calling it cancelled, or still being cancelled, afterwards said the opposite.
 func TestDownloadCancel_KeepsTheOutcomeOfADownloadThatEndedFirst(t *testing.T) {
+	replies := []struct {
+		name string
+		msg  cancelPullMsg
+	}{
+		{"the cancel is acknowledged", cancelPullMsg{engine: "ollama", model: "llama3.2"}},
+		{"the cancel passes its reply deadline", cancelPullMsg{engine: "ollama", model: "llama3.2", detached: true}},
+	}
 	test := func(name, stage, want string) {
 		t.Run(name, func(t *testing.T) {
-			d := localDetail()
-			d.pane = detailModels
-			d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+			for _, reply := range replies {
+				t.Run(reply.name, func(t *testing.T) {
+					d := localDetail()
+					d.pane = detailModels
+					d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
 
-			d.update(pullFramePush(t, d, "ollama", "llama3.2", stage))
-			d.update(detailReply{node: d.node.key, msg: cancelPullMsg{engine: "ollama", model: "llama3.2"}})
+					d.update(pullFramePush(t, d, "ollama", "llama3.2", stage))
+					d.update(detailReply{node: d.node.key, msg: reply.msg})
 
-			got := d.status.render()
-			assert.Contains(t, got, want)
-			assert.NotContains(t, got, "cancelled")
+					got := d.status.render()
+					assert.Contains(t, got, want)
+					assert.NotContains(t, got, "cancelled")
+				})
+			}
 		})
 	}
 	test("a download that completed", "success", "download llama3.2 (Ollama): done")

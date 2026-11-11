@@ -1153,7 +1153,8 @@ func (d *nodeDetail) settlePull(msg pullDoneMsg) {
 //
 // An acknowledgement says the download settled, not how. One that finished, or
 // failed, just as the cancel arrived is acknowledged too, after its outcome
-// frame has retired it and said what happened; that outcome stays on screen.
+// frame has retired it and said what happened; that outcome stays on screen,
+// as it does when the cancel's reply deadline passes after it.
 func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
 	what := d.downloadLabel(msg.engine, msg.model)
 	dl := detailDownload{engine: msg.engine, model: msg.model}
@@ -1165,7 +1166,7 @@ func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
 		return
 	}
 	switch {
-	case msg.detached:
+	case msg.detached && inFlight:
 		d.status.info("download %s is still being cancelled - watch for progress", what)
 	case msg.err != nil:
 		d.status.error("cancel download %s failed: %s", what, msg.err)
