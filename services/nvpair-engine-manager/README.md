@@ -293,9 +293,11 @@ if its synchronous call already timed out; a request that joins a download
 already in flight shares that download's frames rather than adding its own, as
 does a request a cancel stopped before it started while another download of
 that model is still registered, or once the model's outcome has been reported
-while the request was outstanding. Such a request answers `cancelled`, unless
-a download installed the model meanwhile, in which case it answers with that
-download's result. A peer's progress hub drops frames a slow
+while the request was outstanding. Such a request settles as one joined to the
+download the cancel stopped along with it would, once that download has
+stopped and with how it ended, or answers `cancelled` when the cancel found no
+download running. Either way, if a download installed the model meanwhile, it
+answers with that download's result. A peer's progress hub drops frames a slow
 stream has no room for, the terminal one included, and streams one download's
 frames to every pull that shares it, and to no other. So a remote initiator
 holds back the terminal frame a stream carries, and only the last of the

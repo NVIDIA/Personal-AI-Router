@@ -607,14 +607,33 @@ func TestTrackedPull_CancelledDuplicateAddsNoSecondTerminalFrame(t *testing.T) {
 	// The cancel marks the outstanding requests before it stops the download,
 	// so once cleanup starts the duplicate's request is already cancelled.
 	<-cleaningUp
+	duplicateRan := make(chan struct{})
+	duplicateDone := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(duplicate, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+			close(duplicateRan)
+			return succeedingPull(runCtx)
+		})
+		duplicateDone <- got
+	}()
+	// The duplicate settles on the download it would have joined, so it waits
+	// for that download's cleanup, as the cancel does.
+	require.Eventually(t, func() bool { return ex.claimedDownload(duplicate)() != 0 },
+		10*time.Second, time.Millisecond, "the duplicate never settled on the stopped download")
 
-	duplicateResult, duplicateRan := claimedPull(t, ex, duplicate)
 	close(finishCleanup)
 	require.NoError(t, <-cancelled)
 	downloadGot := <-download
+	duplicateGot := awaitOutcome(t, ctx, duplicateDone)
 
-	assert.False(t, duplicateRan, "the cancelled duplicate started a download")
-	assertPullStatus(t, duplicateResult, "cancelled")
+	select {
+	case <-duplicateRan:
+		assert.Fail(t, "the cancelled duplicate started a download")
+	default:
+	}
+	require.NoError(t, duplicateGot.err)
+	assertPullStatus(t, duplicateGot.result, "cancelled")
 	require.NoError(t, downloadGot.err)
 	assertPullStatus(t, downloadGot.result, "cancelled")
 	assert.Equal(t, []ProgressEvent{
@@ -671,6 +690,82 @@ func TestTrackedPull_CancelledDuplicateOfAFinishedDownloadSettlesOnItsSuccess(t 
 	assert.Equal(t, []ProgressEvent{
 		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo", Download: 1},
 	}, publishedFrames(events), "the model's download ended once")
+}
+
+// A duplicate request still on its way to the executor when the user cancels
+// is stopped along with the download it would have joined, and settles as a
+// joined request does: once that download has stopped, with how it ended. A
+// duplicate that answered "cancelled" sooner said a model the download
+// finished installing as it was stopped was not there, and that a download
+// its engine could not confirm had stopped was no longer running.
+func TestTrackedPull_CancelledDuplicateSettlesOnTheOutcomeOfTheDownloadItDuplicated(t *testing.T) {
+	// duplicateStoppedWith runs a download that ends with stopped once a
+	// cancel reaches it, and a duplicate that reaches the executor after the
+	// cancel, while the download is still stopping. It returns how each ended,
+	// failing if the duplicate answers before the download has.
+	duplicateStoppedWith := func(t *testing.T, stopped func(context.Context) (json.RawMessage, error)) (download, duplicate outcome) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+		downloading := make(chan struct{})
+		stopping := make(chan struct{})
+		finish := make(chan struct{})
+		downloadDone := make(chan outcome, 1)
+		go func() {
+			var got outcome
+			got.result, got.err = ex.trackedPull(ctx, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+				close(downloading)
+				<-runCtx.Done()
+				close(stopping)
+				<-finish
+				return stopped(runCtx)
+			})
+			downloadDone <- got
+		}()
+		<-downloading
+		request, release := ex.claimPull(ctx, "ollama", "demo")
+		defer release()
+		cancelled := make(chan error, 1)
+		go func() { cancelled <- ex.CancelModelPull(ctx, "ollama", "demo") }()
+		// The cancel marks the outstanding requests before it stops the
+		// download, so once the download is stopping the duplicate is cancelled.
+		<-stopping
+		duplicateDone := make(chan outcome, 1)
+		go func() {
+			var got outcome
+			got.result, got.err = ex.trackedPull(request, "ollama", "demo", func(context.Context) (json.RawMessage, error) {
+				return nil, errors.New("the cancelled duplicate started a download")
+			})
+			duplicateDone <- got
+		}()
+		select {
+		case got := <-duplicateDone:
+			require.FailNow(t, "the duplicate answered before the download it duplicated had stopped", "result %s, error %v", got.result, got.err)
+		case <-time.After(100 * time.Millisecond):
+		}
+
+		close(finish)
+		<-cancelled
+		return awaitOutcome(t, ctx, downloadDone), awaitOutcome(t, ctx, duplicateDone)
+	}
+
+	t.Run("the download finishes as it is stopped", func(t *testing.T) {
+		download, duplicate := duplicateStoppedWith(t, succeedingPull)
+
+		require.NoError(t, download.err)
+		assertPullStatus(t, download.result, "success")
+		assert.Equal(t, download, duplicate)
+	})
+	t.Run("the engine cannot confirm the download stopped", func(t *testing.T) {
+		unconfirmed := stopUnconfirmed(errors.New("the engine did not confirm the download stopped"))
+		download, duplicate := duplicateStoppedWith(t, func(context.Context) (json.RawMessage, error) {
+			return nil, unconfirmed
+		})
+
+		require.ErrorIs(t, download.err, unconfirmed)
+		assert.Equal(t, download, duplicate)
+	})
 }
 
 // A retry waiting for the cancelled download it replaces to stop can be

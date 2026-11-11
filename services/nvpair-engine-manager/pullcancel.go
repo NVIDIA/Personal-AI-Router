@@ -94,8 +94,11 @@ type pullClaim struct {
 	key      pullKey
 	executor *Executor
 	// cancelled is set by a cancel that found this request outstanding, and
-	// stops it before it starts a download. Guarded by the executor's pullMu.
+	// stops it before it starts a download. stopped is the model's download the
+	// first such cancel to find one registered stopped along with it, whose
+	// outcome the request settles on. Guarded by the executor's pullMu.
 	cancelled bool
+	stopped   *activePull
 	// reported is set once the model's terminal frame goes out while this
 	// request is outstanding, so its client has heard how the model's download
 	// ended. installed and result keep that download's result if it installed
@@ -223,10 +226,13 @@ func (e *Executor) CancelModelPull(ctx context.Context, engine, model string) er
 func (e *Executor) latchPullCancel(engine, model string) func(context.Context) error {
 	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
+	p := e.pulls[key]
 	for _, claim := range e.pullClaims[key] {
 		claim.cancelled = true
+		if claim.stopped == nil {
+			claim.stopped = p
+		}
 	}
-	p := e.pulls[key]
 	if p != nil {
 		p.requested.Store(true)
 		p.cancel()
@@ -265,6 +271,13 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// it before it starts. Only the request's own claim counts, so a cancel
 		// aimed at an earlier request for the same model cannot stop this one.
 		//
+		// A download of the model the cancel stopped along with this request
+		// is one the request settles on, as a request joined to it does: once
+		// it has stopped, with how it ended. It can finish installing the
+		// model as it is stopped, or end on a stop its engine could not
+		// confirm, and "cancelled" sooner would deny either. A model installed
+		// meanwhile is the answer instead, as below.
+		//
 		// Frames name only the engine and model, so while a download of this
 		// model is registered — the cancelled one still settling, or a retry
 		// accepted after the cancel — the model's frames are that download's.
@@ -277,6 +290,11 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// though the request had joined it: "cancelled" would say the model is
 		// not there.
 		if claim != nil && claim.key == key && claim.cancelled {
+			if stopped := claim.stopped; stopped != nil && !claim.installed {
+				claim.runsAs(key, stopped)
+				e.pullMu.Unlock()
+				return joinPull(ctx, stopped)
+			}
 			if _, registered := e.pulls[key]; registered || claim.reported {
 				installed, result := claim.installed, claim.result
 				e.pullMu.Unlock()
