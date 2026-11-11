@@ -453,12 +453,15 @@ after being asked; its partial files stay in the Hugging Face cache, shared
 with vLLM's own downloads and every other Hugging Face client, for the next
 download to resume. A tool still running 10 seconds after the kill is
 abandoned and the cancellation fails, since the download may still be running;
-a download the tool finished as it was being stopped stands. A stop that could
-not be confirmed, on LM Studio, llama.cpp, or vLLM, keeps failing: cancelling
-that model again reports the same failure, rather than answering as a cancel
-for nothing, until the model is requested again. Only a cancellation someone
-requested removes files: a pull interrupted by app shutdown, a dropped remote
-connection, or the action timeout leaves its partial data resumable.
+a download the tool finished as it was being stopped stands. A cancellation
+that arrives while the tool is still fetching the repository's weight index,
+before any weights, kills it at once and settles as cancelled, waiting at most
+5 seconds on a process the tool started that keeps its output open. A stop that
+could not be confirmed, on LM Studio, llama.cpp, or vLLM, keeps failing:
+cancelling that model again reports the same failure, rather than answering as
+a cancel for nothing, until the model is requested again. Only a cancellation
+someone requested removes files: a pull interrupted by app shutdown, a dropped
+remote connection, or the action timeout leaves its partial data resumable.
 
 Cleanup looks for partial files only where the engine-manager knows the engine
 writes them. For LM Studio that is the manifest's `models_dir`

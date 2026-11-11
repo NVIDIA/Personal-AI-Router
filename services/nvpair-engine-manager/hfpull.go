@@ -465,9 +465,14 @@ func (e *Executor) fetchHFMetadata(ctx context.Context, st *engineState, hubDir,
 
 // fetchHFIndex downloads a repository's weight index ahead of its weights, as
 // vLLM's own download does, and returns the shards it lists, so a Pull fetches
-// only the copy of the weights vLLM loads.
+// only the copy of the weights vLLM loads. A cancel kills the tool, and a
+// helper still holding the tool's output is waited on for at most
+// downloadWaitDelay. All it could still be fetching is the index, so the
+// cancel is not failed as unconfirmed the way one whose download outlives its
+// kill is.
 func (e *Executor) fetchHFIndex(ctx context.Context, tool, hubDir, id, index string, env hfEnv) ([]string, error) {
 	cmd := exec.CommandContext(ctx, tool, "download", id, index, "--cache-dir", hubDir)
+	cmd.WaitDelay = downloadWaitDelay
 	cmd.Env = os.Environ()
 	for key, value := range env.toolEnv() {
 		cmd.Env = append(cmd.Env, key+"="+value)

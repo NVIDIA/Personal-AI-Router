@@ -242,12 +242,12 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 	return result, err
 }
 
-// downloadWaitDelay bounds how long Wait blocks on the stdio pipes after the
-// CLI itself has exited. `lms` commonly ships as a shim that execs Node, so the
-// process actually writing bytes is a grandchild; one that outlives the signal
-// keeps the inherited pipe open and would otherwise park Wait forever, wedging
-// every queued pull for that engine. It is set here rather than per platform
-// because that parked Wait is not platform-specific.
+// downloadWaitDelay bounds how long Wait blocks on the stdio pipes after a
+// download tool itself has exited. `lms` commonly ships as a shim that execs
+// Node, so the process actually writing bytes is a grandchild; one that
+// outlives the signal keeps the inherited pipe open and would otherwise park
+// Wait forever, wedging every queued pull for that engine. It is set here
+// rather than per platform because that parked Wait is not platform-specific.
 const downloadWaitDelay = 5 * time.Second
 
 func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownloadOutput) (string, error) {

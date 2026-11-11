@@ -534,7 +534,10 @@ downloads and every other Hugging Face client share, for the next download of
 the model to resume. A tool still running 10 seconds after the kill is
 abandoned rather than waited on, and the cancel fails, since the download may
 still be running. A download the tool finished as it was being stopped stands,
-and its pull reports the model installed.
+and its pull reports the model installed. A cancel that arrives while the tool
+is still fetching the repository's weight index, before any weights, kills it
+at once and settles as cancelled, waiting at most 5 seconds on a process the
+tool started that keeps its output open.
 
 A stop that could not be confirmed — an LM Studio download its CLI did not
 confirm stopping, a llama.cpp download its router did not confirm stopping, or

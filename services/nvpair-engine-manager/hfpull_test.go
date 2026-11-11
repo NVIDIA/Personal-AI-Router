@@ -400,6 +400,20 @@ perl -e 'setpgrp(0, 0); open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; cl
 exec sleep 30
 `
 
+// killFakeHFHelper kills the helper whose PID a fake tool wrote to pidFile, so
+// a test whose helper outlives the tool leaves nothing running.
+func killFakeHFHelper(pidFile string) {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+		if helper, err := os.FindProcess(pid); err == nil {
+			_ = helper.Kill()
+		}
+	}
+}
+
 // A tool that cannot be reaped is given up on once killed, rather than waited
 // on for good with the cancel's reply and every download queued behind it. It
 // may still be transferring, so the cancel fails as LM Studio's does, deletes
@@ -410,17 +424,7 @@ func TestPullHFModel_CancelFailsWhenTheToolCannotBeReaped(t *testing.T) {
 	defer cancel()
 	partial := filepath.Join(hub, "models--Qwen--Test", "blobs", "w.incomplete")
 	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
-	t.Cleanup(func() {
-		data, err := os.ReadFile(helperPID)
-		if err != nil {
-			return
-		}
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			if helper, err := os.FindProcess(pid); err == nil {
-				_ = helper.Kill()
-			}
-		}
-	})
+	t.Cleanup(func() { killFakeHFHelper(helperPID) })
 	done := make(chan outcome, 1)
 	go func() {
 		var got outcome
@@ -479,6 +483,49 @@ func TestPullHFModel_CancelKeepsADownloadThatFinishedAsItWasStopped(t *testing.T
 	require.NoError(t, json.Unmarshal(got.result, &result))
 	assert.Equal(t, "Qwen/Test", result.Model)
 	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "success", Percent: 100}}, pullOutcomes(*events))
+}
+
+// fakeHFIndexFetchWithAHelper fetches the weight index with a helper that
+// still holds the tool's output once the tool is killed, as a grandchild of a
+// real tool can. The helper writes its PID once it is running.
+const fakeHFIndexFetchWithAHelper = `
+perl -e 'open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 60' "$(dirname "$0")/helper.pid" &
+exec sleep 60
+`
+
+// A cancel while the tool is still fetching the weight index kills it and
+// settles as cancelled within downloadWaitDelay, rather than waiting on a
+// helper that still holds the tool's output, with the cancel's reply and every
+// download queued behind it. All the helper could still be fetching is the
+// index, so the cancel does not fail as one that outlives a download's kill does.
+func TestPullHFModel_CancelDuringTheIndexFetchIsNotHeldUpByAHelper(t *testing.T) {
+	file := func(name string) hfSibling { return hfSibling{RFilename: name, Size: 10} }
+	e, hub, events := hfPullFixture(t, []hfSibling{
+		file("config.json"), file("tokenizer.json"),
+		file("model-00001-of-00002.safetensors"), file("model-00002-of-00002.safetensors"),
+		file("model.safetensors.index.json"),
+	}, http.StatusOK, fakeHFIndexFetchWithAHelper)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() { killFakeHFHelper(helperPID) })
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(helperPID)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the index fetch never started")
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"), "the cancel waited on the helper")
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "cancelled"}}, pullOutcomes(*events))
 }
 
 // A vllm on PATH is often a link into the environment it was installed in, as
