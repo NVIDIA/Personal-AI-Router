@@ -176,4 +176,27 @@ describe('model download cancellation', () => {
         state.setModelPullCanceling('vllm', 'Qwen/Test', false)
         expect(events.at(-1)).toMatchObject({ status: 'success', percent: 100 })
     })
+
+    // A cancel can arrive after a download's last frame, which its row shows
+    // until the awaited pull clears it. Nothing is left to stop, and
+    // "Canceling" would hide how the download ended.
+    it('leaves a download that has already ended showing how it ended', () => {
+        const state = getModularBridgeState()
+        state.setSelfId('local-node')
+        const events: EngineProgress[] = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload)
+        })
+        state.beginModelPull('vllm', 'Qwen/Test')
+        state.applyLocalEngineProgress({
+            engine: 'vllm',
+            model: 'Qwen/Test',
+            op: 'pull',
+            stage: 'success',
+            percent: 100
+        })
+
+        expect(state.setModelPullCanceling('vllm', 'Qwen/Test', true)).toBe(false)
+        expect(events.at(-1)).toMatchObject({ status: 'success', percent: 100 })
+    })
 })

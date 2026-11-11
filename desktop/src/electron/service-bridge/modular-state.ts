@@ -2311,11 +2311,13 @@ class ModularBridgeState {
      * Move a tracked download into or out of "Canceling", remembering the
      * status it had so a rejected cancel can restore it.
      *
-     * Returns false only when there is no such download to mark. It is not the
-     * guard against concurrent cancels — the supervisor holds that for as long
-     * as it awaits a reply, because a cancel that outlives its budget is still
-     * running and the row must stay in "Canceling" while the user remains able
-     * to ask again.
+     * Returns false only when there is no download left to mark: none is
+     * tracked, or its row already shows how it ended, which "Canceling" would
+     * hide until the awaited pull clears it. It is not the guard against
+     * concurrent cancels — the supervisor holds that for as long as it awaits
+     * a reply, because a cancel that outlives its budget is still running and
+     * the row must stay in "Canceling" while the user remains able to ask
+     * again.
      */
     setModelPullCanceling(
         engineType: EngineType,
@@ -2327,6 +2329,7 @@ class ModularBridgeState {
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const existing = this.activePulls.get(key)
         if (!existing) return false
+        if (canceling && isEnginePullOutcome(existing)) return false
         const remembered = this.cancelingPulls.get(key)
         if (canceling) {
             // Record the pre-cancel status on the first cancel only. A retry
