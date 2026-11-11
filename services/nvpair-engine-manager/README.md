@@ -325,7 +325,8 @@ watchdog, so an active download may run longer than 30 minutes; duplicate
 progress frames and heartbeats do not extend a stalled pull. CLI-driven pulls
 without structured byte progress retain the fixed 30-minute action timeout, and
 a pull stopped by that timeout fails saying the download did not finish within
-it.
+it. If LM Studio's CLI did not confirm that stop, the pull instead fails saying
+so, since the download may still be running.
 
 For llama.cpp, an accepted pull that ends before a matching `download_finished`
 or `download_failed` event stops the active download. This includes caller
