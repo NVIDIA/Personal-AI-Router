@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -148,7 +149,7 @@ func (m *Manager) probeCustom(tc *trackedCustom) {
 			tc.models = nil
 		}
 	}
-	changed := prevHealthy != tc.healthy || !sliceEqual(prevModels, tc.models)
+	changed := prevHealthy != tc.healthy || !slices.Equal(prevModels, tc.models)
 	fails := tc.consecutiveFails
 	status := CustomEndpointStatus{
 		ID:      entry.key(),
