@@ -39,9 +39,10 @@ inventory, plus llama.cpp's downloads and load/unload actions; vLLM serves one
 model per process, so loading another downloaded model restarts it on that model. `--proxy-engines` can still restrict the
 facades a standalone broker or TUI starts.
 
-The fourth facade, Custom, fronts user-configured endpoints instead of a local
+The fifth facade, Custom, fronts user-configured endpoints instead of a local
 engine: external OpenAI-compatible servers added by URL with an explicit port,
-exposed on `http://localhost:8000`. There is nothing to install, start, or
+exposed on `http://localhost:6767` — clear of the `8000`/`8001` pair vLLM
+occupies. There is nothing to install, start, or
 adopt — the endpoint set is configuration held by the broker, health is probed
 through each endpoint's `/v1/models`, and a failing probe takes an endpoint out
 of routing and advertisement until it recovers.

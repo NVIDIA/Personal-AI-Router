@@ -10,7 +10,7 @@
 // whose TXT map carries a schema version, the node's identity, its LAN address,
 // and one compact key per local service port, e.g.:
 //
-//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;lc=8080;vl=8000;cu=8002;er=14319;wl=14320;cl=14321;em=14322
+//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;lc=8080;vl=8000;cu=6767;er=14319;wl=14320;cl=14321;em=14322
 //
 // Design decisions this package encodes:
 //   - SRV port is a fixed, NON-authoritative constant; consumers ignore it and

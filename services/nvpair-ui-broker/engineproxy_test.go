@@ -65,12 +65,12 @@ func TestBrokerConstants_MatchCanonicalEngineTable(t *testing.T) {
 	}
 	test("ollama", managedOllamaFacadePort, managedOllamaBackendStart, portOwnershipBlockedID)
 	test("lmstudio", managedLMStudioFacadePort, managedLMStudioBackendStart, lmstudioPortOwnershipBlockedID)
-	// Literal 8002/0 (not restated constants): custom ships no broker-side
+	// Literal 6767/0 (not restated constants): custom ships no broker-side
 	// port constant, so the shared table's values are asserted directly.
 	// The wire prefix is pinned here as a literal because it is a cross-
 	// process name; its absence would make peer addressing of the custom
 	// facade silently unresolvable.
-	test("custom", 8002, 0, "custom-proxy:port-ownership-blocked")
+	test("custom", 6767, 0, "custom-proxy:port-ownership-blocked")
 	assert.Equal(t, ollamaProxyProfile.ComponentName()+":port-bumped", proxyPortBumpedID, "bumped error id")
 }
 

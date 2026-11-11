@@ -131,10 +131,10 @@ func TestCustomRelayAdd_SelfForwardGuardReadsOwnerFacades(t *testing.T) {
 	fake := newCustomOwnerEmFaker(t, b)
 	fake.attach(t, b)
 
-	// 127.0.0.1:8002 is this node's own Custom facade port: the origin's
+	// 127.0.0.1:6767 is this node's own Custom facade port: the origin's
 	// view of its machine is irrelevant, the guard is evaluated against the
 	// target's facades.
-	fake.inject(t, `{"id":"op1","op":"add","request":{"url":"http://127.0.0.1","port":8002},"caller":"urn:nvpair:node:peer-a"}`)
+	fake.inject(t, `{"id":"op1","op":"add","request":{"url":"http://127.0.0.1","port":6767},"caller":"urn:nvpair:node:peer-a"}`)
 
 	reply, _ := fake.reply(t)
 	require.NotEmpty(t, reply.Error, "loopback aimed at the owner's facade port must be refused")

@@ -605,7 +605,7 @@ lists them on a node's detail screen and changes nothing.
 
 What Custom shares with the managed engines is the routing plumbing:
 
-- The proxy fronts it with a facade of its own, on port `8002` by default —
+- The proxy fronts it with a facade of its own, on port `6767` by default —
   clear of the `8000`/`8001` pair vLLM occupies, because a facade parked on a
   sibling engine's port can neither route to it nor let that engine start. A
   request naming a model listed under `custom`
@@ -637,7 +637,7 @@ A default installation listens on these ports:
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
 | `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
 | `8000` | OpenAI-compatible vLLM proxy (managed `vllm serve` on `8001`) |
-| `8002` | OpenAI-compatible Custom proxy (user-configured external endpoints, no local engine behind it) |
+| `6767` | OpenAI-compatible Custom proxy (user-configured external endpoints, no local engine behind it) |
 | `14318` | Public hardware displays and peer node inventory |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |

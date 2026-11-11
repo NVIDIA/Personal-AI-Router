@@ -45,7 +45,7 @@ import (
 // successful custom/set-port. Running says which kind of number Port is: true
 // means a live facade is listening there, false means it is where the facade
 // will land when it comes up (a planned fallback, or the persisted or stock
-// port). The UI prints both the same way and says so, because "8002, nothing
+// port). The UI prints both the same way and says so, because "6767, nothing
 // listening" is a fact the operator can act on and pretending otherwise would
 // advertise a port that answers nothing.
 type customProxyPortState struct {

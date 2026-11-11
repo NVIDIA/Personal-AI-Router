@@ -284,7 +284,7 @@ func TestCustomGetPort_NoFacadeAnswersStockPortAsNotListening(t *testing.T) {
 	// nothing.
 	resp := customCall(t, b, client, "custom/get-port", `{}`)
 	require.Nil(t, resp.Error, "port read without a proxy")
-	assert.JSONEq(t, `{"port":8002,"running":false}`, string(resp.Result))
+	assert.JSONEq(t, `{"port":6767,"running":false}`, string(resp.Result))
 }
 
 func TestCustomGetPort_PersistedPortAnswersAfterARestart(t *testing.T) {

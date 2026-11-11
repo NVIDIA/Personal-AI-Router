@@ -174,14 +174,14 @@ func TestCustomAdd_RejectsMissingOrMismatchedPort(t *testing.T) {
 func TestCustomAdd_RejectsLoopbackEndpointOnAFrontedFacadePort(t *testing.T) {
 	b, client, path := customTestBroker(t, nil)
 
-	// 8002 is the Custom facade default, 8000 vLLM's, and 11434 the Ollama
+	// 6767 is the Custom facade default, 8000 vLLM's, and 11434 the Ollama
 	// facade port: an endpoint whose URL is this node's own proxy is a
 	// self-forward loop regardless of whether that facade is currently bound,
 	// and the proxy's own self/alias guard behind it is defense-in-depth, not
 	// permission.
 	for _, params := range []string{
-		`{"url":"http://127.0.0.1","port":8002}`,
-		`{"url":"http://localhost","port":8002}`,
+		`{"url":"http://127.0.0.1","port":6767}`,
+		`{"url":"http://localhost","port":6767}`,
 		`{"url":"http://127.0.0.1","port":8000}`,
 		`{"url":"http://127.0.0.1","port":11434}`,
 	} {
