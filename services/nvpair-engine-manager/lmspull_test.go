@@ -287,6 +287,21 @@ func TestRunLMSDownloadCommand_ConfirmsACancellationOnlyWhenTheCLIDoes(t *testin
 	fails("the CLI ignores the interrupt", "downloadignoresinterrupt", "did not confirm download cancellation")
 }
 
+// A process `lms get` starts can outlive it still holding the output it
+// inherited, so Wait stops reading that output downloadWaitDelay after the CLI
+// exits. The CLI's own exit decides the run: failing a download it finished
+// would have the user fetch the model again.
+func TestRunLMSDownloadCommand_SucceedsWhenTheCLILeavesAHelperBehind(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "helper.pid")
+	t.Cleanup(func() { killFakeHelper(pidFile) })
+	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
+
+	text, err := runLMSDownloadCommand(context.Background(), append(fakeDownloadArgv("downloadleavesahelper"), pidFile), output)
+
+	require.NoError(t, err, "the helper failed a download the CLI completed")
+	assert.Contains(t, text, "Download completed.")
+}
+
 // An interrupt that cannot be delivered leaves the CLI's state unknown, so the
 // only safe report is a failed cancel — unless the run had in fact already
 // finished, which its reaped result still proves. A process that has been

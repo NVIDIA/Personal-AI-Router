@@ -287,6 +287,12 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 	var runErr error
 	go func() {
 		runErr = cmd.Wait()
+		// Wait reports ErrWaitDelay only for a CLI that exited cleanly while
+		// something it started still held its output, so the CLI's own exit
+		// decides the run.
+		if errors.Is(runErr, exec.ErrWaitDelay) {
+			runErr = nil
+		}
 		close(exited)
 	}()
 	select {

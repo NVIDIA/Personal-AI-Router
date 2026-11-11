@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -200,6 +201,24 @@ func main() {
 			// runtime's deadlock condition, and that panic would exit the very
 			// process this case needs to outlive its interrupt.
 			time.Sleep(time.Hour)
+			os.Exit(2)
+		case "downloadleavesahelper": // stand in for an `lms get` that finishes
+			// while a process it started keeps its output open, and write that
+			// process's PID so the test can stop it.
+			// args: downloadleavesahelper <percent> <pidfile>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			reportDownloadProgress()
+			helper := exec.Command(os.Args[0], "holdoutput")
+			helper.Stdout, helper.Stderr = os.Stdout, os.Stderr
+			if helper.Start() != nil || os.WriteFile(os.Args[3], []byte(strconv.Itoa(helper.Process.Pid)), 0o644) != nil {
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stderr, "Download completed.")
+			return
+		case "holdoutput": // the helper downloadleavesahelper starts
+			time.Sleep(time.Minute)
 			os.Exit(2)
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
