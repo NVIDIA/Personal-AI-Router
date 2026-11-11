@@ -400,9 +400,9 @@ perl -e 'setpgrp(0, 0); open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; cl
 exec sleep 30
 `
 
-// killFakeHFHelper kills the helper whose PID a fake tool wrote to pidFile, so
+// killFakeHelper kills the helper whose PID a fake tool wrote to pidFile, so
 // a test whose helper outlives the tool leaves nothing running.
-func killFakeHFHelper(pidFile string) {
+func killFakeHelper(pidFile string) {
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		return
@@ -424,7 +424,7 @@ func TestPullHFModel_CancelFailsWhenTheToolCannotBeReaped(t *testing.T) {
 	defer cancel()
 	partial := filepath.Join(hub, "models--Qwen--Test", "blobs", "w.incomplete")
 	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
-	t.Cleanup(func() { killFakeHFHelper(helperPID) })
+	t.Cleanup(func() { killFakeHelper(helperPID) })
 	done := make(chan outcome, 1)
 	go func() {
 		var got outcome
@@ -485,30 +485,117 @@ func TestPullHFModel_CancelKeepsADownloadThatFinishedAsItWasStopped(t *testing.T
 	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "success", Percent: 100}}, pullOutcomes(*events))
 }
 
+// indexedRepo is a repository whose weights are shards listed by an index,
+// which a Pull fetches before the weights.
+var indexedRepo = []hfSibling{
+	{RFilename: "config.json", Size: 10}, {RFilename: "tokenizer.json", Size: 10},
+	{RFilename: "model-00001-of-00002.safetensors", Size: 10}, {RFilename: "model-00002-of-00002.safetensors", Size: 10},
+	{RFilename: "model.safetensors.index.json", Size: 10},
+}
+
 // fakeHFIndexFetchWithAHelper fetches the weight index with a helper that
-// still holds the tool's output once the tool is killed, as a grandchild of a
-// real tool can. The helper writes its PID once it is running.
+// holds the tool's output, as a grandchild of a real tool can. The helper
+// writes its PID once it is running.
 const fakeHFIndexFetchWithAHelper = `
 perl -e 'open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 60' "$(dirname "$0")/helper.pid" &
 exec sleep 60
 `
 
-// A cancel while the tool is still fetching the weight index kills it and
-// settles as cancelled within downloadWaitDelay, rather than waiting on a
-// helper that still holds the tool's output, with the cancel's reply and every
-// download queued behind it. All the helper could still be fetching is the
-// index, so the cancel does not fail as one that outlives a download's kill does.
-func TestPullHFModel_CancelDuringTheIndexFetchIsNotHeldUpByAHelper(t *testing.T) {
-	file := func(name string) hfSibling { return hfSibling{RFilename: name, Size: 10} }
-	e, hub, events := hfPullFixture(t, []hfSibling{
-		file("config.json"), file("tokenizer.json"),
-		file("model-00001-of-00002.safetensors"), file("model-00002-of-00002.safetensors"),
-		file("model.safetensors.index.json"),
-	}, http.StatusOK, fakeHFIndexFetchWithAHelper)
+// fakeHFIndexFetchWithAnEscapedHelper is fakeHFIndexFetchWithAHelper with a
+// helper that leaves the tool's process group, so stopping the group leaves
+// it running and still holding the tool's output.
+const fakeHFIndexFetchWithAnEscapedHelper = `
+perl -e 'setpgrp(0, 0); open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 60' "$(dirname "$0")/helper.pid" &
+exec sleep 60
+`
+
+// fakeHFHelperPID reads the PID a fake tool's helper wrote to pidFile.
+func fakeHFHelperPID(t *testing.T, pidFile string) int {
+	t.Helper()
+	data, err := os.ReadFile(pidFile)
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	require.NoError(t, err)
+	return pid
+}
+
+// A cancel while the tool is still fetching the weight index stops what the
+// tool started along with it. A helper left running could still be fetching
+// when the next download of the model starts.
+func TestPullHFModel_CancelDuringTheIndexFetchLeavesNoHelperRunning(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc to tell a killed helper from a running one")
+	}
+	e, hub, events := hfPullFixture(t, indexedRepo, http.StatusOK, fakeHFIndexFetchWithAHelper)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
-	t.Cleanup(func() { killFakeHFHelper(helperPID) })
+	t.Cleanup(func() { killFakeHelper(helperPID) })
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(helperPID)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the index fetch never started")
+	helper := fakeHFHelperPID(t, helperPID)
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "cancelled"}}, pullOutcomes(*events))
+	assert.True(t, waitGone(helper, 2*time.Second), "the helper the tool started is still running")
+}
+
+// fakeHFDownloadWithIndexLeavingAHelper is fakeHFDownloadWithIndex whose index
+// fetch exits cleanly while a helper it started still holds its output. The
+// helper writes its PID once it is running.
+const fakeHFDownloadWithIndexLeavingAHelper = fakeHFDownloadWithIndex + `
+if [ "$files" = " model.safetensors.index.json" ]; then
+  perl -e 'open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 60' "$(dirname "$0")/helper.pid" &
+fi
+`
+
+// A helper still holding the index fetch's output once the tool has exited
+// cleanly is cut off after downloadWaitDelay. The index the tool fetched
+// stands, so the weights are downloaded, and the helper is not left running.
+func TestPullHFModel_DownloadsWhenTheIndexFetchLeavesAHelperBehind(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc to tell a killed helper from a running one")
+	}
+	e, hub, _ := hfPullFixture(t, indexedRepo, http.StatusOK, fakeHFDownloadWithIndexLeavingAHelper)
+	t.Setenv("FAKE_HF_INDEX", `{"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}`)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() { killFakeHelper(helperPID) })
+
+	_, err := e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+
+	require.NoError(t, err, "the helper failed an index fetch that succeeded")
+	calls, err := os.ReadFile(filepath.Join(filepath.Dir(hub), "hf-calls"))
+	require.NoError(t, err)
+	assert.Equal(t, " model.safetensors.index.json\n config.json tokenizer.json model-00001-of-00002.safetensors model-00002-of-00002.safetensors model.safetensors.index.json\n", string(calls))
+	assert.True(t, waitGone(fakeHFHelperPID(t, helperPID), 2*time.Second), "the helper the index fetch left behind is still running")
+}
+
+// A cancel while the tool is still fetching the weight index settles as
+// cancelled within downloadWaitDelay, rather than waiting on a helper that
+// left the tool's process group and still holds its output, with the cancel's
+// reply and every download queued behind it. All the helper could still be
+// fetching is the index, so the cancel does not fail as one that outlives a
+// download's kill does.
+func TestPullHFModel_CancelDuringTheIndexFetchIsNotHeldUpByAHelper(t *testing.T) {
+	e, hub, events := hfPullFixture(t, indexedRepo, http.StatusOK, fakeHFIndexFetchWithAnEscapedHelper)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() { killFakeHelper(helperPID) })
 	done := make(chan outcome, 1)
 	go func() {
 		var got outcome

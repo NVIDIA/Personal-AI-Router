@@ -455,8 +455,11 @@ download to resume. A tool still running 10 seconds after the kill is
 abandoned and the cancellation fails, since the download may still be running;
 a download the tool finished as it was being stopped stands. A cancellation
 that arrives while the tool is still fetching the repository's weight index,
-before any weights, kills it at once and settles as cancelled, waiting at most
-5 seconds on a process the tool started that keeps its output open. A stop that
+before any weights, kills the tool's process group at once and settles as
+cancelled, waiting at most 5 seconds on a process that left the group and
+keeps the tool's output open. Whatever the index fetch leaves in the group is
+killed once the tool exits, and an index the tool fetched stands even if a
+process it started holds its output past those 5 seconds. A stop that
 could not be confirmed, on LM Studio, llama.cpp, or vLLM, keeps failing:
 cancelling that model again reports the same failure, rather than answering as
 a cancel for nothing, until the model is requested again. Only a cancellation

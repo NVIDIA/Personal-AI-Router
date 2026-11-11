@@ -465,19 +465,30 @@ func (e *Executor) fetchHFMetadata(ctx context.Context, st *engineState, hubDir,
 
 // fetchHFIndex downloads a repository's weight index ahead of its weights, as
 // vLLM's own download does, and returns the shards it lists, so a Pull fetches
-// only the copy of the weights vLLM loads. A cancel kills the tool, and a
-// helper still holding the tool's output is waited on for at most
-// downloadWaitDelay. All it could still be fetching is the index, so the
-// cancel is not failed as unconfirmed the way one whose download outlives its
-// kill is.
+// only the copy of the weights vLLM loads.
+//
+// The tool runs in a process group of its own. A cancel kills the group, and
+// whatever is left in it once the tool exits is killed then. A helper still
+// holding the tool's output is waited on for at most downloadWaitDelay, and
+// the tool's own exit decides the fetch. All a helper could still be fetching
+// is the index, so a cancel is not failed as unconfirmed the way one whose
+// download outlives its kill is.
 func (e *Executor) fetchHFIndex(ctx context.Context, tool, hubDir, id, index string, env hfEnv) ([]string, error) {
 	cmd := exec.CommandContext(ctx, tool, "download", id, index, "--cache-dir", hubDir)
+	configureSysProcAttr(cmd)
+	cmd.Cancel = func() error { return killDownload(cmd) }
 	cmd.WaitDelay = downloadWaitDelay
 	cmd.Env = os.Environ()
 	for key, value := range env.toolEnv() {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if cmd.Process != nil {
+		killGroupRemnants(cmd.Process.Pid)
+	}
+	// Wait reports ErrWaitDelay only for a tool that exited cleanly, unasked,
+	// while something it started still held its output.
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return nil, fmt.Errorf("download the weight index: %s", lastLines(string(out), hfErrorTail))
 	}
 	snapshot, ok := hfSnapshotDir(hubDir, id, "main")

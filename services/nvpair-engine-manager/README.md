@@ -535,9 +535,12 @@ the model to resume. A tool still running 10 seconds after the kill is
 abandoned rather than waited on, and the cancel fails, since the download may
 still be running. A download the tool finished as it was being stopped stands,
 and its pull reports the model installed. A cancel that arrives while the tool
-is still fetching the repository's weight index, before any weights, kills it
-at once and settles as cancelled, waiting at most 5 seconds on a process the
-tool started that keeps its output open.
+is still fetching the repository's weight index, before any weights, kills the
+tool's process group at once and settles as cancelled, waiting at most 5
+seconds on a process that left the group and keeps the tool's output open.
+Whatever the index fetch leaves in the group is killed once the tool exits, and
+an index the tool fetched stands even if a process it started holds its output
+past those 5 seconds.
 
 A stop that could not be confirmed — an LM Studio download its CLI did not
 confirm stopping, a llama.cpp download its router did not confirm stopping, or
