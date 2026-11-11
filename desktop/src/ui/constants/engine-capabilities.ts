@@ -37,6 +37,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
+        hasDeleteModel: true,
         // LM Studio answers /v1/models from an index it builds at startup and
         // exposes no rescan, so nvpair-engine-manager's delete_model restarts the
         // server. Deleting therefore interrupts inference and needs a warning.
