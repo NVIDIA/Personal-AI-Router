@@ -38,7 +38,7 @@ func TestCustom_IsAnUnmanagedEngineKind(t *testing.T) {
 	require.True(t, ok, "custom must be a declared engine")
 	assert.True(t, custom.Unmanaged, "custom is routing-only: no manifest, no launch lifecycle")
 	assert.Zero(t, custom.EnginePortBase, "no managed engine process sits behind the custom facade")
-	assert.Equal(t, 8002, custom.FacadePort)
+	assert.Equal(t, 6767, custom.FacadePort)
 	assert.Equal(t, "custom-proxy-port.json", custom.PortFile)
 	assert.Equal(t, noderec.ServiceCustom, custom.DiscoveryService)
 }

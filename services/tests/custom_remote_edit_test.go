@@ -137,7 +137,7 @@ func TestCustomRemoteEdit_TrustedPeerEdit_LandsInOwnerStoreAndKeepsKeyOffStreams
 	// Remote add: the whole chain, keyed. The nodeId is addressing and must
 	// not survive into the HTTP body; the add fields rebuild there.
 	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"custom:remote-add","params":`+
-		`{"nodeId":"nodeB","name":"lab","url":"`+customE2ENet+`","port":8000,"apiKey":"`+customE2EKey+`"}}`)
+		`{"nodeId":"nodeB","name":"lab","url":"`+customE2ENet+`","port":28000,"apiKey":"`+customE2EKey+`"}}`)
 	addResp := waitForResponse(t, aMsgs, 30*time.Second)
 	require.Nil(t, addResp.Error, "remote add errored: %+v", addResp.Error)
 	require.Contains(t, string(addResp.Result), `"keySet":true`,
@@ -163,7 +163,7 @@ func TestCustomRemoteEdit_TrustedPeerEdit_LandsInOwnerStoreAndKeepsKeyOffStreams
 	require.NotEmpty(t, store, "custom-endpoints.json never appeared on node B")
 	persisted, err := os.ReadFile(store)
 	require.NoError(t, err)
-	require.Contains(t, string(persisted), customE2ENet+":8000")
+	require.Contains(t, string(persisted), customE2ENet+":28000")
 	require.Contains(t, string(persisted), customE2EKey, "add did not persist at rest")
 
 	// Audit trail: the peer-driven change is logged by op/caller/id — never
@@ -176,7 +176,7 @@ func TestCustomRemoteEdit_TrustedPeerEdit_LandsInOwnerStoreAndKeepsKeyOffStreams
 	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":2,"method":"custom:remote-list","params":{"nodeId":"nodeB"}}`)
 	listResp := waitForResponse(t, aMsgs, 15*time.Second)
 	require.Nil(t, listResp.Error, "remote list errored: %+v", listResp.Error)
-	require.Contains(t, string(listResp.Result), customE2ENet+":8000")
+	require.Contains(t, string(listResp.Result), customE2ENet+":28000")
 	require.Contains(t, string(listResp.Result), `"keySet":true`)
 	require.NotContains(t, string(listResp.Result), customE2EKey)
 
@@ -230,7 +230,7 @@ func TestCustomRemoteEdit_UntrustedPeer_RefusedAndNothingLands(t *testing.T) {
 
 	customE2ESeedPeer(t, aStdin, uuidB)
 	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"custom:remote-add","params":`+
-		`{"nodeId":"nodeB","url":"`+customE2ENet+`","port":8000,"apiKey":"`+customE2EKey+`"}}`)
+		`{"nodeId":"nodeB","url":"`+customE2ENet+`","port":28000,"apiKey":"`+customE2EKey+`"}}`)
 	resp := waitForResponse(t, aMsgs, 30*time.Second)
 	require.NotNil(t, resp.Error, "an unpinned peer was allowed to attempt the edit")
 	require.NotContains(t, fmt.Sprint(resp.Error), customE2EKey,

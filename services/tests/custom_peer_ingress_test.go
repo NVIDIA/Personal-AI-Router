@@ -160,7 +160,7 @@ func TestCustomPeerInference_PairedRoutingResolvesEndpointsAtTheOwner(t *testing
 
 	// B owns the endpoints: one that demands its configured key, one open.
 	// Both live on high loopback ports so nothing collides with the custom
-	// facade's stock 8000 or with the facades' own bind.
+	// facade's default 6767 or with the facades' own bind.
 	keyPort := freePort(t)
 	plainPort := freePort(t)
 	keyed := newFakeEndpoint(t, keyPort, "custom-e2e/model-a", "Bearer sk-e2e")
@@ -192,7 +192,13 @@ func TestCustomPeerInference_PairedRoutingResolvesEndpointsAtTheOwner(t *testing
 	chatBody := func(model string) []byte {
 		return []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"stream":false}`, model))
 	}
-	newChatClient := func() *http.Client { return &http.Client{Timeout: 15 * time.Second} }
+	// The wait budget covers the proxy's designed retry cycle, not just a fast
+	// hop. A model no endpoint serves answers 502 at the owner, and the origin
+	// treats that as a failed dispatch: maxDispatchAttempts (5) with the
+	// backoff ladder (1+2+4+8 s, jittered) runs to ~20 s before the last 502
+	// surfaces. A 15 s client timeout sat below that bound and only passed
+	// when the jittered ladder happened to finish early.
+	newChatClient := func() *http.Client { return &http.Client{Timeout: 45 * time.Second} }
 
 	// 1. A paired request crosses the mTLS hop and reaches the endpoint that
 	//    declares its model, authenticated by the key configured on the OWNER.

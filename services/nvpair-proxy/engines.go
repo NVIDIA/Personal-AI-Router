@@ -231,10 +231,10 @@ func buildProfiles() []engineProfile {
 			// engine-manager never installs or launches it). Nothing is
 			// relocated onto an engine port, so there is no
 			// ReservedPersistedPort, and no inherited host variable for an
-			// alias to stand in for. 8002 keeps it clear of the 8000/8001
+			// alias to stand in for. 6767 keeps it clear of the 8000/8001
 			// pair vLLM occupies.
 			Engine:         custom,
-			StandalonePort: 8002,
+			StandalonePort: 6767,
 			Routes:         customRoutes,
 			ModelNaming:    exactID,
 		},

@@ -368,7 +368,7 @@ func TestCustomFacade_ModelListFanoutInjectsEndpointKeys(t *testing.T) {
 func TestCustomProfile_ClassifiesOpenAIRoutesWithExactIDs(t *testing.T) {
 	p := customProfileOrFail(t)
 
-	require.Equal(t, 8002, p.StandalonePort, "StandalonePort")
+	require.Equal(t, 6767, p.StandalonePort, "StandalonePort")
 	require.Equal(t, exactID, p.ModelNaming, "ModelNaming")
 	require.True(t, p.Unmanaged, "custom must stay declared Unmanaged so nothing tries to launch it")
 	require.Equal(t, noderec.ServiceCustom, p.DiscoveryService, "DiscoveryService")

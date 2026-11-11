@@ -12,7 +12,7 @@
 // Two behaviours, one per test:
 //
 //   - Configuration becomes routing: custom is fronted with no
-//     --proxy-engines override on its declared port 8000, configured
+//     --proxy-engines override on its declared port 6767, configured
 //     endpoints join the facade's routing set, and both a keyless and a
 //     key-gated endpoint route their exact model ids — while the discovery
 //     wire, which lists machines, stays free of endpoint entries.
@@ -35,7 +35,7 @@
 // The flap test intentionally runs the production probe cadence (10 s) three
 // times down and once up, so it is long by construction. Fake upstreams sit
 // on high ephemeral ports: the endpoint surface refuses endpoints aimed at
-// facade ports, and a facade whose default 8000 is already taken yields
+// facade ports, and a facade whose default 6767 is already taken yields
 // rather than evicting whatever holds it, so those hosts skip.
 package tests
 
@@ -306,8 +306,8 @@ func customCandidateID(port int) string {
 // its exact key, so a probe or inference call reaching it proves the key
 // travelled, and every Authorization it ever observed must be that key.
 func TestCustomChain_ConfiguredEndpoints_RouteThroughTheCustomFacade(t *testing.T) {
-	if portBusy(8000) {
-		t.Skip("custom facade default port 8000 already in use; skipping")
+	if portBusy(6767) {
+		t.Skip("custom facade default port 6767 already in use; skipping")
 	}
 	const (
 		openModel  = "custom-e2e/open-model"
@@ -331,7 +331,7 @@ func TestCustomChain_ConfiguredEndpoints_RouteThroughTheCustomFacade(t *testing.
 	// its declared port rather than a fallback — the port is explicit policy,
 	// never inferred.
 	facadePort := waitEngineProxyReady(t, "custom-proxy", stdin, msgs, 20*time.Second)
-	require.Equal(t, 8000, facadePort, "custom facade must default to port 8000")
+	require.Equal(t, 6767, facadePort, "custom facade must default to port 6767")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
@@ -426,8 +426,8 @@ func TestCustomChain_ConfiguredEndpoints_RouteThroughTheCustomFacade(t *testing.
 // probe restores it, and a custom/remove drops it on its own — inside three
 // probe cadences, so the drop cannot be the prober merely noticing.
 func TestCustomChain_EndpointStateChanges_FollowTheRoutingSet(t *testing.T) {
-	if portBusy(8000) {
-		t.Skip("custom facade default port 8000 already in use; skipping")
+	if portBusy(6767) {
+		t.Skip("custom facade default port 6767 already in use; skipping")
 	}
 	const model = "custom-e2e/flap-model"
 	upPort := freePort(t)
@@ -445,7 +445,7 @@ func TestCustomChain_EndpointStateChanges_FollowTheRoutingSet(t *testing.T) {
 
 	waitForMethod(t, msgs, "app:ready", 15*time.Second)
 	facadePort := waitEngineProxyReady(t, "custom-proxy", stdin, msgs, 20*time.Second)
-	require.Equal(t, 8000, facadePort, "custom facade must default to port 8000")
+	require.Equal(t, 6767, facadePort, "custom facade must default to port 6767")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)

@@ -181,14 +181,14 @@ var all = []Engine{
 		PortFile:         "vllm-proxy-port.json",
 	},
 	{
-		// FacadePort 8002, not 8000: vLLM's facade owns the 8000/8001 pair,
+		// FacadePort 6767, not 8000: vLLM's facade owns the 8000/8001 pair,
 		// and two facades may not declare one default — a facade parked on
 		// a sibling's port can neither route to it nor start beside it, and
 		// TestIdentities_AreUnique keeps that rule from drifting quietly.
 		Name:             NameCustom,
 		DisplayName:      "Custom",
 		DiscoveryService: noderec.ServiceCustom,
-		FacadePort:       8002,
+		FacadePort:       6767,
 		EnginePortBase:   0,
 		PortFile:         "custom-proxy-port.json",
 		Unmanaged:        true,

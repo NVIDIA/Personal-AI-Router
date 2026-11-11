@@ -99,7 +99,7 @@ and the health crash key are matched against each other, so they move together
 |---|---|---|---|---|---|
 | Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 | — (no local engine behind the facade) |
 | Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 | — (nothing to relocate) |
-| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 | 8002 |
+| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 | 6767 |
 | Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` | `custom-proxy-port.json` |
 | Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) |
 | Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below | OpenAI set below |
@@ -123,7 +123,7 @@ The broker enables all five facades by default. Local llama.cpp-compatible
 clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM
 clients use `8000`, while the managed `vllm serve` stays on `8001`. The
 Custom facade fronts user-configured external OpenAI-compatible endpoints
-instead of a local engine. It defaults to `8002`: vLLM already occupies the
+instead of a local engine. It defaults to `6767`: vLLM already occupies the
 customary `8000`, and a facade parked on a sibling engine's port could
 neither route to it nor let that engine start.
 `--proxy-engines` can restrict a standalone broker or TUI to a subset.

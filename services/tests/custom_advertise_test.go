@@ -9,7 +9,7 @@
 // loopback-emitted inventory from a fake second node without a cluster mTLS
 // pin, and non-loopback plaintext is refused on purpose.
 //
-//   - Peer side: a fake owner advertises cu=8000 + em=<stub> and the stub
+//   - Peer side: a fake owner advertises cu=6767 + em=<stub> and the stub
 //     serves a ModelsResult carrying the custom bucket. This machine's broker
 //     must show that bucket attributed on the discovered node — the scanner
 //     copies modelsByEngine wholesale, so this pins the receiving end of the
@@ -41,7 +41,7 @@ import (
 // --- peer side ---------------------------------------------------------------
 
 // TestDiscovery_ReplicatesCustomModelsFromAPeerRecord: a peer advertises a
-// custom facade (cu=8000) plus its em surface, and its /v1/models attributes
+// custom facade (cu=6767) plus its em surface, and its /v1/models attributes
 // one model to the "custom" engine. Our discovery must carry that attribution
 // onto the node untouched — no scanner knowledge of Custom is required, and a
 // cu-bearing TXT record must parse rather than poison the node.
@@ -63,11 +63,11 @@ func TestDiscovery_ReplicatesCustomModelsFromAPeerRecord(t *testing.T) {
 	require.NoError(t, err, "stub port")
 
 	const instance = "xproc-custom-1"
-	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", "cu=8000", fmt.Sprintf("em=%d", emPort)}
+	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", "cu=6767", fmt.Sprintf("em=%d", emPort)}
 	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
 	require.NoError(t, err, "register (%v)", instance)
 	t.Cleanup(zsrv.Shutdown)
-	t.Logf("advertising %s @ %s (cu=8000, em=%d)", instance, nodeRecordService, emPort)
+	t.Logf("advertising %s @ %s (cu=6767, em=%d)", instance, nodeRecordService, emPort)
 
 	stdin, msgs, cleanup := startBroker(t)
 	t.Cleanup(cleanup)
@@ -159,8 +159,8 @@ func waitForCustomBucket(t *testing.T, client *http.Client, want []string, timeo
 // the custom key must disappear entirely. That is what makes the models
 // visible to a peer's fetch and, through it, to peer UIs.
 func TestCustomChain_OwnerSurfacesCustomModelsToEngineManager(t *testing.T) {
-	if portBusy(8000) {
-		t.Skip("custom facade default port 8000 already in use; skipping")
+	if portBusy(6767) {
+		t.Skip("custom facade default port 6767 already in use; skipping")
 	}
 	if portBusy(14322) {
 		t.Skip("engine-manager em port 14322 already in use; skipping")
@@ -182,7 +182,7 @@ func TestCustomChain_OwnerSurfacesCustomModelsToEngineManager(t *testing.T) {
 
 	waitForMethod(t, msgs, "app:ready", 15*time.Second)
 	facadePort := waitEngineProxyReady(t, "custom-proxy", stdin, msgs, 20*time.Second)
-	require.Equal(t, 8000, facadePort, "custom facade must default to port 8000")
+	require.Equal(t, 6767, facadePort, "custom facade must default to port 6767")
 	waitTCP(t, "127.0.0.1:14322", 20*time.Second)
 
 	client := &http.Client{Timeout: 5 * time.Second}
