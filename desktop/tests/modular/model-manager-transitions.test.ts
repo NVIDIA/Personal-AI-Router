@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BannerProps, ButtonProps, DropdownProps } from '@nvidia/foundations-react-core'
 import { EngineDisplayNames, EngineTypes } from '@/shared/constants/engines'
 import type { EngineProcessStatus, EngineType, ModelItemStatus } from '@/shared/types/engines'
+import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { IEngineApi } from '@/ui/api/engine-api'
 import type { ConfirmModal } from '@/ui/components/ConfirmModal'
@@ -180,6 +181,10 @@ function button(label: string): HTMLButtonElement {
     return found
 }
 
+function hasButton(label: string): boolean {
+    return Array.from(host.querySelectorAll('button')).some(b => b.textContent === label)
+}
+
 async function click(label: string) {
     await act(() => button(label).click())
 }
@@ -228,19 +233,30 @@ describe.each(EngineTypes)('%s model lifecycle controls', engine => {
         )
     })
 
-    it('keeps Eject available only for a loaded model on a running engine', async () => {
-        await render(engine, 'stopping', 'loaded')
-        expect(button('Eject').disabled).toBe(true)
-        await render(engine, 'running', 'loaded')
-        expect(button('Eject').disabled).toBe(false)
-        expect(button('Load').disabled).toBe(true)
-        await click('Eject')
-        expect(commands.unloadModel).toHaveBeenCalledExactlyOnceWith(
-            engine,
-            'test-node',
-            'org/cached-model'
-        )
-    })
+    if (EngineCapabilities[engine].hasEject) {
+        it('keeps Eject available only for a loaded model on a running engine', async () => {
+            await render(engine, 'stopping', 'loaded')
+            expect(button('Eject').disabled).toBe(true)
+            await render(engine, 'running', 'loaded')
+            expect(button('Eject').disabled).toBe(false)
+            expect(button('Load').disabled).toBe(true)
+            await click('Eject')
+            expect(commands.unloadModel).toHaveBeenCalledExactlyOnceWith(
+                engine,
+                'test-node',
+                'org/cached-model'
+            )
+        })
+    } else {
+        // An engine without hasEject fronts servers this app does not control
+        // (Custom endpoints are run by their own operators), so PAIR must not
+        // offer to unload anything: even a model reported as loaded on a
+        // running engine gets no Eject button at all.
+        it('offers no Eject for a loaded model on a running engine, because this engine does not unload models', async () => {
+            await render(engine, 'running', 'loaded')
+            expect(hasButton('Eject')).toBe(false)
+        })
+    }
 
     it('downloads a selected model while running', async () => {
         await render(engine, 'running')
