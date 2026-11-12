@@ -171,3 +171,23 @@ func TestManifest_RejectsWaitingWithoutModelSelection(t *testing.T) {
 	m.Platforms["linux/amd64"] = p
 	require.ErrorContains(t, m.Validate(), "wait_for_model requires process mode and a launch_model action")
 }
+
+func TestStop_ReportsStoppedAfterARepeatedStop(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	require.NoError(t, e.Stop("fake"))
+	var states []EngineStatus
+	e.emit = func(method string, params any) {
+		if method != "engine:state-changed" {
+			return
+		}
+		status, ok := params.(EngineStatus)
+		require.True(t, ok, "state notification must carry EngineStatus")
+		states = append(states, status)
+	}
+	require.NoError(t, e.Stop("fake"))
+	require.NotEmpty(t, states, "an explicit Stop must resolve a client's stopping state even when already off")
+	assert.False(t, states[len(states)-1].Running)
+	assert.False(t, states[len(states)-1].Starting)
+	assert.False(t, states[len(states)-1].AwaitingModel)
+}
