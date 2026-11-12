@@ -425,6 +425,9 @@ func (e *Executor) configureLaunchLocked(ctx context.Context, st *engineState, p
 	e.reporter.clear(startFailedID(p.Engine))
 	e.reporter.clear(exitedID(p.Engine))
 	old := e.launchStateLocked(p.Engine, st)
+	st.mu.Lock()
+	wasAwaiting := st.awaitingModel
+	st.mu.Unlock()
 	changed := old.ServerPort != preview.Settings.ServerPort || old.LaunchText != preview.Settings.LaunchText || old.ModelSource != preview.Settings.ModelSource
 	// Stop before writing the override file. A stop failure returns with the
 	// engine still on its old launch, so persisting first would leave disk on
@@ -455,7 +458,7 @@ func (e *Executor) configureLaunchLocked(ctx context.Context, st *engineState, p
 	if enabled, known, err := e.desired.get(p.Engine); err == nil && known && !enabled && !old.Running {
 		resume = false
 	}
-	if (changed && old.Running) || resume {
+	if (changed && (old.Running || wasAwaiting)) || resume {
 		if err := e.doStart(ctx, st, p.Engine, startOpts{RequireOwned: true}); err != nil {
 			e.emitState(p.Engine)
 			return e.launchStateLocked(p.Engine, st), err

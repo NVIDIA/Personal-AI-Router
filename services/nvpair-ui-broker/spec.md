@@ -678,3 +678,12 @@ Each worker is spawned in its own process group — `Setpgid` on Unix, `CREATE_N
 Electron starts **only** this binary from the worker tree, from the app's `cli-bin` directory with every worker's `--*-path` passed explicitly, and reaches every capability through it; no worker is ever launched by both Electron and the broker, and there is no broker-absent path. `nvpair-tui` is a peer client, not a supervised worker: it spawns and supervises its own `nvpair-ui-broker` child (`--broker-path`, defaulting to the sibling binary) and speaks the same contract described here. Each front end also launches the Inference Demo's `inference-dispatcher` itself; that binary is an ordinary HTTP client of the local facades, not a worker, and the broker neither spawns nor sees it.
 
 Build and staging: `services/build.sh` and `services/build.bat` read the component version out of `services/versions.json`, build the broker with that version stamped into `main.Version`, and stage it into `services/build/bin/` alongside the eleven other component binaries and `inference-dispatcher`. `services/installer/nvpair-setup.nsi` (with the `linux/` and `macos/` counterparts) packages that bundle, installs the broker as the process the graphical UI and the TUI launch, and owns the firewall rules for the workers that actually listen — the broker itself needs none, because it opens no socket. When a JSON-RPC contract on any relayed namespace changes, the producing Go service, the Electron bridge under `desktop/src/electron/service-bridge/`, and `npm --prefix desktop run service-contracts:check` must all be updated in the same change.
+
+### Enabled engines awaiting a model
+
+The broker relays the engine manager's optional `awaiting_model` status field
+unchanged on local and paired-peer status/operation responses and state events.
+This is enabled intent without a serving process: `running` and `healthy` remain
+false, so routing and model advertisement do not treat it as ready. The desktop
+and terminal clients display model-selection guidance while allowing explicit
+Stop and model selection. No broker-owned model default is added.

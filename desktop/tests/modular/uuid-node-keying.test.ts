@@ -66,7 +66,7 @@ describe('UUID node keying', () => {
         })
         // Clustered peers need authoritative facts before run state is inferred, even
         // after the proxy presence is merged onto the UUID-keyed entry.
-        expect(state.isRemoteEngineRunning('uuid-merge-1', 'ollama')).toBe(false)
+        expect(state.isRemoteEngineEnabled('uuid-merge-1', 'ollama')).toBe(false)
     })
 
     it('merges regardless of source order (proxy before broker)', () => {
@@ -105,7 +105,7 @@ describe('UUID node keying', () => {
         expect(nodes['uuid-merge-2'].name).toBe('merge-host-2')
         const available = state.getAvailableNodes().find(node => node.id === 'uuid-merge-2')
         expect(available).toMatchObject({ clustered: true })
-        expect(state.isRemoteEngineRunning('uuid-merge-2', 'lm-studio')).toBe(false)
+        expect(state.isRemoteEngineEnabled('uuid-merge-2', 'lm-studio')).toBe(false)
     })
 
     it('rejects broker hardware whose hostUuid disagrees with the verified node', () => {

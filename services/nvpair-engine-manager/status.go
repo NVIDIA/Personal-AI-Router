@@ -211,13 +211,14 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 
 func statusLocked(engine string, st *engineState) EngineStatus {
 	return EngineStatus{
-		Engine:      engine,
-		DisplayName: st.manifest.DisplayName,
-		Installed:   st.installed,
-		Running:     st.running,
-		Starting:    st.starting && !st.running,
-		Healthy:     st.healthy,
-		Port:        st.port,
+		Engine:        engine,
+		DisplayName:   st.manifest.DisplayName,
+		Installed:     st.installed,
+		Running:       st.running,
+		Starting:      st.starting && !st.running,
+		AwaitingModel: st.installed && st.awaitingModel && !st.running && !st.starting,
+		Healthy:       st.healthy,
+		Port:          st.port,
 	}
 }
 
@@ -441,6 +442,7 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	changed := !st.running || !st.healthy || !st.adopted || st.port != port
 	st.installed = true
 	st.running = true
+	st.awaitingModel = false
 	st.healthy = true
 	st.adopted = true
 	st.port = port

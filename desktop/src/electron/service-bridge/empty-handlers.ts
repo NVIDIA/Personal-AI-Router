@@ -167,7 +167,9 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
         // rejection has no resolving `engine:state-changed`; start keeps its
         // existing push path.
         const status = await supervisor.callProcess('broker', 'engine:status', { engine })
-        const running = booleanValue(objectValue(status)?.running)
+        const running =
+            booleanValue(objectValue(status)?.running) ||
+            booleanValue(objectValue(status)?.awaiting_model)
         // Synthesize the transitional status the engine-manager never emits, so
         // the UI shows a spinner immediately instead of sitting idle until the
         // terminal engine:state-changed lands.
@@ -336,8 +338,7 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // (the model may not fit), so like Ollama's its rejection is observed
             // and attributed to the pending model row.
             // Ollama, LM Studio and llama.cpp require the engine running (HTTP/CLI
-            // action); vLLM declares modelOpsWhenStopped. ModelRow.tsx applies
-            // the same rule.
+            // action); enabled vLLM can load its first model before a server exists.
             // See docs/services-parity.md#models.
             if (payload.model) {
                 if (payload.engineType === 'vllm') {
@@ -426,7 +427,7 @@ async function toggleRemoteEngine(
     engineType: EngineType
 ): Promise<void> {
     const supervisor = getModularSupervisor()
-    const running = getModularBridgeState().isRemoteEngineRunning(nodeId, engineType)
+    const running = getModularBridgeState().isRemoteEngineEnabled(nodeId, engineType)
     await supervisor.toggleEngineRemote(nodeId, engine, engineType, running)
 }
 

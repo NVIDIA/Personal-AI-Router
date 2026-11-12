@@ -31,7 +31,8 @@ type launchEdit struct {
 	st     *engineState
 	engine string
 	// before is the launch state when the lock was taken.
-	before settings.LaunchState
+	before     settings.LaunchState
+	wasEnabled bool
 }
 
 // editLaunch runs change with the engine's operation lock held.
@@ -42,7 +43,11 @@ func (e *Executor) editLaunch(engine string, change func(edit *launchEdit) error
 	}
 	st.lockOperation()
 	defer st.unlockOperation()
-	return change(&launchEdit{e: e, st: st, engine: engine, before: e.launchStateLocked(engine, st)})
+	before := e.launchStateLocked(engine, st)
+	st.mu.Lock()
+	wasEnabled := st.running || st.awaitingModel
+	st.mu.Unlock()
+	return change(&launchEdit{e: e, st: st, engine: engine, before: before, wasEnabled: wasEnabled})
 }
 
 // save writes launch text. A running engine is restarted on it; a stopped one
@@ -63,7 +68,7 @@ func (l *launchEdit) save(ctx context.Context, launchText string, resume bool) e
 // mid-start, and a restore under that ctx would fail at once and leave the
 // engine down.
 func (l *launchEdit) restore(ctx context.Context) error {
-	return l.save(context.WithoutCancel(ctx), l.before.LaunchText, l.before.Running && !l.e.stopWaiting(l.st))
+	return l.save(context.WithoutCancel(ctx), l.before.LaunchText, l.wasEnabled && !l.e.stopWaiting(l.st))
 }
 
 // start starts the stopped engine on its saved launch and records that the
@@ -118,7 +123,7 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 			return nil
 		}
 		restarted = true
-		if current.Running {
+		if edit.wasEnabled {
 			err = edit.save(ctx, text, false)
 		} else {
 			if changed {
