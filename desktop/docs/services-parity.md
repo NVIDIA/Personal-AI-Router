@@ -590,3 +590,13 @@ On every backend update:
 
 Do not append release diaries or prior-state narratives. Git history is the
 record of how this integration changed.
+
+### vLLM first use
+
+A newly enabled vLLM waits for explicit model selection and downloads no default
+model. `awaiting_model` maps to **Select a model**, an enabled switch, and a selection
+action that opens the model controls. Add model/Load are available before a server
+is running. Disabled engines hide cached model rows and controls.
+Saved model selections still start normally. The broker retains the authoritative
+engine status for both local and paired nodes; an engine awaiting selection is
+not advertised as serving a model.

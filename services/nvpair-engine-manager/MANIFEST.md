@@ -656,3 +656,11 @@ Caveats worth encoding when authoring these:
 - **LM Studio** model dir is settings-controlled (no documented relocation env); surface its config as flags/API, not env.
 - **vLLM**: native Windows is unsupported (WSL only), and macOS is Apple Silicon only through the vLLM-Metal plugin (`darwin/arm64`); the bind is a flag, not env. The bundled `vllm.json` is the reference: it passes the model as `--model`, since manifest `runtime.args` have no `{model}` token, and installs through a sha256-pinned `uv` bootstrap with a detect-first path.
 - **GPT4All**: no first-class headless CLI today — out of scope for a config-only manager unless targeting its Python SDK.
+
+### Waiting for explicit model selection
+
+`runtime.wait_for_model: true` is supported for process engines with a
+`launch_model` action. When no model launch argument is configured, Start succeeds
+with `awaiting_model:true` and saves enabled intent without spawning a serving
+process. The bundled vLLM manifest uses this policy and supplies no default model.
+Once a model argument is saved, the usual startup and readiness checks apply.

@@ -75,13 +75,11 @@ manager actions: `load_model`, `unload_model`, `pull_model` and `delete_model`,
 described below. PAIR passes requests straight to vLLM and does not load or
 unload models on its own: a model is loaded with Load and released with Eject.
 
-The default launch serves `Qwen/Qwen3.5-4B` through `--model <hugging-face-id>`.
-The model thinks before it answers, and with no `--reasoning-parser` in the launch
-that reasoning arrives in the reply ahead of the answer; adding
-`--reasoning-parser qwen3` in the launch settings moves it to
-`reasoning_content`. The model is about 9.3 GB of weights, so the default needs a GPU with at least 16 GB of
-memory; on a smaller GPU, download and load a smaller model before starting.
-Edit the `--model` argument, or use `load_model`, to serve another model. Only
+The bundled launch has no model argument. Enable installs vLLM and waits for an
+explicit choice without downloading weights or starting a model server. Choose
+**Select a model** in the desktop, then download or load a compatible model.
+An existing saved `--model` argument remains in effect across upgrades.
+Only
 `--host` and `--port` are managed controls, and there is no CORS control.
 The context window and GPU share are chosen automatically at every start
 (`auto_launch`, kind `hf_context`), not pinned in the saved launch. The manager
@@ -169,7 +167,7 @@ restarts vLLM on it, restoring the previous model if the new one does not start
 
 `unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model the engine reports it is not serving is refused. Eject and `engine:stop` cancel a start that is still in flight, as shutdown does, instead of waiting out its readiness window: a Load cut short this way puts the previous model back in the launch arguments without starting it and replies `{model, restarted: false, stopped: true}` rather than an error, since the user asked for it, and a start stopped by the user is not reported as a failed start. Likewise `engine:start` (including `engine:install` with `start`), `engine:restart` and a peer's remote start that a Stop cut short reply with the engine's status, stopped, rather than an error. The broker relays an `engine:stop` without waiting for the lock a Start or Restart holds, so it reaches the engine-manager while that start is still waiting for readiness. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 
-`delete_model` removes a model from the hub cache with the `hf cache rm` command of the `hf` tool beside `vllm` (an `hf_cache` action with `delete` and `tool`). Hugging Face's own tool decides which files go: it keeps any file in the cache's shared `blobs/` store that another model, dataset or Space still links to, and takes that store's locks, so a delete cannot remove a file another program is using or linking at the same moment. The cache is the user's standard Hugging Face cache, shared with every other Hugging Face tool on the machine. The model a running vLLM is serving is refused; which model that is is asked of vLLM itself (`loaded_models`), because an adopted vLLM may serve a model other than the one its saved arguments name, and the delete is refused when vLLM cannot say. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one. The engine's operation lock is held from that check through the removal and any rollback, so a settings save or start made meanwhile waits and is not undone by a failed delete. `load_model`, `unload_model` and `delete_model` share that one launch-change path.
+`delete_model` removes a model from the hub cache with the `hf cache rm` command of the `hf` tool beside `vllm` (an `hf_cache` action with `delete` and `tool`). Hugging Face's own tool decides which files go: it keeps any file in the cache's shared `blobs/` store that another model, dataset or Space still links to, and takes that store's locks, so a delete cannot remove a file another program is using or linking at the same moment. The cache is the user's standard Hugging Face cache, shared with every other Hugging Face tool on the machine. The model a running vLLM is serving is refused; which model that is is asked of vLLM itself (`loaded_models`), because an adopted vLLM may serve a model other than the one its saved arguments name, and the delete is refused when vLLM cannot say. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` waits for explicit selection without downloading a default model; `load_model` chooses what to serve. The engine's operation lock is held from that check through the removal and any rollback, so a settings save or start made meanwhile waits and is not undone by a failed delete. `load_model`, `unload_model` and `delete_model` share that one launch-change path.
 
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not
@@ -216,11 +214,29 @@ Python 3.12, creates `{install_dir}/venv` and installs a pinned `vllm` wheel fro
 PyPI. No source build happens. The pinned wheel is a CUDA 13 build, so the install
 first checks that `nvidia-smi` exists, that the driver supports CUDA 13 or newer
 (it reads either the `CUDA UMD Version` or the older `CUDA Version` field), and
-that at least 25 GB of disk is free, enough for the engine and its default model. It fails with a clear message otherwise,
+that at least 25 GB of disk is free for the engine. Model downloads need additional space. It fails with a clear message otherwise,
 before downloading anything. The
 download is several GB, because `torch` and the CUDA libraries come with it.
-Model weights download from Hugging Face on first start into `~/.cache/huggingface`
+Explicit downloads and loading an uncached selected model fetch weights from Hugging Face into `~/.cache/huggingface`
 (`HF_HOME`), which no removal this service performs will delete.
+
+### vLLM first enable and model selection
+
+Enabling a newly configured vLLM installs the engine and leaves it enabled while
+waiting for a model choice. It does not select, download, or load a default model.
+The status has `installed:true`, `awaiting_model:true`, `running:false`, and
+`healthy:false`; no vLLM serving process or loaded model is advertised. The
+optional `awaiting_model` field is false or omitted in other lifecycle states.
+The desktop shows **Select a model**, keeps the switch on, and offers **Add model**
+and **Load** for downloaded models. A stopped engine hides its model controls.
+
+An explicit Load saves the chosen model and performs the normal readiness-probed
+start. Existing saved model arguments remain in effect, so upgrading preserves
+an existing user's selection. Stop turns enabled intent off; normal shutdown
+preserves it, including waiting for a choice. A failed first Load restores the
+previous model-free enabled state. Eject retains its existing behavior of stopping
+vLLM and releasing its model memory. This change adds no inactivity unload policy.
+
 
 ## Communication
 

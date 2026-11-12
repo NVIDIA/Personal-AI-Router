@@ -743,6 +743,9 @@ func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *te
 			}
 
 			rt := platform.Runtime
+			assert.True(t, rt.WaitForModel, "first enable must wait for explicit model selection")
+			_, selected := launchFlagValue(rt.Args, "--model")
+			assert.False(t, selected, "the bundled launch must not select a model")
 			require.NotNil(t, rt.EditableLaunch)
 			assert.Equal(t, []string{"serve"}, rt.EditableLaunch.FixedArgs, "launch must start with the fixed serve subcommand")
 			assert.Equal(t, "~/.cache/huggingface", platform.ModelsDir, "models_dir must be the Hugging Face cache")
@@ -758,7 +761,7 @@ func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *te
 			assert.Equal(t, autoLaunchHFContext, rt.AutoLaunch.Kind)
 			assert.Equal(t, 65536, rt.AutoLaunch.ContextTokens, "vllm must aim for a 64K window")
 			// vLLM's default of 256 concurrent requests does not fit a hybrid model
-			// such as the default Qwen3.5-4B on a 16 GiB GPU.
+			// such as Qwen3.5-4B on a 16 GiB GPU.
 			assert.Equal(t, 32, rt.AutoLaunch.MaxNumSeqs, "vllm must run at most 32 requests at a time")
 			assert.NotContains(t, rt.Args, "--gpu-memory-utilization", "must not be pinned in the default launch")
 			assert.NotContains(t, rt.Args, "--max-model-len", "must not be pinned in the default launch")

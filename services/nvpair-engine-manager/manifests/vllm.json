@@ -9,7 +9,7 @@
     "mode": "user",
     "run": [
       "sh", "-c",
-      "set -eu; command -v nvidia-smi >/dev/null 2>&1 || { echo 'vLLM needs an NVIDIA GPU and driver (nvidia-smi not found)' >&2; exit 1; }; cuda_major=$(nvidia-smi -q 2>/dev/null | awk -F' *: *' '/^CUDA (UMD )?Version/ {split($2, v, \".\"); print v[1]; exit}'); [ \"${cuda_major:-0}\" -ge 13 ] 2>/dev/null || { echo \"vLLM needs an NVIDIA driver that supports CUDA 13 or newer (found: ${cuda_major:-none}). Update your NVIDIA driver and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 26214400 ] || { echo 'vLLM needs at least 25 GB of free disk space (the engine and its default model)' >&2; exit 1; }; mkdir -p \"$2/uv\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"vllm==0.32.0\" \"mistral_common==1.12.0\"",
+      "set -eu; command -v nvidia-smi >/dev/null 2>&1 || { echo 'vLLM needs an NVIDIA GPU and driver (nvidia-smi not found)' >&2; exit 1; }; cuda_major=$(nvidia-smi -q 2>/dev/null | awk -F' *: *' '/^CUDA (UMD )?Version/ {split($2, v, \".\"); print v[1]; exit}'); [ \"${cuda_major:-0}\" -ge 13 ] 2>/dev/null || { echo \"vLLM needs an NVIDIA driver that supports CUDA 13 or newer (found: ${cuda_major:-none}). Update your NVIDIA driver and try again.\" >&2; exit 1; }; free_kb=$(df -Pk \"$2\" | awk 'NR==2 {print $4}'); [ \"${free_kb:-0}\" -ge 26214400 ] || { echo 'vLLM needs at least 25 GB of free disk space for the engine; model downloads need additional space' >&2; exit 1; }; mkdir -p \"$2/uv\"; tar -xzf \"$1\" -C \"$2/uv\" --strip-components=1; export UV_PYTHON_INSTALL_DIR=\"$2/python\" UV_PYTHON_PREFERENCE=only-managed; \"$2/uv/uv\" venv --no-cache --python 3.12 \"$2/venv\"; \"$2/uv/uv\" pip install --no-cache --python \"$2/venv/bin/python\" \"vllm==0.32.0\" \"mistral_common==1.12.0\"",
       "vllm-install", "{download}", "{install_dir}"
     ]
   },
@@ -24,7 +24,8 @@
         { "flags": ["--port"], "value": "{server.port}" }
       ]
     },
-    "args": ["serve", "--model", "Qwen/Qwen3.5-4B", "--host", "{host}", "--port", "{port}"],
+    "wait_for_model": true,
+    "args": ["serve", "--host", "{host}", "--port", "{port}"],
     "auto_launch": { "kind": "hf_context", "context_tokens": 65536, "max_num_seqs": 32 },
     "env": { "HF_HOME": "{models_dir}", "VLLM_USE_FLASHINFER_SAMPLER": "0" },
     "bind": "127.0.0.1",

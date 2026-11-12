@@ -78,6 +78,7 @@ interface RemoteEngineFacts {
     installed: boolean
     running: boolean
     starting: boolean
+    awaitingModel: boolean
     healthy: boolean
     port: number
 }
@@ -91,9 +92,11 @@ function factsProcessStatus(facts: {
     installed: boolean
     running: boolean
     starting: boolean
+    awaitingModel: boolean
 }): EngineProcessStatus {
     if (facts.running) return 'running'
     if (facts.starting) return 'starting'
+    if (facts.awaitingModel) return 'awaiting-model'
     return facts.installed ? 'stopped' : 'not-installed'
 }
 
@@ -962,7 +965,13 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; starting: boolean; port: number }
+        {
+            installed: boolean
+            running: boolean
+            starting: boolean
+            awaitingModel: boolean
+            port: number
+        }
     >()
     /**
      * The engines `nvpair-engine-manager` lists for this host. It leaves out an
@@ -1394,6 +1403,7 @@ class ModularBridgeState {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
             starting: booleanValue(obj.starting),
+            awaitingModel: booleanValue(obj.awaiting_model),
             port: numberValue(obj.port)
         })
         // A fresh authoritative state is the resolution of whatever op was in
@@ -1482,16 +1492,16 @@ class ModularBridgeState {
     }
 
     /**
-     * Whether a remote peer's proxy-engine is currently reported as running.
+     * Whether a remote engine is enabled, including waiting for model selection.
      * Mirrors {@link resolveRemoteEngineStatus}: authoritative facts are used
      * alone when present, and the coarser per-engine mDNS proxy presence
      * (`up`/`down`) is the fallback only for a peer with no facts, so the toggle
      * decision matches the displayed status.
      */
-    isRemoteEngineRunning(nodeId: string, engineType: EngineType): boolean {
+    isRemoteEngineEnabled(nodeId: string, engineType: EngineType): boolean {
         if (!isProxyEngine(engineType)) return false
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engineType))
-        if (facts) return facts.running
+        if (facts) return facts.running || facts.awaitingModel
         const node = this.nodes.get(nodeId)
         if (!node || node.clustered || node.trusted) return false
         return node.engines[engineType].up
@@ -1805,6 +1815,7 @@ class ModularBridgeState {
                 installed: booleanValue(engineObj.installed),
                 running: booleanValue(engineObj.running),
                 starting: booleanValue(engineObj.starting),
+                awaitingModel: booleanValue(engineObj.awaiting_model),
                 healthy: booleanValue(engineObj.healthy),
                 port: numberValue(engineObj.port)
             })
@@ -1837,6 +1848,7 @@ class ModularBridgeState {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
             starting: booleanValue(obj.starting),
+            awaitingModel: booleanValue(obj.awaiting_model),
             healthy: booleanValue(obj.healthy),
             port: numberValue(obj.port)
         })

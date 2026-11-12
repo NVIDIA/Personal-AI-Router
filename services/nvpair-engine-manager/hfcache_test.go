@@ -339,13 +339,11 @@ func TestDeleteHFModel_LeavesAStoppedEngineWithNoModelSelected(t *testing.T) {
 	assert.True(t, state.Running, "the engine runs after a model is loaded")
 }
 
-// With the bundled manifest and no saved settings the served model is the
-// default launch's, even in a manager that has not been asked about the engine
-// yet. Deleting also fails closed, rather than assuming nothing is served, when
-// the served model cannot be told.
-func TestDeleteHFModel_RefusesTheBundledDefaultModel(t *testing.T) {
+// Cached models are not implicitly selected by the bundled launch. Explicit
+// selection and a running model remain protected by the other deletion cases.
+func TestDeleteHFModel_AllowsCachedModelsWhenNoModelIsSelected(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("the bundled vllm manifest is Linux only")
+		t.Skip("uses Linux cache paths")
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -366,9 +364,8 @@ func TestDeleteHFModel_RefusesTheBundledDefaultModel(t *testing.T) {
 		return err
 	}
 
-	// The bundled default launch serves Qwen/Qwen3.5-4B.
-	require.Error(t, act("Qwen/Qwen3.5-4B"), "the default served model was deleted by a manager that had not detected the engine")
-	require.DirExists(t, filepath.Join(cache, "models--Qwen--Qwen3.5-4B"), "the served model must stay in the cache")
+	assert.NoError(t, act("Qwen/Qwen3.5-4B"))
+	assert.NoDirExists(t, filepath.Join(cache, "models--Qwen--Qwen3.5-4B"))
 	assert.NoError(t, act("org/other"), "another model should be deletable")
 }
 

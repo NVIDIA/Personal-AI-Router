@@ -160,6 +160,9 @@ type InstallArtifact struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
+	// WaitForModel keeps an installed engine enabled without starting a serving
+	// process until the user selects a model through its launch_model action.
+	WaitForModel bool `json:"wait_for_model,omitempty"`
 	// ModelSource selects llama.cpp's model catalogue and download provider.
 	ModelSource string `json:"model_source,omitempty"`
 	// EditableLaunch declares which startup arguments and environment controls
@@ -818,6 +821,11 @@ func (m *Manifest) Validate() error {
 		}
 		if err := p.validate(key); err != nil {
 			return err
+		}
+	}
+	for key, p := range m.Platforms {
+		if p.Runtime.WaitForModel && (p.Runtime.modeOrDefault() != "process" || modelLaunchFlag(m) == "") {
+			return fmt.Errorf("platform %q: wait_for_model requires process mode and a launch_model action", key)
 		}
 	}
 	for name, a := range m.Actions {

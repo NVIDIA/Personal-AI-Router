@@ -25,7 +25,7 @@ describe('remote engine status', () => {
                 ip: '192.0.2.190'
             }
         })
-        expect(state.isRemoteEngineRunning(remoteNodeId, 'lm-studio')).toBe(true)
+        expect(state.isRemoteEngineEnabled(remoteNodeId, 'lm-studio')).toBe(true)
 
         state.applyRemoteEngineFacts(remoteNodeId, {
             engines: [
@@ -39,7 +39,7 @@ describe('remote engine status', () => {
             ]
         })
 
-        expect(state.isRemoteEngineRunning(remoteNodeId, 'lm-studio')).toBe(false)
+        expect(state.isRemoteEngineEnabled(remoteNodeId, 'lm-studio')).toBe(false)
         expect(
             state
                 .getEngineInitialState()

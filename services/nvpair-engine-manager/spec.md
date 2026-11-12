@@ -14,6 +14,23 @@ across OSes with no per-engine code. A third party drops in a JSON manifest and
 their engine's install/launch/controls "just appear" over the same API: the core
 extensibility story for an open-source product.
 
+### vLLM first enable and model selection
+
+Enabling a newly configured vLLM installs the engine and leaves it enabled while
+waiting for a model choice. It does not select, download, or load a default model.
+The status has `installed:true`, `awaiting_model:true`, `running:false`, and
+`healthy:false`; no vLLM serving process or loaded model is advertised. The
+optional `awaiting_model` field is false or omitted in other lifecycle states.
+The desktop shows **Select a model**, keeps the switch on, and offers **Add model**
+and **Load** for downloaded models. A stopped engine hides its model controls.
+
+An explicit Load saves the chosen model and performs the normal readiness-probed
+start. Existing saved model arguments remain in effect, so upgrading preserves
+an existing user's selection. Stop turns enabled intent off; normal shutdown
+preserves it, including waiting for a choice. A failed first Load restores the
+previous model-free enabled state. Eject retains its existing behavior of stopping
+vLLM and releasing its model memory. This change adds no inactivity unload policy.
+
 ## 2. Scope
 **In scope**
 - Broker-coordinated argument/server/proxy settings, literal argument
@@ -138,6 +155,8 @@ implementation is used.
   display_name: string
   installed: boolean
   running: boolean
+  starting?: boolean
+  awaiting_model?: boolean
   healthy: boolean
   port: number
 }

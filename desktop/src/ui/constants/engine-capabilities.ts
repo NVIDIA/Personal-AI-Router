@@ -18,7 +18,6 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasPreferredNode: false,
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
-        modelOpsWhenStopped: false,
         hasDeleteModel: true,
         engineHub: { label: 'Ollama', url: 'https://ollama.com/library' }
     },
@@ -36,7 +35,6 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasPreferredNode: false,
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
-        modelOpsWhenStopped: false,
         hasDeleteModel: true,
         // LM Studio answers /v1/models from an index it builds at startup and
         // exposes no rescan, so nvpair-engine-manager's delete_model restarts the
@@ -54,7 +52,6 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasPreferredNode: false,
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
-        modelOpsWhenStopped: false,
         // The router removes cached models in-process via DELETE /models.
         hasDeleteModel: true,
         engineHub: {
@@ -76,10 +73,8 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasProxyWebUI: false,
         hasPreferredNode: false,
         hasCrashAlert: false,
-        // The cache is on disk, so the model list, Add model, Delete and Load all
-        // work while the engine is stopped (Load starts it).
+        // Enabled vLLM can browse its disk cache before a serving model is selected.
         hasModelSearchOnlyWhenRunning: false,
-        modelOpsWhenStopped: true,
         // delete_model removes a model from the shared Hugging Face cache. The
         // loaded model is refused, so Delete is disabled on it until Eject.
         // Deleting the model an ejected or stopped vLLM is set to serve leaves it

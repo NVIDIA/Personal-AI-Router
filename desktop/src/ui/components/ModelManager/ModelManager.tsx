@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
@@ -23,6 +23,17 @@ import type { ModelEntry } from '@/ui/types/model-hub'
 export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId: string }) {
     const [openModelHubModal, setOpenModelHubModal] = useState(false)
     const [modelPendingDelete, setModelPendingDelete] = useState<string | null>(null)
+    const canManageModels =
+        backend.processStatus === 'running' || backend.processStatus === 'awaiting-model'
+
+    // A lifecycle transition ends the interaction that opened either dialog.
+    // Forget it so restarting cannot reopen a stale download or delete prompt.
+    useEffect(() => {
+        if (!canManageModels) {
+            setOpenModelHubModal(false)
+            setModelPendingDelete(null)
+        }
+    }, [canManageModels])
     const models = (backend.models ?? []).sort((a, b) =>
         formatModelDisplayName(a.name, backend.type).localeCompare(
             formatModelDisplayName(b.name, backend.type)
@@ -115,6 +126,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
     const handleAction = useCallback(
         (modelName: string, action: string) => {
+            if (!canManageModels) return
             switch (action) {
                 case 'load':
                     window.pairApi.engines.loadModel(backendType, nodeId, modelName)
@@ -131,7 +143,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     break
             }
         },
-        [backendType, confirmBeforeDelete, nodeId]
+        [backendType, confirmBeforeDelete, canManageModels, nodeId]
     )
 
     // `ConfirmModal` closes (`onOpenChange(false)`) before it calls `onConfirm`,
@@ -139,16 +151,17 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     // callback closes over the value from the render that showed the modal, and
     // React's state update does not mutate that binding.
     const handleConfirmDelete = useCallback(() => {
-        if (modelPendingDelete) {
+        if (canManageModels && modelPendingDelete) {
             window.pairApi.engines.deleteModel(backendType, nodeId, modelPendingDelete)
         }
-    }, [backendType, modelPendingDelete, nodeId])
+    }, [backendType, canManageModels, modelPendingDelete, nodeId])
 
     const handleExpiryChange = useCallback(
         (modelName: string, value: ModelExpiry) => {
+            if (!canManageModels) return
             window.pairApi.engines.setModelExpiry(backendType, nodeId, modelName, value)
         },
-        [backendType, nodeId]
+        [backendType, canManageModels, nodeId]
     )
 
     const transientPullProgress = transientModel
@@ -159,19 +172,14 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         () => caps?.hasModelSearchOnlyWhenRunning ?? false,
         [caps?.hasModelSearchOnlyWhenRunning]
     )
-    const modelOpsWhenStopped = useMemo(
-        () => caps?.modelOpsWhenStopped ?? false,
-        [caps?.modelOpsWhenStopped]
-    )
-    const isRunning = useMemo(() => backend.processStatus === 'running', [backend.processStatus])
     const supportsSearch = useMemo(
-        () => caps !== undefined && (!hasModelSearchOnlyWhenRunning || isRunning),
-        [caps, hasModelSearchOnlyWhenRunning, isRunning]
+        () => caps !== undefined && (!hasModelSearchOnlyWhenRunning || canManageModels),
+        [caps, hasModelSearchOnlyWhenRunning, canManageModels]
     )
 
     const handleDownload = useCallback(
         (entries: ModelEntry[]) => {
-            if (!entries || entries.length === 0) return
+            if (!canManageModels || !entries || entries.length === 0) return
 
             setOpenModelHubModal(false)
 
@@ -181,11 +189,24 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                 }
             }
         },
-        [backendType, nodeId]
+        [backendType, canManageModels, nodeId]
     )
+
+    if (backend.processStatus === 'stopped') {
+        return (
+            <Text kind="body/regular/sm" className="text-subtle-color pl-2">
+                Start engine to see models
+            </Text>
+        )
+    }
 
     return (
         <Stack gap="4">
+            {backend.processStatus === 'awaiting-model' && (
+                <Text kind="body/regular/sm" className="text-subtle-color pl-2">
+                    Select a downloaded model and choose Load, or add a model to get started.
+                </Text>
+            )}
             {transientModel && (
                 <TransientModelStatusRow
                     transientModel={transientModel}
@@ -200,7 +221,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
             {!isBusy && (
                 <>
-                    {(isRunning || modelOpsWhenStopped) &&
+                    {canManageModels &&
                         models.length === 0 &&
                         incomingSyncs.length === 0 &&
                         (backend.modelsKnown ? (
@@ -212,22 +233,13 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                 Downloaded models unavailable
                             </Text>
                         ))}
-                    {!modelOpsWhenStopped &&
-                        models.length === 0 &&
-                        incomingSyncs.length === 0 &&
-                        backend.processStatus === 'stopped' && (
-                            <Text kind="body/regular/sm" className="text-subtle-color pl-2">
-                                Start engine to see models
-                            </Text>
-                        )}
-
                     {models.length > 0 && (
                         <Stack gap="1">
                             {models.map(model => (
                                 <ModelRow
                                     key={model.name}
                                     model={model}
-                                    isRunning={isRunning}
+                                    isRunning={canManageModels}
                                     capabilities={caps}
                                     progress={getProgress(nodeId, backend.type, 'pull', model.name)}
                                     pendingAction={usePendingActionsStore
@@ -244,7 +256,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             )}
 
             <ConfirmModal
-                open={modelPendingDelete !== null}
+                open={canManageModels && modelPendingDelete !== null}
                 onOpenChange={open => {
                     if (!open) setModelPendingDelete(null)
                 }}
@@ -261,12 +273,13 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                         size="small"
                         kind="primary"
                         color="brand"
+                        disabled={!canManageModels}
                         onClick={() => setOpenModelHubModal(true)}
                     >
                         Add model
                     </Button>
                     <ModelHubModal
-                        engine={openModelHubModal ? backend.type : null}
+                        engine={canManageModels && openModelHubModal ? backend.type : null}
                         onOpenChange={setOpenModelHubModal}
                         onSubmit={handleDownload}
                         downloadedModels={models}

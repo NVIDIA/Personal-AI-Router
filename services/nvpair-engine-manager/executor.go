@@ -41,8 +41,10 @@ type EngineStatus struct {
 	// Starting is true while a start is launching the engine and waiting for
 	// it to become ready. Running is false until it is.
 	Starting bool `json:"starting,omitempty"`
-	Healthy  bool `json:"healthy"`
-	Port     int  `json:"port,omitempty"`
+	// AwaitingModel is enabled user intent with no selected serving model.
+	AwaitingModel bool `json:"awaiting_model,omitempty"`
+	Healthy       bool `json:"healthy"`
+	Port          int  `json:"port,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -74,13 +76,14 @@ type engineState struct {
 	healthy    bool
 	stopping   bool
 	// starting is true while a start launches the engine and waits for readiness.
-	starting   bool
-	adopted    bool  // started externally; we can't stop it
-	gen        int64 // bumped each start; gates stale health loops
-	port       int
-	binPath    string
-	proc       *managedProc
-	healthStop context.CancelFunc
+	awaitingModel bool
+	starting      bool
+	adopted       bool  // started externally; we can't stop it
+	gen           int64 // bumped each start; gates stale health loops
+	port          int
+	binPath       string
+	proc          *managedProc
+	healthStop    context.CancelFunc
 	// startCancel lets StopAll, Stop and Eject unblock doStart before waiting
 	// on opMu.
 	startCancel context.CancelFunc

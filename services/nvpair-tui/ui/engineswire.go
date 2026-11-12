@@ -24,9 +24,10 @@ type engineStatus struct {
 	Running     bool   `json:"running"`
 	// Starting is true while a start is launching the engine and waiting for
 	// it to become ready, which for vLLM can be minutes.
-	Starting bool `json:"starting"`
-	Healthy  bool `json:"healthy"`
-	Port     int  `json:"port"`
+	Starting      bool `json:"starting"`
+	AwaitingModel bool `json:"awaiting_model"`
+	Healthy       bool `json:"healthy"`
+	Port          int  `json:"port"`
 }
 
 func (e engineStatus) label() string {
