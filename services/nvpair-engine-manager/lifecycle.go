@@ -520,6 +520,11 @@ func (e *Executor) Stop(engine string) error {
 	// engine back on. Restart and StopAll call doStop directly and never
 	// rewrite intent — shutdown must not erase the user's saved choice.
 	setErr := e.setDesiredEnabled(engine, false)
+	// Explicit commands must finish the client's transitional state even when
+	// the engine was already stopped and doStop had no change to announce.
+	if stopErr == nil {
+		e.emitState(engine)
+	}
 	return errors.Join(stopErr, setErr)
 }
 
