@@ -22,10 +22,6 @@ var NewDiscovery = discovery.New
 // of their claimed UUIDs. Distinct connection candidates remain separate.
 var WithKeyFunc = discovery.WithKeyFunc
 
-// UUIDFromTXT extracts the claimed host UUID, including for filtering this host's
-// own announcements. It does not determine the discovery record ID.
-var UUIDFromTXT = discovery.UUIDFromTXT
-
 // sameStringSet re-exports the shared order-insensitive multiset compare so the
 // daemon's model-inventory change detection (directory.applyModels / sameByEngine)
 // uses one implementation rather than a local copy.

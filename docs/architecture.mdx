@@ -641,6 +641,12 @@ The UUID reuses the cluster manager's persisted identity when that exists, so on
 host presents the same UUID everywhere. If the cluster manager has never run, the
 scanner mints one and persists it.
 
+Announcements require a nonempty `uuid`. The optional `cluster-uuid` claims the
+node's certificate identity and is separate from the shared cluster identifier.
+Different advertised UUIDs remain unverified discovery data and may receive
+display-only hardware previews. Neither claim establishes the verified peer's
+identity or replaces its saved certificate.
+
 ### Sharing UDP 5353
 
 PAIR runs its own mDNS responder rather than depending on a system one, because
@@ -673,8 +679,11 @@ discovery with this verified record. Other observations remain independently
 unverified. The broker retains record provenance through caches and relays;
 unverified claims cannot replace service endpoints or supply scheduling data.
 Updates to a previously authenticated observation stay hidden while its exact
-proof remains current and its claimed host UUID is unchanged. Changed claims
-require authentication before updating the verified peer.
+proof remains current and its host UUID and advertised cluster identity are
+unchanged. Changing either UUID claim, including adding or clearing the cluster
+identity, clears the observation's previous association. New claims require
+authentication before updating a verified peer. Missing host UUIDs and claims to
+the local host remove only the cached discovery observation and its association.
 
 Each enrichment keeps a last-good value during temporary failures at an unchanged
 source. A peer's model inventories are cleared when its authenticated proof,
@@ -692,22 +701,24 @@ The browser scans every five seconds. An observation expires after 12 consecutiv
 misses, about a minute, clearing its candidate state and remembered address.
 With multiple known nodes, up to six consecutive empty scans receive a shared
 grace period before misses count. Observation expiry is independent of the
-verified peer's availability, so obsolete addresses and ports can be retired
-while the peer stays online.
+verified peer's availability, so obsolete discovery observations can be removed
+while the peer stays online. Announcement changes and removals cannot directly
+remove a verified peer, change its saved pins, or close its connections.
 
 A verified peer record can outlive its last discovery while authenticated
 inventory or recent inference still proves availability. Scanner continues
-sampling the retained peer independently. A failed refresh removes that record
-once its last authenticated inventory is at least a minute old and no inference
-activity was observed in the last minute. Trust invalidation also removes the
-affected verified record. Cluster membership and saved pins have their own
-lifetime and are preserved when availability expires.
+sampling the retained peer independently. Once no discovery remains associated
+with the peer, a failed pinned mTLS refresh removes its record only if its last
+authenticated inventory is at least a minute old and no inference activity was
+observed in the last minute. Trust invalidation also removes the affected
+verified record. Cluster membership and saved pins have their own lifetime and
+are preserved when availability expires.
 
-These checks use accepted evidence without starting another network request.
-The canonical sampling loop continues independently, so multicast loss does not
-add synchronous probes to discovery processing. Recent inventory or inference
-activity keeps a healthy node in the routing pool through Wi-Fi, VPN, and sleep
-or wake gaps. Inference proxy ports are never probed for liveness.
+Discovery cleanup starts no network request. The canonical sampling loop
+continues independently, so multicast loss does not add synchronous probes to
+discovery processing. Recent inventory or inference activity keeps a healthy
+node in the routing pool through Wi-Fi, VPN, and sleep or wake gaps. Inference
+proxy ports are never probed for liveness.
 
 A reset node may reappear under a new identity. Its unverified announcement
 cannot replace a verified record by matching its name or address. The old

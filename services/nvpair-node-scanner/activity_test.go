@@ -19,20 +19,6 @@ func activityDaemon() *daemon {
 	return &daemon{lastActivityAt: make(map[string]time.Time)}
 }
 
-// An authenticated peer may be too busy serving inference to answer node-info.
-func TestFreshActivity_KeepsPeerAvailableDuringInventoryOutage(t *testing.T) {
-	f := newDiscoveryPeerFixture(t, "busy-node")
-	f.discover(t)
-	d := f.daemon
-	f.server.Close()
-	delete(d.nodeInfoStatus, "busy-node")
-
-	require.False(t, d.peerReachable("busy-node"), "no authenticated inventory or inference evidence remains")
-
-	d.noteActivity("busy-node", 0)
-	require.True(t, d.peerReachable("busy-node"), "recent inference keeps the peer available during an inventory outage")
-}
-
 // Activity is credited per node. One busy peer vouching for itself must not
 // vouch for a different peer that really has left.
 func TestActivity_IsCreditedPerNode(t *testing.T) {

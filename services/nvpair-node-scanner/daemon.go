@@ -400,8 +400,8 @@ func (d *daemon) run(ctx context.Context) {
 
 type discoveryCandidate struct {
 	node noderec.DirectoryNode
-	// Retain the last authenticated source link for expiry while a changed
-	// announcement awaits proof. It does not authenticate the pending claims.
+	// Retain the last authenticated source link across announcement updates
+	// only while both identity claims stay unchanged. Pending claims need proof.
 	peerUUID string
 	// peerRecordID binds that association to the exact authenticated proof.
 	peerRecordID string
@@ -685,58 +685,31 @@ func (d *daemon) publishPeerInfo(candidateID string, sample peerInfoSample) {
 // onBrowse stores each discovery independently. Network claims never mutate a
 // canonical host, including when a discovery changes or disappears.
 func (d *daemon) onBrowse(ev DiscoveryEvent) {
+	// Unusable identity updates withdraw the old observation through the same
+	// cleanup as expiry. The verified peer keeps its own availability checks.
 	var node noderec.DirectoryNode
-	alive := false
-	if ev.Type == discovery.Removed {
-		// Find the stored discovery even if its latest announcement changed or
-		// dropped the UUID claim. Cleanup must not depend on validating that claim.
-		d.peerMu.Lock()
-		candidate := d.candidates[nodeDiscoveryRecordID(ev.Node)]
-		peerUUID := ""
-		if candidate != nil {
-			node = candidate.node
-			peerUUID = candidate.peerUUID
-		}
-		d.peerMu.Unlock()
-		if candidate == nil {
-			return
-		}
-		// Judge the canonical peer separately from the expiring observation.
-		// A failed update may still have an older authenticated source link.
-		alive = d.peerReachable(peerUUID)
-	} else {
-		if UUIDFromTXT(ev.Node.TXT) == d.reg.record().HostUUID {
-			return
-		}
+	retireObservation := ev.Type == discovery.Removed
+	if !retireObservation {
 		var ok bool
 		node, ok = toDirectoryNode(ev.Node)
-		if !ok {
-			return
-		}
+		retireObservation = !ok || node.HostUUID == d.reg.record().HostUUID
 	}
 	d.peerMu.Lock()
 	defer d.peerMu.Unlock()
-	if ev.Type == discovery.Removed {
-		candidate := d.candidates[node.DiscoveryRecordID]
-		delete(d.candidates, node.DiscoveryRecordID)
-		d.authRetries.forget(node.DiscoveryRecordID)
-		d.forgetHardwarePreview(node.DiscoveryRecordID)
-		d.enrichHosts.forget(hostKey{recordKey: node.DiscoveryRecordID, service: noderec.ServiceNodeInfo})
-		if d.dir.remove(node.DiscoveryRecordID) {
-			d.emit(noderec.NotifyNodeRemoved, node)
+	if retireObservation {
+		// These unauthenticated events can remove only their own observation.
+		// Verified peers expire through failed authenticated reads, not mDNS.
+		recordID := nodeDiscoveryRecordID(ev.Node)
+		candidate := d.candidates[recordID]
+		if candidate == nil {
+			return
 		}
-		if candidate != nil && candidate.peerUUID != "" && !alive {
-			// Another authenticated discovery still represents this peer.
-			for _, other := range d.candidates {
-				if other.peerUUID == candidate.peerUUID {
-					return
-				}
-			}
-			if peer, present := d.dir.get(candidate.peerUUID); present {
-				d.forget(peer.HostUUID)
-				d.dir.remove(peer.HostUUID)
-				d.emit(noderec.NotifyNodeRemoved, peer)
-			}
+		delete(d.candidates, recordID)
+		d.authRetries.forget(recordID)
+		d.forgetHardwarePreview(recordID)
+		d.enrichHosts.forget(hostKey{recordKey: recordID, service: noderec.ServiceNodeInfo})
+		if d.dir.remove(recordID) {
+			d.emit(noderec.NotifyNodeRemoved, candidate.node)
 		}
 		return
 	}
@@ -745,7 +718,8 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 	}
 	d.mesh.Refresh()
 	candidate := &discoveryCandidate{node: node, pending: true}
-	if previous := d.candidates[node.DiscoveryRecordID]; previous != nil {
+	if previous := d.candidates[node.DiscoveryRecordID]; previous != nil &&
+		previous.node.HostUUID == node.HostUUID && previous.node.ClusterUUID == node.ClusterUUID {
 		candidate.peerUUID, candidate.peerRecordID = previous.peerUUID, previous.peerRecordID
 	}
 	d.candidates[node.DiscoveryRecordID] = candidate
@@ -1128,7 +1102,7 @@ func (d *daemon) watchAddress(ctx context.Context) {
 	}
 }
 
-// retainedPeerGrace gives peers whose last discovery expired a minute without
+// retainedPeerGrace gives peers without an associated discovery a minute without
 // authenticated inventory before removal. Recent inference also keeps them.
 const retainedPeerGrace = time.Minute
 
@@ -1149,23 +1123,6 @@ const activityFreshness = 60 * time.Second
 // loopbackHost reaches the owned engine-manager for model inventory. Local
 // node-info inventory and telemetry arrive over private worker IPC.
 const loopbackHost = "127.0.0.1"
-
-// peerReachable checks a verified peer's current proof and cached availability.
-// Its lifetime is independent of the browser's announcement expiry.
-func (d *daemon) peerReachable(uuid string) bool {
-	if uuid == "" {
-		return false
-	}
-	d.peerMu.Lock()
-	node, ok := d.dir.get(uuid)
-	d.mesh.Refresh()
-	valid := ok && d.currentPeerRecord(node)
-	d.peerMu.Unlock()
-	if !valid {
-		return false
-	}
-	return d.peerEvidenceFresh(uuid)
-}
 
 func (d *daemon) peerEvidenceFresh(uuid string) bool {
 	d.infoMu.Lock()
@@ -1410,8 +1367,8 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 	return true
 }
 
-// expireRetainedPeer removes an unavailable peer after its last discovery has
-// expired. The caller has just failed to refresh target. Membership and pins stay.
+// expireRetainedPeer removes an unavailable peer with no associated discovery.
+// The caller has just failed to refresh target. Membership and pins stay.
 func (d *daemon) expireRetainedPeer(target noderec.DirectoryNode) {
 	d.peerMu.Lock()
 	defer d.peerMu.Unlock()

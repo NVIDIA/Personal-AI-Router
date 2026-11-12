@@ -125,10 +125,13 @@ collected by workers for unverified records.
   none, Scanner ignores at most six consecutive empty scans before counting
   misses normally.
   If a verified peer remains after its last discovery expires, Scanner continues
-  checking availability through the same canonical sampling loop. After a minute
-  without authenticated inventory or inference activity, Scanner removes its
-  record and caches while preserving membership and saved certificates. Open
-  TCP ports and unverified network claims cannot retain a verified peer.
+  checking availability through the same canonical sampling loop. Once no
+  discovery remains associated with the peer, a failed pinned mTLS read removes
+  its record and caches only after a minute without authenticated inventory or
+  inference activity. Membership and saved certificates remain. Announcement
+  changes and removals cannot directly remove verified peers or close their
+  connections. Open TCP ports and unverified network claims cannot retain a
+  verified peer.
 - Scanner applies trust changes while running. Removed or replaced pins clear
   verification status and scheduling samples, close affected idle connections, and
   prevent pending responses from restoring the old state.
@@ -274,12 +277,15 @@ retain their elapsed age under the scheduler's freshness rules.
 
 ### 7.1 Discovery records and trust
 
-The version 1 mDNS TXT record contains `uuid` (host UUID), optional
+The version 1 mDNS TXT record requires a nonempty `uuid` (host UUID), with optional
 `cluster-uuid` (the certificate principal, the node identity named in its
 certificate), addresses in preferred order, and registered service ports.
-Node-info reports the same certificate identity as `clusterUuid`. It identifies
-the node, not a shared cluster-wide identifier. Hardware and model lists are
-read from the services rather than included in TXT.
+Unclustered announcements omit `cluster-uuid`. Different advertised UUIDs are
+retained as unverified discovery data and may receive public hardware previews;
+neither claim establishes a verified identity.
+Node-info reports the same certificate identity as `clusterUuid`. This is the
+individual node's identity, separate from the shared cluster identifier.
+Hardware and model lists are read from the services rather than included in TXT.
 
 The DNS SRV (service-location) record uses the fixed port `14318`; it does not
 select a service's connection port. TXT service ports identify where to try
@@ -293,14 +299,21 @@ hosts may use the same name.
 
 Scanner assigns each unverified record an independent discovery record ID.
 The canonical peer record for an approved node links its identity to its exact
-saved certificate.
-Scanner checks a discovery claiming to be a known host against that link, even
-when the announced certificate identity is missing or different. An announcement
-cannot change which certificate belongs to a node or replace its verified
+saved certificate. That saved pin selects the certificate used to authenticate
+a known host, even when an announcement omits or changes its `cluster-uuid`
+claim. An announcement cannot select a different certificate or replace verified
 service addresses before authentication succeeds.
 Once an observation authenticates, its subsequent announcements stay hidden
-while that exact proof remains current and its claimed host UUID is unchanged.
-Changed claims still require authentication before updating the verified record.
+while that exact proof remains current and its host UUID and advertised cluster
+identity are unchanged. Changing either UUID claim, including adding or clearing
+the cluster identity, clears the observation's previous association. New claims
+require authentication before updating a verified peer.
+
+Scanner rejects announcements with a missing host UUID or a claim to the local
+host. It removes only the cached discovery observation and its previous peer
+association. Announcement changes and removals cannot directly remove a verified
+peer, change its saved pins, or close its connections. The peer's own
+authenticated refresh and availability checks determine when its record expires.
 
 `trusted` is true for a verified peer whose pin is still approved. For the local
 record it follows actual local membership. Adding a pin schedules authentication
@@ -537,7 +550,8 @@ and service ports (§7.1).
 
 | Failure | Behavior |
 |---|---|
-| Missing or malformed announcement | Unusable fields are ignored; usable unverified data is retained within discovery limits |
+| Malformed service or address fields | Unusable fields are ignored; usable unverified data is retained within discovery limits |
+| Missing host UUID or local-host claim | The announcement is rejected and its cached discovery observation is removed; verified peers keep their independent authenticated availability checks |
 | Peer authentication or identity mismatch | The discovery is not marked verified, the existing peer record is unchanged, and no unencrypted retry occurs |
 | Inventory/model timeout or unreachable peer | Previously read inventory is retained, measurements age, and retries use increasing intervals up to the limit |
 | Pin removal/replacement or local departure | Verification is cleared, affected idle connections close, routing stops using the peer, and scheduling samples are discarded; in-flight results are checked against current trust before acceptance |

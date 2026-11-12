@@ -1096,7 +1096,9 @@ func TestDiscovery_StaleAssociationDoesNotHideObservation(t *testing.T) {
 func TestDiscovery_ObservationExpiryClearsCandidateAndRetainsAvailablePeer(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
-	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-20 * time.Second)}
+	// Discovery expiry is unauthenticated. Even old cached availability must
+	// leave the verified peer in place until its own sampling loop checks it.
+	f.daemon.nodeInfoStatus["peer-uuid"] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-2 * retainedPeerGrace)}
 	recordID := nodeDiscoveryRecordID(f.raw)
 	key := hostKey{recordKey: recordID, service: noderec.ServiceNodeInfo}
 	require.NotEmpty(t, f.daemon.enrichHosts.get(key))
@@ -1106,7 +1108,10 @@ func TestDiscovery_ObservationExpiryClearsCandidateAndRetainsAvailablePeer(t *te
 	assert.Empty(t, f.daemon.enrichHosts.get(key))
 	assert.Nil(t, f.daemon.candidates[recordID])
 	_, present := f.daemon.dir.get("peer-uuid")
-	assert.True(t, present, "recent inventory must retain the peer for the full minute")
+	require.True(t, present, "discovery expiry must not remove a verified peer")
+	f.daemon.refreshTelemetryOnce(t.Context())
+	_, present = f.daemon.dir.get("peer-uuid")
+	assert.True(t, present, "a successful authenticated read keeps the peer available")
 }
 
 func TestDiscovery_ReauthenticatesAfterSavedCertificateChanges(t *testing.T) {
@@ -1405,23 +1410,6 @@ func TestDiscovery_DiscardsQueuedModelsAfterReadmission(t *testing.T) {
 	assert.True(t, f.daemon.refreshNodeModels(before))
 }
 
-func TestPeerReachable_RejectsCachedLivenessAfterReadmission(t *testing.T) {
-	f := newDiscoveryPeerFixture(t, "peer-uuid")
-	f.discover(t)
-	f.daemon.noteActivity("peer-uuid", 0)
-	require.True(t, f.daemon.peerReachable("peer-uuid"))
-
-	// Readmission changes the proof binding even when both certificates remain.
-	// Availability checks must reject old evidence before a reload notification.
-	clustertrusttest.WriteAdmission(t, f.selfDir, "test-cluster", 2)
-
-	assert.False(t, f.daemon.peerReachable("peer-uuid"))
-
-	f.daemon.reloadTrust()
-	f.daemon.refreshCandidatesOnce(context.Background())
-	assert.True(t, f.daemon.peerReachable("peer-uuid"))
-}
-
 func TestDiscovery_RequiresReauthenticationBeforeReadmittedPeerTelemetry(t *testing.T) {
 	f := newDiscoveryPeerFixture(t, "peer-uuid")
 	f.discover(t)
@@ -1703,6 +1691,7 @@ func TestDiscovery_RemovesUnavailablePeerAfterItsDiscoveryExpires(t *testing.T) 
 	f.server.Close()
 	delete(f.daemon.nodeInfoStatus, "peer-uuid")
 	f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: f.raw})
+	f.daemon.refreshTelemetryOnce(t.Context())
 	_, present := f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
 }
@@ -1733,6 +1722,7 @@ func TestDiscovery_RemovesExpiredDiscoveryAfterUUIDClaimChanges(t *testing.T) {
 			require.Equal(t, recordID, nodeDiscoveryRecordID(f.raw))
 			f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: f.raw})
 			f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: f.raw})
+			f.daemon.refreshTelemetryOnce(t.Context())
 
 			assert.Nil(t, f.daemon.candidates[recordID])
 			_, present := f.daemon.dir.get(recordID)
@@ -1800,6 +1790,98 @@ func TestDiscovery_RetainedPeerExpiresAfterAvailabilityEvidenceEnds(t *testing.T
 	f.daemon.mesh.Refresh()
 	assert.True(t, f.daemon.mesh.Clustered())
 	assert.True(t, f.daemon.mesh.HasPin("peer-uuid"))
+}
+
+// A changed announcement must not keep its previously verified peer registered
+// after that peer becomes unavailable. Each case changes one UUID independently
+// so checking only the other UUID cannot preserve a stale association.
+func TestDiscovery_ChangedIdentityClaimsDoNotRetainUnavailablePeer(t *testing.T) {
+	const verifiedPeerUUID = "peer-uuid"
+	const replacementHostUUID = "replacement-host-uuid"
+	const replacementPrincipalUUID = "replacement-principal-uuid"
+	const expiredInventoryAge = 2 * retainedPeerGrace
+
+	test := func(name, hostUUID, clusterUUID string) {
+		t.Run(name, func(t *testing.T) {
+			f := newDiscoveryPeerFixture(t, verifiedPeerUUID)
+			f.discover(t)
+			peer, present := f.daemon.dir.get(verifiedPeerUUID)
+			require.True(t, present)
+			require.Equal(t, noderec.IdentityPinned, peer.IdentityVerification)
+
+			// Keep the discovered endpoint unchanged so this updates the same
+			// observation rather than adding an unrelated discovery.
+			updated := f.raw
+			updated.TXT = []string{
+				"uuid=" + hostUUID,
+				"cluster-uuid=" + clusterUUID,
+				fmt.Sprintf("ni=%d", peer.Services[noderec.ServiceNodeInfo].Port),
+				"ol=1",
+			}
+			recordID := nodeDiscoveryRecordID(f.raw)
+			require.Equal(t, recordID, nodeDiscoveryRecordID(updated))
+			f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: updated})
+			_, present = f.daemon.dir.get(peer.HostUUID)
+			require.True(t, present, "an unauthenticated announcement must not immediately revoke a verified peer")
+
+			// The changed announcement stays present, but the old peer stops
+			// answering and has no recent activity. Its historical association
+			// with this observation must not prevent normal expiry.
+			f.server.Close()
+			f.daemon.nodeInfoStatus[peer.HostUUID] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-expiredInventoryAge)}
+			f.daemon.refreshTelemetryOnce(t.Context())
+
+			_, present = f.daemon.dir.get(peer.HostUUID)
+			assert.False(t, present, "changed identity claims must not keep an unavailable verified peer registered")
+			assert.NotNil(t, f.daemon.candidates[recordID], "the updated announcement remains present during peer expiry")
+		})
+	}
+	test("host UUID claim changes", replacementHostUUID, verifiedPeerUUID)
+	test("cluster UUID claim changes", verifiedPeerUUID, replacementPrincipalUUID)
+}
+
+// Changed claims remain available as unverified discovery data. They cannot
+// disconnect a healthy verified peer, even when its cached measurements are old.
+func TestDiscovery_ChangedClaimsPreserveVerifiedPeerAndConnection(t *testing.T) {
+	const verifiedPeerUUID = "peer-uuid"
+	const otherPeerUUID = "other-peer-uuid"
+	const expiredInventoryAge = 2 * retainedPeerGrace
+
+	test := func(name, hostUUID, clusterUUID string) {
+		t.Run(name, func(t *testing.T) {
+			f := newDiscoveryPeerFixture(t, verifiedPeerUUID)
+			f.discover(t)
+			peer, present := f.daemon.dir.get(verifiedPeerUUID)
+			require.True(t, present)
+			require.Equal(t, noderec.IdentityPinned, peer.IdentityVerification)
+
+			updated := f.raw
+			updated.TXT = []string{
+				"uuid=" + hostUUID,
+				"cluster-uuid=" + clusterUUID,
+				fmt.Sprintf("ni=%d", peer.Services[noderec.ServiceNodeInfo].Port),
+				"ol=1",
+			}
+			recordID := nodeDiscoveryRecordID(f.raw)
+			require.Equal(t, recordID, nodeDiscoveryRecordID(updated))
+			// Poisoned announcements cannot declare a verified peer offline,
+			// even when its cached measurements are old. The TLS server is alive.
+			f.daemon.nodeInfoStatus[verifiedPeerUUID] = peerInfoStatus{lastAcceptedAt: time.Now().Add(-expiredInventoryAge)}
+			f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: updated})
+
+			observation, present := f.daemon.dir.get(recordID)
+			require.True(t, present, "changed claims must remain visible as an independent discovery")
+			assert.Equal(t, noderec.IdentityUnverified, observation.IdentityVerification)
+			assert.False(t, observation.Trusted)
+			after, present := f.daemon.dir.get(verifiedPeerUUID)
+			require.True(t, present, "an unauthenticated update must not remove a verified peer")
+			assert.Equal(t, peer, after)
+			f.daemon.refreshTelemetryOnce(t.Context())
+			assert.Equal(t, int32(1), f.connections.Load(), "announcement changes must preserve the authenticated connection")
+		})
+	}
+	test("host UUID claim changes", otherPeerUUID, verifiedPeerUUID)
+	test("cluster UUID claim changes", verifiedPeerUUID, otherPeerUUID)
 }
 
 func TestDiscovery_FailedRefreshKeepsPeersWithActiveDiscoveries(t *testing.T) {
@@ -1931,6 +2013,7 @@ func TestDiscovery_FailedAnnouncementUpdateStillAllowsRemovalOfUnavailablePeer(t
 	f.daemon.onBrowse(DiscoveryEvent{Type: "updated", Node: updated})
 	f.daemon.refreshCandidatesOnce(context.Background())
 	f.daemon.onBrowse(DiscoveryEvent{Type: "removed", Node: updated})
+	f.daemon.refreshTelemetryOnce(t.Context())
 	_, present := f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
 }

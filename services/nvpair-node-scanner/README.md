@@ -14,11 +14,16 @@ Concretely, the daemon:
 
 - **Advertises** this node's one `_nvpair-node._tcp` record, built from a registry of the local services its parent (the broker) registers — `ni`/`ol`/`lm`/`er`/`wl`/`cl`/`em`/`ec` ports plus the node identity (`uuid=`, `cluster-uuid=` when clustered, `ip=`). One record per node covers every service.
 - **Browses** `_nvpair-node._tcp` and tracks connection candidates by
-  `discoveryRecordId`. Claimed UUIDs, names, and addresses cannot select a local
-  or verified peer record.
+  `discoveryRecordId`. Announcements require a nonempty `uuid`. An optional
+  `cluster-uuid` remains an unverified claim even when it differs from `uuid`;
+  those discoveries can receive display-only hardware previews. Missing host
+  UUIDs and claims to the local host remove only the cached discovery observation
+  and its previous peer association. Claimed UUIDs, names, and addresses cannot
+  select a local or verified peer record.
 - **Authenticates peers** using exact certificate pins from
   `nvpair-shared/clustertrust`. A successful pinned mTLS node-info read must
-  report matching host and certificate UUIDs and complete peer metadata.
+  report `hostUuid` and `clusterUuid` matching the serving certificate's node UUID,
+  along with complete peer metadata.
   The authenticated name, addresses, ports, and hardware form a distinct
   `pinned` peer record, replacing only that successful discovery. Failed
   candidates stay separate and `unverified`. Public HTTP previews never supply
@@ -28,7 +33,9 @@ Concretely, the daemon:
   Verified record IDs are opaque and change with the local certificate or
   admission and the peer's exact pin or admission. Host UUIDs remain stable.
   Further announcements from that observation stay hidden while its
-  authenticated association is current and its claimed host UUID is unchanged.
+  authenticated association is current and its host UUID and advertised cluster
+  identity are unchanged. Changing either UUID claim, including adding or clearing
+  the cluster identity, clears the observation's previous association.
   Changed claims require authentication before updating the verified record.
 - **Refreshes models** every 15 seconds from verified endpoints, preserving
   the last successful inventory during outages while its authenticated proof,
@@ -69,13 +76,14 @@ Concretely, the daemon:
   and reads already in progress.
 - **Advertises live membership:** the same reload re-derives this node's own `cluster-uuid=` from the cluster dir and re-advertises when it differs from what is being published, so joining or leaving a cluster takes effect without a restart.
 - **Expires observations independently of peer availability:** twelve missed
-  five-second scans retire an observation and its candidate caches, even when
-  the verified peer is still available. The canonical sampling loop keeps
-  reading the peer independently of multicast. After its last observation
-  expires, a minute without authenticated inventory or approved inference
-  activity removes the verified record and caches, preserving membership and
-  pins. An open TCP port or another discovery claiming that UUID cannot keep
-  the peer alive.
+  five-second scans remove an observation and its candidate caches. Announcement
+  changes and removals cannot directly remove a verified peer, change its saved
+  pins, or close its connections. The canonical sampling loop continues reading
+  the peer independently of multicast. Once no discovery remains associated with
+  the peer, a failed pinned mTLS read removes its record and caches only after a
+  minute without authenticated inventory or approved inference activity.
+  Membership and pins remain. An open TCP port or another discovery claiming
+  that UUID cannot keep the peer alive.
 - **Allows grace for empty scans:** with multiple known nodes, up to six
   consecutive empty scans receive a shared grace period of about 30 seconds.
   Later empty scans count toward each record's miss threshold. This allows for
@@ -150,7 +158,7 @@ principal claims; address order does not affect the ID.
 
 - `discovery:node-discovered` — a new node entered the directory
 - `discovery:node-updated` — a known node's record or enrichment changed. A re-observation that changes nothing emits no event, so `lastSeen` is a last-*change* stamp rather than a liveness heartbeat
-- `discovery:node-removed` — a node aged out (identity + last-known fields)
+- `discovery:node-removed` — a directory record was removed (identity + last-known fields)
 - `discovery:node-telemetry` — compact maximum-GPU utilization, validity, and
   sample age for broker-internal scheduling
 - `discovery:node-info` — a full local or pinned hardware snapshot, or an
