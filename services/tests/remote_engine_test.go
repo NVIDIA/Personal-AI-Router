@@ -403,7 +403,8 @@ func startDownloadingOllama(t *testing.T, blobs string) *downloadingOllama {
 		}
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"models":[]}`))
+		_, err := w.Write([]byte(`{"models":[]}`))
+		assert.NoError(t, err, "answer the poll")
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)

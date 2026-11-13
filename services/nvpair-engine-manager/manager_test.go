@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -176,7 +177,8 @@ func TestManager_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
 // downloading.
 func TestManager_DownloadsARetrySentRightAfterACancel(t *testing.T) {
 	transfer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"success"}` + "\n"))
+		_, err := w.Write([]byte(`{"status":"success"}` + "\n"))
+		assert.NoError(t, err, "send the pull's success record")
 	}))
 	t.Cleanup(transfer.Close)
 	ex := newHTTPPullTestExecutor(t, transfer, Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
