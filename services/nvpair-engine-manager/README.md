@@ -72,16 +72,17 @@ that itself requires `mistral_common` 1.13. `vllm serve` listens on loopback `80
 the proxy facade owns `8000`. vLLM serves **one model per process** and has no
 load, unload, pull or delete API of its own, so the manifest provides them as
 manager actions: `load_model`, `unload_model`, `pull_model` and `delete_model`,
-described below. PAIR passes requests straight to vLLM and does not load or
-unload models on its own: a model is loaded with Load and released with Eject.
+described below. Through the PAIR endpoint, an enabled vLLM loads a requested
+cached model before inference. If another model is loaded, active responses finish
+before the switch. Explicit Load remains available; Eject releases model memory
+and keeps vLLM enabled. An explicitly disabled engine is never started by a request,
+and inference never downloads an uncached model.
 
-The default launch serves `Qwen/Qwen3.5-4B` through `--model <hugging-face-id>`.
-The model thinks before it answers, and with no `--reasoning-parser` in the launch
-that reasoning arrives in the reply ahead of the answer; adding
-`--reasoning-parser qwen3` in the launch settings moves it to
-`reasoning_content`. The model is about 9.3 GB of weights, so the default needs a GPU with at least 16 GB of
-memory; on a smaller GPU, download and load a smaller model before starting.
-Edit the `--model` argument, or use `load_model`, to serve another model. Only
+The bundled launch has no model argument. Enable installs vLLM and waits for an
+explicit choice without downloading weights or starting a model server. Choose
+**Select a model** in the desktop, then download or load a compatible model.
+An existing saved `--model` argument remains in effect across upgrades.
+Only
 `--host` and `--port` are managed controls, and there is no CORS control.
 The context window and GPU share are chosen automatically at every start
 (`auto_launch`, kind `hf_context`), not pinned in the saved launch. The manager
@@ -159,17 +160,18 @@ The model list is the Hugging Face cache (`~/.cache/huggingface/hub`, or the
 one `HF_HUB_CACHE` or `HF_HOME` in vLLM's launch settings names), not what
 vLLM happens to be serving: `list_models` is an `hf_cache` action listing the
 complete, text-model-shaped downloads (see `MANIFEST.md`), and it works while
-vLLM is stopped. Peers and the proxy, though, are only told about the model being
-served (`advertised_models: loaded`, read from vLLM's `GET /v1/models`), because
-the proxy routes a request to any node advertising its model and vLLM cannot
-answer for the others. A stopped vLLM advertises nothing. `load_model` switches
+vLLM is stopped. With `advertised_models: available`, enabled vLLM advertises
+complete downloaded models, including while it awaits a selection. The proxy
+prepares the requested model through engine-manager before forwarding inference.
+An explicitly disabled vLLM advertises no models. `loadedByEngine` still reports
+only the model actually resident in memory. `load_model` switches
 the served model: it writes `--model <id>` into the saved launch arguments and
 restarts vLLM on it, restoring the previous model if the new one does not start
 (for example it does not fit in GPU memory).
 
-`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the engine, which frees all of its GPU memory and keeps the saved model choice; a model the engine reports it is not serving is refused. Eject and `engine:stop` cancel a start that is still in flight, as shutdown does, instead of waiting out its readiness window: a Load cut short this way puts the previous model back in the launch arguments without starting it and replies `{model, restarted: false, stopped: true}` rather than an error, since the user asked for it, and a start stopped by the user is not reported as a failed start. Likewise `engine:start` (including `engine:install` with `start`), `engine:restart` and a peer's remote start that a Stop cut short reply with the engine's status, stopped, rather than an error. The broker relays an `engine:stop` without waiting for the lock a Start or Restart holds, so it reaches the engine-manager while that start is still waiting for readiness. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
+`unload_model` is a `stop_engine` action: vLLM cannot drop its model while running, so ejecting stops the serving process, frees its model memory, clears the saved model choice, and keeps the engine enabled at **Select a model**; a model the engine reports it is not serving is refused. Eject and `engine:stop` cancel a start that is still in flight, as shutdown does, instead of waiting out its readiness window: a Load cut short this way first restores the previous launch arguments without starting it and replies `{model, restarted: false, stopped: true}` rather than an error, since the user asked for it. Eject then clears the model selection and returns to the enabled state awaiting a model, while explicit Stop disables the engine. A start stopped by the user is not reported as a failed start. Likewise `engine:start` (including `engine:install` with `start`), `engine:restart` and a peer's remote start that a Stop cut short reply with the engine's status, stopped, rather than an error. The broker relays an `engine:stop` without waiting for the lock a Start or Restart holds, so it reaches the engine-manager while that start is still waiting for readiness. `load_model` on a stopped engine saves the choice and starts it, restoring the previous choice if it does not start.
 
-`delete_model` removes a model from the hub cache with the `hf cache rm` command of the `hf` tool beside `vllm` (an `hf_cache` action with `delete` and `tool`). Hugging Face's own tool decides which files go: it keeps any file in the cache's shared `blobs/` store that another model, dataset or Space still links to, and takes that store's locks, so a delete cannot remove a file another program is using or linking at the same moment. The cache is the user's standard Hugging Face cache, shared with every other Hugging Face tool on the machine. The model a running vLLM is serving is refused; which model that is is asked of vLLM itself (`loaded_models`), because an adopted vLLM may serve a model other than the one its saved arguments name, and the delete is refused when vLLM cannot say. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` is refused with an error rather than letting vLLM download a default model, until `load_model` selects one. The engine's operation lock is held from that check through the removal and any rollback, so a settings save or start made meanwhile waits and is not undone by a failed delete. `load_model`, `unload_model` and `delete_model` share that one launch-change path.
+`delete_model` removes a model from the hub cache with the `hf cache rm` command of the `hf` tool beside `vllm` (an `hf_cache` action with `delete` and `tool`). Hugging Face's own tool decides which files go: it keeps any file in the cache's shared `blobs/` store that another model, dataset or Space still links to, and takes that store's locks, so a delete cannot remove a file another program is using or linking at the same moment. The cache is the user's standard Hugging Face cache, shared with every other Hugging Face tool on the machine. The model a running vLLM is serving is refused; which model that is is asked of vLLM itself (`loaded_models`), because an adopted vLLM may serve a model other than the one its saved arguments name, and the delete is refused when vLLM cannot say. Deleting the model an ejected or stopped vLLM is set to serve also takes `--model` out of its launch arguments, and a start with no `--model` waits for a model without downloading a default; an explicit `load_model` or an inference request for a complete cached model chooses what to serve. The engine's operation lock is held from that check through the removal and any rollback, so a settings save or start made meanwhile waits and is not undone by a failed delete. `load_model`, `unload_model` and `delete_model` share that one launch-change path.
 
 `pull_model` is an `hf_pull` action: it asks Hugging Face for the repo's file list
 and sizes, picks the files vLLM reads (safetensors, config and tokenizer; not
@@ -216,11 +218,29 @@ Python 3.12, creates `{install_dir}/venv` and installs a pinned `vllm` wheel fro
 PyPI. No source build happens. The pinned wheel is a CUDA 13 build, so the install
 first checks that `nvidia-smi` exists, that the driver supports CUDA 13 or newer
 (it reads either the `CUDA UMD Version` or the older `CUDA Version` field), and
-that at least 25 GB of disk is free, enough for the engine and its default model. It fails with a clear message otherwise,
+that at least 25 GB of disk is free for the engine. Model downloads need additional space. It fails with a clear message otherwise,
 before downloading anything. The
 download is several GB, because `torch` and the CUDA libraries come with it.
-Model weights download from Hugging Face on first start into `~/.cache/huggingface`
+Explicit downloads and loading an uncached selected model fetch weights from Hugging Face into `~/.cache/huggingface`
 (`HF_HOME`), which no removal this service performs will delete.
+
+### vLLM first enable and model selection
+
+Enabling a newly configured vLLM installs the engine and leaves it enabled while
+waiting for a model choice. It does not select, download, or load a default model.
+The status has `installed:true`, `awaiting_model:true`, `running:false`, and
+`healthy:false`; no vLLM serving process or loaded model is advertised. The
+optional `awaiting_model` field is false or omitted in other lifecycle states.
+The desktop shows **Select a model**, keeps the switch on, and offers **Add model**
+and **Load** for downloaded models. A stopped engine hides its model controls.
+
+An explicit Load saves the chosen model and performs the normal readiness-probed
+start. Existing saved model arguments remain in effect, so upgrading preserves
+an existing user's selection. Stop turns enabled intent off; normal shutdown
+preserves it, including waiting for a choice. A failed first Load restores the
+previous model-free enabled state. Eject retains its existing behavior of stopping
+vLLM and releasing its model memory. This change adds no inactivity unload policy.
+
 
 ## Communication
 
@@ -252,7 +272,7 @@ Requests (caller → service):
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
 | `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Both llama.cpp and vLLM are `searchable`. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
-| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"` (vLLM), `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
+| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"`, `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
@@ -592,3 +612,18 @@ another attempt can succeed where a declined stop cannot.
 (a start, stop, install or model switch can hold an engine for minutes): while
 one runs they report what is already known and the operation reports its own
 result.
+
+A custom `--served-model-name` remains an explicit API naming contract. While it
+is configured, only currently served aliases are advertised; cached root IDs
+are not promised as names the native engine accepts. Requests for an already
+served alias do not restart it. Eject clears the model selection, so an alias
+alone does not identify which cached model to load next.
+
+The `enabled` status field records ON intent independently of model residency.
+It remains true through an automatic model switch; `starting` covers the gap
+between the previous process stopping and the replacement becoming ready.
+`requestableByEngine` in `engine:models` is internal loader capability, including
+while OFF. The broker retains this inventory to restore local routes before it
+forwards the next ON event. It is not advertised while OFF and never marks a
+cached model loaded. Desktop, TUI and scanner residency consumers continue to
+use `loadedByEngine`; disk inventory uses `downloadedByEngine`.

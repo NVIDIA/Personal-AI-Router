@@ -302,3 +302,12 @@ These pages cover the surrounding workflows:
 - [Troubleshooting](troubleshooting.mdx)
 - [Overview](overview.mdx)
 - [Architecture](architecture.mdx) (how engines fit into PAIR's process model)
+
+### vLLM requests after Eject
+
+While vLLM is enabled, a request to the PAIR endpoint loads its requested model
+from downloaded files. If another model is loaded, PAIR lets active responses
+finish before switching. Eject keeps the switch on, so the next request can load
+a model again. Turning the switch off prevents request-triggered loading. Requests
+never download an unknown model; add/download it first. The native vLLM server
+port does not provide this PAIR behavior.

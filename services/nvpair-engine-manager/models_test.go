@@ -355,9 +355,10 @@ func TestSweepModels_PushesADownloadedListThatReadsAgainUnchanged(t *testing.T) 
 func TestSweepModels_RetainsLastGoodOnTransientMiss(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
 	prev := modelLists{
-		advertised: map[string][]string{"fake": {"llama3.2:1b"}},
-		loaded:     map[string][]string{"fake": {"llama3.2:1b"}},
-		downloaded: map[string][]string{},
+		advertised:  map[string][]string{"fake": {"llama3.2:1b"}},
+		loaded:      map[string][]string{"fake": {"llama3.2:1b"}},
+		downloaded:  map[string][]string{},
+		requestable: map[string][]string{},
 	}
 	// The engine isn't started, so ModelsResult reports it neither running nor
 	// queryable: no list has a "fake" key this sweep.

@@ -678,3 +678,54 @@ Each worker is spawned in its own process group — `Setpgid` on Unix, `CREATE_N
 Electron starts **only** this binary from the worker tree, from the app's `cli-bin` directory with every worker's `--*-path` passed explicitly, and reaches every capability through it; no worker is ever launched by both Electron and the broker, and there is no broker-absent path. `nvpair-tui` is a peer client, not a supervised worker: it spawns and supervises its own `nvpair-ui-broker` child (`--broker-path`, defaulting to the sibling binary) and speaks the same contract described here. Each front end also launches the Inference Demo's `inference-dispatcher` itself; that binary is an ordinary HTTP client of the local facades, not a worker, and the broker neither spawns nor sees it.
 
 Build and staging: `services/build.sh` and `services/build.bat` read the component version out of `services/versions.json`, build the broker with that version stamped into `main.Version`, and stage it into `services/build/bin/` alongside the eleven other component binaries and `inference-dispatcher`. `services/installer/nvpair-setup.nsi` (with the `linux/` and `macos/` counterparts) packages that bundle, installs the broker as the process the graphical UI and the TUI launch, and owns the firewall rules for the workers that actually listen — the broker itself needs none, because it opens no socket. When a JSON-RPC contract on any relayed namespace changes, the producing Go service, the Electron bridge under `desktop/src/electron/service-bridge/`, and `npm --prefix desktop run service-contracts:check` must all be updated in the same change.
+
+### Enabled engines awaiting a model
+
+The broker relays the engine manager's optional `awaiting_model` status field
+unchanged on local and paired-peer status/operation responses and state events.
+This is enabled intent without a serving process: `running` and `healthy` remain
+false, so routing and model advertisement do not treat it as ready. The desktop
+and terminal clients display model-selection guidance while allowing explicit
+Stop and model selection. No broker-owned model default is added.
+
+
+### Internal model-preparation relay
+
+`model:prepare {id, engine, model}` and `model:cancel` from the supervised proxy
+are relayed as `engine:prepare-model` and `engine:cancel-model-preparation` to
+engine-manager. `engine:model-prepared {id, engine, port?, error?, status?}` is
+returned to the matching engine facade as `model:prepared`. These internal
+notifications carry operational metadata only; they never carry inference
+content or become desktop commands. The shared engine capability currently
+permits this for vLLM. The broker advertises enabled vLLM even while awaiting a
+model and supplies `loadOnRequest:true` to its local proxy target; engine-manager
+rechecks enabled intent before loading, so stale discovery cannot revive OFF.
+
+The broker acknowledges `node/set-local-models {engine, id, enginePort, enabled,
+models}` before exposing initial model snapshots or model-change events to the
+UI. The proxy projects this authoritative inventory onto this node's stable ID,
+superseding only its stale self-discovery entry. This makes an immediate request
+after download routable and removes deleted local models immediately. The port
+comes from engine-manager lifecycle state, including custom server ports. Cached
+model listings through PAIR do not load a model. Browser-origin requests retain
+the native engine's CORS decision.
+
+A manager restart settles pending proxy preparations with a retryable failure;
+a proxy restart cancels preparations orphaned by the old process.
+
+`EngineStatus.enabled` is authoritative ON intent, independent of process
+residency. Model switching preserves `enabled` and reports `starting` until the
+replacement is ready. The broker acknowledges local availability updates before
+forwarding lifecycle events. `requestableByEngine` is retained loader capability
+independent of ON/OFF state; only enabled inventories are advertised for routing.
+It must not be interpreted as loaded models by desktop, TUI or discovery clients.
+
+Before `app:ready`, the broker seeds enabled model-on-request facades from the
+engine manager's persisted intent and cached inventory. The first cached-model
+request after restart can load its model without waiting for periodic
+availability reconciliation. Explicit OFF remains authoritative.
+
+For engines that load cached models on request, settings completion reconciles
+local request eligibility and cached inventory from the engine manager's observed
+enabled state. An idle enabled engine remains requestable after changing its
+cache or ports; a disabled engine stays unavailable.

@@ -40,7 +40,7 @@ describe('remote engine install state', () => {
         // Discovery alone creates the node with empty engine presence. Without
         // facts that must not become a confident "stopped" toggle.
         expect(lmStudioStatus(remoteNodeId)).toBeUndefined()
-        expect(state.isRemoteEngineRunning(remoteNodeId, 'lm-studio')).toBe(false)
+        expect(state.isRemoteEngineEnabled(remoteNodeId, 'lm-studio')).toBe(false)
     })
 
     it('maps authoritative installed:false to not-installed', () => {
@@ -81,7 +81,7 @@ describe('remote engine install state', () => {
             enginePort: null,
             proxyPort: null
         })
-        expect(state.isRemoteEngineRunning(remoteNodeId, 'lm-studio')).toBe(false)
+        expect(state.isRemoteEngineEnabled(remoteNodeId, 'lm-studio')).toBe(false)
     })
 
     it('maps authoritative installed:true running:false to stopped', () => {
@@ -142,7 +142,7 @@ describe('remote engine install state', () => {
             }
         })
 
-        expect(state.isRemoteEngineRunning(remoteNodeId, 'lm-studio')).toBe(true)
+        expect(state.isRemoteEngineEnabled(remoteNodeId, 'lm-studio')).toBe(true)
         expect(lmStudioStatus(remoteNodeId)).toMatchObject({
             processStatus: 'running',
             enginePort: null,
@@ -184,7 +184,7 @@ describe('remote engine install state', () => {
         })
 
         expect(lmStudioStatus(remoteNodeId)).toBeUndefined()
-        expect(state.isRemoteEngineRunning(remoteNodeId, 'lm-studio')).toBe(false)
+        expect(state.isRemoteEngineEnabled(remoteNodeId, 'lm-studio')).toBe(false)
     })
 
     it('retracts a stale stopped projection when authoritative facts say not installed', () => {

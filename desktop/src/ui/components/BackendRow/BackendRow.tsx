@@ -44,7 +44,7 @@ function syntheticPendingStatus(
         case 'uninstall':
             return 'uninstalling'
         case 'toggle':
-            return current === 'running' ? 'stopping' : 'starting'
+            return current === 'running' || current === 'awaiting-model' ? 'stopping' : 'starting'
         case 'stop':
             return 'stopping'
         case 'loadModel':
@@ -66,7 +66,10 @@ export function BackendRow({
     /** False when the service never reported this node/engine pair (placeholder status). */
     statusKnown: boolean
 }) {
-    const [expanded, setExpanded] = useState(false)
+    const [expanded, setExpanded] = useState(backend.processStatus === 'awaiting-model')
+    useEffect(() => {
+        if (backend.processStatus === 'awaiting-model') setExpanded(true)
+    }, [backend.processStatus])
     const [confirmUninstall, setConfirmUninstall] = useState(false)
     const installProgress = useEngineProgressStore(s => {
         const installKey = engineProgressKey({

@@ -315,7 +315,8 @@ func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	waitFor(t, 6*time.Second, func() bool {
 		s, err := ex.Status("fake")
 		require.NoError(t, err)
-		return !s.Running
+		// Process exit and its error notification are published asynchronously.
+		return !s.Running && hasErr(ex.Errors(), exitedID("fake"))
 	})
 	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
 }

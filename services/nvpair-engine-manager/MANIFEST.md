@@ -354,10 +354,10 @@ placeholder before the action runs:
   declared `remove_path.root` via `lms ls --json`. When no indexed file
   matches, the runner falls back to `{root}/{model}` if that path exists.
 
-A manifest-level **`advertised_models`** (`"list"`, the default, or `"loaded"`)
+A manifest-level **`advertised_models`** (`"list"`, the default, `"loaded"`, or `"available"`)
 chooses what the node tells its peers and its own proxy it can serve. The proxy
 sends a request to any node advertising the model, so an engine that serves one
-model per process sets `"loaded"` and advertises only `loaded_models`, even when
+model per process without request-triggered loading sets `"loaded"` and advertises only `loaded_models`, even when
 its `list_models` offers many models it could be switched to. With `"loaded"`,
 a `loaded_models` action is required, and `engine:models` reports the engine in
 two parts:
@@ -385,7 +385,10 @@ in the directory that holds the engine binary, and reports byte progress taken
 from the cache directory. It needs no running engine.
 
 A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
-serves a single model per process and so cannot unload it while running. A
+serves a single model per process and so cannot unload it while running. With
+`wait_for_model`, Eject also clears its selected model and leaves it enabled
+awaiting a new choice, including when cancelling a Load in progress. An already
+disabled engine stays disabled. A
 `launch_model` action on a stopped engine saves the choice and starts it.
 
 A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536, "max_num_seqs": 32}`)
@@ -656,3 +659,19 @@ Caveats worth encoding when authoring these:
 - **LM Studio** model dir is settings-controlled (no documented relocation env); surface its config as flags/API, not env.
 - **vLLM**: native Windows is unsupported (WSL only), and macOS is Apple Silicon only through the vLLM-Metal plugin (`darwin/arm64`); the bind is a flag, not env. The bundled `vllm.json` is the reference: it passes the model as `--model`, since manifest `runtime.args` have no `{model}` token, and installs through a sha256-pinned `uv` bootstrap with a detect-first path.
 - **GPT4All**: no first-class headless CLI today — out of scope for a config-only manager unless targeting its Python SDK.
+
+### Waiting for explicit model selection
+
+`runtime.wait_for_model: true` is supported for process engines with a
+`launch_model` action. When no model launch argument is configured, Start succeeds
+with `awaiting_model:true` and saves enabled intent without spawning a serving
+process. The bundled vLLM manifest uses this policy and supplies no default model.
+Once a model argument is saved, the usual startup and readiness checks apply.
+
+### Cached model availability for request-triggered loading
+
+`advertised_models: "available"` is for a `wait_for_model` runtime with an
+`hf_cache` model inventory and `loaded_models` action. While enabled it advertises
+complete cached models that engine-manager can prepare on request. While disabled
+its advertised set is empty. Downloaded and resident sets remain separately
+reported. Its loaded result may use `inventory_field`, as with `"loaded"`.

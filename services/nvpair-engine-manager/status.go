@@ -98,6 +98,7 @@ func (e *Executor) statusWithContext(ctx context.Context, engine string, probePo
 		return EngineStatus{}, err
 	}
 	for {
+		enabled, _, _ := e.desired.get(engine)
 		st.mu.Lock()
 		port := st.port
 		if probePort > 0 {
@@ -117,7 +118,7 @@ func (e *Executor) statusWithContext(ctx context.Context, engine string, probePo
 					return EngineStatus{}, ctx.Err()
 				}
 			}
-			result := statusLocked(engine, st)
+			result := statusLocked(engine, st, enabled)
 			st.mu.Unlock()
 			return result, nil
 		}
@@ -166,7 +167,7 @@ func (e *Executor) statusWithContext(ctx context.Context, engine string, probePo
 				st.mu.Unlock()
 				continue
 			}
-			result := statusLocked(engine, st)
+			result := statusLocked(engine, st, enabled)
 			st.mu.Unlock()
 			return result, nil
 		}
@@ -204,20 +205,23 @@ func (e *Executor) Errors() []serviceError {
 }
 
 func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
+	enabled, _, _ := e.desired.get(engine)
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return statusLocked(engine, st)
+	return statusLocked(engine, st, enabled)
 }
 
-func statusLocked(engine string, st *engineState) EngineStatus {
+func statusLocked(engine string, st *engineState, enabled bool) EngineStatus {
 	return EngineStatus{
-		Engine:      engine,
-		DisplayName: st.manifest.DisplayName,
-		Installed:   st.installed,
-		Running:     st.running,
-		Starting:    st.starting && !st.running,
-		Healthy:     st.healthy,
-		Port:        st.port,
+		Engine:        engine,
+		DisplayName:   st.manifest.DisplayName,
+		Installed:     st.installed,
+		Enabled:       enabled || st.enabling || st.modelSwitching || st.awaitingModel,
+		Running:       st.running,
+		Starting:      (st.starting || st.modelSwitching) && !st.running,
+		AwaitingModel: st.installed && st.awaitingModel && !st.running && !st.starting && !st.modelSwitching,
+		Healthy:       st.healthy,
+		Port:          st.port,
 	}
 }
 
@@ -271,13 +275,14 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 		return
 	}
 
+	enabled, _, _ := e.desired.get(engine)
 	st.mu.Lock()
 	if st.opDone != nil || st.revision != key.revision {
 		run.stale = true
 		st.mu.Unlock()
 		return
 	}
-	before := statusLocked(engine, st)
+	before := statusLocked(engine, st, enabled)
 	oldBinPath, oldAdopted := st.binPath, st.adopted
 	emit := false
 	st.installed = pathInstalled
@@ -328,7 +333,7 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 			}
 		}
 	}
-	after := statusLocked(engine, st)
+	after := statusLocked(engine, st, enabled)
 	if before != after || oldBinPath != st.binPath || oldAdopted != st.adopted {
 		st.revision++
 	}
@@ -441,6 +446,7 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	changed := !st.running || !st.healthy || !st.adopted || st.port != port
 	st.installed = true
 	st.running = true
+	st.awaitingModel = false
 	st.healthy = true
 	st.adopted = true
 	st.port = port

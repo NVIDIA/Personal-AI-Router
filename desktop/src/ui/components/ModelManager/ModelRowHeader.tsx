@@ -11,6 +11,7 @@ export function ModelRowHeader({
     modelName,
     formattedName,
     isLoaded,
+    disabled,
     actionItems,
     actionDd,
     onAction
@@ -18,6 +19,7 @@ export function ModelRowHeader({
     modelName: string
     formattedName: string
     isLoaded: boolean
+    disabled: boolean
     actionItems: { id: string; children: string; disabled?: boolean; danger?: boolean }[]
     actionDd: ModelRowDropdownControl
     onAction: (modelName: string, action: string) => void
@@ -26,11 +28,11 @@ export function ModelRowHeader({
         () =>
             actionItems.map(item => ({
                 children: item.children,
-                disabled: item.disabled,
+                disabled: disabled || item.disabled,
                 danger: item.danger,
                 onSelect: () => onAction(modelName, item.id)
             })),
-        [actionItems, modelName, onAction]
+        [actionItems, disabled, modelName, onAction]
     )
 
     return (
@@ -53,6 +55,7 @@ export function ModelRowHeader({
             {actionItems.length > 0 && (
                 <Dropdown
                     items={dropdownItems}
+                    disabled={disabled}
                     showChevron={false}
                     size="small"
                     className="compact-dropdown shrink-0"

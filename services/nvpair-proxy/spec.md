@@ -714,3 +714,44 @@ new supervisor, and no new relay wiring.
 | Transport error with candidates left | Forget the node's confirmed address, fail over |
 | Client disconnects mid-stream | Terminal workload event emitted at once; upstream cancelled |
 | Broker link closed | Facades stop serving, then the shared transport pool closes |
+
+## Request-triggered model preparation
+
+The vLLM profile supports preparing an advertised cached model before inference.
+The broker's `node/set-local-backend` payload includes optional
+`loadOnRequest:true` while this engine is enabled, including awaiting-model and
+starting states. This permits a loopback routing target while the serving process
+is not yet healthy. It never permits a non-loopback local target.
+
+The proxy sends operational `{id, engine, model}` metadata in `model:prepare` to
+its broker, receives `model:prepared {id, engine, port?, error?, status?}`, and
+sends `model:cancel` if that preparation is abandoned. Engine-manager rechecks
+cached inventory and enabled intent under the launch lock. Request content is
+never sent over this control channel. Non-retryable preparation failures retain
+an actionable error response rather than repeatedly restarting a failing model.
+
+A per-facade gate allows concurrent same-model local inference and FIFO groups
+for different models. Admission spans the complete response, including streams;
+only after existing responses finish can another model be prepared. Both local
+requests and terminal pinned-mTLS ingress use this gate. The terminal ingress
+still never routes onward. Peer and local HTTP transport pools allow a bounded
+10-minute model preparation allowance before ordinary inference header/body
+budgets. Pin revocation, cancellation and connection cleanup remain enforced.
+
+The broker acknowledges `node/set-local-models {engine, id, enginePort, enabled,
+models}` before exposing initial model snapshots or model-change events to the
+UI. The proxy projects this authoritative inventory onto this node's stable ID,
+superseding only its stale self-discovery entry. This makes an immediate request
+after download routable and removes deleted local models immediately. The port
+comes from engine-manager lifecycle state, including custom server ports. Cached
+model listings through PAIR do not load a model. Browser-origin requests retain
+the native engine's CORS decision.
+
+A manager restart settles pending proxy preparations with a retryable failure;
+a proxy restart cancels preparations orphaned by the old process.
+
+For vLLM, the aggregated `/v1/models` response is limited to each peer's
+advertised model-owner inventory. A peer's fresher HTTP list cannot expose a
+new model before this facade can route an inference request to it. The model
+appears after discovery convergence; removed models disappear when the peer no
+longer reports them. Other engines retain their existing aggregation behavior.

@@ -21,6 +21,7 @@ import (
 
 	"nvpair-shared/engines"
 	"nvpair-shared/errors"
+	"nvpair-shared/modelrequest"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
 	"nvpair-shared/splitlisten"
@@ -43,6 +44,12 @@ import (
 // differ. The transport pool is per process because it is keyed by peer, not
 // by engine, and duplicating it would double the connections to every peer.
 type facade struct {
+	localInventoryMu sync.Mutex
+	localInventory   *modelrequest.LocalInventory
+
+	modelGate     modelRequestGate
+	modelRequests modelRequestRelay
+
 	// host is the process hosting this facade. Reached for shared state only.
 	host *Proxy
 

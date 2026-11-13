@@ -97,6 +97,15 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	}
 	st.lockOperation()
 	defer st.unlockOperation()
+	st.mu.Lock()
+	st.enabling = true
+	st.mu.Unlock()
+	defer func() {
+		st.mu.Lock()
+		st.enabling = false
+		st.mu.Unlock()
+		e.emitState(engine)
+	}()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
 		return e.startStopped(st, err)
 	}
@@ -207,6 +216,15 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if flag := modelLaunchFlag(st.manifest); flag != "" {
 		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
 		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
+			if rt.WaitForModel {
+				st.mu.Lock()
+				st.awaitingModel = true
+				st.stopping = false
+				st.port = port
+				st.mu.Unlock()
+				e.emitState(engine)
+				return nil
+			}
 			return refuse(fmt.Errorf("%s has no model selected; load a model to start it", st.manifest.DisplayName))
 		}
 	}
@@ -223,6 +241,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.mu.Lock()
 	st.port = port
 	st.stopping = false
+	st.awaitingModel = false
 	st.starting = true
 	st.mu.Unlock()
 	e.emitState(engine)
@@ -510,6 +529,11 @@ func (e *Executor) Stop(engine string) error {
 	// engine back on. Restart and StopAll call doStop directly and never
 	// rewrite intent — shutdown must not erase the user's saved choice.
 	setErr := e.setDesiredEnabled(engine, false)
+	// Explicit commands must finish the client's transitional state even when
+	// the engine was already stopped and doStop had no change to announce.
+	if stopErr == nil {
+		e.emitState(engine)
+	}
 	return errors.Join(stopErr, setErr)
 }
 
@@ -523,7 +547,12 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 		// old probe is invalidated by the operation revision, and later status
 		// checks must not adopt the listener behind the user's explicit Stop.
 		st.stopping = true
+		wasAwaiting := st.awaitingModel
+		st.awaitingModel = false
 		st.mu.Unlock()
+		if wasAwaiting {
+			e.emitState(engine)
+		}
 		return nil
 	}
 	proc := st.proc
@@ -690,6 +719,7 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 		st.healthStop = nil
 	}
 	st.running = false
+	st.awaitingModel = false
 	st.healthy = false
 	st.stopping = true
 	st.adopted = false

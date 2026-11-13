@@ -81,15 +81,15 @@ func (e *Executor) watchLoaded(ctx context.Context) {
 // list in a ModelsResult, and the engines whose downloaded list the last sweep
 // could not read.
 type modelLists struct {
-	advertised, loaded, downloaded map[string][]string
-	downloadedMissed               map[string]bool
+	advertised, loaded, downloaded, requestable map[string][]string
+	downloadedMissed                            map[string]bool
 }
 
 // sweepModels performs one poll: it fetches the current model result and
 // computes which engines changed relative to prev in any of the lists a consumer
 // shows — what is served (ByEngine), loaded (LoadedByEngine) or downloaded
 // (DownloadedByEngine). The loaded set alone misses a pull or delete, and for an
-// engine that advertises only what it serves (vLLM) the downloaded list changes
+// engine with a separate disk inventory the downloaded list changes
 // on its own. It returns those engine names, the refreshed baseline to carry
 // into the next sweep, and the full result (the push payload). In each list an
 // engine absent from this sweep keeps its last-good entry (see changedEngines),
@@ -112,9 +112,10 @@ func (e *Executor) sweepModels(ctx context.Context, prev modelLists) (changed []
 		return next
 	}
 	next = modelLists{
-		advertised: sweep(prev.advertised, res.ByEngine),
-		loaded:     sweep(prev.loaded, res.LoadedByEngine),
-		downloaded: sweep(prev.downloaded, res.DownloadedByEngine),
+		advertised:  sweep(prev.advertised, res.ByEngine),
+		loaded:      sweep(prev.loaded, res.LoadedByEngine),
+		downloaded:  sweep(prev.downloaded, res.DownloadedByEngine),
+		requestable: sweep(prev.requestable, res.RequestableByEngine),
 	}
 	// A push made while an engine's downloaded list could not be read carries
 	// no list for it, so a consumer drops its rows. When the list reads again,

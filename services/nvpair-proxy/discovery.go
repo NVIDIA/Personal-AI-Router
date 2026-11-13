@@ -31,6 +31,9 @@ var uuidFromTXT = discovery.UUIDFromTXT
 // Node is the proxy's routable view of a node. It adds a canonical dialable IP
 // field over the discovered node shape.
 type Node struct {
+	// Local is set only by the broker-owned local inventory projection, never by JSON.
+	Local bool `json:"-"`
+
 	ID        string   `json:"id"`
 	Host      string   `json:"host"`
 	Port      int      `json:"port"`
@@ -68,6 +71,8 @@ func (n Node) withPrimaryIP() Node {
 // Discovery holds the proxy's routing targets: the relay-fed subscribed overlay
 // and the user-added manual overlay.
 type Discovery struct {
+	localNode *Node
+
 	mu          sync.RWMutex
 	manualNodes map[string]Node
 	// subscribedNodes are routing targets pushed down by the broker's discovery
@@ -90,7 +95,14 @@ func (d *Discovery) Nodes() []Node {
 	defer d.mu.RUnlock()
 	out := make([]Node, 0, len(d.manualNodes)+len(d.subscribedNodes))
 	seen := make(map[string]struct{}, len(d.subscribedNodes))
+	if d.localNode != nil {
+		out = append(out, *d.localNode)
+		seen[d.localNode.ID] = struct{}{}
+	}
 	for id, n := range d.subscribedNodes {
+		if _, known := seen[id]; known {
+			continue
+		}
 		out = append(out, n)
 		seen[id] = struct{}{}
 	}
@@ -108,6 +120,9 @@ func (d *Discovery) Nodes() []Node {
 func (d *Discovery) Has(id string) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	if d.localNode != nil && d.localNode.ID == id {
+		return true
+	}
 	if _, ok := d.subscribedNodes[id]; ok {
 		return true
 	}
@@ -178,4 +193,21 @@ func (d *Discovery) IsManual(id string) bool {
 	defer d.mu.RUnlock()
 	_, exists := d.manualNodes[id]
 	return exists
+}
+
+func (d *Discovery) SetLocal(node Node) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	node.Local = true
+	node.Models = append([]string{}, node.Models...)
+	d.localNode = &node
+}
+
+func (d *Discovery) LocalModels() ([]string, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.localNode == nil {
+		return nil, false
+	}
+	return append([]string{}, d.localNode.Models...), true
 }

@@ -212,8 +212,10 @@ arguments),
 and has a Hugging Face catalog. Load switches the served model through `load_model` (a
 `launch_model` action): it saves `--model <id>` into the launch arguments and
 restarts the engine, restoring the previous model if the new one does not start.
-Only the model being served is advertised to peers and the proxy, so a request
-for another cached model is refused until it is loaded. A Load switch passes through a stopped engine for the length of the
+Enabled vLLM advertises its complete downloaded models to peers and the proxy.
+A request through PAIR loads the requested cached model, or waits for active
+responses before switching to it. Explicit OFF prevents loading; requests do not
+download missing models. A Load switch passes through a stopped engine for the length of the
 restart. The pending Load in the renderer's pending-actions store (the one owner
 of optimistic engine and model state) also covers the engine, because vLLM's
 capabilities declare `loadRestartsEngine`: its card shows starting rather than
@@ -590,3 +592,18 @@ On every backend update:
 
 Do not append release diaries or prior-state narratives. Git history is the
 record of how this integration changed.
+
+### vLLM first use
+
+A newly enabled vLLM waits for explicit model selection and downloads no default
+model. `awaiting_model` maps to **Select a model**, an enabled switch, and a selection
+action that opens the model controls. Add model/Load are available before a server
+is running. Disabled engines hide cached model rows and controls.
+Saved model selections still start normally. The broker retains the authoritative
+engine status for both local and paired nodes; an engine awaiting selection is
+not advertised as serving a model.
+
+The local model projection applies downloaded inventory and loaded state from
+`engine:models-changed` together. Remote pull/delete operations update the owning
+node's rows while it awaits model selection; an explicit empty inventory clears
+the rows, and an unavailable inventory read retains the last known list.

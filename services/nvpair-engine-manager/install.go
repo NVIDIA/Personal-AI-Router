@@ -155,6 +155,10 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		// claim with it: left behind, it would authorise removing a copy the
 		// user installs later, which PAIR has no right to touch.
 		clearInstallMarker(st.installDir)
+		st.mu.Lock()
+		st.awaitingModel = false
+		st.mu.Unlock()
+		e.emitState(engine)
 		return e.setDesiredEnabled(engine, false)
 	}
 	un := st.plat.Uninstall

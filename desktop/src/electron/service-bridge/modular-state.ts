@@ -78,6 +78,7 @@ interface RemoteEngineFacts {
     installed: boolean
     running: boolean
     starting: boolean
+    awaitingModel: boolean
     healthy: boolean
     port: number
 }
@@ -91,9 +92,11 @@ function factsProcessStatus(facts: {
     installed: boolean
     running: boolean
     starting: boolean
+    awaitingModel: boolean
 }): EngineProcessStatus {
     if (facts.running) return 'running'
     if (facts.starting) return 'starting'
+    if (facts.awaitingModel) return 'awaiting-model'
     return facts.installed ? 'stopped' : 'not-installed'
 }
 
@@ -170,7 +173,7 @@ interface ModularNode extends NodeHardware {
     // engine reports loaded state. Mirrors noderec.DirectoryNode.LoadedByEngine.
     loadedByEngine: Record<string, string[]>
     // Per-engine downloaded inventory of an engine that advertises only the model
-    // it is serving (vLLM), carried on `AvailableNode.downloadedByEngine`. Its
+    // it can load (vLLM), carried on `AvailableNode.downloadedByEngine`. Its
     // {@link modelsByEngine} entry holds just the served name, for routing; this
     // lists every model it can load, read even while it is stopped, so the model
     // manager keeps its rows. Its {@link loadedByEngine} entry names models the
@@ -962,7 +965,13 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; starting: boolean; port: number }
+        {
+            installed: boolean
+            running: boolean
+            starting: boolean
+            awaitingModel: boolean
+            port: number
+        }
     >()
     /**
      * The engines `nvpair-engine-manager` lists for this host. It leaves out an
@@ -1394,6 +1403,7 @@ class ModularBridgeState {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
             starting: booleanValue(obj.starting),
+            awaitingModel: booleanValue(obj.awaiting_model),
             port: numberValue(obj.port)
         })
         // A fresh authoritative state is the resolution of whatever op was in
@@ -1482,16 +1492,16 @@ class ModularBridgeState {
     }
 
     /**
-     * Whether a remote peer's proxy-engine is currently reported as running.
+     * Whether a remote engine is enabled, including waiting for model selection.
      * Mirrors {@link resolveRemoteEngineStatus}: authoritative facts are used
      * alone when present, and the coarser per-engine mDNS proxy presence
      * (`up`/`down`) is the fallback only for a peer with no facts, so the toggle
      * decision matches the displayed status.
      */
-    isRemoteEngineRunning(nodeId: string, engineType: EngineType): boolean {
+    isRemoteEngineEnabled(nodeId: string, engineType: EngineType): boolean {
         if (!isProxyEngine(engineType)) return false
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engineType))
-        if (facts) return facts.running
+        if (facts) return facts.running || facts.awaitingModel
         const node = this.nodes.get(nodeId)
         if (!node || node.clustered || node.trusted) return false
         return node.engines[engineType].up
@@ -1805,6 +1815,7 @@ class ModularBridgeState {
                 installed: booleanValue(engineObj.installed),
                 running: booleanValue(engineObj.running),
                 starting: booleanValue(engineObj.starting),
+                awaitingModel: booleanValue(engineObj.awaiting_model),
                 healthy: booleanValue(engineObj.healthy),
                 port: numberValue(engineObj.port)
             })
@@ -1837,6 +1848,7 @@ class ModularBridgeState {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
             starting: booleanValue(obj.starting),
+            awaitingModel: booleanValue(obj.awaiting_model),
             healthy: booleanValue(obj.healthy),
             port: numberValue(obj.port)
         })
@@ -1887,7 +1899,7 @@ class ModularBridgeState {
         // Stamp `'loaded'` from the self node's loaded set so a `list_models`
         // refresh (pull/lifecycle) preserves residency instead of resetting every
         // row to idle. The loaded set is seeded by discovery self-enrichment and
-        // kept fresh by {@link applyLocalLoadedModels}.
+        // kept fresh by {@link applyLocalModelSnapshot}.
         const loaded = loadedNamesForEngine(nodeId ? this.nodes.get(nodeId) : undefined, engineType)
         const items = modelNames.map(name => modelItem(name, loaded.has(name)))
         this.localManagerModels.set(engineType, items)
@@ -1900,30 +1912,35 @@ class ModularBridgeState {
     }
 
     /**
-     * Update the local node's per-engine loaded-in-memory model set from an
-     * `engine:models-changed` push and re-publish the affected local
-     * engines, so an explicit load/unload, LM Studio JIT auto-load, or TTL/idle
-     * eviction reflects immediately instead of waiting for the next discovery
-     * model-refresh sweep. The push carries the full `engine:models` snapshot, so
-     * the whole loaded map is replaced: an engine absent from `loadedByEngine` is
-     * not running / not queryable and therefore has nothing loaded. Discovery
-     * self-enrichment (`AvailableNode.loadedByEngine` over the loopback
-     * `/v1/models`) remains the seed and backstop until the self node is
-     * discovered.
+     * Apply the engine-manager's complete model push. Downloaded inventories
+     * update the local list even while no server is running. Missing inventory
+     * keys mean the read was unavailable; explicit empty lists clear the cache.
      */
-    applyLocalLoadedModels(loadedByEngine: Record<string, string[]>): void {
+    applyLocalModelSnapshot(params: JsonValue | undefined): void {
+        const models = objectValue(objectValue(params)?.models)
+        if (!models) return
+        const loadedByEngine = parseModelsByEngine(models.loadedByEngine)
+        const downloadedByEngine = parseModelsByEngine(models.downloadedByEngine)
+        for (const engine of PROXY_ENGINES) {
+            const names = downloadedByEngine[engineManagerName(engine)]
+            if (names === undefined) continue
+            const loaded = loadedByEngine[engineManagerName(engine)] ?? []
+            const inventory = [...new Set([...names, ...loaded])]
+            this.localManagerModels.set(
+                engine,
+                inventory.map(name => modelItem(name, false))
+            )
+        }
         const nodeId = this.selfId
         if (!nodeId) return
         const node = this.nodes.get(nodeId)
-        // Before the self node is discovered there is nothing to stamp against;
-        // discovery seeds the loaded set when the node arrives.
         if (!node) return
-        if (sameModelsByEngine(node.loadedByEngine, loadedByEngine)) return
-        const next: ModularNode = { ...node, loadedByEngine }
+        const next: ModularNode = {
+            ...node,
+            loadedByEngine,
+            downloadedByEngine: { ...node.downloadedByEngine, ...downloadedByEngine }
+        }
         this.nodes.set(nodeId, next)
-        // Loaded state feeds only the engine model rows (node identity, metrics,
-        // and the invite-only discovery snapshot are unaffected), so re-emit just
-        // the per-engine model patches.
         for (const engine of PROXY_ENGINES) {
             const status =
                 this.resolveLocalEngineStatus(engine, next) ??
@@ -1998,10 +2015,10 @@ class ModularBridgeState {
      * noderec.DirectoryNode.EngineModels.
      */
     private modelsForEngine(node: ModularNode, engine: ProxyEngine): string[] {
-        // An engine that advertises only the model it is serving (vLLM) reports
+        // An engine with a separate disk inventory (vLLM) reports
         // its downloaded inventory apart: that is the list to manage, plus
         // anything loaded that is not in it, such as a model served from a local
-        // path. Its advertised entry is only the served name, for routing.
+        // path. Its advertised entry includes models loadable on request.
         const downloaded = node.downloadedByEngine[engineManagerName(engine)]
         if (downloaded !== undefined) {
             const loaded = node.loadedByEngine[engineManagerName(engine)] ?? []

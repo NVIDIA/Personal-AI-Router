@@ -31,7 +31,8 @@ type launchEdit struct {
 	st     *engineState
 	engine string
 	// before is the launch state when the lock was taken.
-	before settings.LaunchState
+	before     settings.LaunchState
+	wasEnabled bool
 }
 
 // editLaunch runs change with the engine's operation lock held.
@@ -42,7 +43,11 @@ func (e *Executor) editLaunch(engine string, change func(edit *launchEdit) error
 	}
 	st.lockOperation()
 	defer st.unlockOperation()
-	return change(&launchEdit{e: e, st: st, engine: engine, before: e.launchStateLocked(engine, st)})
+	before := e.launchStateLocked(engine, st)
+	st.mu.Lock()
+	wasEnabled := st.running || st.awaitingModel
+	st.mu.Unlock()
+	return change(&launchEdit{e: e, st: st, engine: engine, before: before, wasEnabled: wasEnabled})
 }
 
 // save writes launch text. A running engine is restarted on it; a stopped one
@@ -63,7 +68,7 @@ func (l *launchEdit) save(ctx context.Context, launchText string, resume bool) e
 // mid-start, and a restore under that ctx would fail at once and leave the
 // engine down.
 func (l *launchEdit) restore(ctx context.Context) error {
-	return l.save(context.WithoutCancel(ctx), l.before.LaunchText, l.before.Running && !l.e.stopWaiting(l.st))
+	return l.save(context.WithoutCancel(ctx), l.before.LaunchText, l.wasEnabled && !l.e.stopWaiting(l.st))
 }
 
 // start starts the stopped engine on its saved launch and records that the
@@ -93,6 +98,10 @@ func (l *launchEdit) start(ctx context.Context) error {
 // for, not a failure, so the reply succeeds with stopped set, and only a restore
 // that fails is an error.
 func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *ActionLaunchModel, params json.RawMessage) (json.RawMessage, error) {
+	return e.changeLaunchModel(ctx, engine, spec, params, false)
+}
+
+func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *ActionLaunchModel, params json.RawMessage, forRequest bool) (json.RawMessage, error) {
 	var request struct {
 		Model string `json:"model"`
 	}
@@ -100,13 +109,39 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		return nil, errors.New(`launch_model params must be {"model": "<model id>"}`)
 	}
 	model := strings.TrimSpace(request.Model)
-	if !hfModelIDRe.MatchString(model) {
+	if model == "" || (!forRequest && !hfModelIDRe.MatchString(model)) {
 		return nil, fmt.Errorf("%q is not a valid model id (want a Hugging Face id such as org/name)", request.Model)
 	}
 
 	var restarted, stopped bool
 	err := e.editLaunch(engine, func(edit *launchEdit) error {
 		current := edit.before
+		if forRequest {
+			enabled, known, err := e.desired.get(engine)
+			if err != nil {
+				return err
+			}
+			if !known || !enabled {
+				return fmt.Errorf("%w: %q", errRequestEngineDisabled, engine)
+			}
+			if current.Running {
+				serving, err := e.servingModels(ctx, edit.st, engine)
+				if err == nil && slices.Contains(serving, model) {
+					return nil
+				}
+			}
+			if !hfModelIDRe.MatchString(model) {
+				return fmt.Errorf("%q is not a valid cached model id", model)
+			}
+			action, ok := edit.st.manifest.Actions["list_models"]
+			if !ok || action.Result == nil {
+				return errors.New("model inventory is unavailable")
+			}
+			downloaded, ok := e.queryModelList(ctx, engine, "list_models", action.Result)
+			if !ok || !slices.Contains(downloaded, model) {
+				return fmt.Errorf("%w: %q", errRequestModelNotCached, model)
+			}
+		}
 		if !current.Editable {
 			return fmt.Errorf("the launch settings of engine %q cannot be changed: %s", engine, current.Reason)
 		}
@@ -117,8 +152,18 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		if !changed && current.Running {
 			return nil
 		}
+		edit.st.mu.Lock()
+		edit.st.modelSwitching = true
+		edit.st.mu.Unlock()
+		defer func() {
+			edit.st.mu.Lock()
+			edit.st.modelSwitching = false
+			edit.st.mu.Unlock()
+			e.emitState(engine)
+		}()
+		e.emitState(engine)
 		restarted = true
-		if current.Running {
+		if edit.wasEnabled {
 			err = edit.save(ctx, text, false)
 		} else {
 			if changed {
@@ -262,6 +307,9 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 	defer done()
 	err = e.editLaunch(engine, func(edit *launchEdit) error {
 		if !edit.before.Running {
+			if edit.st.plat.Runtime.WaitForModel && (edit.wasEnabled || cancelledStart) {
+				return edit.awaitModelAfterEject(ctx)
+			}
 			// A start this Eject cancelled leaves the engine stopped; record that
 			// the user wants it off, as a Stop would, so it is not restarted.
 			if cancelledStart {
@@ -277,6 +325,12 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 			}
 		}
 		stopped = true
+		if edit.st.plat.Runtime.WaitForModel {
+			if err := e.doStop(edit.st, engine); err != nil {
+				return err
+			}
+			return edit.awaitModelAfterEject(ctx)
+		}
 		// Like Stop, this is explicit OFF intent; see Stop for why it is
 		// persisted even when the stop itself fails.
 		return errors.Join(e.doStop(edit.st, engine), e.setDesiredEnabled(engine, false))
@@ -285,6 +339,28 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"model": request.Model, "stopped": stopped})
+}
+
+// awaitModelAfterEject clears the model selection while keeping the engine
+// enabled. The serving process has already stopped (or its start was cancelled),
+// so no start is needed to enter this state. Callers hold the operation lock and
+// retain their stop request until this transaction finishes.
+func (l *launchEdit) awaitModelAfterEject(ctx context.Context) error {
+	text, _, err := withoutLaunchFlag(l.before.LaunchText, modelLaunchFlag(l.st.manifest))
+	if err != nil {
+		return err
+	}
+	if err := l.save(ctx, text, false); err != nil {
+		return err
+	}
+	if err := l.e.setDesiredEnabled(l.engine, true); err != nil {
+		return err
+	}
+	l.st.mu.Lock()
+	l.st.awaitingModel = true
+	l.st.mu.Unlock()
+	l.e.emitState(l.engine)
+	return nil
 }
 
 // servingModels asks a running engine which models it is serving, through its
