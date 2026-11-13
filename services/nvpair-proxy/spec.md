@@ -749,3 +749,9 @@ the native engine's CORS decision.
 
 A manager restart settles pending proxy preparations with a retryable failure;
 a proxy restart cancels preparations orphaned by the old process.
+
+For vLLM, the aggregated `/v1/models` response is limited to each peer's
+advertised model-owner inventory. A peer's fresher HTTP list cannot expose a
+new model before this facade can route an inference request to it. The model
+appears after discovery convergence; removed models disappear when the peer no
+longer reports them. Other engines retain their existing aggregation behavior.

@@ -404,3 +404,41 @@ func TestModelRequestGate_DoesNotLetNewSameModelRequestsOvertakeAQueuedSwitch(t 
 		t.Fatal("later model A never acquired admission")
 	}
 }
+
+func TestAvailableModelList_DoesNotListAPeerModelBeforeItIsRoutable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.WriteString(w, `{"object":"list","data":[{"id":"org/existing"},{"id":"org/new-download"}]}`)
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+	f, _ := modelRequestFacade(t, server.URL, "")
+	u, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(u.Port())
+	require.NoError(t, err)
+	peer := Node{ID: "peer", Host: u.Hostname(), Port: port, Addresses: []string{u.Hostname()}, Models: []string{"org/existing"}}
+	f.discovery.AddManual(peer)
+	list := func() []string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		f.handleHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var result struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &result))
+		ids := make([]string, 0, len(result.Data))
+		for _, item := range result.Data {
+			ids = append(ids, item.ID)
+		}
+		return ids
+	}
+	assert.Equal(t, []string{"org/existing"}, list())
+	assert.Empty(t, f.resolveCandidates("org/new-download"))
+	peer.Models = append(peer.Models, "org/new-download")
+	f.discovery.AddManual(peer)
+	assert.Equal(t, []string{"org/existing", "org/new-download"}, list())
+	assert.Len(t, f.resolveCandidates("org/new-download"), 1)
+}

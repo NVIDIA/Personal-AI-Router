@@ -1098,6 +1098,11 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 					results[i].err = fmt.Errorf("model record has no identity")
 					return
 				}
+				// The remote list can be fresher than discovery. Do not list a
+				// model before this facade's owner gate can route it.
+				if f.profile.LoadOnRequest && cand.availableModels != nil && !slices.Contains(cand.availableModels, key) {
+					continue
+				}
 				items = append(items, modelListItem{key: key, digest: identity.Digest, raw: raw})
 			}
 			results[i] = modelListResult{items: items, ok: true, headers: responseHeaders}
@@ -2122,7 +2127,7 @@ func (f *facade) resolveCandidates(model string) []candidate {
 		}
 		seenHost[u.Host] = true
 		var availableModels []string
-		if n.Local && f.profile.LoadOnRequest {
+		if f.profile.LoadOnRequest {
 			availableModels = append([]string{}, n.Models...)
 		}
 		out = append(out, candidate{
