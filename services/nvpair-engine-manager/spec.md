@@ -28,8 +28,10 @@ An explicit Load saves the chosen model and performs the normal readiness-probed
 start. Existing saved model arguments remain in effect, so upgrading preserves
 an existing user's selection. Stop turns enabled intent off; normal shutdown
 preserves it, including waiting for a choice. A failed first Load restores the
-previous model-free enabled state. Eject retains its existing behavior of stopping
-vLLM and releasing its model memory. This change adds no inactivity unload policy.
+previous model-free enabled state. Eject stops the serving process, releases model
+memory, clears the saved model selection, and returns to the enabled state waiting
+for a choice. Eject during a Load cancels that load and returns to the same state.
+Only explicit Stop disables the engine. No inactivity unload policy is added.
 
 ## 2. Scope
 **In scope**

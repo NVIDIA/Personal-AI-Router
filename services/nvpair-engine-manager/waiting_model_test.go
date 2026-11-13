@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -190,4 +191,97 @@ func TestStop_ReportsStoppedAfterARepeatedStop(t *testing.T) {
 	assert.False(t, states[len(states)-1].Running)
 	assert.False(t, states[len(states)-1].Starting)
 	assert.False(t, states[len(states)-1].AwaitingModel)
+}
+
+func TestEject_ReturnsEnabledEngineToModelSelection(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	_, err := loadModel(t, e, "org/selected")
+	require.NoError(t, err)
+
+	_, err = ejectEngine(t, e, "org/selected")
+	require.NoError(t, err)
+
+	status := mustStatus(t, e)
+	assert.True(t, status.AwaitingModel)
+	assert.False(t, status.Running)
+	assert.False(t, status.Healthy)
+	tokens, err := parseLaunchText(launchTextOf(t, e))
+	require.NoError(t, err)
+	_, selected := launchFlagValue(tokens, "--model")
+	assert.False(t, selected, "Eject must not select a model for the next start")
+	enabled, known, err := e.desired.get("fake")
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.True(t, enabled)
+}
+
+func TestEject_AllowsLoadingAnotherModelWithoutEnablingAgain(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	_, err := loadModel(t, e, "org/first")
+	require.NoError(t, err)
+	_, err = ejectEngine(t, e, "org/first")
+	require.NoError(t, err)
+
+	_, err = loadModel(t, e, "org/second")
+	require.NoError(t, err)
+
+	assert.True(t, mustStatus(t, e).Running)
+	assert.False(t, mustStatus(t, e).AwaitingModel)
+}
+
+func TestEject_CancelsFirstLoadAndReturnsToModelSelection(t *testing.T) {
+	e := waitingModelExecutor(t)
+	before, err := e.LaunchSettings("fake")
+	require.NoError(t, err)
+	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{ServerPort: before.ServerPort, LaunchText: "FAKE_START_DELAY=8s " + before.LaunchText}}, func() error { return nil })
+	require.NoError(t, err)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	result := make(chan error, 1)
+	go func() {
+		_, err := loadModel(t, e, "org/first")
+		result <- err
+	}()
+	waitForStartInFlight(t, e)
+
+	began := time.Now()
+	_, err = ejectEngine(t, e, "org/first")
+	require.NoError(t, err)
+	require.NoError(t, <-result)
+	assert.Less(t, time.Since(began), 4*time.Second)
+	assert.True(t, mustStatus(t, e).AwaitingModel)
+	assert.False(t, mustStatus(t, e).Running)
+}
+
+func TestEject_DoesNotEnableAnExplicitlyStoppedEngine(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	require.NoError(t, e.Stop("fake"))
+
+	_, err := ejectEngine(t, e, "org/selected")
+	require.NoError(t, err)
+
+	assert.False(t, mustStatus(t, e).AwaitingModel)
+	enabled, known, err := e.desired.get("fake")
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, enabled)
+}
+
+func TestRestoreEnabled_AwaitsModelAfterEject(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	_, err := loadModel(t, e, "org/selected")
+	require.NoError(t, err)
+	_, err = ejectEngine(t, e, "org/selected")
+	require.NoError(t, err)
+	e.StopAll()
+	fresh := NewExecutor(e.reg, NewReporter(nil), func(string, any) {}, e.baseDir)
+	t.Cleanup(fresh.StopAll)
+
+	require.NoError(t, fresh.RestoreEnabled(t.Context()))
+
+	assert.True(t, mustStatus(t, fresh).AwaitingModel)
+	assert.False(t, mustStatus(t, fresh).Running)
 }

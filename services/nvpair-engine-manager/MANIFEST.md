@@ -385,7 +385,10 @@ in the directory that holds the engine binary, and reports byte progress taken
 from the cache directory. It needs no running engine.
 
 A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
-serves a single model per process and so cannot unload it while running. A
+serves a single model per process and so cannot unload it while running. With
+`wait_for_model`, Eject also clears its selected model and leaves it enabled
+awaiting a new choice, including when cancelling a Load in progress. An already
+disabled engine stays disabled. A
 `launch_model` action on a stopped engine saves the choice and starts it.
 
 A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536, "max_num_seqs": 32}`)

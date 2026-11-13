@@ -267,6 +267,9 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 	defer done()
 	err = e.editLaunch(engine, func(edit *launchEdit) error {
 		if !edit.before.Running {
+			if edit.st.plat.Runtime.WaitForModel && (edit.wasEnabled || cancelledStart) {
+				return edit.awaitModelAfterEject(ctx)
+			}
 			// A start this Eject cancelled leaves the engine stopped; record that
 			// the user wants it off, as a Stop would, so it is not restarted.
 			if cancelledStart {
@@ -282,6 +285,12 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 			}
 		}
 		stopped = true
+		if edit.st.plat.Runtime.WaitForModel {
+			if err := e.doStop(edit.st, engine); err != nil {
+				return err
+			}
+			return edit.awaitModelAfterEject(ctx)
+		}
 		// Like Stop, this is explicit OFF intent; see Stop for why it is
 		// persisted even when the stop itself fails.
 		return errors.Join(e.doStop(edit.st, engine), e.setDesiredEnabled(engine, false))
@@ -290,6 +299,28 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"model": request.Model, "stopped": stopped})
+}
+
+// awaitModelAfterEject clears the model selection while keeping the engine
+// enabled. The serving process has already stopped (or its start was cancelled),
+// so no start is needed to enter this state. Callers hold the operation lock and
+// retain their stop request until this transaction finishes.
+func (l *launchEdit) awaitModelAfterEject(ctx context.Context) error {
+	text, _, err := withoutLaunchFlag(l.before.LaunchText, modelLaunchFlag(l.st.manifest))
+	if err != nil {
+		return err
+	}
+	if err := l.save(ctx, text, false); err != nil {
+		return err
+	}
+	if err := l.e.setDesiredEnabled(l.engine, true); err != nil {
+		return err
+	}
+	l.st.mu.Lock()
+	l.st.awaitingModel = true
+	l.st.mu.Unlock()
+	l.e.emitState(l.engine)
+	return nil
 }
 
 // servingModels asks a running engine which models it is serving, through its
