@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -621,7 +622,12 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	// force-kills engine-manager on a timeout, so an unbounded stop command
 	// would wedge StopAll and, in turn, the whole app shutdown.
 	stopCtx, cancelStop := context.WithTimeout(context.Background(), commandStopTimeout(rt))
-	runErr := e.runCommand(stopCtx, argv)
+	var runErr error
+	if engine == "lmstudio" && slices.Equal(sp.Cmd, []string{"{cli}", "daemon", "down"}) {
+		runErr = e.stopLMStudio(stopCtx, argv[0])
+	} else {
+		runErr = e.runCommand(stopCtx, argv)
+	}
 	cancelStop()
 	if runErr != nil {
 		return fmt.Errorf("stop %s: %w", engine, runErr)

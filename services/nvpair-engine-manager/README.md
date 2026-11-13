@@ -395,6 +395,17 @@ does not answer a polite signal at all). On Windows, the windowless engines we
 spawn cannot receive a graceful (non-`/F`) close, so stopping uses immediate
 `taskkill /T /F`.
 
+The bundled LM Studio stop command first identifies the running host using
+`lms daemon status --json`. For a headless host, `lms daemon down` terminates
+`llmster` and releases its loaded models, whether PAIR or the user installed it.
+For a GUI host, `lms server stop` closes the HTTP server while leaving the GUI
+and its loaded models alone. Host detection must succeed before sending a
+shutdown command. Host detection and shutdown share the
+ten-second command timeout, followed by up to ten seconds to verify that the
+server closed; daemon shutdown may continue after the CLI returns.
+Restart and application shutdown use the same policy on every supported
+platform. Explicit custom stop commands are executed unchanged.
+
 ### Adoption — start may attach to an engine it didn't launch
 
 Before spawning, `engine:start` **probes the chosen port's readiness

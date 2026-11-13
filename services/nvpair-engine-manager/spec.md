@@ -23,6 +23,13 @@ extensibility story for an open-source product.
   [LAUNCH_TEXT.md](LAUNCH_TEXT.md).
 - Detect installation; **user-mode** install (HTTPS download + checksum-verify-when-pinned + run) per OS/arch.
 - Lifecycle: start (with readiness probe), stop, restart, status, periodic health.
+- The bundled LM Studio stop policy reads `lms daemon status --json`: a headless
+  host uses `lms daemon down` to release its daemon and loaded models; a GUI host
+  uses `lms server stop`, preserving the GUI and its models. Unidentified host
+  status prevents shutdown. Detection and shutdown share a ten-second command
+  timeout, followed by up to ten seconds to confirm server closure. Restart and
+  shutdown use the same policy on every supported platform; custom stop commands
+  remain unchanged.
 - Persistent server-port changes preserve arguments, environment and unrelated
   manifest overrides. Resetting to the bundled port removes only shared and
   host-platform port overrides, deleting the file only when it has no other
