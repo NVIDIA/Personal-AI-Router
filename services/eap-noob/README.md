@@ -38,7 +38,7 @@ Implemented:
   `MSK`/`EMSK`/`AMSK`/`MethodID`/`Kms`/`Kmp`/`Kz`
   outputs (RFC 9140, Table 5).
 - Persistent association store (`Store` interface + in-memory implementation).
-- Secret export via HKDF-SHA256 over `Kz`, limited to 8160 output bytes.
+- Secret export via standard-library HKDF-SHA256 over `Kz`, limited to 8160 output bytes.
 - Error notifications (Type=0) and the RFC error codes.
 
 Not implemented (reserved for a future phase): the Reconnect / rekeying exchange
@@ -94,8 +94,12 @@ calls `OOBInput()` to verify the fingerprint `Hoob`.
 The completion key derivation function (KDF) produces authentication keys and
 the association key `Kz`. Export uses HKDF, the HMAC-based extract-and-expand
 key derivation function, to derive application secrets from `Kz`. These are
-different algorithms; both currently use local implementations built on Go's
-standard cryptographic operations.
+different algorithms. Export uses Go's standard `crypto/hkdf` package; the
+completion KDF retains its local implementation because it is a different
+algorithm required by RFC 9140.
+
+Export labels are separated from context with a two-byte label-length prefix
+and may contain at most 65535 bytes. Output lengths range from 0 to 8160 bytes.
 
 Both constructors accept a `Store`. Passing `nil` uses a `MemoryStore` that
 copies keys on save and load. Supply a persistent implementation to retain
