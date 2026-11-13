@@ -485,8 +485,10 @@ Cleanup looks for partial files only where the engine-manager knows the engine
 writes them. For LM Studio that is the manifest's `models_dir`
 (`~/.lmstudio/models`). For Ollama it is the `OLLAMA_MODELS` of the environment
 the engine-manager launched the daemon with, including a user's launch
-override, or Ollama's own `~/.ollama/models` when that is unset. A relative
-value is ignored. An adopted Ollama daemon was started by someone else, so the
+override, or when that is unset Ollama's own `.ollama/models` under the home
+folder that same environment names (`HOME`, or `USERPROFILE` on Windows). A
+relative value is ignored, and so is a launch environment that names no home
+folder. An adopted Ollama daemon was started by someone else, so the
 engine-manager's own environment stands in for the daemon's. A cancellation on
 an install whose models live elsewhere — a relocated LM Studio models
 directory, or an adopted Ollama daemon started with a different

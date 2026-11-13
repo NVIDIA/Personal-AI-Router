@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -155,22 +156,26 @@ func ollamaPartialGroups(root string, digests map[string]bool) ([]partialGroup, 
 }
 
 // ollamaBlobsDir is where the Ollama daemon writes blobs: under the
-// OLLAMA_MODELS of the environment it runs in, or Ollama's own default in the
-// user's home directory. Empty when that cannot be known, which leaves cleanup
-// nothing to attribute and so nothing to delete.
+// OLLAMA_MODELS of the environment it runs in, or else Ollama's own default,
+// .ollama/models in the home folder that same environment names. Empty when
+// that cannot be known, which leaves cleanup nothing to attribute and so
+// nothing to delete.
 //
 // A daemon this engine manager launched runs in the environment it was handed —
 // the one the engine manager inherited, then the manifest's env, then the
 // user's launch overrides, with the last assignment of a name winning — so that
 // is read back from the process rather than rebuilt from settings that may have
-// changed since. A daemon that was already running when PAIR adopted it was
-// started by someone else, in an environment PAIR cannot see. The engine
-// manager's own environment is the best guess there. A wrong guess usually
-// finds nothing, since no partial of this pull's layers appears there after
-// the snapshot. It does when the guess lands on another live Ollama cache, such
-// as a second daemon's pulling the same layers: a partial that daemon creates
-// after the snapshot, and leaves still for the quiet period, reads as this
-// pull's own and is removed with the progress it held.
+// changed since. Both settings come from it: overriding the home folder moves
+// Ollama's default as surely as overriding OLLAMA_MODELS does, and an
+// environment that names no home folder leaves no default to look in. A daemon
+// that was already running when PAIR adopted it was started by someone else,
+// in an environment PAIR cannot see. The engine manager's own environment is
+// the best guess there. A wrong guess usually finds nothing, since no partial
+// of this pull's layers appears there after the snapshot. It does when the
+// guess lands on another live Ollama cache, such as a second daemon's pulling
+// the same layers: a partial that daemon creates after the snapshot, and
+// leaves still for the quiet period, reads as this pull's own and is removed
+// with the progress it held.
 //
 // The value is read the way Ollama reads it: surrounding spaces and quotes are
 // trimmed, and "~" is not expanded. A relative path would resolve against the
@@ -188,8 +193,13 @@ func ollamaBlobsDir(st *engineState) string {
 	}
 	root := strings.Trim(strings.TrimSpace(value), `"'`)
 	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
+		home := ""
+		if launched != nil {
+			home = environmentValue(launched, homeVariable())
+		} else if h, err := os.UserHomeDir(); err == nil {
+			home = h
+		}
+		if home == "" {
 			return ""
 		}
 		root = filepath.Join(home, ".ollama", "models")
@@ -198,6 +208,15 @@ func ollamaBlobsDir(st *engineState) string {
 		return ""
 	}
 	return filepath.Join(root, "blobs")
+}
+
+// homeVariable names the variable os.UserHomeDir reads, and so the one a Go
+// program such as Ollama finds its home folder in.
+func homeVariable() string {
+	if runtime.GOOS == "windows" {
+		return "USERPROFILE"
+	}
+	return "HOME"
 }
 
 // environmentValue is the value a process started with env sees for key: the

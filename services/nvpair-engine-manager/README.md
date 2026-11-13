@@ -528,9 +528,12 @@ cut short leaves a data file Ollama downloads afresh rather than resume files
 describing bytes that are gone.
 
 Ollama writes its partials under the `OLLAMA_MODELS` of the environment its
-daemon runs in, or under Ollama's default in the user's home directory when
-that is unset. For a daemon engine-manager launched, that environment is read
-back from the process. A daemon that was already running when PAIR adopted it
+daemon runs in, or when that is unset under Ollama's default, `.ollama/models`
+in the home folder the same environment names (`HOME`, or `USERPROFILE` on
+Windows). For a daemon engine-manager launched, that environment is read back
+from the process, so a launch override of either setting moves where cleanup
+looks, and a launch environment that names no home folder leaves nothing to
+look in. A daemon that was already running when PAIR adopted it
 was started in an environment engine-manager cannot see, so engine-manager's
 own stands in for it. A wrong guess usually finds nothing, which leaves the
 download's partials for Ollama to resume or remove. A guess that lands on

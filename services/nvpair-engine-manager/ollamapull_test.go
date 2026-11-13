@@ -47,9 +47,13 @@ func writeBlob(t *testing.T, root, name string) string {
 // launch override can set, rather than whatever the engine manager's own
 // environment says.
 func TestOllamaBlobsDir_FollowsTheEnvironmentOllamaRunsIn(t *testing.T) {
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-	ollamaDefault := filepath.Join(home, ".ollama", "models", "blobs")
+	// Ollama finds its home folder the way Go's os.UserHomeDir does.
+	homeVariable := "HOME"
+	if runtime.GOOS == "windows" {
+		homeVariable = "USERPROFILE"
+	}
+	launchedHome := filepath.Join(t.TempDir(), "home")
+	launchedDefault := filepath.Join(launchedHome, ".ollama", "models", "blobs")
 	launchedDir := filepath.Join(t.TempDir(), "launched")
 	overrideDir := filepath.Join(t.TempDir(), "override")
 	inheritedDir := filepath.Join(t.TempDir(), "inherited")
@@ -69,9 +73,12 @@ func TestOllamaBlobsDir_FollowsTheEnvironmentOllamaRunsIn(t *testing.T) {
 		launchedWith("OLLAMA_MODELS="+inheritedDir, "OLLAMA_MODELS="+overrideDir), filepath.Join(overrideDir, "blobs"))
 	test("surrounding spaces and quotes are trimmed as Ollama trims them",
 		launchedWith(`OLLAMA_MODELS= "`+launchedDir+`" `), filepath.Join(launchedDir, "blobs"))
-	test("a launched daemon without the variable uses Ollama's default",
-		launchedWith("OLLAMA_HOST=127.0.0.1:11434"), ollamaDefault)
-	test("an empty value uses Ollama's default", launchedWith("OLLAMA_MODELS="), ollamaDefault)
+	test("a launched daemon without the variable uses Ollama's default under the home it was launched with",
+		launchedWith(homeVariable+"="+launchedHome, "OLLAMA_HOST=127.0.0.1:11434"), launchedDefault)
+	test("an empty value uses Ollama's default",
+		launchedWith(homeVariable+"="+launchedHome, "OLLAMA_MODELS="), launchedDefault)
+	test("a launched daemon without a home folder has no default to look in",
+		launchedWith("OLLAMA_HOST=127.0.0.1:11434"), "")
 	test("an adopted daemon is assumed to share the engine manager's environment",
 		&engineState{}, filepath.Join(inheritedDir, "blobs"))
 	test("a relative value is refused rather than resolved against an unknown directory",
