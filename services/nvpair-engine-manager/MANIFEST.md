@@ -405,6 +405,12 @@ then appends `--max-model-len`
 native window, and `--gpu-memory-utilization` sized to the weights the engine
 loads plus KV cache, never below 15% of the GPU and never above what is free
 less a 1 GiB margin (the free-memory cap wins).
+For FP8 checkpoints on vLLM-Metal's MLX worker, disk size understates resident
+weights because the loader expands them to BF16. These launches use the measured
+free-memory cap instead of estimating a smaller share or context from the weight
+size. The context target and rules for the model's native limit and rope scaling
+still apply; the worker profiles resident weights and determines whether that
+context fits.
 A model that is not in the cache yet, which vLLM downloads during the start,
 first has its files other than weights fetched into the cache with the engine's
 Hugging Face tool (the one an `hf_pull` action names) at that revision, and is

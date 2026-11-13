@@ -25,33 +25,35 @@ type deviceMemoryProbe struct {
 	Total  int64 `json:"total"`
 	Free   int64 `json:"free"`
 	Shared bool  `json:"shared"`
+	// Runtime identifies the selected Metal worker when its loader affects sizing.
+	Runtime string `json:"runtime,omitempty"`
 }
 
 var nativeDeviceMemory = func(ctx context.Context) (int64, int64, bool) { return nvidiaSMIMemory(ctx, nil) }
 var probeVLLMDeviceMemory = runVLLMDeviceMemoryProbe
 
-func detectDeviceMemory(ctx context.Context, bin string, env map[string]string) (total, free int64, ok bool) {
+func detectDeviceMemory(ctx context.Context, bin string, env map[string]string) (deviceMemoryProbe, bool) {
 	if ctx.Err() != nil {
-		return 0, 0, false
+		return deviceMemoryProbe{}, false
 	}
-	total, free, ok = nativeDeviceMemory(ctx)
+	total, free, ok := nativeDeviceMemory(ctx)
 	if ctx.Err() != nil {
-		return 0, 0, false
+		return deviceMemoryProbe{}, false
 	}
 	if ok {
-		return total, free, ok
+		return deviceMemoryProbe{Total: total, Free: free}, true
 	}
 	reading, err := probeVLLMDeviceMemory(ctx, bin, env)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("could not measure free device memory; leaving memory sizing to vLLM", "err", err)
 		}
-		return 0, 0, false
+		return deviceMemoryProbe{}, false
 	}
 	if reading.Shared {
 		reading.Free = max(reading.Free-unifiedMemoryHeadroom, 0)
 	}
-	return reading.Total, reading.Free, true
+	return reading, true
 }
 
 // runVLLMDeviceMemoryProbe uses the engine's environment so device and platform

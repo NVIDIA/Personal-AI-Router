@@ -51,8 +51,8 @@ func pendingModel(t *testing.T, cache, id, config string, weightBytes int64) hfM
 func withGPU(t *testing.T, totalGiB, freeGiB int64) {
 	t.Helper()
 	old := gpuMemory
-	gpuMemory = func(context.Context, string, map[string]string) (int64, int64, bool) {
-		return totalGiB * gib, freeGiB * gib, true
+	gpuMemory = func(context.Context, string, map[string]string) (deviceMemoryProbe, bool) {
+		return deviceMemoryProbe{Total: totalGiB * gib, Free: freeGiB * gib}, true
 	}
 	t.Cleanup(func() { gpuMemory = old })
 }
@@ -60,7 +60,9 @@ func withGPU(t *testing.T, totalGiB, freeGiB int64) {
 func withoutGPU(t *testing.T) {
 	t.Helper()
 	old := gpuMemory
-	gpuMemory = func(context.Context, string, map[string]string) (int64, int64, bool) { return 0, 0, false }
+	gpuMemory = func(context.Context, string, map[string]string) (deviceMemoryProbe, bool) {
+		return deviceMemoryProbe{}, false
+	}
 	t.Cleanup(func() { gpuMemory = old })
 }
 
@@ -277,6 +279,51 @@ func TestPlanHFContext_LeavesCustomWorkerSizingToTheEngine(t *testing.T) {
 	extra, _ := planHFContext(t.Context(), args, t.TempDir(), 65536, nil, nil, "")
 
 	assert.Empty(t, extra)
+}
+
+func TestPlanHFContext_LeavesExpandedMLXWeightSizingToTheWorker(t *testing.T) {
+	fp8Config := `{
+		"model_type": "qwen3_5",
+		"quantization_config": {"quant_method": "fp8"},
+		"text_config": {
+			"max_position_embeddings": 262144,
+			"num_hidden_layers": 64,
+			"num_key_value_heads": 4,
+			"head_dim": 256,
+			"dtype": "bfloat16"
+		}
+	}`
+	// The readings already exclude the shared-memory startup reserve.
+	metal := deviceMemoryProbe{Total: 72 * gib, Free: 69 * gib, Shared: true, Runtime: "metal_mlx"}
+	test := func(name, config string, weights int64, memory deviceMemoryProbe, wantUtil string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			old := gpuMemory
+			gpuMemory = func(context.Context, string, map[string]string) (deviceMemoryProbe, bool) {
+				return memory, true
+			}
+			t.Cleanup(func() { gpuMemory = old })
+			snapshot := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(snapshot, "config.json"), []byte(config), 0o644))
+			fetch := func() (hfPendingModel, bool) {
+				return hfPendingModel{snapshot: snapshot, weights: weights}, true
+			}
+			args := []string{"--model", "org/model"}
+
+			extra, _ := planHFContext(t.Context(), args, t.TempDir(), 65536, fetch, nil, "")
+
+			assert.Equal(t, wantUtil, flagOf(t, extra, "--gpu-memory-utilization"))
+			assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"))
+		})
+	}
+	// Qwen3.5-27B-FP8 occupies 30,866,680,160 bytes on disk, but its resident
+	// text weights alone need 50.10 GiB after MLX converts them to BF16.
+	test("Metal FP8 uses the measured free-memory cap", fp8Config, 30_866_680_160, metal, "0.94")
+	test("Metal FP8 leaves context fitting to the worker", fp8Config, 30_866_680_160,
+		deviceMemoryProbe{Total: 72 * gib, Free: 45 * gib, Shared: true, Runtime: "metal_mlx"}, "0.61")
+	test("CUDA FP8 keeps checkpoint-based sizing", fp8Config, 30_866_680_160,
+		deviceMemoryProbe{Total: 72 * gib, Free: 72 * gib}, "0.70")
+	test("Metal BF16 keeps checkpoint-based sizing", qwen8BConfig, 16_400_000_000, metal, "0.40")
 }
 
 func TestAutoContext_GivesAModelNotInTheCacheWhatIsFree(t *testing.T) {
@@ -907,9 +954,9 @@ func TestApplyAutoLaunch_UsesTheEngineDeviceEnvironment(t *testing.T) {
 	env := map[string]string{"CUDA_VISIBLE_DEVICES": "1"}
 	old := gpuMemory
 	var received map[string]string
-	gpuMemory = func(_ context.Context, _ string, got map[string]string) (int64, int64, bool) {
+	gpuMemory = func(_ context.Context, _ string, got map[string]string) (deviceMemoryProbe, bool) {
 		received = got
-		return 0, 0, false
+		return deviceMemoryProbe{}, false
 	}
 	t.Cleanup(func() { gpuMemory = old })
 	rt := Runtime{AutoLaunch: &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536}}
@@ -939,11 +986,11 @@ func TestGPUMemory_ProbesWithTheEngineEnvironment(t *testing.T) {
 		"PAIR_TEST_MEMORY_READING": `{"total":68719476736,"free":42949672960}`,
 	}
 
-	total, free, ok := gpuMemory(t.Context(), filepath.Join(binDir, "vllm"+exeExt()), env)
+	reading, ok := gpuMemory(t.Context(), filepath.Join(binDir, "vllm"+exeExt()), env)
 
 	require.True(t, ok)
-	assert.Equal(t, 64*gib, total, "use the engine's reading instead of the service's 16 GiB")
-	assert.Equal(t, 40*gib, free, "use the engine's reading instead of the service's 4 GiB")
+	assert.Equal(t, 64*gib, reading.Total, "use the engine's reading instead of the service's 16 GiB")
+	assert.Equal(t, 40*gib, reading.Free, "use the engine's reading instead of the service's 4 GiB")
 }
 
 func TestNvidiaSMIMemory_LeavesExplicitDeviceSelectionToTheEngine(t *testing.T) {

@@ -169,6 +169,12 @@ one visible NUMA memory node, including its container limits. It leaves sizing
 to vLLM when more than one memory node is visible.
 For vLLM-Metal's default MLX worker, the utilization fraction applies to MLX's
 recommended working-set limit. Its MPS worker uses physical RAM instead.
+MLX expands supported FP8 checkpoints (Qwen3.5 and Qwen3.6) to BF16, so their
+files understate the resident weight size. For these checkpoints, PAIR caps the
+memory share at measured free memory after the reserves below, keeps the context
+target subject to the model's native limit and rope rules, and lets the worker
+profile resident weights and determine whether the context fits. It does not
+estimate a smaller memory share or context window from the checkpoint size.
 Explicit `--worker-cls` selections leave memory and context sizing to the engine.
 
 The runtime probe requires a Python interpreter beside the resolved vLLM

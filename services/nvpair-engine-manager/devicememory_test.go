@@ -37,11 +37,11 @@ func TestDetectDeviceMemory_PrefersNativeTelemetry(t *testing.T) {
 		},
 	)
 
-	total, free, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm", nil)
+	reading, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm", nil)
 
 	require.True(t, ok)
-	assert.Equal(t, 48*gib, total)
-	assert.Equal(t, 32*gib, free)
+	assert.Equal(t, 48*gib, reading.Total)
+	assert.Equal(t, 32*gib, reading.Free)
 }
 
 func TestDetectDeviceMemory_FallsBackToTheSelectedVLLMBackend(t *testing.T) {
@@ -49,15 +49,16 @@ func TestDetectDeviceMemory_FallsBackToTheSelectedVLLMBackend(t *testing.T) {
 		func(context.Context) (int64, int64, bool) { return 0, 0, false },
 		func(_ context.Context, bin string, _ map[string]string) (deviceMemoryProbe, error) {
 			require.Equal(t, "/opt/vllm/bin/vllm", bin)
-			return deviceMemoryProbe{Total: 64 * gib, Free: 40 * gib}, nil
+			return deviceMemoryProbe{Total: 64 * gib, Free: 40 * gib, Runtime: "metal_mlx"}, nil
 		},
 	)
 
-	total, free, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm", nil)
+	reading, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm", nil)
 
 	require.True(t, ok)
-	assert.Equal(t, 64*gib, total)
-	assert.Equal(t, 40*gib, free)
+	assert.Equal(t, 64*gib, reading.Total)
+	assert.Equal(t, 40*gib, reading.Free)
+	assert.Equal(t, "metal_mlx", reading.Runtime)
 }
 
 func TestDetectDeviceMemory_UsesVRAMWhenNvidiaSMIReportsNA(t *testing.T) {
@@ -68,11 +69,11 @@ func TestDetectDeviceMemory_UsesVRAMWhenNvidiaSMIReportsNA(t *testing.T) {
 		},
 	)
 
-	total, free, ok := detectDeviceMemory(t.Context(), "vllm", nil)
+	reading, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	require.True(t, ok)
-	assert.Equal(t, 16*gib, total)
-	assert.Equal(t, 4*gib, free)
+	assert.Equal(t, 16*gib, reading.Total)
+	assert.Equal(t, 4*gib, reading.Free)
 }
 
 func TestDetectDeviceMemory_ReservesStartupHeadroomOnSharedMemory(t *testing.T) {
@@ -83,10 +84,10 @@ func TestDetectDeviceMemory_ReservesStartupHeadroomOnSharedMemory(t *testing.T) 
 		},
 	)
 
-	_, free, ok := detectDeviceMemory(t.Context(), "vllm", nil)
+	reading, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	require.True(t, ok)
-	assert.Equal(t, 17*gib, free, "leave 3 GiB of the available 20 GiB for startup")
+	assert.Equal(t, 17*gib, reading.Free, "leave 3 GiB of the available 20 GiB for startup")
 }
 
 func TestDetectDeviceMemory_LeavesSizingToVLLMWhenEveryProviderFails(t *testing.T) {
@@ -97,7 +98,7 @@ func TestDetectDeviceMemory_LeavesSizingToVLLMWhenEveryProviderFails(t *testing.
 		},
 	)
 
-	_, _, ok := detectDeviceMemory(t.Context(), "vllm", nil)
+	_, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	assert.False(t, ok)
 }
@@ -141,10 +142,10 @@ func withUnifiedMemoryGPU(t *testing.T, total, available int64) {
 func TestDetectDeviceMemory_ReportsNoFreeMemoryBelowSharedStartupHeadroom(t *testing.T) {
 	withUnifiedMemoryGPU(t, sparkTotal, gib)
 
-	_, free, ok := detectDeviceMemory(t.Context(), "vllm", nil)
+	reading, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	require.True(t, ok)
-	assert.Zero(t, free)
+	assert.Zero(t, reading.Free)
 }
 
 // deviceMemoryProbeHarness supplies fake device APIs for the production probe.
@@ -197,18 +198,18 @@ func TestDeviceMemoryProbe_UsesSystemRAMOnlyForVerifiedSharedDevices(t *testing.
 	accept("verified integrated XPU uses available host RAM", `{"backend":"xpu","integrated":true,"allow_system":true}`,
 		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true})
 	accept("Apple Silicon Metal without a free-memory API", `{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"allow_system":true}`,
-		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true})
+		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true, Runtime: "metal_mlx"})
 	accept("Apple Silicon preserves the engine available-memory reading", `{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"has_device_free":true}`,
-		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib, Shared: true})
+		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib, Shared: true, Runtime: "metal_mlx"})
 	accept("Metal MLX uses its working-set limit instead of physical RAM",
 		`{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"total_gib":48,"metal_limit_gib":36,"free_gib":40,"has_device_free":true}`,
-		deviceMemoryProbe{Total: 36 * gib, Free: 36 * gib, Shared: true})
+		deviceMemoryProbe{Total: 36 * gib, Free: 36 * gib, Shared: true, Runtime: "metal_mlx"})
 	accept("Metal MLX caps host availability at its working-set limit",
 		`{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"total_gib":48,"metal_limit_gib":36,"system_free_gib":40,"allow_system":true}`,
-		deviceMemoryProbe{Total: 36 * gib, Free: 36 * gib, Shared: true})
+		deviceMemoryProbe{Total: 36 * gib, Free: 36 * gib, Shared: true, Runtime: "metal_mlx"})
 	accept("Metal MPS uses physical RAM without an MLX limit",
 		`{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"metal_backend":"mps","total_gib":48,"metal_limit_gib":0,"free_gib":40,"has_device_free":true}`,
-		deviceMemoryProbe{Total: 48 * gib, Free: 40 * gib, Shared: true})
+		deviceMemoryProbe{Total: 48 * gib, Free: 40 * gib, Shared: true, Runtime: "metal_mps"})
 	accept("another Apple Silicon platform retains its own memory base",
 		`{"os":"darwin","arch":"arm64","mps_available":true,"total_gib":48,"metal_limit_gib":36,"free_gib":40,"has_device_free":true}`,
 		deviceMemoryProbe{Total: 48 * gib, Free: 40 * gib, Shared: true})

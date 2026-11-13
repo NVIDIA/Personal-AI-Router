@@ -16,11 +16,12 @@ have the same limits.
 Metal's MLX worker uses its recommended working-set limit for capacity; its
 MPS worker uses physical RAM. These match each worker's utilization calculation.
 
-On success, the final stdout line is JSON containing total and free bytes, plus
-a shared flag indicating whether the device shares system RAM. If memory cannot
-be measured, the script exits with an error and the manager leaves memory sizing
-to vLLM. This script reports measurements only; the Go caller applies the startup
-reserve and calculates the launch settings.
+On success, the final stdout line is JSON containing total and free bytes, a
+shared flag indicating whether the device shares system RAM, and an optional
+runtime identifier. If memory cannot be measured, the script exits with an error
+and the manager leaves memory sizing to vLLM. The Go caller calculates the launch
+settings, including the startup reserve and handling runtimes whose resident
+weight size differs from the checkpoint size.
 """
 
 import json
@@ -67,7 +68,8 @@ elif metal_module is not None and isinstance(
 ):
     from vllm_metal import envs as metal_envs
 
-    if metal_envs.VLLM_METAL_BACKEND == "mlx":
+    metal_backend = metal_envs.VLLM_METAL_BACKEND
+    if metal_backend == "mlx":
         import mlx.core as mx
 
         total = int(mx.device_info().get("max_recommended_working_set_size", 0))
@@ -84,6 +86,7 @@ elif metal_module is not None and isinstance(
         }
     else:
         reading = system_reading(total)
+    reading["runtime"] = f"metal_{metal_backend}"
 else:
     apple_silicon = (
         sys.platform == "darwin"

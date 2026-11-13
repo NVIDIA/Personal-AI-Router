@@ -41,13 +41,13 @@ var deviceMemory = detectDeviceMemory
 
 // gpuMemory leaves explicit CUDA device selection to the engine.
 // It is a variable so tests can supply a machine.
-var gpuMemory = func(ctx context.Context, bin string, env map[string]string) (int64, int64, bool) {
+var gpuMemory = func(ctx context.Context, bin string, env map[string]string) (deviceMemoryProbe, bool) {
 	if _, selected := os.LookupEnv("CUDA_VISIBLE_DEVICES"); selected {
-		return 0, 0, false
+		return deviceMemoryProbe{}, false
 	}
 	for name := range env {
 		if environmentKey(name) == "CUDA_VISIBLE_DEVICES" {
-			return 0, 0, false
+			return deviceMemoryProbe{}, false
 		}
 	}
 	return deviceMemory(ctx, bin, env)
@@ -309,6 +309,25 @@ func readHFConfig(snapshot string) (hfModelConfig, bool) {
 	return cfg, true
 }
 
+// canEstimateResidentWeights excludes MLX FP8 checkpoints: the loader expands
+// supported FP8 weights to BF16, so their disk size understates resident memory.
+// Let the worker profile those weights within the measured free-memory cap.
+func canEstimateResidentWeights(runtime, snapshot string) bool {
+	if runtime != "metal_mlx" {
+		return true
+	}
+	config, err := os.ReadFile(filepath.Join(snapshot, "config.json"))
+	if err != nil {
+		return false
+	}
+	quant, err := os.ReadFile(filepath.Join(snapshot, hfQuantConfigFile))
+	if err != nil && !os.IsNotExist(err) {
+		return false
+	}
+	format, _, err := weightFormat(config, quant)
+	return err == nil && format != weightFormatFP8
+}
+
 // autoGPUShare returns the --gpu-memory-utilization for a launch that needs
 // need bytes on a GPU with total and free bytes, and whether to set one. The
 // share is never below minAutoUtil, so a small model still gets room to work,
@@ -344,7 +363,9 @@ func autoGPUShare(need, total, free int64) (float64, bool) {
 // The model is read at the revision vLLM loads (see findLaunchModel). One that
 // is not in the cache yet is read through fetch, when given, since vLLM
 // downloads it on this start. Without its size and config, only the memory
-// share is bounded.
+// share is bounded. MLX FP8 loading changes the resident weight size, so those
+// launches also use the free-memory cap and keep the model's context target
+// without guessing what fits.
 func planHFContext(startupCtx context.Context, args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string, bin string) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
@@ -371,11 +392,12 @@ func planHFContext(startupCtx context.Context, args []string, hubDir string, tar
 	// A dtype override changes how checkpoint bytes become runtime weights
 	// and cache storage. Let vLLM size those combinations instead of estimating
 	// them from the repository's dtype and on-disk size.
-	var total, free int64
+	var memory deviceMemoryProbe
 	var haveGPU bool
 	if !userDtype && !userCacheDtype {
-		total, free, haveGPU = gpuMemory(startupCtx, bin, env)
+		memory, haveGPU = gpuMemory(startupCtx, bin, env)
 	}
+	total, free := memory.Total, memory.Free
 	found, known := findLaunchModel(args, hubDir, fetch)
 	if !known {
 		// Not downloaded yet and Hugging Face could not answer, so its size and
@@ -394,6 +416,10 @@ func planHFContext(startupCtx context.Context, args []string, hubDir string, tar
 		source = "model not in cache, sized from Hugging Face"
 	}
 	cfg, weights := found.cfg, found.weights
+	estimateWeights := canEstimateResidentWeights(memory.Runtime, found.snapshot)
+	if !estimateWeights {
+		source = "MLX profiles resident weights; memory share capped at free memory"
+	}
 	text := cfg.text()
 	native, layers, kvHeads, headDim, ok := text.kvShape()
 	if !ok {
@@ -421,7 +447,7 @@ func planHFContext(startupCtx context.Context, args []string, hubDir string, tar
 	case haveGPU:
 		budget = free - freeMargin
 	}
-	if haveGPU && budget > 0 && fixed+perToken*ctx > budget {
+	if haveGPU && estimateWeights && budget > 0 && fixed+perToken*ctx > budget {
 		fit := (budget - fixed) / perToken
 		fit -= fit % 1024
 		if fit >= minAutoContext {
@@ -461,7 +487,11 @@ func planHFContext(startupCtx context.Context, args []string, hubDir string, tar
 				}
 			}
 		}
-		if util, ok := autoGPUShare(fixed+perToken*utilCtx, total, free); ok {
+		need := fixed + perToken*utilCtx
+		if !estimateWeights {
+			need = total
+		}
+		if util, ok := autoGPUShare(need, total, free); ok {
 			extra = append(extra, "--gpu-memory-utilization", fmt.Sprintf("%.2f", util))
 		}
 	}
