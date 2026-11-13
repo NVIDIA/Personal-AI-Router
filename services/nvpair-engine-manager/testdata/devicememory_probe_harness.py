@@ -14,7 +14,10 @@ JSON. An unavailable or forbidden reading raises an exception on stderr and
 exits unsuccessfully, which the Go rejection cases check.
 
 Fixture fields (memory values are GiB, converted to bytes below):
-- backend: cuda, rocm, xpu, metal, cpu, or unknown (the default).
+- backend: vLLM's selected platform, cuda, rocm, xpu, metal, cpu, or unknown
+  (the default). Accelerator availability follows this selection unless overridden.
+- cuda_available / xpu_available: override PyTorch accelerator availability
+  independently of vLLM's selected platform.
 - total_gib / free_gib: device capacity and free memory, defaulting to 16 / 4.
 - allow_system: permit system-memory reads, false by default. Keeping these
   forbidden for discrete and unknown devices catches unsafe host-RAM fallbacks.
@@ -66,13 +69,13 @@ if not fixture.get("unknown_topology", False):
 
 torch = types.SimpleNamespace(
     cuda=types.SimpleNamespace(
-        is_available=lambda: backend in ("cuda", "rocm"),
+        is_available=lambda: fixture.get("cuda_available", backend in ("cuda", "rocm")),
         device_count=lambda: fixture.get("device_count", 1),
         mem_get_info=device_memory,
         get_device_properties=lambda device: cuda_properties,
     ),
     xpu=types.SimpleNamespace(
-        is_available=lambda: backend == "xpu",
+        is_available=lambda: fixture.get("xpu_available", backend == "xpu"),
         mem_get_info=device_memory,
         get_device_properties=lambda device: xpu_properties,
     ),
@@ -84,6 +87,8 @@ torch = types.SimpleNamespace(
 )
 platform = types.SimpleNamespace(
     get_device_total_memory=lambda device: total,
+    is_cuda_alike=lambda: backend in ("cuda", "rocm"),
+    is_xpu=lambda: backend == "xpu",
     is_cpu=lambda: backend == "cpu",
 )
 if fixture.get("has_device_free", False):

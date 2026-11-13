@@ -5,8 +5,8 @@
 
 The engine manager runs this script with Python from vLLM's environment when
 nvidia-smi cannot provide a usable reading. It uses the installed PyTorch and
-vLLM libraries to find the device's total and currently available memory before
-PAIR chooses a context window and memory budget for the model.
+vLLM libraries to find the selected platform's total and currently available
+memory before PAIR chooses a context window and memory budget for the model.
 
 Discrete GPUs use their own memory readings. System RAM is used only for a
 verified integrated GPU, Apple Silicon with Metal available, or a CPU platform.
@@ -37,7 +37,8 @@ def system_reading(total):
     }
 
 
-if torch.cuda.is_available():
+# Follow vLLM's selection: available accelerators may not be the chosen platform.
+if current_platform.is_cuda_alike():
     if torch.cuda.device_count() != 1:
         raise RuntimeError("multiple CUDA devices require engine-owned memory sizing")
     properties = torch.cuda.get_device_properties(0)
@@ -46,7 +47,7 @@ if torch.cuda.is_available():
     else:
         free, total = torch.cuda.mem_get_info(0)
         reading = {"total": int(total), "free": int(free), "shared": False}
-elif hasattr(torch, "xpu") and torch.xpu.is_available():
+elif current_platform.is_xpu():
     properties = torch.xpu.get_device_properties(0)
     if getattr(properties, "is_integrated_gpu", False):
         reading = system_reading(int(properties.total_memory))

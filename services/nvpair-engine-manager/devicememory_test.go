@@ -206,6 +206,33 @@ func TestDeviceMemoryProbe_UsesSystemRAMOnlyForVerifiedSharedDevices(t *testing.
 		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib})
 }
 
+func TestDeviceMemoryProbe_UsesTheSelectedPlatformWhenOtherAcceleratorsAreAvailable(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python 3 is required to exercise the embedded vLLM memory probe")
+	}
+	test := func(name, input string, expected deviceMemoryProbe) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			// Fail any accelerator-memory query to prove the selected platform wins.
+			output, err := runDeviceMemoryProbeFixture(python, input)
+			require.NoError(t, err, "%s", output)
+			var result deviceMemoryProbe
+			require.NoError(t, json.Unmarshal(output, &result))
+			assert.Equal(t, expected, result)
+		})
+	}
+	test("CPU selected with CUDA available",
+		`{"backend":"cpu","cuda_available":true,"allow_system":true,"device_memory_error":true}`,
+		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true})
+	test("CPU selected with XPU available",
+		`{"backend":"cpu","xpu_available":true,"allow_system":true,"device_memory_error":true}`,
+		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true})
+	test("plugin selected with CUDA available",
+		`{"cuda_available":true,"has_device_free":true,"device_memory_error":true}`,
+		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib})
+}
+
 func TestDeviceMemoryProbe_RejectsUnavailableMemoryWithoutGuessingTopology(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
