@@ -775,3 +775,8 @@ Before `app:ready`, the broker seeds enabled model-on-request facades from the
 engine manager's persisted intent and cached inventory. The first cached-model
 request after restart can load its model without waiting for periodic
 availability reconciliation. Explicit OFF remains authoritative.
+
+For engines that load cached models on request, settings completion reconciles
+local request eligibility and cached inventory from the engine manager's observed
+enabled state. An idle enabled engine remains requestable after changing its
+cache or ports; a disabled engine stays unavailable.

@@ -13,10 +13,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
@@ -45,7 +48,7 @@ func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
 			"detect": []string{executable},
 			"runtime": map[string]any{
 				"bin": executable, "args": []string{"serve"}, "port": enginePort, "wait_for_model": true,
-				"env":             map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}"},
+				"env":             map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}", "HF_HUB_CACHE": cache},
 				"ready":           map[string]any{"http": "http://127.0.0.1:{port}/", "status": http.StatusOK, "timeout_s": 5},
 				"editable_launch": map[string]any{"fixed_args": []string{"serve"}, "controls": []map[string]any{{"env": []string{"OLLAMA_HOST"}, "value": "{server.host}:{server.port}"}}},
 			},
@@ -53,7 +56,7 @@ func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
 		"actions": map[string]any{
 			"load_model":    map[string]any{"launch_model": map[string]string{"flag": "--model"}},
 			"unload_model":  map[string]any{"stop_engine": true},
-			"list_models":   map[string]any{"hf_cache": map[string]string{"dir": cache}, "result": map[string]string{"array": "data", "field": "id"}},
+			"list_models":   map[string]any{"hf_cache": map[string]string{"dir": "{hf_hub_cache}"}, "result": map[string]string{"array": "data", "field": "id"}},
 			"loaded_models": map[string]any{"http": map[string]string{"method": "GET", "path": "/v1/models"}, "result": map[string]string{"array": "data", "field": "id", "inventory_field": "root"}},
 		},
 	}
@@ -165,4 +168,54 @@ func TestBroker_RestoresCachedModelRoutingBeforeReady(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&completion))
 	assert.Equal(t, "org/restored", completion.Model)
+}
+
+func TestBroker_RestoresIdleCachedModelRoutingAfterSettingsApply(t *testing.T) {
+	config, _ := cachedModelRequestConfig(t, []string{"org/idle-cached"})
+	stdin, messages, _, cleanup := startBrokerWithConfigDir(t, config, "--engine-manager-path", engineMgrBin, "--proxy-path", proxyBin, "--proxy-engines", "vllm")
+	t.Cleanup(cleanup)
+	waitForMethod(t, messages, "app:ready", 15*time.Second)
+	id := 9200
+	call := func(method string, params any) json.RawMessage {
+		t.Helper()
+		id++
+		require.NoError(t, json.NewEncoder(stdin).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+		reply := waitForResponseID(t, messages, id, 15*time.Second)
+		require.Nil(t, reply.Error)
+		return reply.Result
+	}
+	call("engine:start", map[string]string{"engine": "vllm"})
+	var before settings.Snapshot
+	require.NoError(t, json.Unmarshal(call("engine:get-settings", settings.Request{Engine: "vllm"}), &before))
+	require.False(t, before.Running, "enabled without a selection must remain idle")
+	empty := before.Settings
+	empty.LaunchText = regexp.MustCompile(`HF_HUB_CACHE=(?:"[^"]*"|'[^']*'|[^\s]+)`).ReplaceAllString(before.Settings.LaunchText, fmt.Sprintf("HF_HUB_CACHE=%q", t.TempDir()))
+	var preview settings.Preview
+	require.NoError(t, json.Unmarshal(call("engine:preview-settings", settings.Request{Engine: "vllm", ExpectedRevision: before.Revision, Settings: empty}), &preview))
+	require.Empty(t, preview.Errors)
+	require.Nil(t, preview.Conflict)
+	var receipt struct {
+		Phase string `json:"phase"`
+	}
+	require.NoError(t, json.Unmarshal(call("engine:apply-settings", settings.Request{Engine: "vllm", ExpectedRevision: before.Revision, RequestID: "empty-cache", Settings: empty}), &receipt))
+	require.Equal(t, "succeeded", receipt.Phase)
+	call("engine:stop", map[string]string{"engine": "vllm"})
+	call("engine:start", map[string]string{"engine": "vllm"})
+	var after settings.Snapshot
+	require.NoError(t, json.Unmarshal(call("engine:get-settings", settings.Request{Engine: "vllm"}), &after))
+	require.NoError(t, json.Unmarshal(call("engine:apply-settings", settings.Request{Engine: "vllm", ExpectedRevision: after.Revision, RequestID: "restore-cache", Settings: before.Settings}), &receipt))
+	require.Equal(t, "succeeded", receipt.Phase)
+
+	// Completion must restore request eligibility even when no model is loaded.
+	body := bytes.NewBufferString(`{"model":"org/idle-cached","messages":[{"role":"user","content":"Reply briefly."}],"max_tokens":8}`)
+	client := &http.Client{Timeout: 15 * time.Second}
+	response, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", before.Settings.ProxyPort), "application/json", body)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var completion struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&completion))
+	assert.Equal(t, "org/idle-cached", completion.Model)
 }

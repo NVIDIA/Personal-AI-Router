@@ -413,7 +413,11 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	}
 	// An unsuccessful apply can leave the previous engine running. Restore
 	// discovery from observed runtime state, independent of the apply result.
-	if proxyReady && launch.Running && launch.EffectivePort > 0 && record.Snapshot.EffectiveProxyPort > 0 && launch.EffectivePort != record.Snapshot.EffectiveProxyPort {
+	if profile.LoadOnRequest {
+		// Idle engines remain requestable from cached inventory. Restore that
+		// eligibility before publishing completion, including after a failed apply.
+		b.reconcileRequestedModelEngine(profile)
+	} else if proxyReady && launch.Running && launch.EffectivePort > 0 && record.Snapshot.EffectiveProxyPort > 0 && launch.EffectivePort != record.Snapshot.EffectiveProxyPort {
 		b.setProxyLocalBackend(b.settingsProxy(engine), engine, launch.EffectivePort, true)
 		if b.regCache != nil {
 			b.registerService(noderec.RegisterParams{Service: service, Port: record.Snapshot.EffectiveProxyPort})
