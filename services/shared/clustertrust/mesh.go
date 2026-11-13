@@ -5,6 +5,7 @@ package clustertrust
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -18,10 +19,9 @@ import (
 
 // ClusterUUIDTXTKey is the mDNS TXT key carrying a node's cluster principal —
 // the UUID of the mTLS leaf nvpair-cluster-manager issued it — so a peer can map
-// an advertised service to the pin it holds for that node. It is deliberately
-// distinct from node-info's existing uuid= key (the stable per-host node id):
-// the cluster principal is a per-cluster cert UUID, not the host UUID, and the
-// two are not equal. A service advertises this key only while clustered.
+// an advertised service to the pin it holds for that node. Authenticated
+// inventory requires the host UUID, this principal, and the serving certificate
+// UUID to match. A service advertises this key only while clustered.
 const ClusterUUIDTXTKey = "cluster-uuid"
 
 // ErrNotClustered is returned by the TLS config resolvers while this node is not
@@ -61,10 +61,8 @@ func ClusterUUIDFromTXT(txt []string) string {
 //
 // Self-trust: a node always trusts its own leaf (it isn't pinned in trusted/,
 // which only holds peers). Without it a node could not reach its own gated
-// endpoints — e.g. nvpair-node-scanner reading the local nvpair-node-info over the
-// LAN, which it discovers via mDNS like any peer. With self-trust the local
-// read completes over the same mTLS path as a peer read, so node-info needs no
-// separate plaintext loopback listener.
+// endpoints. Scanner's local node-info measurements instead arrive from its
+// owned worker over private IPC, independently of membership or self-trust.
 //
 // A nil *Mesh reads as permanently unclustered so a service with no cluster dir
 // needs no special case.
@@ -73,6 +71,9 @@ type Mesh struct {
 	// admission.json, trusted/). Empty means this service was given no cluster
 	// dir and is unclustered for its whole life.
 	dir string
+	// Serialize disk reloads so a read started before revocation cannot finish
+	// after a newer refresh and overwrite its view with older pins.
+	refreshMu sync.Mutex
 
 	// mu guards the identity and the derived membership answer. trust carries
 	// its own lock and is replaced only in Open.
@@ -80,6 +81,7 @@ type Mesh struct {
 	id        *Identity
 	idCertPEM []byte
 	clustered bool
+	admission admissionRecord
 
 	trust *Trust
 }
@@ -122,6 +124,8 @@ func (m *Mesh) Refresh() {
 	if m == nil || m.dir == "" {
 		return
 	}
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
 	m.trust.Reload()
 
 	certPEM, certErr := os.ReadFile(filepath.Join(m.dir, "node.crt"))
@@ -136,11 +140,42 @@ func (m *Mesh) Refresh() {
 			m.id, m.idCertPEM = id, certPEM
 		}
 	}
+	// Keep the previous admission on a read failure. An absent, cleared, or
+	// malformed record still replaces it, so departures remain authoritative.
+	if admission, err := readAdmission(m.dir); err == nil {
+		m.admission = admission
+	}
 	// Membership is a usable identity AND either a live admission (authoritative
 	// and durable across restarts, including a cluster of one with no peers) or
 	// at least one pinned peer (a confirmed peer means clustered even on a
 	// cluster dir written before admission.json existed).
-	m.clustered = m.id != nil && (hasActiveAdmission(m.dir) || m.trust.Count() > 0)
+	m.clustered = m.id != nil && ((m.admission.ClusterID != "" && m.admission.Epoch != 0) || m.trust.Count() > 0)
+}
+
+// PeerRecordID identifies a proof made with the current local identity,
+// admission, and exact peer pin. It is an opaque discovery record key, not an
+// authenticator: only an owned worker's successful mTLS read can publish it.
+// Call Refresh first. Empty means the principal is currently unauthorized.
+func (m *Mesh) PeerRecordID(uuid string) string {
+	if m == nil || uuid == "" {
+		return ""
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.clustered || m.id == nil {
+		return ""
+	}
+	der := selfLeafDER(m.id)
+	peerKey := ""
+	if uuid != m.id.NodeUUID {
+		pin, ok := m.trust.pin(uuid)
+		if !ok {
+			return ""
+		}
+		der, peerKey = pin.der, ":"+pin.recordKey
+	}
+	key := fmt.Sprintf("%x:%x:%s:%d%s", sha256.Sum256(selfLeafDER(m.id)), sha256.Sum256(der), m.admission.ClusterID, m.admission.Epoch, peerKey)
+	return fmt.Sprintf("peer:%s:%x", uuid, sha256.Sum256([]byte(key)))
 }
 
 // Clustered reports whether this node is CURRENTLY a cluster member, as of the
@@ -234,6 +269,13 @@ func (m *Mesh) trustedDER(uuid string) ([]byte, bool) {
 func (m *Mesh) HasPin(uuid string) bool {
 	_, ok := m.trustedDER(uuid)
 	return ok
+}
+
+// VerifyPeerCertificate checks a completed read against the current exact pin.
+// Call Refresh before this check: a reused connection or an in-flight response
+// can outlive the pin that authorized its handshake.
+func (m *Mesh) VerifyPeerCertificate(uuid string, cert *x509.Certificate) bool {
+	return cert != nil && UUIDFromCert(cert) == uuid && m.matchDER(uuid, cert.Raw)
 }
 
 // matchDER is the server-side gate: accept der for uuid when it byte-for-byte

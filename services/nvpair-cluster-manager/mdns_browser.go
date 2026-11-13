@@ -3,17 +3,10 @@
 
 package main
 
-// mdns_browser.go resolves a cluster peer's host:port from a nodeUuid / nodeId,
-// used to resolve an invite target given only a UUID or hostname and to
-// corroborate a member's advertised addr (§7.5). It exposes no RPC; node
-// selection is the Broker's job and a Broker-supplied address always wins.
-//
-// Post-cutover this no longer runs its own _nvpair-cluster-manager
-// browse. This node's cl=<port> is carried in the single _nvpair-node record the
-// node-scanner daemon advertises; the Manager feeds the discovery:nodes snapshot
-// here via setRelay, and Resolve answers from that relay-fed map. The map DOES
-// evict (a removed node stops resolving), the deliberate behavior change from the
-// former accumulate-only browse.
+// Resolve invite and member addresses from broker discovery snapshots (§7.5).
+// Scanner supplies records advertising cl; this resolver opens no browse socket
+// or RPC surface. Each snapshot replaces the map, so departed records stop
+// resolving. A supplied invite address is tried before resolved candidates.
 
 import (
 	"sync"
@@ -23,27 +16,40 @@ import (
 	"nvpair-shared/noderec"
 )
 
-// Browser holds the relay-fed peer map, keyed by the directory hostUuid.
+type resolverKeyKind uint8
+
+const (
+	byDiscoveryRecord resolverKeyKind = iota
+	byHostUUID
+)
+
+// resolverKey keeps advertised UUID text separate from scanner-assigned record
+// IDs, so a claim cannot overwrite another record's pairing lookup.
+type resolverKey struct {
+	kind resolverKeyKind
+	id   string
+}
+
+// Browser resolves relay records by discovery record ID and host UUID.
 type Browser struct {
 	mu    sync.RWMutex
-	relay map[string]discovery.Node
+	relay map[resolverKey]discovery.Node
 }
 
 func newBrowser() *Browser {
-	return &Browser{relay: make(map[string]discovery.Node)}
+	return &Browser{relay: make(map[resolverKey]discovery.Node)}
 }
 
-// setRelay replaces the resolver map from a discovery:nodes snapshot: every node
-// advertising cl with an IP becomes a resolvable entry keyed by hostUuid (the
-// rest are dropped). The broker sends the full filtered set on every change, so
-// this is a wholesale replace, not a per-node apply — a departed node is simply
-// absent from the next snapshot and stops resolving. The synthesized TXT carries
-// uuid=<hostUuid> so Resolve's UUID match works (hostUuid is the same principal
-// the node advertises as uuid=), plus the node's own address ranking so callers
-// can fail over past an address they cannot reach.
+// setRelay replaces the resolver map from a discovery:nodes snapshot. Records
+// with a cluster service and dialable addresses remain selectable by record ID
+// for pairing. Verified records take precedence when resolving a host UUID.
+// Departed records disappear with the next snapshot. Synthesized TXT preserves
+// address ranking for callers that need address failover.
 func (b *Browser) setRelay(nodes []noderec.DirectoryNode) {
-	m := make(map[string]discovery.Node, len(nodes))
+	m := make(map[resolverKey]discovery.Node, len(nodes))
+	verified := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
+		proved := n.IdentityVerification == noderec.IdentityLocal || n.IdentityVerification == noderec.IdentityPinned
 		svc, ok := n.Services[noderec.ServiceCluster]
 		if !ok {
 			continue
@@ -55,48 +61,48 @@ func (b *Browser) setRelay(nodes []noderec.DirectoryNode) {
 		if len(hosts) == 0 {
 			continue
 		}
-		m[n.HostUUID] = discovery.Node{
+		node := discovery.Node{
 			ID:        n.Name,
 			Addresses: hosts,
 			Port:      svc.Port,
-			TXT:       append([]string{"uuid=" + n.HostUUID}, n.AddressTXT()...),
+			TXT:       n.AddressTXT(),
 		}
+		// A selected discovery remains addressable for pairing, independently
+		// of the preferred endpoint for an already verified host.
+		if n.DiscoveryRecordID != "" {
+			m[resolverKey{kind: byDiscoveryRecord, id: n.DiscoveryRecordID}] = node
+		}
+		if verified[n.HostUUID] && !proved {
+			continue
+		}
+		m[resolverKey{kind: byHostUUID, id: n.HostUUID}] = node
+		verified[n.HostUUID] = proved
 	}
 	b.mu.Lock()
 	b.relay = m
 	b.mu.Unlock()
 }
 
-// Resolve returns a node's addresses in the order it ranked them, plus its
-// cluster-manager port, for a UUID or nodeId (hostname); a UUID match wins. The
-// list is what a caller dials down until one address answers — the publisher's
-// ranking is evidence from its vantage point, not a promise about this host's.
+// Resolve returns ranked addresses and the cluster-manager port. Exact record
+// IDs take precedence over host UUIDs, followed by hostname matching. Callers try
+// the addresses in order because the publisher's ranking does not establish
+// which addresses this host can reach.
 func (b *Browser) Resolve(idOrUUID string) (hosts []string, port int, ok bool) {
 	b.mu.RLock()
-	nodes := make([]discovery.Node, 0, len(b.relay))
-	for _, n := range b.relay {
-		nodes = append(nodes, n)
-	}
-	b.mu.RUnlock()
-
-	var byNode discovery.Node
-	haveNode := false
-	for _, n := range nodes {
-		if n.Port == 0 {
-			continue
-		}
-		if discovery.UUIDFromTXT(n.TXT) == idOrUUID {
-			if h := pickHosts(n); len(h) > 0 {
-				return h, n.Port, true
+	defer b.mu.RUnlock()
+	for _, kind := range []resolverKeyKind{byDiscoveryRecord, byHostUUID} {
+		if node, present := b.relay[resolverKey{kind: kind, id: idOrUUID}]; present && node.Port > 0 {
+			if addresses := pickHosts(node); len(addresses) > 0 {
+				return addresses, node.Port, true
 			}
 		}
-		if n.ID == idOrUUID && !haveNode {
-			byNode, haveNode = n, true
-		}
 	}
-	if haveNode {
-		if h := pickHosts(byNode); len(h) > 0 {
-			return h, byNode.Port, true
+	for _, n := range b.relay {
+		if n.ID != idOrUUID || n.Port == 0 {
+			continue
+		}
+		if addresses := pickHosts(n); len(addresses) > 0 {
+			return addresses, n.Port, true
 		}
 	}
 	return nil, 0, false
@@ -115,10 +121,9 @@ func pickHosts(n discovery.Node) []string {
 func (b *Browser) seed(uuid, host string, port int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.relay[uuid] = discovery.Node{
+	b.relay[resolverKey{kind: byHostUUID, id: uuid}] = discovery.Node{
 		ID:        uuid,
 		Addresses: []string{host},
 		Port:      port,
-		TXT:       []string{"uuid=" + uuid},
 	}
 }

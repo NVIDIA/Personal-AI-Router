@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +13,63 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"nvpair-shared/discovery"
+	"nvpair-shared/noderec"
 )
+
+// A claimed trusted flag and an error-service port are insufficient without
+// verified identity. Such a record must not become an error-sync peer.
+func TestDirectoryToPeer_RejectsUnverifiedServiceClaims(t *testing.T) {
+	node := noderec.DirectoryNode{
+		HostUUID:             "peer",
+		IdentityVerification: noderec.IdentityUnverified,
+		Trusted:              true,
+		IP:                   "192.0.2.30",
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceErrors: {Port: 14319},
+		},
+	}
+	_, accepted := directoryToPeer(node)
+	assert.False(t, accepted)
+}
+
+func TestDiscovery_RemovesPeersWhenTrustIsWithdrawn(t *testing.T) {
+	const peerUUID = "peer"
+	const peerAddress = "192.0.2.20"
+	m, _ := newTestManager(t)
+	m.ctx = context.Background()
+	events := make(chan DiscoveryEvent, 2)
+	m.SetRelayEvents(events)
+	peer := noderec.DirectoryNode{
+		HostUUID:             peerUUID,
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		IP:                   peerAddress,
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceErrors: {Port: 14319},
+		},
+	}
+	applySnapshot := func(node noderec.DirectoryNode) {
+		t.Helper()
+		params, err := json.Marshal(noderec.GetNodesResult{Nodes: []noderec.DirectoryNode{node}})
+		require.NoError(t, err)
+		m.handleMessage(&Message{JSONRPC: "2.0", Method: noderec.NotifyNodes, Params: params})
+	}
+	applySnapshot(peer)
+	require.Len(t, events, 1)
+	discovered := <-events
+	require.Equal(t, discovery.Discovered, discovered.Type)
+	assert.Equal(t, peerUUID, discovered.Node.ID)
+	assert.Equal(t, []string{peerAddress}, discovered.Node.Addresses)
+
+	peer.Trusted = false
+	applySnapshot(peer)
+
+	require.Len(t, events, 1)
+	removed := <-events
+	assert.Equal(t, discovery.Removed, removed.Type)
+	assert.Equal(t, peerUUID, removed.Node.ID)
+}
 
 // captureRW splits the manager's outbound stream into two channels at
 // write time: frames that carry a JSON-RPC `id` (responses, including

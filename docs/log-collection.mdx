@@ -351,8 +351,9 @@ casual.
   [SECURITY.md](../SECURITY.md) and [Architecture](architecture.mdx).
 - Restrict to trusted cluster members and require explicit user consent on the
   source node. Membership alone is a weak basis for handing over logs.
-- Do not expose an unauthenticated endpoint, and do not use the node-info HTTP
-  surface. That port exists for telemetry polling, and nothing authenticates it.
+- Require authentication on the log-transfer endpoint. Node-info serves public
+  hardware previews and authenticated peer inventory; log transfer needs its own
+  explicit authorization and interface.
 - Log only operational metadata about the transfer: node, size, duration, and
   outcome. Never log the contents.
 

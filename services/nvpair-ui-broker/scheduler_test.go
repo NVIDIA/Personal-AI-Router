@@ -38,7 +38,7 @@ func TestSchedulerFeedBaseline_PrecedesConcurrentLiveWorkload(t *testing.T) {
 		HostUUID:          "a",
 		GPUUtilizationPct: 50,
 		TelemetryValid:    true,
-	}, time.Now())
+	}, time.Now(), time.Now())
 
 	feedLocked := make(chan struct{})
 	initDone := make(chan int, 1)

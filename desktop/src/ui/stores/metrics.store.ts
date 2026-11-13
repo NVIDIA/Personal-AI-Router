@@ -84,7 +84,7 @@ export const useMetricsStore = create<MetricsStore>((set, get) => ({
                 }
 
                 const lastTs = history.cpuUtilization[history.cpuUtilization.length - 1]?.timestamp
-                if (lastTs === metrics.current.timestamp) return
+                if (lastTs !== undefined && metrics.current.timestamp <= lastTs) return
 
                 const ts = metrics.current.timestamp
 

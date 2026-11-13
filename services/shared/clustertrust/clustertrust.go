@@ -75,14 +75,27 @@ func LoadIdentity(clusterDir string) (*Identity, error) {
 type Trust struct {
 	dir  string
 	mu   sync.RWMutex
-	ders map[string][]byte
+	pins map[string]trustedPin
+}
+
+type trustedPin struct {
+	der       []byte
+	recordKey string
+}
+
+type peerPinRecord struct {
+	NodeUUID       string `json:"nodeUuid"`
+	CertPem        string `json:"certPem"`
+	ClusterID      string `json:"clusterId"`
+	AdmissionEpoch uint64 `json:"admissionEpoch"`
+	PinnedAt       int64  `json:"pinnedAt"`
 }
 
 // newTrust opens clusterDir/trusted. The pins are read by the owning Mesh's
 // first Refresh, not here, so there is one place that decides when the cluster
 // dir is read.
 func newTrust(clusterDir string) *Trust {
-	return &Trust{dir: filepath.Join(clusterDir, "trusted"), ders: map[string][]byte{}}
+	return &Trust{dir: filepath.Join(clusterDir, "trusted"), pins: map[string]trustedPin{}}
 }
 
 // Reload re-reads the trusted/ directory, replacing the in-memory pin set.
@@ -107,7 +120,7 @@ func (t *Trust) Reload() {
 	}
 	// A missing dir leaves entries nil, so the loop below is a no-op and the
 	// empty set is published — the authoritative "no peers trusted".
-	ders := make(map[string][]byte, len(entries))
+	pins := make(map[string]trustedPin, len(entries))
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".tmp") {
@@ -121,15 +134,12 @@ func (t *Trust) Reload() {
 			// dir won't read: the file's presence says the peer is still
 			// trusted, so failing to open it is missing information rather than
 			// a revocation. A pin we have never read stays absent.
-			if previous, ok := t.DER(fileUUID); ok {
-				ders[fileUUID] = previous
+			if previous, ok := t.pin(fileUUID); ok {
+				pins[fileUUID] = previous
 			}
 			continue
 		}
-		var pin struct {
-			NodeUUID string `json:"nodeUuid"`
-			CertPem  string `json:"certPem"`
-		}
+		var pin peerPinRecord
 		// A pin that reads but does not parse or does not validate is dropped,
 		// not carried: that is a content problem, and honoring a certificate we
 		// can no longer verify the provenance of is the one failure this store
@@ -141,11 +151,19 @@ func (t *Trust) Reload() {
 		if err != nil {
 			continue
 		}
-		ders[fileUUID] = der
+		pins[fileUUID] = trustedPin{der: der, recordKey: fmt.Sprintf("%s:%d:%d", pin.ClusterID, pin.AdmissionEpoch, pin.PinnedAt)}
 	}
 	t.mu.Lock()
-	t.ders = ders
+	t.pins = pins
 	t.mu.Unlock()
+}
+
+// pin returns one immutable certificate-and-generation snapshot.
+func (t *Trust) pin(uuid string) (trustedPin, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	pin, ok := t.pins[uuid]
+	return pin, ok
 }
 
 // pinDER validates that a pin file's inner nodeUuid, filename, and embedded
@@ -172,31 +190,25 @@ func pinDER(innerUUID, certPem, fileUUID string) ([]byte, error) {
 
 // MatchDER reports whether der byte-for-byte matches the pinned cert for uuid.
 func (t *Trust) MatchDER(uuid string, der []byte) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	pinned, ok := t.ders[uuid]
-	return ok && bytes.Equal(pinned, der)
+	pin, ok := t.pin(uuid)
+	return ok && bytes.Equal(pin.der, der)
 }
 
 // DER returns a copy of the pinned cert DER for uuid, used to pin a peer's
 // server cert on an outbound call.
 func (t *Trust) DER(uuid string) ([]byte, bool) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	der, ok := t.ders[uuid]
+	pin, ok := t.pin(uuid)
 	if !ok {
 		return nil, false
 	}
-	cp := make([]byte, len(der))
-	copy(cp, der)
-	return cp, true
+	return bytes.Clone(pin.der), true
 }
 
 // Count returns the number of currently-pinned peers.
 func (t *Trust) Count() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return len(t.ders)
+	return len(t.pins)
 }
 
 // ServerTLSConfig builds the inbound mTLS config from a node's leaf: present it
