@@ -89,8 +89,8 @@ reads the model's `config.json` from the Hugging Face cache, at the revision
 vLLM loads (`--revision`, or `main` through `refs/main`, the way
 `huggingface_hub` resolves it; another cached revision is never read in its
 place), and the free GPU
-memory (`nvidia-smi`; on a unified-memory machine such as DGX Spark, where it
-reports `[N/A]`, the total and available system memory from `/proc/meminfo`),
+memory (`nvidia-smi`, or the installed runtime when native telemetry is missing;
+system RAM is used only after confirming that the selected device shares it),
 then adds: `--max-model-len` of 64K (PAIR's agent-ready default; a
 model with a larger window is capped there, and a smaller one is shrunk to what
 fits), a YaRN `--hf-overrides` when the model's own window is below 64K (for
@@ -146,13 +146,28 @@ When no parser reads the model's format (Nemotron Nano v2's `<TOOLCALL>`, or a
 template with no tool support), nothing is added, and a request that asks for
 tool calls gets vLLM's own error (HTTP 400). A parser named in the launch
 arguments is always used as given.
-The environment sets `VLLM_USE_FLASHINFER_SAMPLER=0`. vLLM's FlashInfer sampler
-compiles GPU kernels on first start, and that build cannot handle the spaces in
-PAIR's app-data folder (`Nvidia Corporation/Personal AI Router`), so the
-built-in sampler is used instead. As a side effect no CUDA toolkit or C++
-compiler is needed. The same limit means anything that forces a FlashInfer
-kernel build (for example choosing a FlashInfer attention backend) fails until
-the install can live on a path without spaces.
+PAIR installs its managed vLLM payload under `~/.nvpair/engine-bin/vllm`, rather
+than under the app-data folder whose `Nvidia Corporation/Personal AI Router`
+segments contain spaces. FlashInfer and DeepGEMM write unescaped source and
+include paths into load-time GPU builds, so the space-free physical location lets
+their attention and FP8/FP4 kernels compile normally. The engine's virtualenv is
+put first on `PATH` so those builds find its bundled `ninja`. Engine uninstall,
+Reset app data, and the platform uninstallers all remove this managed directory;
+downloaded Hugging Face models remain in `~/.cache/huggingface`.
+
+The environment still sets `VLLM_USE_FLASHINFER_SAMPLER=0`, so an ordinary model
+does not need a CUDA toolkit solely for the optional FlashInfer sampler. Other
+FlashInfer and DeepGEMM kernels are not disabled, and vLLM chooses their attention
+backend normally.
+
+Before choosing a context window and `--gpu-memory-utilization`, PAIR reads
+device memory from `nvidia-smi` when available and otherwise asks the installed
+vLLM platform. This covers CUDA/ROCm, Intel XPU, Apple Metal, CPU, and
+out-of-tree backends that expose vLLM's memory API. Shared-memory platforms keep
+3 GiB for runtime startup in addition to the normal 1 GiB free margin. If neither
+provider can measure free memory, PAIR does not invent a limit and leaves memory
+sizing to vLLM.
+
 Readiness polls `/health` for up to eight minutes while weights load.
 
 The model list is the Hugging Face cache (`~/.cache/huggingface/hub`, or the

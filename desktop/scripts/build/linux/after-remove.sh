@@ -44,7 +44,8 @@ fi
 
 # 4. Remove per-user data only on `purge`, never on a plain `remove`. Per-user
 # data here means settings, logs, cluster identity and certificates, and the
-# engines NVIDIA PAIR installed under those roots (Ollama and llama.cpp);
+# engines NVIDIA PAIR installed under those roots (Ollama and llama.cpp) or in
+# its managed space-free vLLM directory;
 # downloaded model weights live outside them (~/.ollama, ~/.llamacpp,
 # ~/.lmstudio/models) and are never touched.
 #
@@ -81,10 +82,13 @@ case "${1:-}" in
       # Every delete is best-effort so a locked or missing path never aborts removal.
       rm -rf "$user_home/.config/Nvidia Corporation/Personal AI Router" 2>/dev/null || true
       rm -rf "$user_home/.config/NVIDIA Corporation/PAIR" 2>/dev/null || true
+      rm -rf "$user_home/.nvpair/engine-bin/vllm" 2>/dev/null || true
       # Remove the current and previous parents only when empty so other NVIDIA
       # applications survive.
       rmdir "$user_home/.config/Nvidia Corporation" 2>/dev/null || true
       rmdir "$user_home/.config/NVIDIA Corporation" 2>/dev/null || true
+      rmdir "$user_home/.nvpair/engine-bin" 2>/dev/null || true
+      rmdir "$user_home/.nvpair" 2>/dev/null || true
     fi
     ;;
 esac

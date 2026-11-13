@@ -187,8 +187,11 @@ rather than driver-aware or offline-repacked.
 
 The bundled `vllm` manifest covers Linux (NVIDIA GPU) and Apple Silicon macOS
 (vLLM-Metal). It installs a pinned vLLM release into a private virtualenv
-through a checksum-pinned `uv` bootstrap, or adopts a `vllm` already installed
-at a detected path, then runs `vllm serve` on `8001` behind the proxy facade on
+at the space-free managed path `~/.nvpair/engine-bin/vllm` through a
+checksum-pinned `uv` bootstrap, or adopts a `vllm` already installed at a
+detected path. The space-free physical path lets FlashInfer and DeepGEMM compile
+load-time GPU kernels; reset and uninstall include the path while preserving the
+model cache. It runs `vllm serve` on `8001` behind the proxy facade on
 `8000`. vLLM serves one model per process and has no load or unload API, so
 Eject (`unload_model`, a `stop_engine` action) stops the engine to free the GPU
 and Load on a stopped engine starts it; its model list

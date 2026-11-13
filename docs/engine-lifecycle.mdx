@@ -104,7 +104,11 @@ When you install an engine, consider the following:
   and Qwen3.6, so on a Mac they are left out of **Add model**, and loading or
   downloading one is refused with a message to choose the BF16 version. Linux,
   DGX Spark included, runs them.
-  Nothing is compiled. vLLM serves a single model per process. Until you choose
+  PAIR installs its private environment at `~/.nvpair/engine-bin/vllm` so spaces
+  in the app-data path do not break load-time GPU builds. Reset and uninstall
+  remove that managed environment while preserving downloaded models.
+  Installation uses prebuilt wheels; loading a model may compile FlashInfer or
+  DeepGEMM kernels. vLLM serves a single model per process. Until you choose
   one it serves Qwen3.5-4B, downloaded on the first start (about 9.3 GB, and a GPU
   with at least 16 GB of memory); on a smaller GPU, add and load a smaller model
   first. Its model list

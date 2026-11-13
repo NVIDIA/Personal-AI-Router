@@ -34,9 +34,24 @@ const (
 	minAutoUtil    = 0.15
 )
 
-// gpuMemory reports memory only when the launch has one unambiguous GPU.
+// Shared-memory runtimes need room for their own startup allocations.
+const unifiedMemoryHeadroom = 3 * gib
+
+var deviceMemory = detectDeviceMemory
+
+// gpuMemory leaves explicit CUDA device selection to the engine.
 // It is a variable so tests can supply a machine.
-var gpuMemory = nvidiaSMIMemory
+var gpuMemory = func(bin string, env map[string]string) (int64, int64, bool) {
+	if _, selected := os.LookupEnv("CUDA_VISIBLE_DEVICES"); selected {
+		return 0, 0, false
+	}
+	for name := range env {
+		if environmentKey(name) == "CUDA_VISIBLE_DEVICES" {
+			return 0, 0, false
+		}
+	}
+	return deviceMemory(bin)
+}
 
 func nvidiaSMIMemory(env map[string]string) (total, free int64, ok bool) {
 	// CUDA ordinals can differ from nvidia-smi's physical-device order. Leave
@@ -55,15 +70,12 @@ func nvidiaSMIMemory(env map[string]string) (total, free int64, ok bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	return parseGPUMemory(string(out), systemMemory)
+	return gpuMemoryFromQuery(string(out))
 }
 
-// parseGPUMemory reads a single GPU's memory.total,memory.free query, in MiB.
-// Multiple devices are ambiguous without reproducing CUDA's enumeration, so
-// the engine handles their memory sizing. On a unified-memory machine such as
-// DGX Spark the GPU shares system RAM and nvidia-smi reports [N/A]; system
-// memory then stands in, as it does in nvpair-node-info and vLLM itself.
-func parseGPUMemory(out string, system func() (total, available int64, ok bool)) (total, free int64, ok bool) {
+// gpuMemoryFromQuery accepts one unambiguous device with valid VRAM readings.
+// Missing telemetry requires the runtime probe to establish memory topology.
+func gpuMemoryFromQuery(out string) (total, free int64, ok bool) {
 	line := strings.TrimSpace(out)
 	if strings.ContainsAny(line, "\r\n") {
 		return 0, 0, false
@@ -72,57 +84,12 @@ func parseGPUMemory(out string, system func() (total, available int64, ok bool))
 	if len(parts) != 2 {
 		return 0, 0, false
 	}
-	if nvidiaSMINotApplicable(parts[0]) {
-		return system()
-	}
 	t, errT := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 	f, errF := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-	if errT != nil || errF != nil || t <= 0 {
+	if errT != nil || errF != nil || t <= 0 || f < 0 || f > t || t > math.MaxInt64/(1024*1024) {
 		return 0, 0, false
 	}
 	return t * 1024 * 1024, f * 1024 * 1024, true
-}
-
-// nvidiaSMINotApplicable reports an nvidia-smi field that holds no number, such
-// as the [N/A] or [Not Supported] a unified-memory GPU gives for its memory.
-func nvidiaSMINotApplicable(field string) bool {
-	value := strings.ToLower(strings.Trim(strings.TrimSpace(field), "[]"))
-	return value == "n/a" || value == "not supported"
-}
-
-// systemMemory reports total and available system memory from /proc/meminfo.
-func systemMemory() (total, available int64, ok bool) {
-	raw, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, 0, false
-	}
-	return parseMeminfo(string(raw))
-}
-
-// parseMeminfo reads MemTotal and MemAvailable, which /proc/meminfo gives in kB.
-// Available rather than free counts the page cache the kernel can reclaim.
-func parseMeminfo(text string) (total, available int64, ok bool) {
-	for _, line := range strings.Split(text, "\n") {
-		key, rest, found := strings.Cut(line, ":")
-		if !found {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			continue
-		}
-		kb, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil {
-			continue
-		}
-		switch key {
-		case "MemTotal":
-			total = kb * 1024
-		case "MemAvailable":
-			available = kb * 1024
-		}
-	}
-	return total, available, total > 0 && available > 0
 }
 
 // applyAutoLaunch appends the arguments the manifest's auto_launch asks for.
@@ -138,7 +105,7 @@ func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command lau
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
 	}
-	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch, command.Env)
+	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch, command.Env, command.Bin)
 	if tools, parser := planToolCalling(ctx, command.Args, hub, command.Bin, fetch); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
@@ -377,7 +344,7 @@ func autoGPUShare(need, total, free int64) (float64, bool) {
 // is not in the cache yet is read through fetch, when given, since vLLM
 // downloads it on this start. Without its size and config, only the memory
 // share is bounded.
-func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string) (extra []string, note string) {
+func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string, bin string) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
 	}
@@ -403,7 +370,7 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 	var total, free int64
 	var haveGPU bool
 	if !userDtype && !userCacheDtype {
-		total, free, haveGPU = gpuMemory(env)
+		total, free, haveGPU = gpuMemory(bin, env)
 	}
 	found, known := findLaunchModel(args, hubDir, fetch)
 	if !known {
