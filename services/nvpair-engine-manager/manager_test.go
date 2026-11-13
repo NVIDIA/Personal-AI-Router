@@ -153,9 +153,9 @@ func TestManager_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 
 	id := json.RawMessage("1")
-	m.handleMessage(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
 		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"}}`)})
-	require.NoError(t, ex.CancelModelPull(context.Background(), "fake", "demo"))
+	require.NoError(t, ex.CancelModelPull(t.Context(), "fake", "demo"))
 
 	select {
 	case line := <-response:
@@ -204,9 +204,9 @@ func TestManager_DownloadsARetrySentRightAfterACancel(t *testing.T) {
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 
 	cancelID, retryID := json.RawMessage("1"), json.RawMessage("2")
-	m.handleMessage(context.Background(), &Message{JSONRPC: "2.0", ID: &cancelID, Method: "engine:cancel-pull",
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &cancelID, Method: "engine:cancel-pull",
 		Params: json.RawMessage(`{"engine":"fake","model":"demo"}`)})
-	m.handleMessage(context.Background(), &Message{JSONRPC: "2.0", ID: &retryID, Method: "engine:action",
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &retryID, Method: "engine:action",
 		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"}}`)})
 
 	timeout := time.After(10 * time.Second)

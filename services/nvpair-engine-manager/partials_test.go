@@ -34,8 +34,8 @@ func withPartialSettle(ctx context.Context, settle func()) context.Context {
 }
 
 // settledContext is the context for cleanup that has nothing to wait for.
-func settledContext() context.Context {
-	return withPartialSettle(context.Background(), func() {})
+func settledContext(t *testing.T) context.Context {
+	return withPartialSettle(t.Context(), func() {})
 }
 
 // listing is a candidates function for removeQuiescentPartials that names the
@@ -114,7 +114,7 @@ func TestRemoveQuiescentPartials_RemovesFilesThatHoldStill(t *testing.T) {
 	writePartial(t, first, "data")
 	writePartial(t, second, "data")
 
-	require.NoError(t, removeQuiescentPartials(settledContext(), listing(first, second)))
+	require.NoError(t, removeQuiescentPartials(settledContext(t), listing(first, second)))
 
 	assertRemoved(t, first)
 	assertRemoved(t, second)
@@ -128,7 +128,7 @@ func TestRemoveQuiescentPartials_KeepsAFileAnotherClientIsWriting(t *testing.T) 
 	shared := filepath.Join(t.TempDir(), "shared.part")
 	writePartial(t, shared, "data")
 	waits := 0
-	ctx := withPartialSettle(context.Background(), func() {
+	ctx := withPartialSettle(t.Context(), func() {
 		waits++
 		growFile(t, shared)
 	})
@@ -148,7 +148,7 @@ func TestRemoveQuiescentPartials_WaitsOutTheStoppedTransfersLastWrites(t *testin
 	writePartial(t, partial, "data")
 	waits := 0
 	presentAFullQuietPeriodLater := false
-	ctx := withPartialSettle(context.Background(), func() {
+	ctx := withPartialSettle(t.Context(), func() {
 		waits++
 		switch waits {
 		case partialGraceSamples - 1:
@@ -175,7 +175,7 @@ func TestRemoveQuiescentPartials_KeepsAFileThatChangesAfterTheGrace(t *testing.T
 	partial := filepath.Join(t.TempDir(), "resumed.part")
 	writePartial(t, partial, "data")
 	waits := 0
-	ctx := withPartialSettle(context.Background(), func() {
+	ctx := withPartialSettle(t.Context(), func() {
 		waits++
 		if waits == partialQuietSamples {
 			// The file has matched its baseline at every sample but the one
@@ -197,7 +197,7 @@ func TestRemoveQuiescentPartials_KeepsAFileAnIntermittentWriterResumes(t *testin
 	shared := filepath.Join(t.TempDir(), "shared.part")
 	writePartial(t, shared, "data")
 	waits := 0
-	ctx := withPartialSettle(context.Background(), func() {
+	ctx := withPartialSettle(t.Context(), func() {
 		waits++
 		if waits%(partialQuietSamples-1) == 0 {
 			growFile(t, shared)
@@ -218,7 +218,7 @@ func TestRemoveQuiescentPartials_RemovesACandidateThatAppearsLate(t *testing.T) 
 	late := filepath.Join(root, "late.part")
 	writePartial(t, early, "data")
 	waits := 0
-	ctx := withPartialSettle(context.Background(), func() {
+	ctx := withPartialSettle(t.Context(), func() {
 		waits++
 		if waits == 2 {
 			writePartial(t, late, "data")
@@ -274,7 +274,7 @@ func TestRemoveQuiescentPartials_KeepsACandidateThatFirstAppearsAfterTheGrace(t 
 	late := filepath.Join(root, "late.part")
 	writePartial(t, early, "data")
 	waits := 0
-	ctx := withPartialSettle(context.Background(), func() {
+	ctx := withPartialSettle(t.Context(), func() {
 		waits++
 		if waits == partialGraceSamples {
 			writePartial(t, late, "data")
@@ -323,7 +323,7 @@ func TestRemoveQuiescentPartials_ContinuesPastAFailedRemoval(t *testing.T) {
 	writePartial(t, free, "data")
 	blockPartialRemoval(t, blocked)
 
-	err := removeQuiescentPartials(settledContext(), listing(blocked, free))
+	err := removeQuiescentPartials(settledContext(t), listing(blocked, free))
 
 	assert.ErrorContains(t, err, "partial-file cleanup failed")
 	assertPresent(t, blocked)
@@ -341,7 +341,7 @@ func TestRemoveQuiescentPartials_StopsAGroupsRemovalAtAFileThatWillNotGo(t *test
 	writePartial(t, data, "data")
 	blockPartialRemoval(t, resume)
 
-	err := removeQuiescentPartials(settledContext(), group(resume, data))
+	err := removeQuiescentPartials(settledContext(t), group(resume, data))
 
 	assert.ErrorContains(t, err, "partial-file cleanup failed")
 	assertPresent(t, resume)

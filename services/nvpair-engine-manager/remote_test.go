@@ -82,11 +82,11 @@ func placeCancel(t *testing.T, gate *remotePullGate) remoteOrder {
 // awaitInBackground starts a request waiting on the ones the gate holds it
 // behind — a cancel's awaitAhead, or a pull's awaitCancelsAhead — and returns a
 // channel that closes once the gate lets it through.
-func awaitInBackground(wait func(context.Context)) <-chan struct{} {
+func awaitInBackground(t *testing.T, wait func(context.Context)) <-chan struct{} {
 	waited := make(chan struct{})
 	go func() {
 		defer close(waited)
-		wait(context.Background())
+		wait(t.Context())
 	}()
 	return waited
 }
@@ -146,7 +146,7 @@ func TestRemotePullGate_HoldsACancelUntilThePeerHasThePull(t *testing.T) {
 	pull := placePull(t, &gate)
 	defer pull.end()
 
-	waited := awaitInBackground(placeCancel(t, &gate).awaitAhead)
+	waited := awaitInBackground(t, placeCancel(t, &gate).awaitAhead)
 	assertHeld(t, waited, "the peer does not have the pull yet")
 
 	pull.accepted()()
@@ -160,14 +160,14 @@ func TestRemotePullGate_ReleasesACancelWhenThePullNeverLands(t *testing.T) {
 	var gate remotePullGate
 	pull := placePull(t, &gate)
 
-	waited := awaitInBackground(placeCancel(t, &gate).awaitAhead)
+	waited := awaitInBackground(t, placeCancel(t, &gate).awaitAhead)
 	assertHeld(t, waited, "the pull is still in flight")
 
 	pull.end()
 	assertReleased(t, waited, "the pull has ended")
 	// The pull is gone, so a later cancel for the same model has nothing to
 	// wait for and must not be held by the entry the first one used.
-	assertReleased(t, awaitInBackground(placeCancel(t, &gate).awaitAhead), "a later cancel has no pull to chase")
+	assertReleased(t, awaitInBackground(t, placeCancel(t, &gate).awaitAhead), "a later cancel has no pull to chase")
 }
 
 // The peer joins a duplicate onto the download in flight only once the
@@ -183,7 +183,7 @@ func TestRemotePullGate_HoldsACancelUntilEveryDuplicateHasLanded(t *testing.T) {
 			defer first.end()
 			defer second.end()
 
-			waited := awaitInBackground(placeCancel(t, &gate).awaitAhead)
+			waited := awaitInBackground(t, placeCancel(t, &gate).awaitAhead)
 			first.accepted()()
 			assertHeld(t, waited, "the second request has not reached the peer")
 
@@ -205,7 +205,7 @@ func TestRemotePullGate_DoesNotHoldACancelForAPullSentAfterIt(t *testing.T) {
 	retry := placePull(t, &gate)
 	defer retry.end()
 
-	assertReleased(t, awaitInBackground(cancel.awaitAhead), "the only pull was sent after the cancel")
+	assertReleased(t, awaitInBackground(t, cancel.awaitAhead), "the only pull was sent after the cancel")
 }
 
 // A cancel for a download nobody requested has nothing to chase, so it goes
@@ -213,7 +213,7 @@ func TestRemotePullGate_DoesNotHoldACancelForAPullSentAfterIt(t *testing.T) {
 func TestRemotePullGate_PassesACancelWithNoPullRegistered(t *testing.T) {
 	var gate remotePullGate
 
-	assertReleased(t, awaitInBackground(placeCancel(t, &gate).awaitAhead), "no pull was ever registered")
+	assertReleased(t, awaitInBackground(t, placeCancel(t, &gate).awaitAhead), "no pull was ever registered")
 }
 
 // The peer's cancel stops every request for the download it holds when it
@@ -226,7 +226,7 @@ func TestRemotePullGate_HoldsARetryUntilTheCancelBeforeItEnds(t *testing.T) {
 	retry := placePull(t, &gate)
 	defer retry.end()
 
-	waited := awaitInBackground(retry.awaitCancelsAhead)
+	waited := awaitInBackground(t, retry.awaitCancelsAhead)
 	assertHeld(t, waited, "the cancel sent before the retry has not ended")
 
 	cancel.end()
@@ -235,7 +235,7 @@ func TestRemotePullGate_HoldsARetryUntilTheCancelBeforeItEnds(t *testing.T) {
 	// wait for and must not be held by the entry the first one used.
 	later := placePull(t, &gate)
 	defer later.end()
-	assertReleased(t, awaitInBackground(later.awaitCancelsAhead), "a later pull has no cancel ahead of it")
+	assertReleased(t, awaitInBackground(t, later.awaitCancelsAhead), "a later pull has no cancel ahead of it")
 }
 
 // A cancel sent after a pull is chasing that pull, not standing in its way.
@@ -246,7 +246,7 @@ func TestRemotePullGate_DoesNotHoldAPullForACancelSentAfterIt(t *testing.T) {
 	cancel := placeCancel(t, &gate)
 	defer cancel.end()
 
-	assertReleased(t, awaitInBackground(pull.awaitCancelsAhead), "the only cancel was sent after the pull")
+	assertReleased(t, awaitInBackground(t, pull.awaitCancelsAhead), "the only cancel was sent after the pull")
 }
 
 // Whether a pull was the last of its download outstanding decides which one
@@ -338,7 +338,7 @@ func pullRemoteOver(t *testing.T, order remoteOrder, frames ...streamFrame) sent
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
 	id := json.RawMessage("1")
 	params := remoteParam{Node: demoOnNodeB.node, Engine: demoOnNodeB.engine, Model: demoOnNodeB.model}
-	m.pullRemote(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:remote-pull-model"},
+	m.pullRemote(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:remote-pull-model"},
 		newRemoteStreamTestClient(t, frames...), demoOnNodeB.node, params, order)
 
 	var sent sentUp

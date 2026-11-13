@@ -71,7 +71,7 @@ func TestStreamOp_EmitsErrorFrame(t *testing.T) {
 func TestStreamOp_CarriesOnlyTheDownloadItsRequestRunsAs(t *testing.T) {
 	exec := &Executor{progress: newProgressHub()}
 	s := &controlServer{exec: exec}
-	claimed, release := exec.claimPull(context.Background(), "ollama", "demo")
+	claimed, release := exec.claimPull(t.Context(), "ollama", "demo")
 	defer release()
 	exec.pullMu.Lock()
 	claimed.Value(pullClaimKey{}).(*pullClaim).download = 7
@@ -123,7 +123,7 @@ func frameStages(frames []streamFrame) []string {
 // reach that stream too. Relayed as the retry's, they told the initiator the
 // retry had been cancelled before it began.
 func TestStreamOp_CarriesNoFrameOfTheDownloadARetryReplaces(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	original, releaseOriginal := ex.claimPull(ctx, "ollama", "demo")
@@ -174,7 +174,7 @@ func TestStreamOp_CarriesNoFrameOfTheDownloadARetryReplaces(t *testing.T) {
 // A duplicate request joins the download already in flight, and from then on
 // that download's frames are its own.
 func TestStreamOp_CarriesTheFramesOfTheDownloadADuplicateJoined(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	first, releaseFirst := ex.claimPull(ctx, "ollama", "demo")
@@ -234,7 +234,7 @@ func (w *heldHeaderRecorder) Flush() {
 func TestHandlePull_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
 	ex := newHTTPPullTestExecutor(t, stalledTransfer(t), Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
 	w := &heldHeaderRecorder{ResponseRecorder: httptest.NewRecorder(), headerSent: make(chan struct{}), release: make(chan struct{})}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	served := make(chan struct{})
 	go func() {

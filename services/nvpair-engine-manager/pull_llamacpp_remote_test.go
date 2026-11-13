@@ -52,7 +52,7 @@ func TestLlamaCPPPullRemoteCancel_SettlesTheStreamAsCancelled(t *testing.T) {
 	mux.HandleFunc(controlCancelPullPath, s.handleCancelPull)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	stream := make(chan string, 1)
 	go func() {

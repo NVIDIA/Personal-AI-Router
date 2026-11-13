@@ -53,7 +53,7 @@ func TestRunLMSDownloadCommand_InterruptsTheCLIUnderTheBrokersProcessFlags(t *te
 	const cancellation = "TestRunLMSDownloadCommand_InterruptsTheCLIWhenCancelled"
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "-test.run=^"+cancellation+"$", "-test.v")
 	configureSysProcAttr(cmd)

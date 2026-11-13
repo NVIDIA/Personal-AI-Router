@@ -119,7 +119,7 @@ func TestCleanupOllamaAfterCancel_RemovesOnlyPartialsThisPullCreated(t *testing.
 	// must not be turned into a path.
 	digests := map[string]bool{digestA: true, "../escape": true}
 
-	require.NoError(t, cleanupOllamaAfterCancel(settledContext(), root, digests, before))
+	require.NoError(t, cleanupOllamaAfterCancel(settledContext(t), root, digests, before))
 
 	assertRemoved(t, created)
 	assertRemoved(t, createdChunk)
@@ -139,7 +139,7 @@ func TestCleanupOllamaAfterCancel_KeepsPartialsOlderThanThePull(t *testing.T) {
 	before, err := ollamaPartialSnapshot(root)
 	require.NoError(t, err)
 
-	require.NoError(t, cleanupOllamaAfterCancel(settledContext(), root, map[string]bool{digestA: true}, before))
+	require.NoError(t, cleanupOllamaAfterCancel(settledContext(t), root, map[string]bool{digestA: true}, before))
 
 	assertPresent(t, stalled)
 }
@@ -150,7 +150,7 @@ func TestCleanupOllamaAfterCancel_DeletesNothingWithoutASnapshot(t *testing.T) {
 	root := t.TempDir()
 	partial := writeBlob(t, root, blobA+"-partial")
 
-	require.NoError(t, cleanupOllamaAfterCancel(settledContext(), root, map[string]bool{digestA: true}, nil))
+	require.NoError(t, cleanupOllamaAfterCancel(settledContext(t), root, map[string]bool{digestA: true}, nil))
 
 	assertPresent(t, partial)
 }
@@ -164,7 +164,7 @@ func TestCleanupOllamaAfterCancel_KeepsAPartialAnotherClientIsWriting(t *testing
 	before, err := ollamaPartialSnapshot(root)
 	require.NoError(t, err)
 	shared := writeBlob(t, root, blobC+"-partial")
-	ctx := withPartialSettle(context.Background(), func() { growFile(t, shared) })
+	ctx := withPartialSettle(t.Context(), func() { growFile(t, shared) })
 
 	require.NoError(t, cleanupOllamaAfterCancel(ctx, root, map[string]bool{digestC: true}, before))
 
@@ -199,7 +199,7 @@ func TestCleanupOllamaAfterCancel_KeepsAPartialWhoseResumeFilesPredateThePull(t 
 	require.NoError(t, err)
 	data := writeBlob(t, root, blobA+"-partial")
 
-	require.NoError(t, cleanupOllamaAfterCancel(settledContext(), root, map[string]bool{digestA: true}, before))
+	require.NoError(t, cleanupOllamaAfterCancel(settledContext(t), root, map[string]bool{digestA: true}, before))
 
 	assertPresent(t, olderChunk)
 	assertPresent(t, data)
@@ -318,7 +318,7 @@ func startOllamaPull(t *testing.T, ctx context.Context, server *httptest.Server)
 func TestOllamaCancellation_StopsTheTransferAndRemovesItsPartial(t *testing.T) {
 	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
 	server, disconnected := ollamaTransfer(t, partial, "pulling layer")
-	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
 	defer cancel()
 	ex, done := startOllamaPull(t, ctx, server)
 
@@ -343,7 +343,7 @@ func TestOllamaCancellation_StopsTheTransferAndRemovesItsPartial(t *testing.T) {
 func TestOllamaCancellation_SucceedsWhenCleanupCannotFinish(t *testing.T) {
 	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
 	server, _ := ollamaTransfer(t, partial, "pulling layer")
-	ctx, cancel := context.WithTimeout(settledContext(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(settledContext(t), 60*time.Second)
 	defer cancel()
 	ex, done := startOllamaPull(t, ctx, server)
 	// The partial exists and is attributable to this pull by now, so this is
@@ -367,7 +367,7 @@ func TestOllamaCancellation_SucceedsWhenCleanupCannotFinish(t *testing.T) {
 func TestOllamaPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T) {
 	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
 	server, _ := ollamaTransfer(t, partial, "pulling layer")
-	ctx, cancel := context.WithCancel(settledContext())
+	ctx, cancel := context.WithCancel(settledContext(t))
 	defer cancel()
 	_, done := startOllamaPull(t, ctx, server)
 
@@ -389,7 +389,7 @@ func TestOllamaPull_SucceedsOnOllamasSuccessRecord(t *testing.T) {
 			partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
 			server, _ := ollamaTransfer(t, partial, statuses...)
 			ex := newOllamaPullExecutor(t, server.URL, nil)
-			ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
 			defer cancel()
 
 			result, err := ex.PullModelStream(ctx, "ollama", "demo", nil)
@@ -420,7 +420,7 @@ func TestOllamaPull_FailsWhenTheStreamEndsBeforeSuccess(t *testing.T) {
 	events, unsubscribe := ex.progress.subscribe("ollama")
 	defer unsubscribe()
 
-	_, err := ex.PullModelStream(context.Background(), "ollama", "demo", nil)
+	_, err := ex.PullModelStream(t.Context(), "ollama", "demo", nil)
 
 	require.ErrorContains(t, err, "ended the download without reporting it complete")
 	frames := publishedFrames(events)

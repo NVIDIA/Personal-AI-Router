@@ -252,7 +252,7 @@ func TestLlamaCPPPullCancelledBeforeStart_DoesNotDownload(t *testing.T) {
 func TestLlamaCPPPull_ReportsARequestedCancellationAsCancelled(t *testing.T) {
 	test := func(name string, cancelWhen func(f *llamaCPPPullFixture) <-chan struct{}, wantUnloads int32) {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			f := newLlamaCPPPullFixture(t)
 			reached := cancelWhen(f)
@@ -292,7 +292,7 @@ func TestLlamaCPPPull_ReportsARequestedCancellationAsCancelled(t *testing.T) {
 // even a cancel someone asked for is reported as the failure it is, and the
 // cancel fails with it — as does a cancel asking again once the pull settled.
 func TestLlamaCPPPull_FailsARequestedCancellationTheRouterDidNotConfirm(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	f := newLlamaCPPPullFixture(t)
 	f.unload = func(w http.ResponseWriter, _ *http.Request) {

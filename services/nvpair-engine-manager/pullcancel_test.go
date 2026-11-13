@@ -63,7 +63,7 @@ func succeedingPull(context.Context) (json.RawMessage, error) {
 //     CancelModelPull's own call to p.cancel, so it must still be waiting;
 //  4. cleanup finishes, and only then does the cancel return.
 func TestCancelModelPull_AnswersOnlyOnceCleanupHasSettled(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	downloading := make(chan struct{})
@@ -104,7 +104,7 @@ func TestCancelModelPull_AnswersOnlyOnceCleanupHasSettled(t *testing.T) {
 // to end that wait. The download still stops; only the acknowledgement is
 // abandoned.
 func TestCancelModelPull_StopsWaitingWhenItsCallerGivesUp(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	downloading := make(chan struct{})
@@ -177,10 +177,10 @@ func TestCancelModelPull_StopsARequestThatHasNotRegisteredYet(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	// The read loop claims a pull before dispatching it, so this is the window
 	// in which the cancel's goroutine can reach the executor first.
-	request, release := ex.claimPull(context.Background(), "ollama", "demo")
+	request, release := ex.claimPull(t.Context(), "ollama", "demo")
 	defer release()
 
-	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
 	result, ran := claimedPull(t, ex, request)
 
 	assert.False(t, ran, "the cancelled request started its download")
@@ -196,10 +196,10 @@ func TestCancelModelPull_StopsARequestThatHasNotRegisteredYet(t *testing.T) {
 // that success rather than a "cancelled" that says the model is not there.
 func TestCancelModelPull_StopsTheOriginalRequestEvenWhenItsRetryRegistersFirst(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	original, releaseOriginal := ex.claimPull(context.Background(), "ollama", "demo")
+	original, releaseOriginal := ex.claimPull(t.Context(), "ollama", "demo")
 	defer releaseOriginal()
-	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
-	retry, releaseRetry := ex.claimPull(context.Background(), "ollama", "demo")
+	require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
+	retry, releaseRetry := ex.claimPull(t.Context(), "ollama", "demo")
 	defer releaseRetry()
 
 	retryResult, retryRan := claimedPull(t, ex, retry)
@@ -221,8 +221,8 @@ func TestCancelModelPull_WithNothingOutstandingLeavesTheNextRequestAlone(t *test
 			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 			before(t, ex)
 
-			require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
-			next, release := ex.claimPull(context.Background(), "ollama", "demo")
+			require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
+			next, release := ex.claimPull(t.Context(), "ollama", "demo")
 			defer release()
 			result, ran := claimedPull(t, ex, next)
 
@@ -231,7 +231,7 @@ func TestCancelModelPull_WithNothingOutstandingLeavesTheNextRequestAlone(t *test
 		})
 	}
 	test("the download already finished", func(t *testing.T, ex *Executor) {
-		first, release := ex.claimPull(context.Background(), "ollama", "demo")
+		first, release := ex.claimPull(t.Context(), "ollama", "demo")
 		defer release()
 		_, ran := claimedPull(t, ex, first)
 		require.True(t, ran)
@@ -247,7 +247,7 @@ func TestCancelModelPull_WithNothingOutstandingLeavesTheNextRequestAlone(t *test
 // that download's cleanup — and then downloads, its frames after the
 // cancelled download's outcome.
 func TestTrackedPull_DownloadsARetryOnceTheCancelledDownloadHasStopped(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
@@ -320,20 +320,20 @@ func TestCancelModelPull_ReportsAStopNeverConfirmedUntilTheNextDownload(t *testi
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	unconfirmed := stopUnconfirmed(errors.New("the engine did not confirm the download stopped"))
 	cancelled := make(chan error, 1)
-	_, err := ex.trackedPull(context.Background(), "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
-		go func() { cancelled <- ex.CancelModelPull(context.Background(), "ollama", "demo") }()
+	_, err := ex.trackedPull(t.Context(), "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+		go func() { cancelled <- ex.CancelModelPull(t.Context(), "ollama", "demo") }()
 		<-ctx.Done()
 		return nil, unconfirmed
 	})
 	require.ErrorIs(t, err, unconfirmed)
 	require.ErrorIs(t, <-cancelled, unconfirmed, "the cancel that asked for the stop")
 
-	assert.ErrorIs(t, ex.CancelModelPull(context.Background(), "ollama", "demo"), unconfirmed, "a cancel asking after the pull settled")
+	assert.ErrorIs(t, ex.CancelModelPull(t.Context(), "ollama", "demo"), unconfirmed, "a cancel asking after the pull settled")
 
-	result, err := ex.trackedPull(context.Background(), "ollama", "demo", succeedingPull)
+	result, err := ex.trackedPull(t.Context(), "ollama", "demo", succeedingPull)
 	require.NoError(t, err)
 	assertPullStatus(t, result, "success")
-	assert.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"), "a cancel after the next download completed")
+	assert.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"), "a cancel after the next download completed")
 }
 
 // A request can end without ever registering its download — it failed
@@ -341,11 +341,11 @@ func TestCancelModelPull_ReportsAStopNeverConfirmedUntilTheNextDownload(t *testi
 // stopped that request, and must not carry over to the next one.
 func TestCancelModelPull_DoesNotCarryOverToALaterRequest(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	_, releaseAbandoned := ex.claimPull(context.Background(), "ollama", "demo")
-	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	_, releaseAbandoned := ex.claimPull(t.Context(), "ollama", "demo")
+	require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
 	releaseAbandoned()
 
-	next, release := ex.claimPull(context.Background(), "ollama", "demo")
+	next, release := ex.claimPull(t.Context(), "ollama", "demo")
 	defer release()
 	result, ran := claimedPull(t, ex, next)
 
@@ -379,7 +379,7 @@ func TestCancelModelPull_SettlesAQueuedDownloadWithoutWaitingForItsTurn(t *testi
 			for i := range predecessorCount {
 				ex.pulls[pullKey{engine: "ollama", model: fmt.Sprintf("predecessor-%d", i)}] = &activePull{done: make(chan struct{})}
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			finished := make(chan outcome, 1)
 			ran := false
@@ -435,7 +435,7 @@ func TestTrackedPull_JoinsADuplicateRequestOntoTheActiveDownload(t *testing.T) {
 			joined := make(chan outcome, 1)
 			go func() {
 				var got outcome
-				got.result, got.err = ex.trackedPull(context.Background(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
+				got.result, got.err = ex.trackedPull(t.Context(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
 					return nil, fmt.Errorf("duplicate request started a second download")
 				})
 				joined <- got
@@ -483,19 +483,19 @@ func TestTrackedPull_EndsEachDownloadWithOneTerminalFrame(t *testing.T) {
 		return ProgressEvent{Engine: "ollama", Model: "demo", Op: "pull", Stage: stage, Percent: percent, Message: message, Download: 1}
 	}
 	test("a download that completes", func(t *testing.T, ex *Executor) {
-		_, err := ex.trackedPull(context.Background(), "ollama", "demo", succeedingPull)
+		_, err := ex.trackedPull(t.Context(), "ollama", "demo", succeedingPull)
 		require.NoError(t, err)
 	}, terminal("success", 100, "demo"))
 	test("a download that fails", func(t *testing.T, ex *Executor) {
-		_, err := ex.trackedPull(context.Background(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
+		_, err := ex.trackedPull(t.Context(), "ollama", "demo", func(context.Context) (json.RawMessage, error) {
 			return nil, errors.New("disk full")
 		})
 		require.Error(t, err)
 	}, terminal("error", -1, "ollama experienced an error while downloading a model: disk full"))
 	test("a download someone cancelled", func(t *testing.T, ex *Executor) {
 		cancelled := make(chan error, 1)
-		_, err := ex.trackedPull(context.Background(), "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
-			go func() { cancelled <- ex.CancelModelPull(context.Background(), "ollama", "demo") }()
+		_, err := ex.trackedPull(t.Context(), "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+			go func() { cancelled <- ex.CancelModelPull(t.Context(), "ollama", "demo") }()
 			<-ctx.Done()
 			return nil, ctx.Err()
 		})
@@ -503,9 +503,9 @@ func TestTrackedPull_EndsEachDownloadWithOneTerminalFrame(t *testing.T) {
 		require.NoError(t, <-cancelled)
 	}, terminal("cancelled", 0, "demo"))
 	test("a request cancelled before its download started", func(t *testing.T, ex *Executor) {
-		request, release := ex.claimPull(context.Background(), "ollama", "demo")
+		request, release := ex.claimPull(t.Context(), "ollama", "demo")
 		defer release()
-		require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+		require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
 		result, ran := claimedPull(t, ex, request)
 		require.False(t, ran)
 		assertPullStatus(t, result, "cancelled")
@@ -527,7 +527,7 @@ func publishedFrames(events <-chan ProgressEvent) []ProgressEvent {
 // the retry ending: UIs retired the row and disabled its Cancel button while
 // the retry's bytes were still arriving.
 func TestTrackedPull_CancelledRequestSendsNoFrameWhileARetryDownloads(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
@@ -582,7 +582,7 @@ func TestTrackedPull_CancelledDuplicateAddsNoSecondTerminalFrame(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
 	defer unsubscribe()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	downloading := make(chan struct{})
 	cleaningUp := make(chan struct{})
@@ -648,11 +648,11 @@ func TestTrackedPull_RequestsCancelledBeforeAnyRegistersSendOneTerminalFrame(t *
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
 	defer unsubscribe()
-	first, releaseFirst := ex.claimPull(context.Background(), "ollama", "demo")
+	first, releaseFirst := ex.claimPull(t.Context(), "ollama", "demo")
 	defer releaseFirst()
-	second, releaseSecond := ex.claimPull(context.Background(), "ollama", "demo")
+	second, releaseSecond := ex.claimPull(t.Context(), "ollama", "demo")
 	defer releaseSecond()
-	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
 
 	firstResult, firstRan := claimedPull(t, ex, first)
 	secondResult, secondRan := claimedPull(t, ex, second)
@@ -674,14 +674,14 @@ func TestTrackedPull_CancelledDuplicateOfAFinishedDownloadSettlesOnItsSuccess(t 
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
 	defer unsubscribe()
-	original, releaseOriginal := ex.claimPull(context.Background(), "ollama", "demo")
-	duplicate, releaseDuplicate := ex.claimPull(context.Background(), "ollama", "demo")
+	original, releaseOriginal := ex.claimPull(t.Context(), "ollama", "demo")
+	duplicate, releaseDuplicate := ex.claimPull(t.Context(), "ollama", "demo")
 	defer releaseDuplicate()
 	originalResult, originalRan := claimedPull(t, ex, original)
 	releaseOriginal()
 	require.True(t, originalRan)
 	assertPullStatus(t, originalResult, "success")
-	require.NoError(t, ex.CancelModelPull(context.Background(), "ollama", "demo"))
+	require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
 
 	duplicateResult, duplicateRan := claimedPull(t, ex, duplicate)
 
@@ -705,7 +705,7 @@ func TestTrackedPull_CancelledDuplicateSettlesOnTheOutcomeOfTheDownloadItDuplica
 	// failing if the duplicate answers before the download has.
 	duplicateStoppedWith := func(t *testing.T, stopped func(context.Context) (json.RawMessage, error)) (download, duplicate outcome) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cancel()
 		ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 		downloading := make(chan struct{})
@@ -773,7 +773,7 @@ func TestTrackedPull_CancelledDuplicateSettlesOnTheOutcomeOfTheDownloadItDuplica
 // reports the model's outcome while it waits, so the retry adds no frame of
 // its own.
 func TestTrackedPull_RetryCancelledWhileItWaitsAddsNoSecondTerminalFrame(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
@@ -920,7 +920,7 @@ func startCancelledBeforeItRegisters(t *testing.T, ctx context.Context, ex *Exec
 // a "cancelled" landing after the retry's first frame would tell every UI that
 // the retry had ended.
 func TestTrackedPull_RetryWaitsForTheCancelledFrameOfARequestThatNeverStarted(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	client := newSlowCancelledFrame()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())
@@ -959,7 +959,7 @@ func TestTrackedPull_RetryWaitsForTheCancelledFrameOfARequestThatNeverStarted(t 
 // its model only while that frame goes out, and transfers nothing, so another
 // model's download on the engine has nothing to queue behind.
 func TestTrackedPull_StartsAnotherModelAtOnceWhileACancelledRequestReports(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	client := newSlowCancelledFrame()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())
@@ -984,7 +984,7 @@ func TestTrackedPull_StartsAnotherModelAtOnceWhileACancelledRequestReports(t *te
 // would: with the failure of a stop the engine never confirmed, if the model's
 // last download ended on one, because that download may still be running.
 func TestCancelModelPull_ReportsAnUnconfirmedStopWhileACancelledRequestReports(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	client := newSlowCancelledFrame()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())
@@ -1020,7 +1020,7 @@ func TestCancelModelPull_ReportsAnUnconfirmedStopWhileACancelledRequestReports(t
 // that stops the next request for the same model.
 func TestTrackedPull_RunsARetryAfterARequestWhoseContextEnded(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	ended, cancel := context.WithCancel(context.Background())
+	ended, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err := ex.trackedPull(ended, "ollama", "demo", func(context.Context) (json.RawMessage, error) {
@@ -1028,7 +1028,7 @@ func TestTrackedPull_RunsARetryAfterARequestWhoseContextEnded(t *testing.T) {
 	})
 	require.ErrorIs(t, err, context.Canceled)
 
-	result, err := ex.trackedPull(context.Background(), "ollama", "demo", succeedingPull)
+	result, err := ex.trackedPull(t.Context(), "ollama", "demo", succeedingPull)
 	require.NoError(t, err)
 	assertPullStatus(t, result, "success")
 }
