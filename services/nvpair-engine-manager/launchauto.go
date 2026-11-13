@@ -41,7 +41,7 @@ var deviceMemory = detectDeviceMemory
 
 // gpuMemory leaves explicit CUDA device selection to the engine.
 // It is a variable so tests can supply a machine.
-var gpuMemory = func(bin string, env map[string]string) (int64, int64, bool) {
+var gpuMemory = func(ctx context.Context, bin string, env map[string]string) (int64, int64, bool) {
 	if _, selected := os.LookupEnv("CUDA_VISIBLE_DEVICES"); selected {
 		return 0, 0, false
 	}
@@ -50,10 +50,10 @@ var gpuMemory = func(bin string, env map[string]string) (int64, int64, bool) {
 			return 0, 0, false
 		}
 	}
-	return deviceMemory(bin)
+	return deviceMemory(ctx, bin)
 }
 
-func nvidiaSMIMemory(env map[string]string) (total, free int64, ok bool) {
+func nvidiaSMIMemory(ctx context.Context, env map[string]string) (total, free int64, ok bool) {
 	// CUDA ordinals can differ from nvidia-smi's physical-device order. Leave
 	// memory sizing to the engine when it has an explicit device selection.
 	if _, selected := os.LookupEnv("CUDA_VISIBLE_DEVICES"); selected {
@@ -64,7 +64,7 @@ func nvidiaSMIMemory(env map[string]string) (total, free int64, ok bool) {
 			return 0, 0, false
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits").Output()
 	if err != nil {
@@ -105,7 +105,7 @@ func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command lau
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
 	}
-	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch, command.Env, command.Bin)
+	extra, note := planHFContext(ctx, command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch, command.Env, command.Bin)
 	if tools, parser := planToolCalling(ctx, command.Args, hub, command.Bin, fetch); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
@@ -344,7 +344,7 @@ func autoGPUShare(need, total, free int64) (float64, bool) {
 // is not in the cache yet is read through fetch, when given, since vLLM
 // downloads it on this start. Without its size and config, only the memory
 // share is bounded.
-func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string, bin string) (extra []string, note string) {
+func planHFContext(startupCtx context.Context, args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string, bin string) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
 	}
@@ -370,7 +370,7 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 	var total, free int64
 	var haveGPU bool
 	if !userDtype && !userCacheDtype {
-		total, free, haveGPU = gpuMemory(bin, env)
+		total, free, haveGPU = gpuMemory(startupCtx, bin, env)
 	}
 	found, known := findLaunchModel(args, hubDir, fetch)
 	if !known {

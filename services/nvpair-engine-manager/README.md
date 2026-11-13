@@ -170,6 +170,8 @@ executable, with `torch` (PyTorch), `vllm`, and `psutil` importable in that
 interpreter's environment. PAIR's managed vLLM installation provides these in its
 private environment; an adopted installation must provide them in its own
 environment as well. No separate global Python or package installation is needed.
+Both memory queries are cancelled when the engine start is cancelled, including
+by Stop, Eject, or service shutdown.
 
 Shared-memory platforms keep 3 GiB for runtime startup in addition to the normal
 1 GiB free margin. If neither provider can measure free memory, including when

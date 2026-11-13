@@ -27,16 +27,25 @@ type deviceMemoryProbe struct {
 	Shared bool  `json:"shared"`
 }
 
-var nativeDeviceMemory = func() (int64, int64, bool) { return nvidiaSMIMemory(nil) }
+var nativeDeviceMemory = func(ctx context.Context) (int64, int64, bool) { return nvidiaSMIMemory(ctx, nil) }
 var probeVLLMDeviceMemory = runVLLMDeviceMemoryProbe
 
-func detectDeviceMemory(bin string) (total, free int64, ok bool) {
-	if total, free, ok := nativeDeviceMemory(); ok {
-		return total, free, true
+func detectDeviceMemory(ctx context.Context, bin string) (total, free int64, ok bool) {
+	if ctx.Err() != nil {
+		return 0, 0, false
 	}
-	reading, err := probeVLLMDeviceMemory(bin)
+	total, free, ok = nativeDeviceMemory(ctx)
+	if ctx.Err() != nil {
+		return 0, 0, false
+	}
+	if ok {
+		return total, free, ok
+	}
+	reading, err := probeVLLMDeviceMemory(ctx, bin)
 	if err != nil {
-		slog.Warn("could not measure free device memory; leaving memory sizing to vLLM", "err", err)
+		if ctx.Err() == nil {
+			slog.Warn("could not measure free device memory; leaving memory sizing to vLLM", "err", err)
+		}
 		return 0, 0, false
 	}
 	if reading.Shared {
@@ -45,17 +54,22 @@ func detectDeviceMemory(bin string) (total, free int64, ok bool) {
 	return reading.Total, reading.Free, true
 }
 
-func runVLLMDeviceMemoryProbe(bin string) (deviceMemoryProbe, error) {
+// runVLLMDeviceMemoryProbe stops when its start is cancelled, even if Python or
+// the device runtime is still initializing. Its own timeout also bounds the wait.
+func runVLLMDeviceMemoryProbe(ctx context.Context, bin string) (deviceMemoryProbe, error) {
 	python, err := vllmPython(bin)
 	if err != nil {
 		return deviceMemoryProbe{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), deviceMemoryProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, deviceMemoryProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, python, "-I", "-c", deviceMemoryProbeScript)
 	cmd.Dir = os.TempDir()
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return deviceMemoryProbe{}, fmt.Errorf("device memory probe: %w", err)
 	}
 	return parseDeviceMemoryProbe(out)
