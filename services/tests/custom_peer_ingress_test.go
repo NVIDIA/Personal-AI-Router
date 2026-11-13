@@ -45,6 +45,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
+	"nvpair-shared/noderec"
 )
 
 // startCustomProxyProc launches a real nvpair-proxy for a cluster directory
@@ -96,17 +97,20 @@ func (p *proxyProc) setCustomBackends(backends []map[string]any) {
 // pushCustomPeer feeds the origin's custom facade a discovery snapshot naming
 // one trusted peer that advertises the cu service at cuPort and attributes
 // models to the custom engine — the routing contract between the two nodes.
+// The peer is pinned and currently trusted: the facade only routes to a node
+// whose identity it has proved, so an unverified announcement is dropped.
 func (p *proxyProc) pushCustomPeer(name, ip, clusterUUID string, cuPort int, models []string) {
 	p.notify(engines.AddressMethod("custom", "discovery:nodes"), map[string]any{
 		"nodes": []map[string]any{{
-			"hostUuid":       name,
-			"name":           name,
-			"ip":             ip,
-			"clusterUuid":    clusterUUID,
-			"trusted":        true,
-			"services":       map[string]any{"cu": map[string]any{"port": cuPort}},
-			"modelsByEngine": map[string]any{"custom": models},
-			"lastSeen":       time.Now().Unix(),
+			"hostUuid":             name,
+			"name":                 name,
+			"ip":                   ip,
+			"clusterUuid":          clusterUUID,
+			"identityVerification": string(noderec.IdentityPinned),
+			"trusted":              true,
+			"services":             map[string]any{"cu": map[string]any{"port": cuPort}},
+			"modelsByEngine":       map[string]any{"custom": models},
+			"lastSeen":             time.Now().Unix(),
 		}},
 	})
 }

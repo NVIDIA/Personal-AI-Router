@@ -101,11 +101,16 @@ func customE2EStartTarget(t *testing.T, clusterDir string) (string, <-chan strin
 
 // customE2ESeedPeer points A's engine-manager at B: one discovery:nodes frame
 // carrying the ec service and B's cluster uuid — the two inputs the pin gate
-// and dial need, shaped exactly as the broker's relay would deliver them.
+// and dial need, shaped exactly as the broker's relay would deliver them. The
+// identity fields are part of that shape: a relay record only selects a remote
+// destination once the peer's identity is proved (pinned) and still trusted,
+// so a frame without them reads as an unverified announcement and is refused
+// before the dial.
 func customE2ESeedPeer(t *testing.T, aStdin io.WriteCloser, clusterUUID string) {
 	t.Helper()
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
 		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
 		`"services":{"ec":{"port":14323}},"lastSeen":0}]}}`, clusterUUID)
 	writeRawFrame(t, aStdin, snapshot)
 }
