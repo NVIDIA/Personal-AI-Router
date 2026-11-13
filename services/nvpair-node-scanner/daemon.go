@@ -35,12 +35,14 @@ import (
 // inventory. It publishes discovery:node-* events for the broker relay, which
 // delivers directory snapshots to service consumers.
 type daemon struct {
-	codec     *Codec
-	mesh      *clustertrust.Mesh
-	reg       *registry
-	dir       *directory
-	responder *mdns.Responder
-	browser   *Discovery
+	clusterPeersMu sync.Mutex
+	clusterPeers   map[string]noderec.ClusterPeer
+	codec          *Codec
+	mesh           *clustertrust.Mesh
+	reg            *registry
+	dir            *directory
+	responder      *mdns.Responder
+	browser        *Discovery
 	// instance is this node's mDNS instance name (the hostname). It names the
 	// registry-driven self directory entry (publishSelf), which is anchored to
 	// our own identity rather than to hearing our own multicast.
@@ -759,6 +761,7 @@ func (d *daemon) reloadTrust() {
 	}
 	d.peerMu.Unlock()
 	d.wakeAuthentication()
+	go d.refreshClusterPeers()
 }
 
 // reconcileIdentity republishes local identity when current membership differs
@@ -1590,6 +1593,25 @@ func (d *daemon) handle(msg *Message) bool {
 		}
 		return true
 
+	case noderec.MethodSetClusterPeers:
+		var p noderec.ClusterPeersParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil {
+			if msg.IsRequest() {
+				_ = d.codec.RespondError(msg.ID, -32602, err.Error())
+			}
+			return true
+		}
+		if err := d.setClusterPeers(p.Peers); err != nil {
+			if msg.IsRequest() {
+				_ = d.codec.RespondError(msg.ID, -32602, err.Error())
+			}
+			return true
+		}
+		if msg.IsRequest() {
+			_ = d.codec.Respond(msg.ID, map[string]bool{"ok": true})
+		}
+		go d.refreshClusterPeers()
+		return true
 	case noderec.MethodGetNodes:
 		var p noderec.GetNodesParams
 		_ = json.Unmarshal(msg.Params, &p) // an unparseable/empty filter returns all

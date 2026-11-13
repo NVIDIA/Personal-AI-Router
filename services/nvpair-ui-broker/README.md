@@ -770,3 +770,11 @@ content or become desktop commands. The shared engine capability currently
 permits this for vLLM. The broker advertises enabled vLLM even while awaiting a
 model and supplies `loadOnRequest:true` to its local proxy target; engine-manager
 rechecks enabled intent before loading, so stale discovery cannot revive OFF.
+
+Confirmed cluster members also supply address hints through
+`discovery:set-cluster-peers` (`{peers:[{hostUuid,name,address,nodeInfoPort}]}`).
+The broker excludes self and pending members and replays the roster after a
+scanner restart. Hints enter the existing candidate authentication pipeline;
+only current exact-pin mTLS node-info reads can promote inventory. Roster removal
+withdraws its candidate; authenticated peer availability and pin revocation keep
+their existing lifecycle. No public HTTP inventory authorizes service decisions.

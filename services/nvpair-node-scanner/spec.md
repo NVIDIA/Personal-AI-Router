@@ -623,3 +623,11 @@ Public previews never flow into scheduler or verified peer records. Models refre
 peer metadata, hardware, and measurements share the two-second sampling loop,
 independently of mDNS changes. The broker forwards trust changes to Scanner and clears affected
 verification and service samples when membership or pins change.
+
+Confirmed cluster members also supply address hints through
+`discovery:set-cluster-peers` (`{peers:[{hostUuid,name,address,nodeInfoPort}]}`).
+The broker excludes self and pending members and replays the roster after a
+scanner restart. Hints enter the existing candidate authentication pipeline;
+only current exact-pin mTLS node-info reads can promote inventory. Roster removal
+withdraws its candidate; authenticated peer availability and pin revocation keep
+their existing lifecycle. No public HTTP inventory authorizes service decisions.
