@@ -26,6 +26,9 @@ import (
 )
 
 type settingsHarness struct {
+	idle                atomic.Bool
+	enabled             atomic.Bool
+	localLoadOnRequest  atomic.Bool
 	b                   *Broker
 	applies             atomic.Int32
 	proxyRebinds        atomic.Int32
@@ -92,6 +95,13 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 				continue
 			}
 			engine, method := engines.SplitAddressedMethod(msg.Method)
+			if method == "node/set-local-backend" {
+				var local proxyLocalBackend
+				if !assert.NoError(t, json.Unmarshal(msg.Params, &local)) {
+					return
+				}
+				h.localLoadOnRequest.Store(local.LoadOnRequest)
+			}
 			if engine == "" || method != "set-port" {
 				assert.NoError(t, proxyCodec.Respond(msg.ID, map[string]bool{"ok": true}))
 				continue
@@ -126,8 +136,16 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 			case "engine:get-launch":
 				h.launchMu.Lock()
 				current := launch
+				current.Running = current.Running && !h.idle.Load()
 				h.launchMu.Unlock()
 				assert.NoError(t, codec.Respond(msg.ID, current))
+			case "engine:status":
+				h.launchMu.Lock()
+				port := launch.EffectivePort
+				h.launchMu.Unlock()
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{"installed": true, "enabled": h.enabled.Load(), "port": port}))
+			case "engine:models":
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{"requestableByEngine": map[string][]string{"vllm": {"org/cached"}}}))
 			case "engine:configured-ports":
 				assert.NoError(t, codec.Respond(msg.ID, map[string]any{"engines": []any{map[string]any{"engine": "lmstudio", "port": h.otherEnginePort.Load()}}}))
 			case "engine:preview-launch":
@@ -180,7 +198,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 					}
 					h.launchMu.Lock()
 					launch.EffectivePort = p.Settings.ServerPort
-					launch.Running = p.Resume
+					launch.Running = p.Resume && !h.idle.Load()
 					current := launch
 					h.launchMu.Unlock()
 					if h.failResultSave.Load() {
@@ -436,4 +454,37 @@ func TestSettings_MigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {
 	require.True(t, h.b.prepareExplicitEngineSettings("ollama"), "automatic startup overrode saved proxy choice")
 	require.Equal(t, int32(26080), h.b.ollamaState().startupPort.Load(), "automatic startup overrode saved proxy choice")
 	require.False(t, h.b.ollamaState().managedFacade.Load(), "automatic startup overrode saved proxy choice")
+}
+
+func TestSettingsCoordinator_RestoresIdleRequestEligibilityBeforeApplyReturns(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		fail    bool
+	}{
+		{name: "enabled engine accepts cached model requests", enabled: true},
+		{name: "disabled engine remains unavailable"},
+		{name: "failed apply restores enabled request eligibility", enabled: true, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSettingsHarnessForEngine(t, "vllm")
+			h.b.regCache = relay.NewRegistrationCache()
+			h.idle.Store(true)
+			h.enabled.Store(tc.enabled)
+			h.fail.Store(tc.fail)
+			before, err := h.b.getEngineSettings(t.Context(), settings.Request{Engine: "vllm"}, "")
+			require.NoError(t, err)
+			require.False(t, before.Running)
+			changed := before.Settings
+			changed.LaunchText = "--updated-fixture-option"
+			receipt, err := h.b.applyEngineSettings(t.Context(), settings.Request{Engine: "vllm", ExpectedRevision: before.Revision, RequestID: settingsID(), Settings: changed}, "")
+			require.NoError(t, err)
+			expectedPhase := "succeeded"
+			if tc.fail {
+				expectedPhase = "failed"
+			}
+			require.Equal(t, expectedPhase, receipt.Phase)
+			assert.Equal(t, tc.enabled, h.localLoadOnRequest.Load(), "the proxy must reflect enabled intent when settings finish, without waiting for the periodic reconcile")
+		})
+	}
 }
