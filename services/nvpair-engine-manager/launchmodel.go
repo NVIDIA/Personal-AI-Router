@@ -40,8 +40,8 @@ func (e *Executor) editLaunch(engine string, change func(edit *launchEdit) error
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	return change(&launchEdit{e: e, st: st, engine: engine, before: e.launchStateLocked(engine, st)})
 }
 
