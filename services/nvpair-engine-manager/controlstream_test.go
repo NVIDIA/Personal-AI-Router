@@ -167,6 +167,7 @@ func TestStreamOp_CarriesNoFrameOfTheDownloadARetryReplaces(t *testing.T) {
 
 	assert.Equal(t, []string{"progress:downloading", "progress:cancelled", "result:"}, frameStages(<-originalDone))
 	retryFrames := <-retryDone
+	require.Len(t, retryFrames, 3, "the retry's stream: %v", frameStages(retryFrames))
 	assert.Equal(t, []string{"progress:downloading", "progress:success", "result:"}, frameStages(retryFrames))
 	assert.Equal(t, 10, retryFrames[0].Percent, "the retry's stream carried the cancelled download's progress")
 }
@@ -204,6 +205,8 @@ func TestStreamOp_CarriesTheFramesOfTheDownloadADuplicateJoined(t *testing.T) {
 	close(finish)
 
 	firstFrames, duplicateFrames := <-firstDone, <-duplicateDone
+	require.Len(t, firstFrames, 3, "the first request's stream: %v", frameStages(firstFrames))
+	require.Len(t, duplicateFrames, 3, "the duplicate's stream: %v", frameStages(duplicateFrames))
 	assert.Equal(t, []string{"progress:downloading", "progress:success", "result:"}, frameStages(duplicateFrames))
 	assert.Equal(t, frameStages(firstFrames), frameStages(duplicateFrames))
 	assert.Equal(t, firstFrames[0].Download, duplicateFrames[0].Download, "the two requests run as different downloads")
