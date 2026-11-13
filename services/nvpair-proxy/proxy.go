@@ -33,6 +33,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/engines"
+	"nvpair-shared/modelrequest"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -419,9 +420,10 @@ type Proxy struct {
 	//
 	// Shared across facades: the pool is keyed by peer, not by engine, so a
 	// second copy would double the connections this node opens to every peer.
-	transportMu    sync.Mutex
-	plainTransport *http.Transport
-	peerTransports map[string]*http.Transport
+	transportMu     sync.Mutex
+	plainTransport  *http.Transport
+	peerTransports  map[string]*http.Transport
+	modelTransports map[string]*http.Transport
 
 	// runID is a per-process nonce minted at startup and stamped on every
 	// workload this proxy emits. Shared across facades is correct: a workload's
@@ -846,6 +848,9 @@ func (p *Proxy) emitWorkload(method string, w Workload) {
 // pinned to that peer's exact server cert. Empty peerUUID means a plain-HTTP
 // dial — the local backend (self) or an explicit manual node.
 type candidate struct {
+	localInventoryKnown bool
+	availableModels     []string
+
 	id       string
 	url      *url.URL
 	peerUUID string
@@ -933,6 +938,13 @@ func unpinnedPeerTransport() *http.Transport {
 func (p *Proxy) dropUnpinnedPeerTransports() {
 	p.transportMu.Lock()
 	defer p.transportMu.Unlock()
+	for uuid, tr := range p.modelTransports {
+		if uuid == "" || (p.mesh != nil && p.mesh.HasPin(uuid)) {
+			continue
+		}
+		tr.CloseIdleConnections()
+		delete(p.modelTransports, uuid)
+	}
 	for uuid, tr := range p.peerTransports {
 		if p.mesh != nil && p.mesh.HasPin(uuid) {
 			continue
@@ -945,6 +957,10 @@ func (p *Proxy) dropUnpinnedPeerTransports() {
 func (p *Proxy) closeIdleTransports() {
 	p.transportMu.Lock()
 	defer p.transportMu.Unlock()
+	for key, tr := range p.modelTransports {
+		tr.CloseIdleConnections()
+		delete(p.modelTransports, key)
+	}
 	if p.plainTransport != nil {
 		p.plainTransport.CloseIdleConnections()
 	}
@@ -999,6 +1015,11 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 	results := make([]modelListResult, len(candidates))
 	var wg sync.WaitGroup
 	for i, cand := range candidates {
+		if openAI && cand.localInventoryKnown && r.Header.Get("Origin") == "" {
+			items, err := availableModelItems(cand.availableModels)
+			results[i] = modelListResult{items: items, ok: err == nil, err: err}
+			continue
+		}
 		target := *cand.url
 		target.Path = matchedRoute.upstreamPath()
 		if matchedRoute.UpstreamPath == "" {
@@ -1775,7 +1796,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
-			Transport: p.candidateTransport(cand),
+			Transport: f.requestTransportForCandidate(cand, r, model),
 			// ModifyResponse fires when the upstream's status line + headers
 			// have arrived but before the body streams. That's both the retry
 			// decision point and, on commit, the time-to-first-byte boundary.
@@ -2096,12 +2117,19 @@ func (f *facade) resolveCandidates(model string) []candidate {
 		// targetURL picks a reachable address for a multi-homed node (cached,
 		// TCP-probed), falling back to the first candidate; nil only when the
 		// node advertises no usable address.
-		u := f.targetURL(n)
+		var u *url.URL
+		if n.Local {
+			u, _ = f.localBackendTarget()
+		} else {
+			u = f.targetURL(n)
+		}
 		if u == nil {
 			return
 		}
 		peerUUID := ""
 		switch {
+		case n.Local:
+			// Engine-manager's immediate inventory is this node's own capability.
 		case isSelfTarget(u, selfPort) || isAnyAliasSelfTarget(u, aliasBoundAddresses):
 			// Our own advertised endpoint (ol now points at this proxy). Serve
 			// it from the explicit local backend — the loopback engine — rather
@@ -2141,10 +2169,16 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			return
 		}
 		seenHost[u.Host] = true
+		var availableModels []string
+		if n.Local && f.profile.LoadOnRequest {
+			availableModels = append([]string{}, n.Models...)
+		}
 		out = append(out, candidate{
-			id:       n.ID,
-			url:      u,
-			peerUUID: peerUUID,
+			localInventoryKnown: n.Local && f.profile.LoadOnRequest,
+			availableModels:     availableModels,
+			id:                  n.ID,
+			url:                 u,
+			peerUUID:            peerUUID,
 		})
 	}
 
@@ -2797,6 +2831,9 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 // httpMu on every request and stopServing takes it during teardown, so the
 // facade bring-up path in facade.go is held to the same rule.
 func (p *Proxy) handleMessage(msg *Message) {
+	if p.handleModelPrepared(msg) {
+		return
+	}
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
@@ -2851,6 +2888,21 @@ func (p *Proxy) handleMessage(msg *Message) {
 	}
 
 	switch method {
+	case "node/set-local-models":
+		f, ok := p.requireFacade(msg, engine)
+		if !ok {
+			return
+		}
+		var inventory modelrequest.LocalInventory
+		if json.Unmarshal(msg.Params, &inventory) != nil || inventory.ID == "" || inventory.Engine != engine || !f.profile.LoadOnRequest {
+			p.codec.RespondError(msg.ID, -32602, "invalid local model inventory")
+			return
+		}
+		if err := f.setLocalModelInventory(inventory); err != nil {
+			p.codec.RespondError(msg.ID, -32602, err.Error())
+			return
+		}
+		p.codec.Respond(msg.ID, map[string]bool{"ok": true})
 	case "facade/enable":
 		var params enableFacadeParams
 		if err := json.Unmarshal(msg.Params, &params); err != nil {

@@ -435,7 +435,7 @@ Field-by-field:
 | `models` | string[] | the node's available model names, enriched by the daemon from the node's engine-manager `em` endpoint (`GET /v1/models`). Omitted when the node advertises no engine-manager or no engine is running. |
 | `modelsByEngine` | object | the same models attributed to the engine that serves each (keyed by engine name, e.g. `ollama` / `lmstudio`). Additive alongside the flat `models` union. A present engine key with `[]` means its inventory was successfully queried and is empty; a missing key means it was not running/queryable. Omitted when no engine inventory was successfully reported. |
 | `loadedByEngine` | object | the models currently **loaded in memory** for each engine (normally a subset of `modelsByEngine`), keyed by engine name. Enriched from the peer's `loadedByEngine`. An engine key with an empty list means "running, nothing loaded"; a missing key means loaded state wasn't reported. Omitted when no engine reports loaded state. |
-| `downloadedByEngine` | object | every model an engine can load, for an engine that advertises only the model it is serving (vLLM, whose `modelsByEngine` entry is just that served name). Reported even while the engine is stopped, so a remote model manager keeps its Load and Delete rows; its `loadedByEngine` entry names models the same way. An engine key with an empty list means the inventory was read and is empty; a missing key means it was not read. Omitted when no engine reports one. |
+| `downloadedByEngine` | object | every cached model an engine can load. Enabled vLLM advertises complete cached models for request-triggered loading; `loadedByEngine` separately reports residency. Reported even while the engine is stopped, so a remote model manager keeps its Load and Delete rows; its `loadedByEngine` entry names models the same way. An engine key with an empty list means the inventory was read and is empty; a missing key means it was not read. Omitted when no engine reports one. |
 | `info` | object, optional | full `noderec.NodeInfo` hardware snapshot, including `GPUs`, optional `cpu`/`memory`, `telemetryValid`, and `msSince`; unverified previews are sanitized display data |
 
 A node that the scanner reports as removed is deleted from the snapshot; `lastSeen` is not preserved for removed nodes. The response is wrapped in `{nodes: [...]}` (rather than a bare array) so we can grow summary fields later without breaking clients. An empty list is a normal early-startup state, not an error.
@@ -757,3 +757,16 @@ Attach to a pre-existing endpoint:
 - **AuthN / AuthZ.** Transport security relies on the parent's pipe / socket ACL. There is no per-message token.
 - **Client transport.** The broker speaks newline-delimited JSON-RPC over stdio, a Unix domain socket, or a Windows named pipe.
 - **Automatic workload baseline on subscribe.** `workloads:subscribe` starts only the live stream; clients explicitly request `workloads:get-initial` after subscribing and merge overlapping records. The broker persists bounded terminal history, while active state is rebuilt from live workload reconciliation rather than treated as durable across a full process-tree restart.
+
+
+### Internal model-preparation relay
+
+`model:prepare {id, engine, model}` and `model:cancel` from the supervised proxy
+are relayed as `engine:prepare-model` and `engine:cancel-model-preparation` to
+engine-manager. `engine:model-prepared {id, engine, port?, error?, status?}` is
+returned to the matching engine facade as `model:prepared`. These internal
+notifications carry operational metadata only; they never carry inference
+content or become desktop commands. The shared engine capability currently
+permits this for vLLM. The broker advertises enabled vLLM even while awaiting a
+model and supplies `loadOnRequest:true` to its local proxy target; engine-manager
+rechecks enabled intent before loading, so stale discovery cannot revive OFF.

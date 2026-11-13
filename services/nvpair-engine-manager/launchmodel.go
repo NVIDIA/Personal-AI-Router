@@ -98,6 +98,10 @@ func (l *launchEdit) start(ctx context.Context) error {
 // for, not a failure, so the reply succeeds with stopped set, and only a restore
 // that fails is an error.
 func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *ActionLaunchModel, params json.RawMessage) (json.RawMessage, error) {
+	return e.changeLaunchModel(ctx, engine, spec, params, false)
+}
+
+func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *ActionLaunchModel, params json.RawMessage, forRequest bool) (json.RawMessage, error) {
 	var request struct {
 		Model string `json:"model"`
 	}
@@ -105,13 +109,39 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		return nil, errors.New(`launch_model params must be {"model": "<model id>"}`)
 	}
 	model := strings.TrimSpace(request.Model)
-	if !hfModelIDRe.MatchString(model) {
+	if model == "" || (!forRequest && !hfModelIDRe.MatchString(model)) {
 		return nil, fmt.Errorf("%q is not a valid model id (want a Hugging Face id such as org/name)", request.Model)
 	}
 
 	var restarted, stopped bool
 	err := e.editLaunch(engine, func(edit *launchEdit) error {
 		current := edit.before
+		if forRequest {
+			enabled, known, err := e.desired.get(engine)
+			if err != nil {
+				return err
+			}
+			if !known || !enabled {
+				return fmt.Errorf("%w: %q", errRequestEngineDisabled, engine)
+			}
+			if current.Running {
+				serving, err := e.servingModels(ctx, edit.st, engine)
+				if err == nil && slices.Contains(serving, model) {
+					return nil
+				}
+			}
+			if !hfModelIDRe.MatchString(model) {
+				return fmt.Errorf("%q is not a valid cached model id", model)
+			}
+			action, ok := edit.st.manifest.Actions["list_models"]
+			if !ok || action.Result == nil {
+				return errors.New("model inventory is unavailable")
+			}
+			downloaded, ok := e.queryModelList(ctx, engine, "list_models", action.Result)
+			if !ok || !slices.Contains(downloaded, model) {
+				return fmt.Errorf("%w: %q", errRequestModelNotCached, model)
+			}
+		}
 		if !current.Editable {
 			return fmt.Errorf("the launch settings of engine %q cannot be changed: %s", engine, current.Reason)
 		}
@@ -122,6 +152,16 @@ func (e *Executor) switchLaunchModel(ctx context.Context, engine string, spec *A
 		if !changed && current.Running {
 			return nil
 		}
+		edit.st.mu.Lock()
+		edit.st.modelSwitching = true
+		edit.st.mu.Unlock()
+		defer func() {
+			edit.st.mu.Lock()
+			edit.st.modelSwitching = false
+			edit.st.mu.Unlock()
+			e.emitState(engine)
+		}()
+		e.emitState(engine)
 		restarted = true
 		if edit.wasEnabled {
 			err = edit.save(ctx, text, false)

@@ -3,7 +3,7 @@
   "engine": "vllm",
   "display_name": "vLLM",
   "manifest_version": 1,
-  "advertised_models": "loaded",
+  "advertised_models": "available",
   "detect": ["{install_dir}/venv/bin/vllm", "~/.local/bin/vllm"],
   "install": {
     "mode": "user",

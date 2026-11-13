@@ -280,3 +280,11 @@ next candidate, or the proxy answers 502 when none remain.
 
 Validation: `proxy_hardening_test.go` covers all three fixes. Run with
 `go test -race ./...` from the component directory.
+### vLLM loading on request
+
+An enabled node advertises its complete cached vLLM models. Inference through
+PAIR prepares the requested model before forwarding; it loads from an ejected
+state or switches after current responses finish. Same-model requests may run
+concurrently. Explicit OFF prevents loading; missing models are not downloaded.
+Engine-manager owns preparation, while the proxy owns request and stream
+lifetimes. Direct requests to the native vLLM engine port do not use this feature.
