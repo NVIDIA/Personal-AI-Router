@@ -719,3 +719,8 @@ replacement is ready. The broker acknowledges local availability updates before
 forwarding lifecycle events. `requestableByEngine` is retained loader capability
 independent of ON/OFF state; only enabled inventories are advertised for routing.
 It must not be interpreted as loaded models by desktop, TUI or discovery clients.
+
+Before `app:ready`, the broker seeds enabled model-on-request facades from the
+engine manager's persisted intent and cached inventory. The first cached-model
+request after restart can load its model without waiting for periodic
+availability reconciliation. Explicit OFF remains authoritative.
