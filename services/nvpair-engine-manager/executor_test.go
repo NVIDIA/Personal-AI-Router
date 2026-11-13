@@ -63,6 +63,19 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
 }
 
+func TestEngineInstallDir_RejectsAnEmptyExpandedPath(t *testing.T) {
+	t.Setenv("NVPAIR_TEST_INSTALL_ROOT", "")
+	configured := "$NVPAIR_TEST_INSTALL_ROOT"
+	if runtime.GOOS == "windows" {
+		configured = "%NVPAIR_TEST_INSTALL_ROOT%"
+	}
+
+	dir, err := engineInstallDir(t.TempDir(), "fake", configured)
+
+	assert.ErrorContains(t, err, "install_dir")
+	assert.Empty(t, dir, "failed resolution must not return an uninstall target")
+}
+
 // The readiness allowance counts from when the start began, so time spent
 // before the engine launched is not granted a second time.
 func TestWaitReady_CountsTheAllowanceFromWhenTheStartBegan(t *testing.T) {

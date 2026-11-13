@@ -248,12 +248,16 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s is not supported on %s/%s", m.DisplayName, runtime.GOOS, runtime.GOARCH)
 	}
+	installDir, err := engineInstallDir(e.baseDir, engine, plat.InstallDir)
+	if err != nil {
+		return nil, fmt.Errorf("engine %q: %w", engine, err)
+	}
 	st := &engineState{
 		manifest:   m,
 		plat:       plat,
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
-		installDir: engineInstallDir(e.baseDir, engine, plat.InstallDir),
+		installDir: installDir,
 	}
 	if plat.ModelsDir != "" {
 		st.modelsDir = expandPath(plat.ModelsDir)
@@ -262,11 +266,16 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	return st, nil
 }
 
-func engineInstallDir(defaultBase, engine, configured string) string {
-	if configured != "" {
-		return filepath.Clean(expandPath(configured))
+func engineInstallDir(defaultBase, engine, configured string) (string, error) {
+	if configured == "" {
+		return filepath.Join(defaultBase, engine), nil
 	}
-	return filepath.Join(defaultBase, engine)
+	dir := expandPath(configured)
+	// Clean turns an empty expansion into ".", which is unsafe as an uninstall target.
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("install_dir must not expand to an empty path")
+	}
+	return filepath.Clean(dir), nil
 }
 
 // pathVars are the directory placeholders every templated manifest string can

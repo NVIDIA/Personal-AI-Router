@@ -132,7 +132,7 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `install_dir` | string | no | Literal managed payload directory, with OS env refs and a leading `~` expanded. Defaults to the app-data root's `engine-bin/<engine>`. Use an external location only when the engine requires it, and add that path to every app-data wipe/uninstall inventory. Available to the rest of the platform block as `{install_dir}`. |
+| `install_dir` | string | no | Literal managed payload directory, with OS env refs and a leading `~` expanded. Its expanded value must not be blank on the host. Defaults to the app-data root's `engine-bin/<engine>`. Use an external location only when the engine requires it, and add that path to every app-data wipe/uninstall inventory. Available to the rest of the platform block as `{install_dir}`. |
 | `detect` | string[] | no | Paths that, if any exists, mean the engine is already installed. Supports OS env refs (`%VAR%`, `$VAR`), a leading `~`, and the `{install_dir}` placeholder. |
 | `install` | object | no | How to obtain the engine (see Install). Omit for engines that are only ever detected/launched. |
 | `uninstall` | object | no | How to remove a user-mode install (see Uninstall). Backs `engine:uninstall`. |
