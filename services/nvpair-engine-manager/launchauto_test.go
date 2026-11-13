@@ -487,12 +487,20 @@ func TestPlanToolCalling_KeepsTheParserTheUserChose(t *testing.T) {
 }
 
 func TestGPUMemoryFromQuery_RejectsAmbiguousOrImpossibleReadings(t *testing.T) {
-	for _, output := range []string{"24576, 20000\n49140, 48600\n", "error\n", "", "16, -1", "16, 17", "0, 0"} {
-		t.Run(output, func(t *testing.T) {
+	test := func(name, output string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
 			_, _, ok := gpuMemoryFromQuery(output)
+
 			assert.False(t, ok)
 		})
 	}
+	test("multiple GPUs", "24576, 20000\n49140, 48600\n")
+	test("query error", "error\n")
+	test("empty output", "")
+	test("negative free memory", "16, -1")
+	test("free memory exceeds capacity", "16, 17")
+	test("zero capacity", "0, 0")
 }
 
 // qwen35_4BConfig is the part of Qwen/Qwen3.5-4B's config.json that sizing

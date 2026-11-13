@@ -40,11 +40,16 @@ describe('repo-root wipe scripts', () => {
         }
     })
 
-    it('lists the managed space-free vLLM directory in both inventories', () => {
+    it('Unix wipe inventory includes the managed vLLM directory', () => {
         const shText = fs.readFileSync(sh, 'utf8')
-        const psText = fs.readFileSync(ps1, 'utf8')
+
         expect(shText).toContain('VLLM_INSTALL_ROOT="$HOME_DIR/.nvpair/engine-bin/vllm"')
         expect(shText).toContain('TARGETS+=("$VLLM_INSTALL_ROOT|PAIR-managed vLLM payload")')
+    })
+
+    it('Windows wipe inventory includes the managed vLLM directory', () => {
+        const psText = fs.readFileSync(ps1, 'utf8')
+
         expect(psText).toContain(
             "$VLLMInstallRoot = Join-Path $HomeDir (Join-Path '.nvpair' (Join-Path 'engine-bin' 'vllm'))"
         )

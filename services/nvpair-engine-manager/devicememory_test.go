@@ -6,6 +6,9 @@ package main
 import (
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func withDeviceMemoryProviders(t *testing.T, native func() (int64, int64, bool), probe func(string) (deviceMemoryProbe, error)) {
@@ -30,26 +33,26 @@ func TestDetectDeviceMemory_PrefersNativeTelemetry(t *testing.T) {
 	)
 
 	total, free, ok := detectDeviceMemory("/opt/vllm/bin/vllm")
-	if !ok || total != 48*gib || free != 32*gib {
-		t.Fatalf("got total=%d free=%d ok=%v, want native telemetry", total, free, ok)
-	}
+
+	require.True(t, ok)
+	assert.Equal(t, 48*gib, total)
+	assert.Equal(t, 32*gib, free)
 }
 
 func TestDetectDeviceMemory_FallsBackToTheSelectedVLLMBackend(t *testing.T) {
 	withDeviceMemoryProviders(t,
 		func() (int64, int64, bool) { return 0, 0, false },
 		func(bin string) (deviceMemoryProbe, error) {
-			if bin != "/opt/vllm/bin/vllm" {
-				t.Fatalf("probe bin = %q", bin)
-			}
+			require.Equal(t, "/opt/vllm/bin/vllm", bin)
 			return deviceMemoryProbe{Total: 64 * gib, Free: 40 * gib}, nil
 		},
 	)
 
 	total, free, ok := detectDeviceMemory("/opt/vllm/bin/vllm")
-	if !ok || total != 64*gib || free != 40*gib {
-		t.Fatalf("got total=%d free=%d ok=%v, want the vLLM backend reading", total, free, ok)
-	}
+
+	require.True(t, ok)
+	assert.Equal(t, 64*gib, total)
+	assert.Equal(t, 40*gib, free)
 }
 
 func TestDetectDeviceMemory_UsesVRAMWhenNvidiaSMIReportsNA(t *testing.T) {
@@ -61,9 +64,10 @@ func TestDetectDeviceMemory_UsesVRAMWhenNvidiaSMIReportsNA(t *testing.T) {
 	)
 
 	total, free, ok := detectDeviceMemory("vllm")
-	if !ok || total != 16*gib || free != 4*gib {
-		t.Fatalf("got total=%d free=%d ok=%v, want the discrete device's VRAM", total, free, ok)
-	}
+
+	require.True(t, ok)
+	assert.Equal(t, 16*gib, total)
+	assert.Equal(t, 4*gib, free)
 }
 
 func TestDetectDeviceMemory_ReservesStartupHeadroomOnSharedMemory(t *testing.T) {
@@ -75,9 +79,9 @@ func TestDetectDeviceMemory_ReservesStartupHeadroomOnSharedMemory(t *testing.T) 
 	)
 
 	_, free, ok := detectDeviceMemory("vllm")
-	if !ok || free != 20*gib-unifiedMemoryHeadroom {
-		t.Fatalf("free = %d ok=%v, want shared memory less startup headroom", free, ok)
-	}
+
+	require.True(t, ok)
+	assert.Equal(t, 17*gib, free, "leave 3 GiB of the available 20 GiB for startup")
 }
 
 func TestDetectDeviceMemory_LeavesSizingToVLLMWhenEveryProviderFails(t *testing.T) {
@@ -86,22 +90,29 @@ func TestDetectDeviceMemory_LeavesSizingToVLLMWhenEveryProviderFails(t *testing.
 		func(string) (deviceMemoryProbe, error) { return deviceMemoryProbe{}, errors.New("unsupported backend") },
 	)
 
-	if _, _, ok := detectDeviceMemory("vllm"); ok {
-		t.Fatal("a made-up memory limit is less safe than leaving sizing to vLLM")
-	}
+	_, _, ok := detectDeviceMemory("vllm")
+
+	assert.False(t, ok)
 }
 
 func TestParseDeviceMemoryProbe_ReadsTheLastOutputLine(t *testing.T) {
 	reading, err := parseDeviceMemoryProbe([]byte("vLLM startup log\n{\"total\":68719476736,\"free\":42949672960,\"shared\":true}\n"))
-	if err != nil || reading.Total != 64*gib || reading.Free != 40*gib || !reading.Shared {
-		t.Fatalf("reading = %+v err=%v", reading, err)
-	}
+
+	require.NoError(t, err)
+	assert.Equal(t, deviceMemoryProbe{Total: 64 * gib, Free: 40 * gib, Shared: true}, reading)
 }
 
 func TestParseDeviceMemoryProbe_RejectsImpossibleReadings(t *testing.T) {
-	for _, output := range []string{"", "not json", `{"total":0,"free":0}`, `{"total":10,"free":11}`} {
-		if _, err := parseDeviceMemoryProbe([]byte(output)); err == nil {
-			t.Errorf("accepted %q", output)
-		}
+	test := func(name, output string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			_, err := parseDeviceMemoryProbe([]byte(output))
+
+			assert.Error(t, err)
+		})
 	}
+	test("empty output", "")
+	test("non-JSON output", "not json")
+	test("zero total memory", `{"total":0,"free":0}`)
+	test("free memory exceeds total memory", `{"total":10,"free":11}`)
 }

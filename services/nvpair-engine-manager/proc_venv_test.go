@@ -12,6 +12,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeVenv lays out a Python virtual environment: a pyvenv.cfg beside a bin
@@ -20,16 +23,10 @@ func fakeVenv(t *testing.T, scripts map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	bin := filepath.Join(root, "venv", "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "venv", "pyvenv.cfg"), []byte("home = /usr/bin\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "venv", "pyvenv.cfg"), []byte("home = /usr/bin\n"), 0o644))
 	for name, body := range scripts {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755))
 	}
 	return bin
 }
@@ -50,18 +47,16 @@ func TestProcessEnvironment_PutsTheVirtualEnvironmentFirstOnPath(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 	bin := fakeVenv(t, map[string]string{"vllm": "#!/bin/sh\n"})
 
-	got, _ := lastValue(processEnvironment(filepath.Join(bin, "vllm"), nil), "PATH")
+	path, found := lastValue(processEnvironment(filepath.Join(bin, "vllm"), nil), "PATH")
 
-	if want := bin + ":/usr/bin:/bin"; got != want {
-		t.Fatalf("PATH = %q, want the venv's bin directory ahead of the existing PATH (%q)", got, want)
-	}
+	assert.True(t, found, "the engine must receive PATH")
+	assert.Equal(t, bin+":/usr/bin:/bin", path)
 }
 
 func TestProcessEnvironment_InheritsTheEnvironmentForAnEngineOutsideAVirtualEnvironment(t *testing.T) {
 	dir := t.TempDir()
-	if got := processEnvironment(filepath.Join(dir, "ollama"), nil); got != nil {
-		t.Fatalf("environment = %v, want nil so the process inherits it unchanged", got)
-	}
+
+	assert.Nil(t, processEnvironment(filepath.Join(dir, "ollama"), nil), "nil lets the process inherit its environment")
 }
 
 func TestProcessEnvironment_KeepsTheManifestVariablesAndTheirPath(t *testing.T) {
@@ -69,30 +64,30 @@ func TestProcessEnvironment_KeepsTheManifestVariablesAndTheirPath(t *testing.T) 
 
 	environment := processEnvironment(filepath.Join(bin, "vllm"), map[string]string{"HF_HOME": "/models", "PATH": "/custom"})
 
-	if got, _ := lastValue(environment, "HF_HOME"); got != "/models" {
-		t.Fatalf("HF_HOME = %q, want /models", got)
+	test := func(name, key, want string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			value, found := lastValue(environment, key)
+
+			assert.True(t, found, "the engine must receive %s", key)
+			assert.Equal(t, want, value)
+		})
 	}
-	if got, _ := lastValue(environment, "PATH"); got != bin+":/custom" {
-		t.Fatalf("PATH = %q, want the venv's bin directory ahead of the PATH the manifest set", got)
-	}
+	test("preserves the model cache directory", "HF_HOME", "/models")
+	test("prepends the virtual environment to the manifest PATH", "PATH", bin+":/custom")
 }
 
-func TestProcessEnvironment_FollowsALinkIntoTheVirtualEnvironment(t *testing.T) {
+func TestVenvBinDir_FollowsALinkIntoTheVirtualEnvironment(t *testing.T) {
 	bin := fakeVenv(t, map[string]string{"vllm": "#!/bin/sh\n"})
 	shim := filepath.Join(t.TempDir(), "vllm")
-	if err := os.Symlink(filepath.Join(bin, "vllm"), shim); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(filepath.Join(bin, "vllm"), shim))
 
-	if got := venvBinDir(shim); got != bin {
-		t.Fatalf("venvBinDir = %q, want %q: a link such as ~/.local/bin/vllm belongs to the venv it points into", got, bin)
-	}
+	assert.Equal(t, bin, venvBinDir(shim), "a launcher link must use its target's virtual environment")
 }
 
-// vLLM's FlashInfer compiles kernels by running ninja by name, and ninja is in
-// the virtual environment's bin directory. Before the engine was started with
-// that directory on PATH, loading a model that needs a kernel stopped with
-// "No such file or directory: 'ninja'".
+// FlashInfer compiles GPU code by running ninja by name. The engine must find
+// the copy installed in its Python environment even when it is absent from the
+// service's PATH.
 func TestStartManagedProc_FindsToolsInTheEnginesVirtualEnvironment(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 	bin := fakeVenv(t, map[string]string{
@@ -107,9 +102,9 @@ func TestStartManagedProc_FindsToolsInTheEnginesVirtualEnvironment(t *testing.T)
 		defer mu.Unlock()
 		lines = append(lines, line)
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	t.Cleanup(func() { proc.stop(0) })
+
 	select {
 	case <-proc.done:
 	case <-time.After(10 * time.Second):
@@ -118,7 +113,5 @@ func TestStartManagedProc_FindsToolsInTheEnginesVirtualEnvironment(t *testing.T)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if got := strings.Join(lines, "\n"); !strings.Contains(got, "ninja-was-found") {
-		t.Fatalf("engine output = %q, want it to have run the venv's ninja", got)
-	}
+	assert.Equal(t, []string{"ninja-was-found"}, lines)
 }

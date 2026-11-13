@@ -3,17 +3,30 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
 
-// A DGX Spark (GB10) as seen while a model load failed: 121.69 GiB of unified
-// memory of which about 41.7 GiB was available. The GPU reports "[N/A]" for its
-// own memory, so the system's figures are the only ones there are.
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// DGX Spark (GB10) fixture: about 121.69 GiB of shared memory, with 41.7 GiB
+// available. Native telemetry reports "[N/A]", so the runtime probe must confirm
+// shared memory before using the system's readings.
 const (
 	sparkTotal = int64(127600524) * 1024
 	sparkAvail = int64(43684000) * 1024
 )
 
-const llama8BFP8Config = `{"max_position_embeddings":131072,"num_hidden_layers":32,"num_attention_heads":32,"num_key_value_heads":8,"head_dim":128,"torch_dtype":"bfloat16","rope_scaling":{"rope_type":"llama3","factor":8.0}}`
+const llama8BFP8Config = `{
+  "max_position_embeddings": 131072,
+  "num_hidden_layers": 32,
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "head_dim": 128,
+  "torch_dtype": "bfloat16",
+  "rope_scaling": {"rope_type": "llama3", "factor": 8.0}
+}`
 
 // The runtime confirms shared memory after native memory telemetry is missing.
 func withUnifiedMemoryGPU(t *testing.T, total, available int64) {
@@ -31,72 +44,68 @@ func withUnifiedMemoryGPU(t *testing.T, total, available int64) {
 
 func TestGPUMemoryFromQuery_ReadsADiscreteGPU(t *testing.T) {
 	total, free, ok := gpuMemoryFromQuery("49140, 40000\n")
-	if !ok || total != 49140*1024*1024 || free != 40000*1024*1024 {
-		t.Fatalf("got total=%d free=%d ok=%v, want the two MiB figures in bytes", total, free, ok)
-	}
+
+	require.True(t, ok)
+	assert.Equal(t, int64(49140*1024*1024), total)
+	assert.Equal(t, int64(40000*1024*1024), free)
 }
 
 func TestGPUMemoryFromQuery_RejectsMissingValuesWithoutAssumingSharedMemory(t *testing.T) {
-	for _, tc := range []struct{ name, output string }{
-		{"bracketed N/A, as nvidia-smi prints with nounits", "[N/A], [N/A]\n"},
-		{"bare N/A", "N/A, N/A\n"},
-		{"Not Supported", "[Not Supported], [Not Supported]\n"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			total, free, ok := gpuMemoryFromQuery(tc.output)
-			if ok || total != 0 || free != 0 {
-				t.Fatalf("got total=%d free=%d ok=%v; missing telemetry must not become a host RAM reading", total, free, ok)
-			}
+	test := func(name, output string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			total, free, ok := gpuMemoryFromQuery(output)
+
+			assert.False(t, ok)
+			assert.Zero(t, total)
+			assert.Zero(t, free)
 		})
 	}
+	test("bracketed N/A", "[N/A], [N/A]\n")
+	test("bare N/A", "N/A, N/A\n")
+	test("not supported", "[Not Supported], [Not Supported]\n")
 }
 
 func TestGPUMemoryFromQuery_IsUnavailableWhenOnlyOneFigureIsMissing(t *testing.T) {
-	if _, _, ok := gpuMemoryFromQuery("[N/A], 1000\n"); ok {
-		t.Fatal("one missing figure is not a unified-memory GPU; the reading is unusable")
-	}
+	_, _, ok := gpuMemoryFromQuery("[N/A], 1000\n")
+
+	assert.False(t, ok)
 }
 
 func TestDetectDeviceMemory_ReportsNoFreeMemoryBelowSharedStartupHeadroom(t *testing.T) {
 	withUnifiedMemoryGPU(t, sparkTotal, gib)
+
 	_, free, ok := detectDeviceMemory("vllm")
-	if !ok || free != 0 {
-		t.Fatalf("free = %d ok=%v, want 0 rather than a negative figure", free, ok)
-	}
+
+	require.True(t, ok)
+	assert.Zero(t, free)
 }
 
-// The failure behind the report: with about 41 GiB available, the launch asked
-// vLLM for nothing, so it wanted its default 0.92 of 121.69 GiB (111.95 GiB) and
-// stopped before readiness.
-func TestPlanHFContext_CapsTheGPUShareOnAUnifiedMemoryMachine(t *testing.T) {
+func TestPlanHFContext_KeepsACachedModelWithinTheSharedMemoryBudget(t *testing.T) {
 	withUnifiedMemoryGPU(t, sparkTotal, sparkAvail)
 	cache := cachedModel(t, "nvidia/Llama-3.1-8B-Instruct-FP8", llama8BFP8Config, 9_100_000_000)
+
 	extra, _ := planHFContext([]string{"serve", "--model", "nvidia/Llama-3.1-8B-Instruct-FP8"}, cache, 65536, nil, nil, "")
 
-	util := utilOf(t, extra)
-	request := util * float64(sparkTotal)
-	if limit := float64(sparkAvail - unifiedMemoryHeadroom - freeMargin); request > limit {
-		t.Fatalf("--gpu-memory-utilization %.2f asks for %.1f GiB but only %.1f GiB can be claimed", util, request/float64(gib), limit/float64(gib))
-	}
-	if got := flagOf(t, extra, "--max-model-len"); got != "65536" {
-		t.Fatalf("max-model-len = %q, want 65536 (it fits in the memory that is free): %v", got, extra)
-	}
+	// Leave 3 GiB for startup and 1 GiB for the desktop and other engines.
+	assert.LessOrEqual(t, utilOf(t, extra)*float64(sparkTotal), float64(sparkAvail-4*gib))
+	assert.Equal(t, "65536", flagOf(t, extra, "--max-model-len"), "the full context fits in available memory")
 }
 
-func TestPlanHFContext_CapsTheGPUShareOfAModelNotYetDownloadedOnAUnifiedMemoryMachine(t *testing.T) {
+func TestPlanHFContext_CapsAnUncachedModelAtTheSharedMemoryBudget(t *testing.T) {
 	withUnifiedMemoryGPU(t, sparkTotal, sparkAvail)
+
 	extra, _ := planHFContext([]string{"serve", "--model", "nvidia/Llama-3.1-8B-Instruct-FP8"}, t.TempDir(), 65536, nil, nil, "")
 
-	util := utilOf(t, extra)
-	if limit := float64(sparkAvail-unifiedMemoryHeadroom-freeMargin) / float64(sparkTotal); util > limit {
-		t.Fatalf("--gpu-memory-utilization %.2f is above the %.2f that is free: %v", util, limit, extra)
-	}
+	// Without model metadata, the launch can use only available memory less
+	// the 3 GiB startup reserve and 1 GiB margin.
+	assert.LessOrEqual(t, utilOf(t, extra)*float64(sparkTotal), float64(sparkAvail-4*gib))
 }
 
 func TestPlanHFContext_LeavesTheShareToVLLMWhenAUnifiedMemoryMachineHasNothingFree(t *testing.T) {
 	withUnifiedMemoryGPU(t, sparkTotal, gib)
+
 	extra, _ := planHFContext([]string{"serve", "--model", "nvidia/Llama-3.1-8B-Instruct-FP8"}, t.TempDir(), 65536, nil, nil, "")
-	if v, _ := launchFlagValue(extra, "--gpu-memory-utilization"); v != "" {
-		t.Fatalf("no share can be sized from nothing free; got %q in %v", v, extra)
-	}
+
+	assert.Empty(t, flagOf(t, extra, "--gpu-memory-utilization"))
 }

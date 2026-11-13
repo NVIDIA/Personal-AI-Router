@@ -114,13 +114,12 @@ func TestUninstallManaged_RemovesEngineMarkedInDeclaredInstallDirectory(t *testi
 	platform.InstallDir = filepath.Join(t.TempDir(), "managed", "vendor")
 	manifest.Platforms[platformKey] = platform
 	ex := managedExecutor(t, manifest)
+	// Reset must find ownership markers outside the normal app-data directory.
 	require.NoError(t, writeInstallMarker(platform.InstallDir, "vendor"))
 
-	results := ex.UninstallManaged(context.Background())
+	results := ex.UninstallManaged(t.Context())
 
-	require.Len(t, results, 1, "declared install directory outcome")
-	assert.True(t, results[0].Removed, "marked engine was not removed")
-	assert.Empty(t, results[0].Error, "marked engine removal")
+	assert.Equal(t, []ManagedUninstall{{Engine: "vendor", Removed: true}}, results)
 	assert.NoFileExists(t, binary, "engine binary survived")
 	assert.FileExists(t, weights, "removal deleted downloaded models")
 	assert.False(t, installedByPAIR(platform.InstallDir), "install marker survived removal")
