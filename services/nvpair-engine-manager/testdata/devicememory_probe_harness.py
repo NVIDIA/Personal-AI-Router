@@ -24,7 +24,7 @@ Fixture fields (memory values are GiB, converted to bytes below):
 - system_total_gib / system_free_gib: host readings, defaulting to 16 / 12.
 - integrated: device reports shared memory, false by default. unknown_topology
   omits that property entirely to model a runtime that cannot report it.
-- device_count: visible CUDA/ROCm devices, defaulting to one.
+- device_count: visible CUDA/ROCm or XPU devices, defaulting to one.
 - device_memory_error: make a device free-memory query fail.
 - os / arch / mps_available: simulate the platform, defaulting to linux,
   x86_64, and no Metal support.
@@ -76,6 +76,7 @@ torch = types.SimpleNamespace(
     ),
     xpu=types.SimpleNamespace(
         is_available=lambda: fixture.get("xpu_available", backend == "xpu"),
+        device_count=lambda: fixture.get("device_count", 1),
         mem_get_info=device_memory,
         get_device_properties=lambda device: xpu_properties,
     ),

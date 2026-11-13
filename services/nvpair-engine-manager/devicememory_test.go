@@ -256,4 +256,6 @@ func TestDeviceMemoryProbe_RejectsUnavailableMemoryWithoutGuessingTopology(t *te
 		"device memory unavailable")
 	reject("multiple CUDA devices", `{"backend":"cuda","device_count":2}`,
 		"multiple CUDA devices require engine-owned memory sizing")
+	reject("multiple XPU devices", `{"backend":"xpu","device_count":2}`,
+		"multiple XPU devices require engine-owned memory sizing")
 }

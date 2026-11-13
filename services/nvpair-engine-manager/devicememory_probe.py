@@ -48,6 +48,8 @@ if current_platform.is_cuda_alike():
         free, total = torch.cuda.mem_get_info(0)
         reading = {"total": int(total), "free": int(free), "shared": False}
 elif current_platform.is_xpu():
+    if torch.xpu.device_count() != 1:
+        raise RuntimeError("multiple XPU devices require engine-owned memory sizing")
     properties = torch.xpu.get_device_properties(0)
     if getattr(properties, "is_integrated_gpu", False):
         reading = system_reading(int(properties.total_memory))
