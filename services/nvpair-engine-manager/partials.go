@@ -52,7 +52,8 @@ import (
 //
 // Engines release their writers asynchronously once a transfer stops, so the
 // first partialGraceSamples samples (about a second) belong to the stopped
-// transfer: a write then only restarts the file's wait. After that this pull's
+// transfer: a write then only restarts the file's wait, and cleanup keeps
+// sampling through them even with nothing listed yet. After that this pull's
 // writer is gone, so a candidate that changes or first appears is another
 // client's download, kept however still it holds afterwards — a pause longer
 // than the quiet period is no sign that it finished. What remains is a shared
@@ -189,7 +190,8 @@ type quietGroup struct {
 // grouped by the transfer that needs them. It is asked again at every sample,
 // because a candidate can appear late (this pull's writer flushing its first
 // bytes as the transfer stops) or vanish (the engine discarding its own
-// partial).
+// partial). Cleanup therefore never finishes inside the grace, even when
+// nothing is listed.
 //
 // Only a failure is an error: a removal that kept failing, or candidates that
 // could not be listed, at the last sample. A group another client is writing,
@@ -268,7 +270,9 @@ func removeQuiescentPartials(ctx context.Context, candidates func() ([]partialGr
 				delete(watched, name)
 			}
 		}
-		if !pending {
+		// Having nothing to watch settles nothing while the grace lasts: the
+		// stopped transfer can still flush a partial that is this pull's.
+		if !pending && sample >= partialGraceSamples-1 {
 			return nil
 		}
 	}

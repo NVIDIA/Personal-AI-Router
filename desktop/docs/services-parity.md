@@ -504,9 +504,10 @@ is not the same as owning it — Ollama blobs are content-addressed, and the LM
 Studio app downloads into the same repository directory. Each pull therefore
 records the partial files already present before it starts, and cancelling it
 considers only the ones that appeared afterwards. The stopped transfer gets a
-short grace for its last writes to land, and a file that still changes after
-that, or first appears after it, is shared with another client even by that
-measure, so it survives as well:
+short grace for its last writes to land, which cleanup watches through even
+when it has found nothing yet, and a file that still changes after that, or
+first appears after it, is shared with another client even by that measure,
+so it survives as well:
 
 ```mermaid
 flowchart TD

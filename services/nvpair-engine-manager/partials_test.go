@@ -238,6 +238,33 @@ func TestRemoveQuiescentPartials_RemovesACandidateThatAppearsLate(t *testing.T) 
 	assertRemoved(t, late)
 }
 
+// Listing no candidates yet proves nothing while the stopped transfer's grace
+// lasts: a partial whose first bytes are flushed as the transfer stops is this
+// pull's to remove, though nothing else was waiting on cleanup.
+func TestRemoveQuiescentPartials_RemovesALatePartialWhenNothingElseIsListed(t *testing.T) {
+	late := filepath.Join(t.TempDir(), "late.part")
+	flushed := false
+	waits := 0
+	ctx := withPartialSettle(t.Context(), func() {
+		waits++
+		if waits == partialGraceSamples-2 {
+			writePartial(t, late, "data")
+			flushed = true
+		}
+	})
+	candidates := func() ([]partialGroup, error) {
+		if _, err := os.Stat(late); err == nil {
+			return eachFile([]string{late}), nil
+		}
+		return nil, nil
+	}
+
+	require.NoError(t, removeQuiescentPartials(ctx, candidates))
+
+	assert.True(t, flushed, "cleanup should still be looking when the late partial is flushed")
+	assertRemoved(t, late)
+}
+
 // Once the grace is over this pull's writer is gone, so a partial first
 // appearing after it is another client starting the same download rather than
 // this pull's late flush.
@@ -270,19 +297,20 @@ func TestRemoveQuiescentPartials_KeepsACandidateThatFirstAppearsAfterTheGrace(t 
 // A file that cannot be read is not a file that is gone. Treating the two
 // alike let cleanup report success over a partial it never managed to look at
 // and stop at once, where an unknown file is worth looking at again for as long
-// as the budget allows. Neither is a failed cleanup.
+// as the budget allows. Neither is a failed cleanup. An absent file is looked
+// for until the grace is over, since the stopped transfer may yet flush it.
 func TestRemoveQuiescentPartials_SamplesUntilEveryCandidateIsKnownToBeGone(t *testing.T) {
 	test := func(name, candidate string, wantWaits int) {
 		t.Run(name, func(t *testing.T) {
 			waits := 0
-			ctx := withPartialSettle(context.Background(), func() { waits++ })
+			ctx := withPartialSettle(t.Context(), func() { waits++ })
 
 			require.NoError(t, removeQuiescentPartials(ctx, listing(candidate)))
 
 			assert.Equal(t, wantWaits, waits)
 		})
 	}
-	test("an absent file needs no second look", filepath.Join(t.TempDir(), "absent.part"), 0)
+	test("an absent file is looked for until the grace is over", filepath.Join(t.TempDir(), "absent.part"), partialGraceSamples-1)
 	test("an unreadable file is sampled until the budget runs out", unreadablePath, partialCleanupSamples-1)
 }
 

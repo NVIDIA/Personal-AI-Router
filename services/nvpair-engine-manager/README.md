@@ -511,8 +511,10 @@ the very same content-addressed partial, and the LM Studio app downloads into
 the same repository directory. So each pull records the partial files already
 present before it starts, and cancelling it considers only the ones that
 appeared afterwards. The stopped transfer gets a short grace for its last
-writes to land; a file that still changes after that, or first appears after
-it, is shared by that measure too, and also survives. A file is removed once it
+writes to land, and cleanup watches through it even when it has found nothing
+yet, since a partial can first appear then; a file that still changes after
+that, or first appears after it, is shared by that measure too, and also
+survives. A file is removed once it
 has held still across repeated checks; cleanup retries one it could not remove
 within a bounded budget and leaves anything still busy at the deadline, which
 is not a failure. Completed model files are never candidates — they may be
