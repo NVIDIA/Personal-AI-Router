@@ -915,6 +915,28 @@ func TestApplyAutoLaunch_UsesTheEngineDeviceEnvironment(t *testing.T) {
 	assert.NotContains(t, launch.Args, "--gpu-memory-utilization")
 }
 
+func TestGPUMemory_ProbesWithTheEngineEnvironment(t *testing.T) {
+	// Allow the runtime probe even on a developer machine with CUDA selected.
+	t.Setenv("CUDA_VISIBLE_DEVICES", "")
+	require.NoError(t, os.Unsetenv("CUDA_VISIBLE_DEVICES"))
+	t.Setenv("PAIR_TEST_MEMORY_READING", `{"total":17179869184,"free":4294967296}`)
+	binDir := t.TempDir()
+	copyFile(t, fakeEngineBin, filepath.Join(binDir, "python"+exeExt()))
+	withDeviceMemoryProviders(t,
+		func(context.Context) (int64, int64, bool) { return 0, 0, false },
+		runVLLMDeviceMemoryProbe,
+	)
+	env := map[string]string{
+		"PAIR_TEST_MEMORY_READING": `{"total":68719476736,"free":42949672960}`,
+	}
+
+	total, free, ok := gpuMemory(t.Context(), filepath.Join(binDir, "vllm"+exeExt()), env)
+
+	require.True(t, ok)
+	assert.Equal(t, 64*gib, total, "use the engine's reading instead of the service's 16 GiB")
+	assert.Equal(t, 40*gib, free, "use the engine's reading instead of the service's 4 GiB")
+}
+
 func TestNvidiaSMIMemory_LeavesExplicitDeviceSelectionToTheEngine(t *testing.T) {
 	// Register restoration before testing without an inherited selection.
 	t.Setenv("CUDA_VISIBLE_DEVICES", "")

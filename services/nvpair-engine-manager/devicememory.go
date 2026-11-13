@@ -30,7 +30,7 @@ type deviceMemoryProbe struct {
 var nativeDeviceMemory = func(ctx context.Context) (int64, int64, bool) { return nvidiaSMIMemory(ctx, nil) }
 var probeVLLMDeviceMemory = runVLLMDeviceMemoryProbe
 
-func detectDeviceMemory(ctx context.Context, bin string) (total, free int64, ok bool) {
+func detectDeviceMemory(ctx context.Context, bin string, env map[string]string) (total, free int64, ok bool) {
 	if ctx.Err() != nil {
 		return 0, 0, false
 	}
@@ -41,7 +41,7 @@ func detectDeviceMemory(ctx context.Context, bin string) (total, free int64, ok 
 	if ok {
 		return total, free, ok
 	}
-	reading, err := probeVLLMDeviceMemory(ctx, bin)
+	reading, err := probeVLLMDeviceMemory(ctx, bin, env)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("could not measure free device memory; leaving memory sizing to vLLM", "err", err)
@@ -54,9 +54,10 @@ func detectDeviceMemory(ctx context.Context, bin string) (total, free int64, ok 
 	return reading.Total, reading.Free, true
 }
 
-// runVLLMDeviceMemoryProbe stops when its start is cancelled, even if Python or
-// the device runtime is still initializing. Its own timeout also bounds the wait.
-func runVLLMDeviceMemoryProbe(ctx context.Context, bin string) (deviceMemoryProbe, error) {
+// runVLLMDeviceMemoryProbe uses the engine's environment so device and platform
+// selection match the launch. It stops when its start is cancelled, even if
+// Python or the device runtime is still initializing. Its timeout bounds the wait.
+func runVLLMDeviceMemoryProbe(ctx context.Context, bin string, env map[string]string) (deviceMemoryProbe, error) {
 	python, err := vllmPython(bin)
 	if err != nil {
 		return deviceMemoryProbe{}, err
@@ -65,6 +66,7 @@ func runVLLMDeviceMemoryProbe(ctx context.Context, bin string) (deviceMemoryProb
 	defer cancel()
 	cmd := exec.CommandContext(ctx, python, "-I", "-c", deviceMemoryProbeScript)
 	cmd.Dir = os.TempDir()
+	cmd.Env = processEnvironment(bin, env)
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {

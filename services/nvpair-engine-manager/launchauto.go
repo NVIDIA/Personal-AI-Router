@@ -50,7 +50,7 @@ var gpuMemory = func(ctx context.Context, bin string, env map[string]string) (in
 			return 0, 0, false
 		}
 	}
-	return deviceMemory(ctx, bin)
+	return deviceMemory(ctx, bin, env)
 }
 
 func nvidiaSMIMemory(ctx context.Context, env map[string]string) (total, free int64, ok bool) {

@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func withDeviceMemoryProviders(t *testing.T, native func(context.Context) (int64, int64, bool), probe func(context.Context, string) (deviceMemoryProbe, error)) {
+func withDeviceMemoryProviders(t *testing.T, native func(context.Context) (int64, int64, bool), probe func(context.Context, string, map[string]string) (deviceMemoryProbe, error)) {
 	t.Helper()
 	oldNative := nativeDeviceMemory
 	oldProbe := probeVLLMDeviceMemory
@@ -31,13 +31,13 @@ func withDeviceMemoryProviders(t *testing.T, native func(context.Context) (int64
 func TestDetectDeviceMemory_PrefersNativeTelemetry(t *testing.T) {
 	withDeviceMemoryProviders(t,
 		func(context.Context) (int64, int64, bool) { return 48 * gib, 32 * gib, true },
-		func(context.Context, string) (deviceMemoryProbe, error) {
+		func(context.Context, string, map[string]string) (deviceMemoryProbe, error) {
 			t.Fatal("the vLLM probe must not run when native telemetry works")
 			return deviceMemoryProbe{}, nil
 		},
 	)
 
-	total, free, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm")
+	total, free, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm", nil)
 
 	require.True(t, ok)
 	assert.Equal(t, 48*gib, total)
@@ -47,13 +47,13 @@ func TestDetectDeviceMemory_PrefersNativeTelemetry(t *testing.T) {
 func TestDetectDeviceMemory_FallsBackToTheSelectedVLLMBackend(t *testing.T) {
 	withDeviceMemoryProviders(t,
 		func(context.Context) (int64, int64, bool) { return 0, 0, false },
-		func(_ context.Context, bin string) (deviceMemoryProbe, error) {
+		func(_ context.Context, bin string, _ map[string]string) (deviceMemoryProbe, error) {
 			require.Equal(t, "/opt/vllm/bin/vllm", bin)
 			return deviceMemoryProbe{Total: 64 * gib, Free: 40 * gib}, nil
 		},
 	)
 
-	total, free, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm")
+	total, free, ok := detectDeviceMemory(t.Context(), "/opt/vllm/bin/vllm", nil)
 
 	require.True(t, ok)
 	assert.Equal(t, 64*gib, total)
@@ -63,12 +63,12 @@ func TestDetectDeviceMemory_FallsBackToTheSelectedVLLMBackend(t *testing.T) {
 func TestDetectDeviceMemory_UsesVRAMWhenNvidiaSMIReportsNA(t *testing.T) {
 	withDeviceMemoryProviders(t,
 		func(context.Context) (int64, int64, bool) { return gpuMemoryFromQuery("[N/A], [N/A]\n") },
-		func(context.Context, string) (deviceMemoryProbe, error) {
+		func(context.Context, string, map[string]string) (deviceMemoryProbe, error) {
 			return deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib, Shared: false}, nil
 		},
 	)
 
-	total, free, ok := detectDeviceMemory(t.Context(), "vllm")
+	total, free, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	require.True(t, ok)
 	assert.Equal(t, 16*gib, total)
@@ -78,12 +78,12 @@ func TestDetectDeviceMemory_UsesVRAMWhenNvidiaSMIReportsNA(t *testing.T) {
 func TestDetectDeviceMemory_ReservesStartupHeadroomOnSharedMemory(t *testing.T) {
 	withDeviceMemoryProviders(t,
 		func(context.Context) (int64, int64, bool) { return 0, 0, false },
-		func(context.Context, string) (deviceMemoryProbe, error) {
+		func(context.Context, string, map[string]string) (deviceMemoryProbe, error) {
 			return deviceMemoryProbe{Total: 64 * gib, Free: 20 * gib, Shared: true}, nil
 		},
 	)
 
-	_, free, ok := detectDeviceMemory(t.Context(), "vllm")
+	_, free, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	require.True(t, ok)
 	assert.Equal(t, 17*gib, free, "leave 3 GiB of the available 20 GiB for startup")
@@ -92,12 +92,12 @@ func TestDetectDeviceMemory_ReservesStartupHeadroomOnSharedMemory(t *testing.T) 
 func TestDetectDeviceMemory_LeavesSizingToVLLMWhenEveryProviderFails(t *testing.T) {
 	withDeviceMemoryProviders(t,
 		func(context.Context) (int64, int64, bool) { return 0, 0, false },
-		func(context.Context, string) (deviceMemoryProbe, error) {
+		func(context.Context, string, map[string]string) (deviceMemoryProbe, error) {
 			return deviceMemoryProbe{}, errors.New("unsupported backend")
 		},
 	)
 
-	_, _, ok := detectDeviceMemory(t.Context(), "vllm")
+	_, _, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	assert.False(t, ok)
 }
@@ -129,7 +129,7 @@ func withUnifiedMemoryGPU(t *testing.T, total, available int64) {
 	t.Helper()
 	withDeviceMemoryProviders(t,
 		func(context.Context) (int64, int64, bool) { return gpuMemoryFromQuery("[N/A], [N/A]\n") },
-		func(context.Context, string) (deviceMemoryProbe, error) {
+		func(context.Context, string, map[string]string) (deviceMemoryProbe, error) {
 			return deviceMemoryProbe{Total: total, Free: available, Shared: true}, nil
 		},
 	)
@@ -141,7 +141,7 @@ func withUnifiedMemoryGPU(t *testing.T, total, available int64) {
 func TestDetectDeviceMemory_ReportsNoFreeMemoryBelowSharedStartupHeadroom(t *testing.T) {
 	withUnifiedMemoryGPU(t, sparkTotal, gib)
 
-	_, free, ok := detectDeviceMemory(t.Context(), "vllm")
+	_, free, ok := detectDeviceMemory(t.Context(), "vllm", nil)
 
 	require.True(t, ok)
 	assert.Zero(t, free)
