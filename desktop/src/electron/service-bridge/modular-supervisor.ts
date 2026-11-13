@@ -349,11 +349,11 @@ class ModularSupervisor {
     private discoveryModelRetryTimers = new Map<ProxyEngine, ReturnType<typeof setTimeout>>()
     private discoveryModelRetryAttempts = new Map<ProxyEngine, number>()
 
-    // Download cancellations this is currently awaiting a broker reply for,
-    // keyed by node, engine and model. Held only for the duration of the await
-    // so a cancel that outlives its budget can be re-issued; see
-    // {@link ModularSupervisor.cancelModelPull}.
-    private cancelsInFlight = new Set<string>()
+    // Download cancellations this is currently awaiting a broker reply for, by
+    // the attempt number of the download each was sent for. Held only for the
+    // duration of the await so a cancel that outlives its budget can be
+    // re-issued; see {@link ModularSupervisor.cancelModelPull}.
+    private cancelsInFlight = new Set<number>()
     // Authoritative value is the persisted ui-config `modularLogLevel`; the
     // connector seeds it via setLogLevel() before start() so spawn args use it.
     // This default only applies if start() runs before the connector seeds.
@@ -1706,6 +1706,12 @@ class ModularSupervisor {
      * asking again has to reach the backend. Only a cancel this is currently
      * waiting on is refused, which is what keeps a mashed button from fanning
      * out duplicate requests.
+     *
+     * Each cancel belongs to the attempt it was sent for. The download can end,
+     * and its row clear, while its cancel is still awaited, and a retry of the
+     * model is then a new attempt the backend names the same way. That earlier
+     * cancel neither refuses the retry's nor, rejected late, restores the
+     * retry's row.
      */
     async cancelModelPull(
         engine: string,
@@ -1714,14 +1720,11 @@ class ModularSupervisor {
         nodeId?: string
     ): Promise<void> {
         const state = getModularBridgeState()
-        const active = nodeId
-            ? state.isRemoteModelPullActive(nodeId, engineType, model)
-            : state.isModelPullActive(engineType, model)
-        if (!active) return
-        const inFlight = `${nodeId ?? 'local'}:${engineType}:${model}`
-        if (this.cancelsInFlight.has(inFlight)) return
+        const attempt = state.modelPullAttempt(engineType, model, nodeId)
+        if (attempt === undefined) return
+        if (this.cancelsInFlight.has(attempt)) return
         if (!state.setModelPullCanceling(engineType, model, true, nodeId)) return
-        this.cancelsInFlight.add(inFlight)
+        this.cancelsInFlight.add(attempt)
         try {
             if (nodeId) {
                 await this.callProcess(
@@ -1750,7 +1753,9 @@ class ModularSupervisor {
                 })
                 return
             }
-            state.setModelPullCanceling(engineType, model, false, nodeId)
+            if (state.modelPullAttempt(engineType, model, nodeId) === attempt) {
+                state.setModelPullCanceling(engineType, model, false, nodeId)
+            }
             this.reportError(
                 `Failed to cancel download of ${model}: ${getErrorString(err)}`,
                 'error',
@@ -1758,7 +1763,7 @@ class ModularSupervisor {
                 { engineType, nodeId, operation: 'pull', modelName: model }
             )
         } finally {
-            this.cancelsInFlight.delete(inFlight)
+            this.cancelsInFlight.delete(attempt)
         }
     }
 

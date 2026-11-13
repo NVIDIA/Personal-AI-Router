@@ -443,12 +443,16 @@ so the row is not dropped back to "Downloading". The download's last frame is
 the exception: it says how the download ended — it may have finished before
 the stop reached it, or its engine could not confirm the stop — so the row
 shows that instead, and a cancel rejected after it leaves it there. The wire
-names a download by engine and model alone, so the terminal UI numbers each
-download it tracks, a retry of the same model included, and acts on a pull's
-or a cancel's reply only while that attempt is still the model's download: a
-late reply for a stopped download leaves its retry alone. Progress frames
-still match by engine and model, since the engine-manager sends a stopped
-download's last frame before it starts the retry. Ollama
+names a download by engine and model alone, so each UI numbers the downloads
+it tracks, a retry of the same model included, and keeps every reply to the
+attempt it was sent for. The terminal UI acts on a pull's or a cancel's reply
+only while that attempt is still the model's download, so a late reply for a
+stopped download leaves its retry alone. The desktop app holds a cancel's
+in-flight guard per row attempt: a cancel still awaited after its download
+ended neither refuses the retry's cancel nor, rejected late, restores the
+retry's row. Progress frames still match by engine and model, since the
+engine-manager sends a stopped download's last frame before it starts the
+retry. Ollama
 closes the pull request and removes the partial blobs named by its progress
 digests, judging each blob's data file and `-partial-N` resume files together:
 any one of them that predates the pull, or changes, first appears, or vanishes

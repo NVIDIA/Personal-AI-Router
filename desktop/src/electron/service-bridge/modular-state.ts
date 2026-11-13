@@ -1021,6 +1021,14 @@ class ModularBridgeState {
      */
     private cancelingPulls = new Map<string, string>()
     /**
+     * The attempt number of each pull in {@link activePulls}, under the same
+     * key, given when its row is created. The wire names a download by engine
+     * and model alone, so this is what tells a retry from the attempt before
+     * it; see {@link modelPullAttempt}.
+     */
+    private pullAttempts = new Map<string, number>()
+    private lastPullAttempt = 0
+    /**
      * Authoritative remote-engine facts keyed by {@link remoteOpKey}
      * (`${nodeId}:${engineType}`). Populated by the supervisor from each
      * clustered peer's `engine:remote-get-installed` (mTLS `ec` surface) — the
@@ -1504,8 +1512,7 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        this.activePulls.set(engineProgressKey(progress), progress)
-        emitBridgePush('engines:progress-changed', progress)
+        this.trackPull(progress)
     }
 
     /** Whether an optimistic remote pull entry for this model is still in flight. */
@@ -1526,6 +1533,7 @@ class ModularBridgeState {
     finishRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         this.cancelingPulls.delete(key)
+        this.pullAttempts.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
     }
@@ -1553,9 +1561,8 @@ class ModularBridgeState {
                     : `${nodeId}:${engineType}:${operation}`
             emitBridgePush('engines:progress-cleared', { key: progressKey })
             if (operation === 'pull' && model) {
-                this.activePulls.delete(
-                    engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-                )
+                this.activePulls.delete(progressKey)
+                this.pullAttempts.delete(progressKey)
             }
             if (stage === 'already-installed' || stage === 'failed') {
                 this.clearRemoteEngineOp(nodeId, engineType)
@@ -2208,7 +2215,14 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        this.activePulls.set(engineProgressKey(progress), progress)
+        this.trackPull(progress)
+    }
+
+    /** Add a pull's row, numbering it as a new attempt of its model. */
+    private trackPull(progress: EngineProgress): void {
+        const key = engineProgressKey(progress)
+        this.activePulls.set(key, progress)
+        this.pullAttempts.set(key, ++this.lastPullAttempt)
         emitBridgePush('engines:progress-changed', progress)
     }
 
@@ -2266,8 +2280,26 @@ class ModularBridgeState {
         if (!nodeId) return
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         this.cancelingPulls.delete(key)
+        this.pullAttempts.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
+    }
+
+    /**
+     * The attempt number of the download of this model tracked on the node, or
+     * undefined when none is. A retry is a new row with a new number, so a
+     * cancel that outlives the attempt it was sent for can tell that the row
+     * it would act on is no longer that attempt's.
+     */
+    modelPullAttempt(
+        engineType: EngineType,
+        model: string,
+        nodeId = this.selfId
+    ): number | undefined {
+        if (!nodeId) return undefined
+        return this.pullAttempts.get(
+            engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        )
     }
 
     /**

@@ -3,15 +3,17 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { JsonRpcTimeoutError } from '@/electron/service-bridge/json-rpc-subprocess'
+import type { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { MODULAR_CANCEL_PULL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
+
+type BridgeState = ReturnType<typeof getModularBridgeState>
 
 const mocks = vi.hoisted(() => ({
     bridgeState: {
         handleNotification: vi.fn(),
         getSelfId: vi.fn(() => null),
         getProxyPort: vi.fn(() => null),
-        isModelPullActive: vi.fn(() => true),
-        isRemoteModelPullActive: vi.fn(() => true),
+        modelPullAttempt: vi.fn<BridgeState['modelPullAttempt']>(() => 1),
         setModelPullCanceling: vi.fn(() => true)
     },
     emitBridgePush: vi.fn()
@@ -67,8 +69,7 @@ describe('cancelling a model download', () => {
     beforeEach(() => {
         vi.restoreAllMocks()
         mocks.bridgeState.setModelPullCanceling.mockClear().mockReturnValue(true)
-        mocks.bridgeState.isModelPullActive.mockReturnValue(true)
-        mocks.bridgeState.isRemoteModelPullActive.mockReturnValue(true)
+        mocks.bridgeState.modelPullAttempt.mockReturnValue(1)
     })
 
     it('gives the backend a budget above the peer response-header timeout', async () => {
@@ -240,8 +241,7 @@ describe('cancelling a model download', () => {
     // must not put the row back into "Canceling".
     it('sends nothing when the download it names is no longer active', async () => {
         const call = vi.spyOn(supervisor, 'callProcess').mockResolvedValue(null)
-        mocks.bridgeState.isModelPullActive.mockReturnValue(false)
-        mocks.bridgeState.isRemoteModelPullActive.mockReturnValue(false)
+        mocks.bridgeState.modelPullAttempt.mockReturnValue(undefined)
 
         await supervisor.cancelModelPull('ollama', 'ollama', 'demo')
         await supervisor.cancelModelPull('ollama', 'ollama', 'demo', 'uuid-b')
