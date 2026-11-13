@@ -181,8 +181,8 @@ func TestNodeDetail_NeverOverflowsItsBudget(t *testing.T) {
 		d.status.error("download failed")
 	})
 	test("hardware", func(d *nodeDetail) {
-		d.telemetryOK = true
-		d.telemetry = nodeTelemetry{TelemetryValid: true}
+		d.node.info = &noderec.NodeInfo{TelemetryValid: true}
+		d.node.infoReceivedAt = time.Now()
 		d.SetSize(w, budget)
 	})
 }
@@ -308,8 +308,8 @@ func TestDetail_SurvivesAManyGpuHost(t *testing.T) {
 				{Engine: "ollama", Installed: true, Running: true},
 				{Engine: "lmstudio", Installed: true},
 			}
-			d.telemetryOK = true
-			d.telemetry = nodeTelemetry{
+			d.node.infoReceivedAt = time.Now()
+			d.node.info = &noderec.NodeInfo{
 				TelemetryValid: true, GPUs: gpus,
 				CPU:    &noderec.CPUInfo{Name: "CPU", Cores: 8},
 				Memory: &noderec.MemoryInfo{TotalBytes: 1 << 34, UsedBytes: 1 << 33},
@@ -408,8 +408,8 @@ func TestDetail_StaysInBudgetWithAStaleEngineList(t *testing.T) {
 			d := newNodeDetail(nil, nodeRow{key: "peer", name: "peer-01"})
 			d.engines = []engineStatus{{Engine: "ollama", Installed: true, Running: true}}
 			d.enginesStale = stale
-			d.telemetryOK = true
-			d.telemetry = nodeTelemetry{
+			d.node.infoReceivedAt = time.Now()
+			d.node.info = &noderec.NodeInfo{
 				TelemetryValid: true, GPUs: gpus,
 				CPU:    &noderec.CPUInfo{Name: "CPU", Cores: 8},
 				Memory: &noderec.MemoryInfo{TotalBytes: 1 << 34, UsedBytes: 1 << 33},

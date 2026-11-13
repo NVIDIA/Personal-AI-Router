@@ -39,7 +39,6 @@ import { serviceLogLevel } from './service-log-level'
 import { engineManagerName } from '@/shared/utils/engines'
 import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
-import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
     MODULAR_CANCEL_PULL_TIMEOUT_MS,
     MODULAR_DEFAULT_LOG_LEVEL,
@@ -326,8 +325,8 @@ function emptyLocalEngineBridge(): LocalEngineBridge {
  *   engine-manager, `errors:` for the error pipeline, `node/*` for manual nodes,
  *   `settings/*` and `cluster:` for the rest. Local inference jobs arrive on the
  *   broker's `workloads:subscribe` stream.
- * - The local `/v1/node-info` HTTP poll is the single sanctioned HTTP exception
- *   for telemetry (see `node-info-poller.ts`).
+ * - Hardware snapshots arrive through the broker's discovery subscription,
+ *   alongside node identity and service inventory.
  */
 class ModularSupervisor {
     private processes = new Map<ModularProcessName, JsonRpcSubprocess>()
@@ -539,7 +538,6 @@ class ModularSupervisor {
 
         this.isReady = true
         this.updateReadiness()
-        startNodeInfoPoller()
         log.info({ sublevel: 'lifecycle', message: 'Started modular service processes' })
     }
 
@@ -547,7 +545,6 @@ class ModularSupervisor {
         // Mark teardown first so the broker's exit during stop() is treated as a
         // deliberate shutdown, not a crash.
         this.shuttingDown = true
-        stopNodeInfoPoller()
         if (this.remoteStatusDebounceTimer) {
             clearTimeout(this.remoteStatusDebounceTimer)
             this.remoteStatusDebounceTimer = null

@@ -161,10 +161,11 @@ async function nodeSettingString(method: string): Promise<string> {
 async function toggleLocalEngine(engine: string, engineType: EngineType): Promise<void> {
     const supervisor = getModularSupervisor()
     try {
-        // `engine:status` is a fast detect (no lifecycle lock), so awaiting the
-        // read is fine. Lifecycle ops stay fire-and-forget to the renderer. A stop
-        // observes its eventual response because an ownership rejection has no
-        // resolving `engine:state-changed`; start keeps its existing push path.
+        // `engine:status` probes independently of lifecycle operations, so it
+        // cannot wait on their lock. Lifecycle ops stay fire-and-forget to the
+        // renderer. A stop observes its eventual response because an ownership
+        // rejection has no resolving `engine:state-changed`; start keeps its
+        // existing push path.
         const status = await supervisor.callProcess('broker', 'engine:status', { engine })
         const running = booleanValue(objectValue(status)?.running)
         // Synthesize the transitional status the engine-manager never emits, so
@@ -747,10 +748,10 @@ async function handleNodeRemoveMember(
     const selfId = state.getSelfId()
     const isSelfLeave = selfId !== null && payload.nodeId === selfId
 
-    // The broker owns manual-node persistence and resolves a stable node UUID
-    // back to the manual alias expected by nvpair-manual-nodes. For a purely
-    // discovered peer this remains a harmless no-op.
-    supervisor.callProcess('broker', 'node/remove', { id: payload.nodeId }).catch(() => {})
+    // The broker resolves this node key to its manual entry, if any. Keeping it
+    // separate from the worker's entry ID prevents a matching user-supplied name
+    // from selecting a different configuration for removal.
+    supervisor.callProcess('broker', 'node/remove', { nodeId: payload.nodeId }).catch(() => {})
 
     if (isSelfLeave) {
         // Self-departure is `cluster:leave`, not `nodes:remove` (the cluster-manager

@@ -835,3 +835,101 @@ func TestSettings_SupportsEngineWithoutStartupSubcommand(t *testing.T) {
 	require.Empty(t, preview.Errors, "engine without subcommand rejected (%v)", preview)
 	require.Equal(t, []string{"--future-option=opaque"}, preview.Args, "engine without subcommand rejected (%v)", preview)
 }
+
+// Reading or validating settings must leave an earlier status check usable,
+// including when validation rejects the proposed settings.
+func TestSettingsReads_PreservePendingStatusCheck(t *testing.T) {
+	test := func(name string, read func(*testing.T, *Executor, settings.Request)) {
+		t.Run(name, func(t *testing.T) {
+			fixture := newEditableStatusFixture(t)
+			ex := fixture.executor
+			request := settingsRequest(t, ex)
+			// Hold the status result until the settings read has completed.
+			finished := make(chan statusResult, 1)
+			go func() {
+				status, err := ex.Status("fake")
+				finished <- statusResult{status, err}
+			}()
+			awaitProbeStart(t, fixture.probeStarted)
+
+			read(t, ex, request)
+			fixture.releaseProbe()
+			got := awaitResult(t, finished)
+			require.NoError(t, got.err)
+			require.True(t, got.status.Running, "a settings read discarded the successful status check")
+			require.True(t, got.status.Healthy)
+			require.Equal(t, int32(1), fixture.requests.Load(), "a settings read caused another engine check")
+		})
+	}
+	test("read launch settings", func(t *testing.T, ex *Executor, request settings.Request) {
+		launch, err := ex.LaunchSettings(request.Engine)
+		require.NoError(t, err)
+		require.Equal(t, request.Settings.ServerPort, launch.ServerPort)
+	})
+	test("preview launch settings", func(t *testing.T, ex *Executor, request settings.Request) {
+		preview, err := ex.PreviewLaunch(request)
+		require.NoError(t, err)
+		require.Empty(t, preview.Errors)
+		require.Nil(t, preview.Conflict)
+	})
+	test("validate unchanged browser access", func(t *testing.T, ex *Executor, request settings.Request) {
+		require.NoError(t, ex.RejectRemoteCORSChange(request))
+	})
+	test("reject a browser access change", func(t *testing.T, ex *Executor, request settings.Request) {
+		request.Settings.LaunchText = "OLLAMA_ORIGINS=https://example.test " + request.Settings.LaunchText
+		require.ErrorContains(t, ex.RejectRemoteCORSChange(request), "CORS changes are local-only")
+	})
+}
+
+// Applying settings must still invalidate the old observation so its reply
+// cannot restore the former port or adopt the old listener.
+func TestConfigureLaunch_PreservesPortChangeAfterPendingStatusCheck(t *testing.T) {
+	fixture := newEditableStatusFixture(t)
+	ex := fixture.executor
+	request := settingsRequest(t, ex)
+	newPort, err := freePort()
+	require.NoError(t, err)
+	for newPort == fixture.port {
+		newPort, err = freePort()
+		require.NoError(t, err)
+	}
+	request.Settings.ServerPort = newPort
+	request.Settings.LaunchText = fmt.Sprintf(`OLLAMA_HOST="127.0.0.1:%d"`, newPort)
+	// Collect the old-port status reply after the configuration change finishes.
+	finished := make(chan statusResult, 1)
+	go func() {
+		status, err := ex.Status("fake")
+		finished <- statusResult{status, err}
+	}()
+	awaitProbeStart(t, fixture.probeStarted)
+	launch, err := ex.ConfigureLaunch(context.Background(), settings.Configure{
+		Engine: request.Engine, Settings: request.Settings,
+	}, func() error { return nil })
+	require.NoError(t, err)
+	require.Equal(t, newPort, launch.ServerPort)
+	fixture.releaseProbe()
+	got := awaitResult(t, finished)
+	require.NoError(t, got.err)
+	require.Equal(t, newPort, got.status.Port)
+	require.False(t, got.status.Running, "an old status reply adopted the former listener")
+}
+
+// Use an editable configuration without a local executable, so the pending
+// status request observes the external test listener without starting an engine.
+func newEditableStatusFixture(t *testing.T) blockedReadinessFixture {
+	t.Helper()
+	fixture := newBlockedReadinessFixture(t)
+	ex := fixture.executor
+	st := settingsState(t, ex)
+	st.plat.Runtime.Args = []string{"serve"}
+	st.plat.Runtime.Bind = "127.0.0.1"
+	st.plat.Runtime.EditableLaunch = &EditableLaunch{
+		FixedArgs: []string{"serve"},
+		Controls: []LaunchControl{
+			{Value: "{server.host}:{server.port}", Env: []string{"OLLAMA_HOST"}},
+			{Value: "{cors.origins}", Env: []string{"OLLAMA_ORIGINS"}},
+		},
+	}
+	ex.overrideDir = t.TempDir()
+	return fixture
+}

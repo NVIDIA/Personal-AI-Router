@@ -12,6 +12,30 @@ import (
 	"nvpair-shared/noderec"
 )
 
+// Add a verified peer and a candidate copying its host UUID, then remove only
+// the candidate. The service-filtered snapshot must still contain the original
+// peer, proving that candidate events do not overwrite or remove its target.
+func TestDirectory_CandidateClaimsCannotReplaceServiceTargets(t *testing.T) {
+	directory := NewDirectory()
+	peer := olNode("host-a")
+	peer.DiscoveryRecordID = "peer:host-a"
+	peer.IdentityVerification = noderec.IdentityPinned
+	peer.Trusted = true
+	peer.IP = "192.0.2.20"
+
+	candidate := olNode("host-a")
+	candidate.DiscoveryRecordID = "candidate:rogue"
+	candidate.IdentityVerification = noderec.IdentityUnverified
+	candidate.Trusted = false
+	candidate.IP = "192.0.2.30"
+
+	directory.Apply(noderec.NotifyNodeDiscovered, peer)
+	directory.Apply(noderec.NotifyNodeDiscovered, candidate)
+	directory.Apply(noderec.NotifyNodeRemoved, candidate)
+
+	require.Equal(t, []noderec.DirectoryNode{peer}, directory.Snapshot(noderec.ServiceOllama))
+}
+
 func TestRegistrationCache_StoresAndReplacesServiceRegistrations(t *testing.T) {
 	c := NewRegistrationCache()
 	require.True(t, c.Register(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: 14318}), "first register should change")
@@ -59,10 +83,24 @@ func ids(nodes []noderec.DirectoryNode) []string {
 }
 
 func olNode(id string) noderec.DirectoryNode {
-	return noderec.DirectoryNode{HostUUID: id, Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}}}
+	return noderec.DirectoryNode{
+		DiscoveryRecordID:    "local:" + id,
+		IdentityVerification: noderec.IdentityLocal,
+		HostUUID:             id,
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceOllama: {Port: 11434},
+		},
+	}
 }
 func erNode(id string) noderec.DirectoryNode {
-	return noderec.DirectoryNode{HostUUID: id, Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}
+	return noderec.DirectoryNode{
+		DiscoveryRecordID:    "local:" + id,
+		IdentityVerification: noderec.IdentityLocal,
+		HostUUID:             id,
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceErrors: {Port: 14319},
+		},
+	}
 }
 
 func TestDirectorySubscribe_SendsInitialSnapshot(t *testing.T) {

@@ -13,14 +13,45 @@ import (
 	"nvpair-shared/noderec"
 )
 
-// mergeReference is a fixed instant for building lastSeen timestamps.
-//
-// The merge itself no longer reads a clock — presence comes from whether the
-// backend still lists a node, not from how old its record is — so this exists
-// only to construct records of a given age and prove they are ignored.
-var mergeReference = time.Unix(1_700_000_000, 0)
+var mergeReference = time.Unix(1_700_000_000, 0).UTC() // arbitrary fixed instant
 
-// seenAgo builds a lastSeen timestamp d before the reference instant.
+// A discovered candidate copying a member's UUID must keep its own row and
+// remain outside membership. Its claimed identity cannot change the verified
+// peer's endpoint or turn the candidate into that member.
+func TestMergeNodes_UnverifiedClaimsRemainSeparateFromMembers(t *testing.T) {
+	const peerUUID = "peer"
+	const peerName = "verified"
+	const peerAddress = "192.0.2.20"
+	const candidateName = "rogue"
+	const candidateRecordID = "candidate:rogue"
+	rows := mergeNodes(nodeFeeds{
+		discovered: []availableNode{
+			{
+				HostUUID:             peerUUID,
+				DiscoveryRecordID:    "peer:peer",
+				IdentityVerification: noderec.IdentityPinned,
+				Name:                 peerName,
+				IPAddress:            peerAddress,
+				Trusted:              true,
+			},
+			{
+				HostUUID:             peerUUID,
+				DiscoveryRecordID:    candidateRecordID,
+				IdentityVerification: noderec.IdentityUnverified,
+				Name:                 candidateName,
+				IPAddress:            "192.0.2.30",
+			},
+		},
+	})
+
+	require.Len(t, rows, 2)
+	assert.Equal(t, membershipNone, findRow(t, rows, candidateName).membership)
+	assert.Equal(t, candidateRecordID, findRow(t, rows, candidateName).key)
+	assert.Equal(t, peerAddress, findRow(t, rows, peerName).address)
+}
+
+// seenAgo builds a lastSeen timestamp d before a fixed reference instant.
+// Presence comes from the service's snapshot, so these ages must not evict rows.
 func seenAgo(d time.Duration) int64 { return mergeReference.Add(-d).Unix() }
 
 func findRow(t *testing.T, rows []nodeRow, name string) nodeRow {
@@ -137,22 +168,36 @@ func TestMerge_NeedsSomewhereToReachANode(t *testing.T) {
 // TestMergeDeduplicatesAcrossFeeds checks one machine appearing in all three
 // feeds renders as a single row carrying every feed's contribution.
 func TestMerge_DeduplicatesAcrossFeeds(t *testing.T) {
+	const hostUUID = "u1"
+	const hostName = "host"
+	const address = "10.0.0.5"
+	const manualID = "m1"
 	rows := mergeNodes(nodeFeeds{
 		discovered: []availableNode{{
-			HostUUID:  "u1",
-			Name:      "host",
-			IPAddress: "10.0.0.5",
+			HostUUID:  hostUUID,
+			Name:      hostName,
+			IPAddress: address,
 			LastSeen:  seenAgo(time.Second),
 			Trusted:   true,
 			Models:    []string{"llama3.2", "qwen3"},
 		}},
-		members: []clusterNode{{NodeUUID: "u1", Name: "host", State: "joined"}},
-		manual:  []manualNode{{ID: "m1", Address: "10.0.0.5", NodeInfoUp: true}},
+		members: []clusterNode{{
+			NodeUUID: hostUUID,
+			Name:     hostName,
+			State:    "joined",
+		}},
+		manual: []manualNode{{
+			IdentityVerification: noderec.IdentityPinned,
+			HostUUID:             hostUUID,
+			ID:                   manualID,
+			Address:              address,
+			NodeInfoUp:           true,
+		}},
 	})
 
 	require.Len(t, rows, 1, "one machine must produce one row")
 	row := rows[0]
-	assert.Equal(t, []string{"m1"}, row.manualIDs, "manual handle must survive the merge")
+	assert.Equal(t, []string{manualID}, row.manualIDs, "manual handle must survive the merge")
 	assert.Equal(t, nodeMembership(membershipMember), row.membership)
 	assert.Equal(t, 2, row.modelCount())
 }
@@ -172,41 +217,39 @@ func TestMergeManualProbe_BeatsDiscoverySilence(t *testing.T) {
 	assert.Equal(t, nodePresence(presenceOffline), findRow(t, rows, "dead").presence)
 }
 
-// TestMergeUsesEveryFactTheManualWorkerReports is the regression guard for the
-// merged table reading the manual-node worker's reply too narrowly.
-//
-// It decoded only Ollama and node-info liveness and an address, so a host
-// running only LM Studio read Offline, a hostname typed by hand could not be
-// joined to the same machine discovered by IP, and the node-info port and TLS
-// setting the probe found were dropped.
-func TestMerge_UsesEveryFactTheManualWorkerReports(t *testing.T) {
+func TestMergeNodes_UsesManualEngineReachabilityWithoutHardware(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
-		manual: []manualNode{{ID: "m1", Name: "lms-only", Address: "10.0.0.7", LMStudioUp: true}},
-	})
-	assert.Equal(t, nodePresence(presenceOnline), findRow(t, rows, "lms-only").presence, "a host answering only on LM Studio must read online")
-
-	// Typed as a hostname, discovered by IP: only the UUID ties them together.
-	rows = mergeNodes(nodeFeeds{
-		discovered: []availableNode{{HostUUID: "u1", Name: "gpu-box", IPAddress: "10.0.0.5", Port: 14318}},
-		manual:     []manualNode{{ID: "m1", Address: "gpu-box.lan", HostUUID: "u1", NodeInfoUp: true}},
-	})
-	require.Len(t, rows, 1, "the manual entry must be joined by its UUID")
-	assert.Equal(t, []string{"m1"}, rows[0].manualIDs, "the joined row must retain its manual handle")
-
-	// A hand-added node reached on a non-default node-info port, over TLS.
-	rows = mergeNodes(nodeFeeds{
 		manual: []manualNode{{
-			ID: "m2", Name: "tls-box", Address: "10.0.0.9", NodeInfoUp: true,
-			NodeInfoPort: 14319, TLSEnabled: true, TelemetryValid: true,
-			GPUs: []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}},
+			ID:         "manual-entry",
+			Name:       "lms-only",
+			Address:    "10.0.0.7",
+			LMStudioUp: true,
 		}},
 	})
-	tls := findRow(t, rows, "tls-box")
-	assert.Equal(t, 14319, tls.port, "node-info port must match the probe")
-	assert.True(t, tls.nodeInfoTLS, "TLS node-info must be carried with the worker's reading")
-	if assert.NotNil(t, tls.probedTelemetry, "worker's reading must be carried") {
-		assert.Len(t, tls.probedTelemetry.GPUs, 1)
-	}
+	assert.Equal(t, presenceOnline, findRow(t, rows, "lms-only").presence)
+}
+
+func TestMergeNodes_JoinsManualEntriesByVerifiedIdentity(t *testing.T) {
+	const manualID = "m1"
+	const hostUUID = "u1"
+	// Typed as a hostname, discovered by IP: only the UUID ties them together.
+	rows := mergeNodes(nodeFeeds{
+		discovered: []availableNode{{
+			HostUUID:  hostUUID,
+			Name:      "gpu-box",
+			IPAddress: "10.0.0.5",
+			Port:      14318,
+		}},
+		manual: []manualNode{{
+			IdentityVerification: noderec.IdentityPinned,
+			ID:                   manualID,
+			Address:              "gpu-box.lan",
+			HostUUID:             hostUUID,
+			NodeInfoUp:           true,
+		}},
+	})
+	require.Len(t, rows, 1, "the manual entry must be joined by its UUID")
+	assert.Equal(t, []string{manualID}, rows[0].manualIDs, "the joined row must retain its manual handle")
 }
 
 // TestMerge_KeepsEveryManualEntryForOneMachine checks a machine added twice, by
@@ -214,10 +257,13 @@ func TestMerge_UsesEveryFactTheManualWorkerReports(t *testing.T) {
 // one left behind brings it back when the broker next starts.
 func TestMerge_KeepsEveryManualEntryForOneMachine(t *testing.T) {
 	rows := mergeNodes(nodeFeeds{
-		discovered: []availableNode{{HostUUID: "u1", Name: "gpu-box", IPAddress: "10.0.0.5", Port: 14318}},
+		discovered: []availableNode{{
+			HostUUID: "u1", DiscoveryRecordID: "peer:u1", IdentityVerification: noderec.IdentityPinned,
+			Name: "gpu-box", IPAddress: "10.0.0.5", Port: 14318,
+		}},
 		manual: []manualNode{
-			{ID: "m1", Address: "gpu-box.lan", HostUUID: "u1", NodeInfoUp: true},
-			{ID: "m2", Address: "10.0.0.5", HostUUID: "u1", NodeInfoUp: true},
+			{ID: "m1", Address: "gpu-box.lan", HostUUID: "u1", IdentityVerification: noderec.IdentityPinned, NodeInfoUp: true},
+			{ID: "m2", Address: "10.0.0.5", HostUUID: "u1", IdentityVerification: noderec.IdentityPinned, NodeInfoUp: true},
 		},
 	})
 	require.Len(t, rows, 1, "both entries must join the one machine")
@@ -227,39 +273,41 @@ func TestMerge_KeepsEveryManualEntryForOneMachine(t *testing.T) {
 // TestAReusedAddressDoesNotMergeTwoMachines checks an address is not taken for
 // an identity. A manual entry whose probe read one UUID must not fold into a
 // discovered row with a different UUID at the same address — that is another
-// machine now answering there. An entry the probe has not identified still
-// joins by address, as it must for a host discovery reports by IP.
+// machine now answering there. An unidentified configuration also remains
+// separate: sharing an address does not establish host identity.
 func TestAReusedAddress_DoesNotMergeTwoMachines(t *testing.T) {
-	discovered := []availableNode{{HostUUID: "machine-b", Name: "b", IPAddress: "10.0.0.5", Port: 14318}}
+	const address = "10.0.0.5"
+	const peerName = "b"
+	const manualID = "m1"
+	discovered := []availableNode{{
+		HostUUID:  "machine-b",
+		Name:      peerName,
+		IPAddress: address,
+		Port:      14318,
+	}}
 
 	rows := mergeNodes(nodeFeeds{
 		discovered: discovered,
-		manual:     []manualNode{{ID: "m1", Name: "a", Address: "10.0.0.5", HostUUID: "machine-a", NodeInfoUp: true}},
+		manual: []manualNode{{
+			ID:         manualID,
+			Name:       "a",
+			Address:    address,
+			HostUUID:   "machine-a",
+			NodeInfoUp: true,
+		}},
 	})
 	require.Len(t, rows, 2, "two machines at one address must remain distinct")
-	assert.Empty(t, findRow(t, rows, "b").manualIDs, "machine b must not take the manual entry for machine a")
+	assert.Empty(t, findRow(t, rows, peerName).manualIDs, "machine b must not take the manual entry for machine a")
 
 	rows = mergeNodes(nodeFeeds{
 		discovered: discovered,
-		manual:     []manualNode{{ID: "m1", Address: "10.0.0.5"}},
+		manual: []manualNode{{
+			ID:      manualID,
+			Address: address,
+		}},
 	})
-	require.Len(t, rows, 1, "an unidentified entry must join the machine at its address")
-	assert.Equal(t, []string{"m1"}, rows[0].manualIDs)
-}
-
-// TestTLSNodeInfoIsNotPolledInPlainText checks the detail screen shows the
-// worker's reading for a TLS node rather than polling it itself. That endpoint
-// needs the backend's cluster trust, and a plain-HTTP poll to it only fails.
-func TestTLSNodeInfo_IsNotPolledInPlainText(t *testing.T) {
-	d := newNodeDetail(nil, nodeRow{
-		key: "manual:m2", name: "tls-box", address: "10.0.0.9", port: 14319,
-		presence: presenceOnline, nodeInfoTLS: true,
-		probedTelemetry: &nodeTelemetry{TelemetryValid: true,
-			GPUs: []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 1 << 30}}},
-	})
-	d.SetSize(100, 30)
-	assert.Nil(t, d.telemetryCmd(), "the detail screen must not poll a TLS node-info endpoint over plain HTTP")
-	assert.Contains(t, d.View(), "GPU 0", "the worker's hardware reading must be shown")
+	require.Len(t, rows, 2, "an address alone cannot join a configured target to another record")
+	assert.Empty(t, findRow(t, rows, peerName).manualIDs)
 }
 
 // TestMembershipGovernsInvitability is the guard for re-inviting a node that

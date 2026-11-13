@@ -74,6 +74,7 @@ func (e *Executor) Models(ctx context.Context) []string {
 type engineModels struct {
 	advertised, loaded, downloaded       []string
 	advertisedOK, loadedOK, downloadedOK bool
+	statusErr                            error
 }
 
 // ModelsResult queries each installed, running engine's loopback list_models
@@ -87,14 +88,17 @@ type engineModels struct {
 // per-engine failure is logged and skipped so the engines that did answer
 // still surface their models.
 //
-// The per-engine queries run CONCURRENTLY. A host running several engines (e.g.
-// Ollama + LM Studio) must not have the later engines squeezed out of a single
-// shared deadline: sequential queries under one budget meant a slow first engine
-// left little for the second, and the peer's discovery daemon fetches this over
-// HTTP with its own (shorter) timeout, so a squeezed second engine silently
-// dropped its models for peers. Concurrency bounds the sweep by the slowest
-// single engine, not the sum.
+// Queries run concurrently so a slow engine does not consume the time available
+// to the others. The five-second limit covers status checks and model-list
+// requests for every engine.
 func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
+	res, _ := e.modelsResult(ctx)
+	return res
+}
+
+// modelsResult also reports a canceled sweep to HTTP callers, which must not
+// replace a peer's last-good inventory with a successful partial response.
+func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, modelsTimeout)
 	defer cancel()
 
@@ -119,15 +123,23 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			continue
 		}
 		wg.Go(func() {
+			// Unsupported engines are omitted, as in get-installed.
+			if _, err := e.state(name); err != nil {
+				return
+			}
+			st, err := e.statusWithContext(ctx, name, 0, true)
+			if err != nil {
+				perEngine[i].statusErr = err
+				return
+			}
 			// An engine that can only answer for what it is running advertises its
 			// loaded set. Its list_models is a view of what could be loaded, which
 			// is not what a peer or the proxy may route to, so it is reported apart.
 			if mf.AdvertisedModels == advertisedModelsLoaded && loadedSpec != nil {
-				perEngine[i] = e.loadedOnlyEngineModels(ctx, name, listSpec, loadedSpec)
+				perEngine[i] = e.loadedOnlyEngineModels(ctx, name, st, listSpec, loadedSpec)
 				return
 			}
-			st, err := e.Status(name)
-			if err != nil || !st.Running {
+			if !st.Running {
 				return
 			}
 			var r engineModels
@@ -164,7 +176,15 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 			res.DownloadedByEngine = withModels(res.DownloadedByEngine, name, r.downloaded)
 		}
 	}
-	return res
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+	for _, result := range perEngine {
+		if result.statusErr != nil {
+			return res, result.statusErr
+		}
+	}
+	return res, nil
 }
 
 // loadedOnlyEngineModels answers for an engine that advertises its loaded set.
@@ -174,10 +194,9 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 // loaded_models response gives both the names it answers to (result.field,
 // such as vLLM's served name) and, when result.inventory_field is set, the same
 // models in the inventory's terms (vLLM's --model).
-func (e *Executor) loadedOnlyEngineModels(ctx context.Context, name string, listSpec, loadedSpec *ActionResult) engineModels {
+func (e *Executor) loadedOnlyEngineModels(ctx context.Context, name string, st EngineStatus, listSpec, loadedSpec *ActionResult) engineModels {
 	var r engineModels
-	st, err := e.Status(name)
-	if err != nil || !st.Installed {
+	if !st.Installed {
 		return r
 	}
 	if listSpec != nil {

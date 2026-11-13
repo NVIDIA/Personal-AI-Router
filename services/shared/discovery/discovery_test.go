@@ -29,8 +29,8 @@ func seenSet(ns ...Node) map[string]Node {
 }
 
 // eventsByType tallies events for concise assertions.
-func eventsByType(evs []Event) map[string]int {
-	m := map[string]int{}
+func eventsByType(evs []Event) map[EventType]int {
+	m := map[EventType]int{}
 	for _, e := range evs {
 		m[e.Type]++
 	}
@@ -337,7 +337,7 @@ func TestRun_EmitsAndCloses(t *testing.T) {
 	done := make(chan struct{})
 	go func() { b.Run(ctx, events); close(done) }()
 
-	got := map[string]int{}
+	got := map[EventType]int{}
 	timeout := time.After(2 * time.Second)
 	for {
 		select {

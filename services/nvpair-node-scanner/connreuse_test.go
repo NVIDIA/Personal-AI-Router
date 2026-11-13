@@ -21,9 +21,7 @@ import (
 	"nvpair-shared/clustertrusttest"
 )
 
-// TestModelsClient_ReusesPeerConnections is the regression for the 15s
-// enrichment handshake storm: modelsClient used to build a fresh Transport
-// per peer fetch. Several /v1/models GETs must ride ONE connection.
+// Repeated model inventory reads reuse one authenticated peer connection.
 func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 	selfDir := t.TempDir()
 	peerDir := t.TempDir()
@@ -74,10 +72,8 @@ func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 	const rounds = 5
 	for i := range rounds {
 		inventory, ok := d.fetchModels("localhost", port, "uuid-peer")
-		models := inventory.models
-		require.True(t, ok, "round (%v, %v, %v)", i, ok, models)
-		require.Len(t, models, 1, "round (%v, %v, %v)", i, ok, models)
-		require.Equal(t, "m", models[0], "round (%v, %v, %v)", i, ok, models)
+		require.True(t, ok, "round %d", i)
+		assert.Equal(t, []string{"m"}, inventory.models, "round %d", i)
 	}
 
 	mu.Lock()
@@ -90,9 +86,5 @@ func writePinFromCert(t *testing.T, clusterDir, peerUUID, certPath string) {
 	t.Helper()
 	certPEM, err := os.ReadFile(certPath)
 	require.NoError(t, err)
-	trusted := filepath.Join(clusterDir, "trusted")
-	require.NoError(t, os.MkdirAll(trusted, 0o700))
-	body, err := json.Marshal(map[string]string{"nodeUuid": peerUUID, "certPem": string(certPEM)})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(trusted, peerUUID+".json"), body, 0o600))
+	clustertrusttest.WritePeerPinFromCertificate(t, clusterDir, peerUUID, certPEM)
 }
