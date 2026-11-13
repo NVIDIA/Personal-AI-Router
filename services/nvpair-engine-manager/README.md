@@ -497,7 +497,10 @@ probe — so they always spawn an owned process.
 `engine:cancel-pull` answers only once the transfer has stopped and its partial
 files are settled, because a UI reads that answer as "it is safe to download
 this again". The pull's own `engine:action{pull_model}` request settles
-separately, as `{"status":"cancelled"}`.
+separately, with how the download ended: `{"status":"cancelled"}` when the
+cancel stopped it, its usual success result when it finished before the stop
+reached it, or an error when it failed first or its engine could not confirm
+the stop (see below).
 
 **Only a cancellation someone asked for deletes anything.** A pull's context
 also dies on shutdown, on a dropped remote connection, and on the action
@@ -656,10 +659,16 @@ by exactly one terminal `{"type":"result",...}` or `{"type":"error",...}` frame.
 A pull's stream carries only the frames of the download its request runs as —
 the one it started, or the one it shares — and its progress frames and result
 name that download in `download`, the peer's ID for it.
-The initiating node's engine-manager consumes that stream, relays each progress
-frame up as `engine:remote-progress`, and settles the originating
+The initiating node's engine-manager consumes that stream, relays the progress
+frames it receives up as `engine:remote-progress`, and settles the originating
 `engine:remote-*` request on the terminal frame — so a UI gets one synchronous
-response plus a live progress feed keyed by `opId`.
+response plus a live progress feed keyed by `opId`. A pull's outcome frame
+(`stage` `success`, `cancelled` or `error`) is held back instead: the peer's
+progress hub can drop it, as it drops any frame a slow stream has no room for,
+and every pull sharing the download carries a copy. Only the last of the
+download's pulls outstanding on the initiator sends one — the copy it held when
+that agrees with its result, or else one built from the result (`cancelled` for
+a `{"status":"cancelled"}` result, `error` for a failed stream).
 
 The broker wires both directions: it passes `--control-port`/`--cluster-dir`,
 registers `ec` with the discovery daemon whenever a cluster dir is configured, and

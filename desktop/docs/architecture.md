@@ -224,7 +224,8 @@ The cancels, the remote pull, and `engine:pull-progress` carry the model in a
 top-level `model` field, so every frame lands on the row it belongs to.
 `engine:action{pull_model}` carries it in the engine's own `params` instead:
 `name` for Ollama, since those params become its `/api/pull` request body, and
-`model` for LM Studio and llama.cpp. The engine manager reads either spelling.
+`model` for LM Studio, llama.cpp, and vLLM. The engine manager reads either
+spelling.
 
 Cancellation is a request, not a result. The engine manager stops the transfer
 and lets its cleanup settle before answering, and the row clears when the

@@ -394,15 +394,17 @@ list and clears it. Progress for a download whose row has already cleared is ign
 both paths, since a row rebuilt from it would be one nothing clears.
 
 The pull request itself stays pending for the whole download, so it is the
-request's own response that reports the outcome — a completion or a
-cancellation — while progress arrives out of band on the notification:
+request's own response that reports the outcome — a completion, a
+cancellation, or a failure — while progress arrives out of band on the
+notification. A cancel's reply and the pull's are independent; neither waits
+for the other:
 
 ```mermaid
 sequenceDiagram
     participant UI as Model Manager
     participant Bridge as Electron bridge
     participant Manager as Engine manager
-    participant Engine as Ollama, LM Studio, or llama.cpp
+    participant Engine as Ollama, LM Studio, llama.cpp, or vLLM
 
     UI->>Bridge: Download model
     Bridge->>UI: Show optimistic "Pulling…" row
@@ -425,10 +427,33 @@ sequenceDiagram
         Bridge->>UI: Show "Canceling…"
         Bridge->>Manager: Cancel {engine, model}
         Manager->>Engine: Stop transfer
-        Manager->>Manager: Remove the partial files this pull created
-        Manager-->>Bridge: Progress {stage: cancelled}
-        Manager-->>Bridge: Cancellation completes
-        Manager-->>Bridge: Original pull settles as canceled
+        alt Transfer stopped
+            alt Ollama or LM Studio
+                Manager->>Manager: Remove the partial files this pull created
+            else llama.cpp or vLLM
+                Manager->>Manager: Keep what was fetched, for the next download to resume
+            end
+            Manager-->>Bridge: Progress {stage: cancelled}
+            par Pull request
+                Manager-->>Bridge: Original pull settles as cancelled
+            and Cancel request
+                Manager-->>Bridge: Cancellation completes
+            end
+        else Download finished before the stop
+            Manager-->>Bridge: Progress {stage: success}
+            par Pull request
+                Manager-->>Bridge: Original pull request completes
+            and Cancel request
+                Manager-->>Bridge: Cancellation completes
+            end
+        else Stop not confirmed (LM Studio, llama.cpp, or vLLM)
+            Manager-->>Bridge: Progress {stage: error}
+            par Pull request
+                Manager-->>Bridge: Original pull fails
+            and Cancel request
+                Manager-->>Bridge: Cancellation fails
+            end
+        end
     end
 
     Bridge->>Manager: Refresh model list

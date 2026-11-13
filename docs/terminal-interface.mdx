@@ -331,6 +331,7 @@ configured, and says why.
 | --- | --- |
 | `p` | Browse models to download |
 | `n` | Download by name |
+| `c` | Cancel a download (asks you to confirm) |
 | `enter` | Load into memory |
 | `e` | Eject from memory |
 | `d` | Delete (asks you to confirm) |
@@ -353,9 +354,20 @@ to the starting list.
 
 Press `n` instead if you already know exactly what you want and would rather type
 it. Each engine names models its own way: an Ollama tag such as `llama3.2`, a
-Hugging Face repository for LM Studio, and a repository with its quantization
-for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`. Either way,
-downloading needs a running engine, and progress appears on the status line.
+Hugging Face repository for LM Studio, a repository with its quantization
+for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`, and a Hugging Face
+repository for vLLM, such as `Qwen/Qwen3.5-4B`. Either way, progress appears on
+the status line. Downloading needs a running engine, except with vLLM, which
+downloads into the Hugging Face cache without its server: highlight it in the
+Engines pane to download into it while it is stopped.
+
+In the Models pane, while a download is in progress, `c` cancels it. It picks
+the newest download into the engine highlighted in the Engines pane, or, when
+that engine has none, the newest on the machine, and the prompt names the model
+and engine it will stop: `y` stops it, and any other key keeps it downloading.
+Cancelling an Ollama or LM Studio download can also delete the partial files it
+wrote, which is why it asks first; llama.cpp and vLLM keep them for the next
+download to resume.
 
 Restart and uninstall need PAIR to own the engine process, so they only apply
 to the machine you are sitting on. They are hidden on a peer rather than
