@@ -725,6 +725,8 @@ Confirmed `nodes:changed` members seed the scanner through
 appear online without multicast. Pending invites and self entries are excluded.
 The broker fetches the restored roster on cluster-manager startup and replays
 its latest peer snapshot after a scanner restart. A delayed startup response
-cannot replace a newer membership event. The registration cache is also pushed
-to node-info through `nodeinfo:set-services` on changes and worker restarts, so
-HTTP bootstrap discovers actual service ports rather than fixed engine defaults.
+cannot replace a newer membership event. These addresses are connection hints
+only. The scanner uses its existing exact-pin mTLS candidate authentication;
+service ports come from the peer's authenticated node-info metadata, published
+through the existing owned registry path. Public HTTP cannot supply trusted
+service inventory.

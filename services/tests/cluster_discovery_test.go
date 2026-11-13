@@ -15,6 +15,7 @@ import (
 	"nvpair-shared/netpick"
 	"nvpair-shared/noderec"
 	"os/exec"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -105,6 +106,10 @@ func TestScanner_DiscoversAndEnrichesAPairedPeerWithoutMulticast(t *testing.T) {
 			require.NoError(t, json.Unmarshal(message.Params, &event))
 			node := event.Node
 			if node.HostUUID != cluster.peerUUID || node.IdentityVerification != noderec.IdentityPinned {
+				continue
+			}
+			// Authenticated identity is published before the independent model refresh.
+			if !slices.Equal(node.ModelsByEngine["vllm"], []string{"org/cached"}) {
 				continue
 			}
 			require.True(t, node.Trusted)
