@@ -43,8 +43,8 @@ func run(srv *eapnoob.Server, peer *eapnoob.Peer) error {
 // arbitrary length. Here the OOB message travels peer-to-server; the caller is
 // responsible for relaying it over a user-assisted channel (QR code, etc.).
 func Example() {
-	srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: 1}, nil)
-	peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: 1}, nil)
+	srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: eapnoob.OOBPeerToServer}, nil)
+	peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: eapnoob.OOBPeerToServer}, nil)
 
 	// Initial Exchange.
 	if err := run(srv, peer); err != nil {

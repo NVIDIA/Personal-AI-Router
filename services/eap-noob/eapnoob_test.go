@@ -38,7 +38,7 @@ func driveConversation(t *testing.T, srv *Server, peer *Peer) {
 
 // pair runs a full EAP-NOOB pairing (Initial + OOB + Completion) for the given
 // cryptosuite and OOB direction, returning the registered server and peer.
-func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
+func pair(t *testing.T, suite int, dir OOBDirection) (*Server, *Peer) {
 	t.Helper()
 	srv := NewServer(ServerConfig{
 		Cryptosuites: []int{suite},
@@ -57,12 +57,12 @@ func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
 
 	// OOB Step in the negotiated direction.
 	switch dir {
-	case 1: // peer-to-server
+	case OOBPeerToServer:
 		msg, err := peer.OOBOutput()
 		require.NoError(t, err, "peer OOBOutput:")
 		require.NoError(t, srv.OOBInput(msg), "server OOBInput:")
 		require.Equal(t, StateOOBReceived, srv.State())
-	case 2: // server-to-peer
+	case OOBServerToPeer:
 		msg, err := srv.OOBOutput()
 		require.NoError(t, err, "server OOBOutput:")
 		require.NoError(t, peer.OOBInput(msg), "peer OOBInput:")
@@ -77,8 +77,8 @@ func pair(t *testing.T, suite, dir int) (*Server, *Peer) {
 }
 
 func TestPairing_DerivesMatchingSecretsAcrossSuitesAndDirections(t *testing.T) {
-	for _, suite := range []int{1, 2} {
-		for _, dir := range []int{1, 2} {
+	for _, suite := range []int{int(cryptosuiteX25519), int(cryptosuiteP256)} {
+		for _, dir := range []OOBDirection{OOBPeerToServer, OOBServerToPeer} {
 			suite, dir := suite, dir
 			t.Run("", func(t *testing.T) {
 				srv, peer := pair(t, suite, dir)
@@ -120,8 +120,8 @@ func TestExport_RejectsUnregisteredPairing(t *testing.T) {
 }
 
 func TestPairing_RejectsTamperedMAC(t *testing.T) {
-	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 1}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 1}, nil)
+	srv := NewServer(ServerConfig{Cryptosuites: []int{int(cryptosuiteX25519)}, Dirs: OOBPeerToServer}, nil)
+	peer := NewPeer(PeerConfig{PreferDir: OOBPeerToServer}, nil)
 
 	driveConversation(t, srv, peer)
 	oob, err := peer.OOBOutput()
@@ -153,8 +153,8 @@ func TestPairing_RejectsTamperedMAC(t *testing.T) {
 }
 
 func TestPairing_RejectsIncorrectOutOfBandFingerprint(t *testing.T) {
-	srv := NewServer(ServerConfig{Cryptosuites: []int{1}, Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Cryptosuites: []int{int(cryptosuiteX25519)}, Dirs: OOBServerToPeer}, nil)
+	peer := NewPeer(PeerConfig{PreferDir: OOBServerToPeer}, nil)
 	driveConversation(t, srv, peer)
 
 	oob, err := srv.OOBOutput()
@@ -185,7 +185,7 @@ func TestOneStepKDF_DerivesRepeatableKeys(t *testing.T) {
 }
 
 func TestJWK_RoundTripsPublicKeys(t *testing.T) {
-	test := func(name string, id int) {
+	test := func(name string, id cryptosuiteID) {
 		t.Run(name, func(t *testing.T) {
 			cs, err := suiteByID(id)
 			require.NoError(t, err)
@@ -196,6 +196,6 @@ func TestJWK_RoundTripsPublicKeys(t *testing.T) {
 			assert.Equal(t, priv.PublicKey().Bytes(), pub.Bytes(), "JWK round-trip mismatch")
 		})
 	}
-	test("suite 1", 1)
-	test("suite 2", 2)
+	test("suite 1", cryptosuiteX25519)
+	test("suite 2", cryptosuiteP256)
 }

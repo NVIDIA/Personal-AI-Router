@@ -23,10 +23,20 @@ type JWK struct {
 	Y   string `json:"y,omitempty"`
 }
 
+// cryptosuiteID identifies an EAP-NOOB set of cryptographic algorithms.
+type cryptosuiteID int
+
+// Cryptosuite identifiers are assigned by RFC 9140, Section 5.1.
+// Both suites use SHA-256; PAIR normally selects P-256.
+const (
+	cryptosuiteX25519 cryptosuiteID = 1
+	cryptosuiteP256   cryptosuiteID = 2
+)
+
 // cryptosuite implements one EAP-NOOB cryptosuite (RFC 9140, Section 5.1).
 // Both registered suites use SHA-256, so only the curve and JWK encoding vary.
 type cryptosuite struct {
-	id    int
+	id    cryptosuiteID
 	curve ecdh.Curve
 	kty   string
 	crv   string
@@ -36,12 +46,12 @@ type cryptosuite struct {
 // suiteByID returns the cryptosuite for an IANA identifier. Suite 1
 // (Curve25519/SHA-256) is mandatory; suite 2 (NIST P-256/SHA-256) is
 // recommended (RFC 9140, Section 5.1).
-func suiteByID(id int) (*cryptosuite, error) {
+func suiteByID(id cryptosuiteID) (*cryptosuite, error) {
 	switch id {
-	case 1:
-		return &cryptosuite{id: 1, curve: ecdh.X25519(), kty: "OKP", crv: "X25519", ec: false}, nil
-	case 2:
-		return &cryptosuite{id: 2, curve: ecdh.P256(), kty: "EC", crv: "P-256", ec: true}, nil
+	case cryptosuiteX25519:
+		return &cryptosuite{id: cryptosuiteX25519, curve: ecdh.X25519(), kty: "OKP", crv: "X25519", ec: false}, nil
+	case cryptosuiteP256:
+		return &cryptosuite{id: cryptosuiteP256, curve: ecdh.P256(), kty: "EC", crv: "P-256", ec: true}, nil
 	default:
 		return nil, fmt.Errorf("eapnoob: unsupported cryptosuite %d", id)
 	}
@@ -49,10 +59,10 @@ func suiteByID(id int) (*cryptosuite, error) {
 
 // supportedCryptosuites lists the suites this library implements, in the
 // recommended server priority order.
-func supportedCryptosuites() []int { return []int{2, 1} }
+func supportedCryptosuites() []int { return []int{int(cryptosuiteP256), int(cryptosuiteX25519)} }
 
 func isSupportedCryptosuite(id int) bool {
-	return id == 1 || id == 2
+	return id == int(cryptosuiteX25519) || id == int(cryptosuiteP256)
 }
 
 // generateKeypair creates an ephemeral ECDHE key pair and returns the private

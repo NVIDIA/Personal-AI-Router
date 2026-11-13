@@ -80,7 +80,7 @@ func decodeMAC(r json.RawMessage) ([]byte, error) {
 // oobOutput builds the OOB message for the given direction, generating a fresh
 // secret nonce Noob and computing the fingerprint Hoob over the negotiated
 // Initial Exchange parameters (RFC 9140, Section 3.3.2).
-func oobOutput(ms *methodState, dir int) (OOBMessage, error) {
+func oobOutput(ms *methodState, dir OOBDirection) (OOBMessage, error) {
 	noob := make([]byte, 16)
 	if _, err := rand.Read(noob); err != nil {
 		return OOBMessage{}, err
@@ -100,7 +100,7 @@ func oobOutput(ms *methodState, dir int) (OOBMessage, error) {
 // of band by a human (e.g. a six-digit PIN encoded into the 16 bytes); the
 // returned Noob/Hoob need not be transmitted, since the peer recomputes them
 // locally from the same PIN and the transcript.
-func oobOutputWith(ms *methodState, dir int, noob []byte) (OOBMessage, error) {
+func oobOutputWith(ms *methodState, dir OOBDirection, noob []byte) (OOBMessage, error) {
 	if len(noob) != 16 {
 		return OOBMessage{}, fmt.Errorf("eapnoob: Noob must be 16 bytes")
 	}
@@ -128,7 +128,7 @@ func oobInputNoob(ms *methodState, noob []byte) error {
 // oobInput verifies a received OOB message: the PeerId must match and the
 // locally recomputed Hoob must equal the received value (RFC 9140,
 // Section 3.2.3).
-func oobInput(ms *methodState, dir int, msg OOBMessage) error {
+func oobInput(ms *methodState, dir OOBDirection, msg OOBMessage) error {
 	if ms.peerId != "" && msg.PeerId != ms.peerId {
 		return fmt.Errorf("eapnoob: OOB PeerId mismatch")
 	}

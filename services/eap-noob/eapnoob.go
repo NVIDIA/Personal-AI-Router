@@ -12,7 +12,7 @@
 //
 // Once the Completion Exchange succeeds, both sides reach the Registered state
 // and share the association key Kz, from which Export derives a shared secret
-// of any requested length.
+// of up to 8160 bytes.
 package eapnoob
 
 import (

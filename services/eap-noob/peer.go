@@ -24,9 +24,8 @@ type PeerConfig struct {
 	// []int{1, 2} (suite 1 is mandatory).
 	Cryptosuites []int
 	// PreferDir selects the OOB direction the peer prefers when the server
-	// offers both (1=peer-to-server, 2=server-to-peer). Defaults to
-	// server-to-peer.
-	PreferDir int
+	// offers both. Defaults to OOBServerToPeer.
+	PreferDir OOBDirection
 	// PeerInfo is an optional application-defined JSON object sent to the
 	// server in the Initial Exchange.
 	PeerInfo map[string]any
@@ -42,7 +41,7 @@ type Peer struct {
 
 	verp int
 	csp  int
-	dirp int
+	dirp OOBDirection
 }
 
 // NewPeer creates a peer using the given configuration and association store.
@@ -55,7 +54,7 @@ func NewPeer(cfg PeerConfig, store Store) *Peer {
 		cfg.Versions = []int{1}
 	}
 	if len(cfg.Cryptosuites) == 0 {
-		cfg.Cryptosuites = []int{1, 2}
+		cfg.Cryptosuites = []int{int(cryptosuiteX25519), int(cryptosuiteP256)}
 	}
 	if store == nil {
 		store = NewMemoryStore()
@@ -180,12 +179,12 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad Dirs")
 	}
-	dirp, ok := chooseDir(serverDirs, p.cfg.PreferDir)
+	dirp, ok := chooseDir(OOBDirection(serverDirs), p.cfg.PreferDir)
 	if !ok {
 		return p.fail(ErrNoMutuallySupportedOOB, "no mutually supported OOB direction")
 	}
 
-	suite, err := suiteByID(csp)
+	suite, err := suiteByID(cryptosuiteID(csp))
 	if err != nil {
 		return p.fail(ErrUnsupportedCryptosuite, err.Error())
 	}
@@ -202,7 +201,7 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 
 	verpRaw := rawInt(verp)
 	cspRaw := rawInt(csp)
-	dirpRaw := rawInt(dirp)
+	dirpRaw := rawInt(int(dirp))
 	peerInfo := marshalInfo(p.cfg.PeerInfo)
 
 	p.in.Vers = wm.Vers
@@ -353,10 +352,10 @@ func (p *Peer) OOBOutput() (OOBMessage, error) {
 	if p.state != StateWaiting {
 		return OOBMessage{}, fmt.Errorf("eapnoob: OOBOutput requires Waiting state, have %s", p.state)
 	}
-	if p.dirp != 1 && p.dirp != 3 {
+	if p.dirp != OOBPeerToServer && p.dirp != OOBBoth {
 		return OOBMessage{}, fmt.Errorf("eapnoob: peer-to-server OOB not negotiated")
 	}
-	return oobOutput(&p.methodState, 1)
+	return oobOutput(&p.methodState, OOBPeerToServer)
 }
 
 // OOBInput accepts the out-of-band message for the server-to-peer direction and
@@ -366,10 +365,10 @@ func (p *Peer) OOBInput(msg OOBMessage) error {
 	if p.state != StateWaiting {
 		return fmt.Errorf("eapnoob: OOBInput requires Waiting state, have %s", p.state)
 	}
-	if p.dirp != 2 && p.dirp != 3 {
+	if p.dirp != OOBServerToPeer && p.dirp != OOBBoth {
 		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
 	}
-	if err := oobInput(&p.methodState, 2, msg); err != nil {
+	if err := oobInput(&p.methodState, OOBServerToPeer, msg); err != nil {
 		return err
 	}
 	p.state = StateOOBReceived
@@ -385,7 +384,7 @@ func (p *Peer) OOBInputNoob(noob []byte) error {
 	if p.state != StateWaiting {
 		return fmt.Errorf("eapnoob: OOBInputNoob requires Waiting state, have %s", p.state)
 	}
-	if p.dirp != 2 && p.dirp != 3 {
+	if p.dirp != OOBServerToPeer && p.dirp != OOBBoth {
 		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
 	}
 	if err := oobInputNoob(&p.methodState, noob); err != nil {
@@ -424,17 +423,17 @@ func firstSupported(serverCS, peerCS []int) (int, bool) {
 	return 0, false
 }
 
-func chooseDir(serverDirs, prefer int) (int, bool) {
+func chooseDir(serverDirs, prefer OOBDirection) (OOBDirection, bool) {
 	switch serverDirs {
-	case 1:
-		return 1, true
-	case 2:
-		return 2, true
-	case 3:
-		if prefer == 1 || prefer == 2 {
+	case OOBPeerToServer:
+		return OOBPeerToServer, true
+	case OOBServerToPeer:
+		return OOBServerToPeer, true
+	case OOBBoth:
+		if prefer == OOBPeerToServer || prefer == OOBServerToPeer {
 			return prefer, true
 		}
-		return 2, true
+		return OOBServerToPeer, true
 	default:
 		return 0, false
 	}

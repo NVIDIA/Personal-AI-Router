@@ -21,6 +21,19 @@ const (
 // NAI (RFC 9140, Section 3.2.1).
 const defaultNAI = "noob@eap-noob.arpa"
 
+// OOBDirection identifies an out-of-band channel direction or set of directions.
+type OOBDirection int
+
+// OOB direction values are defined by RFC 9140, Section 3.3.2.
+const (
+	// OOBPeerToServer transfers the secret from the peer to the server.
+	OOBPeerToServer OOBDirection = 1
+	// OOBServerToPeer transfers the secret from the server to the peer.
+	OOBServerToPeer OOBDirection = 2
+	// OOBBoth allows either direction to be selected during negotiation.
+	OOBBoth OOBDirection = 3
+)
+
 // eapResult is a non-protocol control message used by this transport-agnostic
 // library to convey the terminating EAP-Success / EAP-Failure indication that a
 // real EAP lower layer would deliver out of band of the EAP-NOOB payloads.

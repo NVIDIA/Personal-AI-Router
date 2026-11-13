@@ -42,8 +42,8 @@ func driveAllowFail(srv *Server, peer *Peer) bool {
 // PIN flow takes): the server supplies the Noob via OOBOutputWith and the peer
 // records the same Noob via OOBInputNoob, with no OOBMessage/Hoob envelope.
 func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2, ServerInfo: map[string]any{"role": "server"}}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2, PeerInfo: map[string]any{"role": "peer"}}, nil)
+	srv := NewServer(ServerConfig{Dirs: OOBServerToPeer, ServerInfo: map[string]any{"role": "server"}}, nil)
+	peer := NewPeer(PeerConfig{PreferDir: OOBServerToPeer, PeerInfo: map[string]any{"role": "peer"}}, nil)
 
 	driveConversation(t, srv, peer)
 	require.Equal(t, StateWaiting, srv.State(), "after Initial: server=%s peer=%s, want WaitingForOOB", srv.State(), peer.State())
@@ -69,8 +69,8 @@ func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
 // TestMismatchedInjectedNoobFails is the wrong-PIN case: the two sides inject
 // different Noobs, so the Completion MACs cannot agree and pairing must fail.
 func TestPairing_RejectsMismatchedCallerProvidedNoob(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Dirs: OOBServerToPeer}, nil)
+	peer := NewPeer(PeerConfig{PreferDir: OOBServerToPeer}, nil)
 
 	driveConversation(t, srv, peer)
 
@@ -94,8 +94,8 @@ func TestPairing_RejectsMismatchedCallerProvidedNoob(t *testing.T) {
 // reports it this way, the cluster manager would silently degrade a wrong PIN to
 // a generic failure (empty reason) instead of reason:"incorrect-pin".
 func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Dirs: OOBServerToPeer}, nil)
+	peer := NewPeer(PeerConfig{PreferDir: OOBServerToPeer}, nil)
 
 	// Initial Exchange.
 	driveConversation(t, srv, peer)
@@ -132,8 +132,8 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 
 // TestOOBOutputWithRejectsBadLength guards the 16-byte contract.
 func TestOOBOutputWith_RejectsBadLength(t *testing.T) {
-	srv := NewServer(ServerConfig{Dirs: 2}, nil)
-	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	srv := NewServer(ServerConfig{Dirs: OOBServerToPeer}, nil)
+	peer := NewPeer(PeerConfig{PreferDir: OOBServerToPeer}, nil)
 	driveConversation(t, srv, peer)
 	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8))
 	require.Error(t, err, "expected OOBOutputWith to reject an 8-byte Noob")
