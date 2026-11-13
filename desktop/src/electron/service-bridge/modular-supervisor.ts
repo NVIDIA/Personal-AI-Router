@@ -192,26 +192,6 @@ export function parseListModelNames(result: JsonValue | undefined): string[] {
     return names
 }
 
-/**
- * Extract the per-engine loaded-in-memory model set from an
- * `engine:models-changed` push. The payload is `{ engine, models }`
- * where `models` is the full `engine:models` result carrying `loadedByEngine`
- * (engine-manager engine name -> loaded model names). Missing/omitted maps yield
- * an empty record, which stamps every local model `idle`.
- */
-function parseLoadedByEngine(params: JsonValue | undefined): Record<string, string[]> {
-    const models = objectValue(objectValue(params)?.models)
-    // requestableByEngine is broker loader capability, never residency.
-    const loaded = objectValue(models?.loadedByEngine)
-    if (!loaded) return {}
-    const out: Record<string, string[]> = {}
-    for (const [engine, list] of Object.entries(loaded)) {
-        if (!Array.isArray(list)) continue
-        out[engine] = list.filter((name): name is string => typeof name === 'string')
-    }
-    return out
-}
-
 function normalizeLogLevel(value: string | undefined): ModularLogLevel {
     const lowered = value?.toLowerCase()
     if (lowered && isModularLogLevel(lowered)) return lowered
@@ -1595,10 +1575,9 @@ class ModularSupervisor {
         if (notification.method === 'engine:models-changed') {
             // An engine's in-memory (loaded) model set changed — explicit
             // load/unload, LM Studio JIT auto-load, or idle/TTL eviction. The push
-            // carries the full engine:models snapshot; forward its per-engine
-            // loaded set so the local node's model rows reflect residency at once,
-            // ahead of the next discovery model-refresh sweep.
-            getModularBridgeState().applyLocalLoadedModels(parseLoadedByEngine(notification.params))
+            // carries the full engine:models snapshot; apply inventory and residency
+            // together so remote mutations also refresh the owning node's rows.
+            getModularBridgeState().applyLocalModelSnapshot(notification.params)
             return
         }
         if (notification.method === 'engine:install-progress') {

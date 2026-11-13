@@ -602,3 +602,13 @@ is running. Disabled engines hide cached model rows and controls.
 Saved model selections still start normally. The broker retains the authoritative
 engine status for both local and paired nodes; an engine awaiting selection is
 not advertised as serving a model.
+
+Confirmed cross-subnet members enter the backend discovery directory using the
+roster and node-info service advertisements. The desktop uses the same discovery
+and engine snapshots; telemetry parsing intentionally ignores the additive
+node-info `services` metadata. Discovery hints do not authorize peer traffic.
+
+The local model projection applies downloaded inventory and loaded state from
+`engine:models-changed` together. Remote pull/delete operations update the owning
+node's rows while it awaits model selection; an explicit empty inventory clears
+the rows, and an unavailable inventory read retains the last known list.

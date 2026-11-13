@@ -186,7 +186,7 @@ describe('proxy engine identity', () => {
             port: 8081
         })
         state.setLocalEngineModels('llama-cpp', [model])
-        state.applyLocalLoadedModels({ llamacpp: [model] })
+        state.applyLocalModelSnapshot({ models: { loadedByEngine: { llamacpp: [model] } } })
 
         const initial = state.getEngineInitialState()
         expect(
@@ -236,7 +236,7 @@ describe('proxy engine identity', () => {
             port: 8001
         })
         state.setLocalEngineModels('vllm', [model])
-        state.applyLocalLoadedModels({ vllm: [model] })
+        state.applyLocalModelSnapshot({ models: { loadedByEngine: { vllm: [model] } } })
 
         const initial = state.getEngineInitialState()
         expect(
@@ -286,14 +286,120 @@ describe('proxy engine identity', () => {
             port: 8001
         })
         state.setLocalEngineModels('vllm', models)
-        state.applyLocalLoadedModels({ vllm: [] })
+        state.applyLocalModelSnapshot({ models: { loadedByEngine: { vllm: [] } } })
         const initial = state.getEngineInitialState()
         expect(
-            initial.statuses.find(engine => engine.nodeId === nodeId && engine.engineType === 'vllm')
+            initial.statuses.find(
+                engine => engine.nodeId === nodeId && engine.engineType === 'vllm'
+            )
         ).toMatchObject({ processStatus: 'awaiting-model' })
         expect(
             initial.models.find(engine => engine.nodeId === nodeId && engine.engineType === 'vllm')
                 ?.models
         ).toEqual(models.map(name => expect.objectContaining({ name, status: 'idle' })))
+    })
+    it.each([
+        {
+            description: 'removes a remotely deleted row while awaiting a model',
+            downloaded: ['org/model-a'],
+            expected: ['org/model-a']
+        },
+        {
+            description: 'clears the inventory after the last remote deletion',
+            downloaded: [],
+            expected: []
+        },
+        {
+            description: 'adds a remotely downloaded row while awaiting a model',
+            downloaded: ['org/model-a', 'org/model-b', 'org/model-c'],
+            expected: ['org/model-a', 'org/model-b', 'org/model-c']
+        },
+        {
+            description: 'preserves the inventory when its read is unavailable',
+            downloaded: undefined,
+            expected: ['org/model-a', 'org/model-b']
+        }
+    ])('$description', ({ downloaded, expected }) => {
+        const state = getModularBridgeState()
+        const nodeId = 'local-model-inventory-push'
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'inventory-owner',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            enabled: true,
+            running: false,
+            awaiting_model: true,
+            healthy: false,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', ['org/model-a', 'org/model-b'])
+
+        state.applyLocalModelSnapshot({
+            models: {
+                loadedByEngine: { vllm: [] },
+                ...(downloaded === undefined ? {} : { downloadedByEngine: { vllm: downloaded } })
+            }
+        })
+
+        const initial = state.getEngineInitialState()
+        expect(
+            initial.models.find(row => row.nodeId === nodeId && row.engineType === 'vllm')
+        ).toMatchObject({
+            inventoryKnown: true,
+            models: expected.map(name => expect.objectContaining({ name, status: 'idle' }))
+        })
+        expect(
+            initial.statuses.find(row => row.nodeId === nodeId && row.engineType === 'vllm')
+        ).toMatchObject({ processStatus: 'awaiting-model' })
+    })
+
+    it('keeps a loaded local path visible alongside downloaded inventory', () => {
+        const state = getModularBridgeState()
+        const nodeId = 'local-path-inventory-push'
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'local-path-owner',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+
+        state.applyLocalModelSnapshot({
+            models: {
+                downloadedByEngine: { vllm: ['org/model-a'] },
+                loadedByEngine: { vllm: ['/models/local-model'] }
+            }
+        })
+
+        expect(
+            state
+                .getEngineInitialState()
+                .models.find(row => row.nodeId === nodeId && row.engineType === 'vllm')?.models
+        ).toEqual([
+            expect.objectContaining({ name: 'org/model-a', status: 'idle' }),
+            expect.objectContaining({ name: '/models/local-model', status: 'loaded' })
+        ])
     })
 })
