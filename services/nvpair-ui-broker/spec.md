@@ -719,14 +719,3 @@ replacement is ready. The broker acknowledges local availability updates before
 forwarding lifecycle events. `requestableByEngine` is retained loader capability
 independent of ON/OFF state; only enabled inventories are advertised for routing.
 It must not be interpreted as loaded models by desktop, TUI or discovery clients.
-
-Confirmed `nodes:changed` members seed the scanner through
-`discovery:set-cluster-peers`, allowing paired nodes on different subnets to
-appear online without multicast. Pending invites and self entries are excluded.
-The broker fetches the restored roster on cluster-manager startup and replays
-its latest peer snapshot after a scanner restart. A delayed startup response
-cannot replace a newer membership event. These addresses are connection hints
-only. The scanner uses its existing exact-pin mTLS candidate authentication;
-service ports come from the peer's authenticated node-info metadata, published
-through the existing owned registry path. Public HTTP cannot supply trusted
-service inventory.

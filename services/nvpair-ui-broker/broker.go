@@ -161,9 +161,6 @@ type ProxyStatusResult struct {
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
-	clusterPeersMu         sync.Mutex
-	clusterPeersGeneration uint64
-	clusterPeers           []noderec.ClusterPeer
 	// settingsApplyMu serializes engine settings applies end to end, including
 	// the engine stop and restart. engineConfigMu guards only the journal and
 	// is released while an engine restarts, so this is what keeps two applies —
@@ -661,7 +658,6 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 		return nil, err
 	}
 	b.setScanner(sp)
-	b.pushClusterPeers(sp)
 	b.replayLocalInfo(sp)
 	// Replay cached registrations to the (re)started daemon so it re-advertises
 	// this node's services without any worker reconnect logic (epoch replay).
@@ -1306,7 +1302,6 @@ func (b *Broker) spawnClusterManager() (supervisedHandle, error) {
 		return nil, err
 	}
 	b.setClusterMgr(cm)
-	go b.refreshClusterPeers()
 	b.registerService(noderec.RegisterParams{Service: noderec.ServiceCluster, Port: clusterManagerHTTPPort})
 	// Reflect the persisted clusterId (owned by nvpair-node-settings) back into the
 	// cluster-manager, which doesn't persist it itself. Synchronous so the first
@@ -2877,12 +2872,6 @@ func (b *Broker) forwardLogLevel(level string) {
 // errors:clear are routed into the nvpair-errors pipeline (the broker now
 // supervises it) rather than dropped.
 func (b *Broker) forwardClusterManagerNotification(method string, params json.RawMessage) {
-	if method == "nodes:changed" {
-		b.updateClusterPeers(params)
-	}
-	if method == "cluster:ready" {
-		go b.refreshClusterPeers()
-	}
 	if b.dispatchErrorsNotif("cluster-manager", method, params) {
 		return
 	}
