@@ -164,6 +164,9 @@ Before choosing a context window and `--gpu-memory-utilization`, PAIR reads
 device memory from `nvidia-smi` when available and otherwise asks the installed
 vLLM platform. This covers CUDA/ROCm, Intel XPU, Apple Metal, CPU, and
 out-of-tree backends that expose vLLM's memory API.
+For CPU execution, the runtime probe uses vLLM's total and available memory for
+one visible NUMA memory node, including its container limits. It leaves sizing
+to vLLM when more than one memory node is visible.
 
 The runtime probe requires a Python interpreter beside the resolved vLLM
 executable, with `torch` (PyTorch), `vllm`, and `psutil` importable in that

@@ -11,6 +11,8 @@ memory before PAIR chooses a context window and memory budget for the model.
 Discrete GPUs use their own memory readings. System RAM is used only for a
 verified integrated GPU, Apple Silicon with Metal available, or a CPU platform.
 A missing device reading alone is never a reason to substitute system RAM.
+CPU readings use vLLM's memory-node view so capacity and available memory
+have the same limits.
 
 On success, the final stdout line is JSON containing total and free bytes, plus
 a shared flag indicating whether the device shares system RAM. If memory cannot
@@ -57,7 +59,6 @@ elif current_platform.is_xpu():
         free, total = torch.xpu.mem_get_info(0)
         reading = {"total": int(total), "free": int(free), "shared": False}
 else:
-    total = int(current_platform.get_device_total_memory(0))
     apple_silicon = (
         sys.platform == "darwin"
         and platform.machine() == "arm64"
@@ -65,10 +66,27 @@ else:
     )
     available = getattr(current_platform, "get_device_available_memory", None)
     if callable(available):
+        total = int(current_platform.get_device_total_memory(0))
         free = int(available(0))
         reading = {"total": total, "free": free, "shared": apple_silicon or current_platform.is_cpu()}
-    elif current_platform.is_cpu() or apple_silicon:
-        reading = system_reading(total)
+    elif current_platform.is_cpu():
+        from vllm.utils.cpu_resource_utils import (
+            get_memory_node_info,
+            get_visible_memory_node,
+        )
+
+        # Match the CPU worker's memory node and container limits.
+        nodes = get_visible_memory_node()
+        if len(nodes) != 1:
+            raise RuntimeError("CPU memory sizing requires one visible memory node")
+        memory = get_memory_node_info(nodes[0])
+        reading = {
+            "total": int(memory.total_memory),
+            "free": int(memory.available_memory),
+            "shared": True,
+        }
+    elif apple_silicon:
+        reading = system_reading(int(current_platform.get_device_total_memory(0)))
     else:
         raise RuntimeError("the selected vLLM backend does not report free memory")
 

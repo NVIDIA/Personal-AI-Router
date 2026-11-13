@@ -202,6 +202,12 @@ func TestDeviceMemoryProbe_UsesSystemRAMOnlyForVerifiedSharedDevices(t *testing.
 		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib, Shared: true})
 	accept("CPU explicitly uses system RAM", `{"backend":"cpu","allow_system":true}`,
 		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true})
+	accept("CPU uses its selected memory node and limits instead of host RAM",
+		`{"backend":"cpu","cpu_nodes":[3],"cpu_total_gib":8,"cpu_available_gib":2,"system_total_gib":64,"system_free_gib":48,"allow_system":true}`,
+		deviceMemoryProbe{Total: 8 * gib, Free: 2 * gib, Shared: true})
+	accept("CPU preserves the platform available-memory API",
+		`{"backend":"cpu","has_device_free":true}`,
+		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib, Shared: true})
 	accept("unknown engine with its own free-memory API", `{"has_device_free":true}`,
 		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib})
 }
@@ -258,4 +264,8 @@ func TestDeviceMemoryProbe_RejectsUnavailableMemoryWithoutGuessingTopology(t *te
 		"multiple CUDA devices require engine-owned memory sizing")
 	reject("multiple XPU devices", `{"backend":"xpu","device_count":2}`,
 		"multiple XPU devices require engine-owned memory sizing")
+	reject("multiple CPU memory nodes", `{"backend":"cpu","cpu_nodes":[0,1]}`,
+		"CPU memory sizing requires one visible memory node")
+	reject("no CPU memory nodes", `{"backend":"cpu","cpu_nodes":[]}`,
+		"CPU memory sizing requires one visible memory node")
 }

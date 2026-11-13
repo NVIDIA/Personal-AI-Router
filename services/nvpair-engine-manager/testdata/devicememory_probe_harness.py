@@ -22,6 +22,9 @@ Fixture fields (memory values are GiB, converted to bytes below):
 - allow_system: permit system-memory reads, false by default. Keeping these
   forbidden for discrete and unknown devices catches unsafe host-RAM fallbacks.
 - system_total_gib / system_free_gib: host readings, defaulting to 16 / 12.
+- cpu_nodes: visible CPU memory-node IDs, defaulting to [0].
+- cpu_total_gib / cpu_available_gib: selected CPU node's capacity and available
+  memory, defaulting to 16 / 12 independently of the host readings.
 - integrated: device reports shared memory, false by default. unknown_topology
   omits that property entirely to model a runtime that cannot report it.
 - device_count: visible CUDA/ROCm or XPU devices, defaulting to one.
@@ -59,6 +62,15 @@ def device_memory(device):
     if fixture.get("device_memory_error", False):
         raise RuntimeError("device memory unavailable")
     return free, total
+
+
+def cpu_memory_node_info(node):
+    if node not in fixture.get("cpu_nodes", [0]):
+        raise RuntimeError("CPU memory node is not visible")
+    return types.SimpleNamespace(
+        total_memory=fixture.get("cpu_total_gib", 16) * gib,
+        available_memory=fixture.get("cpu_available_gib", 12) * gib,
+    )
 
 
 cuda_properties = types.SimpleNamespace(total_memory=total)
@@ -102,4 +114,8 @@ sys.modules["platform"] = types.SimpleNamespace(
     machine=lambda: fixture.get("arch", "x86_64")
 )
 sys.modules["vllm.platforms"] = types.SimpleNamespace(current_platform=platform)
+sys.modules["vllm.utils.cpu_resource_utils"] = types.SimpleNamespace(
+    get_visible_memory_node=lambda: fixture.get("cpu_nodes", [0]),
+    get_memory_node_info=cpu_memory_node_info,
+)
 sys.platform = fixture.get("os", "linux")
