@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.22 — Refresh vLLM model lists after peer downloads and deletions (#200)
+
+- The owning computer's vLLM model list now updates automatically when a peer downloads or deletes a model, including while the engine is stopped.
+
 ## 1.0.21 — Keep slow engine status checks from delaying engine controls (#180)
 
 - Starting, stopping, and changing an engine's port no longer wait for a separate status check to finish.
