@@ -1899,7 +1899,7 @@ class ModularBridgeState {
         // Stamp `'loaded'` from the self node's loaded set so a `list_models`
         // refresh (pull/lifecycle) preserves residency instead of resetting every
         // row to idle. The loaded set is seeded by discovery self-enrichment and
-        // kept fresh by {@link applyLocalLoadedModels}.
+        // kept fresh by {@link applyLocalModelSnapshot}.
         const loaded = loadedNamesForEngine(nodeId ? this.nodes.get(nodeId) : undefined, engineType)
         const items = modelNames.map(name => modelItem(name, loaded.has(name)))
         this.localManagerModels.set(engineType, items)
@@ -1912,30 +1912,35 @@ class ModularBridgeState {
     }
 
     /**
-     * Update the local node's per-engine loaded-in-memory model set from an
-     * `engine:models-changed` push and re-publish the affected local
-     * engines, so an explicit load/unload, LM Studio JIT auto-load, or TTL/idle
-     * eviction reflects immediately instead of waiting for the next discovery
-     * model-refresh sweep. The push carries the full `engine:models` snapshot, so
-     * the whole loaded map is replaced: an engine absent from `loadedByEngine` is
-     * not running / not queryable and therefore has nothing loaded. Discovery
-     * self-enrichment (`AvailableNode.loadedByEngine` over the loopback
-     * `/v1/models`) remains the seed and backstop until the self node is
-     * discovered.
+     * Apply the engine-manager's complete model push. Downloaded inventories
+     * update the local list even while no server is running. Missing inventory
+     * keys mean the read was unavailable; explicit empty lists clear the cache.
      */
-    applyLocalLoadedModels(loadedByEngine: Record<string, string[]>): void {
+    applyLocalModelSnapshot(params: JsonValue | undefined): void {
+        const models = objectValue(objectValue(params)?.models)
+        if (!models) return
+        const loadedByEngine = parseModelsByEngine(models.loadedByEngine)
+        const downloadedByEngine = parseModelsByEngine(models.downloadedByEngine)
+        for (const engine of PROXY_ENGINES) {
+            const names = downloadedByEngine[engineManagerName(engine)]
+            if (names === undefined) continue
+            const loaded = loadedByEngine[engineManagerName(engine)] ?? []
+            const inventory = [...new Set([...names, ...loaded])]
+            this.localManagerModels.set(
+                engine,
+                inventory.map(name => modelItem(name, false))
+            )
+        }
         const nodeId = this.selfId
         if (!nodeId) return
         const node = this.nodes.get(nodeId)
-        // Before the self node is discovered there is nothing to stamp against;
-        // discovery seeds the loaded set when the node arrives.
         if (!node) return
-        if (sameModelsByEngine(node.loadedByEngine, loadedByEngine)) return
-        const next: ModularNode = { ...node, loadedByEngine }
+        const next: ModularNode = {
+            ...node,
+            loadedByEngine,
+            downloadedByEngine: { ...node.downloadedByEngine, ...downloadedByEngine }
+        }
         this.nodes.set(nodeId, next)
-        // Loaded state feeds only the engine model rows (node identity, metrics,
-        // and the invite-only discovery snapshot are unaffected), so re-emit just
-        // the per-engine model patches.
         for (const engine of PROXY_ENGINES) {
             const status =
                 this.resolveLocalEngineStatus(engine, next) ??
