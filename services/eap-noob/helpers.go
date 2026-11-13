@@ -21,16 +21,10 @@ func newPeerId() (string, error) {
 	return b64Encode(b), nil
 }
 
-// marshalInfo encodes a ServerInfo/PeerInfo object, defaulting to an empty JSON
-// object when none is configured.
-func marshalInfo(m map[string]any) json.RawMessage {
-	if m == nil {
-		return json.RawMessage("{}")
-	}
-	b, err := json.Marshal(m)
-	if err != nil || len(b) == 0 {
-		return json.RawMessage("{}")
-	}
+// marshalInfo encodes the identity object included in the authenticated transcript.
+func marshalInfo(info PairingInfo) json.RawMessage {
+	// PairingInfo contains only strings and integers, so encoding cannot fail.
+	b, _ := json.Marshal(info)
 	return b
 }
 
@@ -80,7 +74,7 @@ func decodeMAC(r json.RawMessage) ([]byte, error) {
 // oobOutput builds the OOB message for the given direction, generating a fresh
 // secret nonce Noob and computing the fingerprint Hoob over the negotiated
 // Initial Exchange parameters (RFC 9140, Section 3.3.2).
-func oobOutput(ms *methodState, dir int) (OOBMessage, error) {
+func oobOutput(ms *methodState, dir OOBDirection) (OOBMessage, error) {
 	noob := make([]byte, 16)
 	if _, err := rand.Read(noob); err != nil {
 		return OOBMessage{}, err
@@ -94,30 +88,11 @@ func oobOutput(ms *methodState, dir int) (OOBMessage, error) {
 	}, nil
 }
 
-// oobOutputWith builds the OOB message for the given direction using a
-// caller-supplied 16-byte secret nonce Noob instead of generating a fresh
-// random one. It is the low-entropy variant used when the Noob is carried out
-// of band by a human (e.g. a six-digit PIN encoded into the 16 bytes); the
-// returned Noob/Hoob need not be transmitted, since the peer recomputes them
-// locally from the same PIN and the transcript.
-func oobOutputWith(ms *methodState, dir int, noob []byte) (OOBMessage, error) {
-	if len(noob) != 16 {
-		return OOBMessage{}, fmt.Errorf("eapnoob: Noob must be 16 bytes")
-	}
-	ms.setNoob(noob)
-	hoob := ms.suite.computeHoob(dir, ms.in)
-	return OOBMessage{
-		PeerId: ms.peerId,
-		Noob:   b64Encode(noob),
-		Hoob:   b64Encode(hoob),
-	}, nil
-}
-
-// oobInputNoob records a caller-supplied 16-byte Noob without an OOBMessage
+// setOOBNoob records a caller-supplied 16-byte Noob without an OOBMessage
 // envelope. Unlike oobInput it does not verify a received Hoob (there is none
 // to verify for a human-carried Noob); transcript agreement is instead proven
 // by the Completion Exchange MACs.
-func oobInputNoob(ms *methodState, noob []byte) error {
+func setOOBNoob(ms *methodState, noob []byte) error {
 	if len(noob) != 16 {
 		return fmt.Errorf("eapnoob: Noob must be 16 bytes")
 	}
@@ -128,7 +103,7 @@ func oobInputNoob(ms *methodState, noob []byte) error {
 // oobInput verifies a received OOB message: the PeerId must match and the
 // locally recomputed Hoob must equal the received value (RFC 9140,
 // Section 3.2.3).
-func oobInput(ms *methodState, dir int, msg OOBMessage) error {
+func oobInput(ms *methodState, dir OOBDirection, msg OOBMessage) error {
 	if ms.peerId != "" && msg.PeerId != ms.peerId {
 		return fmt.Errorf("eapnoob: OOB PeerId mismatch")
 	}

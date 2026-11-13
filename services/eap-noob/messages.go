@@ -21,6 +21,21 @@ const (
 // NAI (RFC 9140, Section 3.2.1).
 const defaultNAI = "noob@eap-noob.arpa"
 
+const protocolVersion = 1
+
+// OOBDirection identifies an out-of-band channel direction or set of directions.
+type OOBDirection int
+
+// OOB direction values are defined by RFC 9140, Section 3.3.2.
+const (
+	// OOBPeerToServer transfers the secret from the peer to the server.
+	OOBPeerToServer OOBDirection = 1
+	// OOBServerToPeer transfers the secret from the server to the peer.
+	OOBServerToPeer OOBDirection = 2
+	// OOBBoth allows either direction to be selected during negotiation.
+	OOBBoth OOBDirection = 3
+)
+
 // eapResult is a non-protocol control message used by this transport-agnostic
 // library to convey the terminating EAP-Success / EAP-Failure indication that a
 // real EAP lower layer would deliver out of band of the EAP-NOOB payloads.
@@ -58,8 +73,6 @@ type wireMessage struct {
 	Ns  json.RawMessage `json:"Ns,omitempty"`
 	Np  json.RawMessage `json:"Np,omitempty"`
 
-	SleepTime *int `json:"SleepTime,omitempty"`
-
 	NoobId json.RawMessage `json:"NoobId,omitempty"`
 	MACs   json.RawMessage `json:"MACs,omitempty"`
 	MACp   json.RawMessage `json:"MACp,omitempty"`
@@ -68,21 +81,6 @@ type wireMessage struct {
 	ErrorInfo string `json:"ErrorInfo,omitempty"`
 
 	EAP string `json:"eap,omitempty"`
-}
-
-// encode marshals a message to compact JSON and parses it back so callers can
-// capture the exact serialized bytes of each field (the bytes that travel on
-// the wire and feed the MAC/Hoob arrays).
-func encode(m *wireMessage) ([]byte, *wireMessage, error) {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return nil, nil, err
-	}
-	parsed := new(wireMessage)
-	if err := json.Unmarshal(b, parsed); err != nil {
-		return nil, nil, err
-	}
-	return b, parsed, nil
 }
 
 func decode(b []byte) (*wireMessage, error) {
