@@ -33,6 +33,32 @@ memory, clears the saved model selection, and returns to the enabled state waiti
 for a choice. Eject during a Load cancels that load and returns to the same state.
 Only explicit Stop disables the engine. No inactivity unload policy is added.
 
+
+### Request-triggered model loading
+
+Requests through the PAIR vLLM endpoint may select a model that is already
+completely downloaded on an enabled node. A request while awaiting a model loads
+that model; a request for B while A is loaded switches to B after active A
+responses finish. Requests for the same model can run concurrently. Other-model
+requests form FIFO groups, so an ongoing stream is not interrupted by an automatic
+switch and a queued switch is not starved by new requests for the old model.
+
+The proxy owns inference and response lifetimes; engine-manager alone validates
+cached inventory and enabled intent and changes the serving process using the
+normal launch transaction. Unknown or incomplete downloads are refused, explicit
+OFF remains authoritative even with stale discovery, and failed switches restore
+the previous model. Client cancellation removes queued work and cancels its pending
+model preparation. Eject and Stop can still cancel a load. Preparation has a
+10-minute budget including queueing; normal stream/body deadlines still apply
+once inference starts. Clients must allow for cold model startup latency.
+
+`modelsByEngine` for this engine lists complete cached models only while enabled;
+`downloadedByEngine` remains the disk inventory even while disabled, and
+`loadedByEngine` continues to identify only resident models. Enabled-but-empty
+vLLM has no serving process and downloads nothing merely because it was enabled.
+Native vLLM's direct engine port retains vLLM's own behavior; request-triggered
+loading is provided by the PAIR proxy endpoint.
+
 ## 2. Scope
 **In scope**
 - Broker-coordinated argument/server/proxy settings, literal argument
@@ -397,3 +423,10 @@ end over stdio. Current product wiring is:
 
 The retired desktop wiring is intentionally omitted; its implementation record
 remains available in Git history and is not part of the current architecture.
+
+`EngineStatus.enabled` is authoritative ON intent, independent of process
+residency. Model switching preserves `enabled` and reports `starting` until the
+replacement is ready. The broker acknowledges local availability updates before
+forwarding lifecycle events. `requestableByEngine` is retained loader capability
+independent of ON/OFF state; only enabled inventories are advertised for routing.
+It must not be interpreted as loaded models by desktop, TUI or discovery clients.

@@ -354,10 +354,10 @@ placeholder before the action runs:
   declared `remove_path.root` via `lms ls --json`. When no indexed file
   matches, the runner falls back to `{root}/{model}` if that path exists.
 
-A manifest-level **`advertised_models`** (`"list"`, the default, or `"loaded"`)
+A manifest-level **`advertised_models`** (`"list"`, the default, `"loaded"`, or `"available"`)
 chooses what the node tells its peers and its own proxy it can serve. The proxy
 sends a request to any node advertising the model, so an engine that serves one
-model per process sets `"loaded"` and advertises only `loaded_models`, even when
+model per process without request-triggered loading sets `"loaded"` and advertises only `loaded_models`, even when
 its `list_models` offers many models it could be switched to. With `"loaded"`,
 a `loaded_models` action is required, and `engine:models` reports the engine in
 two parts:
@@ -667,3 +667,11 @@ Caveats worth encoding when authoring these:
 with `awaiting_model:true` and saves enabled intent without spawning a serving
 process. The bundled vLLM manifest uses this policy and supplies no default model.
 Once a model argument is saved, the usual startup and readiness checks apply.
+
+### Cached model availability for request-triggered loading
+
+`advertised_models: "available"` is for a `wait_for_model` runtime with an
+`hf_cache` model inventory and `loaded_models` action. While enabled it advertises
+complete cached models that engine-manager can prepare on request. While disabled
+its advertised set is empty. Downloaded and resident sets remain separately
+reported. Its loaded result may use `inventory_field`, as with `"loaded"`.

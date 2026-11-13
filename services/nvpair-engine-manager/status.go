@@ -204,6 +204,7 @@ func (e *Executor) Errors() []serviceError {
 }
 
 func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
+	enabled, _, _ := e.desired.get(engine)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return statusLocked(engine, st)
@@ -214,9 +215,10 @@ func statusLocked(engine string, st *engineState) EngineStatus {
 		Engine:        engine,
 		DisplayName:   st.manifest.DisplayName,
 		Installed:     st.installed,
+		Enabled:       enabled || st.enabling || st.modelSwitching || st.awaitingModel,
 		Running:       st.running,
-		Starting:      st.starting && !st.running,
-		AwaitingModel: st.installed && st.awaitingModel && !st.running && !st.starting,
+		Starting:      (st.starting || st.modelSwitching) && !st.running,
+		AwaitingModel: st.installed && st.awaitingModel && !st.running && !st.starting && !st.modelSwitching,
 		Healthy:       st.healthy,
 		Port:          st.port,
 	}

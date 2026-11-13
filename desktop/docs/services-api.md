@@ -41,6 +41,7 @@
 - ⚠️ nvpair-proxy → facade/enable
 - ⚠️ nvpair-proxy → node/selected
 - ⚠️ nvpair-proxy → node/set-local-backend
+- ⚠️ nvpair-proxy → node/set-local-models
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:configure-launch
 - ⚠️ nvpair-ui-broker → engine:restart
@@ -217,6 +218,7 @@
 | `node/select` | request (we call) | ✅ yes |
 | `node/selected` | request (we call) | ⚠️ not called |
 | `node/set-local-backend` | request (we call) | ⚠️ not called |
+| `node/set-local-models` | request (we call) | ⚠️ not called |
 | `node/set-priority` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
 
@@ -296,6 +298,7 @@
 - `method (var)  (broker.go, 5 sites)`
 - `method (var)  (clustermanager.go)`
 - `method (var)  (errors.go)`
+- `target (var)  (modelrequest.go)`
 - `method (var)  (proxy.go, 2 sites)`
 - `method (var)  (rpcworker.go, 2 sites)`
 

@@ -780,13 +780,13 @@ func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.
 
 	assert.Contains(t, manifest.Actions, "list_models")
 	assert.Contains(t, manifest.Actions, "loaded_models")
-	// list_models is what is on disk; only the model being served is advertised.
+	// list_models is what is on disk; enabled vLLM can load these on request.
 	// Listing, Delete and Pull use the hub cache vLLM itself uses, resolved from
 	// its launch environment ({hf_hub_cache}).
 	if list := manifest.Actions["list_models"]; assert.NotNil(t, list.HFCache, "list_models must list the Hugging Face cache") {
 		assert.Equal(t, "{hf_hub_cache}", list.HFCache.Dir)
 	}
-	assert.Equal(t, advertisedModelsLoaded, manifest.AdvertisedModels, "peers and the proxy must only be offered the served model")
+	assert.Equal(t, advertisedModelsAvailable, manifest.AdvertisedModels, "enabled vLLM must offer cached models for request-triggered loading")
 	if loaded := manifest.Actions["loaded_models"]; assert.NotNil(t, loaded.HTTP, "loaded_models must read vLLM's /v1/models") {
 		assert.Equal(t, "/v1/models", loaded.HTTP.Path)
 	}

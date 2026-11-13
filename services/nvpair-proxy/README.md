@@ -246,3 +246,12 @@ Add one entry to `nvpair-shared/engines` for the cross-process identity, one to
 proxy-unification plan for the full checklist, including the one-liners that are
 still per-engine (a `noderec.ServiceKey`, the TUI health label, the desktop
 engine-type constants, and an engine-manager manifest).
+
+### vLLM loading on request
+
+An enabled node advertises its complete cached vLLM models. Inference through
+PAIR prepares the requested model before forwarding; it loads from an ejected
+state or switches after current responses finish. Same-model requests may run
+concurrently. Explicit OFF prevents loading; missing models are not downloaded.
+Engine-manager owns preparation, while the proxy owns request and stream
+lifetimes. Direct requests to the native vLLM engine port do not use this feature.

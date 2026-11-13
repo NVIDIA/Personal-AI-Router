@@ -253,4 +253,47 @@ describe('proxy engine identity', () => {
                 ?.models
         ).toEqual([expect.objectContaining({ name: model, status: 'loaded' })])
     })
+    it('keeps cached vLLM models idle while the enabled engine awaits a request', () => {
+        const state = getModularBridgeState()
+        const nodeId = 'vllm-cached-awaiting-request'
+        const models = ['org/model-a', 'org/model-b']
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'awaiting-request',
+                        ipAddress: '127.0.0.1',
+                        port: 14318,
+                        modelsByEngine: { vllm: models },
+                        downloadedByEngine: { vllm: models },
+                        loadedByEngine: { vllm: [] },
+                        requestableByEngine: { vllm: models }
+                    }
+                ]
+            }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            enabled: true,
+            running: false,
+            awaiting_model: true,
+            healthy: false,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', models)
+        state.applyLocalLoadedModels({ vllm: [] })
+        const initial = state.getEngineInitialState()
+        expect(
+            initial.statuses.find(engine => engine.nodeId === nodeId && engine.engineType === 'vllm')
+        ).toMatchObject({ processStatus: 'awaiting-model' })
+        expect(
+            initial.models.find(engine => engine.nodeId === nodeId && engine.engineType === 'vllm')
+                ?.models
+        ).toEqual(models.map(name => expect.objectContaining({ name, status: 'idle' })))
+    })
 })

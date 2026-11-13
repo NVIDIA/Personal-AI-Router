@@ -687,3 +687,35 @@ This is enabled intent without a serving process: `running` and `healthy` remain
 false, so routing and model advertisement do not treat it as ready. The desktop
 and terminal clients display model-selection guidance while allowing explicit
 Stop and model selection. No broker-owned model default is added.
+
+
+### Internal model-preparation relay
+
+`model:prepare {id, engine, model}` and `model:cancel` from the supervised proxy
+are relayed as `engine:prepare-model` and `engine:cancel-model-preparation` to
+engine-manager. `engine:model-prepared {id, engine, port?, error?, status?}` is
+returned to the matching engine facade as `model:prepared`. These internal
+notifications carry operational metadata only; they never carry inference
+content or become desktop commands. The shared engine capability currently
+permits this for vLLM. The broker advertises enabled vLLM even while awaiting a
+model and supplies `loadOnRequest:true` to its local proxy target; engine-manager
+rechecks enabled intent before loading, so stale discovery cannot revive OFF.
+
+The broker acknowledges `node/set-local-models {engine, id, enginePort, enabled,
+models}` before exposing initial model snapshots or model-change events to the
+UI. The proxy projects this authoritative inventory onto this node's stable ID,
+superseding only its stale self-discovery entry. This makes an immediate request
+after download routable and removes deleted local models immediately. The port
+comes from engine-manager lifecycle state, including custom server ports. Cached
+model listings through PAIR do not load a model. Browser-origin requests retain
+the native engine's CORS decision.
+
+A manager restart settles pending proxy preparations with a retryable failure;
+a proxy restart cancels preparations orphaned by the old process.
+
+`EngineStatus.enabled` is authoritative ON intent, independent of process
+residency. Model switching preserves `enabled` and reports `starting` until the
+replacement is ready. The broker acknowledges local availability updates before
+forwarding lifecycle events. `requestableByEngine` is retained loader capability
+independent of ON/OFF state; only enabled inventories are advertised for routing.
+It must not be interpreted as loaded models by desktop, TUI or discovery clients.

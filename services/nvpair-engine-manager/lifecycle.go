@@ -97,6 +97,15 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	}
 	st.lockOperation()
 	defer st.unlockOperation()
+	st.mu.Lock()
+	st.enabling = true
+	st.mu.Unlock()
+	defer func() {
+		st.mu.Lock()
+		st.enabling = false
+		st.mu.Unlock()
+		e.emitState(engine)
+	}()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
 		return e.startStopped(st, err)
 	}

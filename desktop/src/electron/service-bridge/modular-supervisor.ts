@@ -201,6 +201,7 @@ export function parseListModelNames(result: JsonValue | undefined): string[] {
  */
 function parseLoadedByEngine(params: JsonValue | undefined): Record<string, string[]> {
     const models = objectValue(objectValue(params)?.models)
+    // requestableByEngine is broker loader capability, never residency.
     const loaded = objectValue(models?.loadedByEngine)
     if (!loaded) return {}
     const out: Record<string, string[]> = {}

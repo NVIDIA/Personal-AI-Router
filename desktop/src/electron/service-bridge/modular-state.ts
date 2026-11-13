@@ -173,7 +173,7 @@ interface ModularNode extends NodeHardware {
     // engine reports loaded state. Mirrors noderec.DirectoryNode.LoadedByEngine.
     loadedByEngine: Record<string, string[]>
     // Per-engine downloaded inventory of an engine that advertises only the model
-    // it is serving (vLLM), carried on `AvailableNode.downloadedByEngine`. Its
+    // it can load (vLLM), carried on `AvailableNode.downloadedByEngine`. Its
     // {@link modelsByEngine} entry holds just the served name, for routing; this
     // lists every model it can load, read even while it is stopped, so the model
     // manager keeps its rows. Its {@link loadedByEngine} entry names models the
@@ -2010,10 +2010,10 @@ class ModularBridgeState {
      * noderec.DirectoryNode.EngineModels.
      */
     private modelsForEngine(node: ModularNode, engine: ProxyEngine): string[] {
-        // An engine that advertises only the model it is serving (vLLM) reports
+        // An engine with a separate disk inventory (vLLM) reports
         // its downloaded inventory apart: that is the list to manage, plus
         // anything loaded that is not in it, such as a model served from a local
-        // path. Its advertised entry is only the served name, for routing.
+        // path. Its advertised entry includes models loadable on request.
         const downloaded = node.downloadedByEngine[engineManagerName(engine)]
         if (downloaded !== undefined) {
             const loaded = node.loadedByEngine[engineManagerName(engine)] ?? []
