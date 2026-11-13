@@ -805,18 +805,3 @@ func (telemetry NodeTelemetry) Aged(elapsed time.Duration) NodeTelemetry {
 	telemetry.MSSince = agedMilliseconds(telemetry.TelemetryValid, telemetry.MSSince, elapsed)
 	return telemetry
 }
-
-// ClusterPeer is a confirmed address hint. Service inventory still requires
-// the peer's current certificate pin and authenticated node-info response.
-type ClusterPeer struct {
-	HostUUID     string `json:"hostUuid"`
-	Name         string `json:"name"`
-	Address      string `json:"address"`
-	NodeInfoPort int    `json:"nodeInfoPort"`
-}
-
-const MethodSetClusterPeers = "discovery:set-cluster-peers"
-
-type ClusterPeersParams struct {
-	Peers []ClusterPeer `json:"peers"`
-}
