@@ -3,7 +3,7 @@
 
 """Supply fake runtime modules for the Go device-memory probe tests.
 
-devicememory_probe_test.go embeds this file only in its test binary. Each case
+devicememory_test.go embeds this file only in its test binary. Each case
 sends one JSON object on stdin and runs this source followed by the production
 devicememory_probe.py source in a fresh `python3 -I -c` process. Installing the
 fakes in sys.modules makes the production imports use the fixture's device APIs
