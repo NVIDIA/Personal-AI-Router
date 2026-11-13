@@ -443,8 +443,11 @@ so the row is not dropped back to "Downloading". The download's last frame is
 the exception: it says how the download ended — it may have finished before
 the stop reached it, or its engine could not confirm the stop — so the row
 shows that instead, and a cancel rejected after it leaves it there. Ollama
-closes the pull request and removes partial blobs named by its progress
-digests; LM Studio receives Ctrl+C and a negative answer to its
+closes the pull request and removes the partial blobs named by its progress
+digests, judging each blob's data file and `-partial-N` resume files together:
+any one of them that predates the pull, or changes, first appears, or vanishes
+after the grace, keeps them all, and otherwise the resume files are removed
+before the data file. LM Studio receives Ctrl+C and a negative answer to its
 background-download prompt, and after acknowledgement the partial files of the
 model file it was fetching are removed. That file is identified by the
 quantization the request pins or, when it pins none, the one the CLI announced
@@ -527,7 +530,7 @@ flowchart TD
     Cancel -- Yes --> Engine{"Which engine?"}
 
     Engine -- Ollama --> OllamaStop["Close HTTP pull request"]
-    OllamaStop --> OllamaCandidates["Select partial blobs named<br/>by this pull's digests"]
+    OllamaStop --> OllamaCandidates["Group each blob's data and<br/>resume files, for the blobs<br/>this pull's digests name"]
 
     Engine -- LM Studio --> LMSStop["Send Ctrl+C"]
     LMSStop --> LMSPrompt["Answer no to background download"]
@@ -539,12 +542,12 @@ flowchart TD
     Engine -- vLLM --> VLLMStop["Stop the hf tool,<br/>killing it after 3s"]
     VLLMStop --> VLLMKeep["Leave its files in the<br/>Hugging Face cache to resume"]
 
-    OllamaCandidates --> Owned{"Absent from<br/>the snapshot?"}
+    OllamaCandidates --> Owned{"Every file of the group<br/>absent from the snapshot?"}
     LMSCandidates --> Owned
     Owned -- No --> Preserve["Preserve completed,<br/>shared, and unrelated files"]
-    Owned -- Yes --> Quiet{"Held still across repeated<br/>checks after a short grace?"}
+    Owned -- Yes --> Quiet{"Every file held still across<br/>repeated checks after a short grace?"}
     Quiet -- No --> Preserve
-    Quiet -- Yes --> Delete["Remove the partial file"]
+    Quiet -- Yes --> Delete["Remove the group,<br/>Ollama's resume files first"]
 
     Delete --> Settle["Settle pull and refresh models"]
     Preserve --> Settle

@@ -15,12 +15,15 @@ package main
 //  1. Attribution — is this file ours? Each pull snapshots the partials
 //     present before it starts, and only files that appeared afterwards are
 //     candidates. The engine supplies this, as the candidates function it
-//     hands removeQuiescentPartials.
+//     hands removeQuiescentPartials. Files that one transfer needs together,
+//     such as Ollama's data file and the resume files describing its chunks,
+//     are handed over as one group, and a group with any member that predates
+//     the pull is left out whole.
 //  2. Quiescence — is anyone still writing it? A file this pull created can
 //     still be shared, because both vendors coalesce a concurrent download of
 //     the same content onto the same file, so one that moves once this pull's
-//     transfer has had time to stop is someone else's. That test is the same
-//     for every engine, so it lives here.
+//     transfer has had time to stop is someone else's. A group moves when any
+//     member does. That test is the same for every engine, so it lives here.
 //
 // Deletion requires both. Every ambiguous case resolves toward keeping the
 // file: a partial left behind costs disk space the vendor's own cleanup
@@ -106,76 +109,137 @@ func (o observation) changedFrom(baseline os.FileInfo) bool {
 		!baseline.ModTime().Equal(o.info.ModTime())
 }
 
-// quietFile is a candidate's baseline — how it looked when it last changed —
-// and how many samples in a row have found it exactly so. It is kept for the
-// whole cleanup rather than taken afresh at intervals, so a write landing
-// between any two samples is seen at the next one: within the grace it
-// restarts the count, and after it marks the file as another client's, rather
-// than handing a writer that paused a new chance to look finished.
-type quietFile struct {
-	baseline os.FileInfo
+// partialGroup is partial files that cleanup keeps or removes together,
+// because removing only some of them breaks the transfer they belong to. name
+// identifies the group from one sample to the next while members come and go,
+// and files are removed in the order listed.
+type partialGroup struct {
+	name  string
+	files []string
+}
+
+// eachFile makes every path a group of its own, for an engine whose partial
+// files do not depend on one another.
+func eachFile(paths []string) []partialGroup {
+	groups := make([]partialGroup, len(paths))
+	for i, path := range paths {
+		groups[i] = partialGroup{name: path, files: []string{path}}
+	}
+	return groups
+}
+
+// groupObservation is one sample of a group: each member present and how it
+// looked, or the error that kept a member from being read.
+type groupObservation struct {
+	present map[string]os.FileInfo
+	err     error
+}
+
+func observeGroup(files []string) groupObservation {
+	present := make(map[string]os.FileInfo, len(files))
+	for _, path := range files {
+		now := observe(path)
+		switch {
+		case now.gone():
+		case now.err != nil:
+			return groupObservation{err: now.err}
+		default:
+			present[path] = now.info
+		}
+	}
+	return groupObservation{present: present}
+}
+
+// gone reports whether every member is known to be absent.
+func (o groupObservation) gone() bool { return o.err == nil && len(o.present) == 0 }
+
+// changedFrom reports whether a member appeared, vanished, or moved since the
+// baseline. An unreadable member counts as a change, as it does for one file.
+func (o groupObservation) changedFrom(baseline map[string]os.FileInfo) bool {
+	if o.err != nil || len(o.present) != len(baseline) {
+		return true
+	}
+	for path, info := range o.present {
+		was, ok := baseline[path]
+		if !ok || (observation{info: info}).changedFrom(was) {
+			return true
+		}
+	}
+	return false
+}
+
+// quietGroup is a candidate group's baseline — how each member looked when the
+// group last changed — and how many samples in a row have found it exactly
+// so. It is kept for the whole cleanup rather than taken afresh at intervals,
+// so a write landing between any two samples is seen at the next one: within
+// the grace it restarts the count, and after it marks the group as another
+// client's, rather than handing a writer that paused a new chance to look
+// finished.
+type quietGroup struct {
+	baseline map[string]os.FileInfo
 	still    int
 }
 
-// removeQuiescentPartials deletes the files candidates lists once each has held
-// still for partialQuietSamples samples in a row, and leaves the rest in place:
-// a file that changes or first appears after the stopped transfer's grace at
-// once, and any other when partialCleanupSamples run out.
+// removeQuiescentPartials deletes the groups candidates lists once each has
+// held still for partialQuietSamples samples in a row, and leaves the rest in
+// place: a group that changes or first appears after the stopped transfer's
+// grace at once, and any other when partialCleanupSamples run out.
 //
-// candidates is the engine's attribution: the partial files this pull created.
-// It is asked again at every sample, because a candidate can appear late (this
-// pull's writer flushing its first bytes as the transfer stops) or vanish (the
-// engine discarding its own partial).
+// candidates is the engine's attribution: the partial files this pull created,
+// grouped by the transfer that needs them. It is asked again at every sample,
+// because a candidate can appear late (this pull's writer flushing its first
+// bytes as the transfer stops) or vanish (the engine discarding its own
+// partial).
 //
 // Only a failure is an error: a removal that kept failing, or candidates that
-// could not be listed, at the last sample. A file another client is writing,
+// could not be listed, at the last sample. A group another client is writing,
 // or one still unreadable when the samples run out, is left in place as the
-// safe outcome rather than a failed cleanup. One candidate that cannot be
-// removed does not strand the others; each is tried at every sample.
-func removeQuiescentPartials(ctx context.Context, candidates func() ([]string, error)) error {
-	watched := make(map[string]*quietFile)
-	// shared holds the candidates seen changing, or first seen, after the
-	// grace: other clients' downloads, left to them.
+// safe outcome rather than a failed cleanup. One group that cannot be removed
+// does not strand the others; each is tried at every sample.
+func removeQuiescentPartials(ctx context.Context, candidates func() ([]partialGroup, error)) error {
+	watched := make(map[string]*quietGroup)
+	// shared holds the groups seen changing, or first seen, after the grace:
+	// other clients' downloads, left to them.
 	shared := make(map[string]bool)
 	var failure error
 	for sample := range partialCleanupSamples {
 		if sample > 0 {
 			waitForNextSample(ctx)
 		}
-		paths, err := candidates()
+		groups, err := candidates()
 		if err != nil {
 			failure = err
 			continue
 		}
 		failure = nil
 		pending := false
-		listed := make(map[string]bool, len(paths))
-		for _, path := range paths {
-			listed[path] = true
-			if shared[path] {
+		listed := make(map[string]bool, len(groups))
+		for _, group := range groups {
+			listed[group.name] = true
+			if shared[group.name] {
 				continue
 			}
-			now := observe(path)
-			watch, seen := watched[path]
+			now := observeGroup(group.files)
+			watch, seen := watched[group.name]
 			switch {
 			case now.gone():
-				delete(watched, path)
+				delete(watched, group.name)
 				continue
 			case now.err != nil:
 				// Unknown is not absent. Look again rather than report the
-				// file handled.
-				delete(watched, path)
+				// group handled.
+				delete(watched, group.name)
 				pending = true
 				continue
 			case !seen || now.changedFrom(watch.baseline):
 				if sample >= partialGraceSamples {
-					// This pull's writer has had its grace, so whoever wrote
+					// This pull's writer has had its grace, so whoever changed
 					// this is still downloading it.
-					delete(watched, path)
-					shared[path] = true
+					delete(watched, group.name)
+					shared[group.name] = true
 					continue
 				}
-				watched[path] = &quietFile{baseline: now.info}
+				watched[group.name] = &quietGroup{baseline: now.present}
 				pending = true
 				continue
 			}
@@ -184,7 +248,7 @@ func removeQuiescentPartials(ctx context.Context, candidates func() ([]string, e
 				pending = true
 				continue
 			}
-			removed, err := removeIfUnchanged(path, watch.baseline)
+			removed, err := watch.removeIfUnchanged(group.files)
 			if err != nil {
 				if failure == nil {
 					failure = err
@@ -194,14 +258,14 @@ func removeQuiescentPartials(ctx context.Context, candidates func() ([]string, e
 			}
 			if !removed {
 				// Claimed between the last sample and the unlink.
-				delete(watched, path)
+				delete(watched, group.name)
 				pending = true
 			}
 		}
-		// A file that stopped being a candidate starts over if it returns.
-		for path := range watched {
-			if !listed[path] {
-				delete(watched, path)
+		// A group that stopped being a candidate starts over if it returns.
+		for name := range watched {
+			if !listed[name] {
+				delete(watched, name)
 			}
 		}
 		if !pending {
@@ -212,6 +276,34 @@ func removeQuiescentPartials(ctx context.Context, candidates func() ([]string, e
 		return fmt.Errorf("download stopped, but partial-file cleanup failed: %w", failure)
 	}
 	return nil
+}
+
+// removeIfUnchanged deletes a group's members in the order files lists them,
+// provided the group still matches the baseline cleanup last saw it hold,
+// reporting whether every member is now gone. A removal that fails stops
+// there, leaving the members after it for the next sample, and each member
+// removed comes out of the baseline so that retry does not read this
+// cleanup's own removals as the group changing.
+func (g *quietGroup) removeIfUnchanged(files []string) (removed bool, err error) {
+	now := observeGroup(files)
+	switch {
+	case now.gone():
+		return true, nil
+	case now.changedFrom(g.baseline):
+		return false, nil
+	}
+	for _, path := range files {
+		baseline, ok := g.baseline[path]
+		if !ok {
+			continue
+		}
+		removed, err := removeIfUnchanged(path, baseline)
+		if err != nil || !removed {
+			return false, err
+		}
+		delete(g.baseline, path)
+	}
+	return true, nil
 }
 
 // removeIfUnchanged deletes path only if it still matches the baseline cleanup

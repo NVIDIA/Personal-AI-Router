@@ -164,6 +164,62 @@ func TestCleanupOllamaAfterCancel_KeepsAPartialAnotherClientIsWriting(t *testing
 	assertPresent(t, shared)
 }
 
+// Ollama keeps a transfer's resume state beside its data file, one
+// "-partial-N" file per chunk, and fails to finish the blob if any of them is
+// missing. A chunk that has finished holds still while the data file goes on
+// growing, so a shared transfer keeps its finished chunks' files as well.
+func TestCleanupOllamaAfterCancel_KeepsTheResumeFilesOfAPartialAnotherClientIsWriting(t *testing.T) {
+	root := t.TempDir()
+	before, err := ollamaPartialSnapshot(root)
+	require.NoError(t, err)
+	shared := writeBlob(t, root, blobC+"-partial")
+	finishedChunk := writeBlob(t, root, blobC+"-partial-0")
+	ctx := withPartialSettle(t.Context(), func() { growFile(t, shared) })
+
+	require.NoError(t, cleanupOllamaAfterCancel(ctx, root, map[string]bool{digestC: true}, before))
+
+	assertPresent(t, shared)
+	assertPresent(t, finishedChunk)
+}
+
+// Ollama writes a transfer's resume files before it creates the data file. A
+// data file appearing after the snapshot beside resume files that were already
+// there is another client's transfer getting under way, not this pull's.
+func TestCleanupOllamaAfterCancel_KeepsAPartialWhoseResumeFilesPredateThePull(t *testing.T) {
+	root := t.TempDir()
+	olderChunk := writeBlob(t, root, blobA+"-partial-0")
+	before, err := ollamaPartialSnapshot(root)
+	require.NoError(t, err)
+	data := writeBlob(t, root, blobA+"-partial")
+
+	require.NoError(t, cleanupOllamaAfterCancel(settledContext(), root, map[string]bool{digestA: true}, before))
+
+	assertPresent(t, olderChunk)
+	assertPresent(t, data)
+}
+
+// Ollama finishes a blob by removing its resume files and then renaming the
+// data file into place. Resume files vanishing after the grace is another
+// client finishing the transfer, so the data file it is about to rename stays.
+func TestCleanupOllamaAfterCancel_KeepsAPartialAnotherClientIsFinishing(t *testing.T) {
+	root := t.TempDir()
+	before, err := ollamaPartialSnapshot(root)
+	require.NoError(t, err)
+	data := writeBlob(t, root, blobC+"-partial")
+	chunk := writeBlob(t, root, blobC+"-partial-0")
+	waits := 0
+	ctx := withPartialSettle(t.Context(), func() {
+		waits++
+		if waits == partialGraceSamples {
+			require.NoError(t, os.Remove(chunk))
+		}
+	})
+
+	require.NoError(t, cleanupOllamaAfterCancel(ctx, root, map[string]bool{digestC: true}, before))
+
+	assertPresent(t, data)
+}
+
 // newOllamaPullExecutor wires an executor whose ollama pull_model action points
 // at a fake /api/pull server.
 func newOllamaPullExecutor(t *testing.T, serverURL string, emit func(method string, params any)) *Executor {

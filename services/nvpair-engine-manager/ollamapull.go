@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -73,33 +74,38 @@ func cleanupOllamaAfterCancel(
 	if before == nil {
 		return nil
 	}
-	return removeQuiescentPartials(ctx, func() ([]string, error) {
+	return removeQuiescentPartials(ctx, func() ([]partialGroup, error) {
 		return ollamaCreatedPartials(root, digests, before)
 	})
 }
 
 // ollamaCreatedPartials lists the partial blobs this pull both reported and
 // created. Completed blobs may be shared by installed models, and a partial
-// that predates this download belongs to someone else; both are deliberately
-// left out.
-func ollamaCreatedPartials(root string, digests map[string]bool, before ollamaPartialsBefore) ([]string, error) {
-	candidates, err := ollamaPartialPaths(root, digests)
+// that predates this download belongs to someone else, along with every
+// resume file beside it; all are deliberately left out.
+func ollamaCreatedPartials(root string, digests map[string]bool, before ollamaPartialsBefore) ([]partialGroup, error) {
+	groups, err := ollamaPartialGroups(root, digests)
 	if err != nil {
 		return nil, err
 	}
-	created := make([]string, 0, len(candidates))
-	for _, path := range candidates {
-		if !before[path] {
-			created = append(created, path)
+	created := make([]partialGroup, 0, len(groups))
+	for _, group := range groups {
+		if !slices.ContainsFunc(group.files, func(path string) bool { return before[path] }) {
+			created = append(created, group)
 		}
 	}
 	return created, nil
 }
 
-// ollamaPartialPaths lists the blob files matching any digest this pull
-// reported. The directory holds one entry per layer of every installed model,
-// so it is read once rather than per digest.
-func ollamaPartialPaths(root string, digests map[string]bool) ([]string, error) {
+// ollamaPartialGroups lists the partial files of every blob this pull
+// reported, one group per blob: the data file "<blob>-partial" and the resume
+// files beside it, "<blob>-partial-N", one per chunk. Ollama gives up on
+// finishing a blob whose resume files are not all there, so a blob's files
+// are kept or removed together, resume files first: a data file left on its
+// own is a fresh download to Ollama, while resume files left without their
+// data file describe bytes that are gone. The directory holds one entry per
+// layer of every installed model, so it is read once rather than per digest.
+func ollamaPartialGroups(root string, digests map[string]bool) ([]partialGroup, error) {
 	prefixes := make([]string, 0, len(digests))
 	for digest := range digests {
 		if ollamaDigestPattern.MatchString(digest) {
@@ -109,6 +115,7 @@ func ollamaPartialPaths(root string, digests map[string]bool) ([]string, error) 
 	if len(prefixes) == 0 {
 		return nil, nil
 	}
+	slices.Sort(prefixes)
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -116,19 +123,35 @@ func ollamaPartialPaths(root string, digests map[string]bool) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
+	resume := make(map[string][]string, len(prefixes))
+	data := make(map[string]bool, len(prefixes))
 	for _, entry := range entries {
 		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		for _, prefix := range prefixes {
-			if entry.Name() == prefix || strings.HasPrefix(entry.Name(), prefix+"-") {
-				paths = append(paths, filepath.Join(root, entry.Name()))
+			if entry.Name() == prefix {
+				data[prefix] = true
+				break
+			}
+			if strings.HasPrefix(entry.Name(), prefix+"-") {
+				resume[prefix] = append(resume[prefix], filepath.Join(root, entry.Name()))
 				break
 			}
 		}
 	}
-	return paths, nil
+	var groups []partialGroup
+	for _, prefix := range prefixes {
+		name := filepath.Join(root, prefix)
+		files := resume[prefix]
+		if data[prefix] {
+			files = append(files, name)
+		}
+		if len(files) > 0 {
+			groups = append(groups, partialGroup{name: name, files: files})
+		}
+	}
+	return groups, nil
 }
 
 // ollamaBlobsDir is where the Ollama daemon writes blobs: under the

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -38,9 +39,17 @@ func settledContext() context.Context {
 }
 
 // listing is a candidates function for removeQuiescentPartials that names the
-// same files at every sample.
-func listing(paths ...string) func() ([]string, error) {
-	return func() ([]string, error) { return paths, nil }
+// same files at every sample, each a group of its own.
+func listing(paths ...string) func() ([]partialGroup, error) {
+	return func() ([]partialGroup, error) { return eachFile(paths), nil }
+}
+
+// group is a candidates function that names the same files at every sample,
+// as one group removed in the order given.
+func group(files ...string) func() ([]partialGroup, error) {
+	return func() ([]partialGroup, error) {
+		return []partialGroup{{name: files[len(files)-1], files: files}}, nil
+	}
 }
 
 func writePartial(t *testing.T, path, data string) {
@@ -71,19 +80,20 @@ func assertPresent(t *testing.T, path string) {
 	assert.NoError(t, err, "%s should have been kept", filepath.Base(path))
 }
 
-// blockPartialRemoval makes the unlink of path fail, standing in for the
-// sharing violations and permission errors cleanup meets in the field. The
-// platforms need different levers: Windows refuses to delete a file that has
-// an open handle which did not opt into FILE_SHARE_DELETE, which is the handle
-// Go's Open returns, while Unix refuses the unlink when the parent directory
-// is not writable.
-func blockPartialRemoval(t *testing.T, path string) {
+// blockPartialRemoval makes the unlink of path fail until unblock is called or
+// the test ends, standing in for the sharing violations and permission errors
+// cleanup meets in the field. The platforms need different levers: Windows
+// refuses to delete a file that has an open handle which did not opt into
+// FILE_SHARE_DELETE, which is the handle Go's Open returns, while Unix refuses
+// the unlink when the parent directory is not writable.
+func blockPartialRemoval(t *testing.T, path string) (unblock func()) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		file, err := os.Open(path)
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = file.Close() })
-		return
+		unblock = sync.OnceFunc(func() { _ = file.Close() })
+		t.Cleanup(unblock)
+		return unblock
 	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions, so the unlink cannot be made to fail")
@@ -92,7 +102,9 @@ func blockPartialRemoval(t *testing.T, path string) {
 	info, err := os.Stat(dir)
 	require.NoError(t, err)
 	require.NoError(t, os.Chmod(dir, 0500))
-	t.Cleanup(func() { _ = os.Chmod(dir, info.Mode().Perm()) })
+	unblock = sync.OnceFunc(func() { _ = os.Chmod(dir, info.Mode().Perm()) })
+	t.Cleanup(unblock)
+	return unblock
 }
 
 func TestRemoveQuiescentPartials_RemovesFilesThatHoldStill(t *testing.T) {
@@ -212,12 +224,12 @@ func TestRemoveQuiescentPartials_RemovesACandidateThatAppearsLate(t *testing.T) 
 			writePartial(t, late, "data")
 		}
 	})
-	candidates := func() ([]string, error) {
+	candidates := func() ([]partialGroup, error) {
 		paths := []string{early}
 		if _, err := os.Stat(late); err == nil {
 			paths = append(paths, late)
 		}
-		return paths, nil
+		return eachFile(paths), nil
 	}
 
 	require.NoError(t, removeQuiescentPartials(ctx, candidates))
@@ -241,12 +253,12 @@ func TestRemoveQuiescentPartials_KeepsACandidateThatFirstAppearsAfterTheGrace(t 
 			writePartial(t, late, "data")
 		}
 	})
-	candidates := func() ([]string, error) {
+	candidates := func() ([]partialGroup, error) {
 		paths := []string{early}
 		if _, err := os.Stat(late); err == nil {
 			paths = append(paths, late)
 		}
-		return paths, nil
+		return eachFile(paths), nil
 	}
 
 	require.NoError(t, removeQuiescentPartials(ctx, candidates))
@@ -288,6 +300,51 @@ func TestRemoveQuiescentPartials_ContinuesPastAFailedRemoval(t *testing.T) {
 	assert.ErrorContains(t, err, "partial-file cleanup failed")
 	assertPresent(t, blocked)
 	assertRemoved(t, free)
+}
+
+// A group's files go in the order listed, and a removal that fails stops
+// there. Ollama lists resume files before the data file: a data file left on
+// its own is a fresh download to Ollama, while resume files left without their
+// data file describe bytes that are gone.
+func TestRemoveQuiescentPartials_StopsAGroupsRemovalAtAFileThatWillNotGo(t *testing.T) {
+	resume := filepath.Join(t.TempDir(), "blob-partial-0")
+	data := filepath.Join(t.TempDir(), "blob-partial")
+	writePartial(t, resume, "chunk")
+	writePartial(t, data, "data")
+	blockPartialRemoval(t, resume)
+
+	err := removeQuiescentPartials(settledContext(), group(resume, data))
+
+	assert.ErrorContains(t, err, "partial-file cleanup failed")
+	assertPresent(t, resume)
+	assertPresent(t, data)
+}
+
+// The members a failed removal left behind are retried at the next sample, and
+// cleanup's own removals before the failure do not read as another client
+// changing the group.
+func TestRemoveQuiescentPartials_FinishesAGroupWhoseRemovalFailedPartWay(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "blob-partial-0")
+	second := filepath.Join(t.TempDir(), "blob-partial-1")
+	data := filepath.Join(t.TempDir(), "blob-partial")
+	for _, path := range []string{first, second, data} {
+		writePartial(t, path, "data")
+	}
+	unblock := blockPartialRemoval(t, second)
+	waits := 0
+	ctx := withPartialSettle(t.Context(), func() {
+		waits++
+		if waits == partialQuietSamples+1 {
+			unblock()
+		}
+	})
+
+	require.NoError(t, removeQuiescentPartials(ctx, group(first, second, data)))
+
+	assert.Equal(t, partialQuietSamples+1, waits, "the retry should come at the sample after the failed removal")
+	assertRemoved(t, first)
+	assertRemoved(t, second)
+	assertRemoved(t, data)
 }
 
 // Cleanup can only report what was true when it last looked. Both vendors

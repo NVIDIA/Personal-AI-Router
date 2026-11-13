@@ -390,8 +390,12 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model string, before map[s
 	if before == nil {
 		return nil
 	}
-	return removeQuiescentPartials(ctx, func() ([]string, error) {
-		return lmsCreatedPartials(root, model, before, announced)
+	return removeQuiescentPartials(ctx, func() ([]partialGroup, error) {
+		paths, err := lmsCreatedPartials(root, model, before, announced)
+		if err != nil {
+			return nil, err
+		}
+		return eachFile(paths), nil
 	})
 }
 

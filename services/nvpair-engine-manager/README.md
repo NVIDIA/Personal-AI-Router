@@ -518,6 +518,15 @@ within a bounded budget and leaves anything still busy at the deadline, which
 is not a failure. Completed model files are never candidates — they may be
 layers of an installed model.
 
+Ollama keeps a transfer's resume state beside its data file, one `-partial-N`
+file per chunk, and fails to finish a blob whose resume files are not all
+there. So a blob's partial files are judged together: if any of them predates
+the pull, or changes, first appears, or vanishes after the grace (a resume file
+vanishing is another client finishing the blob), all of them stay. Otherwise
+all of them are removed, the resume files before the data file, so a removal
+cut short leaves a data file Ollama downloads afresh rather than resume files
+describing bytes that are gone.
+
 Ollama writes its partials under the `OLLAMA_MODELS` of the environment its
 daemon runs in, or under Ollama's default in the user's home directory when
 that is unset. For a daemon engine-manager launched, that environment is read
