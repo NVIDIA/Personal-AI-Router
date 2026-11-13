@@ -103,7 +103,8 @@ ships in `cli-bin` and the app's updater replaces it.
   the newest download on the highlighted engine, or the newest on the node when
   that engine has none, and its prompt names the model it will stop. A model
   already downloading, or still being cancelled, cannot be downloaded again
-  until that download ends.
+  until that download ends, and a reply for the ended download that arrives
+  once the model has been started again leaves the new download alone.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a

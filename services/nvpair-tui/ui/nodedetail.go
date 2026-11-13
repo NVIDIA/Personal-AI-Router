@@ -92,6 +92,8 @@ type nodeDetail struct {
 	// model as well as the engine because an engine queues downloads rather
 	// than refusing them.
 	downloads []detailDownload
+	// downloadAttempts is the number given to the last download first seen.
+	downloadAttempts int
 
 	// settings is the last settings snapshot seen per engine, keyed by engine
 	// name. Fetched when the operator asks to edit rather than for every engine
@@ -167,10 +169,25 @@ type detailModelRow struct {
 }
 
 // detailDownload is one model download in flight, named the way a cancel
-// names it.
+// names it, and numbered by this screen when it first saw it.
+//
+// The wire names a download by engine and model alone, so only that number
+// tells a retry of a model from the attempt before it. A reply to a pull or a
+// cancel carries the attempt it was sent for, and one that arrives after that
+// attempt has ended and the model has been started again leaves the retry
+// alone. Frames carry no number and are matched by engine and model: each
+// describes whichever download of the model is running, and the engine manager
+// sends a stopped download's last frame before it starts the retry.
 type detailDownload struct {
-	engine string
-	model  string
+	engine  string
+	model   string
+	attempt int
+}
+
+// sameModel reports whether two downloads are of the same model on the same
+// engine, whichever attempts they are.
+func (dl detailDownload) sameModel(other detailDownload) bool {
+	return dl.engine == other.engine && dl.model == other.model
 }
 
 type detailEnginesMsg struct {
@@ -906,33 +923,57 @@ func (d *nodeDetail) promptArmed() bool {
 // outcome a download ends on retires it. A frame naming no model cannot be
 // told apart from another download on its engine, so it is not followed.
 func (d *nodeDetail) followDownload(p pullFrame) {
-	dl := detailDownload{engine: p.Engine, model: p.Model}
-	if dl.engine == "" || dl.model == "" {
+	if p.Engine == "" || p.Model == "" {
 		return
 	}
-	if p.ended() {
+	if !p.ended() {
+		d.trackDownload(p.Engine, p.Model)
+		return
+	}
+	if dl, ok := d.trackedDownload(p.Engine, p.Model); ok {
 		d.retireDownload(dl)
-		return
 	}
-	d.trackDownload(dl)
+}
+
+// trackedDownload returns the download of model on engine in flight, if any.
+func (d *nodeDetail) trackedDownload(engine, model string) (detailDownload, bool) {
+	want := detailDownload{engine: engine, model: model}
+	i := slices.IndexFunc(d.downloads, want.sameModel)
+	if i < 0 {
+		return detailDownload{}, false
+	}
+	return d.downloads[i], true
 }
 
 // trackDownload records a download as in flight, keeping the order downloads
-// were first seen in.
-func (d *nodeDetail) trackDownload(dl detailDownload) {
-	if !slices.Contains(d.downloads, dl) {
-		d.downloads = append(d.downloads, dl)
+// were first seen in, and returns it. A download first seen now is given the
+// next attempt number; one already in flight keeps its own.
+func (d *nodeDetail) trackDownload(engine, model string) detailDownload {
+	if dl, ok := d.trackedDownload(engine, model); ok {
+		return dl
 	}
+	d.downloadAttempts++
+	dl := detailDownload{engine: engine, model: model, attempt: d.downloadAttempts}
+	d.downloads = append(d.downloads, dl)
+	return dl
 }
 
 // retireDownload forgets a download that has ended. A cancellation armed
-// against it is withdrawn too: confirming it would stop nothing, and the
-// outcome is the thing to show.
+// against that attempt is withdrawn too: confirming it would stop nothing, and
+// the outcome is the thing to show.
 func (d *nodeDetail) retireDownload(dl detailDownload) {
 	d.downloads = slices.DeleteFunc(d.downloads, func(x detailDownload) bool { return x == dl })
 	if p := d.pending; p != nil && p.download != nil && *p.download == dl {
 		d.pending = nil
 	}
+}
+
+// retried reports whether a reply sent for dl comes from an attempt that has
+// ended since, with the model started again: the download in flight under its
+// engine and model is a later attempt, which the reply must not act on.
+func (d *nodeDetail) retried(dl detailDownload) bool {
+	current, ok := d.trackedDownload(dl.engine, dl.model)
+	return ok && current.attempt != dl.attempt
 }
 
 // downloadToCancel is the download the cancel key stops: the newest on the
@@ -970,7 +1011,7 @@ func (d *nodeDetail) cancelDownload() tea.Cmd {
 		dismissed: "still downloading " + what,
 		run: func() tea.Cmd {
 			d.status.busy("cancelling download %s...", what)
-			return d.own(cancelPullCmd(d.client, d.nodeArg(), target.engine, target.model))
+			return d.own(cancelPullCmd(d.client, d.nodeArg(), target.engine, target.model, target.attempt))
 		},
 	}
 	d.status.arm("stop downloading %s into %s? press y to stop it, any other key to keep it",
@@ -978,8 +1019,14 @@ func (d *nodeDetail) cancelDownload() tea.Cmd {
 	return nil
 }
 
-// settlePull reports how a download this screen started settled.
+// settlePull reports how a download this screen started settled. A reply for
+// an attempt that ended, with the model started again since, says nothing
+// about the retry and is dropped.
 func (d *nodeDetail) settlePull(msg pullDoneMsg) {
+	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt}
+	if d.retried(dl) {
+		return
+	}
 	what := d.downloadLabel(msg.engine, msg.model)
 	if msg.detached {
 		// Still running, so still cancellable; its frames report the end.
@@ -988,7 +1035,7 @@ func (d *nodeDetail) settlePull(msg pullDoneMsg) {
 		}
 		return
 	}
-	d.retireDownload(detailDownload{engine: msg.engine, model: msg.model})
+	d.retireDownload(dl)
 	if d.promptArmed() {
 		return
 	}
@@ -1013,10 +1060,15 @@ func (d *nodeDetail) settlePull(msg pullDoneMsg) {
 // An acknowledgement says the download settled, not how. One that finished, or
 // failed, just as the cancel arrived is acknowledged too, after its outcome
 // frame has retired it and said what happened; that outcome stays on screen,
-// as it does when the cancel's reply deadline passes after it.
+// as it does when the cancel's reply deadline passes after it. By then the
+// model may have been started again, and the reply, which is about the attempt
+// it stopped, leaves the retry alone.
 func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
+	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt}
+	if d.retried(dl) {
+		return
+	}
 	what := d.downloadLabel(msg.engine, msg.model)
-	dl := detailDownload{engine: msg.engine, model: msg.model}
 	inFlight := slices.Contains(d.downloads, dl)
 	if msg.err == nil && !msg.detached {
 		d.retireDownload(dl)
@@ -1512,19 +1564,19 @@ func (d *nodeDetail) downloadFromCatalog(engine, model string) tea.Cmd {
 // startDownload sends a download and marks it in flight at once, so it can be
 // cancelled before its first progress frame arrives.
 //
-// A model already in flight is refused, as the desktop app refuses it.
-// Downloads are told apart by engine and model alone, so the replies of the one
-// in flight, or of a cancel stopping it, would retire the second too, leaving
-// it running with nothing on screen to cancel.
+// A model already in flight is refused, as the desktop app refuses it. The
+// second request would share the first's entry and attempt, so the replies of
+// the first, or of a cancel stopping it, would retire the second too, leaving
+// it running with nothing on screen to cancel. Once the first has ended, the
+// model starts again as a new attempt, which its replies leave alone.
 func (d *nodeDetail) startDownload(engine, model string) tea.Cmd {
-	dl := detailDownload{engine: engine, model: model}
-	if slices.Contains(d.downloads, dl) {
+	if _, ok := d.trackedDownload(engine, model); ok {
 		d.status.error("download %s is already in progress", d.downloadLabel(engine, model))
 		return nil
 	}
-	d.trackDownload(dl)
+	dl := d.trackDownload(engine, model)
 	d.status.busy("download %s: %s...", d.engineLabel(engine), model)
-	return d.own(pullCmd(d.client, d.nodeArg(), engine, model))
+	return d.own(pullCmd(d.client, d.nodeArg(), engine, model, dl.attempt))
 }
 
 func (d *nodeDetail) modelOp(op string) tea.Cmd {

@@ -287,7 +287,9 @@ func classifyModelOpResult(what, engine, op string, msg *rpc.Message, err error)
 type pullDoneMsg struct {
 	engine string
 	model  string
-	err    error
+	// attempt is the number the screen gave the download it sent this for.
+	attempt int
+	err     error
 	// detached marks a download still running when its reply deadline passed.
 	detached bool
 	// cancelled marks a download that stopped because someone cancelled it,
@@ -304,17 +306,18 @@ type pullDoneMsg struct {
 // replaced, which left the operator with no acknowledgement that the download
 // had started at all, and nothing to distinguish it from a keystroke that
 // missed.
-func pullCmd(client *rpc.Client, node, engine, model string) tea.Cmd {
+func pullCmd(client *rpc.Client, node, engine, model string, attempt int) tea.Cmd {
 	act := modelActions["pull"]
 	method, params, err := modelRequest(node, engine, act, model)
 	if err != nil {
-		return func() tea.Msg { return pullDoneMsg{engine: engine, model: model, err: err} }
+		return func() tea.Msg { return pullDoneMsg{engine: engine, model: model, attempt: attempt, err: err} }
 	}
 	return call(client, method, params, func(reply *rpc.Message, err error) tea.Msg {
 		op := classifyOpResult(act.what+" "+model, engine, act.op, err)
 		return pullDoneMsg{
 			engine:    engine,
 			model:     model,
+			attempt:   attempt,
 			err:       op.err,
 			detached:  op.detached,
 			cancelled: err == nil && pullWasCancelled(reply),
@@ -345,7 +348,9 @@ func pullWasCancelled(reply *rpc.Message) bool {
 type cancelPullMsg struct {
 	engine string
 	model  string
-	err    error
+	// attempt is the number the screen gave the download this cancelled.
+	attempt int
+	err     error
 	// detached marks a cancellation still running when its reply deadline
 	// passed. The engine manager answers only once the transfer has stopped
 	// and its cleanup has settled, and gives a peer far longer than
@@ -354,8 +359,9 @@ type cancelPullMsg struct {
 }
 
 // cancelPullCmd cancels a download on a node, naming it by engine and model
-// because an engine queues downloads rather than refusing them.
-func cancelPullCmd(client *rpc.Client, node, engine, model string) tea.Cmd {
+// because an engine queues downloads rather than refusing them. attempt is
+// the screen's own number for the download, carried only to the reply.
+func cancelPullCmd(client *rpc.Client, node, engine, model string, attempt int) tea.Cmd {
 	method := "engine:cancel-pull"
 	params := map[string]any{"engine": engine, "model": model}
 	if node != "" {
@@ -364,9 +370,9 @@ func cancelPullCmd(client *rpc.Client, node, engine, model string) tea.Cmd {
 	}
 	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return cancelPullMsg{engine: engine, model: model, detached: true}
+			return cancelPullMsg{engine: engine, model: model, attempt: attempt, detached: true}
 		}
-		return cancelPullMsg{engine: engine, model: model, err: err}
+		return cancelPullMsg{engine: engine, model: model, attempt: attempt, err: err}
 	})
 }
 
