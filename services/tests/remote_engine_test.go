@@ -199,13 +199,14 @@ func TestRemoteEngineCancelPull_AnswersAtOnceWithNothingToStop(t *testing.T) {
 	waitForMethod(t, aMsgs, "engine:ready", 10*time.Second)
 
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
-		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
+		`{"hostUuid":%q,"name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
+		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, uuidB, portB)
 	writeRawFrame(t, aStdin, snapshot)
 
 	t.Run("a cancel for a download nobody started is answered, not stalled", func(t *testing.T) {
-		writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-cancel-pull",`+
-			`"params":{"node":"nodeB","engine":"ollama","model":"demo"}}`)
+		writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"engine:remote-cancel-pull",`+
+			`"params":{"node":%q,"engine":"ollama","model":"demo"}}`, uuidB))
 
 		// Comfortably inside the gate's window: were an absent pull to park the
 		// cancel there, this would time out rather than return.
@@ -217,8 +218,8 @@ func TestRemoteEngineCancelPull_AnswersAtOnceWithNothingToStop(t *testing.T) {
 	// The model is what names the download, so a cancel without one has no
 	// target. It is refused before anything is sent to the peer.
 	t.Run("a cancel naming no model is refused", func(t *testing.T) {
-		writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":2,"method":"engine:remote-cancel-pull",`+
-			`"params":{"node":"nodeB","engine":"ollama"}}`)
+		writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"engine:remote-cancel-pull",`+
+			`"params":{"node":%q,"engine":"ollama"}}`, uuidB))
 
 		resp := waitForResponse(t, aMsgs, 15*time.Second)
 		require.NotNil(t, resp.Error, "a cancel with no model was accepted: %s", resp.Result)
@@ -260,13 +261,14 @@ func TestRemoteEngineCancelPull_StopsTheDownloadAndRemovesItsPartial(t *testing.
 	t.Cleanup(aCleanup)
 	waitForMethod(t, aMsgs, "engine:ready", 10*time.Second)
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
-		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
+		`{"hostUuid":%q,"name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
+		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, uuidB, portB)
 	writeRawFrame(t, aStdin, snapshot)
 
 	// Reading B's engines is what has B probe the stand-in and adopt it as a
 	// running Ollama; until then a pull there is refused as not running.
-	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
+	writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":%q}}`, uuidB))
 	installed := waitForResponseID(t, aMsgs, 1, 15*time.Second)
 	require.Nil(t, installed.Error, "remote-get-installed errored")
 	type engineRunning struct {
@@ -279,8 +281,8 @@ func TestRemoteEngineCancelPull_StopsTheDownloadAndRemovesItsPartial(t *testing.
 	require.NoError(t, json.Unmarshal(installed.Result, &engines), "decode %s", installed.Result)
 	require.Contains(t, engines.Engines, engineRunning{Engine: "ollama", Running: true}, "B did not adopt the stand-in as a running Ollama")
 
-	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":2,"method":"engine:remote-pull-model",`+
-		`"params":{"node":"nodeB","engine":"ollama","model":"demo"}}`)
+	writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"engine:remote-pull-model",`+
+		`"params":{"node":%q,"engine":"ollama","model":"demo"}}`, uuidB))
 	select {
 	case <-ollama.downloading:
 	case <-time.After(15 * time.Second):
@@ -294,11 +296,11 @@ func TestRemoteEngineCancelPull_StopsTheDownloadAndRemovesItsPartial(t *testing.
 	}
 	relayed := waitForMethod(t, aMsgs, "engine:remote-progress", 15*time.Second)
 	require.NoError(t, json.Unmarshal(relayed.Params, &progress), "decode %s", relayed.Params)
-	require.Equal(t, "nodeB", progress.Node, "progress was not attributed to the peer downloading")
+	require.Equal(t, uuidB, progress.Node, "progress was not attributed to the peer downloading")
 	require.Equal(t, "demo", progress.Model, "progress was not attributed to the model downloading")
 
-	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":3,"method":"engine:remote-cancel-pull",`+
-		`"params":{"node":"nodeB","engine":"ollama","model":"demo"}}`)
+	writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"engine:remote-cancel-pull",`+
+		`"params":{"node":%q,"engine":"ollama","model":"demo"}}`, uuidB))
 	// The two replies race, since each settles when the download does.
 	replies := make(map[int]jsonrpc.Message)
 	var stages []string
