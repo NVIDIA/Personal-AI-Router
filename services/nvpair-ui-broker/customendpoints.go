@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"nvpair-shared/appdir"
+	"nvpair-shared/noderec"
 )
 
 // persistedCustomEndpoint is one row of custom-endpoints.json. ID is only
@@ -827,19 +828,23 @@ type customProxyCandidate struct {
 }
 
 // customToEnriched projects a bridged endpoint onto the discovery store. The
-// endpoint key is both the display ID and the store key: it never rotates
-// the way a learned hostUuid does, and the custom:<baseUrl>/explicit-id
-// spelling cannot collide with the host-keyed records the scanner and manual
-// feeds write.
+// endpoint key is the display ID, the independent record key, and the store
+// key: it never rotates the way a learned hostUuid does, and the
+// custom:<baseUrl>/explicit-id spelling cannot collide with the host-keyed
+// records the scanner and manual feeds write. The record stays unverified —
+// an endpoint URL proves no host identity — so the store keys it by
+// DiscoveryRecordID exactly as it keys an unverified announcement or an
+// unauthenticated manual entry, and never merges it into a peer's record.
 func customToEnriched(status customEndpointStatus, host string, port int) EnrichedNode {
 	return EnrichedNode{
-		ID:             status.ID,
-		HostUUID:       status.ID,
-		Host:           host,
-		Port:           port,
-		Addresses:      []string{host},
-		Models:         status.Models,
-		ModelsByEngine: map[string][]string{"custom": status.Models},
+		ID:                   status.ID,
+		DiscoveryRecordID:    status.ID,
+		IdentityVerification: noderec.IdentityUnverified,
+		Host:                 host,
+		Port:                 port,
+		Addresses:            []string{host},
+		Models:               status.Models,
+		ModelsByEngine:       map[string][]string{"custom": status.Models},
 	}
 }
 

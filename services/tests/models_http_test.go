@@ -58,14 +58,34 @@ func TestDiscovery_EnrichesModelsThroughHTTP(t *testing.T) {
 // the same pinned identity. The one announcement remains fixed during refresh tests.
 func (c *interNodeCluster) startModelsPeer(t *testing.T, instance string, models http.Handler) {
 	t.Helper()
+	c.startAdvertisedModelsPeer(t, instance, models, nil)
+}
+
+// startAdvertisedModelsPeer is startModelsPeer with extra advertised services.
+// Each one is reported in the authenticated inventory and in the announcement
+// TXT, so a test can prove a service the scanner has no use of its own for
+// (Custom's cu) is parsed and carried rather than poisoning the record.
+func (c *interNodeCluster) startAdvertisedModelsPeer(
+	t *testing.T, instance string, models http.Handler, extra map[noderec.ServiceKey]int,
+) {
+	t.Helper()
 	var port int
+	// Reads port lazily: the listener's number is only known once the TLS
+	// server has started, while the handler is registered before that.
+	services := func() map[noderec.ServiceKey]int {
+		out := map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: port, noderec.ServiceEngineManager: port}
+		for key, extraPort := range extra {
+			out[key] = extraPort
+		}
+		return out
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
 		info := noderec.NodeInfo{
 			HostUUID: c.peerUUID, ClusterUUID: &c.peerUUID,
 			Peer: &noderec.PeerMetadata{
 				Name: instance, Addresses: []string{"127.0.0.1"},
-				Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: port, noderec.ServiceEngineManager: port},
+				Services: services(),
 			},
 		}
 		assert.NoError(t, json.NewEncoder(w).Encode(info))
@@ -88,6 +108,11 @@ func (c *interNodeCluster) startModelsPeer(t *testing.T, instance string, models
 
 	txt := []string{"v=1", "uuid=" + c.peerUUID, "cluster-uuid=" + c.peerUUID, "ip=127.0.0.1",
 		fmt.Sprintf("ni=%d", port), fmt.Sprintf("em=%d", port)}
+	for key, extraPort := range extra {
+		// A ServiceKey is its own TXT code, so the extra services advertise
+		// exactly the way the built-in ones do.
+		txt = append(txt, fmt.Sprintf("%s=%d", key, extraPort))
+	}
 	advertisement, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
 	require.NoError(t, err, "register model peer")
 	t.Cleanup(advertisement.Shutdown)
