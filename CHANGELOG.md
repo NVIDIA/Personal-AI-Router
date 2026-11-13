@@ -11,6 +11,15 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.23 — Authenticate peer inventory before using it for service decisions (#179)
+
+- Verify discovered peers before using their identities, service endpoints, models, or hardware measurements.
+- Preserve public hardware previews and explicitly configured manual engine routes.
+- Withdraw obsolete peer state after trust changes and recover worker state without making cached measurements appear fresh.
+- Remove custom certificate/CA flags from standalone scanner and manual-node commands; authenticated hardware reads use paired cluster identities.
+- Broker node removal now distinguishes exact manual entry IDs from broker node keys; callers using a node key must send nodeId.
+- Deliver GUI and TUI hardware displays through broker snapshots and live updates instead of plaintext HTTP.
+
 ## 1.0.22 — Refresh vLLM model lists after peer downloads and deletions (#200)
 
 - The owning computer's vLLM model list now updates automatically when a peer downloads or deletes a model, including while the engine is stopped.
