@@ -22,12 +22,12 @@ type PeerConfig struct {
 
 // Peer drives the EAP peer side of one EAP-NOOB association.
 type Peer struct {
-	peerInfo  json.RawMessage
-	preferDir OOBDirection
-	dirp      OOBDirection
-	csp       int
-	store     Store
-	state     State
+	peerInfo           json.RawMessage
+	preferDir          OOBDirection
+	dirp               OOBDirection
+	store              Store
+	state              State
+	completionVerified bool
 
 	methodState
 }
@@ -72,6 +72,7 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 	if wm.EAP != "" {
 		return p.onResult(wm)
 	}
+	p.completionVerified = false
 	if wm.ErrorCode != nil {
 		return Outcome{State: p.state, Done: true, Err: &ProtocolError{Code: *wm.ErrorCode, Info: wm.ErrorInfo}}, nil
 	}
@@ -98,10 +99,14 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 
 func (p *Peer) onResult(wm *wireMessage) (Outcome, error) {
 	if wm.EAP == eapSuccess {
+		if !p.completionVerified {
+			return p.fail(ErrStateMismatch, "success before verified Completion")
+		}
+		p.completionVerified = false
 		assoc := &Association{
 			PeerId:       p.peerId,
 			NAI:          p.nai,
-			Cryptosuitep: p.csp,
+			Cryptosuitep: int(p.suite.id),
 			Kz:           append([]byte(nil), p.keyM.Kz...),
 		}
 		if err := p.store.Save(assoc); err != nil {
@@ -112,6 +117,7 @@ func (p *Peer) onResult(wm *wireMessage) (Outcome, error) {
 		return Outcome{State: p.state, Done: true, Success: true}, nil
 	}
 	// EAP-Failure: the conversation ended without registration.
+	p.completionVerified = false
 	return Outcome{State: p.state, Done: true}, nil
 }
 
@@ -164,7 +170,6 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	}
 
 	p.suite = suite
-	p.csp = int(suite.id)
 	p.dirp = dirp
 
 	// Determine the effective NAI: a server-assigned NewNAI overrides the
@@ -206,6 +211,9 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 }
 
 func (p *Peer) onKeyExchangeRequest(wm *wireMessage) (Outcome, error) {
+	if p.state != StateUnregistered || p.suite == nil {
+		return p.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
+	}
 	jwk, err := rawToJWK(wm.PKs)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad PKs")
@@ -318,6 +326,7 @@ func (p *Peer) onCompletionRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	p.completionVerified = true
 	return Outcome{Send: b, State: p.state}, nil
 }
 
@@ -369,6 +378,7 @@ func (p *Peer) OOBInputNoob(noob []byte) error {
 }
 
 func (p *Peer) fail(code int, info string) (Outcome, error) {
+	p.completionVerified = false
 	b, err := errorMessage(code, info)
 	if err != nil {
 		return Outcome{}, err

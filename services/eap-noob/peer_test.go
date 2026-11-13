@@ -112,6 +112,38 @@ func TestPeerNegotiation_RejectsUnsupportedOffers(t *testing.T) {
 	}, ErrNoMutuallySupportedOOB)
 }
 
+func TestPeer_RejectsSuccessBeforeVerifiedCompletion(t *testing.T) {
+	test := func(name string, state State) {
+		t.Run(name, func(t *testing.T) {
+			srv := NewServer(ServerConfig{}, nil)
+			peer := NewPeer(PeerConfig{}, nil)
+			if state != StateUnregistered {
+				require.Nil(t, driveConversation(t, srv, peer).Err)
+			}
+			if state == StateOOBReceived {
+				require.NoError(t, peer.OOBInputNoob(make([]byte, 16)))
+			}
+			require.Equal(t, state, peer.State())
+
+			out, err := peer.Receive(resultBytes(eapSuccess))
+
+			require.NoError(t, err)
+			require.NotNil(t, out.Err)
+			assert.Equal(t, ErrStateMismatch, out.Err.Code)
+			assert.True(t, out.Done)
+			assert.False(t, out.Success)
+			assert.Equal(t, state, peer.State())
+			assert.Nil(t, peer.Association())
+			secret, err := peer.Export("app", nil, 32)
+			assert.ErrorIs(t, err, ErrNotRegistered)
+			assert.Empty(t, secret)
+		})
+	}
+	test("before initial exchange", StateUnregistered)
+	test("before OOB input", StateWaiting)
+	test("after OOB input without Completion", StateOOBReceived)
+}
+
 func TestPeer_RejectsChangedAuthenticatedCertificateInformation(t *testing.T) {
 	test := func(name string, changedServerInfo, changedPeerInfo json.RawMessage) {
 		t.Run(name, func(t *testing.T) {
@@ -157,4 +189,22 @@ func TestPeer_RejectsChangedAuthenticatedCertificateInformation(t *testing.T) {
 	}
 	test("changed server certificate", json.RawMessage(`{"cert":"changed-server-cert"}`), nil)
 	test("changed peer certificate", nil, json.RawMessage(`{"cert":"changed-peer-cert"}`))
+}
+
+// A sender can skip negotiation after discovery. Reject its key-exchange
+// message before accessing the algorithm that negotiation would have selected.
+func TestPeer_RejectsKeyExchangeBeforeNegotiation(t *testing.T) {
+	peer := NewPeer(PeerConfig{}, nil)
+	discovery, err := peer.Receive([]byte(`{"Type":1}`))
+	require.NoError(t, err)
+	require.Nil(t, discovery.Err)
+
+	out, err := peer.Receive([]byte(`{"Type":3,"PKs":{},"Ns":""}`))
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.True(t, out.Done)
+	assert.False(t, out.Success)
+	assert.Equal(t, StateUnregistered, peer.State())
 }

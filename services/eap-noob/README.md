@@ -105,6 +105,10 @@ conversation for the Initial Exchange, perform the OOB relay, then run a second
 conversation for the Completion Exchange (call `srv.Start()` again to begin it).
 `Done` alone does not mean pairing succeeded.
 
+Key exchange requires completed negotiation. Completion requires derived
+authentication keys, and the peer accepts success only after verifying the
+server's completion message authentication code (MAC).
+
 ### OOB direction
 
 `ServerConfig.Dirs` selects the supported OOB directions using `OOBPeerToServer`
@@ -130,7 +134,7 @@ different algorithms. Export uses Go's standard `crypto/hkdf` package; the
 completion KDF retains its local implementation because it is a different
 algorithm required by RFC 9140.
 
-Exports return `ErrNotRegistered` until a registered association is available.
+Exports return `ErrNotRegistered` until authenticated Completion succeeds.
 Labels are separated from context with a two-byte label-length prefix and may
 contain at most 65535 bytes. Export lengths range from 0 to 8160 bytes, the
 HKDF-SHA-256 limit. Use distinct labels or contexts for distinct purposes.

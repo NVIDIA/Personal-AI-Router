@@ -23,7 +23,6 @@ type Server struct {
 	serverInfo json.RawMessage
 	dirs       OOBDirection
 	dirp       OOBDirection
-	csp        int
 	store      Store
 	state      State
 
@@ -189,7 +188,6 @@ func (s *Server) onNegotiation(wm *wireMessage) (Outcome, error) {
 	}
 
 	s.suite = suite
-	s.csp = selectedSuite
 	s.dirp = dirp
 
 	s.in.Verp = wm.Verp
@@ -236,6 +234,9 @@ func (s *Server) buildKeyExchangeRequest() (Outcome, error) {
 }
 
 func (s *Server) onKeyExchange(wm *wireMessage) (Outcome, error) {
+	if s.state != StateUnregistered || s.suite == nil || s.priv == nil {
+		return s.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
+	}
 	if err := s.checkPeerId(wm); err != nil {
 		return s.fail(ErrUnexpectedPeerIdentier, err.Error())
 	}
@@ -333,6 +334,9 @@ func (s *Server) buildCompletionRequest() (Outcome, error) {
 }
 
 func (s *Server) onCompletion(wm *wireMessage) (Outcome, error) {
+	if (s.state != StateWaiting && s.state != StateOOBReceived) || s.suite == nil || len(s.keyM.Kmp) == 0 {
+		return s.fail(ErrStateMismatch, "completion before authentication keys are ready")
+	}
 	if err := s.checkPeerId(wm); err != nil {
 		return s.fail(ErrUnexpectedPeerIdentier, err.Error())
 	}
@@ -348,7 +352,7 @@ func (s *Server) onCompletion(wm *wireMessage) (Outcome, error) {
 	assoc := &Association{
 		PeerId:       s.peerId,
 		NAI:          s.nai,
-		Cryptosuitep: s.csp,
+		Cryptosuitep: int(s.suite.id),
 		Kz:           append([]byte(nil), s.keyM.Kz...),
 	}
 	if err := s.store.Save(assoc); err != nil {
