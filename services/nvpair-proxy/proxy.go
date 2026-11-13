@@ -1275,7 +1275,12 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("proxy request rejected",
 			"id", reqID, "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr, "reason", rejectionError)
-		http.Error(w, rejectionBody, rejectionStatus)
+		// Not http.Error: it labels the body text/plain, so clients that read
+		// the error from a JSON response (ollama-js, for one) show it raw.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(rejectionStatus)
+		w.Write([]byte(rejectionBody))
 		_ = f.notify("proxy/request", RequestEvent{
 			ID:       reqID,
 			Method:   r.Method,
