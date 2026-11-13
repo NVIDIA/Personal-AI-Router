@@ -163,10 +163,18 @@ backend normally.
 Before choosing a context window and `--gpu-memory-utilization`, PAIR reads
 device memory from `nvidia-smi` when available and otherwise asks the installed
 vLLM platform. This covers CUDA/ROCm, Intel XPU, Apple Metal, CPU, and
-out-of-tree backends that expose vLLM's memory API. Shared-memory platforms keep
-3 GiB for runtime startup in addition to the normal 1 GiB free margin. If neither
-provider can measure free memory, PAIR does not invent a limit and leaves memory
-sizing to vLLM.
+out-of-tree backends that expose vLLM's memory API.
+
+The runtime probe requires a Python interpreter beside the resolved vLLM
+executable, with `torch` (PyTorch), `vllm`, and `psutil` importable in that
+interpreter's environment. PAIR's managed vLLM installation provides these in its
+private environment; an adopted installation must provide them in its own
+environment as well. No separate global Python or package installation is needed.
+
+Shared-memory platforms keep 3 GiB for runtime startup in addition to the normal
+1 GiB free margin. If neither provider can measure free memory, including when
+the probe's interpreter or packages are missing, PAIR logs a warning and leaves
+memory sizing to vLLM.
 
 Readiness polls `/health` for up to eight minutes while weights load.
 

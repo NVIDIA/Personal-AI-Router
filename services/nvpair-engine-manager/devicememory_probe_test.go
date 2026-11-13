@@ -4,6 +4,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"os/exec"
 	"strings"
@@ -13,71 +14,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Run the embedded production probe with device APIs supplied by the fixture.
-// Discrete and unknown devices deliberately reject any attempt to read host RAM.
-const deviceMemoryProbeHarness = `
-import json
-import sys
-import types
+// deviceMemoryProbeHarness supplies fake device APIs for the production probe.
+// Each case sends a JSON fixture on stdin to a fresh Python process, which runs
+// the harness followed by deviceMemoryProbeScript. The probe's imports resolve
+// to the harness's fake modules, so no GPU, PyTorch, or vLLM install is needed.
+// These tests check which memory source the probe uses and the values it returns.
+// They do not check real library compatibility, the engine environment passed by
+// the Go launcher, or cancellation of the production probe. The fixture file
+// documents the input fields and rejects unexpected reads of system RAM.
+//
+//go:embed testdata/devicememory_probe_harness.py
+var deviceMemoryProbeHarness string
 
-sys.excepthook = sys.__excepthook__
-fixture = json.load(sys.stdin)
-gib = 1 << 30
-backend = fixture.get("backend", "unknown")
-total = fixture.get("total_gib", 16) * gib
-free = fixture.get("free_gib", 4) * gib
-
-def system_memory():
-    if not fixture.get("allow_system", False):
-        raise RuntimeError("system RAM must not be read for this device")
-    return types.SimpleNamespace(total=fixture.get("system_total_gib", 16) * gib,
-                                 available=fixture.get("system_free_gib", 12) * gib)
-
-def device_memory(device):
-    if fixture.get("device_memory_error", False):
-        raise RuntimeError("device memory unavailable")
-    return free, total
-
-cuda_properties = types.SimpleNamespace(total_memory=total)
-xpu_properties = types.SimpleNamespace(total_memory=total)
-if not fixture.get("unknown_topology", False):
-    cuda_properties.is_integrated = fixture.get("integrated", False)
-    xpu_properties.is_integrated_gpu = fixture.get("integrated", False)
-
-torch = types.SimpleNamespace(
-    cuda=types.SimpleNamespace(is_available=lambda: backend in ("cuda", "rocm"),
-        device_count=lambda: fixture.get("device_count", 1),
-        mem_get_info=device_memory, get_device_properties=lambda device: cuda_properties),
-    xpu=types.SimpleNamespace(is_available=lambda: backend == "xpu",
-        mem_get_info=device_memory, get_device_properties=lambda device: xpu_properties),
-    backends=types.SimpleNamespace(mps=types.SimpleNamespace(
-        is_available=lambda: fixture.get("mps_available", False))))
-platform = types.SimpleNamespace(get_device_total_memory=lambda device: total,
-                                is_cpu=lambda: backend == "cpu")
-if fixture.get("has_device_free", False):
-    platform.get_device_available_memory = lambda device: free
-sys.modules["torch"] = torch
-sys.modules["psutil"] = types.SimpleNamespace(virtual_memory=system_memory)
-sys.modules["platform"] = types.SimpleNamespace(machine=lambda: fixture.get("arch", "x86_64"))
-sys.modules["vllm.platforms"] = types.SimpleNamespace(current_platform=platform)
-sys.platform = fixture.get("os", "linux")
-`
+// runDeviceMemoryProbeFixture gives each case a fresh Python process so its fake
+// modules and platform settings cannot affect another case.
+func runDeviceMemoryProbeFixture(python, input string) ([]byte, error) {
+	cmd := exec.Command(python, "-I", "-c", deviceMemoryProbeHarness+"\n"+deviceMemoryProbeScript)
+	cmd.Stdin = strings.NewReader(input)
+	return cmd.CombinedOutput()
+}
 
 func TestDeviceMemoryProbe_UsesSystemRAMOnlyForVerifiedSharedDevices(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("Python 3 is required to exercise the embedded vLLM memory probe")
 	}
-	accept := func(name, input string, want deviceMemoryProbe) {
+	accept := func(name, input string, expected deviceMemoryProbe) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
-			cmd := exec.Command(python, "-I", "-c", deviceMemoryProbeHarness+"\n"+deviceMemoryProbeScript)
-			cmd.Stdin = strings.NewReader(input)
-			output, err := cmd.CombinedOutput()
+			output, err := runDeviceMemoryProbeFixture(python, input)
 			require.NoError(t, err, "%s", output)
 			var result deviceMemoryProbe
 			require.NoError(t, json.Unmarshal(output, &result))
-			assert.Equal(t, want, result)
+			assert.Equal(t, expected, result)
 		})
 	}
 	accept("discrete CUDA with the same capacity as host RAM", `{"backend":"cuda"}`,
@@ -109,19 +78,22 @@ func TestDeviceMemoryProbe_RejectsUnavailableMemoryWithoutGuessingTopology(t *te
 	if err != nil {
 		t.Skip("Python 3 is required to exercise the embedded vLLM memory probe")
 	}
-	for _, tc := range []struct{ name, input, message string }{
-		{"unknown device matching host RAM", `{}`, "the selected vLLM backend does not report free memory"},
-		{"Intel Mac with Metal is not proof of shared RAM", `{"os":"darwin","arch":"x86_64","mps_available":true}`, "the selected vLLM backend does not report free memory"},
-		{"Apple Silicon without Metal available", `{"os":"darwin","arch":"arm64"}`, "the selected vLLM backend does not report free memory"},
-		{"discrete CUDA query failure", `{"backend":"cuda","device_memory_error":true}`, "device memory unavailable"},
-		{"multiple CUDA devices", `{"backend":"cuda","device_count":2}`, "multiple CUDA devices require engine-owned memory sizing"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(python, "-I", "-c", deviceMemoryProbeHarness+"\n"+deviceMemoryProbeScript)
-			cmd.Stdin = strings.NewReader(tc.input)
-			output, err := cmd.CombinedOutput()
+	reject := func(name, input, expectedMessage string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			output, err := runDeviceMemoryProbeFixture(python, input)
 			require.Error(t, err)
-			assert.Contains(t, string(output), tc.message)
+			assert.Contains(t, string(output), expectedMessage)
 		})
 	}
+	reject("unknown device matching host RAM", `{}`,
+		"the selected vLLM backend does not report free memory")
+	reject("Intel Mac with Metal is not proof of shared RAM", `{"os":"darwin","arch":"x86_64","mps_available":true}`,
+		"the selected vLLM backend does not report free memory")
+	reject("Apple Silicon without Metal available", `{"os":"darwin","arch":"arm64"}`,
+		"the selected vLLM backend does not report free memory")
+	reject("discrete CUDA query failure", `{"backend":"cuda","device_memory_error":true}`,
+		"device memory unavailable")
+	reject("multiple CUDA devices", `{"backend":"cuda","device_count":2}`,
+		"multiple CUDA devices require engine-owned memory sizing")
 }
