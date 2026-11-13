@@ -27,7 +27,9 @@ type JWK struct {
 type cryptosuiteID int
 
 // Cryptosuite identifiers are assigned by RFC 9140, Section 5.1.
-// Both suites use SHA-256; PAIR normally selects P-256.
+// PAIR nodes normally select P-256; X25519 is retained because the RFC requires
+// implementations to support it, and remains available during negotiation.
+// Both suites use SHA-256. Keep these values explicit to match the protocol.
 const (
 	cryptosuiteX25519 cryptosuiteID = 1
 	cryptosuiteP256   cryptosuiteID = 2
@@ -55,14 +57,6 @@ func suiteByID(id cryptosuiteID) (*cryptosuite, error) {
 	default:
 		return nil, fmt.Errorf("eapnoob: unsupported cryptosuite %d", id)
 	}
-}
-
-// supportedCryptosuites lists the suites this library implements, in the
-// recommended server priority order.
-func supportedCryptosuites() []int { return []int{int(cryptosuiteP256), int(cryptosuiteX25519)} }
-
-func isSupportedCryptosuite(id int) bool {
-	return id == int(cryptosuiteX25519) || id == int(cryptosuiteP256)
 }
 
 // generateKeypair creates an ephemeral ECDHE key pair and returns the private

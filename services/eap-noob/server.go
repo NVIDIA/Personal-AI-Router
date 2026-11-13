@@ -9,58 +9,38 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"slices"
 )
 
-// ServerConfig configures the EAP server role.
+// ServerConfig configures the server's identity and offered OOB directions.
 type ServerConfig struct {
-	// Versions are the supported protocol versions, highest priority first.
-	// Defaults to []int{1}.
-	Versions []int
-	// Cryptosuites are the supported cryptosuites in decreasing priority.
-	// Defaults to the recommended order []int{2, 1}.
-	Cryptosuites []int
-	// Dirs selects the supported OOB channel directions. Defaults to OOBBoth.
+	ServerInfo PairingInfo
+	// Dirs selects supported OOB directions. The default is OOBBoth.
 	Dirs OOBDirection
-	// ServerInfo is an optional application-defined JSON object sent to the
-	// peer in the Initial Exchange.
-	ServerInfo map[string]any
-	// NewNAI optionally assigns a new NAI to the peer.
-	NewNAI string
-	// SleepTime is an optional minimum probe interval advertised to the peer.
-	SleepTime int
 }
 
 // Server drives the EAP server side of one EAP-NOOB association.
 type Server struct {
-	cfg   ServerConfig
-	store Store
-	state State
+	serverInfo json.RawMessage
+	dirs       OOBDirection
+	dirp       OOBDirection
+	csp        int
+	store      Store
+	state      State
 
 	methodState
-
-	peerState int
-	verp      int
-	csp       int
-	dirp      OOBDirection
 }
 
-// NewServer creates a server using the given configuration and association
-// store. If store is nil an in-memory store is used.
+// NewServer creates a server with a typed identity and offered OOB directions.
+// Completion authenticates the identity, including its public certificate.
+// If store is nil, an in-memory association store is used.
 func NewServer(cfg ServerConfig, store Store) *Server {
-	if len(cfg.Versions) == 0 {
-		cfg.Versions = []int{1}
-	}
-	if len(cfg.Cryptosuites) == 0 {
-		cfg.Cryptosuites = supportedCryptosuites()
-	}
 	if cfg.Dirs == 0 {
 		cfg.Dirs = OOBBoth
 	}
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	return &Server{cfg: cfg, store: store, state: StateUnregistered}
+	return &Server{serverInfo: marshalInfo(cfg.ServerInfo), dirs: cfg.Dirs, store: store, state: StateUnregistered}
 }
 
 // State returns the server's current association state.
@@ -75,8 +55,8 @@ func (s *Server) PeerInfo() json.RawMessage { return s.in.PeerInfo }
 // has succeeded, or nil.
 func (s *Server) Association() *Association { return s.registered }
 
-// Export derives an arbitrary-length shared secret from the registered
-// association (see Association.Export).
+// Export derives a shared application secret from the registered association
+// (see Association.Export).
 func (s *Server) Export(label string, context []byte, length int) ([]byte, error) {
 	return s.registered.Export(label, context, length)
 }
@@ -124,7 +104,6 @@ func (s *Server) onDiscovery(wm *wireMessage) (Outcome, error) {
 	if wm.PeerState == nil {
 		return s.fail(ErrInvalidData, "missing PeerState")
 	}
-	s.peerState = *wm.PeerState
 	if len(wm.NAI) > 0 {
 		if nai, err := rawToString(wm.NAI); err == nil {
 			s.nai = nai
@@ -134,13 +113,14 @@ func (s *Server) onDiscovery(wm *wireMessage) (Outcome, error) {
 		s.nai = defaultNAI
 	}
 
-	ss, ps := int(s.state), s.peerState
+	ss, ps := s.state, State(*wm.PeerState)
 	switch {
-	case (ss == 2 && (ps == 1 || ps == 2)) || (ps == 2 && (ss == 1 || ss == 2)):
+	case (ss == StateOOBReceived && (ps == StateWaiting || ps == StateOOBReceived)) ||
+		(ps == StateOOBReceived && (ss == StateWaiting || ss == StateOOBReceived)):
 		return s.startCompletion(wm)
-	case ss == 1 && ps == 1:
+	case ss == StateWaiting && ps == StateWaiting:
 		return s.buildWaitingRequest()
-	case ss == 0 || ps == 0:
+	case ss == StateUnregistered || ps == StateUnregistered:
 		return s.buildNegotiationRequest()
 	default:
 		return s.fail(ErrStateMismatch, fmt.Sprintf("server state %d / peer state %d", ss, ps))
@@ -154,10 +134,9 @@ func (s *Server) buildNegotiationRequest() (Outcome, error) {
 	}
 	s.peerId = peerId
 
-	vers := rawIntSlice(s.cfg.Versions)
-	cs := rawIntSlice(s.cfg.Cryptosuites)
-	dirs := rawInt(int(s.cfg.Dirs))
-	srvInfo := marshalInfo(s.cfg.ServerInfo)
+	vers := rawIntSlice([]int{protocolVersion})
+	cs := rawIntSlice([]int{int(cryptosuiteP256), int(cryptosuiteX25519)})
+	dirs := rawInt(int(s.dirs))
 
 	m := &wireMessage{
 		Type:         intp(typeNegotiation),
@@ -165,18 +144,14 @@ func (s *Server) buildNegotiationRequest() (Outcome, error) {
 		PeerId:       rawString(peerId),
 		Cryptosuites: cs,
 		Dirs:         dirs,
-		ServerInfo:   srvInfo,
-	}
-	if s.cfg.NewNAI != "" {
-		m.NewNAI = rawString(s.cfg.NewNAI)
-		s.nai = s.cfg.NewNAI
+		ServerInfo:   s.serverInfo,
 	}
 
 	s.in.Vers = vers
 	s.in.PeerId = rawString(peerId)
 	s.in.Cryptosuites = cs
 	s.in.Dirs = dirs
-	s.in.ServerInfo = srvInfo
+	s.in.ServerInfo = s.serverInfo
 
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -193,14 +168,15 @@ func (s *Server) onNegotiation(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return s.fail(ErrInvalidData, "bad Verp")
 	}
-	if !slices.Contains(s.cfg.Versions, verp) {
+	if verp != protocolVersion {
 		return s.fail(ErrUnsupportedVersion, "peer selected unsupported version")
 	}
-	csp, err := rawToInt(wm.Cryptosuitep)
+	selectedSuite, err := rawToInt(wm.Cryptosuitep)
 	if err != nil {
 		return s.fail(ErrInvalidData, "bad Cryptosuitep")
 	}
-	if !slices.Contains(s.cfg.Cryptosuites, csp) || !isSupportedCryptosuite(csp) {
+	suite, err := suiteByID(cryptosuiteID(selectedSuite))
+	if err != nil {
 		return s.fail(ErrUnsupportedCryptosuite, "peer selected unsupported cryptosuite")
 	}
 	selectedDirection, err := rawToInt(wm.Dirp)
@@ -208,16 +184,13 @@ func (s *Server) onNegotiation(wm *wireMessage) (Outcome, error) {
 		return s.fail(ErrInvalidData, "bad Dirp")
 	}
 	dirp := OOBDirection(selectedDirection)
-	if dirp&s.cfg.Dirs == 0 || dirp < OOBPeerToServer || dirp > OOBBoth {
+	if dirp&s.dirs == 0 || dirp < OOBPeerToServer || dirp > OOBBoth {
 		return s.fail(ErrNoMutuallySupportedOOB, "no mutually supported OOB direction")
 	}
 
-	suite, err := suiteByID(cryptosuiteID(csp))
-	if err != nil {
-		return s.fail(ErrUnsupportedCryptosuite, err.Error())
-	}
 	s.suite = suite
-	s.verp, s.csp, s.dirp = verp, csp, dirp
+	s.csp = selectedSuite
+	s.dirp = dirp
 
 	s.in.Verp = wm.Verp
 	s.in.Cryptosuitep = wm.Cryptosuitep
@@ -250,9 +223,6 @@ func (s *Server) buildKeyExchangeRequest() (Outcome, error) {
 		PeerId: rawString(s.peerId),
 		PKs:    pks,
 		Ns:     nsRaw,
-	}
-	if s.cfg.SleepTime > 0 {
-		m.SleepTime = intp(s.cfg.SleepTime)
 	}
 
 	s.in.PKs = pks
@@ -297,9 +267,6 @@ func (s *Server) onKeyExchange(wm *wireMessage) (Outcome, error) {
 
 func (s *Server) buildWaitingRequest() (Outcome, error) {
 	m := &wireMessage{Type: intp(typeWaiting), PeerId: rawString(s.peerId)}
-	if s.cfg.SleepTime > 0 {
-		m.SleepTime = intp(s.cfg.SleepTime)
-	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return Outcome{}, err
@@ -321,17 +288,16 @@ func (s *Server) startCompletion(wm *wireMessage) (Outcome, error) {
 	if len(s.noob) == 0 {
 		return s.fail(ErrStateMismatch, "no OOB message processed")
 	}
-	if s.peerState == 2 {
-		// Server-to-peer direction: discover the NoobId the peer accepted.
-		m := &wireMessage{Type: intp(typeNoobID), PeerId: rawString(s.peerId)}
-		b, err := json.Marshal(m)
-		if err != nil {
-			return Outcome{}, err
-		}
-		return Outcome{Send: b, State: s.state}, nil
+	if State(*wm.PeerState) != StateOOBReceived {
+		// In the peer-to-server direction, the peer is still Waiting.
+		return s.buildCompletionRequest()
 	}
-	// Peer-to-server direction (peer still Waiting): send MACs directly.
-	return s.buildCompletionRequest()
+	m := &wireMessage{Type: intp(typeNoobID), PeerId: rawString(s.peerId)}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return Outcome{}, err
+	}
+	return Outcome{Send: b, State: s.state}, nil
 }
 
 func (s *Server) onNoobID(wm *wireMessage) (Outcome, error) {
@@ -395,8 +361,7 @@ func (s *Server) onCompletion(wm *wireMessage) (Outcome, error) {
 
 // OOBOutput produces the out-of-band message for the server-to-peer direction
 // (RFC 9140, Section 3.2.3). The server must have completed the Initial
-// Exchange (Waiting state) and have negotiated a direction that includes
-// server-to-peer.
+// Exchange (Waiting state) and negotiated server-to-peer OOB.
 func (s *Server) OOBOutput() (OOBMessage, error) {
 	if s.state != StateWaiting {
 		return OOBMessage{}, fmt.Errorf("eapnoob: OOBOutput requires Waiting state, have %s", s.state)
@@ -408,10 +373,8 @@ func (s *Server) OOBOutput() (OOBMessage, error) {
 }
 
 // OOBOutputWith produces the server-to-peer OOB material using a caller-supplied
-// 16-byte Noob (e.g. derived from a user-carried PIN) instead of a randomly
-// generated one. Preconditions match OOBOutput. The returned OOBMessage is
-// informational: the Noob is caller-controlled and the peer recomputes Hoob
-// locally, so nothing here needs to be transmitted in band.
+// 16-byte Noob instead of a randomly generated one. Preconditions match
+// OOBOutput. The returned envelope need not be transmitted in the PIN flow.
 func (s *Server) OOBOutputWith(noob []byte) (OOBMessage, error) {
 	if s.state != StateWaiting {
 		return OOBMessage{}, fmt.Errorf("eapnoob: OOBOutputWith requires Waiting state, have %s", s.state)

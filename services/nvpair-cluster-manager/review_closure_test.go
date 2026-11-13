@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"eapnoob"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +30,7 @@ func TestInboundInitial_CannotPublishAfterTeardown(t *testing.T) {
 	sess := &pairingSession{
 		inviteID: inviteID,
 		role:     roleJoiner,
-		peerPairing: &PairingInfo{
+		peerPairing: &eapnoob.PairingInfo{
 			NodeUUID:  peer.identity.NodeUUID,
 			NodeID:    peer.identity.NodeID,
 			Name:      peer.identity.Name,

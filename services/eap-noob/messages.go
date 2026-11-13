@@ -21,6 +21,8 @@ const (
 // NAI (RFC 9140, Section 3.2.1).
 const defaultNAI = "noob@eap-noob.arpa"
 
+const protocolVersion = 1
+
 // OOBDirection identifies an out-of-band channel direction or set of directions.
 type OOBDirection int
 
@@ -71,8 +73,6 @@ type wireMessage struct {
 	Ns  json.RawMessage `json:"Ns,omitempty"`
 	Np  json.RawMessage `json:"Np,omitempty"`
 
-	SleepTime *int `json:"SleepTime,omitempty"`
-
 	NoobId json.RawMessage `json:"NoobId,omitempty"`
 	MACs   json.RawMessage `json:"MACs,omitempty"`
 	MACp   json.RawMessage `json:"MACp,omitempty"`
@@ -83,9 +83,8 @@ type wireMessage struct {
 	EAP string `json:"eap,omitempty"`
 }
 
-// encode marshals a message to compact JSON and parses it back so callers can
-// capture the exact serialized bytes of each field (the bytes that travel on
-// the wire and feed the MAC/Hoob arrays).
+// encode marshals a message and parses it back so callers can inspect the
+// serialized fields used in the authenticated transcript.
 func encode(m *wireMessage) ([]byte, *wireMessage, error) {
 	b, err := json.Marshal(m)
 	if err != nil {

@@ -14,15 +14,17 @@ import (
 	"testing"
 	"time"
 
+	"eapnoob"
+
 	"github.com/stretchr/testify/require"
 )
 
 // pairingInfoFor builds an authenticated PairingInfo + parsed cert for a peer
 // fixture, standing in for the joiner's PeerInfo that onInviterPaired feeds to
 // commitPairing.
-func pairingInfoFor(t *testing.T, f pinFixture) (*PairingInfo, *x509.Certificate) {
+func pairingInfoFor(t *testing.T, f pinFixture) (*eapnoob.PairingInfo, *x509.Certificate) {
 	t.Helper()
-	pi := &PairingInfo{
+	pi := &eapnoob.PairingInfo{
 		V:              pairingInfoVersion,
 		NodeUUID:       f.uuid,
 		NodeID:         "peer-2",

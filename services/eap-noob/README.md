@@ -35,11 +35,15 @@ Implemented:
 - Cryptosuite 1 (Curve25519 / SHA-256, mandatory) and cryptosuite 2
   (NIST P-256 / SHA-256, recommended).
 - NIST SP 800-56C one-step KDF and the
-  `MSK`/`EMSK`/`AMSK`/`MethodID`/`Kms`/`Kmp`/`Kz`
-  outputs (RFC 9140, Table 5).
+  `MSK`/`EMSK`/`AMSK`/`MethodID`/`Kms`/`Kmp`/`Kz` outputs (RFC 9140, Table 5).
 - Persistent association store (`Store` interface + in-memory implementation).
-- Secret export via standard-library HKDF-SHA256 over `Kz`, limited to 8160 output bytes.
+- Secret export via standard-library HKDF-SHA256 over `Kz`.
 - Error notifications (Type=0) and the RFC error codes.
+
+Protocol settings are fixed to version 1 and server cryptosuite priority `[2, 1]`.
+`ServerConfig.Dirs` and `PeerConfig.PreferDir` select the OOB direction. Each
+configuration accepts a typed [`PairingInfo`](info.go) input containing the node
+identity and public certificate authenticated by Completion.
 
 Not implemented (reserved for a future phase): the Reconnect / rekeying exchange
 (message types 7-9, KeyingMode 1-3) and AAA roaming.
@@ -47,23 +51,41 @@ Not implemented (reserved for a future phase): the Reconnect / rekeying exchange
 ## Usage
 
 ```go
-srv := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: eapnoob.OOBPeerToServer}, nil)
-peer := eapnoob.NewPeer(eapnoob.PeerConfig{PreferDir: eapnoob.OOBPeerToServer}, nil)
+srv := eapnoob.NewServer(eapnoob.ServerConfig{
+    ServerInfo: eapnoob.PairingInfo{Name: "inviter"},
+    Dirs: eapnoob.OOBServerToPeer,
+}, nil)
+peer := eapnoob.NewPeer(eapnoob.PeerConfig{
+    PeerInfo: eapnoob.PairingInfo{Name: "joiner"},
+    PreferDir: eapnoob.OOBServerToPeer,
+}, nil)
 
 // 1. Initial Exchange: relay each side's Outcome.Send to the other until done.
 //    (srv.Start() produces the first message.)
 
 // 2. OOB Step: relay the OOB message over a user-assisted channel.
-oob, _ := peer.OOBOutput()
-_ = srv.OOBInput(oob)
+oob, err := srv.OOBOutput()
+if err != nil {
+    return err
+}
+if err := peer.OOBInput(oob); err != nil {
+    return err
+}
 
 // 3. Completion Exchange: relay messages again until both reach Registered.
 
 // 4. Derive a shared secret.
-secret, _ := srv.Export("my-application", nil, 48) // == peer.Export(...)
+secret, err := srv.Export("my-application", nil, 48) // == peer.Export(...)
+if err != nil {
+    return err
+}
+_ = secret
 ```
 
-See [`example_test.go`](example_test.go) for a complete, runnable driver loop.
+See [`example_test.go`](example_test.go) for a complete, runnable driver loop
+using PAIR's caller-supplied PIN-derived `Noob`. The shortened identities above
+omit fields; the cluster manager supplies the full `PairingInfo`, including each
+node's public certificate.
 
 ### Driving the message loop
 
@@ -85,11 +107,21 @@ conversation for the Completion Exchange (call `srv.Start()` again to begin it).
 
 ### OOB direction
 
-`ServerConfig.Dirs` selects the supported OOB directions: `OOBPeerToServer`
-(`1`), `OOBServerToPeer` (`2`), or `OOBBoth` (`3`, the default). When both are
-offered, `PeerConfig.PreferDir` selects the direction, defaulting to
-`OOBServerToPeer`. The sending side calls `OOBOutput()` and the receiving side
-calls `OOBInput()` to verify the fingerprint `Hoob`.
+`ServerConfig.Dirs` selects the supported OOB directions using `OOBPeerToServer`
+(`1`), `OOBServerToPeer` (`2`), or `OOBBoth` (`3`, the default). These constants
+have type `OOBDirection`. When both are offered, `PeerConfig.PreferDir` selects
+the direction, defaulting to `OOBServerToPeer`.
+The sending side calls `OOBOutput()` and the receiving side calls `OOBInput()`
+to transfer a random `Noob` and verify its `Hoob` fingerprint. Both methods
+require the corresponding direction to have been negotiated.
+
+PAIR's PIN flow instead supplies the same 16-byte `Noob` locally through
+`Server.OOBOutputWith` and `Peer.OOBInputNoob`. The server returns an OOB
+envelope containing Hoob, which the cluster manager discards. The Completion
+MACs authenticate the secret and transcript. See the
+[cluster-manager specification](../nvpair-cluster-manager/spec.md) for PIN encoding.
+
+### Shared application secrets and storage
 
 The completion key derivation function (KDF) produces authentication keys and
 the association key `Kz`. Export uses HKDF, the HMAC-based extract-and-expand
@@ -98,14 +130,16 @@ different algorithms. Export uses Go's standard `crypto/hkdf` package; the
 completion KDF retains its local implementation because it is a different
 algorithm required by RFC 9140.
 
-Export labels are separated from context with a two-byte label-length prefix
-and may contain at most 65535 bytes. Output lengths range from 0 to 8160 bytes.
+Exports return `ErrNotRegistered` until a registered association is available.
+Labels are separated from context with a two-byte label-length prefix and may
+contain at most 65535 bytes. Export lengths range from 0 to 8160 bytes, the
+HKDF-SHA-256 limit. Use distinct labels or contexts for distinct purposes.
 
 Both constructors accept a `Store`. Passing `nil` uses a `MemoryStore` that
 copies keys on save and load. Supply a persistent implementation to retain
-associations across process restarts. A loaded `Association` can also export
-secrets directly. The cluster manager stores certificate pins and membership
-separately from this association store.
+associations across process restarts. Each role saves its association before
+reporting success; a storage error prevents local registration. A loaded
+`Association` can also export secrets directly.
 
 ## Testing
 
@@ -115,4 +149,5 @@ go test ./...
 
 The suite runs full pairings for both cryptosuites and both OOB directions,
 verifies that the server and peer derive identical exported secrets, and checks
-the KDF, JWK round-trip, OOB fingerprint rejection, and MAC verification paths.
+the KDF, JWK round-trip, OOB fingerprint rejection, MAC verification, and
+association storage paths.

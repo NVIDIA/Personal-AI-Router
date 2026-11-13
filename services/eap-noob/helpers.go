@@ -21,16 +21,10 @@ func newPeerId() (string, error) {
 	return b64Encode(b), nil
 }
 
-// marshalInfo encodes a ServerInfo/PeerInfo object, defaulting to an empty JSON
-// object when none is configured.
-func marshalInfo(m map[string]any) json.RawMessage {
-	if m == nil {
-		return json.RawMessage("{}")
-	}
-	b, err := json.Marshal(m)
-	if err != nil || len(b) == 0 {
-		return json.RawMessage("{}")
-	}
+// marshalInfo encodes the identity object included in the authenticated transcript.
+func marshalInfo(info PairingInfo) json.RawMessage {
+	// PairingInfo contains only strings and integers, so encoding cannot fail.
+	b, _ := json.Marshal(info)
 	return b
 }
 
@@ -94,12 +88,7 @@ func oobOutput(ms *methodState, dir OOBDirection) (OOBMessage, error) {
 	}, nil
 }
 
-// oobOutputWith builds the OOB message for the given direction using a
-// caller-supplied 16-byte secret nonce Noob instead of generating a fresh
-// random one. It is the low-entropy variant used when the Noob is carried out
-// of band by a human (e.g. a six-digit PIN encoded into the 16 bytes); the
-// returned Noob/Hoob need not be transmitted, since the peer recomputes them
-// locally from the same PIN and the transcript.
+// oobOutputWith builds an OOB message from a caller-supplied 16-byte Noob.
 func oobOutputWith(ms *methodState, dir OOBDirection, noob []byte) (OOBMessage, error) {
 	if len(noob) != 16 {
 		return OOBMessage{}, fmt.Errorf("eapnoob: Noob must be 16 bytes")

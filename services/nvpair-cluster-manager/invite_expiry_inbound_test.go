@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"eapnoob"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,7 +36,7 @@ func putPendingJoinerSession(t *testing.T, m *Manager, inviteID, fromUUID, invit
 		State:        inviteStatePending,
 		CreatedAt:    createdAt,
 	})
-	pi := &PairingInfo{NodeUUID: fromUUID, NodeID: "inviter-node", ClusterID: "cluster-remote"}
+	pi := &eapnoob.PairingInfo{NodeUUID: fromUUID, NodeID: "inviter-node", ClusterID: "cluster-remote"}
 	m.putSession(&pairingSession{
 		inviteID:    inviteID,
 		role:        roleJoiner,
