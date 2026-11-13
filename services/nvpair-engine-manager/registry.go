@@ -893,8 +893,22 @@ func (p *Platform) validate(key string) error {
 			return fmt.Errorf("platform %q: install_dir %q must be a literal path, not a template", key, p.InstallDir)
 		}
 		if p.ModelsDir != "" {
-			installDir := strings.ToLower(filepath.Clean(expandPath(p.InstallDir)))
-			modelsDir := strings.ToLower(filepath.Clean(expandPath(p.ModelsDir)))
+			installDir := expandPath(p.InstallDir)
+			modelsDir := expandPath(p.ModelsDir)
+			// Only the host platform's relative paths have a meaningful local base.
+			if key == runtime.GOOS+"/"+runtime.GOARCH {
+				var err error
+				installDir, err = filepath.Abs(installDir)
+				if err != nil {
+					return fmt.Errorf("platform %q: resolve install_dir: %w", key, err)
+				}
+				modelsDir, err = filepath.Abs(modelsDir)
+				if err != nil {
+					return fmt.Errorf("platform %q: resolve models_dir: %w", key, err)
+				}
+			}
+			installDir = strings.ToLower(filepath.Clean(installDir))
+			modelsDir = strings.ToLower(filepath.Clean(modelsDir))
 			if pathWithinRoot(installDir, modelsDir) {
 				return fmt.Errorf("platform %q: models_dir %q cannot be inside install_dir %q — app reset removes managed engine payloads", key, p.ModelsDir, p.InstallDir)
 			}

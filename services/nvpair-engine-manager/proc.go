@@ -27,14 +27,14 @@ func processEnvironment(bin string, env map[string]string) []string {
 		return nil
 	}
 	merged := os.Environ()
+	path := os.Getenv("PATH")
 	for k, v := range env {
 		merged = append(merged, k+"="+v)
+		if environmentKey(k) == "PATH" {
+			path = v
+		}
 	}
 	if venvBin != "" {
-		path, ok := env["PATH"]
-		if !ok {
-			path = os.Getenv("PATH")
-		}
 		merged = append(merged, "PATH="+venvBin+string(os.PathListSeparator)+path)
 	}
 	return merged

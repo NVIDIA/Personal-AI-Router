@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,9 @@ func TestValidate_AcceptsEnvironmentReferenceInInstallDirectory(t *testing.T) {
 }
 
 func TestValidate_RejectsOverlappingInstallAndModelDirectories(t *testing.T) {
+	workingDir := t.TempDir()
+	t.Chdir(workingDir)
+	key := runtime.GOOS + "/" + runtime.GOARCH
 	test := func(name, installDir, modelsDir string) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
@@ -82,13 +86,16 @@ func TestValidate_RejectsOverlappingInstallAndModelDirectories(t *testing.T) {
 			platform.InstallDir = installDir
 			platform.ModelsDir = modelsDir
 			platform.Uninstall = &Uninstall{Remove: []string{"{install_dir}"}}
-			m.Platforms["linux/amd64"] = platform
+			m.Platforms = map[string]Platform{key: platform}
 
 			require.ErrorContains(t, m.Validate(), "models_dir")
 		})
 	}
 	test("model store inside installation", "~/.nvpair/engine-bin/demo", "~/.nvpair/engine-bin/demo/models")
 	test("installation inside model store", "~/.cache/huggingface/engine-bin/demo", "~/.cache/huggingface")
+	test("same directory through relative and absolute paths", "payload", filepath.Join(workingDir, "payload"))
+	test("relative installation inside absolute model store", "models/engine", filepath.Join(workingDir, "models"))
+	test("absolute installation around relative model store", filepath.Join(workingDir, "payload"), "payload/models")
 }
 
 func TestValidate_AcceptsCommandModeAndCmdAction(t *testing.T) {
