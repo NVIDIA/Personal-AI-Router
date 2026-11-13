@@ -1400,33 +1400,30 @@ func TestDownloadCancel_StopTheRouterDidNotConfirmEndsTheDownload(t *testing.T) 
 // just as the cancel arrived has already reported that on its own frame, and
 // calling it cancelled, or still being cancelled, afterwards said the opposite.
 func TestDownloadCancel_KeepsTheOutcomeOfADownloadThatEndedFirst(t *testing.T) {
-	replies := []struct {
-		name string
-		msg  cancelPullMsg
-	}{
-		{"the cancel is acknowledged", cancelPullMsg{engine: "ollama", model: "llama3.2"}},
-		{"the cancel passes its reply deadline", cancelPullMsg{engine: "ollama", model: "llama3.2", detached: true}},
-	}
-	test := func(name, stage, want string) {
+	test := func(name, stage string, reply cancelPullMsg, want string) {
 		t.Run(name, func(t *testing.T) {
-			for _, reply := range replies {
-				t.Run(reply.name, func(t *testing.T) {
-					d := localDetail()
-					d.pane = detailModels
-					d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+			d := localDetail()
+			d.pane = detailModels
+			d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
 
-					d.update(pullFramePush(t, d, "ollama", "llama3.2", stage))
-					d.update(detailReply{node: d.node.key, msg: reply.msg})
+			d.update(pullFramePush(t, d, "ollama", "llama3.2", stage))
+			d.update(detailReply{node: d.node.key, msg: reply})
 
-					got := d.status.render()
-					assert.Contains(t, got, want)
-					assert.NotContains(t, got, "cancelled")
-				})
-			}
+			got := d.status.render()
+			assert.Contains(t, got, want)
+			assert.NotContains(t, got, "cancelled")
 		})
 	}
-	test("a download that completed", "success", "download llama3.2 (Ollama): done")
-	test("a download that failed", "error", "download llama3.2 (Ollama) failed")
+	acknowledged := cancelPullMsg{engine: "ollama", model: "llama3.2"}
+	pastDeadline := cancelPullMsg{engine: "ollama", model: "llama3.2", detached: true}
+	test("a download that completed, then the cancel is acknowledged", "success", acknowledged,
+		"download llama3.2 (Ollama): done")
+	test("a download that completed, then the cancel passes its reply deadline", "success", pastDeadline,
+		"download llama3.2 (Ollama): done")
+	test("a download that failed, then the cancel is acknowledged", "error", acknowledged,
+		"download llama3.2 (Ollama) failed")
+	test("a download that failed, then the cancel passes its reply deadline", "error", pastDeadline,
+		"download llama3.2 (Ollama) failed")
 }
 
 // A cancel can be acknowledged after the download it stopped has reported its
