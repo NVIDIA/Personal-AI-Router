@@ -19,7 +19,8 @@ import (
 	"time"
 )
 
-func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
+func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
+	t.Helper()
 	config := t.TempDir()
 	executable := filepath.Join(t.TempDir(), "fake-engine")
 	if runtime.GOOS == "windows" {
@@ -27,7 +28,7 @@ func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
 	}
 	require.NoError(t, goBuild(filepath.Join("..", "nvpair-engine-manager", "testdata", "fakeengine"), executable))
 	cache := t.TempDir()
-	for _, model := range []string{"org/first", "org/second"} {
+	for _, model := range models {
 		repo := filepath.Join(cache, "models--"+strings.ReplaceAll(model, "/", "--"))
 		snapshot := filepath.Join(repo, "snapshots", "test-revision")
 		require.NoError(t, os.MkdirAll(snapshot, 0o755))
@@ -62,6 +63,11 @@ func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dir, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "vllm.json"), raw, 0o644))
 	}
+	return config, enginePort
+}
+
+func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
+	config, enginePort := cachedModelRequestConfig(t, []string{"org/first", "org/second"})
 	stdin, messages, _, cleanup := startBrokerWithConfigDir(t, config, "--engine-manager-path", engineMgrBin, "--proxy-path", proxyBin, "--proxy-engines", "vllm")
 	t.Cleanup(cleanup)
 	waitForMethod(t, messages, "app:ready", 15*time.Second)
@@ -123,4 +129,40 @@ func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
 	_, err = io.Copy(io.Discard, response.Body)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusConflict, response.StatusCode)
+}
+
+// Persisted ON intent must be routable when the broker reports ready, without
+// a UI command, a manually injected proxy target, or the next polling interval.
+func TestBroker_RestoresCachedModelRoutingBeforeReady(t *testing.T) {
+	config, _ := cachedModelRequestConfig(t, []string{"org/restored"})
+	for _, base := range []string{
+		filepath.Join(config, "Nvidia Corporation", "Personal AI Router"),
+		filepath.Join(config, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router"),
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Join(base, "engine-bin"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(base, "engine-bin", "engine-state.json"), []byte(`{"engines":{"vllm":true}}`), 0o600))
+	}
+	stdin, messages, _, cleanup := startBrokerWithConfigDir(t, config, "--engine-manager-path", engineMgrBin, "--proxy-path", proxyBin, "--proxy-engines", "vllm")
+	t.Cleanup(cleanup)
+	waitForMethod(t, messages, "app:ready", 15*time.Second)
+	require.NoError(t, json.NewEncoder(stdin).Encode(map[string]any{"jsonrpc": "2.0", "id": 9101, "method": "vllm-proxy:get-status"}))
+	reply := waitForResponseID(t, messages, 9101, 5*time.Second)
+	require.Nil(t, reply.Error)
+	var proxy struct {
+		Ready bool `json:"ready"`
+		Port  int  `json:"port"`
+	}
+	require.NoError(t, json.Unmarshal(reply.Result, &proxy))
+	require.True(t, proxy.Ready)
+	body := bytes.NewBufferString(`{"model":"org/restored","messages":[{"role":"user","content":"Reply briefly."}],"max_tokens":8}`)
+	client := &http.Client{Timeout: 15 * time.Second}
+	response, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", proxy.Port), "application/json", body)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode, "the first request after readiness must load the persisted cached model")
+	var completion struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&completion))
+	assert.Equal(t, "org/restored", completion.Model)
 }

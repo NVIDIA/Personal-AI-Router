@@ -770,3 +770,8 @@ content or become desktop commands. The shared engine capability currently
 permits this for vLLM. The broker advertises enabled vLLM even while awaiting a
 model and supplies `loadOnRequest:true` to its local proxy target; engine-manager
 rechecks enabled intent before loading, so stale discovery cannot revive OFF.
+
+Before `app:ready`, the broker seeds enabled model-on-request facades from the
+engine manager's persisted intent and cached inventory. The first cached-model
+request after restart can load its model without waiting for periodic
+availability reconciliation. Explicit OFF remains authoritative.

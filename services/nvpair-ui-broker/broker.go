@@ -2316,6 +2316,17 @@ func (b *Broker) Serve(ctx context.Context) error {
 		}
 	}
 
+	// Seed cached-model routing from persisted ON intent before app:ready.
+	// The periodic advertiser may still be waiting on its first status read;
+	// UI inventory can already be visible while the proxy has no local owner.
+	b.engineConfigMu.Lock()
+	for _, profile := range engineProxyProfiles {
+		if profile.LoadOnRequest && b.proxyEnabled(profile) && b.engineProxyHandle(profile) != nil {
+			b.reconcileRequestedModelEngine(profile)
+		}
+	}
+	b.engineConfigMu.Unlock()
+
 	// Restore engines and begin advertising only after both managed proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
