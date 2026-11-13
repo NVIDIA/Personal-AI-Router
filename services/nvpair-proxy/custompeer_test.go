@@ -115,12 +115,14 @@ func customPeerPair(t *testing.T, advertised []string, backends []backendEntry) 
 	u, err := url.Parse(ownerURL)
 	require.NoError(t, err, "parse owner URL (%v, %v)", ownerURL, err)
 	snapshot := noderec.GetNodesResult{Nodes: []noderec.DirectoryNode{{
-		HostUUID:       "node-b",
-		Name:           "peer-b",
-		IP:             u.Hostname(),
-		ClusterUUID:    "principal-b",
-		Services:       map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCustom: {Port: ownerPort}},
-		ModelsByEngine: map[string][]string{"custom": advertised},
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		HostUUID:             "node-b",
+		Name:                 "peer-b",
+		IP:                   u.Hostname(),
+		ClusterUUID:          "principal-b",
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCustom: {Port: ownerPort}},
+		ModelsByEngine:       map[string][]string{"custom": advertised},
 	}}}
 	raw, err := json.Marshal(snapshot)
 	require.NoError(t, err, "encode snapshot")
@@ -195,14 +197,18 @@ func TestResolveCandidates_PinnedCuPeerDialsOwnerFacadePortOverMtls(t *testing.T
 
 	// The relay snapshot names the owner's cu service at its facade port —
 	// peers dial the facade, never an engine — plus the per-engine inventory
-	// that attributes custom models to it.
+	// that attributes custom models to it. Pinned-and-trusted provenance is
+	// what admits a relay record to routing at all; the cu service only says
+	// where the owner's facade listens.
 	snapshot := noderec.GetNodesResult{Nodes: []noderec.DirectoryNode{{
-		HostUUID:       "node-b",
-		Name:           "peer-b",
-		IP:             "192.0.2.20",
-		ClusterUUID:    peerUUID,
-		Services:       map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCustom: {Port: 18000}},
-		ModelsByEngine: map[string][]string{"custom": {"small-llm"}},
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		HostUUID:             "node-b",
+		Name:                 "peer-b",
+		IP:                   "192.0.2.20",
+		ClusterUUID:          peerUUID,
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCustom: {Port: 18000}},
+		ModelsByEngine:       map[string][]string{"custom": {"small-llm"}},
 	}}}
 	raw, err := json.Marshal(snapshot)
 	require.NoError(t, err, "encode snapshot")
@@ -233,12 +239,14 @@ func TestResolveCandidates_CuPeerModelFilterUsesCustomAttribution(t *testing.T) 
 	f := p.soleFacade()
 
 	peerWithAttribution := noderec.DirectoryNode{
-		HostUUID:       "node-b",
-		Name:           "peer-b",
-		IP:             "192.0.2.20",
-		ClusterUUID:    peerUUID,
-		Services:       map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCustom: {Port: 18000}},
-		ModelsByEngine: map[string][]string{"custom": {"small-llm"}},
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		HostUUID:             "node-b",
+		Name:                 "peer-b",
+		IP:                   "192.0.2.20",
+		ClusterUUID:          peerUUID,
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCustom: {Port: 18000}},
+		ModelsByEngine:       map[string][]string{"custom": {"small-llm"}},
 	}
 	raw, err := json.Marshal(noderec.GetNodesResult{Nodes: []noderec.DirectoryNode{peerWithAttribution}})
 	require.NoError(t, err, "encode attributed snapshot")

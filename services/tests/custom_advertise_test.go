@@ -9,11 +9,11 @@
 // loopback-emitted inventory from a fake second node without a cluster mTLS
 // pin, and non-loopback plaintext is refused on purpose.
 //
-//   - Peer side: a fake owner advertises cu=6767 + em=<stub> and the stub
-//     serves a ModelsResult carrying the custom bucket. This machine's broker
-//     must show that bucket attributed on the discovered node — the scanner
-//     copies modelsByEngine wholesale, so this pins the receiving end of the
-//     contract (and that a cu-bearing record parses).
+//   - Peer side: a pinned stub owner advertises cu=6767 beside its em surface,
+//     and the stub serves a ModelsResult carrying the custom bucket. This
+//     machine's broker must show that bucket attributed on the discovered
+//     node — the scanner copies modelsByEngine wholesale, so this pins the
+//     receiving end of the contract (and that a cu-bearing record parses).
 //   - Owner side: one broker with the real proxy, prober, and
 //     engine-manager binaries. A configured endpoint must travel the whole
 //     chain — probe, bridge, reconcile — and surface on the real
@@ -23,79 +23,46 @@ package tests
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"strconv"
 	"testing"
 	"time"
 
+	"nvpair-shared/noderec"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/grandcat/zeroconf"
 )
 
 // --- peer side ---------------------------------------------------------------
 
-// TestDiscovery_ReplicatesCustomModelsFromAPeerRecord: a peer advertises a
-// custom facade (cu=6767) plus its em surface, and its /v1/models attributes
-// one model to the "custom" engine. Our discovery must carry that attribution
-// onto the node untouched — no scanner knowledge of Custom is required, and a
-// cu-bearing TXT record must parse rather than poison the node.
+// TestDiscovery_ReplicatesCustomModelsFromAPeerRecord: a stub owner advertises
+// a custom facade (cu=6767) beside its em surface, and its /v1/models
+// attributes one model to the "custom" engine. Our discovery must carry that
+// attribution onto the node untouched — no scanner knowledge of Custom is
+// required, and a cu-bearing record must parse rather than poison the node.
+// The owner is a pinned cluster peer because a peer's inventory is only read
+// after it authenticates: an unverified announcement never gets fetched.
 func TestDiscovery_ReplicatesCustomModelsFromAPeerRecord(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			http.NotFound(w, r)
-			return
-		}
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 			"models":         []string{"external/model-a"},
 			"modelsByEngine": map[string][]string{"custom": {"external/model-a"}},
 		}))
-	}))
-	t.Cleanup(srv.Close)
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err, "parse stub url")
-	emPort, err := strconv.Atoi(u.Port())
-	require.NoError(t, err, "stub port")
+	})
 
 	const instance = "xproc-custom-1"
-	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", "cu=6767", fmt.Sprintf("em=%d", emPort)}
-	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	require.NoError(t, err, "register (%v)", instance)
-	t.Cleanup(zsrv.Shutdown)
-	t.Logf("advertising %s @ %s (cu=6767, em=%d)", instance, nodeRecordService, emPort)
+	cluster := newInterNodeCluster(t)
+	cluster.startAdvertisedModelsPeer(t, instance, stub,
+		map[noderec.ServiceKey]int{noderec.ServiceCustom: 6767})
 
-	stdin, msgs, cleanup := startBroker(t)
+	stdin, msgs, _, cleanup := startBrokerWithDirs(t, t.TempDir(), cluster.nodeDir)
 	t.Cleanup(cleanup)
 
-	deadline := time.After(30 * time.Second)
-	ticker := time.NewTicker(1500 * time.Millisecond)
-	defer ticker.Stop()
-	id := 300
-	sendReq(t, stdin, id, "discovery:get-nodes")
-	for {
-		select {
-		case msg, ok := <-msgs:
-			require.True(t, ok, "broker stream closed unexpectedly")
-			if msg.Method == "" && msg.ID != nil {
-				var res availableNodesResult
-				require.NoError(t, json.Unmarshal(msg.Result, &res))
-				if n, found := findNode(res.Nodes, instance); found &&
-					byEngineEqual(n.ModelsByEngine, map[string][]string{"custom": {"external/model-a"}}) {
-					return // the custom bucket replicated as-is
-				}
-			}
-		case <-ticker.C:
-			id++
-			sendReq(t, stdin, id, "discovery:get-nodes")
-		case <-deadline:
-			require.FailNow(t, fmt.Sprintf("timed out waiting for %q with a custom-attributed model list", instance))
-		}
-	}
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 30*time.Second, func(n availableNode) bool {
+		return n.ID == instance &&
+			byEngineEqual(n.ModelsByEngine, map[string][]string{"custom": {"external/model-a"}})
+	})
 }
 
 // --- owner side --------------------------------------------------------------

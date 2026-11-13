@@ -41,6 +41,8 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-shared/noderec"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -393,7 +395,10 @@ func TestCustomBridgedEndpoint_KeepsRoutingSlotButNeverProjectsAsNode(t *testing
 		{Name: "lab", BaseURL: "http://10.0.0.9:8000", APIKey: bridgeTestKey},
 	})
 	b.store.Upsert(
-		EnrichedNode{ID: "workstation", HostUUID: "uuid-workstation", Host: "workstation", Port: 14318},
+		EnrichedNode{
+			ID: "workstation", HostUUID: "uuid-workstation", DiscoveryRecordID: "local:workstation",
+			IdentityVerification: noderec.IdentityLocal, Host: "workstation", Port: 14318,
+		},
 		sourceScanner)
 
 	b.manualNotificationHandler(b.manualGeneration)("custom/updated",
