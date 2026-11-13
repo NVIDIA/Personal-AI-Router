@@ -167,10 +167,14 @@ out-of-tree backends that expose vLLM's memory API.
 For CPU execution, the runtime probe uses vLLM's total and available memory for
 one visible NUMA memory node, including its container limits. It leaves sizing
 to vLLM when more than one memory node is visible.
+For vLLM-Metal's default MLX worker, the utilization fraction applies to MLX's
+recommended working-set limit. Its MPS worker uses physical RAM instead.
+Explicit `--worker-cls` selections leave memory and context sizing to the engine.
 
 The runtime probe requires a Python interpreter beside the resolved vLLM
 executable, with `torch` (PyTorch), `vllm`, and `psutil` importable in that
-interpreter's environment. PAIR's managed vLLM installation provides these in its
+interpreter's environment. The Metal MLX path also requires `mlx`, supplied by
+vLLM-Metal. PAIR's managed vLLM installation provides these in its
 private environment; an adopted installation must provide them in its own
 environment as well. No separate global Python or package installation is needed.
 The probe uses the engine's launch environment so device and platform selection

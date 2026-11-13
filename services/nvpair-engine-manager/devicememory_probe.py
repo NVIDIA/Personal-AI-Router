@@ -13,6 +13,8 @@ verified integrated GPU, Apple Silicon with Metal available, or a CPU platform.
 A missing device reading alone is never a reason to substitute system RAM.
 CPU readings use vLLM's memory-node view so capacity and available memory
 have the same limits.
+Metal's MLX worker uses its recommended working-set limit for capacity; its
+MPS worker uses physical RAM. These match each worker's utilization calculation.
 
 On success, the final stdout line is JSON containing total and free bytes, plus
 a shared flag indicating whether the device shares system RAM. If memory cannot
@@ -28,6 +30,8 @@ import sys
 import psutil
 import torch
 from vllm.platforms import current_platform
+
+metal_module = sys.modules.get("vllm_metal.platform")
 
 
 def system_reading(total):
@@ -58,6 +62,28 @@ elif current_platform.is_xpu():
     else:
         free, total = torch.xpu.mem_get_info(0)
         reading = {"total": int(total), "free": int(free), "shared": False}
+elif metal_module is not None and isinstance(
+    current_platform, metal_module.MetalPlatform
+):
+    from vllm_metal import envs as metal_envs
+
+    if metal_envs.VLLM_METAL_BACKEND == "mlx":
+        import mlx.core as mx
+
+        total = int(mx.device_info().get("max_recommended_working_set_size", 0))
+    else:
+        total = int(current_platform.get_device_total_memory(0))
+    if total <= 0:
+        raise RuntimeError("Metal runtime did not report a usable memory limit")
+    available = getattr(current_platform, "get_device_available_memory", None)
+    if callable(available):
+        reading = {
+            "total": total,
+            "free": min(int(available(0)), total),
+            "shared": True,
+        }
+    else:
+        reading = system_reading(total)
 else:
     apple_silicon = (
         sys.platform == "darwin"

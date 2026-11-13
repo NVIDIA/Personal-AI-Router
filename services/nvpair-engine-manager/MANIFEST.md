@@ -423,8 +423,9 @@ Arguments the user saved always win and nothing added is written back to saved
 settings, so a model switch is re-sized for the new model. It also adds
 `--enable-auto-tool-choice` and a `--tool-call-parser` found from the model's own
 chat template with the installed vLLM (see the README's vLLM section), or nothing
-when no parser reads the model's tool calls. Tensor- or
-pipeline-parallel launches are left alone. It requires a process-mode runtime
+when no parser reads the model's tool calls. Memory and context sizing are left
+to the engine for tensor- or pipeline-parallel launches and explicit
+`--worker-cls` selections. It requires a process-mode runtime
 with `editable_launch`.
 
 A runtime **`unsupported_weights`** (`{"formats": ["fp8"], "except_model_types":

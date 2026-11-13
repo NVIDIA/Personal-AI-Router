@@ -31,6 +31,8 @@ Fixture fields (memory values are GiB, converted to bytes below):
 - device_memory_error: make a device free-memory query fail.
 - os / arch / mps_available: simulate the platform, defaulting to linux,
   x86_64, and no Metal support.
+- metal_backend: vLLM-Metal worker implementation, defaulting to mlx.
+- metal_limit_gib: MLX's recommended working-set limit, defaulting to 16.
 - has_device_free: expose the vLLM platform's optional free-memory API.
 
 These tests check that the probe chooses the expected memory source and returns
@@ -73,6 +75,10 @@ def cpu_memory_node_info(node):
     )
 
 
+class FakeMetalPlatform(types.SimpleNamespace):
+    pass
+
+
 cuda_properties = types.SimpleNamespace(total_memory=total)
 xpu_properties = types.SimpleNamespace(total_memory=total)
 if not fixture.get("unknown_topology", False):
@@ -98,7 +104,8 @@ torch = types.SimpleNamespace(
         )
     ),
 )
-platform = types.SimpleNamespace(
+platform_type = FakeMetalPlatform if backend == "metal" else types.SimpleNamespace
+platform = platform_type(
     get_device_total_memory=lambda device: total,
     is_cuda_alike=lambda: backend in ("cuda", "rocm"),
     is_xpu=lambda: backend == "xpu",
@@ -118,4 +125,19 @@ sys.modules["vllm.utils.cpu_resource_utils"] = types.SimpleNamespace(
     get_visible_memory_node=lambda: fixture.get("cpu_nodes", [0]),
     get_memory_node_info=cpu_memory_node_info,
 )
+metal_envs = types.SimpleNamespace(
+    VLLM_METAL_BACKEND=fixture.get("metal_backend", "mlx")
+)
+sys.modules["vllm_metal"] = types.SimpleNamespace(envs=metal_envs)
+sys.modules["vllm_metal.envs"] = metal_envs
+sys.modules["vllm_metal.platform"] = types.SimpleNamespace(
+    MetalPlatform=FakeMetalPlatform
+)
+mlx_core = types.SimpleNamespace(
+    device_info=lambda: {
+        "max_recommended_working_set_size": fixture.get("metal_limit_gib", 16) * gib
+    }
+)
+sys.modules["mlx"] = types.SimpleNamespace(core=mlx_core)
+sys.modules["mlx.core"] = mlx_core
 sys.platform = fixture.get("os", "linux")

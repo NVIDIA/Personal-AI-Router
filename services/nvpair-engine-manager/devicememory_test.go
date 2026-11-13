@@ -200,6 +200,18 @@ func TestDeviceMemoryProbe_UsesSystemRAMOnlyForVerifiedSharedDevices(t *testing.
 		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true})
 	accept("Apple Silicon preserves the engine available-memory reading", `{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"has_device_free":true}`,
 		deviceMemoryProbe{Total: 16 * gib, Free: 4 * gib, Shared: true})
+	accept("Metal MLX uses its working-set limit instead of physical RAM",
+		`{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"total_gib":48,"metal_limit_gib":36,"free_gib":40,"has_device_free":true}`,
+		deviceMemoryProbe{Total: 36 * gib, Free: 36 * gib, Shared: true})
+	accept("Metal MLX caps host availability at its working-set limit",
+		`{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"total_gib":48,"metal_limit_gib":36,"system_free_gib":40,"allow_system":true}`,
+		deviceMemoryProbe{Total: 36 * gib, Free: 36 * gib, Shared: true})
+	accept("Metal MPS uses physical RAM without an MLX limit",
+		`{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"metal_backend":"mps","total_gib":48,"metal_limit_gib":0,"free_gib":40,"has_device_free":true}`,
+		deviceMemoryProbe{Total: 48 * gib, Free: 40 * gib, Shared: true})
+	accept("another Apple Silicon platform retains its own memory base",
+		`{"os":"darwin","arch":"arm64","mps_available":true,"total_gib":48,"metal_limit_gib":36,"free_gib":40,"has_device_free":true}`,
+		deviceMemoryProbe{Total: 48 * gib, Free: 40 * gib, Shared: true})
 	accept("CPU explicitly uses system RAM", `{"backend":"cpu","allow_system":true}`,
 		deviceMemoryProbe{Total: 16 * gib, Free: 12 * gib, Shared: true})
 	accept("CPU uses its selected memory node and limits instead of host RAM",
@@ -268,4 +280,6 @@ func TestDeviceMemoryProbe_RejectsUnavailableMemoryWithoutGuessingTopology(t *te
 		"CPU memory sizing requires one visible memory node")
 	reject("no CPU memory nodes", `{"backend":"cpu","cpu_nodes":[]}`,
 		"CPU memory sizing requires one visible memory node")
+	reject("Metal MLX with an unavailable working-set limit", `{"backend":"metal","os":"darwin","arch":"arm64","mps_available":true,"metal_limit_gib":0,"has_device_free":true}`,
+		"Metal runtime did not report a usable memory limit")
 }

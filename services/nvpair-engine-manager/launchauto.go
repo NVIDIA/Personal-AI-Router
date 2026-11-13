@@ -339,6 +339,7 @@ func autoGPUShare(need, total, free int64) (float64, bool) {
 //
 // A flag the user already set is never touched. Tensor or pipeline parallel
 // launches are left alone entirely: sizing them needs more than GPU 0.
+// Custom workers are also left alone because their memory budgeting may differ.
 //
 // The model is read at the revision vLLM loads (see findLaunchModel). One that
 // is not in the cache yet is read through fetch, when given, since vLLM
@@ -349,6 +350,9 @@ func planHFContext(startupCtx context.Context, args []string, hubDir string, tar
 		return nil, ""
 	}
 	if _, ok := launchFlagValue(args, "--pipeline-parallel-size"); ok {
+		return nil, ""
+	}
+	if _, ok := launchFlagValue(args, "--worker-cls"); ok {
 		return nil, ""
 	}
 	if model, ok := launchFlagValue(args, "--model"); !ok || model == "" {

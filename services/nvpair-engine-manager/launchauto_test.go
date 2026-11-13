@@ -270,6 +270,15 @@ func TestAutoContext_SkipsShardedLaunches(t *testing.T) {
 	test("--pipeline-parallel-size")
 }
 
+func TestPlanHFContext_LeavesCustomWorkerSizingToTheEngine(t *testing.T) {
+	withGPU(t, 48, 48)
+	args := []string{"--model", "org/model", "--worker-cls", "vllm_metal.pytorch_backend.worker.MPSWorker"}
+
+	extra, _ := planHFContext(t.Context(), args, t.TempDir(), 65536, nil, nil, "")
+
+	assert.Empty(t, extra)
+}
+
 func TestAutoContext_GivesAModelNotInTheCacheWhatIsFree(t *testing.T) {
 	withGPU(t, 48, 20)
 
