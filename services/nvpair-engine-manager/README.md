@@ -545,13 +545,25 @@ across the checks, it cannot be told from this pull's and is removed. A
 relative `OLLAMA_MODELS` names no directory engine-manager can resolve, so
 cleanup removes nothing.
 
+LM Studio's cleanup runs only when the CLI downloaded from the repository's
+Hugging Face URL, the one run that writes into `models/<owner>/<repo>`. For a
+bare `owner/name` PAIR tries the LM Studio Hub first and falls back to that URL
+when the Hub does not have the model. A model the Hub resolves, such as
+`qwen/qwen3-8b`, is stored under the owner and repository of the source its
+definition names (`lmstudio-community/Qwen3-8B-GGUF`), which `lms get` never
+prints, so cancelling it removes nothing.
+
 LM Studio keeps every quantization of a repository side by side, so its
 cleanup also considers only the quantization this pull fetched: the one the
 request pins, or for a request that pins none, the one the CLI announced in its
 download plan. A pin that is not a quantization name, such as `@GGUF` or `@8B`,
 counts as none. The quantization is matched as a whole name token, so `Q4_K`
 never claims `Q4_K_M`'s files, and an unpinned pull whose plan announced none
-removes nothing. Cancelling an MLX download removes nothing, pinned or not: its
+removes nothing. The CLI names the quantization it chose but never the file,
+so when the new partials carrying it name more than one file, as in a
+repository holding several variants of one quantization, cleanup removes none
+of them; the shards of one split file (`-00001-of-00003`) count as one file.
+Cancelling an MLX download removes nothing, pinned or not: its
 plan names no GGUF quantization, and a pin such as `@4bit` is not a
 quantization name. LM Studio additionally requires the CLI to confirm:
 declining its background-download prompt is what aborts the daemon's task, so

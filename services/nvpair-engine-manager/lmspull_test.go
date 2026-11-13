@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -419,21 +420,22 @@ func TestLMSPull_CancelWhileWaitingToResumeStopsTheDownload(t *testing.T) {
 	assert.Equal(t, "cancelled", frames[len(frames)-1].Stage, "the last frame must report the cancellation")
 }
 
-// startLMSDownload pulls owner/repo through a fake `lms get` running
-// subcommand, which writes a partial file and announces its quantization before
-// it waits to be interrupted. It returns once the CLI has reported progress, by
-// which point the partial is one cleanup would attribute to this pull.
-func startLMSDownload(t *testing.T, ctx context.Context, subcommand string) (*Executor, string, <-chan outcome) {
+// startLMSDownload pulls model, a bare owner/repo reference, through a fake
+// `lms get` running subcommand, which writes a partial file in the repository's
+// directory and announces its quantization before it waits to be interrupted.
+// It returns once the CLI has reported progress.
+func startLMSDownload(t *testing.T, ctx context.Context, subcommand, model string) (*Executor, string, <-chan outcome) {
 	t.Helper()
 	modelsDir := t.TempDir()
-	partial := filepath.Join(modelsDir, "owner", "repo", "downloading_repo-Q4_K_M.gguf.part")
+	owner, repo, _ := strings.Cut(model, "/")
+	partial := filepath.Join(modelsDir, owner, repo, "downloading_"+repo+"-Q4_K_M.gguf.part")
 	ex := newLMSPullExecutor(t, modelsDir, append(fakeDownloadArgv(subcommand), partial, "{model}")...)
 	events, unsubscribe := ex.progress.subscribe("fake")
 	defer unsubscribe()
 	done := make(chan outcome, 1)
 	go func() {
 		var got outcome
-		got.result, got.err = ex.PullModelStream(ctx, "fake", "owner/repo", nil)
+		got.result, got.err = ex.PullModelStream(ctx, "fake", model, nil)
 		done <- got
 	}()
 	for {
@@ -453,10 +455,13 @@ func startLMSDownload(t *testing.T, ctx context.Context, subcommand string) (*Ex
 // A cancel someone asked for interrupts the running CLI, which declines to
 // continue in the background and confirms. That is the stop that may delete
 // the partial, and the pull settles as the cancellation that was asked for.
+// The LM Studio Hub does not have owner/repo, so the CLI ran from the
+// repository's Hugging Face URL, which downloads into the repository's
+// directory.
 func TestLMSCancellation_StopsTheDownloadAndRemovesItsPartial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
 	defer cancel()
-	ex, partial, done := startLMSDownload(t, ctx, "canceldownload")
+	ex, partial, done := startLMSDownload(t, ctx, "canceldownload", "owner/repo")
 
 	require.NoError(t, ex.CancelModelPull(ctx, "fake", "owner/repo"))
 	got := awaitOutcome(t, ctx, done)
@@ -464,6 +469,24 @@ func TestLMSCancellation_StopsTheDownloadAndRemovesItsPartial(t *testing.T) {
 	require.NoError(t, got.err)
 	assertPullStatus(t, got.result, "cancelled")
 	assertRemoved(t, partial)
+}
+
+// A model the LM Studio Hub resolves is stored under the owner and repository
+// of the source its definition names, such as lmstudio-community/Qwen3-8B-GGUF
+// for qwen/qwen3-8b, and `lms get` never prints which. The directory the
+// request names then says nothing about which files are this download's, so
+// cancelling removes nothing, whatever appears there.
+func TestLMSCancellation_RemovesNothingForAModelTheHubResolved(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
+	defer cancel()
+	ex, partial, done := startLMSDownload(t, ctx, "canceldownload", "hub/model")
+
+	require.NoError(t, ex.CancelModelPull(ctx, "fake", "hub/model"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assertPresent(t, partial)
 }
 
 // The pull's context also ends when PAIR quits mid-download, when a remote
@@ -475,7 +498,7 @@ func TestLMSPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T) {
 	defer cancel()
 	pullCtx, stopPull := context.WithCancel(ctx)
 	defer stopPull()
-	_, partial, done := startLMSDownload(t, pullCtx, "canceldownload")
+	_, partial, done := startLMSDownload(t, pullCtx, "canceldownload", "owner/repo")
 
 	stopPull()
 	got := awaitOutcome(t, ctx, done)
@@ -515,7 +538,7 @@ func TestLMSPull_ReportsTheActionTimeoutThatStoppedIt(t *testing.T) {
 func TestLMSPull_FailsARequestedCancellationTheCLIDidNotConfirm(t *testing.T) {
 	ctx, cancel := context.WithTimeout(settledContext(), 30*time.Second)
 	defer cancel()
-	ex, partial, done := startLMSDownload(t, ctx, "downloadsilent")
+	ex, partial, done := startLMSDownload(t, ctx, "downloadsilent", "owner/repo")
 
 	assert.ErrorContains(t, ex.CancelModelPull(ctx, "fake", "owner/repo"), "exited without confirming download cancellation")
 	got := awaitOutcome(t, ctx, done)
@@ -526,6 +549,48 @@ func TestLMSPull_FailsARequestedCancellationTheCLIDidNotConfirm(t *testing.T) {
 	// asking again cannot be answered as though the download had stopped.
 	assert.ErrorContains(t, ex.CancelModelPull(ctx, "fake", "owner/repo"), "exited without confirming download cancellation",
 		"a cancel asking after the pull settled")
+}
+
+// fromHuggingFace is the `lms get` argument a pull of model runs when the LM
+// Studio Hub does not have it: the repository's huggingface.co URL, the only
+// run whose partials cleanup can attribute.
+func fromHuggingFace(model string) string {
+	if isHTTPURL(model) {
+		return model
+	}
+	return "https://huggingface.co/" + model
+}
+
+// Only a run from a huggingface.co URL downloads into the repository directory
+// the request names. Whatever else `lms get` resolved, a Hub artifact by id or
+// by lmstudio.ai URL, stores its files under its source's owner and repository
+// instead, so cancelling it removes nothing; and a cancel that landed before
+// any run started has nothing to attribute either.
+func TestCleanupLMSAfterCancel_RemovesNothingUnlessTheCLIRanFromAHuggingFaceURL(t *testing.T) {
+	const model = "owner/repo@Q4_K_M"
+	test := func(name, source string, wantRemoved bool) {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "owner", "repo")
+			require.NoError(t, os.MkdirAll(target, 0700))
+			before, err := lmsPartialFiles(root, model)
+			require.NoError(t, err)
+			partial := filepath.Join(target, "downloading_repo-Q4_K_M.gguf.part")
+			writePartial(t, partial, "data")
+
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, source, before, nil))
+
+			if wantRemoved {
+				assertRemoved(t, partial)
+			} else {
+				assertPresent(t, partial)
+			}
+		})
+	}
+	test("a Hugging Face URL", "https://huggingface.co/owner/repo@Q4_K_M", true)
+	test("a Hub artifact id", "owner/repo@Q4_K_M", false)
+	test("an lmstudio.ai URL", "https://lmstudio.ai/models/owner/repo@Q4_K_M", false)
+	test("no run", "", false)
 }
 
 func TestCleanupLMSAfterCancel_RemovesThePartialButKeepsCompletedShards(t *testing.T) {
@@ -539,7 +604,7 @@ func TestCleanupLMSAfterCancel_RemovesThePartialButKeepsCompletedShards(t *testi
 	partial := filepath.Join(target, "downloading_model-Q4_K_M.gguf.part")
 	writePartial(t, partial, "data")
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, nil))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, nil))
 
 	assertRemoved(t, partial)
 	assertPresent(t, completeShard)
@@ -555,7 +620,7 @@ func TestCleanupLMSAfterCancel_KeepsPartialsOlderThanThePull(t *testing.T) {
 	newPartial := filepath.Join(target, "downloading_selected-Q4_K_M.gguf.part")
 	writePartial(t, newPartial, "new download")
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, "owner/repo", before, []string{"Q4_K_M"}))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, "owner/repo", fromHuggingFace("owner/repo"), before, []string{"Q4_K_M"}))
 
 	assertPresent(t, olderPartial)
 	assertRemoved(t, newPartial)
@@ -579,7 +644,7 @@ func TestCleanupLMSAfterCancel_UnpinnedRequestRemovesOnlyTheAnnouncedQuantizatio
 			writePartial(t, ours, "our download")
 			writePartial(t, theirs, "the app's download, stalled")
 
-			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, announced))
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, announced))
 
 			if wantOursRemoved {
 				assertRemoved(t, ours)
@@ -610,7 +675,7 @@ func TestCleanupLMSAfterCancel_KeepsOtherQuantizations(t *testing.T) {
 	writePartial(t, appeared, "app started this one after our snapshot")
 	writePartial(t, ours, "our download")
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, nil))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, nil))
 
 	assertPresent(t, growing)
 	assertPresent(t, appeared)
@@ -635,7 +700,7 @@ func TestCleanupLMSAfterCancel_KeepsQuantizationsWhoseNamesContainTheRequestedOn
 			writePartial(t, oursPath, "our download")
 			writePartial(t, theirsPath, "the app's download")
 
-			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, nil))
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, nil))
 
 			assertRemoved(t, oursPath)
 			assertPresent(t, theirsPath)
@@ -666,7 +731,7 @@ func TestCleanupLMSAfterCancel_TreatsAPinThatNamesNoQuantizationAsNone(t *testin
 			writePartial(t, ours, "our download")
 			writePartial(t, theirs, "the app's download")
 
-			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, announced))
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, announced))
 
 			if wantOursRemoved {
 				assertRemoved(t, ours)
@@ -696,7 +761,7 @@ func TestCleanupLMSAfterCancel_KeepsTheRequestedQuantizationWhileAnotherClientWr
 	writePartial(t, shared, "shared download")
 	ctx := withPartialSettle(context.Background(), func() { growFile(t, shared) })
 
-	require.NoError(t, cleanupLMSAfterCancel(ctx, root, model, before, nil))
+	require.NoError(t, cleanupLMSAfterCancel(ctx, root, model, fromHuggingFace(model), before, nil))
 
 	assertPresent(t, shared)
 }
@@ -721,9 +786,52 @@ func TestCleanupLMSAfterCancel_KeepsAPreexistingPartialThatGrew(t *testing.T) {
 	// perfectly still by the time cleanup observes it.
 	growFile(t, theirs)
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, []string{"Q4_K_M"}))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, []string{"Q4_K_M"}))
 
 	assertPresent(t, theirs)
+}
+
+// `lms get` prints the quantization it chose, never the file, and a repository
+// can hold more than one file of a quantization: variants of a model, or every
+// file of a repository named for the quantization. Which of two such partials
+// is this download's is then a guess, so cancelling removes neither.
+func TestCleanupLMSAfterCancel_KeepsEveryFileWhenTheQuantizationNamesMoreThanOne(t *testing.T) {
+	root := t.TempDir()
+	const model = "BobbyLLM/Qwen3.5-4B-EU-Tool-Q4_K_M-GGUF@Q4_K_M"
+	target := filepath.Join(root, "BobbyLLM", "Qwen3.5-4B-EU-Tool-Q4_K_M-GGUF")
+	require.NoError(t, os.MkdirAll(target, 0700))
+	before, err := lmsPartialFiles(root, model)
+	require.NoError(t, err)
+	first := filepath.Join(target, "downloading_Qwen3.5-4B-EU-Tool-Q4_K_M.gguf.part")
+	second := filepath.Join(target, "downloading_Qwen3.5-4B-EU-Tool-v2-Q4_K_M.gguf.part")
+	writePartial(t, first, "one download")
+	writePartial(t, second, "another")
+
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, nil))
+
+	assertPresent(t, first)
+	assertPresent(t, second)
+}
+
+// A GGUF too large for one file is split into shards named
+// "<name>-00001-of-00003.gguf", which one `lms get` downloads. They count as
+// one file, so cancelling removes every shard the download started.
+func TestCleanupLMSAfterCancel_RemovesEveryShardOfTheFileItWasFetching(t *testing.T) {
+	root := t.TempDir()
+	const model = "lmstudio-community/Qwen3-235B-A22B-GGUF@Q4_K_M"
+	target := filepath.Join(root, "lmstudio-community", "Qwen3-235B-A22B-GGUF")
+	require.NoError(t, os.MkdirAll(target, 0700))
+	before, err := lmsPartialFiles(root, model)
+	require.NoError(t, err)
+	first := filepath.Join(target, "downloading_Qwen3-235B-A22B-Q4_K_M-00001-of-00003.gguf.part")
+	second := filepath.Join(target, "downloading_Qwen3-235B-A22B-Q4_K_M-00002-of-00003.gguf.part")
+	writePartial(t, first, "data")
+	writePartial(t, second, "data")
+
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, nil))
+
+	assertRemoved(t, first)
+	assertRemoved(t, second)
 }
 
 // `lms get` resumes in place, so the same rule means a cancelled resume leaves
@@ -743,7 +851,7 @@ func TestCleanupLMSAfterCancel_LeavesAResumedDownloadsPartial(t *testing.T) {
 	fresh := filepath.Join(target, "downloading_Qwen3-8B-Q4_K_M-00002-of-00002.gguf.part")
 	writePartial(t, fresh, "a shard this pull started from nothing")
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, before, []string{"Q4_K_M"}))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, model, fromHuggingFace(model), before, []string{"Q4_K_M"}))
 
 	assertPresent(t, resuming)
 	assertRemoved(t, fresh)
@@ -757,7 +865,7 @@ func TestCleanupLMSAfterCancel_DeletesNothingWithoutASnapshot(t *testing.T) {
 	partial := filepath.Join(root, "owner", "repo", "downloading_model-Q4_K_M.gguf.part")
 	writePartial(t, partial, "data")
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, "owner/repo@Q4_K_M", nil, nil))
+	require.NoError(t, cleanupLMSAfterCancel(settledContext(), root, "owner/repo@Q4_K_M", fromHuggingFace("owner/repo@Q4_K_M"), nil, nil))
 
 	assertPresent(t, partial)
 }

@@ -101,14 +101,31 @@ func writeAnnouncedPartial(partial string) {
 	fmt.Printf("\r ↓ To download: %s %s [GGUF] - 4.68 GB\x1b[0K\n", name[:cut], name[cut+1:])
 }
 
+// resolveLMSArtifact stands in for `lms get` resolving its argument before it
+// downloads anything. A huggingface.co URL resolves, and so does a bare id
+// under the hub/ owner, standing for an LM Studio Hub artifact such as
+// qwen/qwen3-8b. Any other bare id is a Hugging Face repository the Hub does
+// not have, and fails the way LM Studio fails it, so the runner falls back to
+// the repository's URL as it does for a real community model.
+func resolveLMSArtifact(arg string) {
+	if strings.HasPrefix(arg, "https://huggingface.co/") || strings.HasPrefix(arg, "hub/") {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: Failed to resolve artifact %q: The artifact does not exist or you do not have permission to read it\n", strings.ToLower(arg))
+	os.Exit(1)
+}
+
 // downloadUntilInterrupted reports progress and then blocks until this process
 // is interrupted, the way `lms get` waits while it downloads. A partial file
-// named in os.Args[3] is written first, as a transfer under way would have. It
-// listens for the interrupt before reporting: the caller cancels as soon as it
-// reads progress, and an interrupt nothing is listening for ends the process
-// before it can answer, which is what a CLI that exits without confirming
-// looks like.
+// named in os.Args[3] is written first, as a transfer under way would have,
+// once the model in os.Args[4], if any, resolves. It listens for the interrupt
+// before reporting: the caller cancels as soon as it reads progress, and an
+// interrupt nothing is listening for ends the process before it can answer,
+// which is what a CLI that exits without confirming looks like.
 func downloadUntilInterrupted() {
+	if len(os.Args) > 4 {
+		resolveLMSArtifact(os.Args[4])
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 	defer signal.Stop(signals)
@@ -304,6 +321,9 @@ func main() {
 			if len(os.Args) < 3 {
 				fmt.Fprintln(os.Stderr, "downloadstalls: need <partial>")
 				os.Exit(2)
+			}
+			if len(os.Args) > 3 {
+				resolveLMSArtifact(os.Args[3])
 			}
 			writeAnnouncedPartial(os.Args[2])
 			fmt.Fprintln(os.Stderr, "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.")

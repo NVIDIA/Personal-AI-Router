@@ -305,6 +305,9 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		// failure is *not* retried in place — it falls through to the next
 		// source below (and runWithResume returns it immediately).
 		if lmsGet {
+			if output, ok := ctx.Value(downloadOutputKey{}).(*lmsDownloadOutput); ok {
+				output.running(cand)
+			}
 			out, lastErr = e.runWithResume(ctx, argv)
 		} else {
 			out, lastErr = e.runCommandOutput(ctx, argv)

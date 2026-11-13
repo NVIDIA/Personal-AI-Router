@@ -50,6 +50,11 @@ type lmsDownloadOutput struct {
 	// and kept across the request's attempts because a resumed run can fail
 	// before it prints the plan an earlier run started.
 	announced []string
+	// source is the argument the latest `lms get` run was given: which of the
+	// request's candidates (see lmsGetCandidates) it was resolving. Only a
+	// huggingface.co URL downloads into the repository directory the request
+	// names, so it decides whether a partial there can be this download's.
+	source string
 	// line is the output since the last line break. A plan line is read only
 	// once the CLI has finished it, since a pipe can split one partway through
 	// a quantization's name.
@@ -139,6 +144,20 @@ func (w *lmsDownloadOutput) announcedQuants() []string {
 	return slices.Clone(w.announced)
 }
 
+// running records the candidate the next `lms get` run is given.
+func (w *lmsDownloadOutput) running(source string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.source = source
+}
+
+// ranSource returns the candidate the latest `lms get` run was given.
+func (w *lmsDownloadOutput) ranSource() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.source
+}
+
 // lmsAnnouncedQuant returns the quantization a line of `lms get`'s download
 // plan says it will fetch, or "" for any other line. The plan prints each model
 // it will download as "↓ To download: <name> <quantization> [GGUF] - <size>".
@@ -223,7 +242,7 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 	if err != nil && cancelRequested(ctx) && (cancelled || errors.Is(err, context.Canceled)) {
 		// Cleanup outlives the cancellation that triggered it, so it runs on a
 		// context that keeps this one's values without its deadline.
-		if cleanupErr := cleanupLMSAfterCancel(context.WithoutCancel(ctx), st.modelsDir, model, before, output.announcedQuants()); cleanupErr != nil {
+		if cleanupErr := cleanupLMSAfterCancel(context.WithoutCancel(ctx), st.modelsDir, model, output.ranSource(), before, output.announcedQuants()); cleanupErr != nil {
 			// The download did stop, which is what was asked for. Leftover
 			// bytes are the vendor's to resume, so reporting a failed cancel
 			// here would deny the one outcome that did happen and leave the
@@ -386,8 +405,15 @@ func lmsErrorDetail(text string) string {
 // nothing is writing them; see removeQuiescentPartials. No snapshot means the
 // inspection failed, not that the directory was empty, and nothing is
 // attributable without one.
-func cleanupLMSAfterCancel(ctx context.Context, root, model string, before map[string]os.FileInfo, announced []string) error {
-	if before == nil {
+//
+// Nor is anything attributable unless the CLI ran from a huggingface.co URL,
+// source being the candidate it ran last: only that downloads into the
+// repository directory the request names. A model the LM Studio Hub resolves,
+// from a bare id or an lmstudio.ai URL, is stored under the owner and
+// repository of the source its definition names, which `lms get` never
+// prints, so a partial in the requested directory is someone else's.
+func cleanupLMSAfterCancel(ctx context.Context, root, model, source string, before map[string]os.FileInfo, announced []string) error {
+	if before == nil || !strings.HasPrefix(lmsResolverKey(source), "hf:") {
 		return nil
 	}
 	return removeQuiescentPartials(ctx, func() ([]partialGroup, error) {
@@ -411,6 +437,13 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model string, before map[s
 // the LM Studio app is fetching beside it. An unpinned request whose CLI
 // announced none has no candidates, because any partial appearing in the
 // repository could be the app fetching another quantization beside it.
+//
+// The quantization singles out one file only when the repository holds one
+// file of it. It can hold several, as variants of a model or as every file of
+// a repository named for its quantization, and the CLI never names the file
+// it chose, so new partials that name more than one file leave none
+// attributable. The shards of a split GGUF, "<name>-00001-of-00003.gguf", are
+// one file.
 //
 // Presence in the snapshot is disqualifying on its own; what the file has done
 // since is not consulted. Bytes gained during this pull look identical whether
@@ -439,8 +472,19 @@ func lmsCreatedPartials(root, model string, before map[string]os.FileInfo, annou
 		}
 		created = append(created, path)
 	}
+	targets := make(map[string]bool, len(created))
+	for _, path := range created {
+		targets[lmsShardPattern.ReplaceAllString(lmsPartialTarget(path), "$1")] = true
+	}
+	if len(targets) > 1 {
+		return nil, nil
+	}
 	return created, nil
 }
+
+// lmsShardPattern matches the suffix llama.cpp's gguf-split gives each shard
+// of a split model, keeping the extension after it.
+var lmsShardPattern = regexp.MustCompile(`(?i)-\d{5}-of-\d{5}(\.gguf)$`)
 
 // lmsNameCarriesQuant reports whether a model file's name carries quant as a
 // whole token, in either case. Quantization names nest — F16 inside BF16, Q6_K

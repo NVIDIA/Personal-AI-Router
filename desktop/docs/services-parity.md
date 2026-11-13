@@ -449,12 +449,18 @@ any one of them that predates the pull, or changes, first appears, or vanishes
 after the grace, keeps them all, and otherwise the resume files are removed
 before the data file. LM Studio receives Ctrl+C and a negative answer to its
 background-download prompt, and after acknowledgement the partial files of the
-model file it was fetching are removed. That file is identified by the
-quantization the request pins or, when it pins none, the one the CLI announced
-in its download plan, matched as a whole name token so `Q4_K` never claims
-`Q4_K_M`'s files; an unpinned pull whose plan announced no quantization removes
-nothing, and neither does an MLX download, pinned or not, since its plan names
-no GGUF quantization and a pin such as `@4bit` is not one. Completed model
+model file it was fetching are removed, provided the CLI was downloading from
+the repository's Hugging Face URL. That is the one run that writes into
+`models/<owner>/<repo>`; a model the LM Studio Hub resolved is stored under its
+source's owner and repository, which the CLI never prints, so cancelling it
+removes nothing. The file is identified by the quantization the request pins
+or, when it pins none, the one the CLI announced in its download plan, matched
+as a whole name token so `Q4_K` never claims `Q4_K_M`'s files. The CLI never
+names the file itself, so when the new partials carrying the quantization name
+more than one file, none is removed; the shards of one split file count as
+one. An unpinned pull whose plan announced no quantization removes nothing,
+and neither does an MLX download, pinned or not, since its plan names no GGUF
+quantization and a pin such as `@4bit` is not one. Completed model
 files, other quantizations, and unrelated downloads are retained, and a
 cancellation the CLI never confirmed deletes nothing and fails, since the
 download may still be running. A cancel that finds no CLI running — before the first starts,
@@ -537,7 +543,7 @@ flowchart TD
 
     Engine -- LM Studio --> LMSStop["Send Ctrl+C"]
     LMSStop --> LMSPrompt["Answer no to background download"]
-    LMSPrompt --> LMSCandidates[".part files of the pinned<br/>or announced quantization"]
+    LMSPrompt --> LMSCandidates[".part files of the one file of the<br/>pinned or announced quantization,<br/>after a run from the Hugging Face URL"]
 
     Engine -- llama.cpp --> LlamaStop["Ask the router to<br/>stop the download"]
     LlamaStop --> LlamaKeep["Leave its files for<br/>llama.cpp to resume or replace"]
