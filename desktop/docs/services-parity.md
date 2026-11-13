@@ -603,10 +603,10 @@ Saved model selections still start normally. The broker retains the authoritativ
 engine status for both local and paired nodes; an engine awaiting selection is
 not advertised as serving a model.
 
-Confirmed cross-subnet members enter the backend discovery directory using the
-roster and node-info service advertisements. The desktop uses the same discovery
-and engine snapshots; telemetry parsing intentionally ignores the additive
-node-info `services` metadata. Discovery hints do not authorize peer traffic.
+Confirmed cross-subnet member addresses enter the existing backend candidate
+authentication path. Exact-pin mTLS node-info reads supply verified identity,
+service ports and hardware. The desktop consumes the same backend discovery and
+engine snapshots; roster hints alone never authorize service decisions.
 
 The local model projection applies downloaded inventory and loaded state from
 `engine:models-changed` together. Remote pull/delete operations update the owning

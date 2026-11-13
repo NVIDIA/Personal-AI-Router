@@ -78,15 +78,16 @@ type engineState struct {
 	healthy    bool
 	stopping   bool
 	// starting is true while a start launches the engine and waits for readiness.
-	awaitingModel bool
-	starting      bool
-	adopted       bool  // started externally; we can't stop it
-	gen           int64 // bumped each start; gates stale health loops
-	port          int
-	binPath       string
-	proc          *managedProc
-	healthStop    context.CancelFunc
-	enabling      bool
+	awaitingModel  bool
+	starting       bool
+	adopted        bool  // started externally; we can't stop it
+	gen            int64 // bumped each start; gates stale health loops
+	port           int
+	binPath        string
+	proc           *managedProc
+	healthStop     context.CancelFunc
+	enabling       bool
+	modelSwitching bool
 	// startCancel lets StopAll, Stop and Eject unblock doStart before waiting
 	// on opMu.
 	startCancel context.CancelFunc
