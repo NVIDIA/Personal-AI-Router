@@ -361,7 +361,7 @@ func (p *Peer) OOBInputNoob(noob []byte) error {
 	if p.dirp != OOBServerToPeer && p.dirp != OOBBoth {
 		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
 	}
-	if err := oobInputNoob(&p.methodState, noob); err != nil {
+	if err := setOOBNoob(&p.methodState, noob); err != nil {
 		return err
 	}
 	p.state = StateOOBReceived

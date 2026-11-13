@@ -83,20 +83,6 @@ type wireMessage struct {
 	EAP string `json:"eap,omitempty"`
 }
 
-// encode marshals a message and parses it back so callers can inspect the
-// serialized fields used in the authenticated transcript.
-func encode(m *wireMessage) ([]byte, *wireMessage, error) {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return nil, nil, err
-	}
-	parsed := new(wireMessage)
-	if err := json.Unmarshal(b, parsed); err != nil {
-		return nil, nil, err
-	}
-	return b, parsed, nil
-}
-
 func decode(b []byte) (*wireMessage, error) {
 	m := new(wireMessage)
 	if err := json.Unmarshal(b, m); err != nil {

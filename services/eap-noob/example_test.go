@@ -54,7 +54,7 @@ func Example() {
 	// A fixture representing PIN 000123, already validated and encoded by PAIR.
 	noob := make([]byte, 16)
 	noob[15] = 123
-	if _, err := srv.OOBOutputWith(noob); err != nil {
+	if err := srv.OOBOutputWith(noob); err != nil {
 		panic(err)
 	}
 	if err := peer.OOBInputNoob(noob); err != nil {

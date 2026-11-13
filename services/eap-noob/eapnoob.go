@@ -7,12 +7,12 @@
 // The implementation is transport-agnostic: it consumes and produces the
 // EAP-NOOB message bytes (JSON objects) but does not perform EAP/RADIUS framing
 // or networking. A caller drives a Server and a Peer by relaying each side's
-// outbound bytes to the other, and relays the single out-of-band message
-// (PeerId, Noob, Hoob) through whatever user-assisted channel it chooses.
+// outbound bytes to the other. PAIR supplies the out-of-band Noob from its
+// user-carried PIN; a full OOBMessage is also supported for high-entropy codes.
 //
 // Once the Completion Exchange succeeds, both sides reach the Registered state
-// and share the association key Kz, from which Export derives a shared secret
-// of up to 8160 bytes.
+// and share the association key Kz, from which Export derives shared application
+// secrets of up to 8160 bytes. ServerInfo and PeerInfo are then authenticated.
 package eapnoob
 
 import (
@@ -88,9 +88,8 @@ type methodState struct {
 	ns   []byte // raw server nonce
 	np   []byte // raw peer nonce
 
-	noob    []byte // raw 16-byte secret nonce
-	noobB64 json.RawMessage
-	noobID  []byte // raw 16-byte NoobId
+	noob   []byte // raw 16-byte secret nonce
+	noobID []byte // raw 16-byte NoobId
 
 	keyM       keyMaterial
 	registered *Association
@@ -104,10 +103,8 @@ func (ms *methodState) deriveCompletionKeys() {
 // side that holds it.
 func (ms *methodState) setNoob(noob []byte) {
 	ms.noob = noob
-	b64 := b64Encode(noob)
-	ms.noobB64 = rawString(b64)
-	ms.in.Noob = ms.noobB64
-	ms.noobID = ms.suite.computeNoobID(ms.noobB64)
+	ms.in.Noob = rawString(b64Encode(noob))
+	ms.noobID = ms.suite.computeNoobID(ms.in.Noob)
 }
 
 // raw-value helpers -----------------------------------------------------------

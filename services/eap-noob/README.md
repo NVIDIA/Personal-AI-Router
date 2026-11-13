@@ -116,10 +116,10 @@ to transfer a random `Noob` and verify its `Hoob` fingerprint. Both methods
 require the corresponding direction to have been negotiated.
 
 PAIR's PIN flow instead supplies the same 16-byte `Noob` locally through
-`Server.OOBOutputWith` and `Peer.OOBInputNoob`. The server returns an OOB
-envelope containing Hoob, which the cluster manager discards. The Completion
-MACs authenticate the secret and transcript. See the
-[cluster-manager specification](../nvpair-cluster-manager/spec.md) for PIN encoding.
+`Server.OOBOutputWith` and `Peer.OOBInputNoob`, without constructing an OOB
+envelope or computing Hoob. The Completion MACs authenticate the secret and
+transcript. See the [cluster-manager specification](../nvpair-cluster-manager/spec.md)
+for PIN encoding.
 
 ### Shared application secrets and storage
 

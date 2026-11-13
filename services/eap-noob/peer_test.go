@@ -143,8 +143,7 @@ func TestPeer_RejectsChangedAuthenticatedCertificateInformation(t *testing.T) {
 			require.Equal(t, StateWaiting, peer.State())
 
 			noob := bytes.Repeat([]byte{0xAB}, 16)
-			_, err = server.OOBOutputWith(noob)
-			require.NoError(t, err)
+			require.NoError(t, server.OOBOutputWith(noob))
 			require.NoError(t, peer.OOBInputNoob(noob))
 			out := driveConversation(t, server, peer)
 

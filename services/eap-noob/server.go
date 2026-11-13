@@ -372,17 +372,17 @@ func (s *Server) OOBOutput() (OOBMessage, error) {
 	return oobOutput(&s.methodState, OOBServerToPeer)
 }
 
-// OOBOutputWith produces the server-to-peer OOB material using a caller-supplied
-// 16-byte Noob instead of a randomly generated one. Preconditions match
-// OOBOutput. The returned envelope need not be transmitted in the PIN flow.
-func (s *Server) OOBOutputWith(noob []byte) (OOBMessage, error) {
+// OOBOutputWith records a caller-supplied 16-byte Noob for server-to-peer OOB.
+// The server stays Waiting, without building an OOBMessage or computing Hoob.
+// Preconditions match OOBOutput; Completion authenticates the transcript.
+func (s *Server) OOBOutputWith(noob []byte) error {
 	if s.state != StateWaiting {
-		return OOBMessage{}, fmt.Errorf("eapnoob: OOBOutputWith requires Waiting state, have %s", s.state)
+		return fmt.Errorf("eapnoob: OOBOutputWith requires Waiting state, have %s", s.state)
 	}
 	if s.dirp != OOBServerToPeer && s.dirp != OOBBoth {
-		return OOBMessage{}, fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
+		return fmt.Errorf("eapnoob: server-to-peer OOB not negotiated")
 	}
-	return oobOutputWith(&s.methodState, OOBServerToPeer, noob)
+	return setOOBNoob(&s.methodState, noob)
 }
 
 // OOBInput accepts the out-of-band message for the peer-to-server direction and

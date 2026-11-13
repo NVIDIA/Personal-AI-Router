@@ -88,25 +88,11 @@ func oobOutput(ms *methodState, dir OOBDirection) (OOBMessage, error) {
 	}, nil
 }
 
-// oobOutputWith builds an OOB message from a caller-supplied 16-byte Noob.
-func oobOutputWith(ms *methodState, dir OOBDirection, noob []byte) (OOBMessage, error) {
-	if len(noob) != 16 {
-		return OOBMessage{}, fmt.Errorf("eapnoob: Noob must be 16 bytes")
-	}
-	ms.setNoob(noob)
-	hoob := ms.suite.computeHoob(dir, ms.in)
-	return OOBMessage{
-		PeerId: ms.peerId,
-		Noob:   b64Encode(noob),
-		Hoob:   b64Encode(hoob),
-	}, nil
-}
-
-// oobInputNoob records a caller-supplied 16-byte Noob without an OOBMessage
+// setOOBNoob records a caller-supplied 16-byte Noob without an OOBMessage
 // envelope. Unlike oobInput it does not verify a received Hoob (there is none
 // to verify for a human-carried Noob); transcript agreement is instead proven
 // by the Completion Exchange MACs.
-func oobInputNoob(ms *methodState, noob []byte) error {
+func setOOBNoob(ms *methodState, noob []byte) error {
 	if len(noob) != 16 {
 		return fmt.Errorf("eapnoob: Noob must be 16 bytes")
 	}

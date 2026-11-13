@@ -14,7 +14,7 @@ import (
 // TestCallerInjectedNoobPairs drives a full pairing in the server-to-peer
 // direction using the caller-injected-Noob API (the path the cluster manager's
 // PIN flow takes): the server supplies the Noob via OOBOutputWith and the peer
-// records the same Noob via OOBInputNoob, without transferring an OOB envelope.
+// records the same Noob via OOBInputNoob, with no OOBMessage/Hoob envelope.
 func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
 	test := func(name string, suite cryptosuiteID) {
 		t.Run(name, func(t *testing.T) {
@@ -25,8 +25,7 @@ func TestPairing_AcceptsMatchingCallerProvidedNoob(t *testing.T) {
 			require.Equal(t, StateWaiting, peer.State())
 
 			noob := bytes.Repeat([]byte{0xAB}, 16)
-			_, err := srv.OOBOutputWith(noob)
-			require.NoError(t, err)
+			require.NoError(t, srv.OOBOutputWith(noob))
 			assert.Equal(t, StateWaiting, srv.State())
 			require.NoError(t, peer.OOBInputNoob(noob))
 			require.Equal(t, StateOOBReceived, peer.State())
@@ -52,8 +51,7 @@ func TestPeerWrongPin_YieldsProtocolError(t *testing.T) {
 	require.Nil(t, driveConversation(t, srv, peer).Err)
 
 	// Supply different NOOB values to represent a wrong PIN.
-	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16))
-	require.NoError(t, err, "server OOBOutputWith:")
+	require.NoError(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 16)), "server OOBOutputWith:")
 	require.NoError(t, peer.OOBInputNoob(bytes.Repeat([]byte{0x02}, 16)), "peer OOBInputNoob:")
 
 	// Drive the Completion Exchange exactly as the joiner does: the server
@@ -86,6 +84,5 @@ func TestOOBOutputWith_RejectsBadLength(t *testing.T) {
 	srv := NewServer(ServerConfig{Dirs: OOBServerToPeer}, nil)
 	peer := NewPeer(PeerConfig{PreferDir: OOBServerToPeer}, nil)
 	require.Nil(t, driveConversation(t, srv, peer).Err)
-	_, err := srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8))
-	require.Error(t, err, "expected OOBOutputWith to reject an 8-byte Noob")
+	require.Error(t, srv.OOBOutputWith(bytes.Repeat([]byte{0x01}, 8)), "expected OOBOutputWith to reject an 8-byte Noob")
 }
