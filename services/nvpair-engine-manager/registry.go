@@ -892,11 +892,15 @@ func (p *Platform) validate(key string) error {
 		if strings.ContainsAny(literalPath, "{}") {
 			return fmt.Errorf("platform %q: install_dir %q must be a literal path, not a template", key, p.InstallDir)
 		}
-		if p.ModelsDir != "" && pathWithinRoot(
-			strings.ToLower(filepath.Clean(expandPath(p.InstallDir))),
-			strings.ToLower(filepath.Clean(expandPath(p.ModelsDir))),
-		) {
-			return fmt.Errorf("platform %q: models_dir %q cannot be inside install_dir %q — app reset removes managed engine payloads", key, p.ModelsDir, p.InstallDir)
+		if p.ModelsDir != "" {
+			installDir := strings.ToLower(filepath.Clean(expandPath(p.InstallDir)))
+			modelsDir := strings.ToLower(filepath.Clean(expandPath(p.ModelsDir)))
+			if pathWithinRoot(installDir, modelsDir) {
+				return fmt.Errorf("platform %q: models_dir %q cannot be inside install_dir %q — app reset removes managed engine payloads", key, p.ModelsDir, p.InstallDir)
+			}
+			if pathWithinRoot(modelsDir, installDir) {
+				return fmt.Errorf("platform %q: install_dir %q cannot be inside models_dir %q — uninstall preserves the model store", key, p.InstallDir, p.ModelsDir)
+			}
 		}
 	}
 	if auto := p.Runtime.AutoLaunch; auto != nil {

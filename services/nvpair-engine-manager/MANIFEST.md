@@ -187,6 +187,8 @@ That second one is why `models_dir` must be a literal path. By default,
 destroyed when a user uninstalls the app. A platform may declare an external
 `install_dir`, but that PAIR-owned path must also be in the app wipe inventory,
 so it is no safer for models. Keep the store separate from both locations.
+An explicit `install_dir` must also stay outside `models_dir`: uninstall refuses
+to remove anything inside the protected store, including an engine payload.
 
 Declare the engine's own default where it has one, so PAIR and a user's own copy
 of that engine share a library rather than downloading the same weights twice.

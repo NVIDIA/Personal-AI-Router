@@ -73,14 +73,22 @@ func TestValidate_AcceptsEnvironmentReferenceInInstallDirectory(t *testing.T) {
 	require.NoError(t, m.Validate(), "supported braced environment reference rejected")
 }
 
-func TestValidate_RejectsModelStoreInsideDeclaredInstallDirectory(t *testing.T) {
-	m := validManifest()
-	platform := m.Platforms["linux/amd64"]
-	platform.InstallDir = "~/.nvpair/engine-bin/demo"
-	platform.ModelsDir = "~/.nvpair/engine-bin/demo/models"
-	m.Platforms["linux/amd64"] = platform
+func TestValidate_RejectsOverlappingInstallAndModelDirectories(t *testing.T) {
+	test := func(name, installDir, modelsDir string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			m := validManifest()
+			platform := m.Platforms["linux/amd64"]
+			platform.InstallDir = installDir
+			platform.ModelsDir = modelsDir
+			platform.Uninstall = &Uninstall{Remove: []string{"{install_dir}"}}
+			m.Platforms["linux/amd64"] = platform
 
-	require.ErrorContains(t, m.Validate(), "models_dir", "model store inside managed install directory accepted")
+			require.ErrorContains(t, m.Validate(), "models_dir")
+		})
+	}
+	test("model store inside installation", "~/.nvpair/engine-bin/demo", "~/.nvpair/engine-bin/demo/models")
+	test("installation inside model store", "~/.cache/huggingface/engine-bin/demo", "~/.cache/huggingface")
 }
 
 func TestValidate_AcceptsCommandModeAndCmdAction(t *testing.T) {
