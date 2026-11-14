@@ -265,7 +265,9 @@ func TestAutoContext_SkipsShardedLaunches(t *testing.T) {
 		})
 	}
 	test("--tensor-parallel-size")
+	test("-tp")
 	test("--pipeline-parallel-size")
+	test("-pp")
 }
 
 func TestAutoContext_GivesAModelNotInTheCacheWhatIsFree(t *testing.T) {
