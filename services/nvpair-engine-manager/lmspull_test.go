@@ -610,22 +610,6 @@ func TestCleanupLMSAfterCancel_RemovesThePartialButKeepsCompletedShards(t *testi
 	assertPresent(t, completeShard)
 }
 
-func TestCleanupLMSAfterCancel_KeepsPartialsOlderThanThePull(t *testing.T) {
-	root := t.TempDir()
-	target := filepath.Join(root, "owner", "repo")
-	olderPartial := filepath.Join(target, "downloading_other-Q4_K_M.gguf.part")
-	writePartial(t, olderPartial, "other download")
-	before, err := lmsPartialFiles(root, "owner/repo")
-	require.NoError(t, err)
-	newPartial := filepath.Join(target, "downloading_selected-Q4_K_M.gguf.part")
-	writePartial(t, newPartial, "new download")
-
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(t), root, "owner/repo", fromHuggingFace("owner/repo"), before, []string{"Q4_K_M"}))
-
-	assertPresent(t, olderPartial)
-	assertRemoved(t, newPartial)
-}
-
 // An unpinned request lets the CLI choose the quantization, so a partial that
 // appeared since the snapshot is only this download's when it carries the one
 // the CLI announced. Another can be the LM Studio app fetching a different
@@ -795,22 +779,40 @@ func TestCleanupLMSAfterCancel_KeepsAPreexistingPartialThatGrew(t *testing.T) {
 // can hold more than one file of a quantization: variants of a model, or every
 // file of a repository named for the quantization. Which of two such partials
 // is this download's is then a guess, so cancelling removes neither.
+//
+// That holds when one of them predates the pull too. `lms get` may be resuming
+// that one, and the partial that appeared since is then another client's. A
+// single file and a split one are different files, and so are two splits of
+// one name into different numbers of shards.
 func TestCleanupLMSAfterCancel_KeepsEveryFileWhenTheQuantizationNamesMoreThanOne(t *testing.T) {
-	root := t.TempDir()
 	const model = "BobbyLLM/Qwen3.5-4B-EU-Tool-Q4_K_M-GGUF@Q4_K_M"
-	target := filepath.Join(root, "BobbyLLM", "Qwen3.5-4B-EU-Tool-Q4_K_M-GGUF")
-	require.NoError(t, os.MkdirAll(target, 0700))
-	before, err := lmsPartialFiles(root, model)
-	require.NoError(t, err)
-	first := filepath.Join(target, "downloading_Qwen3.5-4B-EU-Tool-Q4_K_M.gguf.part")
-	second := filepath.Join(target, "downloading_Qwen3.5-4B-EU-Tool-v2-Q4_K_M.gguf.part")
-	writePartial(t, first, "one download")
-	writePartial(t, second, "another")
+	test := func(name, first, second string, firstPredatesThePull bool) {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "BobbyLLM", "Qwen3.5-4B-EU-Tool-Q4_K_M-GGUF")
+			require.NoError(t, os.MkdirAll(target, 0700))
+			firstPath := filepath.Join(target, "downloading_"+first+".part")
+			secondPath := filepath.Join(target, "downloading_"+second+".part")
+			if firstPredatesThePull {
+				writePartial(t, firstPath, "a download this pull may be resuming")
+			}
+			before, err := lmsPartialFiles(root, model)
+			require.NoError(t, err)
+			if !firstPredatesThePull {
+				writePartial(t, firstPath, "one download")
+			}
+			writePartial(t, secondPath, "another")
 
-	require.NoError(t, cleanupLMSAfterCancel(settledContext(t), root, model, fromHuggingFace(model), before, nil))
+			require.NoError(t, cleanupLMSAfterCancel(settledContext(t), root, model, fromHuggingFace(model), before, nil))
 
-	assertPresent(t, first)
-	assertPresent(t, second)
+			assertPresent(t, firstPath)
+			assertPresent(t, secondPath)
+		})
+	}
+	test("two variants", "Qwen3.5-4B-EU-Tool-Q4_K_M.gguf", "Qwen3.5-4B-EU-Tool-v2-Q4_K_M.gguf", false)
+	test("a variant that predates the pull", "Qwen3.5-4B-EU-Tool-Q4_K_M.gguf", "Qwen3.5-4B-EU-Tool-v2-Q4_K_M.gguf", true)
+	test("a single file and a split one", "Qwen3.5-4B-EU-Tool-Q4_K_M.gguf", "Qwen3.5-4B-EU-Tool-Q4_K_M-00001-of-00002.gguf", false)
+	test("splits into different numbers of shards", "Qwen3.5-4B-EU-Tool-Q4_K_M-00001-of-00002.gguf", "Qwen3.5-4B-EU-Tool-Q4_K_M-00001-of-00003.gguf", false)
 }
 
 // A GGUF too large for one file is split into shards named

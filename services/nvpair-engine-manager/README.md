@@ -563,9 +563,12 @@ download plan. A pin that is not a quantization name, such as `@GGUF` or `@8B`,
 counts as none. The quantization is matched as a whole name token, so `Q4_K`
 never claims `Q4_K_M`'s files, and an unpinned pull whose plan announced none
 removes nothing. The CLI names the quantization it chose but never the file,
-so when the new partials carrying it name more than one file, as in a
-repository holding several variants of one quantization, cleanup removes none
-of them; the shards of one split file (`-00001-of-00003`) count as one file.
+so when the partials carrying it name more than one file, as in a repository
+holding several variants of one quantization, cleanup removes none of them.
+Partials that predate the pull count too, since `lms get` may be resuming one
+of them instead. The shards of one split file (`-00001-of-00003`) count as one
+file, and an unsplit file of that name, or a split into a different number of
+shards, as another.
 Cancelling an MLX download removes nothing, pinned or not: its
 plan names no GGUF quantization, and a pin such as `@4bit` is not a
 quantization name. LM Studio additionally requires the CLI to confirm:

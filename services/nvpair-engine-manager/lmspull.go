@@ -441,9 +441,11 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model, source string, befo
 // The quantization singles out one file only when the repository holds one
 // file of it. It can hold several, as variants of a model or as every file of
 // a repository named for its quantization, and the CLI never names the file
-// it chose, so new partials that name more than one file leave none
-// attributable. The shards of a split GGUF, "<name>-00001-of-00003.gguf", are
-// one file.
+// it chose, so partials that name more than one file leave none attributable.
+// Those that predate this download count too: `lms get` may be resuming one,
+// and a partial that appeared since is then another client's. The shards of a
+// split GGUF, "<name>-00001-of-00003.gguf", are one file; "<name>.gguf", or
+// <name> split into a different number of shards, is another.
 //
 // Presence in the snapshot is disqualifying on its own; what the file has done
 // since is not consulted. Bytes gained during this pull look identical whether
@@ -461,20 +463,17 @@ func lmsCreatedPartials(root, model string, before map[string]os.FileInfo, annou
 	if quant := lmsModelQuant(model); quant != "" {
 		quants = []string{quant}
 	}
+	targets := make(map[string]bool, len(files))
 	created := make([]string, 0, len(files))
 	for path := range files {
-		if _, existed := before[path]; existed {
-			continue
-		}
 		target := lmsPartialTarget(path)
 		if !slices.ContainsFunc(quants, func(quant string) bool { return lmsNameCarriesQuant(target, quant) }) {
 			continue
 		}
-		created = append(created, path)
-	}
-	targets := make(map[string]bool, len(created))
-	for _, path := range created {
-		targets[lmsShardPattern.ReplaceAllString(lmsPartialTarget(path), "$1")] = true
+		targets[lmsShardPattern.ReplaceAllString(target, "$1")] = true
+		if _, existed := before[path]; !existed {
+			created = append(created, path)
+		}
 	}
 	if len(targets) > 1 {
 		return nil, nil
@@ -482,9 +481,10 @@ func lmsCreatedPartials(root, model string, before map[string]os.FileInfo, annou
 	return created, nil
 }
 
-// lmsShardPattern matches the suffix llama.cpp's gguf-split gives each shard
-// of a split model, keeping the extension after it.
-var lmsShardPattern = regexp.MustCompile(`(?i)-\d{5}-of-\d{5}(\.gguf)$`)
+// lmsShardPattern matches the shard number llama.cpp's gguf-split gives each
+// shard of a split model, keeping the shard count and extension after it, so
+// every shard of one split names the same file.
+var lmsShardPattern = regexp.MustCompile(`(?i)-\d{5}(-of-\d{5}\.gguf)$`)
 
 // lmsNameCarriesQuant reports whether a model file's name carries quant as a
 // whole token, in either case. Quantization names nest — F16 inside BF16, Q6_K

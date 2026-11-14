@@ -491,9 +491,11 @@ source's owner and repository, which the CLI never prints, so cancelling it
 removes nothing. The file is identified by the quantization the request pins
 or, when it pins none, the one the CLI announced in its download plan, matched
 as a whole name token so `Q4_K` never claims `Q4_K_M`'s files. The CLI never
-names the file itself, so when the new partials carrying the quantization name
-more than one file, none is removed; the shards of one split file count as
-one. An unpinned pull whose plan announced no quantization removes nothing,
+names the file itself, so when the partials carrying the quantization name
+more than one file, counting those that predate the pull, which the CLI may be
+resuming, none is removed. The shards of one split file count as one, and an
+unsplit file of that name, or a split into a different number of shards, as
+another. An unpinned pull whose plan announced no quantization removes nothing,
 and neither does an MLX download, pinned or not, since its plan names no GGUF
 quantization and a pin such as `@4bit` is not one. Completed model
 files, other quantizations, and unrelated downloads are retained, and a
