@@ -1188,6 +1188,16 @@ func pullFramePush(t *testing.T, d *nodeDetail, engine, model, stage string) Not
 	return progressPush(t, "engine:pull-progress", fields)
 }
 
+// attemptOf is the number the screen gave the newest download of model on
+// engine it has seen, which is what a reply for that download carries. Every
+// screen draws from one count, so it is read back rather than assumed.
+func attemptOf(t *testing.T, d *nodeDetail, engine, model string) int {
+	t.Helper()
+	attempt, ok := d.latestAttempts[detailDownload{engine: engine, model: model}]
+	require.True(t, ok, "the screen has seen no download of %s into %s", model, engine)
+	return attempt
+}
+
 // receivedCall is the next request a removalBroker received, its params
 // decoded.
 func receivedCall(t *testing.T, calls <-chan removalCall) (string, map[string]string) {
@@ -1248,7 +1258,7 @@ func TestDownloadCancel_ReachesADownloadBeforeItsFirstFrame(t *testing.T) {
 
 	d.handleKeyForTest(t, "c")
 	require.NotNil(t, d.pending, "c did not arm a cancellation")
-	assert.Equal(t, &detailDownload{engine: "ollama", model: "llama3.2", attempt: 1}, d.pending.download)
+	assert.Equal(t, &detailDownload{engine: "ollama", model: "llama3.2", attempt: attemptOf(t, d, "ollama", "llama3.2")}, d.pending.download)
 }
 
 // Downloads are told apart by engine and model alone, so a second request for a
@@ -1263,9 +1273,10 @@ func TestDownloadStart_RefusesAModelAlreadyInFlight(t *testing.T) {
 			d.pane = detailModels
 			inFlight(t, d)
 
+			first := attemptOf(t, d, "ollama", "llama3.2")
 			assert.Nil(t, d.startDownload("ollama", "llama3.2"), "a second download of the model was sent")
 			assert.Contains(t, d.status.render(), "download llama3.2 (Ollama) is already in progress")
-			assert.Equal(t, []detailDownload{{engine: "ollama", model: "llama3.2", attempt: 1}}, d.downloads)
+			assert.Equal(t, []detailDownload{{engine: "ollama", model: "llama3.2", attempt: first}}, d.downloads)
 		})
 	}
 	test("one this screen sent", func(t *testing.T, d *nodeDetail) {
@@ -1340,17 +1351,17 @@ func TestDownloadCancel_ForgetsADownloadOnceItEnds(t *testing.T) {
 		}
 	}
 	reply := func(msg pullDoneMsg) func(*testing.T, *nodeDetail) {
-		return func(_ *testing.T, d *nodeDetail) {
+		return func(t *testing.T, d *nodeDetail) {
+			msg.attempt = attemptOf(t, d, msg.engine, msg.model)
 			d.update(detailReply{node: d.node.key, msg: msg})
 		}
 	}
 	test("on its success frame", frame("success"))
 	test("on its cancelled frame", frame("cancelled"))
 	test("on its error frame", frame("error"))
-	// A screen numbers the downloads it sees from 1.
-	test("when its request completes", reply(pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: 1}))
-	test("when its request reports a cancellation", reply(pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: 1, cancelled: true}))
-	test("when its request fails", reply(pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: 1, err: errors.New("no such model")}))
+	test("when its request completes", reply(pullDoneMsg{engine: "ollama", model: "llama3.2"}))
+	test("when its request reports a cancellation", reply(pullDoneMsg{engine: "ollama", model: "llama3.2", cancelled: true}))
+	test("when its request fails", reply(pullDoneMsg{engine: "ollama", model: "llama3.2", err: errors.New("no such model")}))
 }
 
 // A reply that missed its deadline says nothing about the download, which runs
@@ -1358,23 +1369,27 @@ func TestDownloadCancel_ForgetsADownloadOnceItEnds(t *testing.T) {
 // reached it — a peer that could not be asked. Each must leave the download
 // cancellable, or there is no way to try again.
 func TestDownloadCancel_KeepsADownloadThatMayStillBeRunning(t *testing.T) {
-	test := func(name string, reply tea.Msg, want string) {
+	test := func(name string, reply func(attempt int) tea.Msg, want string) {
 		t.Run(name, func(t *testing.T) {
 			d := localDetail()
 			d.pane = detailModels
 			d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+			attempt := attemptOf(t, d, "ollama", "llama3.2")
 
-			d.update(detailReply{node: d.node.key, msg: reply})
-			assert.Equal(t, []detailDownload{{engine: "ollama", model: "llama3.2", attempt: 1}}, d.downloads)
+			d.update(detailReply{node: d.node.key, msg: reply(attempt)})
+			assert.Equal(t, []detailDownload{{engine: "ollama", model: "llama3.2", attempt: attempt}}, d.downloads)
 			assert.Contains(t, d.status.render(), want)
 		})
 	}
-	test("a download past its reply deadline", pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: 1, detached: true},
-		"download llama3.2 (Ollama) is continuing in the background")
-	test("a cancel past its reply deadline", cancelPullMsg{engine: "ollama", model: "llama3.2", attempt: 1, detached: true},
-		"download llama3.2 (Ollama) is still being cancelled")
-	test("a cancel that never reached the download", cancelPullMsg{engine: "ollama", model: "llama3.2", attempt: 1, err: errors.New("peer did not answer")},
-		"cancel download llama3.2 (Ollama) failed: peer did not answer")
+	test("a download past its reply deadline", func(attempt int) tea.Msg {
+		return pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: attempt, detached: true}
+	}, "download llama3.2 (Ollama) is continuing in the background")
+	test("a cancel past its reply deadline", func(attempt int) tea.Msg {
+		return cancelPullMsg{engine: "ollama", model: "llama3.2", attempt: attempt, detached: true}
+	}, "download llama3.2 (Ollama) is still being cancelled")
+	test("a cancel that never reached the download", func(attempt int) tea.Msg {
+		return cancelPullMsg{engine: "ollama", model: "llama3.2", attempt: attempt, err: errors.New("peer did not answer")}
+	}, "cancel download llama3.2 (Ollama) failed: peer did not answer")
 }
 
 // A cancel can reach the download and still fail: llama.cpp's router not
@@ -1385,10 +1400,11 @@ func TestDownloadCancel_StopTheRouterDidNotConfirmEndsTheDownload(t *testing.T) 
 	d := localDetail()
 	d.pane = detailModels
 	d.update(pullFramePush(t, d, "llamacpp", "owner/repo", "downloading"))
+	attempt := attemptOf(t, d, "llamacpp", "owner/repo")
 
 	d.update(pullFramePush(t, d, "llamacpp", "owner/repo", "error"))
 	d.update(detailReply{node: d.node.key, msg: cancelPullMsg{
-		engine: "llamacpp", model: "owner/repo", err: errors.New("could not confirm download stopped"),
+		engine: "llamacpp", model: "owner/repo", attempt: attempt, err: errors.New("could not confirm download stopped"),
 	}})
 
 	assert.Empty(t, d.downloads, "a download the engine manager stopped tracking was kept to cancel again")
@@ -1400,11 +1416,12 @@ func TestDownloadCancel_StopTheRouterDidNotConfirmEndsTheDownload(t *testing.T) 
 // just as the cancel arrived has already reported that on its own frame, and
 // calling it cancelled, or still being cancelled, afterwards said the opposite.
 func TestDownloadCancel_KeepsTheOutcomeOfADownloadThatEndedFirst(t *testing.T) {
-	test := func(name, stage string, reply cancelPullMsg, want string) {
+	test := func(name, stage string, pastDeadline bool, want string) {
 		t.Run(name, func(t *testing.T) {
 			d := localDetail()
 			d.pane = detailModels
 			d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+			reply := cancelPullMsg{engine: "ollama", model: "llama3.2", attempt: attemptOf(t, d, "ollama", "llama3.2"), detached: pastDeadline}
 
 			d.update(pullFramePush(t, d, "ollama", "llama3.2", stage))
 			d.update(detailReply{node: d.node.key, msg: reply})
@@ -1414,16 +1431,31 @@ func TestDownloadCancel_KeepsTheOutcomeOfADownloadThatEndedFirst(t *testing.T) {
 			assert.NotContains(t, got, "cancelled")
 		})
 	}
-	acknowledged := cancelPullMsg{engine: "ollama", model: "llama3.2"}
-	pastDeadline := cancelPullMsg{engine: "ollama", model: "llama3.2", detached: true}
-	test("a download that completed, then the cancel is acknowledged", "success", acknowledged,
+	test("a download that completed, then the cancel is acknowledged", "success", false,
 		"download llama3.2 (Ollama): done")
-	test("a download that completed, then the cancel passes its reply deadline", "success", pastDeadline,
+	test("a download that completed, then the cancel passes its reply deadline", "success", true,
 		"download llama3.2 (Ollama): done")
-	test("a download that failed, then the cancel is acknowledged", "error", acknowledged,
+	test("a download that failed, then the cancel is acknowledged", "error", false,
 		"download llama3.2 (Ollama) failed")
-	test("a download that failed, then the cancel passes its reply deadline", "error", pastDeadline,
+	test("a download that failed, then the cancel passes its reply deadline", "error", true,
 		"download llama3.2 (Ollama) failed")
+}
+
+// A pull reply past its deadline says the download may still be running. A
+// frame that reported the download's end before that reply arrived has said
+// more, and saying it continues in the background afterwards contradicted it.
+func TestPullReply_PastItsDeadlineKeepsTheOutcomeAFrameReported(t *testing.T) {
+	d := localDetail()
+	d.pane = detailModels
+	d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+	attempt := attemptOf(t, d, "ollama", "llama3.2")
+
+	d.update(pullFramePush(t, d, "ollama", "llama3.2", "success"))
+	d.update(detailReply{node: d.node.key, msg: pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: attempt, detached: true}})
+
+	got := d.status.render()
+	assert.Contains(t, got, "download llama3.2 (Ollama): done")
+	assert.NotContains(t, got, "continuing in the background")
 }
 
 // A cancel can be acknowledged after the download it stopped has reported its
@@ -1454,6 +1486,75 @@ func TestDownloadCancel_LateRepliesForAnEarlierAttemptLeaveTheRetryAlone(t *test
 			d.handleKeyForTest(t, "c")
 			require.NotNil(t, d.pending, "the retry cannot be cancelled")
 			assert.Equal(t, "llama3.2", d.pending.download.model)
+		})
+	}
+	test("the cancel's acknowledgement", func(_, cancel tea.Cmd) tea.Cmd { return cancel })
+	test("the stopped download's pull reply", func(pull, _ tea.Cmd) tea.Cmd { return pull })
+}
+
+// The retry can end before the earlier attempt's replies arrive. With nothing
+// of the model in flight any more they were taken as current, and a late failed
+// cancel or pull reply replaced the retry's outcome with the stopped attempt's.
+func TestDownloadCancel_LateRepliesForAnEarlierAttemptKeepTheRetrysOutcome(t *testing.T) {
+	test := func(name string, late func(first int) tea.Msg) {
+		t.Run(name, func(t *testing.T) {
+			d := localDetail()
+			d.pane = detailModels
+			d.update(pullFramePush(t, d, "ollama", "llama3.2", "downloading"))
+			first := attemptOf(t, d, "ollama", "llama3.2")
+			d.update(pullFramePush(t, d, "ollama", "llama3.2", "cancelled"))
+			require.NotNil(t, d.startDownload("ollama", "llama3.2"), "setup: the retry was refused")
+			d.update(pullFramePush(t, d, "ollama", "llama3.2", "success"))
+
+			d.update(detailReply{node: d.node.key, msg: late(first)})
+
+			got := d.status.render()
+			assert.Contains(t, got, "download llama3.2 (Ollama): done", "the retry's outcome was replaced")
+			assert.NotContains(t, got, "cancel")
+			assert.NotContains(t, got, "background")
+		})
+	}
+	test("a cancel that failed", func(first int) tea.Msg {
+		return cancelPullMsg{engine: "ollama", model: "llama3.2", attempt: first, err: errors.New("peer did not answer")}
+	})
+	test("the stopped download's pull reply", func(first int) tea.Msg {
+		return pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: first, cancelled: true}
+	})
+	test("the stopped download's pull reply past its deadline", func(first int) tea.Msg {
+		return pullDoneMsg{engine: "ollama", model: "llama3.2", attempt: first, detached: true}
+	})
+}
+
+// Replies outlive the screen that sent them and reach the next screen of the
+// same node. Each screen numbered its downloads from 1, so the first download a
+// reopened screen started carried the number of the one an earlier visit had
+// cancelled, and that visit's late cancel acknowledgement or pull reply
+// retired it and reported it ended.
+func TestDownloadCancel_RepliesFromAnEarlierVisitLeaveTheNextVisitsDownloadAlone(t *testing.T) {
+	test := func(name string, late func(pull, cancel tea.Cmd) tea.Cmd) {
+		t.Run(name, func(t *testing.T) {
+			client, _ := removalBroker(t, "")
+			row := nodeRow{key: "self", name: "this-host", self: true, presence: presenceOnline}
+			earlier := newNodeDetail(client, row)
+			earlier.SetSize(100, 30)
+			earlier.pane = detailModels
+			pull := earlier.startDownload("ollama", "llama3.2")
+			require.NotNil(t, pull, "setup: the download was not sent")
+			earlier.handleKeyForTest(t, "c")
+			cancel := earlier.handleKeyForTest(t, "y")
+			require.NotNil(t, cancel, "setup: the cancel was not sent")
+
+			d := newNodeDetail(client, row)
+			d.SetSize(100, 30)
+			d.pane = detailModels
+			require.NotNil(t, d.startDownload("ollama", "llama3.2"), "setup: the download was not sent")
+
+			d.update(late(pull, cancel)())
+
+			assert.Len(t, d.downloads, 1, "this visit's download is no longer tracked")
+			assert.NotContains(t, d.status.render(), "download llama3.2 (Ollama): ", "the earlier visit's reply was reported as this visit's")
+			d.handleKeyForTest(t, "c")
+			require.NotNil(t, d.pending, "this visit's download cannot be cancelled")
 		})
 	}
 	test("the cancel's acknowledgement", func(_, cancel tea.Cmd) tea.Cmd { return cancel })

@@ -92,8 +92,11 @@ type nodeDetail struct {
 	// model as well as the engine because an engine queues downloads rather
 	// than refusing them.
 	downloads []detailDownload
-	// downloadAttempts is the number given to the last download first seen.
-	downloadAttempts int
+	// latestAttempts is the attempt each model's newest download on this
+	// screen was given, keyed by its engine and model with no attempt, and kept
+	// once that download ends: a reply carrying any other attempt is about a
+	// download of the model that was started before it.
+	latestAttempts map[detailDownload]int
 
 	// settings is the last settings snapshot seen per engine, keyed by engine
 	// name. Fetched when the operator asks to edit rather than for every engine
@@ -169,15 +172,19 @@ type detailModelRow struct {
 }
 
 // detailDownload is one model download in flight, named the way a cancel
-// names it, and numbered by this screen when it first saw it.
+// names it, and numbered when a screen first saw it.
 //
 // The wire names a download by engine and model alone, so only that number
 // tells a retry of a model from the attempt before it. A reply to a pull or a
 // cancel carries the attempt it was sent for, and one that arrives after that
 // attempt has ended and the model has been started again leaves the retry
-// alone. Frames carry no number and are matched by engine and model: each
-// describes whichever download of the model is running, and the engine manager
-// sends a stopped download's last frame before it starts the retry.
+// alone, running or ended. Frames carry no number and are matched by engine
+// and model: each describes whichever download of the model is running, and
+// the engine manager sends a stopped download's last frame before it starts
+// the retry. A screen opened while an earlier one's cancel was still cleaning
+// up has not seen that download, though, so it can start the model again
+// before that last frame arrives, and the frame then retires the retry until
+// the retry's next one.
 type detailDownload struct {
 	engine  string
 	model   string
@@ -232,6 +239,12 @@ var (
 // Package-level rather than per-screen because each detail screen is a new value
 // and the point is to differ from every previous one.
 var detailRefreshes int
+
+// downloadAttempts numbers the downloads every detail screen tracks, for the
+// same reason: a screen's replies outlive it and reach the next screen of its
+// node, which must not give a download of its own a number one of them
+// carries.
+var downloadAttempts int
 
 func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	ti := textinput.New()
@@ -952,9 +965,13 @@ func (d *nodeDetail) trackDownload(engine, model string) detailDownload {
 	if dl, ok := d.trackedDownload(engine, model); ok {
 		return dl
 	}
-	d.downloadAttempts++
-	dl := detailDownload{engine: engine, model: model, attempt: d.downloadAttempts}
+	downloadAttempts++
+	dl := detailDownload{engine: engine, model: model, attempt: downloadAttempts}
 	d.downloads = append(d.downloads, dl)
+	if d.latestAttempts == nil {
+		d.latestAttempts = make(map[detailDownload]int)
+	}
+	d.latestAttempts[detailDownload{engine: engine, model: model}] = dl.attempt
 	return dl
 }
 
@@ -969,11 +986,14 @@ func (d *nodeDetail) retireDownload(dl detailDownload) {
 }
 
 // retried reports whether a reply sent for dl comes from an attempt that has
-// ended since, with the model started again: the download in flight under its
-// engine and model is a later attempt, which the reply must not act on.
+// ended since, with the model started again: the newest download of its
+// engine and model this screen has seen is another attempt, which the reply
+// must neither act on nor report over, whether it is still in flight or has
+// ended too. The reply can be this screen's or an earlier screen's of the
+// same node.
 func (d *nodeDetail) retried(dl detailDownload) bool {
-	current, ok := d.trackedDownload(dl.engine, dl.model)
-	return ok && current.attempt != dl.attempt
+	latest, ok := d.latestAttempts[detailDownload{engine: dl.engine, model: dl.model}]
+	return ok && latest != dl.attempt
 }
 
 // downloadToCancel is the download the cancel key stops: the newest on the
@@ -1029,8 +1049,9 @@ func (d *nodeDetail) settlePull(msg pullDoneMsg) {
 	}
 	what := d.downloadLabel(msg.engine, msg.model)
 	if msg.detached {
-		// Still running, so still cancellable; its frames report the end.
-		if !d.promptArmed() {
+		// Still running, so still cancellable; its frames report the end. One
+		// whose end a frame has reported already has nothing to add to it.
+		if slices.Contains(d.downloads, dl) && !d.promptArmed() {
 			d.status.info("download %s is continuing in the background - watch for progress", what)
 		}
 		return
