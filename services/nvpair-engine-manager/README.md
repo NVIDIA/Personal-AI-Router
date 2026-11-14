@@ -194,10 +194,12 @@ The cache listing judges such a model complete on those files. Other formats in 
 repository are not fetched; a full `hf download` adds them to the same cache
 without downloading the rest again. Progress is the
 share of those bytes that has landed in the cache, a download that makes no
-progress for the pull timeout is abandoned, and a cancelled one is stopped. It
-needs no running engine. A gated repo needs its terms accepted and `HF_TOKEN`
-(or a prior `hf auth login`), in the service's environment or the engine's launch
-settings.
+progress for the pull timeout is abandoned, and a cancelled one is stopped —
+the `hf` tool is killed if it has not exited 3 seconds after being asked — and
+settles as cancelled, keeping its partial files for the next download to resume
+(see "Cancelling a pull"). It needs no running engine. A gated repo needs its
+terms accepted and `HF_TOKEN` (or a prior `hf auth login`), in the service's
+environment or the engine's launch settings.
 
 On Apple Silicon, vLLM-Metal stores the KV cache in the model's dtype and
 refuses an FP8 KV cache, and its loader has no FP8 path for most model families.
@@ -248,14 +250,16 @@ Requests (caller → service):
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind) |
-| `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
+| `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). It must name its model in `params.name` or `params.model`, which keys the download's frames and its cancel; one that names none is refused with `-32602`. An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
+| `engine:cancel-pull` | `{ engine, model }` | `null`, once the transfer has stopped **and** its cleanup has settled — so a UI can hold "Canceling" until the backend is genuinely done. See "Cancelling a pull" below |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
 | `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Both llama.cpp and vLLM are `searchable`. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"` (vLLM), `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
-| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
+| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`). Held until every `engine:remote-cancel-pull` of that download sent before it has ended, so a retry cannot reach the peer ahead of the cancel it follows and be stopped by it |
+| `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result. Held until every `engine:remote-pull-model` of that download sent before it has been accepted by the peer or has ended, so a cancel dispatched right behind a pull, or behind a duplicate of it, cannot reach the peer first |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
@@ -283,14 +287,41 @@ is pushed too; `models` is the full `engine:models` shape so a consumer swaps
 its whole snapshot,
 `engine:install-progress{engine, stage, percent?, error?}` (`error` on the
 terminal `failed` frame),
-`engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a
-local model pull driven via `engine:action{action:"pull_model"}` — the local
-counterpart of `engine:remote-progress`; frames are coalesced to changes in
-stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
-a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
-UI converges even if its synchronous call already timed out),
-`engine:remote-progress{opId, node, engine, op, stage, percent?, message}`
-(relayed live progress for a remote install/pull), and — for the error
+`engine:pull-progress{engine, model, op, stage, percent?, message}` (live
+progress for a local model pull driven via `engine:action{action:"pull_model"}`
+— the local counterpart of `engine:remote-progress`; frames are coalesced to
+changes in stage/percent. Whichever engine runs it, a pull ends with exactly
+one terminal frame — `stage:"success", percent:100` once the model is
+installed (an Ollama stream that closes before its success record is a failed
+pull), `stage:"cancelled"` when a cancel stopped it, or
+`stage:"error", percent:-1, message` with the reason — so a UI converges even
+if its synchronous call already timed out; a request that joins a download
+already in flight shares that download's frames rather than adding its own, as
+does a request a cancel stopped before it started while another download of
+that model is still registered, or once the model's outcome has been reported
+while the request was outstanding. Such a request settles as one joined to the
+download the cancel stopped along with it would, once that download has
+stopped and with how it ended, or answers `cancelled` when the cancel found no
+download running. Either way, if a download installed the model meanwhile, it
+answers with that download's result. A peer's progress hub drops frames a slow
+stream has no room for, the terminal one included, and streams one download's
+frames to every pull that shares it, and to no other. So a remote initiator
+holds back the terminal frame a stream carries, and only the last of the
+download's pulls outstanding there sends one: the frame it held when that
+agrees with its result, or else one built from the result. The peer names the
+download on a pull's progress frames and on its result, and the initiator takes
+two pulls for one download when the peer named the same download for both or,
+until it has named both, when no cancel was sent between them. A retry sent
+after a cancel is therefore a download of its own, and the cancelled download
+still sends its outcome while the retry is outstanding.
+`model` names the download the frame belongs to, so a consumer can tell two
+pulls on one engine apart; a pull waiting on another of the same engine's
+downloads reports `stage:"queued"` until its turn),
+`engine:remote-progress{opId, node, engine, model, op, stage, percent?, message}`
+(relayed live progress for a remote install/pull, a pull's terminal frame
+included, which the initiator sends itself when the peer's stream dropped it;
+`model` is carried through from the peer's frame for the same
+reason it appears on the local notification), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
 
@@ -298,7 +329,10 @@ Streaming HTTP pulls have a 30-minute **inactivity** watchdog. Each increase in
 an Ollama layer's or llama.cpp file's completed byte count refreshes that
 watchdog, so an active download may run longer than 30 minutes; duplicate
 progress frames and heartbeats do not extend a stalled pull. CLI-driven pulls
-without structured byte progress retain the fixed 30-minute action timeout.
+without structured byte progress retain the fixed 30-minute action timeout, and
+a pull stopped by that timeout fails saying the download did not finish within
+it. If LM Studio's CLI did not confirm that stop, the pull instead fails saying
+so, since the download may still be running.
 
 For llama.cpp, an accepted pull that ends before a matching `download_finished`
 or `download_failed` event stops the active download. This includes caller
@@ -458,6 +492,140 @@ external app first and re-starting on its usual port works too. Auto-assigned
 ports (manifest `runtime.port: 0`) never adopt — there's no fixed address to
 probe — so they always spawn an owned process.
 
+### Cancelling a pull
+
+`engine:cancel-pull` answers only once the transfer has stopped and its partial
+files are settled, because a UI reads that answer as "it is safe to download
+this again". The pull's own `engine:action{pull_model}` request settles
+separately, with how the download ended: `{"status":"cancelled"}` when the
+cancel stopped it, its usual success result when it finished before the stop
+reached it, or an error when it failed first or its engine could not confirm
+the stop (see below).
+
+**Only a cancellation someone asked for deletes anything.** A pull's context
+also dies on shutdown, on a dropped remote connection, and on the action
+timeout, and none of those mean the user gave up on the bytes already on disk —
+those leave the partial data for the next attempt to resume.
+
+**Naming a file is not owning it.** Both vendors funnel every client on the
+machine into one cache: Ollama coalesces a pull of the same layer — from its
+CLI, its desktop app, another engine-manager, any client on the daemon — onto
+the very same content-addressed partial, and the LM Studio app downloads into
+the same repository directory. So each pull records the partial files already
+present before it starts, and cancelling it considers only the ones that
+appeared afterwards. The stopped transfer gets a short grace for its last
+writes to land, and cleanup watches through it even when it has found nothing
+yet, since a partial can first appear then; a file that still changes after
+that, or first appears after it, is shared by that measure too, and also
+survives. A file is removed once it
+has held still across repeated checks; cleanup retries one it could not remove
+within a bounded budget and leaves anything still busy at the deadline, which
+is not a failure. Completed model files are never candidates — they may be
+layers of an installed model.
+
+Ollama keeps a transfer's resume state beside its data file, one `-partial-N`
+file per chunk, and fails to finish a blob whose resume files are not all
+there. So a blob's partial files are judged together: if any of them predates
+the pull, whether or not it is still there, or changes, first appears, or
+vanishes after the grace (a resume file vanishing is another client finishing
+the blob), all of them stay. Otherwise
+all of them are removed, the resume files before the data file, so a removal
+cut short leaves a data file Ollama downloads afresh rather than resume files
+describing bytes that are gone.
+
+Ollama writes its partials under the `OLLAMA_MODELS` of the environment its
+daemon runs in, or when that is unset under Ollama's default, `.ollama/models`
+in the home folder the same environment names (`HOME`, or `USERPROFILE` on
+Windows). For a daemon engine-manager launched, that environment is read back
+from the process, so a launch override of either setting moves where cleanup
+looks, and a launch environment that names no home folder leaves nothing to
+look in. A daemon that was already running when PAIR adopted it
+was started in an environment engine-manager cannot see, so engine-manager's
+own stands in for it. A wrong guess usually finds nothing, which leaves the
+download's partials for Ollama to resume or remove. A guess that lands on
+another live Ollama cache can find a partial a second daemon created there
+after the snapshot and before the grace ended; if that partial then holds still
+across the checks, it cannot be told from this pull's and is removed. A
+relative `OLLAMA_MODELS` names no directory engine-manager can resolve, so
+cleanup removes nothing.
+
+LM Studio's cleanup runs only when the CLI downloaded from the repository's
+Hugging Face URL, the one run that writes into `models/<owner>/<repo>`. For a
+bare `owner/name` PAIR tries the LM Studio Hub first and falls back to that URL
+when the Hub does not have the model. A model the Hub resolves, such as
+`qwen/qwen3-8b`, is stored under the owner and repository of the source its
+definition names (`lmstudio-community/Qwen3-8B-GGUF`), which `lms get` never
+prints, so cancelling it removes nothing.
+
+LM Studio keeps every quantization of a repository side by side, so its
+cleanup also considers only the quantization this pull fetched: the one the
+request pins, or for a request that pins none, the one the CLI announced in its
+download plan. A pin that is not a quantization name, such as `@GGUF` or `@8B`,
+counts as none. The quantization is matched as a whole name token, so `Q4_K`
+never claims `Q4_K_M`'s files, and an unpinned pull whose plan announced none
+removes nothing. The CLI names the quantization it chose but never the file,
+so when the partials carrying it name more than one file, as in a repository
+holding several variants of one quantization, cleanup removes none of them.
+Partials that predate the pull count too, since `lms get` may be resuming one
+of them instead. The shards of one split file (`-00001-of-00003`) count as one
+file, and an unsplit file of that name, or a split into a different number of
+shards, as another.
+Cancelling an MLX download removes nothing, pinned or not: its
+plan names no GGUF quantization, and a pin such as `@4bit` is not a
+quantization name. LM Studio additionally requires the CLI to confirm:
+declining its background-download prompt is what aborts the daemon's task, so
+a CLI that exited without answering it may still be fetching, nothing is
+deleted, and the cancel fails. A cancel that finds no CLI running — before the
+first starts, between candidate sources, or while a timed-out transfer waits to
+be resumed — has nothing left fetching, so it settles as cancelled and cleans
+up the same way, which removes nothing until a run from the Hugging Face URL
+has started.
+
+llama.cpp and vLLM delete nothing. llama.cpp's router is asked to stop the
+download and keeps what it fetched for llama.cpp to resume or replace. vLLM's
+`hf` tool is stopped, and killed if it has not exited 3 seconds after being
+asked; its partial files stay in the Hugging Face cache, which vLLM's own
+downloads and every other Hugging Face client share, for the next download of
+the model to resume. A tool still running 10 seconds after the kill is
+abandoned rather than waited on, and the cancel fails, since the download may
+still be running. A download the tool finished as it was being stopped stands,
+and its pull reports the model installed. A cancel that arrives while the tool
+is still fetching the repository's weight index, before any weights, kills the
+tool's process group at once and settles as cancelled, waiting at most 5
+seconds on a process that left the group and keeps the tool's output open.
+Whatever the index fetch leaves in the group is killed once the tool exits, and
+an index the tool fetched stands even if a process it started holds its output
+past those 5 seconds.
+
+A stop that could not be confirmed — an LM Studio download its CLI did not
+confirm stopping, a llama.cpp download its router did not confirm stopping, or
+a vLLM `hf` tool that outlived its kill — keeps failing: cancelling that model
+again reports the same failure, rather than answering as a cancel for nothing,
+until the model is requested again.
+
+A cancel can also arrive **before** the pull it names has registered, since the
+read loop dispatches each onto its own goroutine. So each pull request is
+claimed on the read loop, in the order the client sent it, and carries its
+claim to the executor, and a cancel takes effect on the read loop too; only its
+wait for the download to stop and clean up runs on a goroutine. A cancel stops
+every request claimed before it — one whose download has not registered yet
+then never starts it — and a retry sent after the cancel downloads normally,
+whichever of the two reaches the executor first. A retry that finds the
+cancelled download still stopping does not join it: it waits for that download
+to stop and clean up, then downloads anew. It likewise waits while a request
+the cancel stopped before it started reports the model's `cancelled`, so that
+frame never lands after the retry's first. A cancel that finds nothing claimed
+arrived after its download finished, and stops nothing. On the remote path the peer claims a pull before accepting
+it, and `engine:remote-cancel-pull` is held until every
+`engine:remote-pull-model` of that download sent before it has been accepted by
+the peer or has ended. Each is waited on separately: the peer joins a duplicate
+onto the download only once it arrives, so a cancel let go when the first
+landed could stop the download and leave the second to start it over. A pull
+sent after the cancel is a retry, which the cancel does not wait for; the retry
+waits for the cancel to end instead, because the peer's cancel stops every
+request for the download it holds when it lands, a retry that got there first
+included.
+
 ## Remote engine management
 
 When the parent passes `--control-port`, engine-manager serves the **`ec`
@@ -487,15 +655,25 @@ Endpoints (all under `/v1`):
 | `GET /v1/engines` | JSON | remote `engine:get-installed` |
 | `POST /v1/engines/install` | NDJSON stream | remote install (+ optional start) with live progress |
 | `POST /v1/models/pull` | NDJSON stream | remote model pull with live progress |
+| `POST /v1/models/cancel-pull` | JSON | remote `engine:cancel-pull` |
 | `POST /v1/engines/start` | JSON | remote start → `EngineStatus` |
 | `POST /v1/engines/stop` | JSON | remote stop → `EngineStatus` |
 
 The streaming routes emit zero or more `{"type":"progress",...}` frames followed
 by exactly one terminal `{"type":"result",...}` or `{"type":"error",...}` frame.
-The initiating node's engine-manager consumes that stream, relays each progress
-frame up as `engine:remote-progress`, and settles the originating
+A pull's stream carries only the frames of the download its request runs as —
+the one it started, or the one it shares — and its progress frames and result
+name that download in `download`, the peer's ID for it.
+The initiating node's engine-manager consumes that stream, relays the progress
+frames it receives up as `engine:remote-progress`, and settles the originating
 `engine:remote-*` request on the terminal frame — so a UI gets one synchronous
-response plus a live progress feed keyed by `opId`.
+response plus a live progress feed keyed by `opId`. A pull's outcome frame
+(`stage` `success`, `cancelled` or `error`) is held back instead: the peer's
+progress hub can drop it, as it drops any frame a slow stream has no room for,
+and every pull sharing the download carries a copy. Only the last of the
+download's pulls outstanding on the initiator sends one — the copy it held when
+that agrees with its result, or else one built from the result (`cancelled` for
+a `{"status":"cancelled"}` result, `error` for a failed stream).
 
 The broker wires both directions: it passes `--control-port`/`--cluster-dir`,
 registers `ec` with the discovery daemon whenever a cluster dir is configured, and

@@ -252,6 +252,7 @@ working with **models** (download, load, unload, and delete):
 | Get the runtime on the machine | **Install** on the engine's card |
 | Make the runtime available for requests | The engine switch |
 | Get a model's weights onto the machine | **Add model** |
+| Stop a download before it finishes | **Cancel download** on the download's row |
 | Hold a model in memory, when the engine needs it | **Load** |
 | Free that memory without deleting anything | **Eject** |
 | Remove a downloaded model | **Delete**, where the engine supports it |
@@ -259,11 +260,29 @@ working with **models** (download, load, unload, and delete):
 **Eject** removes a model from memory only. The download stays, and **Load**
 brings it back without fetching it again.
 
+**Cancel download** stops a download that is running, or still queued behind
+another download on the same engine. The button reads **Canceling…** until the
+download has stopped and PAIR has finished cleaning up after it. If the
+download finished or failed before the cancel reached it, PAIR shows that
+outcome instead: the model appears in the list, or the download's error is
+reported. What happens to the files it already fetched depends on the engine:
+
+- **Ollama** and **LM Studio** delete the partial files the download created.
+  Files that were there before it started, or that another download or app is
+  still writing, are kept, and LM Studio deletes only when it can tell which
+  files the download wrote.
+- **llama.cpp** and **vLLM** keep the partial files, so the next download of the
+  model resumes where this one stopped.
+
+If the same model is requested again while the cancel is still stopping it,
+for example from another machine in the cluster, the new download waits for
+the cancel to finish and then starts.
+
 ![An engine's model list showing the Load, Eject, and Delete actions against a downloaded model.](assets/onboarding/engine-lifecycle/04-model-actions.png)
 
 On a headless machine the terminal interface covers installing, starting,
-stopping, restarting, and uninstalling an engine; pulling a model; and listing,
-loading, unloading, or deleting models.
+stopping, restarting, and uninstalling an engine; pulling a model or cancelling
+its download; and listing, loading, unloading, or deleting models.
 
 PAIR does **not** warm models. Starting an engine does not pre-load models into
 memory, and it holds nothing ready in advance. Depending on the engine, a model

@@ -70,7 +70,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     const isBusy = models.some(
         m => m.status === 'loading' || m.status === 'ejecting' || m.status === 'pulling'
     )
-    const transientModel = models.find(
+    const transientModels = models.filter(
         m => m.status === 'loading' || m.status === 'ejecting' || m.status === 'pulling'
     )
 
@@ -151,10 +151,6 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         [backendType, nodeId]
     )
 
-    const transientPullProgress = transientModel
-        ? getProgress(nodeId, backend.type, 'pull', transientModel.name)
-        : undefined
-
     const hasModelSearchOnlyWhenRunning = useMemo(
         () => caps?.hasModelSearchOnlyWhenRunning ?? false,
         [caps?.hasModelSearchOnlyWhenRunning]
@@ -186,16 +182,30 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
     return (
         <Stack gap="4">
-            {transientModel && (
+            {transientModels.map(transientModel => (
                 <TransientModelStatusRow
+                    key={transientModel.name}
                     transientModel={transientModel}
                     displayName={displayName}
-                    pullProgress={transientPullProgress}
+                    pullProgress={getProgress(nodeId, backend.type, 'pull', transientModel.name)}
+                    onCancel={() =>
+                        window.pairApi.engines.cancelModelPull(
+                            backendType,
+                            nodeId,
+                            transientModel.name
+                        )
+                    }
                 />
-            )}
+            ))}
 
             {incomingSyncs.map(p => (
-                <IncomingSyncPullRow key={p.rawModel} row={p} />
+                <IncomingSyncPullRow
+                    key={p.rawModel}
+                    row={p}
+                    onCancel={() =>
+                        window.pairApi.engines.cancelModelPull(backendType, nodeId, p.rawModel)
+                    }
+                />
             ))}
 
             {!isBusy && (

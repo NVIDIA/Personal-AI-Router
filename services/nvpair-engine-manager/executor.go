@@ -114,6 +114,19 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	pullMu sync.Mutex
+	pulls  map[pullKey]*activePull
+	// downloads counts the downloads registered so far, so each has an ID of
+	// its own; see activePull.id.
+	downloads uint64
+	// stopsUnconfirmed holds, per engine+model, the failure of the last
+	// download whose engine could not confirm it stopped, until the next
+	// download of that model registers. See stopUnconfirmed.
+	stopsUnconfirmed map[pullKey]error
+	// pullClaims holds the accepted pull requests per engine+model that have
+	// not finished, so a cancel can stop one that has not registered its
+	// download yet. Claimed where the request is accepted; see claimPull.
+	pullClaims       map[pullKey][]*pullClaim
 	settingsHub      settings.Hub
 	settingsParent   func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg              *Registry
@@ -331,10 +344,19 @@ func (e *Executor) emitPullProgress(ev ProgressEvent) {
 	params := map[string]any{
 		"engine": ev.Engine, "op": ev.Op, "stage": ev.Stage, "message": ev.Message,
 	}
+	if ev.Model != "" {
+		params["model"] = ev.Model
+	}
 	if wirePercentIncluded(ev.Percent) {
 		params["percent"] = ev.Percent
 	}
 	e.notify("engine:pull-progress", params)
+	// A download publishes frames only while it is registered, and no other
+	// download of its model registers until it has settled, so the one
+	// registered is the one this frame is from.
+	if ev.Model != "" {
+		ev.Download = e.registeredDownload(ev.Engine, ev.Model)
+	}
 	e.progress.publish(ev)
 }
 

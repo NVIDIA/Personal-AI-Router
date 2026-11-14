@@ -70,26 +70,35 @@ func writeForeignEngineManifest(t *testing.T, configDir string, port int) {
 		},
 		"stop": map[string]any{"signal": "term", "grace_s": 3},
 	}
-	manifest := map[string]any{
+	writeUserManifest(t, configDir, map[string]any{
 		"engine":           "foreign",
 		"display_name":     "Foreign Engine",
 		"manifest_version": 1,
 		"platforms": map[string]any{
 			runtime.GOOS + "/" + runtime.GOARCH: map[string]any{"runtime": runtimeSpec},
 		},
-	}
+	})
+}
+
+// writeUserManifest writes a per-user engine manifest under configDir, which
+// engine-manager overlays onto the bundled manifest of the same engine.
+//
+// The per-user manifest dir differs by platform, and each test points the
+// processes it starts at one disposable root, so write both candidates rather
+// than branching on GOOS: the Windows %LocalAppData% / Linux $XDG_CONFIG_HOME
+// layout, and the macOS Application Support layout under $HOME.
+func writeUserManifest(t *testing.T, configDir string, manifest map[string]any) {
+	t.Helper()
+	engine, ok := manifest["engine"].(string)
+	require.True(t, ok, "a manifest names its engine")
 	data, err := json.MarshalIndent(manifest, "", "  ")
-	require.NoError(t, err, "encode foreign engine manifest")
-	// The per-user manifest dir differs by platform, and the broker points every
-	// worker at one disposable root, so write both candidates rather than
-	// branching on GOOS: the Windows %LocalAppData% / Linux $XDG_CONFIG_HOME
-	// layout, and the macOS Application Support layout under $HOME.
+	require.NoError(t, err, "encode %s manifest", engine)
 	for _, dir := range []string{
 		filepath.Join(configDir, "Nvidia Corporation", "Personal AI Router", "engines"),
 		filepath.Join(configDir, "Library", "Application Support", "Nvidia Corporation", "Personal AI Router", "engines"),
 	} {
 		require.NoError(t, os.MkdirAll(dir, 0o755), "create engine manifest dir")
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "foreign.json"), data, 0o644), "write foreign engine manifest")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, engine+".json"), data, 0o644), "write %s manifest", engine)
 	}
 }
 

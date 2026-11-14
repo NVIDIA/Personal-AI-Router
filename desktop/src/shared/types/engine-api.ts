@@ -65,6 +65,7 @@ export type EngineCommandType =
     | 'uninstall'
     | 'update'
     | 'pullModel'
+    | 'cancelModelPull'
     | 'loadModel'
     | 'unloadModel'
     | 'deleteModel'

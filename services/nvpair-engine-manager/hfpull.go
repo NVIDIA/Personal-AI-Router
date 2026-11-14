@@ -29,11 +29,27 @@ import (
 
 const (
 	hfPollInterval = time.Second
-	// hfStopGrace is how long a cancelled download gets to exit before it is killed.
-	hfStopGrace = 3 * time.Second
 	// hfErrorTail is how many trailing output lines a failed download reports.
 	hfErrorTail = 4
 )
+
+// hfStopGraces are the graces a stopped download's hf tool is given: three
+// seconds to exit once asked, then the kill. It has no prompt to answer and no
+// request to lose, so it is asked once.
+var hfStopGraces = downloadStopGraces{interrupt: 3 * time.Second, reap: 10 * time.Second}
+
+// hfDownloadProcess is the hf tool as stopDownload sees it. Both signals reach
+// its whole process group on Unix, and its process tree on Windows, where
+// even the request to stop is taskkill /T /F: the tool runs windowless, with
+// no console to carry a gentler one.
+func hfDownloadProcess(proc *managedProc) downloadProcess {
+	pid := proc.cmd.Process.Pid
+	return downloadProcess{
+		exited:    proc.done,
+		interrupt: func() error { return gracefulSignal(proc.cmd) },
+		kill:      func() { _ = signalPID(pid, true) },
+	}
+}
 
 // hfDroppedSuffixes are file types a vLLM-served model never reads. Skipping
 // them keeps a repo that ships several formats from downloading each of them.
@@ -450,13 +466,29 @@ func (e *Executor) fetchHFMetadata(ctx context.Context, st *engineState, hubDir,
 // fetchHFIndex downloads a repository's weight index ahead of its weights, as
 // vLLM's own download does, and returns the shards it lists, so a Pull fetches
 // only the copy of the weights vLLM loads.
+//
+// The tool runs in a process group of its own. A cancel kills the group, and
+// whatever is left in it once the tool exits is killed then. A helper still
+// holding the tool's output is waited on for at most downloadWaitDelay, and
+// the tool's own exit decides the fetch. All a helper could still be fetching
+// is the index, so a cancel is not failed as unconfirmed the way one whose
+// download outlives its kill is.
 func (e *Executor) fetchHFIndex(ctx context.Context, tool, hubDir, id, index string, env hfEnv) ([]string, error) {
 	cmd := exec.CommandContext(ctx, tool, "download", id, index, "--cache-dir", hubDir)
+	configureSysProcAttr(cmd)
+	cmd.Cancel = func() error { return killDownload(cmd) }
+	cmd.WaitDelay = downloadWaitDelay
 	cmd.Env = os.Environ()
 	for key, value := range env.toolEnv() {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if cmd.Process != nil {
+		killGroupRemnants(cmd.Process.Pid)
+	}
+	// Wait reports ErrWaitDelay only for a tool that exited cleanly, unasked,
+	// while something it started still held its output.
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return nil, fmt.Errorf("download the weight index: %s", lastLines(string(out), hfErrorTail))
 	}
 	snapshot, ok := hfSnapshotDir(hubDir, id, "main")
@@ -519,7 +551,19 @@ func hfToolPath(st *engineState, name string) (string, error) {
 // engine's `hf` tool. Progress is the share of the repository's bytes that has
 // landed in the cache, which stays honest across resumed and parallel files.
 // A download that makes no progress for the pull timeout is abandoned.
-func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, model string, act Action) (json.RawMessage, error) {
+//
+// A cancelled download stops the tool, killing it once hfStopGraces allow, and
+// deletes nothing. The partial files are the next download's to resume, and the
+// hub cache is shared with vLLM's own downloads and every other Hugging Face
+// client, so nothing in it can be attributed to this download alone. A tool
+// that outlives the kill is abandoned rather than waited on, and the download
+// fails with stopUnconfirmed, since it may still be transferring.
+func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, model string, act Action) (result json.RawMessage, resultErr error) {
+	defer func() {
+		if resultErr != nil && ctx.Err() != nil && !errors.As(resultErr, new(stopUnconfirmedError)) {
+			resultErr = pullStopped(ctx, model)
+		}
+	}()
 	id := strings.TrimSpace(model)
 	if !hfModelIDRe.MatchString(id) {
 		return nil, fmt.Errorf("pull %q: not a valid Hugging Face model id (use org/name)", model)
@@ -535,7 +579,7 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 		return nil, fmt.Errorf("pull %q: %w", id, err)
 	}
 
-	e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: id})
+	e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "pulling", Message: id})
 	env := engineHFEnv(st)
 	siblings, err := e.hfRepoFiles(ctx, id, "main", env)
 	if err != nil {
@@ -586,6 +630,22 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 		return nil, fmt.Errorf("pull %q: start the download: %w", id, err)
 	}
 
+	// finished reports how the tool's run went, once it has exited.
+	finished := func() (json.RawMessage, error) {
+		if proc.cmd.ProcessState == nil || !proc.cmd.ProcessState.Success() {
+			tailMu.Lock()
+			reason := strings.Join(tail, "; ")
+			tailMu.Unlock()
+			return nil, fmt.Errorf("pull %q: download failed: %s", id, reason)
+		}
+		// The revision just downloaded must be complete; another, older
+		// complete revision in the cache would not make it so.
+		snapshot, ok := hfSnapshotDir(hubDir, id, "main")
+		if _, _, complete := completeHFSnapshot(snapshot); !ok || !complete {
+			return nil, fmt.Errorf("pull %q: the download finished but the model in the cache is incomplete", id)
+		}
+		return json.Marshal(map[string]any{"model": id, "bytes": total})
+	}
 	pullCtx, watchdog := newPullProgressWatchdog(ctx, e.pullProgressTimeout)
 	defer watchdog.stop()
 	ticker := time.NewTicker(hfPollInterval)
@@ -594,22 +654,20 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 	for {
 		select {
 		case <-proc.done:
-			if proc.cmd.ProcessState == nil || !proc.cmd.ProcessState.Success() {
-				tailMu.Lock()
-				reason := strings.Join(tail, "; ")
-				tailMu.Unlock()
-				return nil, fmt.Errorf("pull %q: download failed: %s", id, reason)
-			}
-			// The revision just downloaded must be complete; another, older
-			// complete revision in the cache would not make it so.
-			snapshot, ok := hfSnapshotDir(hubDir, id, "main")
-			if _, _, complete := completeHFSnapshot(snapshot); !ok || !complete {
-				return nil, fmt.Errorf("pull %q: the download finished but the model in the cache is incomplete", id)
-			}
-			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: id})
-			return json.Marshal(map[string]any{"model": id, "bytes": total})
+			return finished()
 		case <-pullCtx.Done():
-			proc.stop(hfStopGrace)
+			if !processExited(proc.done) {
+				if stop := stopDownload(hfDownloadProcess(proc), downloadStopGracesFrom(ctx, hfStopGraces)); !stop.exited {
+					return nil, stopUnconfirmed(fmt.Errorf("pull %q: the hf tool did not exit after it was killed, so the download may still be running", id))
+				}
+				// However the tool exits, it can leave helpers it started
+				// behind, and nothing else will ever clean them up.
+				killGroupRemnants(proc.cmd.Process.Pid)
+			}
+			// A download that finished as it was stopped stands.
+			if result, err := finished(); err == nil {
+				return result, nil
+			}
 			return nil, fmt.Errorf("pull %q: %w", id, watchdog.resolveError(pullCtx, context.Cause(pullCtx)))
 		case <-ticker.C:
 			done := hfBlobBytes(repoDir)
@@ -623,7 +681,7 @@ func (e *Executor) pullHFModel(ctx context.Context, st *engineState, engine, mod
 			}
 			if pct != lastPct && pct > 0 {
 				lastPct = pct
-				e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "downloading", Percent: pct, Message: id})
+				e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "downloading", Percent: pct, Message: id})
 			}
 		}
 	}

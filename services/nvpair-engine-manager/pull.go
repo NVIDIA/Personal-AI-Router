@@ -16,8 +16,8 @@ package main
 // coalesced so only changes in stage/percent are emitted (a single layer streams
 // many byte-progress lines at the same rendered percent). llama.cpp instead
 // acknowledges POST /models immediately and reports completion on /models/sse;
-// its manifest opts into that named adapter. CLI-driven pulls (LM Studio's
-// `lms get`) emit one "pulling" marker and return the final result.
+// its manifest opts into that named adapter. LM Studio's lms get output is
+// streamed through lmspull.go, including its cancellation prompt.
 
 import (
 	"bufio"
@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,10 +87,11 @@ func (w *pullProgressWatchdog) resolveError(ctx context.Context, fallback error)
 	return fallback
 }
 
-// modelFromParams extracts a human-readable model name from an engine:action
-// pull_model params object, preferring Ollama's "name" body key then the generic
-// {model} placeholder. Used only for the progress message — the params are still
-// passed through to the action verbatim.
+// modelFromParams extracts the model an engine:action pull_model params object
+// names, preferring Ollama's "name" body key then the generic {model}
+// placeholder. That model keys the download — the claim a cancel finds, the
+// queue, and the progress frames — while the params themselves still pass
+// through to the action verbatim.
 func modelFromParams(params json.RawMessage) string {
 	if len(params) == 0 {
 		return ""
@@ -109,7 +111,23 @@ func modelFromParams(params json.RawMessage) string {
 // the hub as it advances, and returns the action's final JSON result. When
 // params is empty it defaults to {"name","model"} (covering Ollama's `name` body
 // key and the {model} CLI placeholder), so a caller can pass just a model name.
+//
+// The model keys the download a cancel targets and the progress it reports,
+// while params decide what the engine fetches, so params naming a different
+// model are refused rather than tracked under a name the engine never sees.
 func (e *Executor) PullModelStream(ctx context.Context, engine, model string, params json.RawMessage) (json.RawMessage, error) {
+	if fromParams := modelFromParams(params); fromParams != "" {
+		if model != "" && model != fromParams {
+			return nil, fmt.Errorf("pull %q: params name a different model, %q", model, fromParams)
+		}
+		model = fromParams
+	}
+	return e.trackedPull(ctx, engine, model, func(ctx context.Context) (json.RawMessage, error) {
+		return e.pullModelStream(ctx, engine, model, params)
+	})
+}
+
+func (e *Executor) pullModelStream(ctx context.Context, engine, model string, params json.RawMessage) (json.RawMessage, error) {
 	st, err := e.state(engine)
 	if err != nil {
 		return nil, err
@@ -122,6 +140,12 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		params, _ = json.Marshal(map[string]string{"name": model, "model": model})
 	}
 
+	if act.ModelResolution == modelResolutionLMSGet {
+		actionCtx, cancel := context.WithTimeoutCause(ctx, e.actionTimeout, fmt.Errorf("the download did not finish within %s", e.actionTimeout))
+		defer cancel()
+		return e.pullLMSModel(actionCtx, st, engine, model)
+	}
+
 	// Hugging Face repository (vLLM): download with the engine's own `hf` tool and
 	// report progress from the bytes landing in the cache. It needs no running
 	// engine, so a model can be fetched before it is first served.
@@ -129,7 +153,7 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		return e.pullHFModel(ctx, st, engine, model, act)
 	}
 
-	// CLI action (e.g. lms get): no structured line progress; emit a start
+	// Other CLI actions without a progress adapter emit a start
 	// marker and return the final result via the existing runner.
 	if len(act.Cmd) > 0 {
 		actionCtx, cancel := context.WithTimeout(ctx, e.actionTimeout)
@@ -137,11 +161,10 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		st.mu.Lock()
 		port := st.port
 		st.mu.Unlock()
-		e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: model})
+		e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "pulling", Message: model})
 		return e.runCmdAction(actionCtx, st, act, port, params)
 	}
 
-	// HTTP action (e.g. Ollama /api/pull): stream NDJSON progress.
 	st.mu.Lock()
 	running := st.running
 	port := st.port
@@ -149,11 +172,75 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	if !running {
 		return nil, fmt.Errorf("engine %q is not running", engine)
 	}
-	pullCtx, watchdog := newPullProgressWatchdog(ctx, e.pullProgressTimeout)
-	defer watchdog.stop()
 	if act.ProgressProtocol == pullProgressProtocolLlamaCPPModelsSSE {
+		pullCtx, watchdog := newPullProgressWatchdog(ctx, e.pullProgressTimeout)
+		defer watchdog.stop()
 		return e.pullModelLlamaCPPSSE(pullCtx, engine, model, act, port, params, watchdog)
 	}
+	return e.pullModelNDJSON(ctx, st, engine, model, act, port, params)
+}
+
+// pullModelNDJSON runs an HTTP pull that streams newline-delimited JSON status
+// (Ollama's /api/pull), removing the partial blobs a requested cancellation
+// leaves behind.
+func (e *Executor) pullModelNDJSON(
+	ctx context.Context,
+	st *engineState,
+	engine, model string,
+	act Action,
+	port int,
+	params json.RawMessage,
+) (result json.RawMessage, resultErr error) {
+	digests := make(map[string]bool)
+	completed := false
+	// Record the partial blobs on disk before a byte moves. Only the files this
+	// pull goes on to create are unambiguously its own, so this snapshot is
+	// what keeps a cancellation off another client's transfer and off a partial
+	// an earlier attempt deliberately left resumable. A snapshot that could not
+	// be taken stays nil, and cleanup then deletes nothing rather than guess.
+	// The directory is resolved once, so the snapshot and the cleanup cannot
+	// disagree about which cache they are looking at.
+	var blobs string
+	var before ollamaPartialsBefore
+	if engine == "ollama" {
+		blobs = ollamaBlobsDir(st)
+		snapshot, snapshotErr := ollamaPartialSnapshot(blobs)
+		if snapshotErr != nil {
+			slog.Warn("could not snapshot partial downloads; cancelling this download will not remove its files",
+				"engine", engine, "model", model, "err", snapshotErr)
+		}
+		before = snapshot
+	}
+	defer func() {
+		if ctx.Err() != context.Canceled {
+			return
+		}
+		if completed {
+			result = json.RawMessage(`{"status":"success"}`)
+			resultErr = nil
+			return
+		}
+		// Only a cancellation someone asked for may delete partial blobs. The
+		// same context also dies when PAIR quits mid-download and when a remote
+		// initiator's connection drops, and a resumable transfer must survive
+		// both rather than restart from zero on the next attempt.
+		if engine == "ollama" && cancelRequested(ctx) {
+			// Cleanup outlives the cancellation that triggered it, so it runs
+			// on a context that keeps this one's values without its deadline.
+			cleanupCtx := context.WithoutCancel(ctx)
+			if err := cleanupOllamaAfterCancel(cleanupCtx, blobs, digests, before); err != nil {
+				// The download did stop, which is what was asked for. Leftover
+				// blobs are Ollama's to resume, so reporting a failed cancel
+				// here would deny the one outcome that did happen and leave
+				// the row on "Canceling" over a transfer that is gone.
+				slog.Warn("partial-blob cleanup failed after cancellation",
+					"engine", engine, "model", model, "err", err)
+			}
+		}
+		resultErr = context.Canceled
+	}()
+	pullCtx, watchdog := newPullProgressWatchdog(ctx, e.pullProgressTimeout)
+	defer watchdog.stop()
 	path, err := resolvePlaceholders(act.HTTP.Path, map[string]string{"port": strconv.Itoa(port)})
 	if err != nil {
 		return nil, err
@@ -201,7 +288,17 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		last = append(json.RawMessage(nil), line...)
 		progress := decodeOllamaPullLine(line)
 		watchdog.recordProgress(progress.progressKey(), progress.Completed)
-		ev := progress.event(engine)
+		if progress.Status == "success" {
+			// Ollama's last record: the model is installed. Waiting for the
+			// stream to close would only hold back the outcome, whose terminal
+			// frame is trackedPull's to send.
+			completed = true
+			break
+		}
+		if progress.Digest != "" {
+			digests[progress.Digest] = true
+		}
+		ev := progress.event(engine, model)
 		if ev.Stage == lastStage && ev.Percent == lastPct {
 			continue
 		}
@@ -210,6 +307,12 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("pull %q: %w", model, watchdog.resolveError(pullCtx, err))
+	}
+	// Ollama ends every pull with a success or an error record. A stream that
+	// closed without either was cut off — the daemon exited or dropped the
+	// connection — and the model is not installed.
+	if !completed {
+		return nil, fmt.Errorf("pull %q: the engine ended the download without reporting it complete", model)
 	}
 	return last, nil
 }
@@ -238,7 +341,10 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	sseReq.Header.Set("Accept", "text/event-stream")
 	sseResp, err := e.client.Do(sseReq)
 	if err != nil {
-		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, watchdog.resolveError(ctx, err))
+		if ctx.Err() != nil {
+			return nil, pullStopped(ctx, model)
+		}
+		return nil, fmt.Errorf("pull %q: subscribe to model progress: %w", model, err)
 	}
 	defer sseResp.Body.Close()
 	if sseResp.StatusCode < 200 || sseResp.StatusCode >= 300 {
@@ -250,8 +356,8 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	if err != nil {
 		return nil, err
 	}
-	if cause := context.Cause(ctx); cause != nil {
-		return nil, fmt.Errorf("pull %q: %w", model, cause)
+	if ctx.Err() != nil {
+		return nil, pullStopped(ctx, model)
 	}
 	// Cancelling POST /models does not cancel the router's download child. Keep
 	// the bounded handshake alive so cancellation cannot discard its acceptance.
@@ -292,17 +398,20 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 		if terminal {
 			return
 		}
-		if cause := context.Cause(ctx); cause != nil {
-			pullErr = fmt.Errorf("pull %q: %w", model, cause)
+		if ctx.Err() != nil {
+			pullErr = pullStopped(ctx, model)
 		}
+		// Partial files are left for llama.cpp itself to resume or replace.
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), e.pullCleanupTimeout)
 		defer cancelCleanup()
 		if err := e.stopLlamaCPPDownload(cleanupCtx, baseURL, model); err != nil {
-			pullErr = errors.Join(pullErr, fmt.Errorf("pull %q: could not confirm download stopped: %w", model, err))
+			// The download may still be running, so even a cancel someone
+			// asked for has not done what it was asked to.
+			pullErr = errors.Join(pullErr, stopUnconfirmed(fmt.Errorf("pull %q: could not confirm download stopped: %w", model, err)))
 		}
 	}()
-	if cause := context.Cause(ctx); cause != nil {
-		return nil, fmt.Errorf("pull %q: %w", model, cause)
+	if ctx.Err() != nil {
+		return nil, pullStopped(ctx, model)
 	}
 
 	lastPct := -1
@@ -323,11 +432,10 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 			pct := event.percent()
 			if pct != lastPct {
 				lastPct = pct
-				e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "downloading", Percent: pct, Message: model})
+				e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "downloading", Percent: pct, Message: model})
 			}
 		case "download_finished":
 			terminal = true
-			e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: model})
 			return json.RawMessage(startData), nil
 		case "download_failed":
 			terminal = true
@@ -340,11 +448,22 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 	return nil, fmt.Errorf("pull %q: progress stream ended before completion", model)
 }
 
+// pullStopped is the error for a pull its context stopped. A plain
+// cancellation comes back bare, the way every engine returns one, so that
+// trackedPull can tell a cancel someone asked for from a context that died on
+// its own. Any other cause, such as the progress watchdog's, is a failure.
+func pullStopped(ctx context.Context, model string) error {
+	if cause := context.Cause(ctx); cause != context.Canceled {
+		return fmt.Errorf("pull %q: %w", model, cause)
+	}
+	return context.Canceled
+}
+
 // A lost acknowledgement gives us no ownership of a router download: another
 // caller may already be downloading this ID. Preserve the cause without blindly
-// unloading somebody else's model.
+// unloading somebody else's model, and without reporting the download stopped.
 func llamaCPPUnconfirmedStartError(ctx context.Context, model string, err error) error {
-	return fmt.Errorf("pull %q: download acceptance and cancellation could not be confirmed: %w", model, errors.Join(context.Cause(ctx), err))
+	return stopUnconfirmed(fmt.Errorf("pull %q: download acceptance and cancellation could not be confirmed: %w", model, errors.Join(context.Cause(ctx), err)))
 }
 
 // stopLlamaCPPDownload uses the same router as the start request. Inventory is
@@ -493,16 +612,16 @@ func (p ollamaPullLine) progressKey() string {
 	return p.Status
 }
 
-func (p ollamaPullLine) event(engine string) ProgressEvent {
+func (p ollamaPullLine) event(engine, model string) ProgressEvent {
 	pct := 0
 	if p.Total > 0 {
 		pct = int(p.Completed * 100 / p.Total)
 	}
-	return ProgressEvent{Engine: engine, Op: "pull", Stage: p.Status, Percent: pct, Message: p.Status}
+	return ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: p.Status, Percent: pct, Message: p.Status}
 }
 
 // pullProgressFromLine maps an Ollama /api/pull status line into a ProgressEvent,
 // computing a percentage when the line carries total/completed byte counts.
-func pullProgressFromLine(engine string, line []byte) ProgressEvent {
-	return decodeOllamaPullLine(line).event(engine)
+func pullProgressFromLine(engine, model string, line []byte) ProgressEvent {
+	return decodeOllamaPullLine(line).event(engine, model)
 }

@@ -13,12 +13,16 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +74,68 @@ func bstr(m map[string]any, k string) string {
 	return ""
 }
 
+// reportDownloadProgress renders one `lms get` progress redraw at the
+// percentage named in os.Args[2], in the CLI's own two-decimal shape.
+func reportDownloadProgress() {
+	if len(os.Args) < 3 {
+		os.Exit(2)
+	}
+	percent, err := strconv.ParseFloat(os.Args[2], 64)
+	if err != nil {
+		os.Exit(2)
+	}
+	fmt.Printf("\r[====    ] %.2f%%", percent)
+}
+
+// writeAnnouncedPartial writes the partial file a transfer leaves and prints the
+// download plan line `lms get` shows for it. The plan names the quantization
+// the CLI chose, never the file, and that quantization is what lets a pull that
+// pins none attribute the partial to itself. Here it is the part of the
+// partial's name after its last hyphen.
+func writeAnnouncedPartial(partial string) {
+	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(partial), "downloading_"), ".gguf.part")
+	cut := strings.LastIndex(name, "-")
+	if cut < 0 || os.MkdirAll(filepath.Dir(partial), 0o755) != nil || os.WriteFile(partial, []byte("partial"), 0o644) != nil {
+		os.Exit(2)
+	}
+	fmt.Printf("\r ↓ To download: %s %s [GGUF] - 4.68 GB\x1b[0K\n", name[:cut], name[cut+1:])
+}
+
+// resolveLMSArtifact stands in for `lms get` resolving its argument before it
+// downloads anything. A huggingface.co URL resolves, and so does a bare id
+// under the hub/ owner, standing for an LM Studio Hub artifact such as
+// qwen/qwen3-8b. Any other bare id is a Hugging Face repository the Hub does
+// not have, and fails the way LM Studio fails it, so the runner falls back to
+// the repository's URL as it does for a real community model.
+func resolveLMSArtifact(arg string) {
+	if strings.HasPrefix(arg, "https://huggingface.co/") || strings.HasPrefix(arg, "hub/") {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: Failed to resolve artifact %q: The artifact does not exist or you do not have permission to read it\n", strings.ToLower(arg))
+	os.Exit(1)
+}
+
+// downloadUntilInterrupted reports progress and then blocks until this process
+// is interrupted, the way `lms get` waits while it downloads. A partial file
+// named in os.Args[3] is written first, as a transfer under way would have,
+// once the model in os.Args[4], if any, resolves. It listens for the interrupt
+// before reporting: the caller cancels as soon as it reads progress, and an
+// interrupt nothing is listening for ends the process before it can answer,
+// which is what a CLI that exits without confirming looks like.
+func downloadUntilInterrupted() {
+	if len(os.Args) > 4 {
+		resolveLMSArtifact(os.Args[4])
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
+	if len(os.Args) > 3 {
+		writeAnnouncedPartial(os.Args[3])
+	}
+	reportDownloadProgress()
+	<-signals
+}
+
 func main() {
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
@@ -119,6 +185,58 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		// The four download subcommands stand in for `lms get` and cover the
+		// ways it can answer an interrupt. Each takes the percentage to report
+		// so the caller owns that number and can assert on the same constant it
+		// passed in, then optionally the partial file its transfer leaves.
+		case "canceldownload": // answers the prompt and confirms the cancellation
+			downloadUntilInterrupted()
+			fmt.Fprint(os.Stderr, "Continue to download in the background? (Y/N): ")
+			answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+			if err != nil || strings.TrimSpace(answer) != "n" {
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stderr, "Download canceled.")
+			os.Exit(1)
+		case "downloadcompletes": // finishes as the interrupt lands
+			downloadUntilInterrupted()
+			fmt.Fprintln(os.Stderr, "Download completed.")
+			return
+		case "downloadsilent": // exits without answering the prompt
+			downloadUntilInterrupted()
+			os.Exit(1)
+		case "downloadignoresinterrupt": // never acknowledges, so it has to be killed
+			// Take delivery of the interrupt and do nothing with it. Calling
+			// signal.Ignore instead is worse than a no-op on Windows: the
+			// runtime's console handler exits the process for an event no
+			// receiver wants, which is the opposite of what this stands for.
+			swallowed := make(chan os.Signal, 1)
+			signal.Notify(swallowed, os.Interrupt)
+			defer signal.Stop(swallowed)
+			reportDownloadProgress()
+			// Sleeping rather than blocking forever: a bare receive is the
+			// runtime's deadlock condition, and that panic would exit the very
+			// process this case needs to outlive its interrupt.
+			time.Sleep(time.Hour)
+			os.Exit(2)
+		case "downloadleavesahelper": // stand in for an `lms get` that finishes
+			// while a process it started keeps its output open, and write that
+			// process's PID so the test can stop it.
+			// args: downloadleavesahelper <percent> <pidfile>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			reportDownloadProgress()
+			helper := exec.Command(os.Args[0], "holdoutput")
+			helper.Stdout, helper.Stderr = os.Stdout, os.Stderr
+			if helper.Start() != nil || os.WriteFile(os.Args[3], []byte(strconv.Itoa(helper.Process.Pid)), 0o644) != nil {
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stderr, "Download completed.")
+			return
+		case "holdoutput": // the helper downloadleavesahelper starts
+			time.Sleep(time.Minute)
+			os.Exit(2)
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)
@@ -195,6 +313,21 @@ func main() {
 			}
 			fmt.Println("downloaded")
 			return
+		case "downloadstalls": // stand in for an `lms get` whose transfer times
+			// out: write the partial file its plan announces, the way a real
+			// download leaves one, then fail with LM Studio's transient
+			// "Download failed" so the runner waits to resume it.
+			// args: downloadstalls <partial> <model...>
+			if len(os.Args) < 3 {
+				fmt.Fprintln(os.Stderr, "downloadstalls: need <partial>")
+				os.Exit(2)
+			}
+			if len(os.Args) > 3 {
+				resolveLMSArtifact(os.Args[3])
+			}
+			writeAnnouncedPartial(os.Args[2])
+			fmt.Fprintln(os.Stderr, "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.")
+			os.Exit(1)
 		}
 	}
 

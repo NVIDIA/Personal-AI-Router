@@ -57,6 +57,23 @@ export const MODULAR_MODEL_ACTION_TIMEOUT_MS = 120_000
  */
 export const MODEL_SWITCH_TIMEOUT_MS = 20 * 60_000
 
+// Upper bound for `engine:cancel-pull` / `engine:remote-cancel-pull`. The
+// backend answers only once the transfer has stopped and its partial files are
+// settled: LM Studio gets two interrupt windows before its CLI is reclaimed,
+// and Ollama retries blob removal while its writers release. This covers that
+// locally with room to spare.
+//
+// It deliberately does not cover the remote variant. A peer answering a cancel
+// is one of the endpoints served by the readiness pool, whose header budget is
+// far longer (`remoteReadyResponseHeaderTimeout` in
+// services/nvpair-engine-manager/remoteclient.go), because cutting the peer off
+// mid-cancel is worse than waiting. Matching that here would leave the row
+// disabled for minutes before the desktop said anything. Instead a timeout is
+// treated as "still running": the row stays in Canceling, the pull's own
+// settling clears it, and the cancel stays retryable in the meantime. See
+// ModularSupervisor.cancelModelPull.
+export const MODULAR_CANCEL_PULL_TIMEOUT_MS = 90_000
+
 // Upper bound for `engine:catalog`. The engine manager allows its own LM Studio
 // fetch 20s, and only replies once that resolves, so the RPC envelope has to sit
 // outside that budget or a slow catalogue rejects here while the backend is

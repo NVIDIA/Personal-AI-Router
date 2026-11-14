@@ -95,7 +95,7 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `getInitialState()` returns engine statuses, models, active progress, and available
   updates.
 - `toggle`, `install`, `uninstall`, and `update` manage engine lifecycle.
-- `pullModel`, `loadModel`, `unloadModel`, `deleteModel`, and
+- `pullModel`, `cancelModelPull`, `loadModel`, `unloadModel`, `deleteModel`, and
   `setModelExpiry` manage models.
 - `searchHub(engineType)` returns the curated model catalog for an engine.
 - `onStateChanged`, `onProgress`, and `onProgressRemove` expose backend truth.
@@ -149,6 +149,7 @@ environment assignments pass through without an engine-option catalog.
 - `uninstall`;
 - `update`;
 - `pullModel`;
+- `cancelModelPull`;
 - `loadModel`;
 - `unloadModel`;
 - `deleteModel`;
@@ -157,6 +158,22 @@ environment assignments pass through without an engine-option catalog.
 Commands return no state. Renderer stores update from
 `engines:state-changed`, `engines:progress-changed`, and
 `engines:progress-cleared`.
+
+The model-bearing commands — `pullModel`, `cancelModelPull`, `loadModel`,
+`unloadModel`, `deleteModel`, and `setModelExpiry` — carry the target in
+`model`. A node can have several downloads outstanding, because each engine
+fetches one model at a time and queues the rest while different engines download
+side by side. Naming the model is what lets each one be cancelled, and
+progress-tracked, on its own.
+
+`cancelModelPull` reaches `engine:cancel-pull`, or `engine:remote-cancel-pull`
+when `nodeId` names a peer. The download is not cancelled when the command
+returns: the row moves to Canceling and clears when the pull itself settles. A
+cancel whose request outlives its budget leaves the row in Canceling, because
+the backend is still working on it, and stays available to issue again. A
+download that ends while its cancel is under way — one that finished first, or
+whose engine could not confirm the stop — shows how it ended rather than
+Canceling.
 
 ### `pairApi.workloads`
 

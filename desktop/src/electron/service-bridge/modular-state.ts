@@ -28,7 +28,7 @@ import {
     isEngineType,
     unsupportedEngineStatus
 } from '@/shared/utils/engines'
-import { engineProgressKey } from '@/shared/utils/engine-progress'
+import { engineProgressKey, isEnginePullOutcome } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
@@ -1014,6 +1014,21 @@ class ModularBridgeState {
      */
     private activePulls = new Map<string, EngineProgress>()
     /**
+     * Pulls shown as "Canceling", keyed like {@link activePulls}, each with the
+     * status it had before, which a rejected cancel restores. The frame a
+     * download ends on clears its entry: it says how the download ended,
+     * however the cancel goes, so it is shown as is and left in place.
+     */
+    private cancelingPulls = new Map<string, string>()
+    /**
+     * The attempt number of each pull in {@link activePulls}, under the same
+     * key, given when its row is created. The wire names a download by engine
+     * and model alone, so this is what tells a retry from the attempt before
+     * it; see {@link modelPullAttempt}.
+     */
+    private pullAttempts = new Map<string, number>()
+    private lastPullAttempt = 0
+    /**
      * Authoritative remote-engine facts keyed by {@link remoteOpKey}
      * (`${nodeId}:${engineType}`). Populated by the supervisor from each
      * clustered peer's `engine:remote-get-installed` (mTLS `ec` surface) — the
@@ -1027,27 +1042,6 @@ class ModularBridgeState {
     private remoteEngineFacts = new Map<string, RemoteEngineFacts>()
     /** The engines each peer's engine manager lists, as {@link localEngineList} is for this host. */
     private remoteEngineLists = new Map<string, ReadonlySet<EngineType>>()
-    /**
-     * The model of an in-flight remote pull keyed by {@link remoteOpKey}. The
-     * backend's `engine:remote-progress` frames carry **no** `model` field
-     * (`nvpair-engine-manager/remote.go` `remoteProgress`), so we stamp the model
-     * we dispatched with here and backfill it onto every incoming frame — that
-     * keeps the optimistic entry, the streamed percent updates, and the terminal
-     * clear all on one {@link engineProgressKey}. Cleared by
-     * {@link finishRemoteModelPull}.
-     */
-    private remotePullModels = new Map<string, string>()
-    /**
-     * The model of an in-flight local pull keyed by `engineType`. The backend's
-     * `engine:pull-progress` frames (the local counterpart of
-     * `engine:remote-progress`) carry **no** `model` field
-     * (`nvpair-engine-manager/executor.go` `emitPullProgress`), so we stamp the
-     * model we dispatched here and backfill it onto every incoming frame — one
-     * active local pull per engine, matching the backend's engine-scoped
-     * progress hub. Set by {@link beginModelPull}, cleared by
-     * {@link finishModelPull}.
-     */
-    private localPullModels = new Map<EngineType, string>()
     /**
      * The authoritative set of live inbound invites awaiting the local user's PIN
      * entry, keyed by `inviteId`. The cluster-manager pushes `cluster:invite-received`
@@ -1518,11 +1512,7 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        // Remember the model so the model-less `engine:remote-progress` frames can
-        // be re-associated with this exact entry (see remotePullModels).
-        this.remotePullModels.set(this.remoteOpKey(nodeId, engineType), model)
-        this.activePulls.set(engineProgressKey(progress), progress)
-        emitBridgePush('engines:progress-changed', progress)
+        this.trackPull(progress)
     }
 
     /** Whether an optimistic remote pull entry for this model is still in flight. */
@@ -1534,15 +1524,16 @@ class ModularBridgeState {
 
     /**
      * Clear the optimistic remote pull entry once the awaited
-     * `engine:remote-pull-model` RPC settles. The backend emits **no** terminal
-     * `engine:remote-progress` for a pull (the peer's terminal stream frame
-     * becomes the JSON-RPC reply, never a notification —
-     * `nvpair-engine-manager/controlstream.go`), so this awaited-completion clear
-     * is the only signal that removes the spinner.
+     * `engine:remote-pull-model` RPC settles. The peer's last
+     * `engine:remote-progress` for a pull names how it ended (`success`,
+     * `cancelled`, or `error`), but only the reply carries the result and the
+     * error to report, so this awaited-completion clear is what removes the
+     * spinner.
      */
     finishRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
-        this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        this.cancelingPulls.delete(key)
+        this.pullAttempts.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
     }
@@ -1557,14 +1548,11 @@ class ModularBridgeState {
         const op = stringValue(obj.op)
         const operation = op === 'pull' || op === 'pull_model' ? 'pull' : 'install'
         const stage = stringValue(obj.stage) || 'working'
-        // `engine:remote-progress` carries no `model`, so for a pull we backfill
-        // the model captured at dispatch — otherwise the frame would emit under a
-        // different key than the optimistic entry and never update/clear it.
-        const model =
-            stringValue(obj.model) ||
-            (operation === 'pull'
-                ? (this.remotePullModels.get(this.remoteOpKey(nodeId, engineType)) ?? '')
-                : '')
+        // The peer stamps the model on every pull frame it relays
+        // (`nvpair-engine-manager/remote.go` `remoteProgressFn`), which is what
+        // keys a frame to its optimistic entry. An install carries none, and
+        // needs none: its progress is tracked per engine.
+        const model = stringValue(obj.model)
 
         if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
             const progressKey =
@@ -1572,13 +1560,9 @@ class ModularBridgeState {
                     ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
                     : `${nodeId}:${engineType}:${operation}`
             emitBridgePush('engines:progress-cleared', { key: progressKey })
-            if (operation === 'pull') {
-                this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
-                if (model) {
-                    this.activePulls.delete(
-                        engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-                    )
-                }
+            if (operation === 'pull' && model) {
+                this.activePulls.delete(progressKey)
+                this.pullAttempts.delete(progressKey)
             }
             if (stage === 'already-installed' || stage === 'failed') {
                 this.clearRemoteEngineOp(nodeId, engineType)
@@ -1606,16 +1590,24 @@ class ModularBridgeState {
                 ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
                 : ''
         const existingPull = pullKey ? this.activePulls.get(pullKey) : undefined
+        // Only a download this app is awaiting has a row, and the awaited pull
+        // clears it ({@link finishRemoteModelPull}), as on the local path. A
+        // frame after that, from a download that outlived the request's
+        // timeout or the download's own late last frame, has nothing to
+        // update. A row rebuilt from it is one nothing clears, and a retry of
+        // that model on that node is ignored while it stands.
+        if (operation === 'pull' && !existingPull) return
         const percent =
             operation === 'pull'
                 ? mergePullProgressPercent(numberValue(obj.percent), existingPull?.percent)
                 : measuredPercent(obj.percent)
+        if (isEnginePullOutcome({ operation, status: stage })) this.cancelingPulls.delete(pullKey)
         const progress: EngineProgress = {
             engineType,
             nodeId,
             nodeName: node?.name ?? nodeId,
             operation,
-            status: stage,
+            status: this.cancelingPulls.has(pullKey) ? 'canceling' : stage,
             percent,
             model: model || undefined
         }
@@ -1848,7 +1840,6 @@ class ModularBridgeState {
         this.remoteEngineLists.delete(nodeId)
         for (const engine of PROXY_ENGINES) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
-            this.remotePullModels.delete(this.remoteOpKey(nodeId, engine))
         }
     }
 
@@ -2224,10 +2215,14 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        // Remember the model so the model-less `engine:pull-progress` frames can
-        // be re-associated with this exact entry (see localPullModels).
-        this.localPullModels.set(engineType, model)
-        this.activePulls.set(engineProgressKey(progress), progress)
+        this.trackPull(progress)
+    }
+
+    /** Add a pull's row, numbering it as a new attempt of its model. */
+    private trackPull(progress: EngineProgress): void {
+        const key = engineProgressKey(progress)
+        this.activePulls.set(key, progress)
+        this.pullAttempts.set(key, ++this.lastPullAttempt)
         emitBridgePush('engines:progress-changed', progress)
     }
 
@@ -2235,12 +2230,13 @@ class ModularBridgeState {
      * Project a `nvpair-engine-manager` `engine:pull-progress` for the local node
      * — the local counterpart of `engine:remote-progress`: live
      * download progress for a model pull driven via `engine:action`
-     * `pull_model`. The frame carries `{ engine, op, stage, percent, message }`
-     * and **no** `model`, so we backfill the model captured at dispatch and
-     * refresh the optimistic entry in place. Clearing stays with the awaited pull
-     * ({@link finishModelPull}), so this only advances percent/stage: it ignores
-     * the terminal error sentinel (`percent: -1`) and the non-download frames'
-     * `percent: 0` so the rendered bar never jumps backwards.
+     * `pull_model`. The frame carries `{ engine, model, op, stage, percent,
+     * message }` and its `model` identifies which optimistic entry to refresh —
+     * the backend queues concurrent pulls per engine, so the engine alone does
+     * not. Clearing stays with the awaited pull ({@link finishModelPull}), so
+     * this only advances percent/stage: it ignores the terminal error sentinel
+     * (`percent: -1`) and the non-download frames' `percent: 0` so the rendered
+     * bar never jumps backwards.
      */
     applyLocalEngineProgress(params: JsonValue | undefined): void {
         const nodeId = this.selfId
@@ -2250,16 +2246,19 @@ class ModularBridgeState {
         const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
-        const model = this.localPullModels.get(engineType)
+        const model = stringValue(obj.model)
         if (!model) return
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const existing = this.activePulls.get(key)
         if (!existing) return
 
         const percent = numberValue(obj.percent)
+        const stage = stringValue(obj.stage) || existing.status
+        if (isEnginePullOutcome({ operation: 'pull', status: stage }))
+            this.cancelingPulls.delete(key)
         const progress: EngineProgress = {
             ...existing,
-            status: stringValue(obj.stage) || existing.status,
+            status: this.cancelingPulls.has(key) ? 'canceling' : stage,
             percent: mergePullProgressPercent(percent, existing.percent)
         }
         this.activePulls.set(key, progress)
@@ -2279,10 +2278,68 @@ class ModularBridgeState {
     finishModelPull(engineType: EngineType, model: string): void {
         const nodeId = this.selfId
         if (!nodeId) return
-        this.localPullModels.delete(engineType)
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        this.cancelingPulls.delete(key)
+        this.pullAttempts.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
+    }
+
+    /**
+     * The attempt number of the download of this model tracked on the node, or
+     * undefined when none is. A retry is a new row with a new number, so a
+     * cancel that outlives the attempt it was sent for can tell that the row
+     * it would act on is no longer that attempt's.
+     */
+    modelPullAttempt(
+        engineType: EngineType,
+        model: string,
+        nodeId = this.selfId
+    ): number | undefined {
+        if (!nodeId) return undefined
+        return this.pullAttempts.get(
+            engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        )
+    }
+
+    /**
+     * Move a tracked download into or out of "Canceling", remembering the
+     * status it had so a rejected cancel can restore it.
+     *
+     * Returns false only when there is no download left to mark: none is
+     * tracked, or its row already shows how it ended, which "Canceling" would
+     * hide until the awaited pull clears it. It is not the guard against
+     * concurrent cancels — the supervisor holds that for as long as it awaits
+     * a reply, because a cancel that outlives its budget is still running and
+     * the row must stay in "Canceling" while the user remains able to ask
+     * again.
+     */
+    setModelPullCanceling(
+        engineType: EngineType,
+        model: string,
+        canceling: boolean,
+        nodeId = this.selfId
+    ): boolean {
+        if (!nodeId) return false
+        const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        const existing = this.activePulls.get(key)
+        if (!existing) return false
+        if (canceling && isEnginePullOutcome(existing)) return false
+        const remembered = this.cancelingPulls.get(key)
+        if (canceling) {
+            // Record the pre-cancel status on the first cancel only. A retry
+            // would otherwise record "canceling" as the status to restore, and
+            // a later rejection would put the row back into the very state it
+            // is trying to leave.
+            if (remembered === undefined) this.cancelingPulls.set(key, existing.status)
+        } else {
+            this.cancelingPulls.delete(key)
+        }
+        const status = canceling ? 'canceling' : (remembered ?? existing.status)
+        const progress = { ...existing, status }
+        this.activePulls.set(key, progress)
+        emitBridgePush('engines:progress-changed', progress)
+        return true
     }
 
     getLogs(): LogEntry[] {

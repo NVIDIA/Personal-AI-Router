@@ -49,12 +49,28 @@ export function emptyEngineProgress(at: {
     return entry
 }
 
+/**
+ * Statuses a pull's last frame ends it on. That frame names how the download
+ * ended (`success`, `cancelled`, or `error`), and its row stays on that status
+ * until the awaited pull has refreshed the model list.
+ */
+const pullOutcomeStatuses = new Set(['complete', 'success', 'cancelled', 'error'])
+
+/** Statuses of a pull that is not running: one with no frame yet, or one that has ended. */
+const settledPullStatuses = new Set(['idle', ...pullOutcomeStatuses])
+
 /** Whether UI should treat this progress as an active pull (show cancel, spinner, etc.). */
 export function isEnginePullInProgress(
     p: Pick<EngineProgress, 'operation' | 'status'> | undefined
 ): boolean {
     if (!p || p.operation !== 'pull') return false
-    if (p.status === 'idle') return false
-    const s = p.status.toLowerCase()
-    return s !== 'complete' && s !== 'error'
+    return !settledPullStatuses.has(p.status.toLowerCase())
+}
+
+/** Whether this progress is a pull's last frame, naming how the download ended. */
+export function isEnginePullOutcome(
+    p: Pick<EngineProgress, 'operation' | 'status'> | undefined
+): boolean {
+    if (!p || p.operation !== 'pull') return false
+    return pullOutcomeStatuses.has(p.status.toLowerCase())
 }

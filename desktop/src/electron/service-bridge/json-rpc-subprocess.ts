@@ -22,6 +22,13 @@ interface JsonRpcError {
 
 export class JsonRpcResponseError extends Error {}
 
+/**
+ * The request's own budget elapsed. The backend has not answered and has not
+ * failed either — it is still working — so a caller that showed optimistic
+ * state must decide whether to keep it rather than assume the operation lost.
+ */
+export class JsonRpcTimeoutError extends Error {}
+
 type JsonRpcId = number | string
 
 interface JsonRpcMessage {
@@ -148,7 +155,7 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
                     ? undefined
                     : setTimeout(() => {
                           this.pending.delete(id)
-                          reject(new Error(`${this.name} ${method} timed out`))
+                          reject(new JsonRpcTimeoutError(`${this.name} ${method} timed out`))
                       }, timeoutMs)
             this.pending.set(id, { resolve, reject, timeout })
             this.write(message).catch(err => {

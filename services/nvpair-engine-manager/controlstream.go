@@ -31,16 +31,20 @@ const maxControlBody = 1 << 20 // 1 MiB
 
 // streamFrame is one NDJSON frame on the ec streaming endpoints. Type is
 // "progress", "result", or "error". Percent is omitted when indeterminate (0).
+// Download, on a pull's frames, is the peer's ID for the download the request
+// runs as, once it runs as one.
 type streamFrame struct {
-	Type    string          `json:"type"`
-	OpID    string          `json:"opId,omitempty"`
-	Engine  string          `json:"engine,omitempty"`
-	Op      string          `json:"op,omitempty"`
-	Stage   string          `json:"stage,omitempty"`
-	Percent int             `json:"percent,omitempty"`
-	Message string          `json:"message,omitempty"`
-	Status  *EngineStatus   `json:"status,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
+	Model    string          `json:"model,omitempty"`
+	Type     string          `json:"type"`
+	OpID     string          `json:"opId,omitempty"`
+	Engine   string          `json:"engine,omitempty"`
+	Op       string          `json:"op,omitempty"`
+	Stage    string          `json:"stage,omitempty"`
+	Percent  int             `json:"percent,omitempty"`
+	Message  string          `json:"message,omitempty"`
+	Download uint64          `json:"download,omitempty"`
+	Status   *EngineStatus   `json:"status,omitempty"`
+	Result   json.RawMessage `json:"result,omitempty"`
 }
 
 // installRequest is the POST /v1/engines/install body.
@@ -77,7 +81,7 @@ func (s *controlServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"engine" is required`, http.StatusBadRequest)
 		return
 	}
-	s.streamOp(w, r, req.OpID, req.Engine, "install", func(ctx context.Context) (streamFrame, error) {
+	s.streamOp(w, r, req.OpID, req.Engine, "install", nil, func(ctx context.Context) (streamFrame, error) {
 		if err := s.exec.Install(ctx, req.Engine); err != nil {
 			return streamFrame{}, err
 		}
@@ -111,21 +115,28 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"engine" is required`, http.StatusBadRequest)
 		return
 	}
-	if req.Model == "" && len(req.Params) == 0 {
-		http.Error(w, `"model" or "params" is required`, http.StatusBadRequest)
+	if model := modelFromParams(req.Params); model != "" {
+		req.Model = model
+	}
+	// Resolve the model before validating: it scopes claimPull, and with it
+	// the download whose frames the stream carries.
+	if req.Model == "" {
+		http.Error(w, `"model", or "params" naming one, is required`, http.StatusBadRequest)
 		return
 	}
-	s.streamOp(w, r, req.OpID, req.Engine, "pull", func(ctx context.Context) (streamFrame, error) {
+	// The initiator's cancel arrives as its own request, so claim the pull
+	// before starting it: a cancel that beats the download to the executor then
+	// stops this request instead of being read as a cancel for nothing.
+	claimed, release := s.exec.claimPull(r.Context(), req.Engine, req.Model)
+	defer release()
+	download := s.exec.claimedDownload(claimed)
+	s.streamOp(w, r.WithContext(claimed), req.OpID, req.Engine, "pull", download, func(ctx context.Context) (streamFrame, error) {
 		res, err := s.exec.PullModelStream(ctx, req.Engine, req.Model, req.Params)
 		if err != nil {
-			model := req.Model
-			if model == "" {
-				model = modelFromParams(req.Params)
-			}
-			msg := s.exec.reportPullFailed(req.Engine, model, err)
+			msg := s.exec.reportPullFailed(req.Engine, req.Model, err)
 			return streamFrame{}, fmt.Errorf("%s", msg)
 		}
-		return streamFrame{Type: "result", OpID: req.OpID, Engine: req.Engine, Op: "pull", Result: res}, nil
+		return streamFrame{Type: "result", OpID: req.OpID, Engine: req.Engine, Op: "pull", Download: download(), Result: res}, nil
 	})
 }
 
@@ -134,7 +145,11 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 // forwards each progress event as an NDJSON frame, and writes run's terminal
 // frame (or an error frame) last. run executes on the request context, so a
 // disconnected initiator cancels the operation.
-func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, engine, op string, run func(ctx context.Context) (streamFrame, error)) {
+//
+// A pull's stream carries only the frames of the download its request runs
+// as, which download reports; an install's, with no download, carries all of
+// the engine's.
+func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, engine, op string, download func() uint64, run func(ctx context.Context) (streamFrame, error)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -148,10 +163,21 @@ func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, e
 	defer cancelSub()
 
 	enc := json.NewEncoder(w)
+	// The subscription is per engine, so a pull's stream also sees the
+	// engine's install steps, any other model's pull, and another download of
+	// its own model: the cancelled one still settling when this request is
+	// its retry, or the retry that starts once this request was cancelled.
+	// Matching on the model would let the last of those through, stamped with
+	// this request's opID, and the initiator would relay one download's
+	// frames as another's.
 	writeProgress := func(ev ProgressEvent) {
+		if download != nil && (ev.Download == 0 || ev.Download != download()) {
+			return
+		}
 		f := streamFrame{
-			Type: "progress", OpID: opID, Engine: ev.Engine, Op: ev.Op,
-			Stage: ev.Stage, Message: ev.Message,
+			Model: ev.Model,
+			Type:  "progress", OpID: opID, Engine: ev.Engine, Op: ev.Op,
+			Stage: ev.Stage, Message: ev.Message, Download: ev.Download,
 		}
 		if wirePercentIncluded(ev.Percent) {
 			f.Percent = ev.Percent

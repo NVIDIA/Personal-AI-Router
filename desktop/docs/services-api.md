@@ -92,6 +92,7 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
+| `engine:cancel-pull` | request (we call) | ✅ yes |
 | `engine:catalog` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
@@ -105,6 +106,7 @@
 | `engine:prepare-shutdown` | request (we call) | ➖ ignored |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
+| `engine:remote-cancel-pull` | request (we call) | ✅ yes |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
 | `engine:remote-get-settings` | request (we call) | ⚠️ not called |

@@ -12,6 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,6 +153,7 @@ func hfPullFixture(t *testing.T, siblings []hfSibling, apiStatus int, script str
 			return
 		}
 		ev := ProgressEvent{Stage: fields["stage"].(string)}
+		ev.Model, _ = fields["model"].(string)
 		if pct, ok := fields["percent"].(int); ok {
 			ev.Percent = pct
 		}
@@ -189,7 +193,14 @@ func TestPullHFModel_DownloadsAndReportsSuccess(t *testing.T) {
 	require.Len(t, models, 1, "the downloaded model must show in the cache list")
 	assert.Equal(t, "Qwen/Test", models[0].ID)
 	require.NotEmpty(t, *events)
-	assert.Equal(t, ProgressEvent{Stage: "success", Percent: 100}, (*events)[len(*events)-1])
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "success", Percent: 100}}, pullOutcomes(*events),
+		"the download ends on one frame, naming its model")
+	assert.Equal(t, "success", (*events)[len(*events)-1].Stage, "a frame followed the download's outcome")
+}
+
+// pullOutcomes are the frames among events that say how a download ended.
+func pullOutcomes(events []ProgressEvent) []ProgressEvent {
+	return slices.DeleteFunc(slices.Clone(events), func(ev ProgressEvent) bool { return !isPullOutcome(ev.Stage) })
 }
 
 // fakeHFDownloadWithIndex records each run's files and lays them out in the
@@ -334,6 +345,274 @@ func TestPullHFModel_StopsPromptlyWhenCancelled(t *testing.T) {
 
 	assert.Error(t, err, "a cancelled download must fail")
 	assert.LessOrEqual(t, time.Since(start), 10*time.Second, "a cancelled download must stop promptly")
+}
+
+// fakeHFStalledDownload starts a download the way `hf download` does, with an
+// incomplete blob in the cache, and then stalls until it is stopped.
+const fakeHFStalledDownload = `
+repo="$(echo "$@" | sed 's/.*--cache-dir //')/models--Qwen--Test"
+mkdir -p "$repo/blobs"
+head -c 4 /dev/zero > "$repo/blobs/w.incomplete"
+exec sleep 30
+`
+
+// A cancel someone asked for stops the hf tool and settles the download as
+// cancelled, as every engine's does, on one frame naming the model. The partial
+// files stay for the next download of the model to resume, as llama.cpp's do.
+func TestPullHFModel_CancelStopsTheToolAndKeepsItsPartialFiles(t *testing.T) {
+	e, hub, events := hfPullFixture(t, oneFileRepo, http.StatusOK, fakeHFStalledDownload)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	partial := filepath.Join(hub, "models--Qwen--Test", "blobs", "w.incomplete")
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(partial)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the download never started")
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assert.FileExists(t, partial, "the cancel deleted the partial download")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "cancelled"}}, pullOutcomes(*events))
+}
+
+// testHFStopGraces shrinks the hf tool's graces, so a case that models a tool
+// the kill cannot reclaim gives up on it quickly.
+var testHFStopGraces = downloadStopGraces{interrupt: 200 * time.Millisecond, reap: 500 * time.Millisecond}
+
+// fakeHFDownloadWithAnEscapedHelper starts a download whose helper leaves the
+// tool's process group still holding the tool's output open, as a grandchild
+// of a real tool can, so no signal to the group closes the pipe and the tool
+// is never reaped. The helper writes its PID once it has left.
+const fakeHFDownloadWithAnEscapedHelper = `
+repo="$(echo "$@" | sed 's/.*--cache-dir //')/models--Qwen--Test"
+mkdir -p "$repo/blobs"
+head -c 4 /dev/zero > "$repo/blobs/w.incomplete"
+perl -e 'setpgrp(0, 0); open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 30' "$(dirname "$0")/helper.pid" &
+exec sleep 30
+`
+
+// killFakeHelper kills the helper whose PID a fake tool wrote to pidFile, so
+// a test whose helper outlives the tool leaves nothing running.
+func killFakeHelper(pidFile string) {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+		if helper, err := os.FindProcess(pid); err == nil {
+			_ = helper.Kill()
+		}
+	}
+}
+
+// A tool that cannot be reaped is given up on once killed, rather than waited
+// on for good with the cancel's reply and every download queued behind it. It
+// may still be transferring, so the cancel fails as LM Studio's does, deletes
+// nothing, and a cancel sent once the download has settled says so again.
+func TestPullHFModel_CancelFailsWhenTheToolCannotBeReaped(t *testing.T) {
+	e, hub, events := hfPullFixture(t, oneFileRepo, http.StatusOK, fakeHFDownloadWithAnEscapedHelper)
+	ctx, cancel := context.WithTimeout(withDownloadStopGraces(t.Context(), testHFStopGraces), 30*time.Second)
+	defer cancel()
+	partial := filepath.Join(hub, "models--Qwen--Test", "blobs", "w.incomplete")
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() { killFakeHelper(helperPID) })
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(helperPID)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the download never started")
+
+	cancelErr := e.CancelModelPull(ctx, "vllm", "Qwen/Test")
+	got := awaitOutcome(t, ctx, done)
+
+	assert.ErrorContains(t, cancelErr, "may still be running")
+	assert.ErrorContains(t, got.err, "may still be running")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "error", Percent: -1}}, pullOutcomes(*events))
+	assert.FileExists(t, partial, "the cancel deleted the partial download")
+	assert.ErrorContains(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"), "may still be running",
+		"a cancel sent after the download settled reported it stopped")
+}
+
+// fakeHFDownloadFinishingAsItIsStopped stalls until it is asked to stop, then
+// completes the download and exits cleanly: a tool that finishes in the
+// instant it is stopped.
+const fakeHFDownloadFinishingAsItIsStopped = `
+trap 'finished=1' TERM
+touch "$(dirname "$0")/started"
+while [ -z "$finished" ]; do sleep 0.1; done
+` + fakeHFDownload
+
+// A download that finished as it was being cancelled stands, as LM Studio's
+// does: the model is installed, so the cancel has nothing left to stop.
+func TestPullHFModel_CancelKeepsADownloadThatFinishedAsItWasStopped(t *testing.T) {
+	e, hub, events := hfPullFixture(t, oneFileRepo, http.StatusOK, fakeHFDownloadFinishingAsItIsStopped)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(filepath.Dir(hub), "started"))
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the download never started")
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	var result struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(got.result, &result))
+	assert.Equal(t, "Qwen/Test", result.Model)
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "success", Percent: 100}}, pullOutcomes(*events))
+}
+
+// indexedRepo is a repository whose weights are shards listed by an index,
+// which a Pull fetches before the weights.
+var indexedRepo = []hfSibling{
+	{RFilename: "config.json", Size: 10}, {RFilename: "tokenizer.json", Size: 10},
+	{RFilename: "model-00001-of-00002.safetensors", Size: 10}, {RFilename: "model-00002-of-00002.safetensors", Size: 10},
+	{RFilename: "model.safetensors.index.json", Size: 10},
+}
+
+// fakeHFIndexFetchWithAHelper fetches the weight index with a helper that
+// holds the tool's output, as a grandchild of a real tool can. The helper
+// writes its PID once it is running.
+const fakeHFIndexFetchWithAHelper = `
+perl -e 'open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 60' "$(dirname "$0")/helper.pid" &
+exec sleep 60
+`
+
+// fakeHFIndexFetchWithAnEscapedHelper is fakeHFIndexFetchWithAHelper with a
+// helper that leaves the tool's process group, so stopping the group leaves
+// it running and still holding the tool's output.
+const fakeHFIndexFetchWithAnEscapedHelper = `
+perl -e 'setpgrp(0, 0); open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 60' "$(dirname "$0")/helper.pid" &
+exec sleep 60
+`
+
+// fakeHFHelperPID reads the PID a fake tool's helper wrote to pidFile.
+func fakeHFHelperPID(t *testing.T, pidFile string) int {
+	t.Helper()
+	data, err := os.ReadFile(pidFile)
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	require.NoError(t, err)
+	return pid
+}
+
+// A cancel while the tool is still fetching the weight index stops what the
+// tool started along with it. A helper left running could still be fetching
+// when the next download of the model starts.
+func TestPullHFModel_CancelDuringTheIndexFetchLeavesNoHelperRunning(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc to tell a killed helper from a running one")
+	}
+	e, hub, events := hfPullFixture(t, indexedRepo, http.StatusOK, fakeHFIndexFetchWithAHelper)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() { killFakeHelper(helperPID) })
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(helperPID)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the index fetch never started")
+	helper := fakeHFHelperPID(t, helperPID)
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"))
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "cancelled"}}, pullOutcomes(*events))
+	assert.True(t, waitGone(helper, 2*time.Second), "the helper the tool started is still running")
+}
+
+// fakeHFDownloadWithIndexLeavingAHelper is fakeHFDownloadWithIndex whose index
+// fetch exits cleanly while a helper it started still holds its output. The
+// helper writes its PID once it is running.
+const fakeHFDownloadWithIndexLeavingAHelper = fakeHFDownloadWithIndex + `
+if [ "$files" = " model.safetensors.index.json" ]; then
+  perl -e 'open(my $f, ">", "$ARGV[0].tmp") or die; print $f $$; close $f; rename("$ARGV[0].tmp", $ARGV[0]); sleep 60' "$(dirname "$0")/helper.pid" &
+fi
+`
+
+// A helper still holding the index fetch's output once the tool has exited
+// cleanly is cut off after downloadWaitDelay. The index the tool fetched
+// stands, so the weights are downloaded, and the helper is not left running.
+func TestPullHFModel_DownloadsWhenTheIndexFetchLeavesAHelperBehind(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc to tell a killed helper from a running one")
+	}
+	e, hub, _ := hfPullFixture(t, indexedRepo, http.StatusOK, fakeHFDownloadWithIndexLeavingAHelper)
+	t.Setenv("FAKE_HF_INDEX", `{"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}`)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() { killFakeHelper(helperPID) })
+
+	_, err := e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+
+	require.NoError(t, err, "the helper failed an index fetch that succeeded")
+	calls, err := os.ReadFile(filepath.Join(filepath.Dir(hub), "hf-calls"))
+	require.NoError(t, err)
+	assert.Equal(t, " model.safetensors.index.json\n config.json tokenizer.json model-00001-of-00002.safetensors model-00002-of-00002.safetensors model.safetensors.index.json\n", string(calls))
+	assert.True(t, waitGone(fakeHFHelperPID(t, helperPID), 2*time.Second), "the helper the index fetch left behind is still running")
+}
+
+// A cancel while the tool is still fetching the weight index settles as
+// cancelled within downloadWaitDelay, rather than waiting on a helper that
+// left the tool's process group and still holds its output, with the cancel's
+// reply and every download queued behind it. All the helper could still be
+// fetching is the index, so the cancel does not fail as one that outlives a
+// download's kill does.
+func TestPullHFModel_CancelDuringTheIndexFetchIsNotHeldUpByAHelper(t *testing.T) {
+	e, hub, events := hfPullFixture(t, indexedRepo, http.StatusOK, fakeHFIndexFetchWithAnEscapedHelper)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	helperPID := filepath.Join(filepath.Dir(hub), "helper.pid")
+	t.Cleanup(func() { killFakeHelper(helperPID) })
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = e.PullModelStream(ctx, "vllm", "Qwen/Test", nil)
+		done <- got
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(helperPID)
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "the index fetch never started")
+
+	require.NoError(t, e.CancelModelPull(ctx, "vllm", "Qwen/Test"), "the cancel waited on the helper")
+	got := awaitOutcome(t, ctx, done)
+
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	assert.Equal(t, []ProgressEvent{{Model: "Qwen/Test", Stage: "cancelled"}}, pullOutcomes(*events))
 }
 
 // A vllm on PATH is often a link into the environment it was installed in, as
