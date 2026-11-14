@@ -50,11 +50,16 @@ type lmsDownloadOutput struct {
 	// and kept across the request's attempts because a resumed run can fail
 	// before it prints the plan an earlier run started.
 	announced []string
-	// source is the argument the latest `lms get` run was given: which of the
-	// request's candidates (see lmsGetCandidates) it was resolving. Only a
-	// huggingface.co URL downloads into the repository directory the request
-	// names, so it decides whether a partial there can be this download's.
+	// source is the argument the latest `lms get` run that started was given:
+	// which of the request's candidates (see lmsGetCandidates) it was
+	// resolving. Only a huggingface.co URL downloads into the repository
+	// directory the request names, so it decides whether a partial there can
+	// be this download's. A candidate counts only once its run has started: a
+	// cancel can land after the runner has moved to it and before then, and
+	// that run downloads nothing.
 	source string
+	// next is the candidate the next run is given, the source once it starts.
+	next string
 	// line is the output since the last line break. A plan line is read only
 	// once the CLI has finished it, since a pipe can split one partway through
 	// a quantization's name.
@@ -144,14 +149,22 @@ func (w *lmsDownloadOutput) announcedQuants() []string {
 	return slices.Clone(w.announced)
 }
 
-// running records the candidate the next `lms get` run is given.
-func (w *lmsDownloadOutput) running(source string) {
+// trying records the candidate the next `lms get` run is given.
+func (w *lmsDownloadOutput) trying(source string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.source = source
+	w.next = source
 }
 
-// ranSource returns the candidate the latest `lms get` run was given.
+// started records that the run given the latest candidate is under way.
+func (w *lmsDownloadOutput) started() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.source = w.next
+}
+
+// ranSource returns the candidate the latest `lms get` run that started was
+// given, or "" when none has.
 func (w *lmsDownloadOutput) ranSource() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -289,6 +302,7 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
+	output.started()
 	unpin, err := pinDownloadProcess(cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()

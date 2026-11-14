@@ -306,7 +306,7 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		// source below (and runWithResume returns it immediately).
 		if lmsGet {
 			if output, ok := ctx.Value(downloadOutputKey{}).(*lmsDownloadOutput); ok {
-				output.running(cand)
+				output.trying(cand)
 			}
 			out, lastErr = e.runWithResume(ctx, argv)
 		} else {

@@ -186,6 +186,27 @@ func TestLMSDownloadOutput_KeepsAnnouncedQuantizationsAcrossResumedRuns(t *testi
 	assert.Equal(t, []string{"Q4_K_M"}, output.announcedQuants())
 }
 
+// The runner moves to a repository's Hugging Face URL once the LM Studio Hub
+// fails to resolve the model, and a cancel can land before that run starts.
+// Nothing ran from the URL then, so the Hub's id stays the source the run that
+// started was given.
+func TestRunLMSDownloadCommand_CountsACandidateOnlyOnceItsRunStarts(t *testing.T) {
+	const hub, url = "owner/repo", "https://huggingface.co/owner/repo"
+	output := &lmsDownloadOutput{lastPercent: -1, progress: func(int) {}}
+	output.trying(hub)
+	_, err := runLMSDownloadCommand(t.Context(), []string{fakeEngineBin, "resolvesim", hub}, output)
+	require.Error(t, err, "the Hub does not have the model")
+	require.Equal(t, hub, output.ranSource())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	output.trying(url)
+	_, err = runLMSDownloadCommand(ctx, []string{fakeEngineBin, "resolvesim", url}, output)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, hub, output.ranSource())
+}
+
 // Cancelling the download interrupts the CLI the way Ctrl+C would rather than
 // killing it, because only an interrupted `lms get` asks the question whose
 // answer stops the daemon's transfer.
@@ -486,6 +507,37 @@ func TestLMSCancellation_RemovesNothingForAModelTheHubResolved(t *testing.T) {
 
 	require.NoError(t, got.err)
 	assertPullStatus(t, got.result, "cancelled")
+	assertPresent(t, partial)
+}
+
+// A cancel can land after the pull has looked for partials and before `lms
+// get` starts from the request's Hugging Face URL. Nothing ran from it then, so
+// a partial of the pinned quantization another client wrote in the
+// repository's directory meanwhile is not this download's, and stays.
+func TestLMSCancellation_RemovesNothingWhenTheCLINeverStarted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
+	defer cancel()
+	const model = "https://huggingface.co/owner/repo@Q4_K_M"
+	modelsDir := t.TempDir()
+	partial := filepath.Join(modelsDir, "owner", "repo", "downloading_repo-Q4_K_M.gguf.part")
+	ex := newLMSPullExecutor(t, modelsDir, append(fakeDownloadArgv("canceldownload"), partial, "{model}")...)
+	var once sync.Once
+	ex.emit = func(method string, params any) {
+		frame, _ := params.(map[string]any)
+		if method != "engine:pull-progress" || frame["stage"] != "pulling" {
+			return
+		}
+		once.Do(func() {
+			assert.NoError(t, os.MkdirAll(filepath.Dir(partial), 0o700))
+			assert.NoError(t, os.WriteFile(partial, []byte("another client's"), 0o600))
+			ex.latchPullCancel("fake", model)
+		})
+	}
+
+	result, err := ex.PullModelStream(ctx, "fake", model, nil)
+
+	require.NoError(t, err, "the cancellation should settle the pull as cancelled")
+	assertPullStatus(t, result, "cancelled")
 	assertPresent(t, partial)
 }
 

@@ -507,7 +507,8 @@ cancellation the CLI never confirmed deletes nothing and fails, since the
 download may still be running. A cancel that finds no CLI running — before the first starts,
 between the sources PAIR tries, or while a timed-out transfer waits to be
 resumed — has nothing left to stop, so it settles as cancelled and removes the
-same files. llama.cpp's router is asked to stop the download and keeps what it
+same files, which are none until a run from the Hugging Face URL has started.
+llama.cpp's router is asked to stop the download and keeps what it
 already fetched, for llama.cpp to resume or replace; if the router does not
 confirm the stop, the cancellation fails, since the download may still be
 running. vLLM's `hf` tool is stopped, and killed if it has not exited 3 seconds

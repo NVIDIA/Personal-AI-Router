@@ -578,7 +578,8 @@ a CLI that exited without answering it may still be fetching, nothing is
 deleted, and the cancel fails. A cancel that finds no CLI running — before the
 first starts, between candidate sources, or while a timed-out transfer waits to
 be resumed — has nothing left fetching, so it settles as cancelled and cleans
-up the same way.
+up the same way, which removes nothing until a run from the Hugging Face URL
+has started.
 
 llama.cpp and vLLM delete nothing. llama.cpp's router is asked to stop the
 download and keeps what it fetched for llama.cpp to resume or replace. vLLM's
