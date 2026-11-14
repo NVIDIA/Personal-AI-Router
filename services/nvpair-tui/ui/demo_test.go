@@ -220,7 +220,48 @@ func TestStart_RefusesWhenNoProxyIsListening(t *testing.T) {
 
 	tracker := newProxyTracker()
 	_, err := d.start(tracker)
-	require.Error(t, err, "start succeeded with both proxies down")
+	require.Error(t, err, "start succeeded with no proxy up")
+	assert.Equal(t, demoIdle, d.status, "status after a refused start")
+}
+
+func TestDemoProbes_SkipsUnmanagedFacades(t *testing.T) {
+	// The Custom facade has no dispatcher backend and its endpoints live
+	// outside this machine, so it must not become a target even when ready:
+	// the unmanaged filter guards more than the readiness check does.
+	tracker := newProxyTracker()
+	custom := tracker.indexForEngine("custom")
+	require.NotEqual(t, -1, custom, "the proxy tracker lost its custom facade")
+	tracker.engines[custom].ready = true
+	tracker.engines[custom].port = 8000
+
+	assert.Empty(t, demoProbes(tracker), "an unmanaged facade became a demo target")
+
+	ollama := tracker.indexForEngine("ollama")
+	require.NotEqual(t, -1, ollama, "the proxy tracker lost its ollama facade")
+	tracker.engines[ollama].ready = true
+	tracker.engines[ollama].port = 11435
+
+	probes := demoProbes(tracker)
+	require.Len(t, probes, 1, "more probes than ready managed facades")
+	assert.Equal(t, "ollama", probes[0].backend, "dispatcher backend name")
+	assert.Equal(t, 11435, probes[0].port, "dispatcher target port")
+}
+
+func TestStart_RefusesWhenOnlyTheCustomFacadeIsListening(t *testing.T) {
+	// A Custom endpoint answering through 8000 must not start a test run:
+	// the dispatcher would reject its backend name, and the load it meant to
+	// send would spend the operator's budget on an external service.
+	d := newDemoRunner()
+	t.Cleanup(d.close)
+	d.executable = "/nonexistent/inference-dispatcher"
+
+	tracker := newProxyTracker()
+	custom := tracker.indexForEngine("custom")
+	tracker.engines[custom].ready = true
+	tracker.engines[custom].port = 8000
+
+	_, err := d.start(tracker)
+	require.Error(t, err, "start succeeded with only the custom facade up")
 	assert.Equal(t, demoIdle, d.status, "status after a refused start")
 }
 

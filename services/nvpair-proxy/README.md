@@ -73,7 +73,7 @@ parameter, because one flag cannot carry multiple engines' plans.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `engine` | *(required)* | Which engine to front: `ollama`, `lmstudio`, `llamacpp`, or `vllm`. An unknown name is rejected with the accepted values. |
+| `engine` | *(required)* | Which engine to front: `ollama`, `lmstudio`, `llamacpp`, `vllm`, or `custom`. An unknown name is rejected with the accepted values. |
 | `port` | per engine, see below | HTTP listen port for request forwarding. Must be 1–65535, or omitted for the engine's standalone default. `0` means "the default" rather than "pick an ephemeral port", and any other out-of-range value is rejected, because the facade announces the requested port in its `ready` notification and the broker would be told `0`. |
 | `aliasAddresses` | *(empty)* | Optional secondary `host:port` values for the same routing handler, one per loopback family so `localhost` resolves either way. Only literal loopback addresses are accepted; the broker uses this for a safe inherited local `OLLAMA_HOST`, and the aliases are not advertised to peers. Accepted only for an engine with an inherited host variable — today Ollama alone — and rejected for any other. |
 | `ignorePersistedPort` | `false` | Use `port` even when a saved port exists (used by broker-managed startup) |
@@ -83,10 +83,10 @@ parameter, because one flag cannot carry multiple engines' plans.
 Everything engine-specific is one entry in `engines.go`, plus the shared
 identity in `nvpair-shared/engines`.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` |
-|---|---|---|---|---|
-| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` | `vllm-proxy` |
-| Discovery service key | `ol` | `lm` | `lc` | `vl` |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` | `"engine":"custom"` |
+|---|---|---|---|---|---|
+| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` | `vllm-proxy` | `custom-proxy` |
+| Discovery service key | `ol` | `lm` | `lc` | `vl` | `cu` |
 
 The **log component, supervisor label, and TUI health crash key are not in that
 table**: they name the process (`nvpair-proxy`), not a facade, because one
@@ -95,17 +95,17 @@ Facade-scoped log records carry an `engine` field instead. The supervisor label
 and the health crash key are matched against each other, so they move together
 — see `nvpair-shared/engines` and `spec.md` §9.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` |
-|---|---|---|---|---|
-| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
-| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
-| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
-| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) |
-| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below |
-| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` | `"engine":"custom"` |
+|---|---|---|---|---|---|
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 | — (no local engine behind the facade) |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 | — (nothing to relocate) |
+| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 | 6767 |
+| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` | `custom-proxy-port.json` |
+| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) |
+| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below | OpenAI set below |
+| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte |
 
-All four facades classify these OpenAI-compatible POST routes as inference:
+All five facades classify these OpenAI-compatible POST routes as inference:
 
 - `/v1/chat/completions` — [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - `/v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
@@ -119,8 +119,13 @@ The route table is a **classifier, not an allowlist**. An unlisted path is
 forwarded verbatim, which is how `/api/show`, `/api/pull`, `/api/ps`,
 `/api/version` and `OPTIONS` preflights keep working.
 
-The broker enables all four facades by default. Local llama.cpp-compatible
-clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM clients use `8000`, while the managed `vllm serve` stays on `8001`.
+The broker enables all five facades by default. Local llama.cpp-compatible
+clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM
+clients use `8000`, while the managed `vllm serve` stays on `8001`. The
+Custom facade fronts user-configured external OpenAI-compatible endpoints
+instead of a local engine. It defaults to `6767`: vLLM already occupies the
+customary `8000`, and a facade parked on a sibling engine's port could
+neither route to it nor let that engine start.
 `--proxy-engines` can restrict a standalone broker or TUI to a subset.
 
 ### HTTP Reverse Proxy
@@ -143,10 +148,29 @@ actionable warning while the primary listener stays available.
 each connection's first byte. Plaintext HTTP is accepted only from loopback; a
 LAN caller is refused. When `--cluster-dir` shows this node is a cluster member,
 the same listener also terminates cluster mTLS: a peer whose client certificate
-matches one of this node's pins is forwarded straight to the local engine
-reported by `node/set-local-backend`, and is never re-routed onward to another
-node. Membership and pins are re-derived per request, so joining or leaving a
-cluster needs no restart.
+matches one of this node's pins is forwarded straight to a backend this node
+was told about via `node/set-local-backend` — its local engine, or, on the
+Custom facade, one of the configured endpoints whose declared model matches —
+and is never re-routed onward to another node. Membership and pins are
+re-derived per request, so joining or leaving a cluster needs no restart.
+
+A Custom facade holds a *set* of user-configured endpoints instead of one loop
+back engine — `node/set-local-backend` carries that set (`backends`) and the
+endpoint credential, which travels only over the broker↔proxy stdio link. A
+peer request is served by the endpoint declaring its model, or by the lone
+unattributed endpoint when the set has no model owners; anything else is
+refused with a 502 `no-backend-for-model` rather than a guessed dial. The
+endpoint's own key is injected on that last hop and the caller's
+`Authorization` is dropped — no client credential ever reaches an endpoint.
+
+Endpoints are routing targets, not machines. The Custom facade answers
+`nodes/list` with the machine peers it was told about and announces `node/*`
+only for those, because its consumers — the desktop's node hydration, the Add
+Node list, and the engine-status health polls — treat anything listed as a
+machine they may invite and pair against. A configured endpoint is reached
+through the routing set and reported by the broker's `custom:list` instead, so
+it never surfaces as an invitable node. The managed engines keep listing their
+manual nodes, where a manual entry really is a machine.
 
 **Persisted port.** A port chosen at runtime via `set-port` is saved to the
 per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on
@@ -164,7 +188,7 @@ sit on the engine's own port. The stored value predates the current default.
 
 **Browser clients (CORS).** PAIR does not enable CORS or add default browser permissions. Configure origins through the engine; its built-in defaults and user configuration remain authoritative. Ordinary forwarded responses preserve the upstream status, body, and CORS headers, including missing headers. A denial is never replaced with a successful OPTIONS response or retried to find permission elsewhere. Proxy-generated errors carry their actual status without CORS permission headers, so browser JavaScript may see a generic CORS failure while curl and diagnostics show the real error.
 
-A browser preflight (OPTIONS with Origin and Access-Control-Request-Method) queries every currently routable target, with concurrency eight, a ten-second query deadline, and no redirects. A single target's response is relayed. Multiple responding targets must all permit the requested origin, method, and headers; PAIR grants only their shared permissions. Credentials require unanimous explicit support. Synthesized preflights allow browsers to cache the result for 60 seconds; PAIR itself does not cache decisions. A policy denial returns 403. Unavailable targets are skipped; if none can answer, the proxy returns 502. Ordinary OPTIONS requests retain normal routing. Preflights do not create inference jobs or reserve scheduler capacity. Paired ingress forwards only to its local engine.
+A browser preflight (OPTIONS with Origin and Access-Control-Request-Method) queries every currently routable target, with concurrency eight, a ten-second query deadline, and no redirects. A single target's response is relayed. Multiple responding targets must all permit the requested origin, method, and headers; PAIR grants only their shared permissions. Credentials require unanimous explicit support. Synthesized preflights allow browsers to cache the result for 60 seconds; PAIR itself does not cache decisions. A policy denial returns 403. Unavailable targets are skipped; if none can answer, the proxy returns 502. Ordinary OPTIONS requests retain normal routing. Preflights do not create inference jobs or reserve scheduler capacity. Paired ingress forwards only to this node's own backend or endpoints.
 
 Combined model lists forward the caller's origin and end-to-end headers, excluding Authorization and Cookie so credentials are not shared across engines. Multi-target preflights apply the same credential filtering. With an Origin header, every responding engine must return a valid list and permit sharing: one denial returns 403 and one invalid list returns 502, without partial inventory. An invalid-list error retains the combined CORS permissions when every responding engine allows the origin. Unavailable engines are skipped, with 502 returned when none can answer. Successful lists combine origin/credential permissions and Vary requirements. Requests without Origin retain partial aggregation when some inventories are unavailable. Engines without CORS support remain unavailable to cross-origin browser clients through PAIR.
 

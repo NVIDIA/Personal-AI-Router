@@ -10,7 +10,7 @@
 // whose TXT map carries a schema version, the node's identity, its LAN address,
 // and one compact key per local service port, e.g.:
 //
-//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;lc=8080;vl=8000;er=14319;wl=14320;cl=14321;em=14322
+//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;lc=8080;vl=8000;cu=6767;er=14319;wl=14320;cl=14321;em=14322
 //
 // Design decisions this package encodes:
 //   - SRV port is a fixed, NON-authoritative constant; consumers ignore it and
@@ -94,6 +94,11 @@ const (
 	ServiceLMStudio ServiceKey = "lm"
 	ServiceLlamaCPP ServiceKey = "lc"
 	ServiceVLLM     ServiceKey = "vl"
+	// ServiceCustom is the Custom facade's TXT key: the proxy fronting
+	// user-added external OpenAI-compatible endpoints. Advertised so peers
+	// learn the node runs a custom facade; like the managed engine facades
+	// it derives the plain transport.
+	ServiceCustom   ServiceKey = "cu"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -111,9 +116,9 @@ const (
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
-	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCPP, ServiceVLLM,
-	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl,
+	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCPP,
+	ServiceVLLM, ServiceCustom, ServiceErrors, ServiceWorkload,
+	ServiceCluster, ServiceEngineManager, ServiceEngineControl,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).

@@ -78,13 +78,16 @@ type facade struct {
 	selectedMu sync.RWMutex
 	selectedID string
 
-	// backendMu guards backend, the explicit loopback engine this facade's
-	// cluster mTLS ingress forwards to. The broker sets/clears it via
-	// node/set-local-backend; it is never sourced from discovery, so an ingress
-	// request can only ever reach this node's own local engine and can never be
-	// re-routed to a peer.
+	// backendMu guards backend and backends: the two ingress forwarding
+	// classes for this facade's mTLS personality. backend is the explicit
+	// loopback engine; backends is the Custom-class set of user-configured
+	// endpoints. Either way the state is set only via node/set-local-backend
+	// and never sourced from discovery, so an ingress request can only ever
+	// reach this node's own configured backends and can never be re-routed
+	// to a peer.
 	backendMu sync.RWMutex
 	backend   localBackend
+	backends  []configuredBackend
 
 	// targets remembers, per node, which of its published addresses accepted a
 	// connection, so a repeated forward costs no confirmation. An entry is

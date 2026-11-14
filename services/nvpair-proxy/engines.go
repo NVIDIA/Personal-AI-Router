@@ -158,6 +158,14 @@ var vllmBaseRoutes = []route{
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
 
+// customBaseRoutes is the model-list surface a conforming OpenAI-compatible
+// endpoint serves. Declared rather than shared with LM Studio's identical
+// list: a credential-scoped external class and a managed engine evolving
+// apart must not be coupled by one slice literal.
+var customBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -178,10 +186,12 @@ func buildProfiles() []engineProfile {
 	lmstudio, _ := engines.ByName("lmstudio")
 	llamacpp, _ := engines.ByName("llamacpp")
 	vllm, _ := engines.ByName("vllm")
+	custom, _ := engines.ByName("custom")
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
 	vllmRoutes := slices.Concat(vllmBaseRoutes, openAIInferenceRoutes)
+	customRoutes := slices.Concat(customBaseRoutes, openAIInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -215,6 +225,18 @@ func buildProfiles() []engineProfile {
 			Routes:                vllmRoutes,
 			ModelNaming:           exactID,
 			ReservedPersistedPort: 8001,
+		},
+		{
+			// Custom fronts user-configured external endpoints (Unmanaged:
+			// engine-manager never installs or launches it). Nothing is
+			// relocated onto an engine port, so there is no
+			// ReservedPersistedPort, and no inherited host variable for an
+			// alias to stand in for. 6767 keeps it clear of the 8000/8001
+			// pair vLLM occupies.
+			Engine:         custom,
+			StandalonePort: 6767,
+			Routes:         customRoutes,
+			ModelNaming:    exactID,
 		},
 	}
 }

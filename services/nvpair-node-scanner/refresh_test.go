@@ -419,6 +419,38 @@ func TestRefreshModels_TracksDownloadedInventoryWhileEngineIsStopped(t *testing.
 	assert.Equal(t, map[string][]string{"vllm": {"Qwen/Qwen3.5-4B"}}, got.DownloadedByEngine, "after a failed fetch")
 }
 
+// TestRefresh_CustomBucketTravelsTheWholesaleCopy pins the scanner's
+// verify-only contract for the Custom engine: modelsByEngine is copied whole,
+// so a peer's "custom" attribution needs no scanner change — it arrives while
+// the owner configures the endpoint and is dropped when the owner clears it.
+// If this test ever needs a scanner edit, the key-presence semantic (missing
+// key = no custom inventory) is broken somewhere upstream.
+func TestRefresh_CustomBucketTravelsTheWholesaleCopy(t *testing.T) {
+	d := newRefreshTestDaemon()
+	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
+		"models":         []string{"llama3:8b", "external/model-a"},
+		"modelsByEngine": map[string][]string{"ollama": {"llama3:8b"}, "custom": {"external/model-a"}},
+	})
+	target := seedEMNode(d, "peer-U", "127.0.0.1", port)
+
+	require.True(t, d.refreshNodeModels(target), "initial populate should report a change")
+	got, _ := d.dir.get("peer-U")
+	assert.Equal(t, map[string][]string{"ollama": {"llama3:8b"}, "custom": {"external/model-a"}}, got.ModelsByEngine,
+		"custom attribution survives the wholesale copy")
+
+	// The owner clears its custom set: the key must disappear from the copy,
+	// not linger as a stale bucket (a peer card must not keep showing models
+	// the owning node no longer serves).
+	stub.set(http.StatusOK, map[string]any{
+		"models":         []string{"llama3:8b"},
+		"modelsByEngine": map[string][]string{"ollama": {"llama3:8b"}},
+	})
+	require.True(t, d.refreshNodeModels(target), "a cleared custom key should report a change")
+	got, _ = d.dir.get("peer-U")
+	assert.NotContains(t, got.ModelsByEngine, "custom", "a cleared custom key must not linger")
+	assert.Equal(t, []string{"llama3:8b"}, got.Models, "flat union after clear")
+}
+
 // A missing node must stay absent when a periodic sweep reaches its old target.
 func TestRefreshNodeModels_DoesNotRestoreNodeRemovedDuringSweep(t *testing.T) {
 	d := newRefreshTestDaemon()

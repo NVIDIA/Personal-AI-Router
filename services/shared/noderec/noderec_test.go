@@ -103,6 +103,7 @@ func TestParseTXT_ExtractsNodeIdentityAndServices(t *testing.T) {
 	txt := []string{
 		"v=1", "uuid=host-abc", "cluster-uuid=clu-xyz", "ip=192.168.1.10",
 		"ni=14318", "ol=11434", "er=14319", "wl=14320", "cl=14321", "em=14322",
+		"cu=8000",
 		"unknown=ignored", "bad=notaport",
 	}
 	r := ParseTXT(txt)
@@ -120,6 +121,10 @@ func TestParseTXT_ExtractsNodeIdentityAndServices(t *testing.T) {
 	p, ok = r.Port(ServiceEngineManager)
 	assert.True(t, ok, "em port")
 	assert.Equal(t, 14322, p, "em port")
+	// cu is the custom (external OpenAI-compatible) facade port.
+	p, ok = r.Port(ServiceCustom)
+	assert.True(t, ok, "cu port")
+	assert.Equal(t, 8000, p, "cu port")
 	_, ok = r.Port(ServiceLMStudio)
 	assert.False(t, ok, "lm should be absent")
 	// "unknown=" is not a service port; "bad=notaport" is skipped.
@@ -151,11 +156,14 @@ func TestTXT_RoundTripsNodeRecord(t *testing.T) {
 		HostUUID:      "host-abc",
 		ClusterUUID:   "clu-xyz",
 		IP:            "10.0.0.5",
-		Services:      map[ServiceKey]int{ServiceOllama: 11434, ServiceErrors: 14319, ServiceNodeInfo: 14318, ServiceEngineManager: 14322},
+		Services:      map[ServiceKey]int{ServiceOllama: 11434, ServiceErrors: 14319, ServiceNodeInfo: 14318, ServiceEngineManager: 14322, ServiceCustom: 8000},
 	}
 	txt := orig.TXT()
 	// Schema must be first.
 	assert.True(t, strings.HasPrefix(txt[0], "v="), "first TXT entry")
+	// cu must be emitted, not merely parseable: it joins the deterministic
+	// service emit order together with the fourth engine.
+	assert.Contains(t, strings.Join(txt, ";"), "cu=8000", "cu omitted from TXT")
 	assert.Equal(t, orig, ParseTXT(txt), "round-trip mismatch")
 }
 
@@ -191,6 +199,10 @@ func TestServiceTransport_RequiresMutualTLSForClusteredPeerServices(t *testing.T
 	test("errors", ServiceErrors, TransportMTLSWhenClustered, true, false)
 	test("workloads", ServiceWorkload, TransportMTLSWhenClustered, true, false)
 	test("cluster", ServiceCluster, TransportSplit, true, false)
+	// The custom facade fronts external endpoints, so it derives the plain
+	// default — peers reach those through the proxy plane, not by dialing
+	// this advertised port.
+	test("custom facade", ServiceCustom, TransportPlain, false, false)
 }
 
 func TestNodeInfoTransport_UsesPlainHTTPRegardlessOfMembership(t *testing.T) {

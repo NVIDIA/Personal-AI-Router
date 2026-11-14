@@ -169,6 +169,13 @@ func buildEngineProxyProfiles() []engineProxyProfile {
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
 		"llamacpp": {Ownership: managedEngine, HealthProbePath: "/health"},
 		"vllm":     {Ownership: managedEngine, HealthProbePath: "/health"},
+		// Custom fronts user-added external endpoints: there is no local
+		// engine process to relocate, so it takes the default planner path,
+		// whose only relocation authority would be managedEngine — which
+		// would let the broker try to stop unknown processes on the facade
+		// port. The probe path is explicit because custom endpoints answer
+		// liveness on the OpenAI model list, never at the root.
+		"custom": {Ownership: adoptedEngine, HealthProbePath: "/v1/models"},
 	}
 	out := make([]engineProxyProfile, 0, len(engines.All()))
 	for _, e := range engines.All() {
