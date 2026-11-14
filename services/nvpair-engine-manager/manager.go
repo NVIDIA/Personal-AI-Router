@@ -413,6 +413,11 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "port must be between 0 and 65535")
 		return
 	}
+	// allowLanBind carries the gate's decision into the launch path:
+	// applyLiteralLaunch re-checks the bind and would fail a start
+	// the gate just approved. The setting is read once, here, so the
+	// gate and the launch agree on the same value.
+	allowLanBind := false
 	if p.Bind != "" {
 		ip := net.ParseIP(p.Bind)
 		if ip == nil {
@@ -425,14 +430,16 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		// A non-loopback override without the node setting would
 		// silently put them on the LAN. The setting is read live, so
 		// flipping it takes effect on the next start, no restart.
-		if !ip.IsLoopback() && !m.lanBindAllowed(ctx) {
-			m.codec.RespondError(msg.ID, -32602, "bind must be a loopback address")
-			return
+		if !ip.IsLoopback() {
+			allowLanBind = m.lanBindAllowed(ctx)
+			if !allowLanBind {
+				m.codec.RespondError(msg.ID, -32602, "bind must be a loopback address")
+				return
+			}
 		}
 	}
-	}
 	start := func() error {
-		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind})
+		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind, AllowLanBind: allowLanBind})
 	}
 	var err error
 	switch msg.Method {
