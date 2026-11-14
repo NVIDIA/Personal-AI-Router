@@ -26,6 +26,18 @@ var ollamaDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // attributable to that download and cancelling it deletes nothing.
 type ollamaPartialsBefore map[string]bool
 
+// has reports whether the snapshot held any file of the blob whose data file
+// is name: the data file itself or one of its resume files, whether or not
+// that file is still on disk.
+func (b ollamaPartialsBefore) has(name string) bool {
+	for path := range b {
+		if path == name || strings.HasPrefix(path, name+"-") {
+			return true
+		}
+	}
+	return false
+}
+
 // ollamaPartialSnapshot lists the partial blobs present before a download
 // starts, which is what decides ownership at cancellation.
 //
@@ -83,7 +95,10 @@ func cleanupOllamaAfterCancel(
 // ollamaCreatedPartials lists the partial blobs this pull both reported and
 // created. Completed blobs may be shared by installed models, and a partial
 // that predates this download belongs to someone else, along with every
-// resume file beside it; all are deliberately left out.
+// resume file beside it; all are deliberately left out. A blob stays left out
+// once the files the snapshot saw are gone: Ollama removes a blob's resume
+// files as it finishes the blob, just before renaming its data file into
+// place.
 func ollamaCreatedPartials(root string, digests map[string]bool, before ollamaPartialsBefore) ([]partialGroup, error) {
 	groups, err := ollamaPartialGroups(root, digests)
 	if err != nil {
@@ -91,7 +106,7 @@ func ollamaCreatedPartials(root string, digests map[string]bool, before ollamaPa
 	}
 	created := make([]partialGroup, 0, len(groups))
 	for _, group := range groups {
-		if !slices.ContainsFunc(group.files, func(path string) bool { return before[path] }) {
+		if !before.has(group.name) {
 			created = append(created, group)
 		}
 	}

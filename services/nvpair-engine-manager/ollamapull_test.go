@@ -205,6 +205,23 @@ func TestCleanupOllamaAfterCancel_KeepsAPartialWhoseResumeFilesPredateThePull(t 
 	assertPresent(t, data)
 }
 
+// Ollama removes a blob's resume files as it finishes the blob, just before it
+// renames the data file into place, so the files the snapshot saw can be gone
+// by the time the pull is cancelled. The blob still predates the pull, and a
+// data file whose rename has yet to happen, or failed, stays.
+func TestCleanupOllamaAfterCancel_KeepsAPartialWhoseOlderResumeFilesAreGone(t *testing.T) {
+	root := t.TempDir()
+	olderChunk := writeBlob(t, root, blobA+"-partial-0")
+	before, err := ollamaPartialSnapshot(root)
+	require.NoError(t, err)
+	data := writeBlob(t, root, blobA+"-partial")
+	require.NoError(t, os.Remove(olderChunk))
+
+	require.NoError(t, cleanupOllamaAfterCancel(settledContext(t), root, map[string]bool{digestA: true}, before))
+
+	assertPresent(t, data)
+}
+
 // Ollama finishes a blob by removing its resume files and then renaming the
 // data file into place. Resume files vanishing after the grace is another
 // client finishing the transfer, so the data file it is about to rename stays.

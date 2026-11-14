@@ -526,8 +526,9 @@ layers of an installed model.
 Ollama keeps a transfer's resume state beside its data file, one `-partial-N`
 file per chunk, and fails to finish a blob whose resume files are not all
 there. So a blob's partial files are judged together: if any of them predates
-the pull, or changes, first appears, or vanishes after the grace (a resume file
-vanishing is another client finishing the blob), all of them stay. Otherwise
+the pull, whether or not it is still there, or changes, first appears, or
+vanishes after the grace (a resume file vanishing is another client finishing
+the blob), all of them stay. Otherwise
 all of them are removed, the resume files before the data file, so a removal
 cut short leaves a data file Ollama downloads afresh rather than resume files
 describing bytes that are gone.

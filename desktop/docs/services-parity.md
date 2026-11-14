@@ -482,12 +482,11 @@ stopped download's last frame before it starts the retry. A terminal-UI
 screen opened while an earlier one's cancel was still cleaning up has not
 seen that download, though, so it can start the model again before that last
 frame arrives, and the frame then retires the retry until the retry's next
-one. Ollama
-closes the pull request and removes the partial blobs named by its progress
-digests, judging each blob's data file and `-partial-N` resume files together:
-any one of them that predates the pull, or changes, first appears, or vanishes
-after the grace, keeps them all, and otherwise the resume files are removed
-before the data file. LM Studio receives Ctrl+C and a negative answer to its
+one. Ollama closes the pull request and removes the partial blobs named by its
+progress digests, judging each blob's data file and `-partial-N` resume files
+together: any one of them that predates the pull, whether or not it is still
+there, or that changes, first appears, or vanishes after the grace, keeps them
+all, and otherwise the resume files are removed before the data file. LM Studio receives Ctrl+C and a negative answer to its
 background-download prompt, and after acknowledgement the partial files of the
 model file it was fetching are removed, provided the CLI was downloading from
 the repository's Hugging Face URL. That is the one run that writes into
