@@ -47,15 +47,15 @@ func TestWithLaunchFlag_RejectsLaunchTextThatDoesNotParse(t *testing.T) {
 }
 
 // switchModelExecutor is a running fake engine with editable launch settings
-// and a launch_model action. The fake ignores arguments it does not know, so
-// the "model" flag is carried in the saved launch text without changing how it
-// serves.
-func switchModelExecutor(t *testing.T, flag string) *Executor {
+// and a launch_model action that writes the model into every flag named here.
+// The fake ignores arguments it does not know, so a model flag is carried in the
+// saved launch text without changing how it serves.
+func switchModelExecutor(t *testing.T, flags ...string) *Executor {
 	t.Helper()
 	e := settingsExecutor(t, false)
 	m, ok := e.reg.Get("fake")
 	require.True(t, ok, "fake manifest missing")
-	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: flag}}
+	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: flags}}
 	// Like vLLM, the engine answers which model it serves, under the name
 	// requests use (id) and the model it loaded (root).
 	m.AdvertisedModels = advertisedModelsLoaded
@@ -67,7 +67,7 @@ func switchModelExecutor(t *testing.T, flag string) *Executor {
 	// An engine that chooses its model by launch argument needs one to start.
 	state, err := e.LaunchSettings("fake")
 	require.NoError(t, err)
-	text, _, err := withLaunchFlag(state.LaunchText, flag, "org/initial")
+	text, _, err := withLaunchFlags(state.LaunchText, flags, "org/initial")
 	require.NoError(t, err)
 	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{
 		Engine:   "fake",
@@ -112,6 +112,47 @@ func TestWithoutLaunchFlag_RemovesEveryFormOfTheFlag(t *testing.T) {
 	test("repeated", "--model org/a --port 8001 --model=org/b", "--port 8001", true)
 	test("after the terminator is kept", "--port 8001 -- --model org/a", "--port 8001 -- --model org/a", false)
 	test("absent", "--port 8001", "--port 8001", false)
+}
+
+// MTPLX names the model it serves twice over: --model picks the weights,
+// --model-id picks the id it answers to. Both have to move on a Load, so the
+// helpers take the whole list a manifest declares.
+
+func TestWithLaunchFlags_SetsTheModelInEveryDeclaredFlag(t *testing.T) {
+	flags := []string{"--model", "--model-id"}
+	test := func(name, text, want string, wantChanged bool) {
+		t.Run(name, func(t *testing.T) {
+			got, changed, err := withLaunchFlags(text, flags, "org/new")
+
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.Equal(t, wantChanged, changed, "changed")
+		})
+	}
+	test("adds both to a launch that names no model", "--port 8101", "--port 8101 --model org/new --model-id org/new", true)
+	test("moves both, keeping their order", "--model org/old --model-id org/old --port 8101", "--model org/new --model-id org/new --port 8101", true)
+	// --model-id is its own flag, not a spelling of --model, so a launch whose
+	// two flags disagree is corrected rather than left half-replaced.
+	test("corrects a flag that disagrees with the other", "--model org/new --model-id org/old", "--model org/new --model-id org/new", true)
+	test("moves a pair written in the other order", "--model-id org/old --model org/old", "--model-id org/new --model org/new", true)
+	test("unchanged when both already say the model", "--model org/new --model-id org/new", "--model org/new --model-id org/new", false)
+}
+
+func TestWithoutLaunchFlags_ClearsEveryDeclaredFlag(t *testing.T) {
+	flags := []string{"--model", "--model-id"}
+	test := func(name, text, want string, wantChanged bool) {
+		t.Run(name, func(t *testing.T) {
+			got, changed, err := withoutLaunchFlags(text, flags)
+
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.Equal(t, wantChanged, changed, "changed")
+		})
+	}
+	test("removes both", "--model org/a --model-id org/a --port 8101", "--port 8101", true)
+	test("removes the equals forms", "--model=org/a --model-id=org/a", "", true)
+	test("removes one", "--model-id org/a --port 8101", "--port 8101", true)
+	test("leaves a launch that names no model", "--port 8101", "--port 8101", false)
 }
 
 // loadReply is the load_model result.
@@ -159,6 +200,39 @@ func TestLaunchModel_SwitchesAndRestartsARunningEngine(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, decodeLoadReply(t, raw).Restarted, "a no-op switch reports no restart")
 	assert.Equal(t, gen, startGeneration(t, e), "a no-op switch restarted the engine")
+}
+
+// MTPLX serves the id its --model-id says, not the id of the pack named by
+// --model, so a manifest that declares both has to move them together: a Load
+// that only repoints --model leaves the engine answering to a name derived from
+// the weights, which no client, peer, or model list asks for.
+func TestLaunchModel_SwitchesEveryFlagTheModelIsNamedBy(t *testing.T) {
+	e := switchModelExecutor(t, "--model", "--model-id")
+	// What each declared model flag says, so a lagging one shows up here rather
+	// than as a name mismatch somewhere else.
+	flagsSaying := func() map[string]string {
+		tokens := strings.Fields(launchTextOf(t, e))
+		said := map[string]string{}
+		for _, flag := range []string{"--model", "--model-id"} {
+			if value, found := launchFlagValue(tokens, flag); found {
+				said[flag] = value
+			}
+		}
+		return said
+	}
+	const first = "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16"
+
+	_, err := loadModel(t, e, first)
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"--model": first, "--model-id": first}, flagsSaying())
+
+	// A second switch moves the pair again, with nothing of the first model
+	// left behind in either flag.
+	_, err = loadModel(t, e, "org/second")
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"--model": "org/second", "--model-id": "org/second"}, flagsSaying())
 }
 
 // startGeneration counts how many times the engine has been started.
@@ -331,28 +405,31 @@ func TestLaunchModel_RestoresThePreviousModelWhenTheCallerGivesUp(t *testing.T) 
 	assert.True(t, mustStatus(t, e).Running, "the engine was left down after the caller gave up")
 }
 
-func TestLaunchModelAction_AcceptsOnlyALongOptionFlag(t *testing.T) {
-	accept := func(name, flag string) {
+func TestLaunchModelAction_AcceptsOnlyAListOfLongOptionFlags(t *testing.T) {
+	accept := func(name string, flags ...string) {
 		t.Run(name, func(t *testing.T) {
-			assert.NoError(t, (&Action{LaunchModel: &ActionLaunchModel{Flag: flag}}).validate("load_model"))
+			assert.NoError(t, (&Action{LaunchModel: &ActionLaunchModel{Flags: flags}}).validate("load_model"))
 		})
 	}
-	reject := func(name, flag string) {
+	reject := func(name string, flags ...string) {
 		t.Run(name, func(t *testing.T) {
-			assert.Error(t, (&Action{LaunchModel: &ActionLaunchModel{Flag: flag}}).validate("load_model"))
+			assert.Error(t, (&Action{LaunchModel: &ActionLaunchModel{Flags: flags}}).validate("load_model"))
 		})
 	}
-	accept("a long option", "--model")
+	accept("one long option", "--model")
+	accept("a model pair that moves together", "--model", "--model-id")
+	reject("no flag at all")
 	reject("no dashes", "model")
-	reject("a space in the flag", "--mod el")
-	reject("a value in the flag", "--model=x")
-	reject("empty", "")
+	reject("a space in a flag", "--mod el")
+	reject("a value in a flag", "--model=x")
+	reject("an empty flag", "")
+	reject("a flag listed twice", "--model", "--model")
 }
 
 // The restart needs editable launch settings and a readiness probe on every platform.
 func TestLaunchModelAction_RequiresEditableLaunch(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
-	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
+	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: []string{"--model"}}}
 
 	assert.ErrorContains(t, m.Validate(), "editable_launch")
 }

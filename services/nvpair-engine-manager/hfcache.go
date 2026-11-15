@@ -391,11 +391,11 @@ func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, d
 		}
 		unselected := false
 		if selected == id {
-			flag := modelLaunchFlag(st.manifest)
-			if edit.before.Running || flag == "" || !edit.before.Editable {
+			flags := modelLaunchFlags(st.manifest)
+			if edit.before.Running || len(flags) == 0 || !edit.before.Editable {
 				return refused
 			}
-			text, _, err := withoutLaunchFlag(edit.before.LaunchText, flag)
+			text, _, err := withoutLaunchFlags(edit.before.LaunchText, flags)
 			if err != nil {
 				return err
 			}
@@ -463,10 +463,5 @@ func (e *Executor) selectedModelLocked(edit *launchEdit) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	flag := modelLaunchFlag(edit.st.manifest)
-	if flag == "" {
-		return "", nil
-	}
-	model, _ := launchFlagValue(tokens, flag)
-	return model, nil
+	return launchModelValue(tokens, modelLaunchFlags(edit.st.manifest)), nil
 }
