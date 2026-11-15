@@ -11,7 +11,7 @@ import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
 
 // An engine manager lists only the engines its host can run. On Windows the
-// listing has no vLLM, the way these do.
+// listing has no vLLM and no MTPLX, the way these do.
 const windowsListing = {
     engines: [
         { engine: 'ollama', installed: true, running: true, healthy: true, port: 11434 },
@@ -44,6 +44,11 @@ describe('engines a node cannot run', () => {
         state.applyEngineManagerList(windowsListing)
 
         expect(statusOf('windows-self', 'vllm')).toMatchObject({ processStatus: 'unsupported' })
+        // MTPLX declares only darwin/arm64, so a Windows host leaves it out of its
+        // listing the same way it leaves vLLM out.
+        expect(statusOf('windows-self', 'mtplx')).toMatchObject({
+            processStatus: 'unsupported'
+        })
         expect(statusOf('windows-self', 'lm-studio')).toMatchObject({
             processStatus: 'not-installed'
         })
@@ -73,6 +78,7 @@ describe('engines a node cannot run', () => {
         state.applyRemoteEngineFacts(peerId, windowsListing)
 
         expect(statusOf(peerId, 'vllm')).toMatchObject({ processStatus: 'unsupported' })
+        expect(statusOf(peerId, 'mtplx')).toMatchObject({ processStatus: 'unsupported' })
         expect(statusOf(peerId, 'lm-studio')).toMatchObject({ processStatus: 'not-installed' })
     })
 
@@ -100,6 +106,7 @@ describe('engines a node cannot run', () => {
         state.applyRemoteEngineFacts(peerId, { engines: [] })
 
         expect(statusOf(peerId, 'vllm')).toBeUndefined()
+        expect(statusOf(peerId, 'mtplx')).toBeUndefined()
     })
 
     it('gives an unsupported engine no row, and keeps one for an unreported engine', () => {
@@ -123,10 +130,13 @@ describe('engines a node cannot run', () => {
 
         const rows = getEnginesForNode(nodeId, statuses).map(s => [s.engineType, s.processStatus])
 
+        // vLLM is reported unsupported, so it gets no row. MTPLX is reported
+        // neither way here, which keeps a placeholder row until evidence arrives.
         expect(rows).toEqual([
             ['ollama', 'running'],
             ['lm-studio', 'initializing'],
-            ['llama-cpp', 'initializing']
+            ['llama-cpp', 'initializing'],
+            ['mtplx', 'initializing']
         ])
     })
 })

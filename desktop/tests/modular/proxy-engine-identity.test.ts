@@ -19,17 +19,19 @@ import { engineManagerName } from '@/shared/utils/engines'
 
 describe('proxy engine identity', () => {
     it('declares the complete proxy set in stable order', () => {
-        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
+        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'mtplx'])
         expect(PROXY_NODE_SOURCES).toEqual([
             'ollama-proxy',
             'lmstudio-proxy',
             'llamacpp-proxy',
-            'vllm-proxy'
+            'vllm-proxy',
+            'mtplx-proxy'
         ])
         expect(isProxyEngine('ollama')).toBe(true)
         expect(isProxyEngine('lm-studio')).toBe(true)
         expect(isProxyEngine('llama-cpp')).toBe(true)
         expect(isProxyEngine('vllm')).toBe(true)
+        expect(isProxyEngine('mtplx')).toBe(true)
     })
 
     it('round-trips engine, manager, and relay source identities', () => {
@@ -88,6 +90,22 @@ describe('proxy engine identity', () => {
             }
         })
         state.handleNotification({
+            source: 'mtplx-proxy',
+            method: 'ready',
+            params: { port: 8100 }
+        })
+        state.handleNotification({
+            source: 'mtplx-proxy',
+            method: 'node/discovered',
+            params: {
+                id: nodeId,
+                host: 'proxy-identity-host',
+                port: 8100,
+                addresses: ['192.0.2.40'],
+                ip: '192.0.2.40'
+            }
+        })
+        state.handleNotification({
             source: 'broker',
             method: 'discovery:nodes-changed',
             params: {
@@ -107,6 +125,8 @@ describe('proxy engine identity', () => {
             }
         })
         // A peer lists every engine it can run; one it leaves out is unsupported.
+        // This peer is Apple Silicon, so it lists MTPLX too, running on 8101
+        // behind the 8100 facade.
         state.applyRemoteEngineFacts(nodeId, {
             engines: [
                 { engine: 'ollama', installed: true, running: true, healthy: true, port: 11435 },
@@ -118,7 +138,8 @@ describe('proxy engine identity', () => {
                     healthy: true,
                     port: 8081
                 },
-                { engine: 'vllm', installed: false, running: false, healthy: false, port: 0 }
+                { engine: 'vllm', installed: false, running: false, healthy: false, port: 0 },
+                { engine: 'mtplx', installed: true, running: true, healthy: true, port: 8101 }
             ]
         })
 
@@ -142,7 +163,13 @@ describe('proxy engine identity', () => {
                 enginePort: 8081,
                 proxyPort: 8080
             }),
-            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' })
+            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' }),
+            expect.objectContaining({
+                engineType: 'mtplx',
+                processStatus: 'running',
+                enginePort: 8101,
+                proxyPort: 8100
+            })
         ])
 
         const llamaModels = state

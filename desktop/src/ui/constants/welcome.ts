@@ -11,7 +11,13 @@ export const WELCOME_STEP_HEADINGS = ["Welcome, let's get you set up", 'Install 
 
 export const WELCOME_STEP_SUB_HEADINGS = ['', 'You can update later by clicking on a node'] as const
 
-export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
+/**
+ * Which engines arrive preselected in the onboarding list. An engine that cannot
+ * be auto-installed is never offered there — `getWelcomeEngineCandidates` drops
+ * anything with no installable platform — so MTPLX needs no entry, and a missing
+ * entry reads as not selected.
+ */
+export const WELCOME_ENGINE_DEFAULT_SELECTED: Partial<Record<EngineType, boolean>> = {
     ollama: true,
     'lm-studio': true,
     'llama-cpp': true,
