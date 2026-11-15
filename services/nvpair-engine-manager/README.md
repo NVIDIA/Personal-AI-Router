@@ -6,10 +6,10 @@ SPDX-License-Identifier: Apache-2.0
 # nvpair-engine-manager
 
 A config-driven control plane for local inference engines. The bundled
-manifests support Ollama, LM Studio, llama.cpp, and vLLM. It manages everything about
-an engine **except serving inference**: detect, user-mode install,
-start/stop/restart, health, and config-declared actions. Adding an engine
-is a JSON manifest, not code.
+manifests support Ollama, LM Studio, llama.cpp, vLLM, and MTPLX — the last one on
+Apple Silicon only. It manages everything about an engine **except serving
+inference**: detect, user-mode install, start/stop/restart, health, and
+config-declared actions. Adding an engine is a JSON manifest, not code.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
@@ -222,6 +222,80 @@ download is several GB, because `torch` and the CUDA libraries come with it.
 Model weights download from Hugging Face on first start into `~/.cache/huggingface`
 (`HF_HOME`), which no removal this service performs will delete.
 
+### MTPLX
+
+The `mtplx` manifest covers Apple Silicon macOS and nothing else: its `platforms`
+block declares only `darwin/arm64`, because MTPLX decodes on the Metal path. An
+engine manager on any other host therefore leaves MTPLX out of
+`engine:get-installed` rather than reporting it as available, and no client offers
+it there.
+
+It also declares no `install` block, so MTPLX is detected and never installed.
+`~/.mtplx/bin/mtplx`, the MTPLX app's own runtime venv, `/opt/homebrew/bin/mtplx`
+and `~/.local/bin/mtplx` are checked in that order and the first one found is
+launched. An explicit `engine:uninstall` is an error for it ("no uninstall defined
+for this platform") and "reset all data" skips it, because neither has a PAIR
+install marker to work from: the engine, and the pack cache the user filled, stay
+exactly where they were.
+
+`mtplx serve` runs in the foreground as one process, binding loopback `8101` while
+the proxy facade owns `8100`. Port `8000` is deliberately not reused for it: that
+is the vLLM facade's port, and MTPLX's own desktop GUI defaults to it, so a managed
+server would be fighting the user's own daemon for the listener. `stop` signals the
+process group `term` with fifteen seconds of grace, which takes the whole server
+down rather than only the launcher.
+
+MTPLX serves **one model pack per process** and has no load, unload, pull or delete
+API beyond its CLI, so the manifest provides them as manager actions, the way
+`vllm.json` does. It is also a `launch_model` engine: Load writes the pack into the
+saved launch arguments and restarts the server on it, restoring the previous pack if
+the new one does not come up, and Eject is a `stop_engine` action, because MTPLX
+cannot drop its model and keep running.
+
+The model is written into two flags, `["--model", "--model-id"]`. `--model` names
+the files to serve; `--model-id` fixes the id the server answers to, which is what
+routing keys on. Started with `--model` alone, MTPLX derives a name such as
+`mtplx-qwen38-27b-optimized-speed-fp16`, matching neither the cache entry the user
+picked nor the `model` field of a client request. Passing the pack id as `--model-id`
+too makes the served id, what `mtplx models --json` reports as `repo_id`, and the
+name in the model list one string. `load_model` rewrites both flags together, so
+neither is ever left naming the previous pack, and a flag being cleared matches both
+the spaced and the `=` form.
+
+There is no default pack in the launch arguments, and an engine with a
+`launch_model` action will not start while none of its flags names a model: the
+start is refused with "MTPLX has no model selected; load a model to start it"
+instead of bringing up a server with nothing to serve. Load is what picks the first
+pack.
+
+`list_models` is `mtplx models --json`, which reads the pack directory rather than
+asking a running server, so it answers offline and while MTPLX is down; the model
+list, Add model, Delete and Load all work against a stopped engine, and
+`advertised_models: "loaded"` still limits what peers and the proxy hear about to
+the pack being served. `loaded_models` asks the running server's `/v1/models`, and
+both the readiness check and the five-second health probe read `/health`.
+
+`pull_model` is `mtplx pull <hugging-face-id> --json` and needs no running engine;
+neither it nor `mtplx remove --yes --json` reports byte progress, so a pull shows
+only that it is pulling. MTPLX has no in-use guard, so `remove` will delete the pack
+a running server has mapped, and it does not take a deleted pack out of a stopped
+engine's launch arguments; the clients block Delete on the served pack instead. The
+pack cache is `~/.mtplx/models`, a flat `org--Name` layout that is not a Hugging
+Face hub cache, so the `hf_cache` actions do not apply. It is declared as the
+platform's `models_dir` and stays outside PAIR's app data, out of reach of anything
+this service removes, and no `--cache-dir` or `MTPLX_MODEL_DIR` override is passed:
+MTPLX reads that directory whether or not PAIR started it, and a flag naming one
+would defeat a store the user moved elsewhere.
+
+MTPLX loads only packs rebuilt for its own decode path, so its `engine:catalog`
+source is `https://mtplx.com/releases/models.json` — MTPLX publishes its runnable
+pack list there — rather than a Hugging Face search, which would offer mostly packs
+this engine refuses to load. Keys that are not a Hugging Face repo id are dropped,
+the entries come back sorted by repo id so a refresh does not reshuffle the list,
+and every one is marked `appleOnly` and served without `searchable`: the whole list
+is a couple of dozen entries, so clients filter it locally rather than fetching per
+keystroke, and a target that is not Apple Silicon is handed an empty list.
+
 ## Communication
 
 Bidirectional newline-delimited JSON-RPC 2.0 — the same conventions as
@@ -251,8 +325,8 @@ Requests (caller → service):
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Both llama.cpp and vLLM are `searchable`. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
-| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"` (vLLM), `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, vLLM, and MTPLX have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. MTPLX loads only packs rebuilt for its own decode path, so its source is MTPLX's own published pack list (`https://mtplx.com/releases/models.json`) rather than a Hugging Face search, which would offer mostly packs the engine refuses to load; it is not searched, so the reply is the whole list for the client to filter. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Both llama.cpp and vLLM are `searchable`. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations and MTPLX packs only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"` (vLLM and MTPLX), `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model the way the inventory names it — vLLM by the `root` of its `/v1/models`, not a `--served-model-name` alias, MTPLX by the `data[].id` that its `--model-id` pins to the cache id — so the two lists agree, and is `[]` while the engine is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |

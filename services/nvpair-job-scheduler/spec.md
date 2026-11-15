@@ -55,9 +55,9 @@ capacity, model locality, latency, and affinity can grow later behind the same
 - **Simultaneous local burst**: before each auto-routed inference forward, the
   proxy atomically increments a local reservation for its chosen node. Concurrent
   requests therefore see one another even before workload feedback completes.
-- **Cross-engine contention**: Ollama, LM Studio, llama.cpp, and vLLM workloads all
-  consume the destination node's execution resources, so any one of them changes
-  every engine output.
+- **Cross-engine contention**: Ollama, LM Studio, llama.cpp, vLLM and MTPLX workloads
+  all consume the destination node's execution resources, so any one of them
+  changes every engine output.
 - **Periodic reconciliation**: the runtime-adjustable timer recomputes the same
   order as a safety net even when no fresh event arrives.
 - **Load shifts**: as a node drains it rises toward the top; as it fills it sinks; a
@@ -290,7 +290,7 @@ Let `D` = current discovered-node `hostUuid`s:
 `scheduledOn` (not `originatedFrom`) is the key: we care where work runs, not where
 it came from. Engine remains part of workload identity and selects the downstream
 proxy output, but it does not partition the load metric: Ollama, LM Studio,
-llama.cpp, and vLLM normally contend for the same node-level GPU, VRAM, CPU, and memory.
+llama.cpp, vLLM and MTPLX normally contend for the same node-level GPU, VRAM, CPU, and memory.
 Until resource affinity is observable, total node queue depth is the conservative
 signal.
 

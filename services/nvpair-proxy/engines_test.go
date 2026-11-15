@@ -60,6 +60,8 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	require.True(t, ok, "llamacpp profile missing")
 	vllm, ok := profileFor("vllm")
 	require.True(t, ok, "vllm profile missing")
+	mtplx, ok := profileFor("mtplx")
+	require.True(t, ok, "mtplx profile missing")
 
 	accept := func(name string, profile engineProfile, method, path string, wantRole routeRole) {
 		t.Run(name, func(t *testing.T) {
@@ -116,6 +118,39 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	reject("vllm health passthrough", vllm, http.MethodGet, "/health")
 	reject("vllm no native routes", vllm, http.MethodPost, "/api/chat")
 	reject("vllm wrong method on list", vllm, http.MethodPost, "/v1/models")
+
+	accept("mtplx chat", mtplx, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
+	accept("mtplx completions", mtplx, http.MethodPost, "/v1/completions", roleInferencePOST)
+	accept("mtplx responses", mtplx, http.MethodPost, "/v1/responses", roleInferencePOST)
+	// MTPLX really serves the Anthropic surface, unlike vLLM, so it has to be
+	// classified: an unclassified POST would fan out instead of routing by model.
+	accept("mtplx anthropic messages", mtplx, http.MethodPost, "/v1/messages", roleInferencePOST)
+	accept("mtplx list", mtplx, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
+	// count_tokens names a model in its body but is not a workload, so it routes
+	// by that model without entering the workload stream.
+	accept("mtplx count tokens", mtplx, http.MethodPost, "/v1/messages/count_tokens", roleModelLookupPOST)
+	reject("mtplx health passthrough", mtplx, http.MethodGet, "/health")
+	reject("mtplx settings passthrough", mtplx, http.MethodGet, "/v1/mtplx/settings")
+	reject("mtplx wrong method on list", mtplx, http.MethodPost, "/v1/models")
+}
+
+// MTPLX's own default facade port is 8000, which vLLM's facade already claims,
+// and its default server port is 8101 for a managed engine. The facade cannot
+// sit on either.
+func TestMTPLXProfile_KeepsTheFacadeOffTheEnginePorts(t *testing.T) {
+	profile, ok := profileFor("mtplx")
+	require.True(t, ok, "mtplx profile missing")
+
+	require.Equal(t, 8100, profile.StandalonePort, "standalone facade port")
+	require.Equal(t, 8101, profile.ReservedPersistedPort, "reserved engine port")
+	require.Equal(t, "mtplx-proxy", profile.ComponentName(), "facade component name")
+	require.Equal(t, "mtplx-proxy-port.json", profile.PortFile, "persisted-port filename")
+	require.Equal(t, exactID, profile.ModelNaming, "MTPLX serves the cache id verbatim, so no tag is implied")
+
+	assert.False(t, isInferenceRequest(profile, "POST", "/v1/messages/count_tokens"),
+		"a token count is a model lookup, so it must stay out of the workload stream")
+	assert.True(t, isInferenceRequest(profile, "POST", "/v1/messages"),
+		"MTPLX serves /v1/messages, so it must be routed as inference")
 }
 
 func TestIsInferenceRequest_FollowsTheProfile(t *testing.T) {
@@ -223,6 +258,7 @@ func TestEngineProfiles_PreservePortFilesAndDeriveErrorIdentifiers(t *testing.T)
 func TestChooseStartupPort_RespectsOverridesAndReservedPorts(t *testing.T) {
 	ollama, _ := profileFor("ollama")
 	lmstudio, _ := profileFor("lmstudio")
+	mtplx, _ := profileFor("mtplx")
 
 	for _, tc := range []struct {
 		name            string
@@ -242,6 +278,9 @@ func TestChooseStartupPort_RespectsOverridesAndReservedPorts(t *testing.T) {
 		{"lmstudio refuses the engine's port", lmstudio, 1234, false, 1235, true, 1234},
 		// Ollama reserves nothing, so the equivalent value is honoured.
 		{"ollama reserves nothing", ollama, 11434, false, 11435, true, 11435},
+		{"mtplx restores persisted", mtplx, 8100, false, 8150, true, 8150},
+		// 8101 is where engine-manager runs a managed MTPLX.
+		{"mtplx refuses the engine's port", mtplx, 8100, false, 8101, true, 8100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := chooseStartupPort(tc.profile, tc.flagPort, tc.ignorePersisted, tc.persisted, tc.hasPersisted)
