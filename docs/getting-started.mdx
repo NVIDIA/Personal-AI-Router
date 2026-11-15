@@ -37,7 +37,8 @@ Nothing else has to be in place first:
 
 - **Engines.** PAIR installs and starts Ollama, LM Studio, llama.cpp, or (on Linux or Apple Silicon macOS) vLLM for you
   in step 4. Existing Ollama and LM Studio installations can also be detected
-  and used.
+  and used, as can an existing MTPLX install on an Apple Silicon Mac. MTPLX is
+  never installed for you; it is used where it is already present.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
   eligible node, so a single node holding the model is enough. Prepare the same
   model on additional nodes when you want any of them to be able to serve it.
@@ -206,8 +207,8 @@ which machine ends up doing the work.
 
 ### Why the Port May Not Be the One You Expect
 
-PAIR places a proxy in front of each engine. The proxy uses the port that the
-engine would normally listen on:
+PAIR places a proxy in front of each engine. Where an engine has a port it is
+commonly found on, the proxy takes that port:
 
 - `11434` for Ollama.
 - `1234` for LM Studio.
@@ -216,6 +217,11 @@ engine would normally listen on:
 
 Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
+
+MTPLX has no such port to take. Its proxy listens on `8100` and the engine
+behind it on `8101`, because `8000`, which MTPLX itself defaults to, already
+belongs to the vLLM proxy, and an Apple Silicon Mac is the one machine where
+both engines can be installed.
 
 Your application connects to PAIR's proxy, not directly to the engine. A port
 from a standalone engine installation can now lead somewhere else. Copy the URL
@@ -243,6 +249,7 @@ The engine therefore has to understand the style you send.
 | LM Studio | Works | Not available |
 | llama.cpp | Works | Not available |
 | vLLM | Works | Not available |
+| MTPLX | Works | Not available |
 
 **If you are unsure, send the OpenAI-style request.** It works with every
 supported engine, and most tools and SDKs use it. Use the Ollama style
@@ -309,22 +316,29 @@ work across several nodes at once. Refer to
 
 ## 7. Connecting Your Agents and Port Information
 
-An application talks to PAIR's compatible proxy, not directly to an engine. The
-proxy takes the port the engine would normally use, so existing clients keep
-working without reconfiguration, and PAIR moves the engine itself to the next
-free port.
+An application talks to PAIR's compatible proxy, not directly to an engine. Where
+an engine has a port it is commonly found on, the proxy takes that port, so
+existing clients keep working without reconfiguration, and PAIR moves the engine
+itself to the next free port.
 
 | What an Application Connects To | Default Port |
 | --- | --- |
 | Ollama-compatible proxy | `11434` |
 | LM Studio / OpenAI-compatible proxy | `1234` |
 | llama.cpp / OpenAI-compatible proxy | `8080` |
+| vLLM / OpenAI-compatible proxy | `8000` |
+| MTPLX / OpenAI-compatible and Anthropic proxy | `8100` |
 
 When PAIR takes one of those ports, the engine behind it moves:
 
 - Ollama moves to `11435` or higher.
 - LM Studio moves to `1235` or higher.
 - PAIR's managed llama.cpp router runs on `8081`.
+- PAIR's managed vLLM runs on `8001`.
+
+MTPLX has no compatibility port to take, so its proxy keeps a pair of its own:
+`8100` in front and `8101` for `mtplx serve` behind it. Refer to
+[Why the Port May Not Be the One You Expect](#why-the-port-may-not-be-the-one-you-expect).
 
 **Endpoints** is the authoritative source for the URL to use.
 
@@ -459,8 +473,10 @@ relative to the proxy URL, before the `/v1` suffix:
 | Ollama | `http://127.0.0.1:11434` | Ollama's own API (`/api/chat`, `/api/generate`, `/api/embed`, and `/api/tags`), plus the OpenAI-compatible and Anthropic APIs listed below |
 | LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible and Anthropic APIs listed below |
 | llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible API listed below, plus `/models` for model listings |
+| vLLM | `http://127.0.0.1:8000` | The OpenAI-compatible API listed below, plus `/v1/models` for model listings |
+| MTPLX | `http://127.0.0.1:8100` | The OpenAI-compatible and Anthropic APIs listed below, plus `/v1/models` for model listings and `/v1/messages/count_tokens` for token counts |
 
-All three endpoints expose these OpenAI-compatible paths:
+Every endpoint exposes these OpenAI-compatible paths:
 
 - `POST /v1/chat/completions` — [Conversations](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - `POST /v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
@@ -468,8 +484,10 @@ All three endpoints expose these OpenAI-compatible paths:
 - `POST /v1/responses` — [Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
 - `GET /v1/models` — [available models](https://developers.openai.com/api/reference/resources/models/methods/list)
 
-Ollama and LM Studio support the following Anthropic APIs:
+The Ollama, LM Studio, and MTPLX endpoints take the Anthropic Messages API:
 - `POST /v1/messages` — [Messages](https://platform.claude.com/docs/en/api/messages/create)
+
+MTPLX also answers `POST /v1/messages/count_tokens` for the model it is serving.
 
 **Endpoints** includes `/v1` in the displayed and copied URL, so you can paste it
 directly into Hermes or another client that expects an OpenAI-compatible base
@@ -577,6 +595,10 @@ where you stop it early.
 It needs what any request needs: an engine running with a text-generation model
 available. If nothing local qualifies, PAIR tells you to start an engine and try
 again rather than starting a run that cannot go anywhere.
+
+It probes the Ollama, LM Studio, and llama.cpp endpoints only, so a vLLM or MTPLX
+endpoint takes no part in the run even when it is up and serving. Point a real
+application at those.
 
 It is a traffic generator, not a benchmark. It does not produce a score, show
 prompts or responses, or log prompts or responses. The run is local to the

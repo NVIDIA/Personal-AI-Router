@@ -12,9 +12,9 @@ node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
 discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
-llama.cpp, vLLM, any combination, or none, and its model inventory is fetched over
-HTTP from its engine-manager rather than crammed into mDNS TXT records, which
-are too small to carry it.
+llama.cpp, vLLM, MTPLX (Apple Silicon only), any combination, or none, and its
+model inventory is fetched over HTTP from its engine-manager rather than crammed
+into mDNS TXT records, which are too small to carry it.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
 OpenAI-compatible — so an unmodified client on that machine can reach any capable
@@ -28,14 +28,22 @@ can serve that loopback-only address from the same router when it is free —
 `localhost` is claimed on IPv4 and IPv6 together, and remote or HTTPS targets are
 never intercepted.
 
-The llama.cpp and vLLM facades are enabled by default alongside Ollama and LM Studio.
-The llama.cpp facade exposes OpenAI-compatible traffic on `http://localhost:8080`
-while the managed router runs on `8081`. The vLLM facade (the engine itself runs on
-Linux and Apple Silicon macOS) uses `http://localhost:8000` with its managed engine on `8001`. A safe fallback is reported when a facade port is
+The llama.cpp, vLLM and MTPLX facades are enabled by default alongside Ollama and
+LM Studio. The llama.cpp facade exposes OpenAI-compatible traffic on
+`http://localhost:8080` while the managed router runs on `8081`. The vLLM facade
+(the engine itself runs on Linux and Apple Silicon macOS) uses
+`http://localhost:8000` with its managed engine on `8001`. The MTPLX facade uses
+`http://localhost:8100` with its managed engine on `8101`; that pair is chosen
+deliberately, because `8000` is both the vLLM facade's port and MTPLX's own GUI
+default, and a managed server must not fight a daemon the user started. MTPLX
+itself runs on Apple Silicon only, so on every other host that facade sits behind
+nothing and advertises nothing: a facade promotes an engine only while that engine
+answers its health probe. A safe fallback is reported when a facade port is
 occupied. The desktop and TUI expose each engine's managed lifecycle and
-inventory, plus llama.cpp's downloads and load/unload actions; vLLM serves one
-model per process, so loading another downloaded model restarts it on that model. `--proxy-engines` can still restrict the
-facades a standalone broker or TUI starts.
+inventory, plus llama.cpp's downloads and load/unload actions; vLLM and MTPLX
+serve one model per process, so loading another downloaded model restarts them on
+that model. `--proxy-engines` can still restrict the facades a standalone broker
+or TUI starts.
 
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the
@@ -72,7 +80,7 @@ configuration.
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama, LM Studio, llama.cpp, and vLLM together. Fresh maximum-GPU
+node across Ollama, LM Studio, llama.cpp, vLLM and MTPLX together. Fresh maximum-GPU
 utilization is smoothed into pressure 0–3; missing or stale telemetry is
 neutral. Rankings use `pending + gpuPressure`, and each facade adds local
 reservations before choosing, so bursts spread without waiting for workload

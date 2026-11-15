@@ -26,6 +26,7 @@ history.
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                                                                                                                 |
 | llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                                                                                                                    |
 | vLLM engine                | Integrated (Linux, macOS arm64) | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), Hugging Face catalog search and download, endpoints and routing; eject (stops the engine), delete of cached models; no demo traffic |
+| MTPLX engine               | Integrated (macOS arm64 only)   | Desktop and TUI expose lifecycle, the pack-cache list, switching the served pack (Load restarts the engine), MTPLX's pack list and download, endpoints and routing, delete of cached packs; eject stops the engine; no demo traffic      |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                                                                                                          |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                                                                                                                        |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                                                                                                                    |
@@ -35,7 +36,7 @@ history.
 | Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                                                                                                                    |
 | Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none                                                                                          |
 | Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                                                                                                                   |
-| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp                                                                                                  |
+| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio, llama.cpp and MTPLX catalogs, and searches Hugging Face for llama.cpp; MTPLX's is not searched, so clients filter it                                            |
 
 ## Supervision
 
@@ -229,7 +230,7 @@ engine), its switch stays on and usable: turning it off sends an explicit
 toggle reads the engine's status and an engine that is still starting reports
 not running. The engine-manager cancels the start in flight. Its safety net is the awaited lifecycle envelope
 (`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 14 minutes), which outlasts every
-engine's readiness window (vLLM 8 minutes, Ollama 10), so a slow start is never
+engine's readiness window (vLLM 8 minutes, Ollama and MTPLX 10), so a slow start is never
 shown as stopped while it is still loading. Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
 never remove.
@@ -237,6 +238,60 @@ never remove.
 Current limits are explicit: the manual-node worker does not probe vLLM, the
 Inference Demo does not use it, and the icon is a placeholder lettermark rather
 than the vLLM project logo.
+
+### MTPLX support
+
+The bundled `mtplx` manifest covers Apple Silicon macOS and nothing else: its
+`platforms` block declares only `darwin/arm64`, because MTPLX decodes on the Metal
+path. That declaration is the whole platform gate. An engine manager on an Intel
+Mac, on Linux, or on Windows leaves MTPLX out of `engine:get-installed`, so neither
+the desktop engine list nor the terminal interface offers it, and the `8100` proxy
+facade those hosts still enable has nothing to front. MTPLX itself runs on `8101`,
+behind that facade; `8000` was not reused because it is already the vLLM facade's
+port and MTPLX's own default.
+
+MTPLX is also detect-only: the manifest declares no install block, so there is no
+Install action, an explicit uninstall answers that no uninstall is defined for this
+platform, app-data reset skips the engine, and onboarding leaves it out rather than
+showing an install row that cannot be fulfilled. PAIR launches the `mtplx` CLI of an
+install the user made and leaves the engine, and the pack cache the user filled,
+where they were.
+
+Like vLLM it serves one model pack per process, so Eject is a `stop_engine` action
+and Load is a `launch_model` action: Load rewrites the saved launch arguments and
+restarts the server on the new pack, restoring the previous one if it does not come
+up. Two flags move together, `--model` and `--model-id`. The second fixes the id the
+server answers to, which makes the served id, the name in the model list, and the
+`model` field a client sends one string; started with `--model` alone, MTPLX derives
+a name such as `mtplx-qwen38-27b-optimized-speed-fp16`, matching no cache entry and
+no request. `loadRestartsEngine` is set for MTPLX as it is for vLLM, so the pending
+Load in the renderer's pending-actions store covers it the same way. No pack is baked
+into the launch arguments, and an engine with a `launch_model` action will not start
+while none of its flags names a model, so a bare Start answers "MTPLX has no model
+selected; load a model to start it".
+
+Its model list comes from `mtplx models --json`, which reads the pack cache, so the
+list, Add model, Delete and Load all work while the engine is stopped, and only the
+pack being served is advertised to peers and the proxy. Identifier matching is
+byte-exact, as on LM Studio, llama.cpp and vLLM, rather than Ollama's implied
+`:latest`. Pulls and deletes are CLI actions with no byte progress, so a pull shows
+only that it is pulling. `mtplx remove` has no in-use guard and does not clear a
+deleted pack from a stopped engine's launch arguments, so the desktop app blocks
+Delete on the pack being served (`deleteBlockedWhileLoaded`).
+
+MTPLX's catalogue is MTPLX's own published pack list rather than a Hugging Face
+browse, because the engine loads only packs rebuilt for its decode path and a general
+browse would offer mostly packs it refuses. It is not searchable, so the desktop and
+the terminal interface filter its couple-of-dozen entries locally, and it is the one
+catalogue that is not warmed at startup: every pack there is Apple-Silicon-only, and
+the list is reachable only from an MTPLX card, so prewarming would fetch it on hosts
+that can never load from it.
+
+Current limits are explicit: the manual-node worker does not probe MTPLX, which
+probes Ollama and LM Studio only, and the Inference Demo cannot reach it, because
+its probe set and its dispatcher backends cover Ollama, LM Studio and llama.cpp.
+Its row mark is the square tile the MTPLX app uses for the Dock, taken unmodified
+from a 128 px layer of that bundle's `AppIcon.icns`.
 
 ## Engine lifecycle
 
@@ -401,20 +456,24 @@ safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 `sizeVram`/`expiresAt` — the backend delivers the simpler `loadedByEngine`
 name-set, not structured details.
 
-vLLM advertises only the model it is serving, so its `modelsByEngine` entry is
-that one name, for routing. Its whole downloaded list arrives as
-`downloadedByEngine`, read even while it is stopped, and `modelsForEngine`
-lists a node's vLLM rows from it. Its `loadedByEngine` uses the same names, so
-a model served under `--served-model-name` still marks its row loaded. When a
-peer's vLLM list was not read, `EngineModels.inventoryKnown` is false and the
-model manager says the downloaded models are unavailable instead of claiming
-none are downloaded.
+vLLM and MTPLX advertise only the model they are serving, so each `modelsByEngine`
+entry is that one name, for routing. The whole downloaded list arrives as
+`downloadedByEngine`, read even while the engine is stopped, and `modelsForEngine`
+lists a node's vLLM and MTPLX rows from it. Each one's `loadedByEngine` names models
+the way that inventory does, so the served model still marks its row loaded: vLLM by
+the `root` of its `/v1/models`, not a `--served-model-name` alias, and MTPLX by the
+`data[].id` that `--model-id` pins to the cache id. When a peer's list was not read,
+`EngineModels.inventoryKnown` is false and the model manager says the downloaded
+models are unavailable instead of claiming none are downloaded.
 
 The model catalogue is owned by the backend: `engine:catalog` on
-`nvpair-engine-manager` serves the curated Ollama, LM Studio, and llama.cpp
+`nvpair-engine-manager` serves the curated Ollama, LM Studio, llama.cpp and MTPLX
 lists, and searches Hugging Face for llama.cpp, and both the desktop app and
 the terminal interface browse it. Electron only relays the call and maps rows
-for the renderer.
+for the renderer. MTPLX's list is MTPLX's own pack list rather than a Hugging Face
+search, is not marked `searchable`, and is narrowed to the target's platform and
+architecture, so a peer that is not Apple Silicon is handed none of it and the
+clients filter the rest locally.
 
 ## Errors
 
