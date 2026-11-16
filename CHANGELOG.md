@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.24 — More reliable vLLM setup and model loading across supported devices (#188)
+
+- Install PAIR-managed vLLM outside the space-containing app-data directory to avoid GPU-kernel compilation failures.
+- Size vLLM memory allocations using reliable device readings, including verified shared-memory systems.
+
 ## 1.0.23 — Authenticate peer inventory before using it for service decisions (#179)
 
 - Verify discovered peers before using their identities, service endpoints, models, or hardware measurements.
