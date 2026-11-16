@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -196,4 +197,32 @@ func TestHandleHTTP_StalledNodeIsNotPaidForTwice(t *testing.T) {
 			t.Errorf("healthy node served %d requests, want 2", goodHits)
 		}
 	})
+}
+
+// TestHandleHTTP_ClientHangupDoesNotCoolNode: the wait for headers has no cap,
+// so a node can still be generating when the client gives up past the first-byte
+// budget. That ends the attempt on the client's patience, which says nothing
+// about the node, so it must not be demoted.
+func TestHandleHTTP_ClientHangupDoesNotCoolNode(t *testing.T) {
+	setForTest(t, &firstBodyTimeout, testFirstBodyTimeout)
+
+	tc := anyCase(t)
+	withhold := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		<-r.Context().Done() // never sends headers on its own
+	}))
+	defer withhold.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "withhold", withhold.URL, tc.advertisedModel))
+	p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(3*testFirstBodyTimeout, cancel)
+	p.soleFacade().handleHTTP(httptest.NewRecorder(), tc.inferenceRequest().WithContext(ctx))
+
+	if cooling := p.coolingSet(time.Now()); cooling["withhold"] {
+		t.Errorf("cooling set = %v after a client hangup, want the node not cooled", cooling)
+	}
 }
