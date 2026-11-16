@@ -243,7 +243,7 @@ are real:
 
 The last case is why the deadline cannot be dropped as redundant with the
 attempt count, and the middle one is why five attempts is a ceiling rather than
-a promise. **Do not remove either bound as unreachable.**
+a promise.
 
 An engine that withholds its headers never fails for being slow, so neither
 bound ends that job; only the attempt ending does.
