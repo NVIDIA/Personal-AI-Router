@@ -102,6 +102,12 @@ export interface EngineModels {
     engineType: EngineType
     nodeId: string
     models: ModelItem[]
+    /**
+     * Whether the model list was read. False when it could not be, such as a
+     * peer's stopped vLLM whose downloaded models never arrived, so an empty
+     * list must not be shown as "nothing downloaded".
+     */
+    inventoryKnown: boolean
 }
 
 export interface ModelItem {

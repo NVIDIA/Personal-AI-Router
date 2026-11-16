@@ -18,7 +18,7 @@ import (
 
 // catalogBroker is a broker that answers engine:catalog, recording the params
 // of each call and answering a query with one model named after it.
-func catalogBroker(t *testing.T) (*rpc.Client, <-chan map[string]string) {
+func catalogBroker(t *testing.T, peerSource string) (*rpc.Client, <-chan map[string]string) {
 	t.Helper()
 	c1, c2 := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -45,6 +45,9 @@ func catalogBroker(t *testing.T) (*rpc.Client, <-chan map[string]string) {
 			if q := params["query"]; q != "" {
 				result = `{"models":[{"name":"found/` + q + `-GGUF:Q4_K_M"}],"searchable":true,"query":"` + q + `"}`
 			}
+			if req.Method == "engine:get-settings" {
+				result = `{"settings":{"modelSource":"` + peerSource + `"}}`
+			}
 			assert.NoError(t, broker.Write(&rpc.Message{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(result)}))
 		}
 	}()
@@ -63,7 +66,7 @@ func typeSearch(b *catalogBrowser, text string) tea.Cmd {
 // searched rather than filtered. llama.cpp's browse list is a few publishers'
 // repos, and filtering it locally could never find a model outside them.
 func TestSearchableCatalog_SearchesUpstream(t *testing.T) {
-	client, calls := catalogBroker(t)
+	client, calls := catalogBroker(t, "")
 	b := newCatalogBrowser(client, "llamacpp", "llama.cpp", "this-host", false)
 	b.SetSize(100, 24)
 	b.update(b.Init()())
@@ -87,6 +90,31 @@ func TestSearchableCatalog_SearchesUpstream(t *testing.T) {
 	if assert.Len(t, b.shown, 1, "clearing the search must restore the browse list") {
 		assert.Equal(t, "ggml-org/browse-GGUF:Q4_K_M", b.shown[0].Name)
 	}
+}
+
+func TestCatalogBrowser_UsesPeerSourceForBrowseAndSearch(t *testing.T) {
+	client, calls := catalogBroker(t, "modelscope")
+	b := newCatalogBrowser(client, "llamacpp", "llama.cpp", "peer-host", true)
+	b.nodeID = "peer-node"
+	b.update(b.Init()())
+	assert.Equal(t, "peer-node", (<-calls)["nodeId"])
+	assert.Equal(t, "modelscope", (<-calls)["modelSource"])
+
+	b.update(typeSearch(b, "gemma")())
+	assert.Equal(t, "peer-node", (<-calls)["nodeId"])
+	assert.Equal(t, map[string]string{"engine": "llamacpp", "query": "gemma", "modelSource": "modelscope"}, <-calls)
+	assert.False(t, b.failed)
+}
+
+func TestCatalogBrowser_RejectsPeerWithUnreportedSource(t *testing.T) {
+	client, calls := catalogBroker(t, "")
+	b := newCatalogBrowser(client, "llamacpp", "llama.cpp", "peer-host", true)
+	b.nodeID = "peer-node"
+	b.update(b.Init()())
+	assert.Equal(t, "peer-node", (<-calls)["nodeId"])
+	assert.Empty(t, calls, "no catalog request should use the local source")
+	assert.True(t, b.failed)
+	assert.Contains(t, b.View(), "peer does not report its model source")
 }
 
 // TestSupersededSearchIsDropped checks a reply to a search the operator has
@@ -325,9 +353,9 @@ func TestCatalog_IgnoresOtherEnginesReply(t *testing.T) {
 // TestCatalogEmptyCatalogIsDistinctFromNoMatch checks the two empty states read
 // differently, because the fixes are different.
 func TestCatalogEmptyCatalog_IsDistinctFromNoMatch(t *testing.T) {
-	b := newCatalogBrowser(nil, "vllm", "vLLM", "this-host", false)
+	b := newCatalogBrowser(nil, "nosuchengine", "No Such Engine", "this-host", false)
 	b.SetSize(100, 24)
-	b.update(catalogLoadedMsg{engine: "vllm", models: nil})
+	b.update(catalogLoadedMsg{engine: "nosuchengine", models: nil})
 
 	assert.Contains(t, b.View(), "No catalog available")
 }

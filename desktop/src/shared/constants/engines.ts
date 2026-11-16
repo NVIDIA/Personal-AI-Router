@@ -5,11 +5,18 @@ import { EngineType, ModelExpiry } from '@/shared/types/engines'
 
 // The engines `nvpair-engine-manager` ships a manifest for, and therefore the
 // only ones PAIR can install, run or route to.
-export const EngineTypes = ['ollama', 'lm-studio', 'llama-cpp'] as const
+export const EngineTypes = ['ollama', 'lm-studio', 'llama-cpp', 'vllm'] as const
 
 // Kept as a distinct export so a future engine can ship behind it rather than
 // appearing the moment its type exists.
-export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llama-cpp']
+export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llama-cpp', 'vllm']
+
+/**
+ * Engines whose model list is read from disk, so it is available while the engine
+ * is stopped. For every other engine the list comes from the running engine and is
+ * cleared when it stops. The `modelOpsWhenStopped` capability must agree.
+ */
+export const EnginesListingModelsWhenStopped: readonly EngineType[] = ['vllm']
 
 /**
  * How `nvpair-engine-manager` spells each engine on the wire. This is the
@@ -19,7 +26,8 @@ export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llama-c
 export const EngineManagerNames = {
     ollama: 'ollama',
     'lm-studio': 'lmstudio',
-    'llama-cpp': 'llamacpp'
+    'llama-cpp': 'llamacpp',
+    vllm: 'vllm'
 } as const satisfies Record<EngineType, string>
 
 export const EngineSources = ['bundled', 'detected', 'installed'] as const
@@ -27,7 +35,8 @@ export const EngineSources = ['bundled', 'detected', 'installed'] as const
 export const EngineDisplayNames: Record<EngineType, string> = {
     ollama: 'Ollama',
     'lm-studio': 'LM Studio',
-    'llama-cpp': 'llama.cpp'
+    'llama-cpp': 'llama.cpp',
+    vllm: 'vLLM'
 } as const
 
 /** Default docs/install URLs for built-in backends. Single source of truth for UI and adapter buildInfo(). */
@@ -37,6 +46,10 @@ export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUr
     'llama-cpp': {
         docsUrl: 'https://github.com/ggml-org/llama.cpp/tree/master/docs',
         installUrl: 'https://github.com/ggml-org/llama.cpp/releases'
+    },
+    vllm: {
+        docsUrl: 'https://docs.vllm.ai/',
+        installUrl: 'https://docs.vllm.ai/en/latest/getting_started/installation.html'
     }
 } as const
 
@@ -61,7 +74,10 @@ export const EngineProcessStatuses = [
     'uninstalling',
     'starting',
     'stopping',
-    'initializing'
+    'initializing',
+    // The node's engine manager does not list the engine because the node
+    // cannot run it (vLLM on Windows), so it is not shown for that node.
+    'unsupported'
 ] as const
 
 /**

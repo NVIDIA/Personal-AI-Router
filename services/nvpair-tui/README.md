@@ -103,8 +103,12 @@ ships in `cli-bin` and the app's updater replaces it.
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a
 source that cannot search, such as Ollama's list of thousands of entries. For
-one whose reply says it is `searchable` — llama.cpp's, a slice of Hugging Face —
+one whose reply says it is `searchable` — llama.cpp's selected model source —
 `/` sends the query upstream instead, and `c` returns to the browse list.
+For a peer's llama.cpp engine, each browse/search reads that peer's saved
+`modelSource` through `engine:get-settings` and passes it to `engine:catalog`.
+A failed read or a peer that does not report its source fails the catalog load
+instead of displaying this machine's source.
 
 Both panes work on remote cluster peers through the engine manager's
 `engine:remote-*` methods. Restart and uninstall need process ownership on the
@@ -116,9 +120,17 @@ A remote node's models come from the discovery snapshot, which the broker
 enriches from each peer's engine manager — no extra request. This machine's come
 from `engine:models` and stay live through `engine:models-changed`.
 
-The detail screen also polls the node's own `/v1/node-info` endpoint over HTTP
-for GPU, CPU, and memory. That is the one reading the broker's JSON-RPC surface
-does not carry, and only the open node is polled.
+The detail screen shows GPU, CPU, and memory information supplied by the broker.
+It updates as new measurements arrive, including authenticated peer measurements
+and public previews for eligible unpaired discoveries and manual entries. If the
+node disappears or the broker invalidates its measurements, the screen clears
+those hardware details.
+
+GPU utilization includes the sample's age, for example `73% (10m ago)`. Age
+includes time spent cached in services and in the TUI and advances on UI ticks.
+A failed read keeps the last accepted snapshot with its increasing age. A GPU
+without a valid utilization sample shows `--%`; its name and memory capacity
+remain visible. GPU sample age does not describe CPU or system-memory freshness.
 
 ## Keys
 

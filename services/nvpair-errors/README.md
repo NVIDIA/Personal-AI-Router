@@ -249,6 +249,9 @@ producer --errors:report--> nvpair-errors A --POST /v1/errors--> nvpair-errors B
 — return this node's local-origin snapshot (the same body we push;
 handy for manual verification).
 
+Ingest JSON decoding reads at most 1 MiB. A snapshot whose JSON value extends
+past that limit returns `400` without reconciling any errors.
+
 Both require **pin-based cluster mTLS**. The caller must present a
 certificate this node currently pins; anything else is refused with
 `403`. There is no plain-HTTP personality: this is a cluster data plane,

@@ -511,7 +511,7 @@ func TestWorkerTableRows_AlignColumns(t *testing.T) {
 	})
 
 	var indents []int
-	for _, line := range strings.Split(tbl.View(), "\n") {
+	for line := range strings.SplitSeq(tbl.View(), "\n") {
 		// Data rows only: skip the header and its border rule.
 		if !strings.Contains(line, "ok") {
 			continue

@@ -126,11 +126,17 @@ on a service nobody is starting. When the connector reaches `connected` again,
 the renderer re-reads every domain snapshot, because the restarted broker builds
 a fresh state projection.
 
-The only direct backend HTTP polling in Electron is `/v1/node-info`: Electron
-polls healthy local and discovered nodes every two seconds because rich
-telemetry is not part of the broker JSON-RPC surface. Consecutive failures back
-off to 4, 8, 16, then 30 seconds; the first success or a changed endpoint
-restores the normal cadence.
+Electron and TUI receive hardware inventory and utilization through broker
+snapshots (`AvailableNode.info`) and live `discovery:node-info` updates.
+
+Service workers collect local measurements over private IPC, paired peer
+measurements over pinned mTLS, and public HTTP previews for eligible unverified
+discoveries and manual entries. Workers handle retries and address failover.
+
+Public previews update display fields only. They cannot establish identity or
+affect routing, node reachability, or scheduling. The broker preserves each
+sample's age and clears cached hardware when its source record or authentication
+changes.
 
 ## State flow
 
@@ -170,14 +176,16 @@ Important push domains include:
 `AvailableNode` snapshots and does not construct or interpret the backend's
 discovery service names.
 
-Personal AI Router keys every node by the backend's stable per-host UUID (`AvailableNode.id` /
-`hostUuid`), not the hostname. That same UUID keys workload attribution
-(`originatedFrom`/`scheduledOn`), errors (`nodeId`), proxy routing (`Node.ID`),
-`/v1/node-info`, and cluster membership (`ClusterNode.nodeUuid`), and it is the
-value of `selfId` (the cluster-manager `nodeUuid`, resolved as soon as the broker
-is ready). The hostname is retained only as the display `name`. This lets one
+Personal AI Router keys local and verified nodes by the backend's stable per-host
+UUID (`hostUuid`), and unverified records by their independent `discoveryRecordId`.
+The verified UUID keys workload attribution (`originatedFrom`/`scheduledOn`),
+errors (`nodeId`), proxy routing (`Node.ID`), hardware observations, and cluster
+membership (`ClusterNode.nodeUuid`). It is also the value of `selfId` (the
+cluster-manager `nodeUuid`, resolved as soon as the broker is ready).
+The hostname is retained only as the display `name`. This lets one
 merge collapse the broker- and proxy-reported views of a node into a single
-entry and makes cross-domain correlation exact. `AvailableNode` also carries the
+entry and makes cross-domain correlation exact. Unverified UUID claims and public
+hardware previews cannot merge into a verified node. `AvailableNode` also carries the
 `trusted` and `clustered` flags; Personal AI Router renders an already-`clustered` node as
 non-invitable.
 
@@ -250,7 +258,7 @@ not select or pin proxy routes.
 An NVPAIR-launched engine binds to loopback and is never directly LAN-reachable.
 Peers reach it only through the node's proxy over a cluster-mTLS ingress, so
 discovery advertises the promoted proxy port for `ol`/`lm` rather than the
-engine's private port; llama.cpp uses the additional `lc` key. Transport
+engine's private port; llama.cpp uses the additional `lc` key and vLLM the `vl` key. Transport
 security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.
@@ -317,7 +325,7 @@ node-local.
   `stdio: 'ignore'` and with the `INFERENCE_DISPATCHER_*` environment namespace
   stripped so an inherited variable cannot redirect output to disk.
 
-## Local HTTP endpoints
+## Local communication
 
 Backend-owned ports are reported at runtime where available. Constants that
 cannot yet be reported are centralized in
@@ -325,8 +333,10 @@ cannot yet be reported are centralized in
 
 - Ollama-compatible clients use the proxy port reported by the broker.
 - Cluster pairing currently uses port `14321`.
-- Node telemetry is read from `/v1/node-info` at each discovered node's
-  advertised port.
+- Desktop and TUI receive hardware snapshots and updates through broker IPC.
+- `nvpair-node-info` collects hardware measurements. Workers use owned IPC for
+  local measurements, pinned mTLS for approved peers, and public HTTP for
+  unverified previews.
 
 Browser access is decided by the engines, not by the proxies. A proxy passes
 through the upstream engine's CORS headers and its refusals, and adds no
@@ -373,6 +383,13 @@ Personal AI Router and the Go services share one current per-user root:
 
 - `Nvidia Corporation/Personal AI Router`.
 
+Managed engine payloads normally live under that root. vLLM is the deliberate
+exception: its load-time GPU build tools cannot parse spaces in source/include
+paths, so PAIR installs its private environment at
+`~/.nvpair/engine-bin/vllm`. The append-only wipe inventory and every platform
+uninstaller include that exact PAIR-owned path; model weights remain in the
+separate Hugging Face cache.
+
 On first launch after the rename, Electron data under
 `NVIDIA Corporation/PAIR` is merged into the shared directory without
 overwriting backend files already present there.
@@ -408,7 +425,7 @@ deletes finish. Unpackaged (`electron-vite dev`) builds omit relaunch and the UI
 tells the developer to run `npm start` again — quitting Electron tears down the Vite
 renderer server, so auto-relaunch would come up with nothing to load.
 
-The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`) and
+The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`, `~/.cache/huggingface`) and
 the application install tree are never removed. The reset does uninstall the
 engines PAIR installed, through `engine:uninstall-managed` while the broker is
 still running, so an engine a vendor installer placed in the user's home is

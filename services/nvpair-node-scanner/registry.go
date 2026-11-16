@@ -4,6 +4,7 @@
 package main
 
 import (
+	"maps"
 	"slices"
 	"sync"
 
@@ -115,9 +116,7 @@ func (r *registry) record() noderec.NodeRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	svcs := make(map[noderec.ServiceKey]int, len(r.services))
-	for k, v := range r.services {
-		svcs[k] = v
-	}
+	maps.Copy(svcs, r.services)
 	var ip string
 	if len(r.ips) > 0 {
 		ip = r.ips[0]

@@ -165,8 +165,8 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     )
     const isRunning = useMemo(() => backend.processStatus === 'running', [backend.processStatus])
     const supportsSearch = useMemo(
-        () => !hasModelSearchOnlyWhenRunning || isRunning,
-        [hasModelSearchOnlyWhenRunning, isRunning]
+        () => caps !== undefined && (!hasModelSearchOnlyWhenRunning || isRunning),
+        [caps, hasModelSearchOnlyWhenRunning, isRunning]
     )
 
     const handleDownload = useCallback(
@@ -202,11 +202,16 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                 <>
                     {(isRunning || modelOpsWhenStopped) &&
                         models.length === 0 &&
-                        incomingSyncs.length === 0 && (
+                        incomingSyncs.length === 0 &&
+                        (backend.modelsKnown ? (
                             <Text kind="body/regular/sm" className="text-subtle-color pl-2">
                                 No model/weight files downloaded
                             </Text>
-                        )}
+                        ) : (
+                            <Text kind="body/regular/sm" className="text-subtle-color pl-2">
+                                Downloaded models unavailable
+                            </Text>
+                        ))}
                     {!modelOpsWhenStopped &&
                         models.length === 0 &&
                         incomingSyncs.length === 0 &&

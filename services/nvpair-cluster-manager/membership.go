@@ -4,8 +4,9 @@
 package main
 
 import (
+	"cmp"
 	"log"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -285,7 +286,9 @@ func (m *Manager) snapshotNodes() []ClusterNode {
 	for _, n := range m.members {
 		out = append(out, *cloneClusterNode(n))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b ClusterNode) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	return out
 }
 

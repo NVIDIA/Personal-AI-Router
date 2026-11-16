@@ -23,7 +23,31 @@ type nodeInfoOriginGate struct {
 }
 
 func (g *nodeInfoOriginGate) acquire(ctx context.Context, origin string) (func(), bool) {
+	permit := g.permit(origin)
+	select {
+	case permit <- struct{}{}:
+		return func() { <-permit }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// tryAcquire defers candidate authentication while an origin is busy, preventing
+// copied announcements from queuing ahead of the verified peer's telemetry.
+func (g *nodeInfoOriginGate) tryAcquire(origin string) (func(), bool) {
+	permit := g.permit(origin)
+	select {
+	case permit <- struct{}{}:
+		return func() { <-permit }, true
+	default:
+		return nil, false
+	}
+}
+
+// permit returns the shared slot without holding the map lock while a caller waits.
+func (g *nodeInfoOriginGate) permit(origin string) chan struct{} {
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	permit := g.origins[origin]
 	if permit == nil {
 		if g.origins == nil {
@@ -32,12 +56,5 @@ func (g *nodeInfoOriginGate) acquire(ctx context.Context, origin string) (func()
 		permit = make(chan struct{}, 1)
 		g.origins[origin] = permit
 	}
-	g.mu.Unlock()
-
-	select {
-	case permit <- struct{}{}:
-		return func() { <-permit }, true
-	case <-ctx.Done():
-		return nil, false
-	}
+	return permit
 }

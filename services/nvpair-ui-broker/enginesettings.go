@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -201,7 +202,7 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 	if !ready && record != nil {
 		configuredProxy = record.Snapshot.Settings.ProxyPort
 	}
-	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText}
+	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText, ModelSource: launch.ModelSource}
 	if record == nil {
 		record = &engineSettingsRecord{Snapshot: settings.Snapshot{NodeID: b.nodeID, Engine: engine, Revision: 1, AppliedRevision: 1, Epoch: b.engineSettingsEpoch, Phase: "idle", Settings: current}, Receipts: make(map[string]settingsReceipt)}
 		b.engineSettings[engine] = record
@@ -537,9 +538,7 @@ func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, ca
 	record := b.engineSettings[p.Engine]
 	previous := *record
 	previous.Receipts = make(map[string]settingsReceipt, len(record.Receipts))
-	for k, v := range record.Receipts {
-		previous.Receipts[k] = v
-	}
+	maps.Copy(previous.Receipts, record.Receipts)
 	if preview.Settings == record.Snapshot.Settings && record.Snapshot.Phase != "failed" {
 		record.Snapshot.RequestID = p.RequestID
 		record.Snapshot.Phase = "succeeded"

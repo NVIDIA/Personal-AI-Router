@@ -116,12 +116,13 @@ func TestRemoteEngine_ReturnsInstalledEnginesForPeer(t *testing.T) {
 	// synchronously before the next frame, so the directory is populated by the
 	// time the remote request is read.
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
-		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
+		`{"hostUuid":%q,"name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
+		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, uuidB, portB)
 	writeRawFrame(t, aStdin, snapshot)
 
 	// Fire the remote read and await the response.
-	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
+	writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":%q}}`, uuidB))
 	resp := waitForResponse(t, aMsgs, 15*time.Second)
 	require.Nil(t, resp.Error, "remote-get-installed errored")
 	var res struct {
@@ -156,13 +157,15 @@ func TestRemoteEngine_RejectsUntrusted(t *testing.T) {
 	waitForMethod(t, aMsgs, "engine:ready", 10*time.Second)
 
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
-		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
+		`{"hostUuid":%q,"name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
+		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, uuidB, portB)
 	writeRawFrame(t, aStdin, snapshot)
-	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
+	writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":%q}}`, uuidB))
 
 	resp := waitForResponse(t, aMsgs, 15*time.Second)
 	require.NotNil(t, resp.Error, "expected an error from an unpinned caller, got result")
+	require.Contains(t, resp.Error.Message, "HTTP 403", "the discovered peer must reject the caller at its pin gate")
 	t.Logf("unpinned caller correctly refused: %+v", resp.Error)
 }
 

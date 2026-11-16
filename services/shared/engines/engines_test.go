@@ -23,7 +23,7 @@ func TestOllama_IsPreparedFirst(t *testing.T) {
 }
 
 func TestEngineNames_ReturnsCanonicalOrder(t *testing.T) {
-	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp"}, Names())
+	assert.Equal(t, []string{"ollama", "lmstudio", "llamacpp", "vllm"}, Names())
 }
 
 // There are two proxy identities: ComponentName per facade, ProxyComponent per
@@ -112,7 +112,7 @@ func TestEngineLookup_ResolvesDeclaredNamesAndKeys(t *testing.T) {
 		assert.Equal(t, e.ComponentName(), byName.ComponentName())
 	}
 
-	_, ok := ByName("vllm")
+	_, ok := ByName("nosuchengine")
 	assert.False(t, ok, "ByName should report ok=false for an unknown engine")
 }
 

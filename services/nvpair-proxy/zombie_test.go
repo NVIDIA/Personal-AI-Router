@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -117,8 +116,6 @@ func TestHandleHTTP_MarksWorkloadCancelledAfterClientWriteFailure(t *testing.T) 
 func TestHandleHTTP_EmitsOneTerminalEventAfterClientDisconnect(t *testing.T) {
 	received := make(chan struct{}, 1)
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	doRelease := func() { releaseOnce.Do(func() { close(release) }) }
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -136,7 +133,7 @@ func TestHandleHTTP_EmitsOneTerminalEventAfterClientDisconnect(t *testing.T) {
 	}))
 	// LIFO: unblock the upstream handler before tearing the server down.
 	defer upstream.Close()
-	defer doRelease()
+	defer close(release)
 
 	tc := anyCase(t)
 	rec := &recRW{}

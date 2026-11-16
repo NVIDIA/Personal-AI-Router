@@ -241,7 +241,7 @@ const codeFacadeBindFailed = -32010
 // for that reason is retried on a new port; any other error fails the test.
 func requestOnFreePort(t *testing.T, w io.Writer, msgs <-chan jsonrpc.Message, timeout time.Duration, build func(port int) map[string]any) int {
 	t.Helper()
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		port := freePort(t)
 		req := build(port)
 		sendLine(t, w, req)

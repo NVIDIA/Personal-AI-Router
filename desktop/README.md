@@ -94,6 +94,11 @@ Changing the services themselves also means running their own tests — see
 
 ## Build
 
+`npm run generate:icons` stages the application icons from `resources/app-icon/`.
+The macOS menu bar uses `pair-tray-template.png`, a transparent monochrome version
+of PAIR's symbol, rendered at standard and Retina resolutions. Keep its background
+transparent so macOS can adapt the template to light and dark menu bars.
+
 ```bash
 npm run build              # renderer, main, preload, and CLI bundles
 ```

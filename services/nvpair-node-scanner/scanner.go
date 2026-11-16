@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"log/slog"
-	"net/http"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
@@ -30,53 +29,28 @@ type (
 )
 
 // NodeInfoResponse is the /v1/node-info body the daemon fetches to enrich a
-// node (see daemon.fetchNodeInfo).
-type NodeInfoResponse struct {
-	GPUs           []GPUInfo   `json:"GPUs"`
-	CPU            *CPUInfo    `json:"cpu,omitempty"`
-	Memory         *MemoryInfo `json:"memory,omitempty"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
-	// HostUUID is the identity the node itself reports (nvpair-node-info's
-	// hostUuid). It is not enrichment data — it is what lets the liveness probe
-	// tell "this node still answers" from "some other node now answers at this
-	// address", which is the difference between a live peer and the ghost a
-	// wiped-and-reinstalled node leaves behind. Empty when the peer predates the
-	// field, in which case the probe falls back to its TCP-only behaviour.
-	HostUUID string `json:"hostUuid,omitempty"`
-	// ClusterUUID is the node's own report of the cluster principal it holds,
-	// empty when it belongs to no cluster. A pointer so absent is distinguishable
-	// from empty: a node too old to report the field says nothing about its
-	// membership, while a node reporting "" is asserting it has none. Reading
-	// absent as unclustered would mark a clustered peer invitable.
-	ClusterUUID *string `json:"clusterUuid"`
-}
+// node. Share the hardware contract with the local IPC path to prevent drift.
+// A nil ClusterUUID is unknown membership, while a pointer to "" is unclustered.
+type NodeInfoResponse = noderec.NodeInfo
 
 type ReadyParams struct {
 	Version string `json:"version"`
 }
 
-// Scanner is the stdio/JSON-RPC front end for the promoted discovery daemon.
-// Post-cutover there is no legacy _nvpair-node-info browse or node/* stream: the
-// daemon advertises one _nvpair-node record, browses _nvpair-node, maintains the
-// directory, and serves the discovery:* RPC. This wrapper owns the process
-// lifecycle and routes stdio frames into the daemon.
+// Scanner owns the discovery daemon's process lifecycle and routes stdio
+// JSON-RPC frames into its discovery:* handlers.
 type Scanner struct {
 	codec  *Codec
 	daemon *daemon
 	cancel context.CancelFunc
 }
 
-// NewScanner builds the scanner around the promoted daemon. mesh (non-nil when
-// this node is clustered) is threaded to the daemon for the trust annotation on
-// browsed nodes; clusterDir lets the daemon resolve its node identity from the
-// same base cluster-manager persists to (empty selects the shared default).
-// tlsHTTP is nil unless the operator opted node-info enrichment onto HTTPS via
-// the --client-cert/--client-key/--ca-bundle flags.
-func NewScanner(codec *Codec, mesh *clustertrust.Mesh, clusterDir string, tlsHTTP *http.Client) *Scanner {
+// NewScanner uses the live mesh for authenticated discovery. clusterDir also
+// selects the local identity root shared with cluster-manager.
+func NewScanner(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *Scanner {
 	return &Scanner{
 		codec:  codec,
-		daemon: newDaemon(codec, mesh, clusterDir, tlsHTTP),
+		daemon: newDaemon(codec, mesh, clusterDir),
 	}
 }
 

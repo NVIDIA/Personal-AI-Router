@@ -3,14 +3,14 @@
 
 // Package noderec is the single source of truth for the consolidated
 // _nvpair-node._tcp wire format and the discovery JSON-RPC contract shared by the
-// promoted node-scanner daemon, the broker relay, and every consumer of the
+// node-scanner daemon, the broker relay, and every consumer of the
 // consolidated discovery.
 //
 // A node advertises itself as ONE _nvpair-node._tcp record
 // whose TXT map carries a schema version, the node's identity, its LAN address,
 // and one compact key per local service port, e.g.:
 //
-//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;lc=8080;er=14319;wl=14320;cl=14321;em=14322
+//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;lc=8080;vl=8000;er=14319;wl=14320;cl=14321;em=14322
 //
 // Design decisions this package encodes:
 //   - SRV port is a fixed, NON-authoritative constant; consumers ignore it and
@@ -23,16 +23,21 @@
 //   - uuid= (hostUuid) and cluster-uuid= (clusterUuid) are distinct fields:
 //     invite resolution keys by hostUuid; the cluster pin is selected by
 //     clusterUuid, which is present only when the node is clustered.
-//   - The model list is NOT in TXT. It moved to HTTP (engine-manager's em
-//     /v1/models) because it can grow past the DNS per-string limit; a peer's
-//     daemon fetches it during enrichment and puts it on DirectoryNode.Models.
+//   - Engine-manager serves model lists at em /v1/models, keeping lists that
+//     can exceed the DNS per-string limit out of TXT. Scanner reads the owned
+//     engine-manager over loopback HTTP and verified peers over pinned mTLS,
+//     then adds the accepted inventory to DirectoryNode.Models.
 package noderec
 
 import (
+	"encoding/json"
 	"fmt"
-	"sort"
+	"io"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -88,6 +93,7 @@ const (
 	ServiceOllama   ServiceKey = "ol"
 	ServiceLMStudio ServiceKey = "lm"
 	ServiceLlamaCPP ServiceKey = "lc"
+	ServiceVLLM     ServiceKey = "vl"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -105,7 +111,7 @@ const (
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
-	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCPP,
+	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCPP, ServiceVLLM,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
 	ServiceEngineControl,
 }
@@ -114,8 +120,9 @@ var serviceKeyOrder = []ServiceKey{
 type Transport int
 
 const (
-	// TransportPlain: always plain HTTP, even on a clustered node (node-info and
-	// the local inference engines).
+	// TransportPlain describes public node-info hardware displays and local
+	// inference engines. Services read remote node-info separately over pinned
+	// mTLS; this public transport policy does not authorize service measurements.
 	TransportPlain Transport = iota
 	// TransportMTLSWhenClustered: cluster-scoped pin-based mTLS when the target
 	// node is clustered, else plain (nvpair-errors, nvpair-workload-manager).
@@ -139,8 +146,8 @@ func (s ServiceKey) Transport() Transport {
 }
 
 // UsesMTLS reports whether a consumer should dial this service over cluster
-// mTLS, given whether the target node is clustered. node-info is deliberately
-// plain even on a clustered node; errors/workload gate on the target's cluster
+// mTLS, given whether the target node is clustered. Public node-info displays
+// stay plain even on a clustered node; errors/workload gate on the target's cluster
 // state; the cluster-manager split channel's trusted plane is mTLS.
 func (s ServiceKey) UsesMTLS(targetClustered bool) bool {
 	switch s.Transport() {
@@ -203,7 +210,7 @@ func ParseTXT(txt []string) NodeRecord {
 			// room for roughly sixteen IPv4 literals — every one of which a dialer
 			// would walk, at its own per-candidate timeout, before giving up on
 			// the node.
-			for _, part := range strings.Split(val, IPsSeparator) {
+			for part := range strings.SplitSeq(val, IPsSeparator) {
 				if len(r.IPs) >= MaxAdvertisedIPs {
 					break
 				}
@@ -269,7 +276,7 @@ func (r NodeRecord) TXT() []string {
 			extra = append(extra, string(s)+"="+strconv.Itoa(port))
 		}
 	}
-	sort.Strings(extra)
+	slices.Sort(extra)
 	txt = append(txt, extra...)
 	return txt
 }
@@ -301,31 +308,20 @@ const (
 	// converges on the cluster principal even though the scanner spawned (and
 	// minted its own node-id) before cluster-manager wrote identity.json.
 	MethodReloadIdentity = "discovery:reload-identity"
-	// MethodReloadTrust tells the daemon that this node's cluster pin set changed,
-	// so it must re-derive the trusted annotation on every directory entry. The
-	// daemon otherwise answers "do I hold a pin for this peer?" only when that
-	// peer's mDNS record moves, and a peer already advertising when we join never
-	// moves again — leaving it annotated from before our pins existed. The broker
-	// triggers this off nvpair-cluster-manager, which announces only after the pin
-	// is on disk, so the daemon always reads a directory at least as new as the
-	// event.
+	// MethodReloadTrust invalidates peer proofs whose exact pins changed and
+	// schedules authentication of pending discoveries. The broker sends it
+	// after cluster-manager writes pins; an announcement alone cannot grant trust.
 	MethodReloadTrust = "discovery:reload-trust"
 
 	// MethodSetClusterIdentity tells nvpair-node-info the cluster principal this
 	// node currently holds, so it can report it on /v1/node-info.
 	//
-	// node-info is spawned with no cluster dir on purpose — it is the one
-	// inter-node surface kept plain so any LAN peer can read this host's
-	// inventory (see the broker's spawnNodeInfo) — which also leaves it unable to
-	// read membership for itself. The broker owns that fact and pushes it here on
-	// startup and on every change, so node-info reports one live value rather
-	// than deriving a second one.
-	//
-	// The value is a peer's only mDNS-independent way to learn that this node has
-	// left a cluster: cluster membership otherwise reaches the fleet solely as the
-	// cluster-uuid= TXT key, and a consumer that stops receiving this node's mDNS
-	// record keeps its last observed value indefinitely.
+	// With --cluster-dir, node-info reads membership from the mesh. Standalone
+	// deployments without a directory receive the identity from their parent.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
+	MethodSetPeerMetadata    = "nodeinfo:set-peer-metadata"
+	NotifyInfoUpdated        = "nodeinfo:info-updated"
+	MethodLocalNodeInfo      = "discovery:local-node-info"
 
 	// NotifyObservedAddresses is nvpair-node-info -> broker: the local addresses
 	// peers have actually reached this node on, learned from its own accepted
@@ -334,8 +330,8 @@ const (
 	// This is the only direct evidence a host can have about which of its
 	// addresses work from somewhere else. Everything else it can see — routes,
 	// interface flags, multicast success — describes the link from this side. A
-	// peer completing a request proves the whole path, and the desktop polls every
-	// peer's node-info continuously, so the proof arrives on its own.
+	// peer completing a request proves the whole path. Remote scanner and manual
+	// workers supply these observations through their node-info inventory reads.
 	NotifyObservedAddresses = "nodeinfo:observed-addresses"
 
 	// MethodSetObservedAddresses is broker -> nvpair-node-scanner, relaying
@@ -369,6 +365,7 @@ const (
 	NotifyNodeUpdated    = "discovery:node-updated"
 	NotifyNodeRemoved    = "discovery:node-removed"
 	NotifyNodeTelemetry  = "discovery:node-telemetry"
+	NotifyNodeInfo       = "discovery:node-info"
 
 	// NotifyNodes is the broker relay -> subscriber push: the subscriber's full
 	// filtered node set, re-sent on every change. Consumers replace their set
@@ -447,6 +444,115 @@ type MemoryInfo struct {
 	UsedBytes  uint64 `json:"used_bytes,omitempty"`
 }
 
+// NodeInfo is a hardware snapshot. Its identity fields do not establish source
+// ownership; the receiving service must establish that through IPC or pinned TLS.
+type NodeInfo struct {
+	GPUs           []GPUInfo   `json:"GPUs"`
+	CPU            *CPUInfo    `json:"cpu,omitempty"`
+	Memory         *MemoryInfo `json:"memory,omitempty"`
+	TelemetryValid bool        `json:"telemetryValid"`
+	MSSince        int64       `json:"msSince"`
+	// ObservedAt is the local receipt time for the whole display observation,
+	// assigned by the collecting worker or broker in Unix milliseconds. It stays
+	// fixed across cached delivery and replay, independently of GPU sample age,
+	// and does not establish trust.
+	ObservedAt  int64   `json:"observedAt,omitempty"`
+	HostUUID    string  `json:"hostUuid,omitempty"`
+	ClusterUUID *string `json:"clusterUuid,omitempty"`
+	// Peer is included only in peer node inventory served over pinned mTLS.
+	Peer *PeerMetadata `json:"peer,omitempty"`
+}
+
+// DecodeNodeInfo reads a complete hardware response bounded to 64 KiB.
+// Callers remain responsible for authenticating or stripping its identity.
+func DecodeNodeInfo(reader io.Reader) (NodeInfo, error) {
+	const maxBytes = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return NodeInfo{}, err
+	}
+	if len(body) > maxBytes {
+		return NodeInfo{}, fmt.Errorf("node-info response exceeds %d bytes", maxBytes)
+	}
+	var info *NodeInfo
+	if err := json.Unmarshal(body, &info); err != nil {
+		return NodeInfo{}, err
+	}
+	if info == nil {
+		return NodeInfo{}, fmt.Errorf("node-info response is null")
+	}
+	return *info, nil
+}
+
+// Aged returns a copy whose sample age includes time spent in a queue or cache.
+// It preserves validity and clamps age to avoid negative values or overflow.
+func (info NodeInfo) Aged(elapsed time.Duration) NodeInfo {
+	info.MSSince = agedMilliseconds(info.TelemetryValid, info.MSSince, elapsed)
+	return info
+}
+
+func agedMilliseconds(valid bool, age int64, elapsed time.Duration) int64 {
+	if !valid {
+		return 0
+	}
+	if age < 0 {
+		age = 0
+	}
+	const maxAge = int64(1<<63 - 1)
+	if ms := elapsed.Milliseconds(); ms > 0 {
+		if ms > maxAge-age {
+			return maxAge
+		}
+		age += ms
+	}
+	return age
+}
+
+// LocalNodeInfoParams is sent only on owned worker IPC, never from a client or
+// from a discovered endpoint. The scanner anchors it to its local registry.
+type LocalNodeInfoParams struct {
+	Info NodeInfo `json:"info"`
+	// CapturedAt anchors Info's sample age before serialization and pipe writes.
+	// It uses the shared host clock, never a timestamp supplied by a remote node.
+	CapturedAt int64 `json:"capturedAt"`
+}
+
+// InfoAt includes time spent delivering an owned snapshot. An absent or future
+// capture time cannot establish GPU freshness, but hardware remains displayable.
+func (p LocalNodeInfoParams) InfoAt(at time.Time) NodeInfo {
+	info := p.Info
+	if p.CapturedAt <= 0 || p.CapturedAt > at.UnixMilli() {
+		info.TelemetryValid, info.MSSince = false, 0
+		return info
+	}
+	return info.Aged(at.Sub(time.UnixMilli(p.CapturedAt)))
+}
+
+// NodeInfoEvent carries owned local hardware, authenticated peer hardware, or a
+// display-only public preview. Record identity and verification come from the
+// scanner, never from public HTTP. Unverified previews use the discovery record
+// ID and cannot supply canonical identity, registry metadata, or scheduling data.
+type NodeInfoEvent struct {
+	DiscoveryRecordID    string               `json:"discoveryRecordId"`
+	HostUUID             string               `json:"hostUuid"`
+	ClusterUUID          string               `json:"clusterUuid,omitempty"`
+	IdentityVerification IdentityVerification `json:"identityVerification"`
+	Info                 NodeInfo             `json:"info"`
+}
+
+// PeerMetadata comes from this host's local scanner registry, not mDNS input.
+type PeerMetadata struct {
+	Name      string             `json:"name"`
+	Addresses []string           `json:"addresses"`
+	Services  map[ServiceKey]int `json:"services"`
+}
+
+type PeerMetadataParams struct {
+	HostUUID    string       `json:"hostUuid"`
+	ClusterUUID string       `json:"clusterUuid"`
+	Peer        PeerMetadata `json:"peer"`
+}
+
 // ProbeStatus is a service's per-service liveness facet. Liveness is kept
 // distinct from trust: an untrusted gated service (a 403/TLS failure against a
 // peer we hold no pin for) is "inaccessible", never "unreachable" — only a
@@ -464,26 +570,60 @@ const (
 // plus its liveness facet.
 //
 // Probe is reserved and currently always ProbeUnknown: the daemon does not yet
-// report a per-service liveness facet to subscribers. The critical liveness
-// guarantee — the TCP-probe-before-evict anti-flap guard — IS
-// implemented on the daemon (it keeps a still-reachable node across a transient
-// mDNS miss); surfacing per-service reachable/unreachable/inaccessible here is a
-// deferred reporting feature (it would add a probe per service per browse).
+// report per-service liveness to subscribers. Scanner retains authenticated
+// peers across multicast misses using accepted inventory or recent inference
+// activity; per-service status reporting remains unimplemented.
 type ServiceStatus struct {
 	Port  int         `json:"port"`
 	Probe ProbeStatus `json:"probe,omitempty"`
 }
 
+// IdentityVerification records how the scanner established a record's identity.
+type IdentityVerification string
+
+const (
+	// IdentityLocal is assigned to this host's record published from the owned
+	// local registry, for example when scanner publishes registered local services.
+	// A discovered record claiming our UUID or a loopback address is not local.
+	IdentityLocal IdentityVerification = "local"
+
+	// IdentityPinned is assigned after a remote node-info read authenticates the
+	// endpoint against the exact currently approved certificate pin and validates
+	// the response identity, for example when promoting a discovered cluster peer.
+	IdentityPinned IdentityVerification = "pinned"
+
+	// IdentityUnverified is assigned when endpoint ownership has not been proved,
+	// for example for an mDNS announcement or a manually configured address before
+	// authentication. This includes announcements claiming an identity with a pin.
+	IdentityUnverified IdentityVerification = "unverified"
+)
+
 // DirectoryNode is one node in the consolidated directory served by
 // discovery:get-nodes, carried in the daemon's discovery:node-* events, and
-// listed in the broker's discovery:nodes snapshots. It replaces
-// the per-service EnrichedNode: identity is the stable hostUuid, transport is
-// derived from Services + Clustered (never carried), and node-info enrichment
-// decorates entries that advertise a node-info service.
+// listed in the broker's discovery:nodes snapshots. DiscoveryRecordID tracks
+// each local record, authenticated peer proof, or unverified observation, while
+// IdentityVerification records its provenance. HostUUID is authoritative only
+// for local or pinned records. Verified inventory comes from the owned local
+// registry or a peer's authenticated node-info response.
 type DirectoryNode struct {
-	HostUUID string `json:"hostUuid"`
-	Name     string `json:"name"` // mDNS instance name (hostname)
-	IP       string `json:"ip"`   // canonical dialable LAN address
+	// DiscoveryRecordID is PAIR's tracking key for one mDNS discovery, local
+	// registry record, or manual configuration. HostUUID is the machine UUID
+	// that discovery or configuration *claims* to represent.
+	//
+	// For example, an announcement at 192.0.2.20 and an impersonating announcement
+	// at 192.0.2.30 can both advertise HostUUID="host-a". The scanner assigns them
+	// different DiscoveryRecordIDs because their connection candidates differ.
+	// The advertised HostUUID alone cannot distinguish those announcements.
+	//
+	// A separate DiscoveryRecordID means a separate candidate to track, not proof
+	// of a different physical machine. IdentityVerification records whether the
+	// host identity comes from our owned local registry, pinned authentication,
+	// or an unverified claim.
+	DiscoveryRecordID    string               `json:"discoveryRecordId"`
+	IdentityVerification IdentityVerification `json:"identityVerification"`
+	HostUUID             string               `json:"hostUuid"`
+	Name                 string               `json:"name"` // mDNS instance name (hostname)
+	IP                   string               `json:"ip"`   // canonical dialable LAN address
 	// IPs is every address this node published, in its own ranked order with IP
 	// first. A multi-homed node has no single address every peer can reach — a
 	// direct-connect link is reachable only from the machine on its far end — so
@@ -491,7 +631,7 @@ type DirectoryNode struct {
 	// only answer. Empty for a node that published one address.
 	IPs         []string                     `json:"ips,omitempty"`
 	ClusterUUID string                       `json:"clusterUuid,omitempty"`
-	Trusted     bool                         `json:"trusted"` // we hold a cluster pin for it
+	Trusted     bool                         `json:"trusted"` // verified peer with a current pin, or local membership
 	Services    map[ServiceKey]ServiceStatus `json:"services"`
 	GPUs        []GPUInfo                    `json:"gpus,omitempty"`
 	CPU         *CPUInfo                     `json:"cpu,omitempty"`
@@ -515,7 +655,52 @@ type DirectoryNode struct {
 	// empty list means "running, nothing loaded"; a missing key means the peer
 	// didn't report loaded state for it. Omitted when the peer reports none.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
-	LastSeen       int64               `json:"lastSeen"` // Unix seconds
+	// DownloadedByEngine is the model inventory of an engine that advertises
+	// only the model it is serving (vLLM), so ModelsByEngine holds just that one
+	// for routing. It lists every model the engine can load, read even while the
+	// engine is stopped, so a model manager keeps its Load and Delete rows. Its
+	// LoadedByEngine entry names models the same way. An engine key with an empty
+	// list means the inventory was read and is empty; a missing key means it was
+	// not read. Enriched from engine-manager's em /v1/models downloadedByEngine
+	// field; omitted when no engine reports one.
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
+	LastSeen           int64               `json:"lastSeen"` // Unix seconds
+}
+
+// Equals compares directory state, including hardware identity and capacity,
+// but ignores utilization and used-memory measurements. Slice order matters,
+// and nil collections differ from empty collections.
+func (n DirectoryNode) Equals(other DirectoryNode) bool {
+	return n.DiscoveryRecordID == other.DiscoveryRecordID &&
+		n.IdentityVerification == other.IdentityVerification &&
+		n.HostUUID == other.HostUUID &&
+		n.Name == other.Name &&
+		n.IP == other.IP &&
+		equalSlice(n.IPs, other.IPs) &&
+		n.ClusterUUID == other.ClusterUUID &&
+		n.Trusted == other.Trusted &&
+		(n.Services == nil) == (other.Services == nil) && maps.Equal(n.Services, other.Services) &&
+		(n.GPUs == nil) == (other.GPUs == nil) &&
+		slices.EqualFunc(n.GPUs, other.GPUs, func(a, b GPUInfo) bool {
+			return a.Name == b.Name && a.VramBytes == b.VramBytes
+		}) &&
+		(n.CPU == nil) == (other.CPU == nil) &&
+		(n.CPU == nil || n.CPU.Name == other.CPU.Name && n.CPU.Cores == other.CPU.Cores) &&
+		(n.Memory == nil) == (other.Memory == nil) &&
+		(n.Memory == nil || n.Memory.TotalBytes == other.Memory.TotalBytes) &&
+		equalSlice(n.Models, other.Models) &&
+		(n.ModelsByEngine == nil) == (other.ModelsByEngine == nil) &&
+		maps.EqualFunc(n.ModelsByEngine, other.ModelsByEngine, equalSlice[string]) &&
+		(n.LoadedByEngine == nil) == (other.LoadedByEngine == nil) &&
+		maps.EqualFunc(n.LoadedByEngine, other.LoadedByEngine, equalSlice[string]) &&
+		(n.DownloadedByEngine == nil) == (other.DownloadedByEngine == nil) &&
+		maps.EqualFunc(n.DownloadedByEngine, other.DownloadedByEngine, equalSlice[string]) &&
+		n.LastSeen == other.LastSeen
+}
+
+// equalSlice compares ordered values while distinguishing nil from empty slices.
+func equalSlice[T comparable](a, b []T) bool {
+	return (a == nil) == (b == nil) && slices.Equal(a, b)
 }
 
 // Clustered reports whether the node advertises a cluster identity.
@@ -537,12 +722,8 @@ func (n DirectoryNode) CandidateIPs() []string {
 // AddressTXT returns the ip= (and, for a multi-homed node, ips=) TXT strings for
 // this node's published addresses.
 //
-// It exists so every consumer that re-projects a directory node onto a TXT-shaped
-// value — the broker's enriched node, both inference proxies, the cluster
-// resolver — emits the same keys in the same order. Each of them built this by
-// hand before, and each of them collapsed the address list to one entry while
-// doing it, which is what left a caller with a single unreachable address and
-// nothing else to try.
+// Consumers projecting a directory record onto TXT share this representation
+// so service boundaries preserve the ranked addresses needed for failover.
 func (n DirectoryNode) AddressTXT() []string {
 	ips := n.CandidateIPs()
 	if len(ips) == 0 {
@@ -589,12 +770,7 @@ func (p SubscribeParams) Matches(n DirectoryNode) bool {
 	if len(p.Services) == 0 {
 		return true
 	}
-	for _, s := range p.Services {
-		if n.HasService(s) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(p.Services, n.HasService)
 }
 
 // GetNodesParams optionally filters discovery:get-nodes to a single service.
@@ -622,4 +798,10 @@ type NodeTelemetry struct {
 	GPUUtilizationPct uint32 `json:"gpuUtilizationPercent"`
 	TelemetryValid    bool   `json:"telemetryValid"`
 	MSSince           int64  `json:"msSince"`
+}
+
+// Aged advances the sample age without changing its identity or measurements.
+func (telemetry NodeTelemetry) Aged(elapsed time.Duration) NodeTelemetry {
+	telemetry.MSSince = agedMilliseconds(telemetry.TelemetryValid, telemetry.MSSince, elapsed)
+	return telemetry
 }

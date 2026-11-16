@@ -61,5 +61,36 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
             label: 'llama.cpp',
             url: 'https://huggingface.co/models?library=gguf'
         }
+    },
+    vllm: {
+        hasExpiry: false,
+        // vLLM serves one model per process and cannot drop it while running, so
+        // Eject stops the engine, which frees all of its GPU memory. Load starts
+        // it again on the chosen model.
+        hasEject: true,
+        // Linux (NVIDIA) and Apple Silicon macOS (vLLM-Metal). vLLM has no
+        // native Windows path.
+        hasInstall: ['linux', 'darwin'],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        // The cache is on disk, so the model list, Add model, Delete and Load all
+        // work while the engine is stopped (Load starts it).
+        hasModelSearchOnlyWhenRunning: false,
+        modelOpsWhenStopped: true,
+        // delete_model removes a model from the shared Hugging Face cache. The
+        // loaded model is refused, so Delete is disabled on it until Eject.
+        // Deleting the model an ejected or stopped vLLM is set to serve leaves it
+        // with no model selected until Load picks one.
+        hasDeleteModel: true,
+        deleteBlockedWhileLoaded: true,
+        // Load writes the model into the launch arguments and restarts vLLM on it.
+        loadRestartsEngine: true,
+        engineHub: {
+            label: 'vLLM',
+            url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
+        }
     }
 }

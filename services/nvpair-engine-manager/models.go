@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,10 +40,24 @@ const modelsTimeout = 5 * time.Second
 // loaded_models succeeds, a loaded name can appear here without a matching
 // ByEngine/Models entry until the next successful sweep. Its own omitempty drops
 // the whole map when no engine reports loaded state.
+//
+// DownloadedByEngine is the model inventory of an engine that advertises only
+// what it is serving (advertised_models "loaded", such as vLLM): ByEngine holds
+// the names a request may be routed to, and this holds every model the engine
+// can load, so a model manager keeps its rows for models that are on disk but
+// not being served. It is read whenever the engine is installed, running or
+// not, because such an engine's list_models needs no running server. Its
+// LoadedByEngine entry is present and empty while it is stopped, and names
+// models in this list's terms (loaded_models'
+// result.inventory_field), so a model served under an alias still marks its
+// cached row as loaded. An empty list means the inventory was read and is empty;
+// a missing key means it was not read (not installed, or the read failed). An
+// engine whose advertised list is its inventory has no entry here.
 type ModelsResult struct {
-	Models         []string            `json:"models"`
-	ByEngine       map[string][]string `json:"modelsByEngine,omitempty"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	Models             []string            `json:"models"`
+	ByEngine           map[string][]string `json:"modelsByEngine,omitempty"`
+	LoadedByEngine     map[string][]string `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
 }
 
 // Models returns the union of model names served by every installed, running
@@ -53,33 +68,44 @@ func (e *Executor) Models(ctx context.Context) []string {
 	return e.ModelsResult(ctx).Models
 }
 
+// engineModels is one engine's answer within a ModelsResult sweep. Each list
+// has an ok flag because an empty list read successfully and a list that could
+// not be read mean different things on the wire.
+type engineModels struct {
+	advertised, loaded, downloaded       []string
+	advertisedOK, loadedOK, downloadedOK bool
+	statusErr                            error
+}
+
 // ModelsResult queries each installed, running engine's loopback list_models
 // endpoint (reusing the manifest action machinery), normalizes the
 // engine-specific shapes, and returns both the flat de-duplicated union and the
 // per-engine attribution — from a single sweep, so a caller needing both
 // (the /v1/models HTTP surface, the engine:models RPC) never sweeps twice.
 // Stopped engines contribute nothing — their model list isn't queryable while
-// the server is down. Best-effort: a per-engine failure is logged and skipped
-// so the engines that did answer still surface their models.
+// the server is down — except the DownloadedByEngine inventory of an engine
+// that advertises its loaded set, which is read from disk. Best-effort: a
+// per-engine failure is logged and skipped so the engines that did answer
+// still surface their models.
 //
-// The per-engine queries run CONCURRENTLY. A host running several engines (e.g.
-// Ollama + LM Studio) must not have the later engines squeezed out of a single
-// shared deadline: sequential queries under one budget meant a slow first engine
-// left little for the second, and the peer's discovery daemon fetches this over
-// HTTP with its own (shorter) timeout, so a squeezed second engine silently
-// dropped its models for peers. Concurrency bounds the sweep by the slowest
-// single engine, not the sum.
+// Queries run concurrently so a slow engine does not consume the time available
+// to the others. The five-second limit covers status checks and model-list
+// requests for every engine.
 func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
+	res, _ := e.modelsResult(ctx)
+	return res
+}
+
+// modelsResult also reports a canceled sweep to HTTP callers, which must not
+// replace a peer's last-good inventory with a successful partial response.
+func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, modelsTimeout)
 	defer cancel()
 
 	engineNames := e.reg.Names()
 	// Results indexed by engine position so the flattened output stays
 	// deterministic (registration order) despite concurrent completion.
-	perEngine := make([][]string, len(engineNames))
-	listOK := make([]bool, len(engineNames))
-	loaded := make([][]string, len(engineNames))
-	loadedOK := make([]bool, len(engineNames))
+	perEngine := make([]engineModels, len(engineNames))
 	var wg sync.WaitGroup
 	for i, name := range engineNames {
 		mf, ok := e.reg.Get(name)
@@ -96,74 +122,137 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 		if listSpec == nil && loadedSpec == nil {
 			continue
 		}
-		wg.Add(1)
-		go func(i int, name string, listSpec, loadedSpec *ActionResult) {
-			defer wg.Done()
-			st, err := e.Status(name)
-			if err != nil || !st.Running {
+		wg.Go(func() {
+			// Unsupported engines are omitted, as in get-installed.
+			if _, err := e.state(name); err != nil {
 				return
 			}
+			st, err := e.statusWithContext(ctx, name, 0, true)
+			if err != nil {
+				perEngine[i].statusErr = err
+				return
+			}
+			// An engine that can only answer for what it is running advertises its
+			// loaded set. Its list_models is a view of what could be loaded, which
+			// is not what a peer or the proxy may route to, so it is reported apart.
+			if mf.AdvertisedModels == advertisedModelsLoaded && loadedSpec != nil {
+				perEngine[i] = e.loadedOnlyEngineModels(ctx, name, st, listSpec, loadedSpec)
+				return
+			}
+			if !st.Running {
+				return
+			}
+			var r engineModels
 			if listSpec != nil {
-				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {
-					slog.Debug("engine:models list_models failed", "engine", name, "err", err)
-				} else if models, ok := extractStringsResult(raw, listSpec); ok {
-					perEngine[i] = models
-					listOK[i] = true
-				} else {
-					slog.Debug("engine:models list_models returned an invalid inventory", "engine", name)
-				}
+				r.advertised, r.advertisedOK = e.queryModelList(ctx, name, "list_models", listSpec)
 			}
 			if loadedSpec != nil {
-				if raw, err := e.Action(ctx, name, "loaded_models", nil); err != nil {
-					slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
-				} else if models, ok := extractStringsResult(raw, loadedSpec); ok {
-					// A successful query — even an empty result — records the key
-					// so a consumer can tell "running, nothing loaded" apart from
-					// "unknown". An action or shape error leaves loadedOK[i] false.
-					loaded[i] = models
-					loadedOK[i] = true
-				} else {
-					slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
-				}
+				// A successful query — even an empty result — records the key so a
+				// consumer can tell "running, nothing loaded" apart from "unknown".
+				r.loaded, r.loadedOK = e.queryModelList(ctx, name, "loaded_models", loadedSpec)
 			}
-		}(i, name, listSpec, loadedSpec)
+			perEngine[i] = r
+		})
 	}
 	wg.Wait()
 
 	res := ModelsResult{Models: []string{}}
 	seen := map[string]bool{}
-	for i, models := range perEngine {
-		if listOK[i] {
-			if res.ByEngine == nil {
-				res.ByEngine = make(map[string][]string)
-			}
-			// Normalize nil -> [] so the wire distinguishes a successful empty
-			// inventory from a missing/not-queryable engine.
-			if models == nil {
-				models = []string{}
-			}
-			res.ByEngine[engineNames[i]] = models
-			for _, m := range models {
+	for i, r := range perEngine {
+		name := engineNames[i]
+		if r.advertisedOK {
+			res.ByEngine = withModels(res.ByEngine, name, r.advertised)
+			for _, m := range r.advertised {
 				if m != "" && !seen[m] {
 					seen[m] = true
 					res.Models = append(res.Models, m)
 				}
 			}
 		}
-		if loadedOK[i] {
-			if res.LoadedByEngine == nil {
-				res.LoadedByEngine = make(map[string][]string)
-			}
-			// Normalize nil -> [] so the wire carries an empty array ("queried,
-			// nothing resident"), never null.
-			ld := loaded[i]
-			if ld == nil {
-				ld = []string{}
-			}
-			res.LoadedByEngine[engineNames[i]] = ld
+		if r.loadedOK {
+			res.LoadedByEngine = withModels(res.LoadedByEngine, name, r.loaded)
+		}
+		if r.downloadedOK {
+			res.DownloadedByEngine = withModels(res.DownloadedByEngine, name, r.downloaded)
 		}
 	}
-	return res
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+	for _, result := range perEngine {
+		if result.statusErr != nil {
+			return res, result.statusErr
+		}
+	}
+	return res, nil
+}
+
+// loadedOnlyEngineModels answers for an engine that advertises its loaded set.
+// Its inventory comes from list_models whenever it is installed, since that
+// list is read from disk and needs no running server, and while it is stopped
+// it reports nothing loaded. While it runs, one
+// loaded_models response gives both the names it answers to (result.field,
+// such as vLLM's served name) and, when result.inventory_field is set, the same
+// models in the inventory's terms (vLLM's --model).
+func (e *Executor) loadedOnlyEngineModels(ctx context.Context, name string, st EngineStatus, listSpec, loadedSpec *ActionResult) engineModels {
+	var r engineModels
+	if !st.Installed {
+		return r
+	}
+	if listSpec != nil {
+		r.downloaded, r.downloadedOK = e.queryModelList(ctx, name, "list_models", listSpec)
+	}
+	if !st.Running {
+		// A stopped engine of this kind has nothing loaded, which is known, not
+		// unknown: its rows show as not loaded rather than unreported.
+		r.loadedOK = true
+		return r
+	}
+	raw, err := e.Action(ctx, name, "loaded_models", nil)
+	if err != nil {
+		slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
+		return r
+	}
+	r.advertised, r.advertisedOK = extractStringsResult(raw, loadedSpec)
+	r.loaded, r.loadedOK = r.advertised, r.advertisedOK
+	if loadedSpec.InventoryField != "" {
+		inventorySpec := *loadedSpec
+		inventorySpec.Field = loadedSpec.InventoryField
+		r.loaded, r.loadedOK = extractStringsResult(raw, &inventorySpec)
+	}
+	if !r.advertisedOK || !r.loadedOK {
+		slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
+	}
+	return r
+}
+
+// queryModelList runs one model-list action and extracts its names. ok is
+// false when the action failed or its response was not a valid list.
+func (e *Executor) queryModelList(ctx context.Context, name, action string, spec *ActionResult) ([]string, bool) {
+	raw, err := e.Action(ctx, name, action, nil)
+	if err != nil {
+		slog.Debug("engine:models action failed", "engine", name, "action", action, "err", err)
+		return nil, false
+	}
+	models, ok := extractStringsResult(raw, spec)
+	if !ok {
+		slog.Debug("engine:models action returned an invalid inventory", "engine", name, "action", action)
+	}
+	return models, ok
+}
+
+// withModels records one engine's list in a per-engine map, creating the map on
+// first use. A nil list is stored as [] so the wire carries an empty array
+// ("read, nothing there"), never null.
+func withModels(m map[string][]string, engine string, models []string) map[string][]string {
+	if m == nil {
+		m = make(map[string][]string)
+	}
+	if models == nil {
+		models = []string{}
+	}
+	m[engine] = models
+	return m
 }
 
 // extractStrings is the value-only wrapper used by focused extractor tests.
@@ -239,12 +328,7 @@ func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
 	if err := json.Unmarshal(fv, &s); err != nil {
 		return false
 	}
-	for _, want := range m.In {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.In, s)
 }
 
 func resolveObjectPath(obj map[string]json.RawMessage, path string) (json.RawMessage, bool) {

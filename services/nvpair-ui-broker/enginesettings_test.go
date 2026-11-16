@@ -61,7 +61,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 
 func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 4)
+	ports := make([]int, 5)
 	releases := make([]func(), len(ports))
 	for i := range ports {
 		ports[i], releases[i] = reserveSettingsPort(t)
@@ -77,6 +77,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 		"ollama":   {ready: true, port: ports[1]},
 		"lmstudio": {ready: true, port: ports[2]},
 		"llamacpp": {ready: true, port: ports[3]},
+		"vllm":     {ready: true, port: ports[4]},
 	}}
 	for _, profile := range engineProxyProfiles {
 		h.b.setEngineProxyHandle(profile, proxy)
@@ -109,6 +110,9 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 		}
 	}()
 	launch := settings.LaunchState{Engine: engine, ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
+	if engine == "llamacpp" {
+		launch.ModelSource = "huggingface"
+	}
 	go func() {
 		for {
 			msg, err := codec.Read()
@@ -134,7 +138,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 					p.Settings.LaunchText = strings.TrimPrefix(p.Settings.LaunchText, "managed serve ")
 				}
 				h.launchMu.Lock()
-				restart := launch.Running && (p.Settings.ServerPort != launch.ServerPort || p.Settings.LaunchText != launch.LaunchText)
+				restart := launch.Running && (p.Settings.ServerPort != launch.ServerPort || p.Settings.LaunchText != launch.LaunchText || p.Settings.ModelSource != launch.ModelSource)
 				h.launchMu.Unlock()
 				assert.NoError(t, codec.Respond(msg.ID, settings.Preview{Settings: p.Settings, Restart: restart}))
 			case "engine:configure-launch":
@@ -163,6 +167,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 					h.launchMu.Lock()
 					launch.ServerPort = p.Settings.ServerPort
 					launch.LaunchText = p.Settings.LaunchText
+					launch.ModelSource = p.Settings.ModelSource
 					launch.Running = false
 					h.launchMu.Unlock()
 					if err := h.b.rebindSettingsProxy(p.Engine, p.Settings.ProxyPort); err != nil {
@@ -199,6 +204,32 @@ func (h *settingsHarness) request(t *testing.T) settings.Request {
 	s, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "ollama"}, "")
 	require.NoError(t, err)
 	return settings.Request{Engine: "ollama", ExpectedRevision: s.Revision, RequestID: settingsID(), Settings: s.Settings}
+}
+
+func TestSettingsCoordinator_PreservesModelSourceAcrossWorkerAndJournal(t *testing.T) {
+	h := newSettingsHarnessForEngine(t, "llamacpp")
+	target := settings.Request{Engine: "llamacpp"}
+	before, err := h.b.getEngineSettings(context.Background(), target, "")
+	require.NoError(t, err)
+	require.Equal(t, "huggingface", before.Settings.ModelSource)
+	request := settings.Request{Engine: target.Engine, ExpectedRevision: before.Revision, RequestID: settingsID(), Settings: before.Settings}
+	request.Settings.ModelSource = "modelscope"
+	preview, err := h.b.previewEngineSettings(context.Background(), request, "")
+	require.NoError(t, err)
+	assert.True(t, preview.Restart)
+	receipt, err := h.b.applyEngineSettings(context.Background(), request, "")
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", receipt.Phase)
+	after, err := h.b.getEngineSettings(context.Background(), target, "")
+	require.NoError(t, err)
+	assert.Equal(t, "modelscope", after.Settings.ModelSource)
+	journal, err := h.b.engineSettingsPath()
+	require.NoError(t, err)
+	data, err := os.ReadFile(journal)
+	require.NoError(t, err)
+	var saved map[string]engineSettingsRecord
+	require.NoError(t, json.Unmarshal(data, &saved))
+	assert.Equal(t, "modelscope", saved["llamacpp"].Snapshot.Settings.ModelSource)
 }
 
 func TestSettingsCoordinator_TracksRevisionsDeduplicatesAndReportsFailures(t *testing.T) {

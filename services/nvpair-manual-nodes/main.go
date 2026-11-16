@@ -20,10 +20,7 @@ import (
 
 func main() {
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
-	clientCert := flag.String("client-cert", "", "path to PEM client certificate to present when probing TLS-enabled manual nodes")
-	clientKey := flag.String("client-key", "", "path to PEM client private key matching --client-cert")
-	caBundle := flag.String("ca-bundle", "", "path to PEM bundle of CAs to trust for verifying server certificates (additive to system trust store)")
-	clusterDir := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/); when set, a TLS manual node is probed over cluster mTLS with our pinned leaf")
+	clusterDir := flag.String("cluster-dir", "", "cluster identity and current certificate pins for authenticated node-info reads")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -35,21 +32,8 @@ func main() {
 
 	applog.Init("nvpair-manual-nodes", resolveLevel())
 
-	// While this node is a cluster member, a TLS manual node is probed over
-	// cluster mTLS (the only way to reach a clustered peer's node-info);
-	// otherwise the BYO --client-cert / plaintext paths are unchanged. The mesh is
-	// a live view of the cluster dir, so probes start using the cluster leaf as
-	// soon as this node joins, without a restart.
+	// The live mesh follows cluster changes without restarting the worker.
 	mesh := clustertrust.Open(*clusterDir)
-
-	tlsOpts := tlsClientOptions{
-		CertPath:     *clientCert,
-		KeyPath:      *clientKey,
-		CABundlePath: *caBundle,
-	}
-	if err := tlsOpts.validate(); err != nil {
-		log.Fatalf("invalid TLS configuration: %v", err)
-	}
 
 	var transport io.ReadWriteCloser
 	if *ipcPath != "" {
@@ -80,10 +64,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
-	mgr, err := NewManager(codec, tlsOpts, mesh)
-	if err != nil {
-		log.Fatalf("failed to construct manager: %v", err)
-	}
+	mgr := NewManager(codec, mesh)
 
 	if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("manager error: %v", err)

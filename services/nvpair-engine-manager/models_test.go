@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -251,44 +253,117 @@ func TestModelsResultNoLoadedAction_OmitsKey(t *testing.T) {
 	require.Nil(t, ex.ModelsResult(ctx).LoadedByEngine)
 }
 
-// TestSweepLoadedSeedsThenEmitsOnChange covers the watcher's core diff without
+// TestSweepModels_SeedsThenEmitsOnChange covers the watcher's core diff without
 // goroutines or timers: the first sweep only seeds a baseline (the caller,
 // watchLoaded, suppresses its emit), a subsequent identical sweep reports no
 // change, and a sweep after an eviction reports the engine as changed and
 // carries the fresh full model result as the push payload.
-func TestSweepLoaded_SeedsThenEmitsOnChange(t *testing.T) {
+func TestSweepModels_SeedsThenEmitsOnChange(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
-	ctx := context.Background()
+	ctx := t.Context()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	require.NoError(t, ex.Start(ctx, "fake"), "start")
 
-	// Seed sweep: baseline is {fake:[llama3.2:1b]}.
-	_, prev, _ := ex.sweepLoaded(ctx, nil)
-	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, prev, "seed baseline")
+	// Seed sweep: the loaded baseline is {fake:[llama3.2:1b]}.
+	_, prev, _ := ex.sweepModels(ctx, modelLists{})
+	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, prev.loaded, "seed baseline")
 
-	// No residency change -> no engine reported changed.
-	changed, prev, _ := ex.sweepLoaded(ctx, prev)
+	// No change -> no engine reported changed.
+	changed, prev, _ := ex.sweepModels(ctx, prev)
 	require.Empty(t, changed, "unchanged sweep reported")
 
 	// Evict everything -> fake changes; payload carries the empty loaded set.
 	setLoaded(t, ex, nil)
-	changed, _, res := ex.sweepLoaded(ctx, prev)
+	changed, _, res := ex.sweepModels(ctx, prev)
 	require.Equal(t, []string{"fake"}, changed, "changed")
 	require.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "pushed LoadedByEngine")
 }
 
-// TestSweepLoadedRetainsLastGoodOnTransientMiss covers the anti-churn guard: an
+// A pull or delete changes what an engine has, not what it has loaded. The push
+// has to follow it too, or a client that waits for pushes (the terminal
+// interface) keeps showing the old list until it asks again.
+func TestSweepModels_EmitsWhenAModelIsPulledOrDeleted(t *testing.T) {
+	test := func(name string, manifest func(t *testing.T) *Manifest, start bool, list func(ModelsResult) []string) {
+		t.Run(name, func(t *testing.T) {
+			m := manifest(t)
+			cache := m.Actions["list_models"].HFCache.Dir
+			ex := newTestExecutor(t, m)
+			ctx := t.Context()
+			if start {
+				t.Cleanup(func() { _ = ex.Stop("fake") })
+				require.NoError(t, ex.Start(ctx, "fake"))
+			}
+			_, prev, _ := ex.sweepModels(ctx, modelLists{})
+
+			writeHFRepo(t, cache, "org/pulled-model", llmFiles(map[string]string{"model.safetensors": "w"}))
+			changed, prev, res := ex.sweepModels(ctx, prev)
+			assert.Equal(t, []string{"fake"}, changed, "after the pull")
+			assert.Contains(t, list(res), "org/pulled-model", "the pushed list")
+
+			require.NoError(t, os.RemoveAll(filepath.Join(cache, "models--org--pulled-model")))
+			changed, _, res = ex.sweepModels(ctx, prev)
+			assert.Equal(t, []string{"fake"}, changed, "after the delete")
+			assert.NotContains(t, list(res), "org/pulled-model", "the pushed list")
+		})
+	}
+	test("a stopped engine that advertises only what it serves, such as vLLM",
+		func(t *testing.T) *Manifest { return loadedOnlyManifest(t, fakeEngineBin) }, false,
+		func(r ModelsResult) []string { return r.DownloadedByEngine["fake"] })
+	test("a running engine that advertises what it has",
+		func(t *testing.T) *Manifest {
+			m := loadedOnlyManifest(t, fakeEngineBin)
+			m.AdvertisedModels = ""
+			delete(m.Actions, "loaded_models")
+			require.NoError(t, m.Validate())
+			return m
+		}, true,
+		func(r ModelsResult) []string { return r.ByEngine["fake"] })
+}
+
+// While vLLM's cache cannot be read, a push caused by another engine carries no
+// vLLM list, and a consumer drops those rows. When the cache reads again the
+// list matches the last-good one, but it still has to be pushed once.
+func TestSweepModels_PushesADownloadedListThatReadsAgainUnchanged(t *testing.T) {
+	m := loadedOnlyManifest(t, fakeEngineBin)
+	cache := m.Actions["list_models"].HFCache.Dir
+	ex := newTestExecutor(t, m)
+	ctx := t.Context()
+	_, prev, _ := ex.sweepModels(ctx, modelLists{})
+	require.Equal(t, []string{"other/cached-model"}, prev.downloaded["fake"], "seed baseline")
+
+	require.NoError(t, os.Chmod(cache, 0))
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o755) })
+	changed, prev, res := ex.sweepModels(ctx, prev)
+	if _, read := res.DownloadedByEngine["fake"]; read {
+		t.Skip("this system can still read a directory with no permissions")
+	}
+	assert.Empty(t, changed, "a cache that cannot be read is not a change")
+
+	require.NoError(t, os.Chmod(cache, 0o755))
+	changed, prev, res = ex.sweepModels(ctx, prev)
+	assert.Equal(t, []string{"fake"}, changed, "the list read again")
+	assert.Equal(t, []string{"other/cached-model"}, res.DownloadedByEngine["fake"], "the pushed list")
+
+	changed, _, _ = ex.sweepModels(ctx, prev)
+	assert.Empty(t, changed, "pushed once, not on every sweep after")
+}
+
+// TestSweepModels_RetainsLastGoodOnTransientMiss covers the anti-churn guard: an
 // engine that drops out of a sweep (a transient loaded_models miss, indistinct
 // from a stop) is NOT reported as changed and keeps its last-good baseline, so a
 // single blip can't emit a spurious drop-then-re-add pair.
-func TestSweepLoaded_RetainsLastGoodOnTransientMiss(t *testing.T) {
+func TestSweepModels_RetainsLastGoodOnTransientMiss(t *testing.T) {
 	ex := newTestExecutor(t, loadedActionManifest())
-	prev := map[string][]string{"fake": {"llama3.2:1b"}}
+	prev := modelLists{
+		advertised: map[string][]string{"fake": {"llama3.2:1b"}},
+		loaded:     map[string][]string{"fake": {"llama3.2:1b"}},
+		downloaded: map[string][]string{},
+	}
 	// The engine isn't started, so ModelsResult reports it neither running nor
-	// queryable: LoadedByEngine has no "fake" key this sweep.
-	changed, next, _ := ex.sweepLoaded(context.Background(), prev)
+	// queryable: no list has a "fake" key this sweep.
+	changed, next, _ := ex.sweepModels(t.Context(), prev)
 	require.Empty(t, changed, "a disappeared engine reported")
-	require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, next, "baseline after miss")
+	require.Equal(t, prev, next, "baseline after miss")
 }
 
 func TestChangedEngines_IdentifiesInventoryDifferences(t *testing.T) {
@@ -319,4 +394,196 @@ func TestSameStringSet_IgnoresOrdering(t *testing.T) {
 	test("different elements", []string{"x"}, []string{"y"}, false)
 	test("duplicates matter", []string{"x", "x"}, []string{"x", "y"}, false)
 	test("same multiset with dups", []string{"x", "x", "y"}, []string{"y", "x", "x"}, true)
+}
+
+// loadedOnlyManifest is a vLLM-like engine: it advertises only what it is
+// serving (loaded_models on the OpenAI-shape /v1/models), and lists what it has
+// downloaded from a Hugging Face cache, which needs no running server.
+func loadedOnlyManifest(t *testing.T, bin string) *Manifest {
+	t.Helper()
+	cache := t.TempDir()
+	writeHFRepo(t, cache, "other/cached-model", llmFiles(map[string]string{"model.safetensors": "w"}))
+	m := testEngineManifest(bin)
+	m.AdvertisedModels = advertisedModelsLoaded
+	m.Actions["list_models"] = Action{
+		HFCache: &ActionHFCache{Dir: cache},
+		Result:  &ActionResult{Array: "data", Field: "id"},
+	}
+	m.Actions["loaded_models"] = Action{
+		HTTP:   &ActionHTTP{Method: "GET", Path: "/v1/models"},
+		Result: &ActionResult{Array: "data", Field: "id", InventoryField: "root"},
+	}
+	require.NoError(t, m.Validate())
+	return m
+}
+
+// An engine that serves one model per process can list many models on disk but
+// answers for only the one it is running. The proxy routes to any node that
+// advertises a model, so advertising the on-disk list would send requests to an
+// engine that cannot answer them. advertised_models: "loaded" advertises the
+// served model and reports the on-disk list apart, for model managers.
+func TestModelsResult_AdvertisesOnlyTheServedModelOfALoadedOnlyEngine(t *testing.T) {
+	ex := newTestExecutor(t, loadedOnlyManifest(t, fakeEngineBin))
+	ctx := t.Context()
+	t.Cleanup(func() { _ = ex.Stop("fake") })
+	require.NoError(t, ex.Start(ctx, "fake"))
+
+	res := ex.ModelsResult(ctx)
+	served := []string{"llama3.2:1b"} // what the fake engine is running
+	assert.Equal(t, map[string][]string{"fake": served}, res.ByEngine, "advertised per engine")
+	assert.Equal(t, served, res.Models, "advertised union")
+	assert.Equal(t, map[string][]string{"fake": served}, res.LoadedByEngine, "loaded")
+	assert.Equal(t, map[string][]string{"fake": {"other/cached-model"}}, res.DownloadedByEngine, "downloaded")
+}
+
+// Ejecting a vLLM model stops the engine. Its downloaded models must still be
+// reported, so a model manager on this node or a peer keeps the rows it needs to
+// Load or Delete them, while nothing is advertised for routing.
+func TestModelsResult_ReportsTheDownloadedModelsOfAStoppedLoadedOnlyEngine(t *testing.T) {
+	ex := newTestExecutor(t, loadedOnlyManifest(t, fakeEngineBin))
+	ctx := t.Context()
+
+	res := ex.ModelsResult(ctx)
+	assert.Equal(t, map[string][]string{"fake": {"other/cached-model"}}, res.DownloadedByEngine, "downloaded")
+	assert.Empty(t, res.ByEngine, "advertised per engine")
+	assert.Empty(t, res.Models, "advertised union")
+	assert.Equal(t, map[string][]string{"fake": {}}, res.LoadedByEngine, "nothing loaded, and known to be")
+}
+
+// A model the engine cannot read is unknown, not an empty cache: an engine that
+// is not installed reports no downloaded key at all.
+func TestModelsResult_OmitsTheDownloadedModelsOfAnEngineThatIsNotInstalled(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-installed")
+	ex := newTestExecutor(t, loadedOnlyManifest(t, missing))
+
+	res := ex.ModelsResult(t.Context())
+	assert.Nil(t, res.DownloadedByEngine)
+}
+
+// With vLLM's --served-model-name, requests use the alias, but the model list
+// names the cached repository. The alias is advertised for routing and the
+// loaded marker uses the repository, so the cached row shows as loaded.
+func TestModelsResult_MarksTheCachedModelLoadedWhenServedUnderAnAlias(t *testing.T) {
+	m := loadedOnlyManifest(t, fakeEngineBin)
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	plat := m.Platforms[key]
+	plat.Runtime.Env = map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}", "FAKE_SERVED_MODEL_NAME": "qwen-api"}
+	m.Platforms[key] = plat
+	ex := newTestExecutor(t, m)
+	ctx := t.Context()
+	t.Cleanup(func() { _ = ex.Stop("fake") })
+	require.NoError(t, ex.Start(ctx, "fake"))
+
+	res := ex.ModelsResult(ctx)
+	assert.Equal(t, map[string][]string{"fake": {"qwen-api"}}, res.ByEngine, "advertised per engine")
+	assert.Equal(t, []string{"qwen-api"}, res.Models, "advertised union")
+	assert.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.LoadedByEngine, "loaded")
+}
+
+// An engine whose advertised list is its inventory reports nothing apart.
+func TestModelsResult_OmitsDownloadedForAnEngineThatAdvertisesItsList(t *testing.T) {
+	ex := newTestExecutor(t, loadedActionManifest())
+	ctx := t.Context()
+	t.Cleanup(func() { _ = ex.Stop("fake") })
+	require.NoError(t, ex.Start(ctx, "fake"))
+
+	assert.Nil(t, ex.ModelsResult(ctx).DownloadedByEngine)
+}
+
+func TestInventoryField_IsOnlyForTheLoadedModelsOfALoadedOnlyEngine(t *testing.T) {
+	manifestWith := func(advertised, action, field string) *Manifest {
+		m := loadedActionManifest()
+		m.AdvertisedModels = advertised
+		act := m.Actions[action]
+		result := *act.Result
+		result.InventoryField = field
+		act.Result = &result
+		m.Actions[action] = act
+		return m
+	}
+	accept := func(name, advertised, action, field string) {
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, manifestWith(advertised, action, field).Validate())
+		})
+	}
+	reject := func(name, advertised, action, field string) {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, manifestWith(advertised, action, field).Validate())
+		})
+	}
+	accept("loaded_models of a loaded-only engine", advertisedModelsLoaded, "loaded_models", "root")
+	reject("engine that advertises its list", advertisedModelsList, "loaded_models", "root")
+	reject("action other than loaded_models", advertisedModelsLoaded, "list_models", "root")
+	reject("object path instead of a field name", advertisedModelsLoaded, "loaded_models", "a.b")
+}
+
+func TestAdvertisedModels_AcceptsOnlyKnownValuesItCanServe(t *testing.T) {
+	accept := func(name, value string) {
+		t.Run(name, func(t *testing.T) {
+			m := loadedActionManifest()
+			m.AdvertisedModels = value
+
+			assert.NoError(t, m.Validate())
+		})
+	}
+	reject := func(name string, m *Manifest, value string) {
+		t.Run(name, func(t *testing.T) {
+			m.AdvertisedModels = value
+
+			assert.Error(t, m.Validate())
+		})
+	}
+	accept("unset", "")
+	accept("the list", advertisedModelsList)
+	accept("loaded, with a loaded_models action", advertisedModelsLoaded)
+	reject("loaded without a loaded_models action", testEngineManifest(fakeEngineBin), advertisedModelsLoaded)
+	reject("an unknown value", testEngineManifest(fakeEngineBin), "everything")
+}
+
+// Canceling inventory should release its caller promptly. A later status read
+// must still be able to identify the listener after that cancellation.
+func TestModelsResult_CanceledCallerReturnsBeforeProbeCompletes(t *testing.T) {
+	test := func(name, advertised string) {
+		t.Run(name, func(t *testing.T) {
+			fixture := newBlockedReadinessFixture(t)
+			ex := fixture.executor
+			enableModelInventory(t, ex)
+			m, ok := ex.reg.Get("fake")
+			require.True(t, ok)
+			m.AdvertisedModels = advertised
+			m.Actions["loaded_models"] = m.Actions["list_models"]
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// Receive cancellation while the fixture still withholds the engine reply.
+			finished := make(chan error, 1)
+			go func() {
+				_, err := ex.modelsResult(ctx)
+				finished <- err
+			}()
+			awaitProbeStart(t, fixture.probeStarted)
+			cancel()
+			require.ErrorIs(t, awaitResult(t, finished), context.Canceled)
+			// The last caller leaving must stop the HTTP request before its reply is
+			// released, rather than merely letting the caller stop waiting.
+			awaitResult(t, fixture.probeCanceled)
+			fixture.releaseProbe()
+			status, err := ex.Status("fake")
+			require.NoError(t, err)
+			require.True(t, status.Running)
+		})
+	}
+	test("engine advertises its inventory", advertisedModelsList)
+	test("engine advertises its loaded models", advertisedModelsLoaded)
+}
+
+// enableModelInventory adds the result specification needed for modelsResult
+// to include this engine in an inventory sweep.
+func enableModelInventory(t *testing.T, ex *Executor) {
+	t.Helper()
+	m, ok := ex.reg.Get("fake")
+	require.True(t, ok)
+	m.Actions["list_models"] = Action{
+		HTTP:   &ActionHTTP{Method: http.MethodGet, Path: "/api/tags"},
+		Result: &ActionResult{Array: "models", Field: "name"},
+	}
 }

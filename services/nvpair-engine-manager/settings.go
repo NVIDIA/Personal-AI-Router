@@ -66,26 +66,11 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 				if command.Env == nil {
 					command.Env = map[string]string{}
 				}
-				for supplied := range command.Env {
-					if environmentKey(supplied) == environmentKey(name) {
-						delete(command.Env, supplied)
-					}
-				}
-				command.Env[name] = value
+				setEnvironmentValue(command.Env, name, value)
 			}
 		}
 	}
-	if rt.LaunchArgs == nil {
-		return command, nil
-	}
-	command.Args = slices.Clone(p.FixedArgs)
-	for _, control := range p.Controls {
-		if value, managed := control.managedValue(vars["host"], vars["port"]); managed && control.flag() != "" {
-			command.Args = append(command.Args, control.flag(), value)
-		}
-	}
-	command.Args = append(command.Args, rt.LaunchArgs...)
-
+	command.Args = launchArguments(rt, command.Args, vars)
 	return command, nil
 }
 
@@ -103,16 +88,21 @@ func resolveRuntimeCommand(rt Runtime, index int, vars map[string]string) (launc
 // launchForState is read-only; callers hold opMu, and neither preview nor a
 // settings read probes ports, starts processes or writes configuration.
 func launchForState(st *engineState, port int) (launchCommand, error) {
+	st.mu.Lock()
 	rt := st.plat.Runtime
-	vars := st.pathVars()
+	bin := st.binPath
+	st.mu.Unlock()
+	return resolveSettingsLaunch(rt, bin, port, st.pathVars())
+}
+
+// resolveSettingsLaunch uses captured values so a status update cannot change
+// the executable halfway through assembling a settings response.
+func resolveSettingsLaunch(rt Runtime, bin string, port int, vars map[string]string) (launchCommand, error) {
 	vars["host"] = effectiveBind(rt.Bind, "")
 	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
-	st.mu.Lock()
-	bin := st.binPath
-	st.mu.Unlock()
 	if rt.modeOrDefault() == "process" {
 		return resolveProcessLaunch(rt, bin, vars)
 	}
@@ -128,18 +118,22 @@ func launchForState(st *engineState, port int) (launchCommand, error) {
 
 func (e *Executor) launchStateLocked(engine string, st *engineState) settings.LaunchState {
 	st.mu.Lock()
-	result := settings.LaunchState{Engine: engine, ServerPort: st.plat.Runtime.Port, EffectivePort: st.port, Running: st.running, Adopted: st.adopted, Format: launchTextFormat}
+	rt, bin := st.plat.Runtime, st.binPath
+	result := settings.LaunchState{Engine: engine, ServerPort: rt.Port, EffectivePort: st.port, Running: st.running, Adopted: st.adopted, Format: launchTextFormat}
 	st.mu.Unlock()
-	command, err := launchForState(st, result.ServerPort)
+	command, err := resolveSettingsLaunch(rt, bin, result.ServerPort, st.pathVars())
+	if engine == "llamacpp" {
+		result.ModelSource = modelSource(st.plat.Runtime)
+	}
 	if err == nil {
-		result.LaunchText, err = command.argumentText(st.plat.Runtime.EditableLaunch)
+		result.LaunchText, err = command.argumentText(rt.EditableLaunch)
 	}
 	switch {
 	case err != nil:
 		result.Reason = "The engine launch configuration cannot be displayed."
-	case st.plat.Runtime.EditableLaunch == nil:
+	case rt.EditableLaunch == nil:
 		result.Reason = "This engine does not support launch settings."
-	case result.Running && result.Adopted && !canMoveAdoptedEngine(st.plat.Runtime):
+	case result.Running && result.Adopted && !canMoveAdoptedEngine(rt):
 		result.Reason = "Stop this engine in its own application before changing settings."
 	default:
 		result.Editable = true
@@ -152,6 +146,7 @@ func (e *Executor) LaunchSettings(engine string) (settings.LaunchState, error) {
 	if err != nil {
 		return settings.LaunchState{}, err
 	}
+	// Serialize with configuration writes without invalidating status checks.
 	st.opMu.Lock()
 	defer st.opMu.Unlock()
 	return e.launchStateLocked(engine, st), nil
@@ -246,6 +241,18 @@ func (e *Executor) PreviewLaunch(p settings.Request) (settings.Preview, error) {
 func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request) settings.Preview {
 	result := settings.Preview{Settings: request.Settings, Args: []string{}, Env: []string{}, Errors: map[string]string{}}
 	fail := func(message string) settings.Preview { result.Errors["launchText"] = message; return result }
+	if request.Engine == "llamacpp" {
+		if result.Settings.ModelSource == "" {
+			result.Settings.ModelSource = modelSource(st.plat.Runtime)
+		}
+		if result.Settings.ModelSource != "huggingface" && result.Settings.ModelSource != "modelscope" {
+			result.Errors["modelSource"] = "Select Hugging Face or ModelScope."
+			return result
+		}
+	} else if result.Settings.ModelSource != "" {
+		result.Errors["modelSource"] = "Model download source is only supported for llama.cpp."
+		return result
+	}
 	if request.Settings.ServerPort < 1 || request.Settings.ServerPort > 65535 {
 		result.Errors["serverPort"] = "Enter a server port from 1 to 65535."
 		return result
@@ -381,7 +388,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		return fail(err.Error())
 	}
 	current := e.launchStateLocked(request.Engine, st)
-	result.Restart = current.Running && (current.ServerPort != result.Settings.ServerPort || current.LaunchText != result.Settings.LaunchText)
+	result.Restart = current.Running && (current.ServerPort != result.Settings.ServerPort || current.LaunchText != result.Settings.LaunchText || current.ModelSource != result.Settings.ModelSource)
 	if !current.Editable {
 		return fail(current.Reason)
 	}
@@ -396,8 +403,15 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	if err != nil {
 		return settings.LaunchState{}, err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
+	return e.configureLaunchLocked(ctx, st, p, rebind)
+}
+
+// configureLaunchLocked is ConfigureLaunch for a caller that already holds
+// st.opMu, so a model switch or a delete can change the launch, start or roll
+// back without another operation slipping in between.
+func (e *Executor) configureLaunchLocked(ctx context.Context, st *engineState, p settings.Configure, rebind func() error) (settings.LaunchState, error) {
 	if err := ctx.Err(); err != nil {
 		return settings.LaunchState{}, err
 	}
@@ -411,7 +425,7 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	e.reporter.clear(startFailedID(p.Engine))
 	e.reporter.clear(exitedID(p.Engine))
 	old := e.launchStateLocked(p.Engine, st)
-	changed := old.ServerPort != preview.Settings.ServerPort || old.LaunchText != preview.Settings.LaunchText
+	changed := old.ServerPort != preview.Settings.ServerPort || old.LaunchText != preview.Settings.LaunchText || old.ModelSource != preview.Settings.ModelSource
 	// Stop before writing the override file. A stop failure returns with the
 	// engine still on its old launch, so persisting first would leave disk on
 	// the new one and the next start would silently adopt a configuration the
@@ -422,7 +436,7 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 		}
 	}
 	if changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, preview.Env) {
-		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env); err != nil {
+		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env, &preview.Settings.ModelSource); err != nil {
 			return e.launchStateLocked(p.Engine, st), err
 		}
 	}
@@ -430,6 +444,7 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	st.plat.Runtime.Port = preview.Settings.ServerPort
 	st.plat.Runtime.LaunchArgs = preview.Args
 	st.plat.Runtime.LaunchEnv = preview.Env
+	st.plat.Runtime.ModelSource = preview.Settings.ModelSource
 	st.port = preview.Settings.ServerPort
 	st.mu.Unlock()
 	if err := rebind(); err != nil {

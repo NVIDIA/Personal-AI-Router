@@ -150,7 +150,7 @@ func TestErrorContext_ShowsTheFullMessage(t *testing.T) {
 	flat := strings.Join(strings.Fields(got), " ")
 	assert.Contains(t, flat, strings.Join(strings.Fields(long), " "), "the full message must be in the detail block")
 	// And it must wrap rather than run off the side.
-	for _, line := range strings.Split(got, "\n") {
+	for line := range strings.SplitSeq(got, "\n") {
 		assert.LessOrEqual(t, len(line), 80, "detail line must fit the terminal: %q", line)
 	}
 }

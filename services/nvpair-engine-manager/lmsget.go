@@ -191,7 +191,7 @@ func isHTTPURL(s string) bool {
 // non-empty segments.
 func pathSegments(p string) []string {
 	var out []string
-	for _, s := range strings.Split(p, "/") {
+	for s := range strings.SplitSeq(p, "/") {
 		if s != "" {
 			out = append(out, s)
 		}

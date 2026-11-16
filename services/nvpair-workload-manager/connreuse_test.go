@@ -70,7 +70,7 @@ func TestBroadcast_ReusesPeerConnections(t *testing.T) {
 	defer b.CloseIdle()
 
 	const rounds = 5
-	for i := 0; i < rounds; i++ {
+	for range rounds {
 		b.Broadcast(context.Background(), []byte(`{"jsonrpc":"2.0","method":"workload:started","params":{}}`))
 	}
 

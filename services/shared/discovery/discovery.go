@@ -1,10 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package discovery provides a single mDNS service browser that five services
-// (nvpair-node-scanner, nvpair-errors, nvpair-proxy, nvpair-workload-manager,
-// nvpair-cluster-manager) each carried a near-identical copy of (the mDNS
-// dedup).
+// Package discovery provides the shared mDNS service browser and its
+// scan-and-diff state machine.
 //
 // The core is a scan-and-diff state machine: each scan browses a service type
 // over grandcat/zeroconf, re-sends the PTR query from a per-interface unicast
@@ -20,12 +18,12 @@
 //   - WithMissThreshold — consecutive misses before eviction (default
 //     missThresholdDefault).
 //   - WithNoEviction — accumulate-only, never evict (cluster-manager).
-//   - WithLivenessProbe — TCP-probe a threshold-missed node before evicting it;
-//     if it still answers, keep it (the proxies' anti-flap guard).
+//   - WithLivenessProbe — check availability before evicting a missing node;
+//     retain it while the callback has current evidence that it is available.
 //   - WithSelfFilter — drop our own advertisement from results (workload-manager).
-//   - WithKeyFunc — key the node map by something other than the instance name
-//     (cluster-manager keys by uuid= so two hosts sharing an instance name but
-//     distinct UUIDs don't collide).
+//   - WithKeyFunc — choose the key for each connection candidate instead of
+//     using its instance name. Scanner uses its discovery record ID to keep
+//     observations separate from the host identities they claim.
 //
 // Two consumption shapes are supported over the same core:
 //   - Run(ctx, events) — push: a background loop that emits Discovered/Updated/
@@ -51,65 +49,33 @@ import (
 	"github.com/miekg/dns"
 )
 
+// EventType identifies a change to the discovered set.
+type EventType string
+
 // Event types emitted by Run.
 const (
-	Discovered = "discovered"
-	Updated    = "updated"
-	Removed    = "removed"
+	Discovered EventType = "discovered"
+	Updated    EventType = "updated"
+	Removed    EventType = "removed"
 )
 
-// probeConcurrency bounds how many liveness probes run at once. A probe against
-// an address that silently drops SYNs (a firewalled or unroutable peer) burns
-// its full dial timeout, so probing serially lets a few such peers push one
-// reconcile past the scan interval and delay every other node's eviction or
-// recovery.
+// probeConcurrency bounds simultaneous availability callbacks. Checks run
+// outside the browser lock so a slow callback does not block directory readers.
 const probeConcurrency = 8
 
 // missThresholdDefault is how many consecutive scans a node must be absent from
 // before it becomes eligible for eviction. At the default 5s interval that is a
 // full minute of continuous silence.
 //
-// It was 15 seconds, which is not enough. A node saturated by its own inference
-// load starves its control plane of CPU: mDNS responses stop going out and
-// liveness probes stop being answered, for as long as the load lasts. Fifteen
-// seconds of that was read as a departure, so a busy node was dropped from the
-// cluster and its in-flight work failed with it — while it was still serving
-// requests.
-//
-// The cost of waiting longer is that a genuinely departed node lingers for
-// another three quarters of a minute. That is cheap: routing skips a node that
-// will not answer, so the visible effect is one request that fails and retries.
-// The cost of evicting too early is losing a working node and everything running
-// on it, which is not.
-//
-// Waiting longer does not mean looking less often. The scan interval is
-// unchanged, the node-info telemetry sweep still runs every couple of seconds,
-// and probeAfterMisses starts the liveness probe a quarter of the way in — so by
-// the time this threshold is reached the node has been asked repeatedly and has
-// declined every time, rather than having been ignored for a minute and then
-// judged on one dial.
-//
-// This is the coarse guard. The precise one is the node's own traffic — see
-// nvpair-node-scanner's activityFreshness, which keeps a node that is currently
-// streaming inference regardless of what its probes say.
+// The grace period avoids evicting a busy node whose multicast replies are
+// delayed. Availability checks begin after probeAfterMisses; scanner uses
+// recent authenticated inventory and inference activity to retain working peers.
 const missThresholdDefault = 12
 
-// probeAfterMisses is how many consecutive misses a node accumulates before the
-// liveness probe starts asking about it — a quarter of the default threshold, so
-// about fifteen seconds.
-//
-// Probing and giving up are separate decisions. The threshold above is when we
-// stop believing a node is there; this is when we start checking, and it stays
-// short so the minute is spent gathering evidence instead of waiting. A single
-// answer resets the miss counter and the node is fully recovered, which is the
-// common case for a peer whose multicast is being dropped while it is otherwise
-// perfectly reachable. It also means eviction rests on a run of failed probes
-// rather than the one that happens to land on the deadline.
-//
-// The added cost is one TCP connect per missing node per scan. It is independent
-// of node-info telemetry's failure backoff because it answers a different
-// question — whether an mDNS-missing node should be evicted — and it is never
-// aimed at an inference port.
+// probeAfterMisses is how many consecutive misses trigger an availability
+// callback, about fifteen seconds at the default scan interval. A positive
+// result resets the miss counter; otherwise the node continues toward eviction
+// at missThresholdDefault.
 const probeAfterMisses = 3
 
 // emptyScanGrace bounds how many consecutive scans that lose EVERY known node at
@@ -147,7 +113,7 @@ type Node struct {
 
 // Event is a change to the discovered set.
 type Event struct {
-	Type string // Discovered, Updated, or Removed
+	Type EventType
 	Node Node
 }
 
@@ -180,10 +146,9 @@ func WithMissThreshold(n int) Option { return func(o *options) { o.missThreshold
 // invite flow) rather than being evicted at the miss threshold.
 func WithNoEviction() Option { return func(o *options) { o.noEvict = true } }
 
-// WithLivenessProbe supplies a reachability check run against a threshold-missed
+// WithLivenessProbe supplies a bounded availability check for a threshold-missed
 // node before it is evicted; returning true keeps the node (its miss counter is
-// reset). This is the proxies' TCP-probe-before-evict guard: an mDNS miss is not
-// proof a node is gone. Probes run outside the browser lock and up to
+// reset). Callbacks run outside the browser lock and up to
 // probeConcurrency at a time, so fn must be safe for concurrent use.
 func WithLivenessProbe(fn func(Node) bool) Option { return func(o *options) { o.liveness = fn } }
 
@@ -194,8 +159,8 @@ func WithSelfFilter(selfInstance string) Option {
 }
 
 // WithKeyFunc keys the node map by fn(node) instead of the instance name. Return
-// "" to fall back to the instance name for that node. cluster-manager keys by
-// uuid= so two hosts sharing an instance name but distinct UUIDs don't collide.
+// "" to fall back to the instance name for that node. Scanner uses a discovery
+// record ID derived from the advertised endpoint and resolved addresses.
 func WithKeyFunc(fn func(Node) string) Option { return func(o *options) { o.keyFunc = fn } }
 
 // Browser maintains a reconciled set of discovered nodes for one service type.
@@ -516,13 +481,11 @@ func (b *Browser) probeLiveness(nodes []Node) []verdict {
 	slots := make(chan struct{}, probeConcurrency)
 	var wg sync.WaitGroup
 	for i, node := range nodes {
-		wg.Add(1)
 		slots <- struct{}{}
-		go func(i int, n Node) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-slots }()
-			verdicts[i] = verdict{node: n, alive: b.opt.liveness(n)}
-		}(i, node)
+			verdicts[i] = verdict{node: node, alive: b.opt.liveness(node)}
+		})
 	}
 	wg.Wait()
 	return verdicts

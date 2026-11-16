@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net"
 	"sync/atomic"
@@ -58,7 +57,7 @@ func TestDefaultEngineFacade_RetriesAwayFromReservedPorts(t *testing.T) {
 	serveFacadeEnable(t, proxyServer, map[int]bool{profile.FacadePort: true}, attempts)
 
 	err := b.enableEngineFacadeWithPortCheck(
-		context.Background(),
+		t.Context(),
 		proxy,
 		profile,
 		ollamaHostAlias{},

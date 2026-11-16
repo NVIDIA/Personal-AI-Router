@@ -38,7 +38,7 @@ func TestProbeHTTP_ReusesConnections(t *testing.T) {
 			ex := &Executor{client: client}
 			probe := &Probe{HTTP: "http://127.0.0.1:{port}/api/version"}
 			const rounds = 32
-			for i := 0; i < rounds; i++ {
+			for i := range rounds {
 				require.Equal(t, i%2 == 0, ex.probe(context.Background(), probe, 1), "poll (%v)", i)
 			}
 			require.Equal(t, int32(1), connections.Count(), "connection count after %d polls", rounds)

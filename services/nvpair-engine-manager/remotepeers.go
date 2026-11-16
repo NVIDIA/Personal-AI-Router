@@ -39,14 +39,31 @@ func newPeerDirectory() *peerDirectory {
 	return &peerDirectory{peers: make(map[string]ecPeer)}
 }
 
-// set replaces the directory from a discovery:nodes snapshot, keeping only nodes
-// that advertise the ec service and a dialable address.
+// set replaces the directory from a discovery:nodes snapshot, accepting local
+// records and trusted pinned peers with a usable engine-control endpoint.
 func (d *peerDirectory) set(nodes []noderec.DirectoryNode) {
 	next := make(map[string]ecPeer, len(nodes))
 	for _, n := range nodes {
+		verification := n.IdentityVerification
+		if verification != noderec.IdentityLocal && verification != noderec.IdentityPinned {
+			// Discovery claims alone cannot select a destination for engine
+			// commands, even when they copy another peer's UUID and trusted flag.
+			continue
+		}
+		if verification == noderec.IdentityPinned && !n.Trusted {
+			// Remote control requires current trust in addition to proved peer
+			// identity. The owned local record does not require a peer pin.
+			continue
+		}
 		svc, ok := n.Services[noderec.ServiceEngineControl]
 		addresses := n.CandidateIPs()
-		if !ok || len(addresses) == 0 || svc.Port == 0 {
+		if !ok || svc.Port == 0 {
+			// Without an advertised control service and port there is no
+			// engine-control listener to contact on this node.
+			continue
+		}
+		if len(addresses) == 0 {
+			// An eligible identity still needs an address for the connection.
 			continue
 		}
 		// Key by the stable hostUuid so a target survives a rename and same-named

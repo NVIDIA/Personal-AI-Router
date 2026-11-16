@@ -11,6 +11,95 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.26 — Proxy "no node" errors are labelled as JSON (#199)
+
+- When no node can serve a request, the proxy's error response now carries `Content-Type: application/json`, like its other errors. Clients that read the error message only from JSON responses, such as the Ollama JavaScript library, now show the message instead of the raw `{"error": ...}` text.
+
+## 1.0.25 — Proxy request hardening: 32 MiB body cap, loopback-only engine addresses, fail-closed peer TLS (#79)
+
+- The proxy now rejects inference request bodies over 32 MiB with 413 before routing, closing an unauthenticated OOM vector on the loopback ingress.
+- Engine addresses supplied via set-local-backend must be loopback; anything else is refused at store time.
+- A missing peer certificate pin now fails closed (every dial errors) instead of falling back to an unpinned transport.
+
+## 1.0.24 — More reliable vLLM setup and model loading across supported devices (#188)
+
+- Install PAIR-managed vLLM outside the space-containing app-data directory to avoid GPU-kernel compilation failures.
+- Size vLLM memory allocations using reliable device readings, including verified shared-memory systems.
+
+## 1.0.23 — Authenticate peer inventory before using it for service decisions (#179)
+
+- Verify discovered peers before using their identities, service endpoints, models, or hardware measurements.
+- Preserve public hardware previews and explicitly configured manual engine routes.
+- Withdraw obsolete peer state after trust changes and recover worker state without making cached measurements appear fresh.
+- Remove custom certificate/CA flags from standalone scanner and manual-node commands; authenticated hardware reads use paired cluster identities.
+- Broker node removal now distinguishes exact manual entry IDs from broker node keys; callers using a node key must send nodeId.
+- Deliver GUI and TUI hardware displays through broker snapshots and live updates instead of plaintext HTTP.
+
+## 1.0.22 — Refresh vLLM model lists after peer downloads and deletions (#200)
+
+- The owning computer's vLLM model list now updates automatically when a peer downloads or deletes a model, including while the engine is stopped.
+
+## 1.0.21 — Keep slow engine status checks from delaying engine controls (#180)
+
+- Starting, stopping, and changing an engine's port no longer wait for a separate status check to finish.
+- Model-list requests from other devices now return an error if they cannot finish in time, allowing those devices to keep their last known model lists.
+
+## 1.0.20 — Recover stale macOS helper registrations after upgrades (#201)
+
+- Allow a delayed, bounded retry when macOS retains the privileged helper's old signing identity after an upgrade.
+- Preserve the retry limit across application restarts and pending background-item approval.
+
+## 1.0.19 — Launch at login and start minimized to the tray (#97)
+
+- New Startup section in Settings > Service with two switches: launch at login, and start minimized to the tray.
+- A launch by the login item stays in the tray and opens the Overview from the tray menu; a launch by hand still opens the window.
+- Launch at login shows what the operating system will do. If you disable or remove PAIR's startup entry outside the app (Windows Task Manager or startup apps settings, macOS System Settings, or your Linux desktop's startup settings), PAIR leaves it off and the switch shows off; turning the switch on again enables it.
+- Supported on Windows, macOS and Linux. Off by default: nothing is registered until launch at login is enabled.
+
+## 1.0.18 — Choose ModelScope for llama.cpp model downloads (#186)
+
+- Select Hugging Face or ModelScope in llama.cpp Settings. The saved choice controls model browsing, search, and downloads on that device; Hugging Face remains the default.
+- ModelScope verifies complete download sizes and SHA-256 checksums. Interrupted downloads restart from the beginning.
+- Model search runs automatically after two characters and a short typing pause. Searches run one at a time, with only the latest query continuing next; Enter and the search button bypass the pause.
+
+## 1.0.17 — Stalled candidates yield to their peers for one deadline (#144)
+
+- A candidate that used up a full first-byte deadline without producing content is ranked behind its peers for one deadline.
+
+## 1.0.16 — Local node figures stay current in discovery (#5)
+
+- The scanner republishes its own entry on every peer refresh, so GPU, CPU and memory figures follow the node instead of freezing at daemon start.
+
+## 1.0.15 — vLLM engine support (#181)
+
+- vLLM can now be installed and managed from PAIR like the other engines.
+- vLLM can download, load, eject and delete models from the local Hugging Face cache; loading another model restarts vLLM on it, and the previous model is restored if it fails.
+- vLLM picks the right tool-call parser for each model, so agent clients work with Qwen, Granite and other models.
+- vLLM uses the Hugging Face cache (or its `--download-dir`), mirror, token and offline settings set in its launch settings, and downloads only the weights it loads.
+- vLLM is shown as starting while it downloads and loads a model, and Stop or Eject works during that time.
+- A download that vLLM could not load is refused before anything is downloaded, and Add model shows who published each model.
+- On a Mac, FP8 models that vLLM-Metal cannot run are refused with a message to choose the BF16 version.
+- The terminal interface shows a downloaded or deleted model straight away, and can download into a stopped vLLM.
+- vLLM is no longer offered on Windows, where it cannot run.
+
+## 1.0.14 — Simplify Go concurrency and collections with standard library helpers (#195)
+
+- Refresh internal service concurrency and collection code while preserving intended application behavior.
+- Apply `go fix` across the repo
+
+## 1.0.13 — Limit JSON reads for node metadata and peer messages (#167)
+
+- Limit JSON memory usage when processing input for node telemetry, model inventories, error synchronization, and remote engine progress. Improve connection reuse when fetching node metadata and model inventories.
+
+## 1.0.12 — Restore macOS privileged helper communication after upgrades (#192)
+
+- Preserve the helper-specific signing identifier needed to communicate with the macOS background helper and complete setup.
+- Replace an enabled but unreachable helper once per app version after an upgrade, and keep setup incomplete until helper communication and firewall configuration succeed.
+
+## 1.0.11 — Use the PAIR symbol in the macOS menu bar (#194)
+
+- Replace the opaque app tile with a transparent PAIR house-and-network symbol, with Retina support.
+
 ## 1.0.10 — Background services shut down in parallel (#173)
 
 - The background services now shut down in parallel rather than one at a time, so a busy machine no longer pays each service's shutdown in turn.

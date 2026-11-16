@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"sort"
 	"sync"
 
 	"nvpair-shared/applog"
@@ -244,11 +244,8 @@ func (m *Manager) clearByID(id string) bool {
 // relies on for cheap diff-by-position) then by nodeId so entries that
 // share an id across nodes have a stable, deterministic order.
 func sortServiceErrors(out []ServiceError) {
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].ID != out[j].ID {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].NodeID < out[j].NodeID
+	slices.SortFunc(out, func(a, b ServiceError) int {
+		return cmp.Or(cmp.Compare(a.ID, b.ID), cmp.Compare(a.NodeID, b.NodeID))
 	})
 }
 
@@ -508,9 +505,9 @@ func (m *Manager) emitRelayEvent(ev DiscoveryEvent) {
 	}
 }
 
-// directoryToPeer projects a relay DirectoryNode onto the errors service's er
-// peer, returning false when it doesn't advertise er or has no address. The nodeId is
-// the peer's stable hostUuid, matching the UUID each peer stamps as the origin
+// directoryToPeer projects a trusted pinned record onto an error-sync peer,
+// rejecting records without the errors service or a dialable address. The nodeId
+// is the peer's stable hostUuid, matching the UUID each peer stamps as the origin
 // of its errors and uses as its own localNodeID — so the self-check and
 // EvictNode key on an identity that survives a peer's PC rename. A
 // relay DirectoryNode always carries a hostUuid (the scanner guarantees it), so
@@ -518,6 +515,9 @@ func (m *Manager) emitRelayEvent(ev DiscoveryEvent) {
 // cluster-uuid= is reconstructed into TXT so PeerSync's mTLS pin lookup is
 // unchanged.
 func directoryToPeer(n noderec.DirectoryNode) (RawNode, bool) {
+	if n.IdentityVerification != noderec.IdentityPinned || !n.Trusted {
+		return RawNode{}, false
+	}
 	svc, ok := n.Services[noderec.ServiceErrors]
 	addresses := n.CandidateIPs()
 	if !ok || len(addresses) == 0 {

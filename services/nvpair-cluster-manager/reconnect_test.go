@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"net"
 	"strconv"
 	"testing"
@@ -39,8 +38,7 @@ func TestSetMemberAddr_ReportsHostAndPortChanges(t *testing.T) {
 // client's real source IP from the authenticated connection while preserving
 // the client's known listening port.
 func TestHandleRoster_LearnsSourceAddr(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	mA := newTestManagerPort(t, 15021)
 	mB := newTestManagerPort(t, 15022)

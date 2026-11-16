@@ -67,10 +67,27 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 ### `pairApi.discovery`
 
 - `getNodes()` returns discoverable nodes. Each `AvailableNode` carries the
-  backend `id` (the stable per-host UUID that keys every domain), the display
-  `name` (hostname), the reachable `ipAddress`/`port`, and the `trusted` and
-  `clustered` flags. A `clustered` node already belongs to some cluster and is
+  normalized `id` (the host UUID for local and verified rows, or the discovery
+  record ID for unverified rows), the display `name` (hostname), the reachable
+  `ipAddress`/`port`, and the `trusted` and `clustered` flags. A `clustered` node
+  already belongs to some cluster and is
   rendered non-invitable.
+  Broker records also carry `discoveryRecordId` and `identityVerification` (`local`,
+  `pinned`, or `unverified`). The bridge retains these provenance fields through
+  proxy updates. Broker withdrawal deletes a pinned peer's row, including cached
+  proxy presence. For other records, a surviving proxy keeps the row while its
+  broker provenance and hardware are cleared. Public hardware readings cannot
+  change provenance. Broker snapshots carry optional full
+  hardware in `info`, and live `discovery:node-info` updates refresh the same
+  record. Electron matches record ID, verification, and verified host identity
+  before projecting GPU, CPU, memory, and VRAM fields. Workers collect local
+  IPC measurements, pinned peer measurements, and sanitized unverified previews.
+  The broker's `info.observedAt` supplies a stable Unix millisecond display
+  observation time, independently of GPU sample age.
+  Electron emits `metrics:update` once for each newer observation, including
+  unchanged readings, and ignores replayed or older measurements. Changes to
+  utilization, used memory, sample time, or directory freshness do not emit
+  structural node or engine updates. Charts also reject non-increasing times.
 - `onNodesChanged(callback)` reports discovery changes.
 
 ### `pairApi.engines`
@@ -99,11 +116,23 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
-`EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
+`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and `vllm`.
+vLLM serves one model per process, so `unloadModel` (Eject) stops the engine,
+which frees its GPU memory, and `loadModel` on a stopped engine starts it. Its model
+list is the Hugging Face cache, which stays available while the engine is stopped, `deleteModel` removes a cached model (not the one
+loaded in vLLM; deleting an ejected or stopped vLLM's model leaves it with no model
+selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo into
+that cache (no running engine needed), and `loadModel` on a cached model switches
+the served model by restarting vLLM on it.
 `searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
-live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
-query performs an explicit bounded search across public Hugging Face GGUF
-repositories; other calls return the populated engine catalog. llama.cpp pull
+live Hugging Face catalogs for LM Studio, llama.cpp and vLLM. It returns the model
+rows and the backend's `searchable` flag, which controls whether the model hub
+submits an upstream query or filters the populated list locally. An unavailable
+catalog reports `searchable: null`, so an explicit query can retry after an
+initial browse failure. A non-empty
+llama.cpp or vLLM query performs an explicit bounded search across public
+Hugging Face repositories (GGUF for llama.cpp, safetensors chat models for vLLM);
+other calls return the populated engine catalog. llama.cpp pull
 IDs are exact `owner/repository:quantization` values; load, unload, and delete
 all use that same exact id.
 

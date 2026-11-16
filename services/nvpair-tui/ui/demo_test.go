@@ -23,7 +23,7 @@ import (
 
 func targets(n int) []demoTarget {
 	out := make([]demoTarget, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, demoTarget{
 			backend: "ollama",
 			port:    11434,

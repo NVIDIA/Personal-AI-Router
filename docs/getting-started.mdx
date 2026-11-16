@@ -35,7 +35,7 @@ inference. Two or more on the same local network let you try pairing and routing
 
 Nothing else has to be in place first:
 
-- **Engines.** PAIR installs and starts Ollama, LM Studio, or llama.cpp for you
+- **Engines.** PAIR installs and starts Ollama, LM Studio, llama.cpp, or (on Linux or Apple Silicon macOS) vLLM for you
   in step 4. Existing Ollama and LM Studio installations can also be detected
   and used.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
@@ -170,11 +170,13 @@ A node is eligible for a request only when it is online, a compatible engine is
 running, and the requested model is available there. To test routing across
 multiple nodes, prepare the same model on each of those nodes.
 
-llama.cpp downloads use exact `owner/repository:quantization` IDs. Its **Add model**
-list is populated from popular GGUF repositories published by `ggml-org`,
-`bartowski`, and `unsloth`. Typing filters those results locally. Pressing
-**Enter** or selecting the search button searches public Hugging Face
-repositories. PAIR offers one verified `Q4_K_M` option for each result.
+llama.cpp downloads use exact `owner/repository:quantization` IDs. With Hugging
+Face selected, its **Add model** list starts with popular GGUF repositories
+published by `ggml-org`, `bartowski`, and `unsloth`. Typing filters visible results
+immediately and searches public repositories on the selected download source
+after two characters and a short pause. **Enter** or the search button submits
+without the pause. If a search is still running, only the latest query runs next.
+PAIR offers one verified `Q4_K_M` option for each result.
 **Load**, **Eject**, and **Delete** use that same exact model ID. **Delete**
 removes the selected entry from llama.cpp's persistent cache.
 
@@ -210,6 +212,7 @@ engine would normally listen on:
 - `11434` for Ollama.
 - `1234` for LM Studio.
 - `8080` for llama.cpp.
+- `8000` for vLLM.
 
 Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
@@ -239,6 +242,7 @@ The engine therefore has to understand the style you send.
 | Ollama | Works | Works |
 | LM Studio | Works | Not available |
 | llama.cpp | Works | Not available |
+| vLLM | Works | Not available |
 
 **If you are unsure, send the OpenAI-style request.** It works with every
 supported engine, and most tools and SDKs use it. Use the Ollama style
@@ -594,6 +598,26 @@ want to observe.
 
 When a status is not specific enough, the services' own reporting is behind
 **Open log file** on **Settings > Service**.
+
+## Start PAIR at Sign-In
+
+PAIR does not start by itself after a restart unless you ask it to. Open
+**Settings > Service** and use the **Startup** switches:
+
+- **Launch at login** registers PAIR with the operating system so it starts when
+  you sign in. It is off by default.
+- **Start minimized to tray** keeps PAIR in the tray or menu bar, with no window,
+  when the operating system starts it at sign-in. Starting PAIR yourself still
+  opens the window. It is on by default.
+
+Both switches work on Windows, macOS, and Linux. On Linux, PAIR adds an
+autostart entry for your desktop environment. **Launch at login** shows what the
+operating system will do, and the operating system's choice wins over what PAIR
+last saved. If you disable PAIR in Windows Task Manager or the Windows startup
+apps settings, switch it off in macOS System Settings, or remove or disable the
+entry in your Linux desktop's startup settings, it reads off and PAIR does not
+turn it back on at the next launch. Turning **Launch at login** on again from
+Settings registers it again.
 
 ## Keeping PAIR Up to Date
 

@@ -39,9 +39,11 @@ The binary inventory and launch ownership live in
 - The `nvpair` terminal command launches the bundled Go `nvpair-tui`, which owns
   its own broker. PAIR has no Electron-backed console client.
 - Renderer code (`src/ui/`) must not import from `src/electron/`.
-
-The only direct service-data HTTP polling in Electron is `/v1/node-info`.
-Inference HTTP endpoints are for local client-compatible traffic.
+- Hardware displays consume broker snapshots and push events.
+- `nvpair-node-info` owns hardware collection. Scanner and manual-node workers
+  supply authenticated peer measurements and display-only public previews
+  through the broker.
+- Inference HTTP endpoints provide local client-compatible traffic.
 
 ## Reactive state
 

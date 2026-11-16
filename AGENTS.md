@@ -95,6 +95,19 @@ cross-process coverage. Some tests skip themselves rather than fail; refer to
 passing. Live engine and multi-node tests can modify real system state, so run
 them only when you intend to and only against systems and networks you control.
 
+## Go formatting and modernization
+
+- **Must:** Run `gofmt` on every Go file you change, including tests.
+- **Suggestion:** Consider `go fix` when upgrading Go or refactoring older
+  patterns. With a Go 1.26+ toolchain, use `go tool fix help` to discover
+  analyzers and `go fix -diff -<name> ./...` in the affected module to preview
+  scoped changes. Favor active analyzers compatible with the module's Go minimum;
+  review correctness and readability, preserve accurate comments, and run
+  relevant tests before accepting suggestions.
+
+Keep automated rewrites scoped to the task, review the resulting diff, and run
+relevant checks.
+
 ## Test readability
 
 Follow [PAIR test style](.agents/skills/pair-test-style/SKILL.md) when writing,
@@ -119,8 +132,11 @@ On Windows, run the underlying npm and `go test` commands directly.
 
 ## Conventions
 
-- **No type casting.** No `as Type`, `as any`, `as unknown`, or `: any`, and no
-  `unknown` in signatures. If a cast seems necessary, the types are wrong.
+- **TypeScript: no type casting or `any`.** No `as Type`, `as any`, `as unknown`,
+  or `: any`, and no `unknown` in signatures. If a cast seems necessary, the
+  types are wrong.
+- **Go's `any` is allowed.** It is an alias for `interface{}` and may be used
+  when appropriate. Prefer concrete types when the value's type is known.
 - **Absolute imports across directories.** Use the `@/...` alias for anything
   that would otherwise need `../`. Within one directory, `./sibling` is correct.
 - **Static imports only.** No `await import()`.

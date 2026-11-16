@@ -43,6 +43,7 @@
 - ⚠️ nvpair-proxy → node/set-local-backend
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:configure-launch
+- ⚠️ nvpair-ui-broker → engine:restart
 - ⚠️ nvpair-ui-broker → engine:set-port
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
@@ -178,7 +179,7 @@
 | `ready` | notification (we consume) | ✅ yes |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (daemon.go, 3 sites)`
+- `method (var)  (daemon.go, 4 sites)`
 
 ## nvpair-node-settings
 
@@ -270,9 +271,11 @@
 | `engine:get-settings` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:preview-settings` | request (we call) | ✅ yes |
+| `engine:restart` | request (we call) | ⚠️ not called |
 | `engine:set-port` | request (we call) | ⚠️ not called |
 | `engine:set-reserved-port` | request (we call) | ⚠️ not called |
 | `engine:start` | request (we call) | ✅ yes |
+| `engine:stop` | request (we call) | ✅ yes |
 | `engine:subscribe` | request (we call) | ✅ yes |
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
 | `errors:get-initial` | request (we call) | ✅ yes |

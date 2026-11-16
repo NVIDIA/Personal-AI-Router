@@ -151,6 +151,13 @@ var llamaCPPBaseRoutes = []route{
 	{Path: "/v1/models", UpstreamPath: "/models", Role: roleModelListOpenAIGET},
 }
 
+// vllmBaseRoutes is the engine-specific surface that vLLM exposes before the
+// shared OpenAI routes are added. vLLM serves one model per process, so the
+// fleet inventory is what makes /v1/models useful across nodes.
+var vllmBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -170,9 +177,11 @@ func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
 	llamacpp, _ := engines.ByName("llamacpp")
+	vllm, _ := engines.ByName("vllm")
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
+	vllmRoutes := slices.Concat(vllmBaseRoutes, openAIInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -199,6 +208,13 @@ func buildProfiles() []engineProfile {
 			Routes:                llamaCPPRoutes,
 			ModelNaming:           exactID,
 			ReservedPersistedPort: 8081,
+		},
+		{
+			Engine:                vllm,
+			StandalonePort:        8000,
+			Routes:                vllmRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: 8001,
 		},
 	}
 }

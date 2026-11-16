@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +31,14 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	act, ok := st.manifest.Actions[action]
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, action)
+	}
+	if act.LaunchModel != nil {
+		// Like restart_after, the restart gets the caller's context: it is a stop
+		// plus a readiness-probed start that the action timeout does not budget for.
+		return e.switchLaunchModel(ctx, engine, act.LaunchModel, params)
+	}
+	if act.StopEngine {
+		return e.ejectByStopping(ctx, engine, params)
 	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
@@ -64,8 +73,8 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 //     model must not rewrite the engine's saved ON/OFF intent. doStop/doStart
 //     are the intent-neutral pair (StopAll uses them for the same reason).
 func (e *Executor) restartAfterAction(ctx context.Context, st *engineState, engine, action string) error {
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	st.mu.Lock()
 	running := st.running
 	st.mu.Unlock()
@@ -100,6 +109,9 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	// it to be up.
 	if act.RemovePath != nil {
 		return e.runRemovePathAction(ctx, st, act, params)
+	}
+	if act.HFCache != nil {
+		return e.runHFCacheAction(ctx, st, engine, act, params)
 	}
 	if len(act.Cmd) > 0 {
 		return e.runCmdAction(ctx, st, act, port, params)
@@ -262,9 +274,7 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		}
 	}
 	vars["port"] = strconv.Itoa(port)
-	for name, value := range st.pathVars() {
-		vars[name] = value
-	}
+	maps.Copy(vars, st.pathVars())
 	if cli := st.plat.Runtime.CLI; cli != "" {
 		vars["cli"] = expandPath(cli)
 	}

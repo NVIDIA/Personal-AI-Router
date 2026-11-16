@@ -117,13 +117,11 @@ func (e *Executor) RestoreEnabled(ctx context.Context) error {
 		if !known || !enabled {
 			continue
 		}
-		wg.Add(1)
-		go func(engine string) {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := e.restoreEnabled(ctx, engine); err != nil {
 				errs <- fmt.Errorf("restore %s: %w", engine, err)
 			}
-		}(engine)
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -139,8 +137,8 @@ func (e *Executor) restoreEnabled(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	enabled, known, err := e.desired.get(engine)
 	if err != nil || !known || !enabled {
 		return err

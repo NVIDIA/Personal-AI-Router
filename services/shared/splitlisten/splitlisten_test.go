@@ -168,7 +168,7 @@ func httpGet(t *testing.T, url string, tlsCfg *tls.Config) string {
 	}
 	var lastErr error
 	// The servers start in goroutines; retry briefly to avoid a startup race.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err

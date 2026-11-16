@@ -14,6 +14,49 @@ import (
 	"time"
 )
 
+// processEnvironment is the environment an engine process starts with: the
+// current one with env merged over it, and the engine's own Python virtual
+// environment first on PATH. An engine installed in a virtual environment runs
+// its helper tools by name (vLLM's FlashInfer compiles kernels with ninja), and
+// those are in the environment's bin directory, which the service's own PATH
+// does not include. It returns nil when there is nothing to add, so the process
+// inherits the environment unchanged.
+func processEnvironment(bin string, env map[string]string) []string {
+	venvBin := venvBinDir(bin)
+	if len(env) == 0 && venvBin == "" {
+		return nil
+	}
+	merged := os.Environ()
+	path := os.Getenv("PATH")
+	for k, v := range env {
+		merged = append(merged, k+"="+v)
+		if environmentKey(k) == "PATH" {
+			path = v
+		}
+	}
+	if venvBin != "" {
+		merged = append(merged, "PATH="+venvBin+string(os.PathListSeparator)+path)
+	}
+	return merged
+}
+
+// venvBinDir returns the directory holding bin when it belongs to a Python
+// virtual environment, which has a pyvenv.cfg beside its bin directory, and ""
+// when it does not. A symbolic link such as ~/.local/bin/vllm is followed.
+func venvBinDir(bin string) string {
+	candidates := []string{bin}
+	if resolved, err := filepath.EvalSymlinks(bin); err == nil && resolved != bin {
+		candidates = append(candidates, resolved)
+	}
+	for _, candidate := range candidates {
+		dir := filepath.Dir(candidate)
+		if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "pyvenv.cfg")); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
 // managedProc is a spawned engine process with its stdout/stderr
 // captured line-by-line and a `done` channel that closes when it
 // exits. The OS-specific primitives it relies on (console hiding,
@@ -30,12 +73,7 @@ type managedProc struct {
 // closes once the process exits.
 func startManagedProc(bin string, args []string, env map[string]string, onLine func(stream, line string)) (*managedProc, error) {
 	cmd := exec.Command(bin, args...)
-	if len(env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
+	cmd.Env = processEnvironment(bin, env)
 	configureSysProcAttr(cmd)
 
 	stdout, err := cmd.StdoutPipe()
@@ -52,9 +90,8 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 
 	mp := &managedProc{cmd: cmd, done: make(chan struct{})}
 	var scanWg sync.WaitGroup
-	scanWg.Add(2)
-	go func() { defer scanWg.Done(); scanLines(stdout, "stdout", onLine) }()
-	go func() { defer scanWg.Done(); scanLines(stderr, "stderr", onLine) }()
+	scanWg.Go(func() { scanLines(stdout, "stdout", onLine) })
+	scanWg.Go(func() { scanLines(stderr, "stderr", onLine) })
 	go func() {
 		// Drain stdout/stderr fully before Wait: Wait closes the pipes on
 		// exit, which would otherwise truncate the final captured lines.
@@ -90,8 +127,13 @@ func (mp *managedProc) stop(grace time.Duration) {
 		return // already exited
 	default:
 	}
+	pid := mp.cmd.Process.Pid
+	// However the process we started exits, an engine that forks helpers (vLLM's
+	// EngineCore) can leave them behind, holding GPU memory, when its main
+	// process goes down mid-start. Nothing else will ever clean them up.
+	defer killGroupRemnants(pid)
 	if grace <= 0 {
-		_ = signalPID(mp.cmd.Process.Pid, true)
+		_ = signalPID(pid, true)
 		<-mp.done
 		return
 	}
@@ -103,7 +145,7 @@ func (mp *managedProc) stop(grace time.Duration) {
 		return
 	case <-timer.C:
 	}
-	_ = signalPID(mp.cmd.Process.Pid, true)
+	_ = signalPID(pid, true)
 	<-mp.done
 }
 

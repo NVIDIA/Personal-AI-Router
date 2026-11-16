@@ -4,11 +4,12 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 )
 
 // tombstonesFile is the durable record of cluster-wide removals. Persisting it
@@ -80,7 +81,9 @@ func (m *Manager) snapshotTombstones() []Tombstone {
 	for _, t := range m.tombstones {
 		out = append(out, t)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].NodeUUID < out[j].NodeUUID })
+	slices.SortFunc(out, func(a, b Tombstone) int {
+		return cmp.Compare(a.NodeUUID, b.NodeUUID)
+	})
 	return out
 }
 
@@ -112,7 +115,9 @@ func (m *Manager) persistTombstonesLocked() error {
 	for _, t := range m.tombstones {
 		out = append(out, t)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].NodeUUID < out[j].NodeUUID })
+	slices.SortFunc(out, func(a, b Tombstone) int {
+		return cmp.Compare(a.NodeUUID, b.NodeUUID)
+	})
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err

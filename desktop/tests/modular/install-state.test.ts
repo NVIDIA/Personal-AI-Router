@@ -77,8 +77,10 @@ describe('LM Studio install state', () => {
         vi.advanceTimersByTime(1)
         expect(statuses.at(-1)).toBe('not-installed')
 
+        // A start has its own, shorter net: the awaited lifecycle envelope that
+        // outlasts every engine's readiness window, not the installer's 30 minutes.
         state.beginLocalEngineOp('lm-studio', 'starting')
-        vi.advanceTimersByTime(90_000)
+        vi.advanceTimersByTime(14 * 60_000)
         expect(statuses.at(-1)).toBe('not-installed')
     })
 })

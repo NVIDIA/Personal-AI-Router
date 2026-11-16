@@ -100,7 +100,7 @@ The process starts with **no engine and no listener**. The broker then sends one
 
 A flag cannot express this. The broker plans a different port for each engine —
 Ollama's managed facade wants `:11434`, LM Studio's wants `:1234`, and
-llama.cpp's managed facade wants `:8080`; any may be absent so the child keeps
+llama.cpp's managed facade wants `:8080`, and vLLM's wants `:8000`; any may be absent so the child keeps
 its own persisted port — and a single-valued flag carries only one plan.
 
 ### 3.1 Why one process
@@ -109,7 +109,7 @@ Between scheduler snapshots a facade takes short-lived **reservations** for work
 it has dispatched but that the scheduler has not yet observed. Those live in the
 process, and every facade shares them. If each engine had its own proxy
 process, none could see the others' reservations, so simultaneous bursts across
-Ollama, LM Studio, and llama.cpp could select the same node, each incorrectly
+Ollama, LM Studio, llama.cpp, and vLLM could select the same node, each incorrectly
 believing it was idle.
 Sharing the map is the reason the engines share a process.
 
@@ -164,7 +164,7 @@ For a model-bearing inference request:
 
 1. Filter a request-local discovery snapshot to nodes whose per-engine inventory
    advertises the requested model. Ollama normalizes the implicit `:latest` tag;
-   LM Studio and llama.cpp ids match exactly. An empty owner set returns a local
+   LM Studio, llama.cpp, and vLLM ids match exactly. An empty owner set returns a local
    `502` without contacting an engine.
 2. Order the eligible owners: explicit `node/select` pin, then the scheduler's
    priority list, then deterministic default ordering.
@@ -374,6 +374,7 @@ These are the statuses the proxy itself returns:
 
 | Condition | Status |
 | --- | --- |
+| Request body exceeds 32 MiB, nothing dispatched | `413` |
 | No owner advertises the model, nothing dispatched | `502` |
 | Final permitted attempt returned a status | that status and body, unchanged |
 | Final permitted attempt failed at the transport | `502` |
@@ -508,15 +509,16 @@ approve. See README.md for the complete forwarding and intersection rules.
 
 ### 5.9 Candidate resolution
 
-Resolution turns the eligible owners into dial targets. It re-reads membership
-and pins from the cluster directory first, so a peer paired or removed since the
-last request is reflected on this one. Each owner is then classified by where
+Resolution turns the eligible owners into dial targets. Relay-fed owners first
+pass the identity gate in §5.11. Resolution then refreshes membership and pins
+from the cluster directory, so each relay-fed remote dial requires a current pin in
+addition to the admitted discovery record. Each owner is classified by where
 its address points:
 
 | Owner | Dialed as | Why |
 | --- | --- | --- |
 | This facade — its own listen port, or an alias address it bound | the local engine from `node/set-local-backend`, over loopback; dropped when none is set or it is unhealthy | this node advertises the facade under the engine's own key (e.g. `ol`, `lm`, `lc`), so dialing it would enter this node's own cluster ingress and recurse |
-| A peer this node holds a pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | the relayed `trusted` flag is the scanner's answer from the peer's last record change, so it is stale for a peer discovered before this node's pins existed |
+| An admitted peer this node holds a current pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | discovery supplies the verified identity and `trusted: true`; the live mesh authorizes the outbound connection against the current pin |
 | A manual node from `node/add-manual` | plain HTTP to the address the user supplied | a deliberate, separately labelled bypass |
 | Anything else — an unpinned peer, or any peer while this node is unclustered | dropped | a peer's facade refuses plaintext from the LAN, so it is not reachable |
 
@@ -566,8 +568,11 @@ filtered set, on every change. Each snapshot **replaces** the facade's relay-fed
 overlay, so a departed node is simply absent from the next one and there is no
 state to drift.
 
-A directory node becomes a routable node only if it advertises that key and has
-an address:
+A directory node enters the routing overlay only when `identityVerification`
+is `local`, or it is `pinned` with `trusted: true`, and it advertises this
+engine's service key with a nonempty canonical `ip`. Owned local records need
+no peer pin. Unverified records remain outside the overlay regardless of their
+UUID, address, model, or trust claims. For an admitted record:
 
 - its id is its `hostUuid`, so routing, `scheduledOn`, and the scheduler's list
   agree on one identity that survives a rename;
@@ -664,12 +669,12 @@ untouched, the primary listener stays up, and a warning is reported.
 
 ## 8. Ports
 
-| | Ollama | LM Studio | llama.cpp |
-| --- | --- | --- | --- |
-| Engine's own client-facing port | 11434 | 1234 | 8080 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 |
-| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 |
-| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` |
+| | Ollama | LM Studio | llama.cpp | vLLM |
+| --- | --- | --- | --- | --- |
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
+| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
+| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
 
 A port chosen at runtime via `set-port` is persisted per engine and restored
 when that facade is enabled, taking precedence over the requested port, so the
@@ -705,6 +710,7 @@ new supervisor, and no new relay wiring.
 | Mode | Behavior |
 | --- | --- |
 | Requested port taken at enable | Tagged bind failure; broker retries on a fallback port |
+| Request body exceeds 32 MiB | Local `413`, rejected before candidate selection, no engine contacted |
 | No advertised owner for the model | Local `502`, no engine contacted |
 | All owners refuse retryably | Last upstream status surfaced |
 | Transport error with candidates left | Forget the node's confirmed address, fail over |

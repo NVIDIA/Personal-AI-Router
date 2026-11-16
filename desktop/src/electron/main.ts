@@ -6,15 +6,18 @@ import { electronApp } from '@electron-toolkit/utils'
 
 import { buildCspHeader } from '@/electron/csp'
 import { registerApplicationIconMenu } from '@/electron/application-icon-menu'
-import { createOverviewWindow } from '@/electron/window'
+import { createOverviewWindow, onOverviewFirstShown } from '@/electron/window'
 import { registerWindowShortcuts } from '@/electron/window-shortcuts'
 import { initTray, destroyTray } from '@/electron/tray'
 import { createStructuredLogger } from '@/shared/utils/log'
 import {
     loadUiConfig,
+    getStartupSettings,
     isMacHelperSetupComplete,
-    setMacHelperSetupComplete
+    setMacHelperSetupComplete,
+    setStartupSettings
 } from '@/electron/config/ui-config'
+import { reconcileLoginItem, shouldStartHidden, wasOpenedAtLogin } from '@/electron/login-item'
 import { currentPlatform } from '@/shared/utils/platform'
 import { APP_DISPLAY_NAME, APP_EXIT_ARGUMENT, APP_ID } from '@/shared/constants/app'
 import { migrateAppData } from '@/electron/path'
@@ -55,7 +58,15 @@ if (!gotTheLock || exitRequested) {
             app.quit()
             return
         }
-        createOverviewWindow()
+        // A second launch is normally a person double-clicking the app while it
+        // sits in the tray, and it opens the window as it always has. The login
+        // item firing against an already-running instance is the exception: it
+        // carries the hidden argument and must not steal the foreground. Only the
+        // argument counts here: `wasOpenedAtLogin` describes how this process
+        // started, not the launch that reached it.
+        if (!startsHidden(commandLine, false)) {
+            createOverviewWindow()
+        }
     })
 
     // macOS fires `activate` when the Dock/Launchpad icon is clicked on an
@@ -64,7 +75,17 @@ if (!gotTheLock || exitRequested) {
     // the tray keeps the process alive (`window-all-closed` is a no-op).
     // `createOverviewWindow` focuses the existing window if one is open, so this
     // is safe to call unconditionally.
+    //
+    // A macOS login item that is meant to start hidden can receive one `activate`
+    // as part of that launch, which would open the window the user asked not to
+    // see. `launchActivatePending` swallows that one event, and the ready
+    // handler clears it once startup has settled, so a Dock click afterwards
+    // always opens the window even if no launch-time `activate` ever arrived.
     app.on('activate', () => {
+        if (launchActivatePending) {
+            launchActivatePending = false
+            return
+        }
         createOverviewWindow()
     })
 
@@ -80,7 +101,28 @@ if (!gotTheLock || exitRequested) {
 
     loadUiConfig()
 
+    let launchActivatePending = false
+
+    /**
+     * Whether a launch carrying `argv` stays in the tray with no window.
+     * `openedAtLogin` is how the OS started this process, which only the first
+     * launch has: a second-instance launch passes false.
+     */
+    function startsHidden(argv: readonly string[], openedAtLogin: boolean): boolean {
+        return shouldStartHidden({
+            argv,
+            platform: currentPlatform(),
+            wasOpenedAtLogin: openedAtLogin,
+            startHidden: getStartupSettings().startHidden
+        })
+    }
+
     app.whenReady().then(async () => {
+        // Decided first, before anything awaits: the macOS `activate` that comes
+        // with a login launch can arrive while the connector is still starting.
+        const hiddenLaunch = startsHidden(process.argv, wasOpenedAtLogin())
+        launchActivatePending = hiddenLaunch && currentPlatform() === 'darwin'
+
         if (app.isPackaged) {
             electronApp.setAppUserModelId(APP_ID)
         } else if (currentPlatform() === 'win32') {
@@ -137,10 +179,21 @@ if (!gotTheLock || exitRequested) {
         // the bundled terminal UI.
         ensureNvpairOnPath()
 
-        createOverviewWindow()
+        // A login-item launch starts to the tray with no window. The tray is
+        // still what keeps the process alive and its Overview entry (and a tray
+        // click) creates the window on demand, exactly as it does after the
+        // window is closed by hand.
+        if (!hiddenLaunch) {
+            createOverviewWindow()
+        }
         initTray()
 
-        void runMacPrivilegedSetup()
+        reconcileLoginItemAtLaunch()
+
+        void runMacPrivilegedSetup(hiddenLaunch)
+
+        // Startup has settled: any `activate` from here on is a person.
+        launchActivatePending = false
     })
 
     // Keep app alive in tray -- don't quit when all windows are closed
@@ -150,17 +203,101 @@ if (!gotTheLock || exitRequested) {
 
     const log = createStructuredLogger('app')
 
+    /**
+     * Bring the OS login item in line with the persisted preferences, once per
+     * launch.
+     *
+     * The registered entry names an executable, and an app update moves that
+     * executable, so an entry written by the previous version can point at a
+     * path that no longer exists. Reconciling on every ready keeps it current
+     * without the user touching the toggle again. It writes only when the entry
+     * differs from the preference. An entry the user switched off outside the app
+     * (Task Manager, Windows Settings, System Settings, a deleted autostart file)
+     * is not re-armed: the OS state wins, and the stored preference is set to off
+     * to match.
+     */
+    function reconcileLoginItemAtLaunch(): void {
+        const startup = getStartupSettings()
+        try {
+            const outcome = reconcileLoginItem(startup)
+            if (outcome === 'opt-out') setStartupSettings({ launchAtLogin: false })
+            log.info({
+                sublevel: 'login-item',
+                message: `Login item ${outcome}: launchAtLogin=${startup.launchAtLogin} startHidden=${startup.startHidden}`
+            })
+        } catch (err) {
+            // Autostart is a convenience; a registry or SMAppService failure must
+            // not take the launch down with it.
+            log.error({ sublevel: 'login-item', message: `Login item write failed: ${err}` })
+        }
+    }
+
     // macOS only: register the SMAppService privileged helper that owns one-time
     // root setup (Application Firewall config) and keep it current across app
     // updates. The Electron app never runs as root — it only spawns the signed
     // nvpair-helper-ctl. The first run explains the macOS approval before it appears;
     // subsequent launches reconcile silently (version-aware reinstall).
-    async function runMacPrivilegedSetup(): Promise<void> {
+    //
+    // A hidden launch has nobody to explain the approval to, and the first-run
+    // setup opens dialogs and the System Settings approval page on its own. So a
+    // hidden first-time launch checks the helper first:
+    //   - already approved: everything left is silent (`ensureConfigured` and the
+    //     firewall rules), so it runs now and setup is marked complete;
+    //   - otherwise: the interactive first run waits for the Overview window's
+    //     first show, which a tray or Dock click produces whenever someone is
+    //     looking. It is not skipped for the session.
+    // Version-aware reconciliation has no UI and runs on every launch regardless.
+
+    /** The setup run in progress, if any. Runs share it instead of overlapping. */
+    let macSetupInFlight: Promise<void> | null = null
+    let firstRunSetupDeferred = false
+
+    function runMacPrivilegedSetup(startedHidden: boolean): Promise<void> {
+        if (macSetupInFlight) return macSetupInFlight
+        const run = performMacPrivilegedSetup(startedHidden).finally(() => {
+            if (macSetupInFlight === run) macSetupInFlight = null
+        })
+        macSetupInFlight = run
+        return run
+    }
+
+    /**
+     * Run the first-run flow once the Overview window is first shown. Waits for a
+     * launch-time run still in flight and then re-checks, so the two can never run
+     * together and a launch that already finished setup is not repeated.
+     */
+    function deferFirstRunSetupToOverview(): void {
+        if (firstRunSetupDeferred) return
+        firstRunSetupDeferred = true
+        log.info({
+            sublevel: 'mac-helper',
+            message: 'First-run helper setup deferred to the first time the Overview is shown'
+        })
+        onOverviewFirstShown(() => {
+            void (async () => {
+                await macSetupInFlight?.catch(() => {})
+                if (!isMacHelperSetupComplete()) await runMacPrivilegedSetup(false)
+            })()
+        })
+    }
+
+    async function performMacPrivilegedSetup(startedHidden: boolean): Promise<void> {
         if (!macPrivilege.isSupported()) return
         const firstTime = !isMacHelperSetupComplete()
 
         try {
-            if (firstTime) {
+            // Whether this run may show dialogs. A hidden first-time launch may not.
+            let interactive = firstTime
+            if (firstTime && startedHidden) {
+                const helper = await macPrivilege.status()
+                if (helper.registration !== 'enabled') {
+                    deferFirstRunSetupToOverview()
+                    return
+                }
+                interactive = false
+            }
+
+            if (interactive) {
                 await dialog.showMessageBox({
                     type: 'info',
                     buttons: ['Continue'],
@@ -172,9 +309,12 @@ if (!gotTheLock || exitRequested) {
 
             const result = await macPrivilege.ensureConfigured(firstTime)
             if (!result.supported) return
+            setMacHelperSetupComplete(
+                result.registration === 'enabled' && result.firewallConfigured
+            )
 
             if (result.registration === 'requiresApproval') {
-                if (firstTime) {
+                if (interactive) {
                     await dialog.showMessageBox({
                         type: 'warning',
                         buttons: ['OK'],
@@ -190,7 +330,6 @@ if (!gotTheLock || exitRequested) {
             }
 
             if (result.registration === 'enabled' && result.firewallConfigured) {
-                setMacHelperSetupComplete(true)
                 log.info({ sublevel: 'mac-helper', message: 'Privileged helper configured' })
             } else {
                 log.error({
@@ -199,6 +338,7 @@ if (!gotTheLock || exitRequested) {
                 })
             }
         } catch (err) {
+            setMacHelperSetupComplete(false)
             log.error({ sublevel: 'mac-helper', message: `Privileged setup error: ${err}` })
         }
     }

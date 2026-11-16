@@ -572,7 +572,7 @@ func TestClusterCancelInvite_PreservesConsistentOutcomeDuringConcurrentAccept(t 
 	}
 
 	const iterations = 6
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		port := 14880 + i
 		b := startCM(t, t.TempDir(), port)
 		time.Sleep(600 * time.Millisecond) // let B's inter-node listener bind
@@ -593,20 +593,17 @@ func TestClusterCancelInvite_PreservesConsistentOutcomeDuringConcurrentAccept(t 
 		// don't clash.
 		var wg sync.WaitGroup
 		var cancelMsg, respMsg jsonrpc.Message
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			respMsg = b.callExpectError("cluster:respond-to-invite", map[string]any{
 				"inviteId": inv.InviteID, "accept": true, "pin": inv.Pin,
 			})
-		}()
-		go func() {
-			defer wg.Done()
+		})
+		wg.Go(func() {
 			// Land inside the inviter's commit pause (after Completion has entered
 			// it, well before it ends).
 			time.Sleep(commitDelayMS / 3 * time.Millisecond)
 			cancelMsg = a.callExpectError("cluster:cancel-invite", map[string]any{"inviteId": inv.InviteID})
-		}()
+		})
 		wg.Wait()
 
 		cancelSucceeded := cancelMsg.Error == nil && decodeResult[inviteState](t, cancelMsg).State == "canceled"

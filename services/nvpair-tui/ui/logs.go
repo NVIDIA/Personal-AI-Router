@@ -87,7 +87,7 @@ func (v *logsView) Init() tea.Cmd { return nil }
 func (v *logsView) SetSize(w, h int) {
 	v.width, v.height = w, h
 	// One row for the status/filter footer.
-	vh := clampWidth(h-1, 1)
+	vh := max(h-1, 1)
 	if !v.ready {
 		v.vp = viewport.New(w, vh)
 		v.ready = true
@@ -220,7 +220,7 @@ func (v *logsView) saveCmd() tea.Cmd {
 		// destroying the first file is the opposite of what saving is for.
 		// O_EXCL makes the check and the create one step, so a second save
 		// cannot land between them.
-		for attempt := 0; attempt < 100; attempt++ {
+		for attempt := range 100 {
 			name := fmt.Sprintf("nvpair-logs-%s.log", stamp)
 			if attempt > 0 {
 				name = fmt.Sprintf("nvpair-logs-%s-%d.log", stamp, attempt+1)

@@ -105,7 +105,7 @@ func TestOllamaHostAlias_ForwardsRequestsThroughBrokerManagedProxy(t *testing.T)
 
 func freeDualLoopbackPort(t *testing.T) int {
 	t.Helper()
-	for attempt := 0; attempt < 10; attempt++ {
+	for range 10 {
 		ipv6, err := net.Listen("tcp", "[::1]:0")
 		if err != nil {
 			t.Skipf("IPv6 loopback unavailable: %v", err)

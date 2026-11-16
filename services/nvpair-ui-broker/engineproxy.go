@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -96,6 +97,8 @@ type engineProxyRuntime struct {
 	// supervisor swaps it on restart from the monitor goroutine while request
 	// handlers read it from the read loop.
 	proxy *proxyProcess
+	// manualBridge owns this facade's ordered manual-target sender.
+	manualBridge manualProxyBridge
 
 	// subscribed reports whether a client asked for this engine's relay
 	// stream. Guarded by Broker.proxyMu.
@@ -165,6 +168,7 @@ func buildEngineProxyProfiles() []engineProxyProfile {
 		// llama.cpp's managed process is stopped directly by engine-manager.
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
 		"llamacpp": {Ownership: managedEngine, HealthProbePath: "/health"},
+		"vllm":     {Ownership: managedEngine, HealthProbePath: "/health"},
 	}
 	out := make([]engineProxyProfile, 0, len(engines.All()))
 	for _, e := range engines.All() {
@@ -379,12 +383,7 @@ func (b *Broker) proxyEnabled(p engineProxyProfile) bool {
 	if b.proxyPath == "" {
 		return false
 	}
-	for _, name := range b.proxyEngines {
-		if name == p.Name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(b.proxyEngines, p.Name)
 }
 
 // prepareEnabledFacades prepares port ownership for the engines the broker is

@@ -21,7 +21,7 @@ func TestConnectionCounter_CountsDistinctConnections(t *testing.T) {
 	}))
 
 	const requests = 2
-	for i := 0; i < requests; i++ {
+	for range requests {
 		req, err := http.NewRequest(http.MethodGet, "http://example.test/", nil)
 		require.NoError(t, err)
 		// Request.Close makes the transport reject connection reuse before it

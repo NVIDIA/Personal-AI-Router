@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -125,8 +126,8 @@ func (c *backendClient) listModels(ctx context.Context) ([]RegisteredModel, erro
 	if len(models) == 0 {
 		return nil, fmt.Errorf("no registered %s models were found", c.cfg.Backend)
 	}
-	sort.SliceStable(models, func(i, j int) bool {
-		return strings.ToLower(models[i].Name) < strings.ToLower(models[j].Name)
+	slices.SortStableFunc(models, func(a, b RegisteredModel) int {
+		return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 	})
 	return models, nil
 }
@@ -255,7 +256,7 @@ func parseLMStudioNativeModels(data []byte) ([]RegisteredModel, error) {
 					model.Capabilities = append(model.Capabilities, strings.ToLower(key))
 				}
 			}
-			sort.Strings(model.Capabilities)
+			slices.Sort(model.Capabilities)
 		}
 		models = append(models, model)
 	}
@@ -316,7 +317,7 @@ func normalizedStrings(values []string) []string {
 			out = append(out, value)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
