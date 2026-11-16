@@ -124,14 +124,15 @@ and recovery. Editing `args`/`start` directly remains trusted manifest authoring
 | `manifest_version` | int | yes | Must be `1`. A higher value is rejected (asks for behavior this binary lacks). Unknown optional fields within a supported version are ignored, so the schema can grow additively. |
 | `platforms` | object | yes | Map of `"<goos>/<goarch>"` → platform block (e.g. `"windows/amd64"`, `"darwin/arm64"`, `"linux/amd64"`). At least one entry. The runner selects the block matching the host. |
 | `actions` | object | no | Map of action name → action (see below). |
-| `detect` / `install` / `uninstall` / `models_dir` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
+| `install_dir` / `detect` / `install` / `uninstall` / `models_dir` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
 
-**Shared defaults & per-platform overrides.** The platform-level fields `detect`, `install`, `uninstall`, `models_dir`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
+**Shared defaults & per-platform overrides.** The platform-level fields `install_dir`, `detect`, `install`, `uninstall`, `models_dir`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
 
 ## Platform block
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
+| `install_dir` | string | no | Literal managed payload directory, with OS env refs and a leading `~` expanded. Its expanded value must not be blank on the host. Defaults to the app-data root's `engine-bin/<engine>`. Use an external location only when the engine requires it, and add that path to every app-data wipe/uninstall inventory. Available to the rest of the platform block as `{install_dir}`. |
 | `detect` | string[] | no | Paths that, if any exists, mean the engine is already installed. Supports OS env refs (`%VAR%`, `$VAR`), a leading `~`, and the `{install_dir}` placeholder. |
 | `install` | object | no | How to obtain the engine (see Install). Omit for engines that are only ever detected/launched. |
 | `uninstall` | object | no | How to remove a user-mode install (see Uninstall). Backs `engine:uninstall`. |
@@ -181,10 +182,15 @@ PAIR cannot replace for them. Two separate removals have to leave them alone:
    data directory. Nothing can exempt a subdirectory of it, so the only defense
    is for `models_dir` to resolve somewhere else entirely.
 
-That second one is why `models_dir` must be a literal path: `{install_dir}` is
-inside the app data root, so any store derived from it is destroyed when a user
-uninstalls the app — even though the prompt promises their models are kept, and
-even though no engine uninstall ever touched them.
+That second one is why `models_dir` must be a literal path. By default,
+`{install_dir}` is inside the app data root, so any store derived from it is
+destroyed when a user uninstalls the app. A platform may declare an external
+`install_dir`, but that PAIR-owned path must also be in the app wipe inventory,
+so it is no safer for models. Keep the store separate from both locations.
+An explicit `install_dir` must also stay outside `models_dir`: uninstall refuses
+to remove anything inside the protected store, including an engine payload.
+For the host platform, relative paths are resolved against the service's working
+directory before checking this separation.
 
 Declare the engine's own default where it has one, so PAIR and a user's own copy
 of that engine share a library rather than downloading the same weights twice.
@@ -399,6 +405,12 @@ then appends `--max-model-len`
 native window, and `--gpu-memory-utilization` sized to the weights the engine
 loads plus KV cache, never below 15% of the GPU and never above what is free
 less a 1 GiB margin (the free-memory cap wins).
+For FP8 checkpoints on vLLM-Metal's MLX worker, disk size understates resident
+weights because the loader expands them to BF16. These launches use the measured
+free-memory cap instead of estimating a smaller share or context from the weight
+size. The context target and rules for the model's native limit and rope scaling
+still apply; the worker profiles resident weights and determines whether that
+context fits.
 A model that is not in the cache yet, which vLLM downloads during the start,
 first has its files other than weights fetched into the cache with the engine's
 Hugging Face tool (the one an `hf_pull` action names) at that revision, and is
@@ -417,8 +429,9 @@ Arguments the user saved always win and nothing added is written back to saved
 settings, so a model switch is re-sized for the new model. It also adds
 `--enable-auto-tool-choice` and a `--tool-call-parser` found from the model's own
 chat template with the installed vLLM (see the README's vLLM section), or nothing
-when no parser reads the model's tool calls. Tensor- or
-pipeline-parallel launches are left alone. It requires a process-mode runtime
+when no parser reads the model's tool calls. Memory and context sizing are left
+to the engine for tensor- or pipeline-parallel launches and explicit
+`--worker-cls` selections. It requires a process-mode runtime
 with `editable_launch`.
 
 A runtime **`unsupported_weights`** (`{"formats": ["fp8"], "except_model_types":
@@ -496,7 +509,7 @@ validation at load:
 | `{cli}` | The platform's `runtime.cli` path | runtime start/stop, action `cmd` |
 | `{download}` | Path of the verified download | `install.run` |
 | `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
-| `{install_dir}` | Per-engine user-scoped install dir | `detect`, `install`, runtime |
+| `{install_dir}` | Per-engine managed payload directory: the platform's expanded `install_dir`, or the app-data root's `engine-bin/<engine>` by default | `detect`, `install`, uninstall, runtime |
 | `{hf_hub_cache}` | The Hugging Face hub cache the engine itself uses, from its launch environment as `huggingface_hub` resolves it: `HF_HUB_CACHE`, else `HUGGINGFACE_HUB_CACHE`, else `HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub` | the `dir` of an `hf_cache` or `hf_pull` action only |
 | `{models_dir}` | The platform's `models_dir`, expanded | `detect`, runtime args/env, `uninstall.run`, actions. **Not** `install`, which resolves only `{install_dir}` and the download paths — and not `uninstall.remove`, where naming the store is rejected at load. Unset when the platform declares no store, so a template referencing it then fails to resolve rather than silently becoming a path under `/` |
 
@@ -651,7 +664,7 @@ GPU selection, and auth.
 | **GPT4All** | weak (GUI app) | none (Local API Server toggled in the GUI, `:4891`) | desktop settings / Python SDK — not env | OpenAI `/v1` once enabled in-app |
 
 Caveats worth encoding when authoring these:
-- **Model store location**: leave each engine's model cache at the engine's own default — `~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models` — and declare that path as `models_dir`. Never point one inside `{install_dir}` or anywhere else under the app data root: `uninstall` skips `models_dir`, but the app-level "remove all data" uninstall deletes the entire app data root and nothing can exempt a subdirectory of it. See Model stores.
+- **Model store location**: leave each engine's model cache at the engine's own default — `~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models` — and declare that path as `models_dir`. Never point one inside `{install_dir}` or anywhere else under the app data root: `uninstall` skips `models_dir`, but app reset removes both the data root and PAIR-owned external payload directories. See Model stores.
 - **llama.cpp** ships prebuilt archives with **published SHA-256s**, so it's an ideal checksum-pinned `fetch`+`run` target (no placeholder SHA needed).
 - **LM Studio** model dir is settings-controlled (no documented relocation env); surface its config as flags/API, not env.
 - **vLLM**: native Windows is unsupported (WSL only), and macOS is Apple Silicon only through the vLLM-Metal plugin (`darwin/arm64`); the bind is a flag, not env. The bundled `vllm.json` is the reference: it passes the model as `--model`, since manifest `runtime.args` have no `{model}` token, and installs through a sha256-pinned `uv` bootstrap with a detect-first path.

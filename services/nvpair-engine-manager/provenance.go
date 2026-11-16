@@ -125,7 +125,13 @@ func (e *Executor) UninstallManaged(ctx context.Context) []ManagedUninstall {
 			slog.Warn("stopped removing engines before finishing", "err", err, "remaining", len(names)-len(results))
 			return results
 		}
-		installDir := filepath.Join(e.baseDir, engine)
+		st, err := e.state(engine)
+		if err != nil {
+			slog.Info("leaving engine in place; it is not supported on this host", "engine", engine, "err", err)
+			results = append(results, ManagedUninstall{Engine: engine})
+			continue
+		}
+		installDir := st.installDir
 		if !installedByPAIR(installDir) {
 			slog.Info("leaving engine in place; PAIR did not install it", "engine", engine)
 			results = append(results, ManagedUninstall{Engine: engine})

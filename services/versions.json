@@ -1,6 +1,6 @@
 {
   "$comment": "Single source of truth for all version numbers. See VERSIONING.md for bump rules.",
-  "services": "2.9.0",
+  "services": "2.10.0",
   "components": {
     "nvpair-proxy": "1.5.2",
     "nvpair-node-info": "0.14.0",
@@ -10,7 +10,7 @@
     "nvpair-errors": "0.7.8",
     "nvpair-node-settings": "1.0.6",
     "nvpair-ui-broker": "1.6.0",
-    "nvpair-engine-manager": "0.23.2",
+    "nvpair-engine-manager": "0.23.3",
     "nvpair-cluster-manager": "1.1.9",
     "nvpair-job-scheduler": "0.6.1",
     "nvpair-tui": "1.0.8"
