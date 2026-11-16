@@ -1962,8 +1962,11 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// stamping would overstate it; and a fast failure is no evidence the node
 		// is serving either, so clearing an existing stamp would understate it.
 		// Only a byte clears, and only a full budget stamps.
+		//
+		// A requester that gave up leaves it untouched too. The attempt measured
+		// the client's patience, not the node, which may still be generating.
 		if noContent := retry || respondedWithError; noContent {
-			if time.Since(attemptStart) >= firstBodyTimeout {
+			if time.Since(attemptStart) >= firstBodyTimeout && r.Context().Err() == nil {
 				p.noteNoFirstByte(cand.id, time.Now())
 			}
 		} else {
