@@ -18,6 +18,8 @@ import getErrorString from '@/shared/utils/get-error-string'
 
 type ModelHubContentProps = {
     engine: EngineType | null
+    /** The node the chosen model is downloaded to, whose catalog is shown. */
+    nodeId: string
     multiple: boolean
     onSubmit: (models: ModelEntry[]) => void
     /** Already-installed models for this engine; matching hub results are hidden. */
@@ -36,6 +38,7 @@ const SORT_DEFAULT_STATE: SortState = {
 
 export const ModelHubContent = ({
     engine,
+    nodeId,
     multiple,
     onSubmit,
     downloadedModels
@@ -57,9 +60,10 @@ export const ModelHubContent = ({
     )
     const [errors, setErrors] = useState<{ id: string; message: string }[]>([])
 
-    // Per-engine browse cache keeps local filtering immediate while upstream
-    // searches wait for a pause in typing.
-    const cacheRef = useRef<Map<EngineType, EngineHubSearchResponse<ModelEntry>>>(new Map())
+    // Per-node, per-engine browse cache keeps local filtering immediate while
+    // upstream searches wait for a pause in typing. Nodes can select different
+    // download sources, so one node's list never answers for another.
+    const cacheRef = useRef<Map<string, EngineHubSearchResponse<ModelEntry>>>(new Map())
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
     const fetchGenRef = useRef(0)
@@ -67,8 +71,9 @@ export const ModelHubContent = ({
     const submittedQueryRef = useRef('')
     const searchInFlightRef = useRef<ReturnType<typeof searchEngineHub> | null>(null)
 
-    const loadModels = useCallback(async (backend: EngineType) => {
-        const cached = cacheRef.current.get(backend)
+    const loadModels = useCallback(async (backend: EngineType, node: string) => {
+        const cacheKey = `${node}\n${backend}`
+        const cached = cacheRef.current.get(cacheKey)
         if (cached) {
             setCatalog(cached)
             setLoading(false)
@@ -78,9 +83,9 @@ export const ModelHubContent = ({
         setLoading(true)
         setCatalog({ models: [], searchable: null })
         try {
-            const result = await searchEngineHub(backend)
+            const result = await searchEngineHub(backend, node)
             if (fetchGenRef.current !== gen) return
-            if (result.searchable !== null) cacheRef.current.set(backend, result)
+            if (result.searchable !== null) cacheRef.current.set(cacheKey, result)
             setCatalog(result)
             setLoading(false)
         } catch (error) {
@@ -109,13 +114,13 @@ export const ModelHubContent = ({
         setQuery('')
         setSelectedModels(new Set())
         setSort(resolveStoredSort(engine, SORT_DEFAULT_STATE))
-        void loadModels(engine)
+        void loadModels(engine, nodeId)
         return () => {
             // Invalidate in-flight population or search for the previous engine.
             fetchGenRef.current += 1
             searchGenRef.current += 1
         }
-    }, [engine, loadModels])
+    }, [engine, nodeId, loadModels])
 
     const queryFiltered = useMemo(() => {
         const q = query.toLowerCase().trim()
@@ -215,7 +220,7 @@ export const ModelHubContent = ({
                 await searchInFlightRef.current.catch(() => undefined)
             }
             if (searchGenRef.current !== generation) return
-            const request = searchEngineHub(engine, normalized)
+            const request = searchEngineHub(engine, nodeId, normalized)
             searchInFlightRef.current = request
             try {
                 const result = await request
@@ -232,7 +237,7 @@ export const ModelHubContent = ({
                 if (searchGenRef.current === generation) setSearching(false)
             }
         },
-        [engine, catalog.searchable]
+        [engine, nodeId, catalog.searchable]
     )
 
     useEffect(() => {

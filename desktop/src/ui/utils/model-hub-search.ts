@@ -49,14 +49,16 @@ export function mergeModelHubResults(
 }
 
 /**
- * Fetch an engine's populated catalog or submit an explicit upstream query.
- * Electron main owns every upstream source; the renderer only maps display rows.
+ * Fetch the populated catalog for a node's engine or submit an explicit
+ * upstream query. Electron main owns every upstream source; the renderer only
+ * maps display rows.
  */
 export async function searchEngineHub(
     engine: EngineType,
+    nodeId: string,
     query?: string
 ): Promise<EngineHubSearchResponse<ModelEntry>> {
     if (!getEngineHub(engine)) return { models: [], searchable: false }
-    const { models, searchable } = await window.pairApi.engines.searchHub(engine, query)
+    const { models, searchable } = await window.pairApi.engines.searchHub(engine, nodeId, query)
     return { models: models.map(hubModelToEntry), searchable }
 }

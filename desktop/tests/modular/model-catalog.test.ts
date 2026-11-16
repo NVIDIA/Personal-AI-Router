@@ -43,14 +43,14 @@ describe('model catalog relay', () => {
     // The backend decides whether a source can search; the relay only carries
     // the query, and a blank one is no query at all.
     it('passes a search query through, trimmed, and leaves a blank one out', async () => {
-        await getEngineHubModels('lm-studio', '  gemma  ')
+        await getEngineHubModels('lm-studio', undefined, '  gemma  ')
         expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
             'broker',
             'engine:catalog',
             { engine: 'lmstudio', query: 'gemma' },
             MODULAR_CATALOG_CALL_TIMEOUT_MS
         )
-        await getEngineHubModels('lm-studio', '   ')
+        await getEngineHubModels('lm-studio', undefined, '   ')
         expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
             'broker',
             'engine:catalog',
@@ -162,11 +162,10 @@ describe('model catalog relay', () => {
         // Both the relay and display mapper must preserve unknown support so a
         // failed browse does not prevent the next query reaching the engine.
         vi.stubGlobal('window', { pairApi: { engines: { searchHub: getEngineHubModels } } })
-
-        const browse = await searchEngineHub('vllm')
+        const browse = await searchEngineHub('vllm', 'self')
         expect(browse).toEqual({ models: [], searchable: null })
 
-        const result = await searchEngineHub('vllm', 'coder')
+        const result = await searchEngineHub('vllm', 'self', 'coder')
         expect(result.searchable).toBe(true)
         expect(result.models.map(model => model.id)).toEqual(['org/coder'])
         expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
@@ -175,6 +174,113 @@ describe('model catalog relay', () => {
             { engine: 'vllm', query: 'coder' },
             MODULAR_CATALOG_CALL_TIMEOUT_MS
         )
+    })
+
+    describe('for a llama.cpp node', () => {
+        function settingsFor(modelSource: string | undefined) {
+            return {
+                nodeId: 'mac',
+                engine: 'llamacpp',
+                phase: 'idle',
+                epoch: 'e1',
+                sequence: 1,
+                revision: 1,
+                appliedRevision: 1,
+                settings: {
+                    serverPort: 8081,
+                    proxyPort: 8080,
+                    launchText: '',
+                    ...(modelSource ? { modelSource } : {})
+                },
+                effectiveServerPort: 8081,
+                effectiveProxyPort: 8080,
+                running: true,
+                adopted: false,
+                editable: true,
+                reason: '',
+                format: 'pair-arguments-v1',
+                error: '',
+                requestId: ''
+            }
+        }
+
+        function answer(modelSource: string | undefined) {
+            mocks.supervisor.callProcess.mockImplementation(async (_process, method) =>
+                method === 'engine:get-settings'
+                    ? settingsFor(modelSource)
+                    : { models: [], searchable: true }
+            )
+        }
+
+        // The catalog is served by this device's engine manager, which would
+        // otherwise answer with this device's source rather than the node's.
+        it("asks for the catalog from that node's saved download source", async () => {
+            answer('modelscope')
+
+            await getEngineHubModels('llama-cpp', 'mac', 'qwen')
+
+            expect(mocks.supervisor.callProcess).toHaveBeenNthCalledWith(
+                1,
+                'broker',
+                'engine:get-settings',
+                { nodeId: 'mac', engine: 'llamacpp' }
+            )
+            expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
+                'broker',
+                'engine:catalog',
+                { engine: 'llamacpp', query: 'qwen', modelSource: 'modelscope' },
+                MODULAR_CATALOG_CALL_TIMEOUT_MS
+            )
+        })
+
+        // Settings change between opens, so a saved source is not reused.
+        it('reads the source again for every request', async () => {
+            answer('modelscope')
+            await getEngineHubModels('llama-cpp', 'mac')
+            answer('huggingface')
+            await getEngineHubModels('llama-cpp', 'mac')
+
+            expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
+                'broker',
+                'engine:catalog',
+                { engine: 'llamacpp', modelSource: 'huggingface' },
+                MODULAR_CATALOG_CALL_TIMEOUT_MS
+            )
+        })
+
+        // Falling back to this device's source would list models the node
+        // then fetches from a different provider.
+        it('refuses a node that does not report its source', async () => {
+            answer(undefined)
+
+            await expect(getEngineHubModels('llama-cpp', 'mac')).rejects.toThrow(
+                'does not report its model download source'
+            )
+            expect(mocks.supervisor.callProcess).not.toHaveBeenCalledWith(
+                'broker',
+                'engine:catalog',
+                expect.anything(),
+                expect.anything()
+            )
+        })
+
+        it('surfaces a failed settings read rather than an empty hub', async () => {
+            mocks.supervisor.callProcess.mockRejectedValue(new Error('peer unreachable'))
+
+            await expect(getEngineHubModels('llama-cpp', 'mac')).rejects.toThrow('peer unreachable')
+        })
+
+        it('leaves engines with a fixed source alone', async () => {
+            await getEngineHubModels('lm-studio', 'mac')
+
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledTimes(1)
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                'broker',
+                'engine:catalog',
+                { engine: 'lmstudio' },
+                MODULAR_CATALOG_CALL_TIMEOUT_MS
+            )
+        })
     })
 
     // Ollama's list is compiled into the engine manager, so warming it would

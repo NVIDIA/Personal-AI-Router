@@ -45,9 +45,9 @@ describe('model hub catalog display', () => {
             searchable: true
         })
 
-        const result = await searchEngineHub('vllm', 'model')
+        const result = await searchEngineHub('vllm', 'peer', 'model')
 
-        expect(searchHub).toHaveBeenCalledWith('vllm', 'model')
+        expect(searchHub).toHaveBeenCalledWith('vllm', 'peer', 'model')
         expect(result).toEqual({
             models: [
                 {
@@ -65,7 +65,7 @@ describe('model hub catalog display', () => {
     it('retains local filtering when the backend reports no search capability', async () => {
         searchHub.mockResolvedValue({ models: [], searchable: false })
 
-        await expect(searchEngineHub('vllm')).resolves.toEqual({
+        await expect(searchEngineHub('vllm', 'peer')).resolves.toEqual({
             models: [],
             searchable: false
         })
