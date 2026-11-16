@@ -374,6 +374,7 @@ These are the statuses the proxy itself returns:
 
 | Condition | Status |
 | --- | --- |
+| Request body exceeds 32 MiB, nothing dispatched | `413` |
 | No owner advertises the model, nothing dispatched | `502` |
 | Final permitted attempt returned a status | that status and body, unchanged |
 | Final permitted attempt failed at the transport | `502` |
@@ -709,6 +710,7 @@ new supervisor, and no new relay wiring.
 | Mode | Behavior |
 | --- | --- |
 | Requested port taken at enable | Tagged bind failure; broker retries on a fallback port |
+| Request body exceeds 32 MiB | Local `413`, rejected before candidate selection, no engine contacted |
 | No advertised owner for the model | Local `502`, no engine contacted |
 | All owners refuse retryably | Last upstream status surfaced |
 | Transport error with candidates left | Forget the node's confirmed address, fail over |
