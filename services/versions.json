@@ -1,8 +1,8 @@
 {
   "$comment": "Single source of truth for all version numbers. See VERSIONING.md for bump rules.",
-  "services": "2.11.0",
+  "services": "2.11.1",
   "components": {
-    "nvpair-proxy": "1.5.4",
+    "nvpair-proxy": "1.5.5",
     "nvpair-node-info": "0.14.1",
     "nvpair-node-scanner": "0.22.0",
     "nvpair-manual-nodes": "0.12.0",

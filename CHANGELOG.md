@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.31 — Long requests are no longer cut off while an engine is still working (#209)
+
+- The router no longer gives up on an engine after two minutes without a response. Queued Ollama requests and long non-streaming generations now run to completion instead of being restarted on another machine.
+- An engine that starts responding but then stalls is still failed over, now after three minutes instead of two.
+
 ## 1.0.30 — fix(node-info): report Apple Silicon GPU memory in use (#213)
 
 - Apple Silicon Macs now report GPU memory in use instead of allocated GPU memory. GPU memory usage is unavailable when the driver does not provide an in-use reading.
