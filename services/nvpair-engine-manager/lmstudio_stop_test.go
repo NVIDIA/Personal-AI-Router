@@ -49,20 +49,31 @@ func TestLMStudioStop_UsesHostSpecificShutdown(t *testing.T) {
 	test("GUI server", `{"status":"running","isDaemon":false}`, []string{"server", "stop"})
 }
 
-func TestLMStudioStop_RejectsUnidentifiedHost(t *testing.T) {
+func TestLMStudioStop_StopsServerWhenHostIsUnidentified(t *testing.T) {
 	test := func(name, status string) {
 		t.Run(name, func(t *testing.T) {
 			ex, marker := lmStudioStopExecutor(t, status)
 
-			require.Error(t, ex.Stop("lmstudio"))
-			assert.NoFileExists(t, marker, "an unidentified host must not receive a stop command")
+			require.NoError(t, ex.Stop("lmstudio"))
+
+			data, err := os.ReadFile(marker)
+			require.NoError(t, err)
+			var command []string
+			require.NoError(t, json.Unmarshal(data, &command))
+			assert.Equal(t, []string{"server", "stop"}, command)
 		})
 	}
 	test("status command failed", "command-error")
 	test("malformed JSON", "not JSON")
+	test("notice before JSON", "Notice: updating CLI\n"+`{"status":"running","isDaemon":true}`)
+	test("multiple JSON objects", `{"status":"running","isDaemon":true} {}`)
 	test("missing status", `{}`)
+	test("missing status with daemon flag", `{"isDaemon":true}`)
 	test("missing host type", `{"status":"running"}`)
+	test("invalid host type", `{"status":"running","isDaemon":"true"}`)
+	test("null host type", `{"status":"running","isDaemon":null}`)
 	test("unknown status", `{"status":"unexpected","isDaemon":false}`)
+	test("unknown status with daemon flag", `{"status":"unexpected","isDaemon":true}`)
 }
 
 func TestLMStudioStop_DoesNotStartAnAbsentHost(t *testing.T) {
@@ -70,6 +81,16 @@ func TestLMStudioStop_DoesNotStartAnAbsentHost(t *testing.T) {
 
 	require.NoError(t, ex.Stop("lmstudio"))
 	assert.NoFileExists(t, marker)
+}
+
+func TestLMStudioStop_ReturnsErrorWhenFallbackStopFails(t *testing.T) {
+	ex, _ := lmStudioStopExecutor(t, "command-error")
+	t.Setenv("PAIR_TEST_LMS_STOP", t.TempDir())
+
+	require.Error(t, ex.Stop("lmstudio"))
+	st, err := ex.state("lmstudio")
+	require.NoError(t, err)
+	assert.True(t, st.running)
 }
 
 func TestLMStudioStop_PreservesCustomStopCommand(t *testing.T) {

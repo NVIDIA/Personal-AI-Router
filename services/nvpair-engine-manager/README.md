@@ -439,8 +439,10 @@ The bundled LM Studio stop command first identifies the running host using
 `lms daemon status --json`. For a headless host, `lms daemon down` terminates
 `llmster` and releases its loaded models, whether PAIR or the user installed it.
 For a GUI host, `lms server stop` closes the HTTP server while leaving the GUI
-and its loaded models alone. Host detection must succeed before sending a
-shutdown command. Host detection and shutdown share the
+and its loaded models alone. If host detection fails or returns unrecognized
+output, PAIR uses `lms server stop` too; the host and loaded models may remain
+in memory. An explicit `not-running` status requires no stop command.
+Host detection and shutdown share the
 ten-second command timeout, followed by up to ten seconds to verify that the
 server closed; daemon shutdown may continue after the CLI returns.
 Restart and application shutdown use the same policy on every supported

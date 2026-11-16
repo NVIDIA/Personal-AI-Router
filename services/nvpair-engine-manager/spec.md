@@ -25,8 +25,10 @@ extensibility story for an open-source product.
 - Lifecycle: start (with readiness probe), stop, restart, status, periodic health.
 - The bundled LM Studio stop policy reads `lms daemon status --json`: a headless
   host uses `lms daemon down` to release its daemon and loaded models; a GUI host
-  uses `lms server stop`, preserving the GUI and its models. Unidentified host
-  status prevents shutdown. Detection and shutdown share a ten-second command
+  uses `lms server stop`, preserving the GUI and its models. Failed or
+  unrecognized host status also uses `server stop`, so the host and models may
+  remain in memory. An explicit `not-running` status requires no stop command.
+  Detection and shutdown share a ten-second command
   timeout, followed by up to ten seconds to confirm server closure. Restart and
   shutdown use the same policy on every supported platform; custom stop commands
   remain unchanged.
