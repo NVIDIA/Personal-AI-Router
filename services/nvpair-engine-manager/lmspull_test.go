@@ -867,6 +867,86 @@ func TestCleanupLMSAfterCancel_KeepsEveryFileWhenTheQuantizationNamesMoreThanOne
 	test("splits into different numbers of shards", "Qwen3.5-4B-EU-Tool-Q4_K_M-00001-of-00002.gguf", "Qwen3.5-4B-EU-Tool-Q4_K_M-00001-of-00003.gguf", false)
 }
 
+// Once cleanup has seen two files of the quantization, it cannot tell which one
+// is this download's, and one of them going away does not settle that: its
+// client may have finished or cancelled it, and the file that remains may still
+// be another client's, paused rather than abandoned. So the ambiguity lasts for
+// the whole cleanup, whether the file that went away was in the snapshot or
+// appeared while cleanup was watching, and even when it went before cleanup
+// first looked. In each case it goes before the stopped transfer's grace is
+// over, the only time the file that remains could still be taken for this
+// download's: a candidate that first appears, or reappears, after the grace is
+// kept as another client's anyway.
+func TestCleanupLMSAfterCancel_KeepsAFileAfterTheOtherOfItsQuantizationDisappears(t *testing.T) {
+	const model = "owner/repo@Q4_K_M"
+	t.Run("the other predates the pull and is gone when cleanup starts", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(root, "owner", "repo")
+		snapshotted := filepath.Join(target, "downloading_model-v1-Q4_K_M.gguf.part")
+		writePartial(t, snapshotted, "a download this pull may be resuming")
+		before, err := lmsPartialFiles(root, model)
+		require.NoError(t, err)
+		appeared := filepath.Join(target, "downloading_model-v2-Q4_K_M.gguf.part")
+		writePartial(t, appeared, "a download that appeared after the snapshot")
+		require.NoError(t, os.Remove(snapshotted))
+
+		require.NoError(t, cleanupLMSAfterCancel(settledContext(t), root, model, fromHuggingFace(model), before, nil))
+
+		assertPresent(t, appeared)
+	})
+	t.Run("the other predates the pull and disappears during cleanup", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(root, "owner", "repo")
+		snapshotted := filepath.Join(target, "downloading_model-v1-Q4_K_M.gguf.part")
+		writePartial(t, snapshotted, "a download this pull may be resuming")
+		before, err := lmsPartialFiles(root, model)
+		require.NoError(t, err)
+		appeared := filepath.Join(target, "downloading_model-v2-Q4_K_M.gguf.part")
+		writePartial(t, appeared, "a download that appeared after the snapshot")
+		gone := false
+		waits := 0
+		ctx := withPartialSettle(t.Context(), func() {
+			waits++
+			if waits == 1 {
+				require.NoError(t, os.Remove(snapshotted))
+				gone = true
+			}
+		})
+
+		require.NoError(t, cleanupLMSAfterCancel(ctx, root, model, fromHuggingFace(model), before, nil))
+
+		assert.True(t, gone, "cleanup should still be looking when the other file goes")
+		assertPresent(t, appeared)
+	})
+	t.Run("the other appears and disappears during cleanup", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(root, "owner", "repo")
+		require.NoError(t, os.MkdirAll(target, 0700))
+		before, err := lmsPartialFiles(root, model)
+		require.NoError(t, err)
+		appeared := filepath.Join(target, "downloading_model-v2-Q4_K_M.gguf.part")
+		writePartial(t, appeared, "a download that appeared after the snapshot")
+		passing := filepath.Join(target, "downloading_model-v3-Q4_K_M.gguf.part")
+		gone := false
+		waits := 0
+		ctx := withPartialSettle(t.Context(), func() {
+			waits++
+			switch waits {
+			case 1:
+				writePartial(t, passing, "another client's download")
+			case 2:
+				require.NoError(t, os.Remove(passing))
+				gone = true
+			}
+		})
+
+		require.NoError(t, cleanupLMSAfterCancel(ctx, root, model, fromHuggingFace(model), before, nil))
+
+		assert.True(t, gone, "cleanup should still be looking when the other file goes")
+		assertPresent(t, appeared)
+	})
+}
+
 // A GGUF too large for one file is split into shards named
 // "<name>-00001-of-00003.gguf", which one `lms get` downloads. They count as
 // one file, so cancelling removes every shard the download started.

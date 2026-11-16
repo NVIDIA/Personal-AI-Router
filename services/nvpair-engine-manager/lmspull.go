@@ -430,8 +430,18 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model, source string, befo
 	if before == nil || !strings.HasPrefix(lmsResolverKey(source), "hf:") {
 		return nil
 	}
+	quants := announced
+	if quant := lmsModelQuant(model); quant != "" {
+		quants = []string{quant}
+	}
+	seen := make(map[string]bool)
+	for path := range before {
+		if target, ok := lmsQuantTarget(path, quants); ok {
+			seen[target] = true
+		}
+	}
 	return removeQuiescentPartials(ctx, func() ([]partialGroup, error) {
-		paths, err := lmsCreatedPartials(root, model, before, announced)
+		paths, err := lmsCreatedPartials(root, model, before, quants, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -446,20 +456,24 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model, source string, befo
 // started. Never list a model directory or a symlink out of the cache.
 //
 // LM Studio names a GGUF after its quantization, so which file is this
-// download's comes from the quantization: the one the request pins, or else
-// the ones the CLI's plan announced. Pulling @Q4_K_M must not touch a @Q8_0
-// the LM Studio app is fetching beside it. An unpinned request whose CLI
+// download's comes from the quantization in quants: the one the request pins,
+// or else the ones the CLI's plan announced. Pulling @Q4_K_M must not touch a
+// @Q8_0 the LM Studio app is fetching beside it. An unpinned request whose CLI
 // announced none has no candidates, because any partial appearing in the
 // repository could be the app fetching another quantization beside it.
 //
 // The quantization singles out one file only when the repository holds one
 // file of it. It can hold several, as variants of a model or as every file of
 // a repository named for its quantization, and the CLI never names the file
-// it chose, so partials that name more than one file leave none attributable.
-// Those that predate this download count too: `lms get` may be resuming one,
-// and a partial that appeared since is then another client's. The shards of a
-// split GGUF, "<name>-00001-of-00003.gguf", are one file; "<name>.gguf", or
-// <name> split into a different number of shards, is another.
+// it chose, so once partials have named more than one file, none is
+// attributable. seen holds every file of the quantization named so far in
+// this cleanup, by its listings or by the snapshot, which counts because
+// `lms get` may be resuming one of those files, and a partial that appeared
+// since is then another client's. This listing adds to it, and one of those
+// files going away, finished or cancelled by its client, does not make another
+// this download's. The shards of a split GGUF, "<name>-00001-of-00003.gguf",
+// are one file; "<name>.gguf", or <name> split into a different number of
+// shards, is another.
 //
 // Presence in the snapshot is disqualifying on its own; what the file has done
 // since is not consulted. Bytes gained during this pull look identical whether
@@ -468,31 +482,36 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model, source string, befo
 // resumed download therefore keeps its partial through a cancellation, which
 // costs disk the vendor reuses on the next attempt; the alternative costs
 // another client its transfer.
-func lmsCreatedPartials(root, model string, before map[string]os.FileInfo, announced []string) ([]string, error) {
+func lmsCreatedPartials(root, model string, before map[string]os.FileInfo, quants []string, seen map[string]bool) ([]string, error) {
 	files, err := lmsPartialFiles(root, model)
 	if err != nil {
 		return nil, err
 	}
-	quants := announced
-	if quant := lmsModelQuant(model); quant != "" {
-		quants = []string{quant}
-	}
-	targets := make(map[string]bool, len(files))
 	created := make([]string, 0, len(files))
 	for path := range files {
-		target := lmsPartialTarget(path)
-		if !slices.ContainsFunc(quants, func(quant string) bool { return lmsNameCarriesQuant(target, quant) }) {
+		target, ok := lmsQuantTarget(path, quants)
+		if !ok {
 			continue
 		}
-		targets[lmsShardPattern.ReplaceAllString(target, "$1")] = true
+		seen[target] = true
 		if _, existed := before[path]; !existed {
 			created = append(created, path)
 		}
 	}
-	if len(targets) > 1 {
+	if len(seen) > 1 {
 		return nil, nil
 	}
 	return created, nil
+}
+
+// lmsQuantTarget is the model file a partial is becoming, with every shard of
+// one split named alike, when that file carries one of quants.
+func lmsQuantTarget(path string, quants []string) (string, bool) {
+	target := lmsPartialTarget(path)
+	if !slices.ContainsFunc(quants, func(quant string) bool { return lmsNameCarriesQuant(target, quant) }) {
+		return "", false
+	}
+	return lmsShardPattern.ReplaceAllString(target, "$1"), true
 }
 
 // lmsShardPattern matches the shard number llama.cpp's gguf-split gives each
