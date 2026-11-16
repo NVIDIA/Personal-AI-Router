@@ -279,9 +279,10 @@ func TestModelScopeCatalog_FailsWhenTheRequestEndsBeforeEveryListingReturns(t *t
 	c := newCatalogService()
 	c.modelScopeEndpoint = srv.URL
 
-	// The slow listing alone is under the failure limit, so only the ended
-	// request fails this fetch rather than caching the eight that returned,
-	// and it is named as the cause.
+	// The slow listing, and a fast one still being read when the request
+	// ends, are under the failure limit, so only the ended request fails this
+	// fetch rather than caching the listings that returned. It is named as the
+	// cause.
 	_, err := c.fetchModelScope(ctx, "")
 	require.ErrorIs(t, err, context.Canceled)
 	assert.ErrorContains(t, err, " of 9 ModelScope file lists failed: context canceled")
