@@ -113,10 +113,6 @@ function normalizeWindowsPath(value: string): string {
     return path.win32.normalize(value.replace(/^"|"$/g, '')).toLowerCase()
 }
 
-function sameArgs(a: readonly string[], b: readonly string[]): boolean {
-    return a.length === b.length && a.every((arg, index) => arg === b[index])
-}
-
 /**
  * The Windows Run entries this app owns: the per-user ones Electron writes,
  * under this app's value name or pointing at this executable.
@@ -162,10 +158,12 @@ function ownedWindowsItems(launchItems: readonly LaunchItems[], execPath: string
  * - preference on, enabled: keep it.
  * - preference off, enabled: remove it. Any other state is already off.
  *
- * `current` must come from `getLoginItemSettings({ args })` with the arguments
- * the preference would register. `openAtLogin` alone is not trusted to mean
- * "registered": the documentation does not say whether a disabled entry still
- * reports it, so the Run entries in `launchItems` are read as well.
+ * `current` must come from {@link readLoginItem} for `settings`. On Windows,
+ * `openAtLogin` is then Electron's exact comparison of this app's Run value with
+ * this executable and the arguments the preference would register, so it alone
+ * says whether the entry is current. `launchItems` says whether the user disabled
+ * it; its `args` are never compared, because Electron leaves switches such as
+ * {@link APP_HIDDEN_ARGUMENT} out of them.
  *
  * Linux has no `LoginItemSettings`; see {@link planLinuxLoginItem}.
  */
@@ -194,16 +192,7 @@ export function planLoginItem({
     }
 
     if (owned.some(item => !item.enabled)) return { kind: 'opt-out' }
-
-    const wantedArgs = windowsLoginItemArgs(settings.startHidden)
-    const exe = normalizeWindowsPath(execPath)
-    const registered =
-        current.openAtLogin ||
-        owned.some(
-            item => normalizeWindowsPath(item.path) === exe && sameArgs(item.args, wantedArgs)
-        )
-    if (registered) return { kind: 'keep' }
-    return { kind: 'register', enabled: true }
+    return current.openAtLogin ? { kind: 'keep' } : { kind: 'register', enabled: true }
 }
 
 /**
@@ -241,11 +230,20 @@ const NO_LOGIN_ITEM: LoginItemSettings = {
 /**
  * The OS entry as it reads under the arguments `settings` would register. Linux
  * has none: its entry is a file, read through {@link readAutostartEntry}.
+ *
+ * On Windows `path` is the executable in quotes. Electron before 44.10 parses
+ * the path it matches Run entries against as a command line, so an unquoted
+ * `C:\Program Files\...` reads as `C:\Program`, matches nothing, and reports
+ * `launchItems: []` and `executableWillLaunchAtLogin: false` for an entry it
+ * just wrote (electron/electron#54364). Later versions strip the quotes.
  */
 function readLoginItem(settings: StartupSettings, platform: SupportedPlatform): LoginItemSettings {
     if (platform === 'linux') return NO_LOGIN_ITEM
     return platform === 'win32'
-        ? app.getLoginItemSettings({ args: windowsLoginItemArgs(settings.startHidden) })
+        ? app.getLoginItemSettings({
+              args: windowsLoginItemArgs(settings.startHidden),
+              path: `"${process.execPath}"`
+          })
         : app.getLoginItemSettings()
 }
 
