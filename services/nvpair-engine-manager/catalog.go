@@ -294,6 +294,9 @@ func newCatalogService() *catalogService {
 		ollamaCatalog: sync.OnceValues(loadOllamaCatalog),
 		searches:      map[string]*listingCache{},
 	}
+	// ModelScope serves file lists over HTTP/1.1, so keep a connection idle for
+	// every concurrent request rather than redialling past Go's default of two.
+	c.client.Transport.(*http.Transport).MaxIdleConnsPerHost = modelScopeFileListConcurrency
 	c.lmStudio = &listingCache{label: "lm studio catalog", fetch: c.fetchLmStudio}
 	c.llamaCPP = &listingCache{label: "llama.cpp catalog", fetch: c.fetchLlamaCPP}
 	c.vllm = &listingCache{label: "vllm catalog", fetch: c.fetchVLLM}
@@ -340,7 +343,7 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		}
 		switch selectedSource {
 		case "modelscope":
-			models, fetchedAt, err := c.searchCache("modelscope:"+strings.ToLower(query), "ModelScope catalog", func(ctx context.Context) ([]CatalogModel, error) {
+			models, fetchedAt, err := c.searchCache("modelscope:"+strings.ToLower(query), "ModelScope catalog", query != "", func(ctx context.Context) ([]CatalogModel, error) {
 				return c.fetchModelScope(ctx, query)
 			}).get(ctx)
 			if err != nil {
@@ -626,7 +629,7 @@ func (c *catalogService) llamaCPPCatalog(ctx context.Context, query string) ([]C
 // llamaCPPSearch is the cache for one query, created on first use. Queries
 // differing only in case share one.
 func (c *catalogService) llamaCPPSearch(query string) *listingCache {
-	return c.searchCache("llamacpp:"+strings.ToLower(query), "llama.cpp search", func(ctx context.Context) ([]CatalogModel, error) {
+	return c.searchCache("llamacpp:"+strings.ToLower(query), "llama.cpp search", true, func(ctx context.Context) ([]CatalogModel, error) {
 		rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
 		if err != nil {
 			return nil, err
@@ -637,13 +640,14 @@ func (c *catalogService) llamaCPPSearch(query string) *listingCache {
 
 // searchCache returns the cache for one search, creating it on first use and
 // marking it most recently used. The set of possible queries is unbounded, so
-// the least recently used are evicted past searchCacheLimit.
-func (c *catalogService) searchCache(key, label string, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
+// the least recently used are evicted past searchCacheLimit. emptyOK is false
+// for a browse list kept here, which has failed when it comes back empty.
+func (c *catalogService) searchCache(key, label string, emptyOK bool, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
 	search, ok := c.searches[key]
 	if !ok {
-		search = &listingCache{label: label, emptyOK: true, fetch: fetch}
+		search = &listingCache{label: label, emptyOK: emptyOK, fetch: fetch}
 		c.searches[key] = search
 	}
 	for i, k := range c.searchOrder {

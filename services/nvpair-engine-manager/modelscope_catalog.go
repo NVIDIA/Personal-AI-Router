@@ -9,15 +9,69 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 )
 
-// ModelScope lists files separately, so keep the page small enough to check
-// every repository's offered quantization within the catalog timeout.
-const modelScopeCatalogLimit = 10
+const (
+	// modelScopeCatalogLimit is one page of the listing, and the largest page
+	// ModelScope serves. Every repository on it costs its own file-list request
+	// to check the offered quantization, all inside the catalog timeout.
+	modelScopeCatalogLimit = 50
+	// modelScopeFileListConcurrency bounds the file-list requests in flight, so
+	// a full page fits the timeout without opening one connection per entry.
+	modelScopeFileListConcurrency = 8
+	// modelScopeFileListFailureLimit fails the fetch when more than one file
+	// list in this many fails. A few broken repositories are skipped; more than
+	// that is an upstream problem, and a list cut short by it would be cached
+	// as the catalogue for catalogCacheTTL.
+	modelScopeFileListFailureLimit = 4
+)
+
+// modelScopeNonChatMarkers are tags and repo-name words of models that do not
+// answer chat requests. They decide only for a repository that declares no
+// task: ModelScope leaves it empty for many chat GGUF repos, so an undeclared
+// task is taken as chat unless one of these says otherwise. A blocklist cannot
+// name every non-chat model; it covers the families seen on ModelScope.
+var modelScopeNonChatMarkers = map[string]bool{
+	"embed": true, "embedding": true, "embeddings": true, "feature-extraction": true, "sentence-similarity": true,
+	"sentence-embedding": true, "rerank": true, "reranker": true, "reranking": true, "text-ranking": true,
+	"audio": true, "speech": true, "tts": true, "asr": true, "whisper": true, "voice-cloning": true,
+	"text-to-speech": true, "speech-to-speech": true, "speech-to-text": true, "text-to-audio": true, "audio-to-audio": true,
+	"automatic-speech-recognition": true, "speech-recognition": true,
+	"text-to-image": true, "text-to-image-synthesis": true, "image-to-image": true, "text-to-video": true, "image-to-video": true,
+	"video-generation": true, "diffusion": true, "stable-diffusion": true, "stable-diffusion.cpp": true,
+	"sdxl": true, "sd3": true, "flux": true, "vae": true, "comfy": true, "comfyui": true, "wan": true, "hunyuanvideo": true, "ltxv": true,
+}
+
+// modelScopeChatByDefault reports a repository with no declared task that
+// carries no non-chat marker in its tags or its name. A name is matched by
+// word, and by word without a trailing version number so wan2 matches wan,
+// and a multi-word marker is matched as consecutive words.
+func modelScopeChatByDefault(repo string, tags []string) bool {
+	for _, tag := range tags {
+		if modelScopeNonChatMarkers[strings.ToLower(strings.TrimSpace(tag))] {
+			return false
+		}
+	}
+	words := strings.NewReplacer("_", "-", ".", "-")
+	_, name, _ := strings.Cut(strings.ToLower(repo), "/")
+	name = words.Replace(name)
+	for _, word := range strings.Split(name, "-") {
+		if modelScopeNonChatMarkers[word] || modelScopeNonChatMarkers[strings.TrimRight(word, "0123456789")] {
+			return false
+		}
+	}
+	for marker := range modelScopeNonChatMarkers {
+		if phrase := words.Replace(marker); strings.Contains(phrase, "-") && strings.Contains("-"+name+"-", "-"+phrase+"-") {
+			return false
+		}
+	}
+	return true
+}
 
 func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]CatalogModel, error) {
 	ctx, cancel := context.WithTimeout(ctx, catalogHTTPTimeout)
@@ -61,6 +115,8 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 	}
 	rows := make([]hfModelRow, len(result.Data.Models))
 	errs := make([]error, len(rows))
+	listed := make([]bool, len(rows))
+	slots := make(chan struct{}, modelScopeFileListConcurrency)
 	var wg sync.WaitGroup
 	for i, entry := range result.Data.Models {
 		row := entry.hfModelRow
@@ -72,13 +128,19 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 		}
 		if len(entry.Tasks) > 0 {
 			row.PipelineTag = entry.Tasks[0]
+		} else if modelScopeChatByDefault(row.ID, row.Tags) {
+			row.PipelineTag = "text-generation"
+		} else {
+			// Without this, isGenerative would still accept a marked repo
+			// through a text-generation or conversational tag.
+			continue
 		}
 		if row.Private || string(row.Gated) != "false" || !hfRepoPattern.MatchString(row.ID) || !hasTag(row.Tags, "gguf") || !isGenerative(row) {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			files, err := fetchModelScopeFiles(ctx, c.client, endpoint, row.ID, "master")
 			if errors.Is(err, errModelScopeListingTooLarge) {
 				return
@@ -90,12 +152,33 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 			for _, file := range files {
 				row.Siblings = append(row.Siblings, hfSibling{RFilename: file.Path})
 			}
-			rows[i] = row
-		}()
+			rows[i], listed[i] = row, true
+		})
 	}
 	wg.Wait()
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
+	failed, succeeded := 0, 0
+	var firstErr error
+	for i, err := range errs {
+		switch {
+		case err != nil:
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+		case listed[i]:
+			succeeded++
+		}
+	}
+	if failed > 0 {
+		// One summary rather than every listing's error: a timeout fails them
+		// all alike, and the message reaches the desktop and terminal as is.
+		err := fmt.Errorf("%d of %d ModelScope file lists failed: %w", failed, failed+succeeded, firstErr)
+		if ctx.Err() != nil || failed*modelScopeFileListFailureLimit > failed+succeeded {
+			return nil, err
+		}
+		// Repository ids are left out: an exact-name search would log the
+		// operator's query.
+		slog.Warn("skipping ModelScope repositories whose file list is unavailable", "err", err)
 	}
 	models := normalizeListing(rows, llamaCPPModel)
 	for i := range models {

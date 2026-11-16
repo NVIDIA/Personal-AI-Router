@@ -85,8 +85,19 @@ Omitting it uses this node's setting. Only `huggingface` and `modelscope` are
 accepted for llama.cpp; each source keeps its own browse/search cache.
 
 ModelScope's public GGUF catalogue is normalized through the same quantization
-and generative-model filters as Hugging Face. A loopback-only adapter translates
-ModelScope metadata and streams file requests without forwarding Hugging Face
+and generative-model filters as Hugging Face. Browse and search each read one
+50-entry page by downloads, the largest ModelScope serves, and list each
+candidate's files at most eight at a time. ModelScope declares no task for many
+chat repos, so a repo without one counts as chat unless a speech, audio, image,
+video, embedding or reranking marker appears in its tags or as words of its
+name. The markers are a blocklist of the families seen on ModelScope, so an
+unmarked non-chat repo can still be listed. A repo whose file list fails is left
+out; the fetch fails instead when more than one file list in four fails or the
+catalogue timeout expires, and an empty browse list is a failure, so the cache
+keeps its previous list rather than one cut short.
+
+A loopback-only adapter translates ModelScope metadata and streams file
+requests without forwarding Hugging Face
 credentials. Requests must match the listener's exact Host and include a random
 256-bit path token, which is redacted from engine output. Streams are bounded to
 the accepted file size and must match the metadata SHA-256. The adapter advertises

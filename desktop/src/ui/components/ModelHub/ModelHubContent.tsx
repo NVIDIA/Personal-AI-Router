@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Stack } from '@nvidia/foundations-react-core'
+import { Stack, Text } from '@nvidia/foundations-react-core'
 import { ModelHubSearchBar } from './ModelHubSearchBar'
 import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
@@ -272,6 +272,17 @@ export const ModelHubContent = ({
                         sort={sort}
                         onSort={handleSortPersist}
                     />
+                    {/* A searchable source browses only a sample of its upstream, so
+                        a search can reach models this list does not show, even
+                        when every listed model is already installed. */}
+                    {catalog.searchable === true &&
+                        !loading &&
+                        query.trim() === '' &&
+                        allModels.length > 0 && (
+                            <Text kind="body/regular/sm" className="text-subtle-color mt-2 ml-2">
+                                Showing popular models. Search to find more.
+                            </Text>
+                        )}
                 </Stack>
                 <ModelHubList
                     className="grow min-h-0"

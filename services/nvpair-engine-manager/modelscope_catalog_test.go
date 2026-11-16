@@ -7,12 +7,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +27,7 @@ func TestModelScopeCatalog_ReturnsOnlyOpenGenerativeQ4Models(t *testing.T) {
 		if r.URL.Path == "/openapi/v1/models" {
 			assert.Equal(t, "Qwen", r.URL.Query().Get("search"))
 			assert.Equal(t, "gguf", r.URL.Query().Get("filter.library"))
-			assert.Equal(t, "10", r.URL.Query().Get("page_size"))
+			assert.Equal(t, "50", r.URL.Query().Get("page_size"))
 			_, err := w.Write([]byte(`{"success":true,"data":{"models":[
 				{"id":"owner/chat","gated":false,"tags":["library:gguf"],"tasks":["text-generation"],"last_modified":"2026-01-01T00:00:00Z","downloads":12},
 				{"id":"owner/q8","gated":false,"tags":["library:gguf"],"tasks":["text-generation"],"last_modified":"2026-01-01T00:00:00Z"},
@@ -69,6 +72,263 @@ func TestModelScopeCatalog_ReturnsOnlyOpenGenerativeQ4Models(t *testing.T) {
 	assert.Equal(t, "owner/chat:Q4_K_M", models[0].ID)
 	assert.Equal(t, "https://modelscope.cn/models/owner/chat", models[0].URL)
 	assert.Equal(t, 12, models[0].Downloads)
+}
+
+// writeModelScopeQ4Listing answers a file-list request with one valid Q4_K_M
+// model file.
+func writeModelScopeQ4Listing(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+		"Success": true,
+		"Data": map[string]any{"Files": []modelScopeFile{{
+			Path: "model-Q4_K_M.gguf", Type: "blob", Revision: "0123456789012345678901234567890123456789",
+			SHA256: "0123456789012345678901234567890123456789012345678901234567890123", Size: 42,
+		}}},
+	}))
+}
+
+// writeModelScopeChatPage answers a catalog request with one page of open GGUF
+// repositories that each declare text generation.
+func writeModelScopeChatPage(t *testing.T, w http.ResponseWriter, repos ...string) {
+	t.Helper()
+	entries := make([]map[string]any, len(repos))
+	for i, repo := range repos {
+		entries[i] = map[string]any{
+			"id": repo, "gated": false, "tags": []string{"library:gguf"},
+			"tasks": []string{"text-generation"}, "last_modified": "2026-01-01T00:00:00Z",
+		}
+	}
+	assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{"models": entries}}))
+}
+
+func TestModelScopeCatalog_TreatsUndeclaredTaskAsChatUnlessMarkedOtherwise(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi/v1/models" {
+			_, err := w.Write([]byte(`{"success":true,"data":{"models":[
+				{"id":"owner/DeepSeek-R1-GGUF","gated":false,"tags":["library:gguf","custom_tag:deepseek"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/Qwen3.6-35B-A3B-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/VoxCPM2-GGUF","gated":false,"tags":["library:gguf","custom_tag:text-to-speech"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/LFM2.5-Audio-1.5B-JP-GGUF","gated":false,"tags":["library:gguf","custom_tag:speech-to-speech"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/LFM2-Audio-1.5B-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/MiniMax-H3-GGUF","gated":false,"tags":["library:gguf","custom_tag:text-to-video"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/Wan2.2-Animate-14B-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/Open_Text_To_Video-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/Qwen3-Embedding-8B-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/bge-m3-GGUF","gated":false,"tags":["library:gguf","custom_tag:sentence-embedding"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/declared-embedding","gated":false,"tags":["library:gguf"],"tasks":["sentence-embedding"],"last_modified":"2026-01-01T00:00:00Z"}
+			]}}`))
+			assert.NoError(t, err)
+			return
+		}
+		writeModelScopeQ4Listing(t, w)
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+
+	models, err := c.fetchModelScope(context.Background(), "")
+	require.NoError(t, err)
+
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	// ModelScope declares no task for many chat repos, so only a speech, image,
+	// video, or embedding marker in the tags or name keeps an undeclared one
+	// out. Version numbers in a name, as in Qwen3.6, are not markers.
+	assert.ElementsMatch(t, []string{"owner/DeepSeek-R1-GGUF:Q4_K_M", "owner/Qwen3.6-35B-A3B-GGUF:Q4_K_M"}, ids)
+}
+
+func TestModelScopeCatalog_DropsMarkedRepositoryThatCarriesAChatTag(t *testing.T) {
+	var fileListRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi/v1/models" {
+			_, err := w.Write([]byte(`{"success":true,"data":{"models":[
+				{"id":"owner/voice-GGUF","gated":false,"tags":["library:gguf","custom_tag:tts","task:text-generation"],"last_modified":"2026-01-01T00:00:00Z"}
+			]}}`))
+			assert.NoError(t, err)
+			return
+		}
+		fileListRequests.Add(1)
+		writeModelScopeQ4Listing(t, w)
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+
+	models, err := c.fetchModelScope(context.Background(), "")
+	require.NoError(t, err)
+
+	// A text-generation tag would otherwise pass the generative check that a
+	// repository without a declared task falls back to.
+	assert.Empty(t, models)
+	assert.Equal(t, int32(0), fileListRequests.Load())
+}
+
+func TestModelScopeCatalog_SkipsRepositoryWhoseFileListFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/v1/models":
+			writeModelScopeChatPage(t, w, "owner/a", "owner/b", "owner/c", "owner/d", "owner/broken")
+		case "/api/v1/models/owner/broken/repo/files":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			writeModelScopeQ4Listing(t, w)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+
+	models, err := c.fetchModelScope(context.Background(), "")
+	require.NoError(t, err)
+
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	assert.ElementsMatch(t, []string{"owner/a:Q4_K_M", "owner/b:Q4_K_M", "owner/c:Q4_K_M", "owner/d:Q4_K_M"}, ids)
+}
+
+func TestModelScopeCatalog_FailsWhenMoreThanAQuarterOfFileListsFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/v1/models":
+			writeModelScopeChatPage(t, w, "owner/a", "owner/b", "owner/c", "owner/broken-1", "owner/broken-2")
+		case "/api/v1/models/owner/broken-1/repo/files", "/api/v1/models/owner/broken-2/repo/files":
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			writeModelScopeQ4Listing(t, w)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+
+	// Two of five is an upstream in trouble, not two broken repositories; the
+	// three left would be cached as the catalogue.
+	_, err := c.fetchModelScope(context.Background(), "")
+	assert.EqualError(t, err, "2 of 5 ModelScope file lists failed: ModelScope metadata returned HTTP 429")
+}
+
+func TestModelScopeCatalog_FailsWhenEveryFileListFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi/v1/models" {
+			writeModelScopeChatPage(t, w, "owner/first", "owner/second")
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+
+	// One summary line rather than one per repository: the message is shown
+	// as is in the desktop error banner and the terminal status line.
+	_, err := c.fetchModelScope(context.Background(), "")
+	assert.EqualError(t, err, "2 of 2 ModelScope file lists failed: ModelScope metadata returned HTTP 503")
+}
+
+func TestModelScopeCatalog_FailsWhenOnlyOversizedListingsSurviveAFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/v1/models":
+			writeModelScopeChatPage(t, w, "owner/oversized", "owner/broken")
+		case "/api/v1/models/owner/oversized/repo/files":
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"Success": true, "Data": map[string]any{"Files": make([]modelScopeFile, 3000)}}))
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+
+	// An oversized repository is dropped without counting as listed, so the
+	// one failure is every listing that could have counted.
+	_, err := c.fetchModelScope(context.Background(), "")
+	assert.EqualError(t, err, "1 of 1 ModelScope file lists failed: ModelScope metadata returned HTTP 503")
+}
+
+func TestModelScopeCatalog_FailsWhenTheTimeoutExpiresBeforeEveryListingReturns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/v1/models":
+			writeModelScopeChatPage(t, w, "owner/a", "owner/b", "owner/c", "owner/d", "owner/e", "owner/f", "owner/g", "owner/h", "owner/slow")
+		case "/api/v1/models/owner/slow/repo/files":
+			<-r.Context().Done()
+		default:
+			writeModelScopeQ4Listing(t, w)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	t.Cleanup(cancel)
+
+	// One failure in nine is under the failure limit, so only the expired
+	// timeout fails this fetch rather than caching the eight that returned.
+	_, err := c.fetchModelScope(ctx, "")
+	assert.ErrorContains(t, err, "1 of 9 ModelScope file lists failed")
+}
+
+func TestModelScopeCatalog_RunsEightFileListRequestsAtOnce(t *testing.T) {
+	var inFlight, peak atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi/v1/models" {
+			repos := make([]string, modelScopeCatalogLimit)
+			for i := range repos {
+				repos[i] = fmt.Sprintf("owner/model-%d", i)
+			}
+			writeModelScopeChatPage(t, w, repos...)
+			return
+		}
+		current := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			seen := peak.Load()
+			if current <= seen || peak.CompareAndSwap(seen, current) {
+				break
+			}
+		}
+		// Hold every request until the limit is reached, so the peak shows
+		// the limit itself rather than how quickly requests happened to finish.
+		if current == modelScopeFileListConcurrency {
+			releaseOnce.Do(func() { close(release) })
+		}
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+			t.Errorf("only %d file-list requests ran at once", current)
+		}
+		writeModelScopeQ4Listing(t, w)
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+
+	models, err := c.fetchModelScope(context.Background(), "")
+	require.NoError(t, err)
+	assert.Len(t, models, modelScopeCatalogLimit)
+	assert.Equal(t, int32(modelScopeFileListConcurrency), peak.Load())
+}
+
+func TestCatalog_FailsAnEmptyModelScopeBrowseList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := w.Write([]byte(`{"success":true,"data":{"models":[]}}`))
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.modelScopeEndpoint = server.URL
+
+	// A search can match nothing, but the most-downloaded page cannot be
+	// empty; caching it would show no models for catalogCacheTTL.
+	_, err := catalog.Catalog(context.Background(), "llamacpp", "", "", "", "modelscope")
+	assert.ErrorContains(t, err, "ModelScope catalog returned no models")
 }
 
 func TestModelScopeCatalog_AcceptsAnEmptySearchResult(t *testing.T) {
