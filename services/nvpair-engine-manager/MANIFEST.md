@@ -623,7 +623,7 @@ script. It is still added with **no code** — using `mode: "command"`, a
         "cli": "~/.lmstudio/bin/lms",
         "port": 1235,
         "start": [["{cli}", "server", "start", "--port", "{port}"]],
-        "stop":  { "cmd": ["{cli}", "server", "stop"] },
+        "stop":  { "cmd": ["{cli}", "daemon", "down"], "grace_s": 10 },
         "ready":  { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 60 },
         "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
       }
@@ -638,7 +638,7 @@ script. It is still added with **no code** — using `mode: "command"`, a
 ```
 
 What each piece does here:
-- **`mode: "command"`** — no owned process; liveness is the `/v1/models` probe, and `stop.cmd` (`lms server stop`) brings the daemon down.
+- **`mode: "command"`** — no owned process; liveness is the `/v1/models` probe. For LM Studio's bundled `stop.cmd` (`["{cli}", "daemon", "down"]`), engine-manager first reads `lms daemon status --json`. A confirmed running headless host uses `daemon down` to terminate `llmster` and release loaded models; a GUI host uses `server stop` to close HTTP without quitting the GUI or unloading its models. Failed or unrecognized host status also uses `server stop`, which may leave the host and models in memory. An explicit `not-running` status requires no stop command. Explicit custom stop commands bypass this selection and execute unchanged.
 - **`cmd` action** — `pull_model` shells out to `lms get {model}` (no HTTP equivalent exists), with `{model}` filled from the call's params.
 - **`model_resolution: "lms-get"`** — `pull_model` tries the model as given, then the Hub artifact id, then the Hugging Face repo URL, so a bare `owner/name` for a Hugging-Face-hosted model (most of LM Studio's catalog) downloads instead of 404ing against the Hub registry.
 - **`{cli}`** — the manifest-global `pull_model` action resolves to the right per-OS binary (`lms.exe` on Windows, `lms` elsewhere).
