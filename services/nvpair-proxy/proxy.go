@@ -561,8 +561,7 @@ func (p *Proxy) Run(ctx context.Context) error {
 // Both bounds are reachable. A node that sends headers and then stalls costs a
 // 180s first-content cap per attempt, so with backoff the fifth dispatch would
 // start past 600s and the deadline ends that job after four. The deadline is
-// also the only bound on the no-owner wait. Do not remove either as
-// unreachable.
+// also the only bound on the no-owner wait.
 const maxDispatchAttempts = 5
 
 // jobDeadline is a var (not a const) only so a test can shorten it; production
