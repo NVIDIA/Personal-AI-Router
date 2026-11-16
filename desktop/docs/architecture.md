@@ -39,19 +39,19 @@ them from `process.resourcesPath/cli-bin`.
 The canonical runtime inventory is
 `src/shared/constants/modular-binaries.ts`:
 
-| Binary                    | Owner            | Purpose                                     |
-| ------------------------- | ---------------- | ------------------------------------------- |
-| `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay  |
+| Binary                    | Owner            | Purpose                                                                           |
+| ------------------------- | ---------------- | --------------------------------------------------------------------------------- |
+| `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay                                        |
 | `nvpair-proxy`            | Broker           | Engine proxy and cluster routing; one process hosting a facade per enabled engine |
-| `nvpair-node-scanner`     | Broker           | LAN discovery and announcement              |
-| `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint        |
-| `nvpair-workload-manager` | Broker, optional | Workload replication                        |
-| `nvpair-cluster-manager`  | Broker, optional | Cluster identity, pairing, and membership   |
-| `nvpair-node-settings`    | Broker           | Persisted node identity and settings        |
-| `nvpair-manual-nodes`     | Broker, optional | User-managed discovery entries              |
-| `nvpair-engine-manager`   | Broker, optional | Engine lifecycle and model operations       |
-| `nvpair-errors`           | Broker, optional | Error registry and peer synchronization     |
-| `nvpair-job-scheduler`    | Broker, optional | Node-wide routing priority                  |
+| `nvpair-node-scanner`     | Broker           | LAN discovery and announcement                                                    |
+| `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint                                              |
+| `nvpair-workload-manager` | Broker, optional | Workload replication                                                              |
+| `nvpair-cluster-manager`  | Broker, optional | Cluster identity, pairing, and membership                                         |
+| `nvpair-node-settings`    | Broker           | Persisted node identity and settings                                              |
+| `nvpair-manual-nodes`     | Broker, optional | User-managed discovery entries                                                    |
+| `nvpair-engine-manager`   | Broker, optional | Engine lifecycle and model operations                                             |
+| `nvpair-errors`           | Broker, optional | Error registry and peer synchronization                                           |
+| `nvpair-job-scheduler`    | Broker, optional | Node-wide routing priority                                                        |
 
 `nvpair-tui` is bundled as a standalone terminal client; it is not supervised by
 Electron or the broker. It spawns and owns its own `nvpair-ui-broker`, so it runs
@@ -278,17 +278,24 @@ same method, so both front ends browse one implementation.
   callers coalesced onto one request and a failure backoff. The cache is warmed
   when the Overview renderer reports ready, not when the service connects, so a
   slow or hanging catalog fetch cannot compete with the window's first paint;
-- llama.cpp models come from the 50 most-downloaded GGUF repositories of each
-  approved publisher (`ggml-org`, `bartowski`, and `unsloth`), fetched and cached
-  the same way. It is the one searchable source: a `query` searches up to 50
-  public Hugging Face matches across publishers, each query cached on its own.
-  Both keep only public, generative repositories with a primary `Q4_K_M` file
-  and emit exact `owner/repository:Q4_K_M` pull IDs;
+- llama.cpp models come from the node's selected model download source. From
+  Hugging Face, the browse list is the 50 most-downloaded GGUF repositories of
+  each approved publisher (`ggml-org`, `bartowski`, and `unsloth`), fetched and
+  cached the same way, and a `query` searches up to 50 public matches across
+  publishers, each query cached on its own. From ModelScope, it lists and
+  searches popular public GGUF repositories. Both keep only public, generative
+  repositories with a primary `Q4_K_M` file and emit exact
+  `owner/repository:Q4_K_M` pull IDs;
+- the request takes an optional `modelSource`; omitting it uses the answering
+  machine's own selection. The model hub is opened for a node, and for a peer's
+  llama.cpp the desktop reads that peer's saved source with
+  `engine:get-settings` before each browse or search and passes it, as the
+  terminal interface does, so the list matches what the peer will download;
 - the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
   rows, keeps them only for Apple Silicon, and echoes the target it filtered
   for, so a client driving a peer is not offered models that peer cannot
-  install. The desktop names no target: the hub installs only to this machine,
-  which is also the one answering;
+  install. The desktop does not yet pass them, so a peer's list is still
+  filtered for this machine;
 - the Ollama reply is a single multi-megabyte frame, so every hop on its path
   shares `jsonrpc.WorkerFrameBytes`. See `docs/services-backend.md`;
 - model pulls still run through `nvpair-engine-manager`.
@@ -406,10 +413,10 @@ They list every PAIR-owned path (current and historical layouts) and are never
 shrunk — when storage moves, both old and new locations stay listed so upgrades
 from any prior version remain recoverable. No Node runtime is required.
 
-| Path                                                     | Behavior                                                                                               |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Path                                                     | Behavior                                                                                                                                                                                                               |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Settings → Service → **Reset app data**                  | Confirms → removes PAIR-installed engines → stop → wipe; stops before the wipe if an engine cannot be removed or the service is down; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
-| `scripts/wipe-app-data.sh` / `scripts/wipe-app-data.cmd` | Clean-only manual entrypoints; require confirmation; do not relaunch                                   |
+| `scripts/wipe-app-data.sh` / `scripts/wipe-app-data.cmd` | Clean-only manual entrypoints; require confirmation; do not relaunch                                                                                                                                                   |
 
 Packaged builds ship the same scripts under `resources/scripts/` so the app invokes
 the identical inventory. Platform uninstall scripts should stay aligned with these

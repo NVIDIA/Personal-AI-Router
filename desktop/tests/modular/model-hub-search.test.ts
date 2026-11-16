@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mergeModelHubResults, searchEngineHub } from '@/ui/utils/model-hub-search'
+import {
+    addModelHubError,
+    mergeModelHubResults,
+    searchEngineHub
+} from '@/ui/utils/model-hub-search'
 import type { IEngineApi } from '@/ui/api/engine-api'
 import type { ModelEntry } from '@/ui/types/model-hub'
 
@@ -69,6 +73,22 @@ describe('model hub catalog display', () => {
             models: [],
             searchable: false
         })
+    })
+})
+
+describe('model hub error banners', () => {
+    it('shows a repeated failure once and keeps the list unchanged', () => {
+        const errors = addModelHubError([], 'peer unreachable', '1')
+        expect(addModelHubError(errors, 'peer unreachable', '2')).toBe(errors)
+        expect(errors).toEqual([{ id: '1', message: 'peer unreachable' }])
+    })
+
+    it('adds a different failure as its own banner', () => {
+        const errors = addModelHubError([], 'peer unreachable', '1')
+        expect(addModelHubError(errors, 'catalog timed out', '2')).toEqual([
+            { id: '1', message: 'peer unreachable' },
+            { id: '2', message: 'catalog timed out' }
+        ])
     })
 })
 

@@ -8,7 +8,12 @@ import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import { ModelEntry, SortState } from '@/ui/types/model-hub'
 import { ModelHubList } from './ModelHubList'
-import { mergeModelHubResults, searchEngineHub } from '@/ui/utils/model-hub-search'
+import {
+    addModelHubError,
+    mergeModelHubResults,
+    searchEngineHub,
+    type ModelHubError
+} from '@/ui/utils/model-hub-search'
 import { resolveStoredSort, writeStoredSort } from '@/ui/utils/model-hub-content-storage'
 import { isHubEntryDownloaded } from '@/ui/utils/match-downloaded-model'
 import { EngineType } from '@/shared/types/engines'
@@ -58,12 +63,14 @@ export const ModelHubContent = ({
     const [sort, setSort] = useState<SortState>(() =>
         engine ? resolveStoredSort(engine, SORT_DEFAULT_STATE) : { ...SORT_DEFAULT_STATE }
     )
-    const [errors, setErrors] = useState<{ id: string; message: string }[]>([])
+    const [errors, setErrors] = useState<ModelHubError[]>([])
+    const reportError = useCallback((message: string) => {
+        setErrors(prev => addModelHubError(prev, message, performance.now().toString()))
+    }, [])
 
-    // Per-node, per-engine browse cache keeps local filtering immediate while
-    // upstream searches wait for a pause in typing. Nodes can select different
-    // download sources, so one node's list never answers for another.
-    const cacheRef = useRef<Map<string, EngineHubSearchResponse<ModelEntry>>>(new Map())
+    // Per-engine browse cache keeps local filtering immediate while upstream
+    // searches wait for a pause in typing.
+    const cacheRef = useRef<Map<EngineType, EngineHubSearchResponse<ModelEntry>>>(new Map())
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
     const fetchGenRef = useRef(0)
@@ -71,34 +78,33 @@ export const ModelHubContent = ({
     const submittedQueryRef = useRef('')
     const searchInFlightRef = useRef<ReturnType<typeof searchEngineHub> | null>(null)
 
-    const loadModels = useCallback(async (backend: EngineType, node: string) => {
-        const cacheKey = `${node}\n${backend}`
-        const cached = cacheRef.current.get(cacheKey)
-        if (cached) {
-            setCatalog(cached)
-            setLoading(false)
-            return
-        }
-        const gen = ++fetchGenRef.current
-        setLoading(true)
-        setCatalog({ models: [], searchable: null })
-        try {
-            const result = await searchEngineHub(backend, node)
-            if (fetchGenRef.current !== gen) return
-            if (result.searchable !== null) cacheRef.current.set(cacheKey, result)
-            setCatalog(result)
-            setLoading(false)
-        } catch (error) {
-            if (fetchGenRef.current !== gen) return
-            console.warn('Model hub load error', error)
-            setErrors(prev => [
-                ...prev,
-                { id: performance.now().toString(), message: getErrorString(error) }
-            ])
+    const loadModels = useCallback(
+        async (backend: EngineType, node: string) => {
+            const cached = cacheRef.current.get(backend)
+            if (cached) {
+                setCatalog(cached)
+                setLoading(false)
+                return
+            }
+            const gen = ++fetchGenRef.current
+            setLoading(true)
             setCatalog({ models: [], searchable: null })
-            setLoading(false)
-        }
-    }, [])
+            try {
+                const result = await searchEngineHub(backend, node)
+                if (fetchGenRef.current !== gen) return
+                if (result.searchable !== null) cacheRef.current.set(backend, result)
+                setCatalog(result)
+                setLoading(false)
+            } catch (error) {
+                if (fetchGenRef.current !== gen) return
+                console.warn('Model hub load error', error)
+                reportError(getErrorString(error))
+                setCatalog({ models: [], searchable: null })
+                setLoading(false)
+            }
+        },
+        [reportError]
+    )
 
     useEffect(() => {
         setRemoteModels([])
@@ -228,16 +234,13 @@ export const ModelHubContent = ({
                 setRemoteModels(result.searchable ? result.models : [])
             } catch (error) {
                 if (searchGenRef.current !== generation) return
-                setErrors(prev => [
-                    ...prev,
-                    { id: performance.now().toString(), message: getErrorString(error) }
-                ])
+                reportError(getErrorString(error))
             } finally {
                 if (searchInFlightRef.current === request) searchInFlightRef.current = null
                 if (searchGenRef.current === generation) setSearching(false)
             }
         },
-        [engine, nodeId, catalog.searchable]
+        [engine, nodeId, catalog.searchable, reportError]
     )
 
     useEffect(() => {

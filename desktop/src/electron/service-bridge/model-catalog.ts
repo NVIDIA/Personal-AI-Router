@@ -3,8 +3,9 @@
 
 import type { EngineType } from '@/shared/types/engines'
 import type { EngineHubModel, EngineHubSearchResponse } from '@/shared/types/engine-api'
-import type { EngineSettingsConfig } from '@/shared/types/engine-settings'
+import type { EngineSettingsConfig, EngineSettingsSnapshot } from '@/shared/types/engine-settings'
 import { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
+import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { parseEngineSettings } from '@/electron/service-bridge/engine-settings'
 import type { JsonObject, JsonValue } from '@/electron/service-bridge/json-rpc-subprocess'
 import { createStructuredLogger } from '@/shared/utils/log'
@@ -65,21 +66,33 @@ function toHubModel(raw: JsonValue): EngineHubModel | null {
     }
 }
 
-/** Read a node's saved llama.cpp download source, fresh for each request. */
-async function readModelSource(
-    nodeId: string,
-    engine: string
-): Promise<NonNullable<EngineSettingsConfig['modelSource']>> {
-    const snapshot = parseEngineSettings(
-        await getModularSupervisor().callProcess('broker', 'engine:get-settings', {
-            nodeId,
-            engine
-        })
-    )
+/**
+ * Read a peer's saved llama.cpp download source, fresh for each request. This
+ * device needs no read: its engine manager already uses its own selection.
+ */
+async function peerModelSource(
+    nodeId: string
+): Promise<EngineSettingsConfig['modelSource'] | undefined> {
+    if (nodeId === getModularBridgeState().getSelfId()) return undefined
+    let snapshot: EngineSettingsSnapshot
+    try {
+        snapshot = parseEngineSettings(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:get-settings',
+                { nodeId, engine: 'llamacpp' },
+                MODULAR_CATALOG_CALL_TIMEOUT_MS
+            )
+        )
+    } catch (err) {
+        throw new Error(
+            `Could not read that device's model download source: ${getErrorString(err)}`
+        )
+    }
     const source = snapshot.settings.modelSource
     if (!source)
         throw new Error(
-            'This device does not report its model download source. Update PAIR on that device.'
+            'That device does not report its model download source. Update PAIR on that device.'
         )
     return source
 }
@@ -100,10 +113,11 @@ async function readModelSource(
  * source uses it; the others return their whole list, which the modal filters.
  *
  * The catalog is served by this device's engine manager, so a llama.cpp
- * catalog for a node carries that node's saved download source. Omitting the
- * node uses this device's selection. A node whose source cannot be read is an
- * error rather than an empty hub: listing this device's source instead would
- * offer models that node will try to fetch from somewhere else.
+ * catalog for a peer carries that peer's saved download source. Omitting the
+ * node, or naming this device, uses this device's selection. A peer whose
+ * source cannot be read is an error rather than an empty hub: listing this
+ * device's source instead would offer models that peer will try to fetch from
+ * somewhere else.
  */
 export async function getEngineHubModels(
     engineType: EngineType,
@@ -113,7 +127,7 @@ export async function getEngineHubModels(
     const engine = engineManagerName(engineType)
     const search = query?.trim()
     const modelSource =
-        engineType === 'llama-cpp' && nodeId ? await readModelSource(nodeId, engine) : undefined
+        engineType === 'llama-cpp' && nodeId ? await peerModelSource(nodeId) : undefined
     try {
         // The catalog is currently filtered for the broker's host. This API
         // does not yet pass the destination's platform and architecture.

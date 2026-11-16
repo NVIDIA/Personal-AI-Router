@@ -48,6 +48,23 @@ export function mergeModelHubResults(
     return Array.from(byId.values())
 }
 
+export interface ModelHubError {
+    id: string
+    message: string
+}
+
+/**
+ * Add an error banner unless one with the same message is showing: a failure
+ * such as an unreadable peer repeats on every debounced search.
+ */
+export function addModelHubError(
+    errors: ModelHubError[],
+    message: string,
+    id: string
+): ModelHubError[] {
+    return errors.some(e => e.message === message) ? errors : [...errors, { id, message }]
+}
+
 /**
  * Fetch the populated catalog for a node's engine or submit an explicit
  * upstream query. Electron main owns every upstream source; the renderer only

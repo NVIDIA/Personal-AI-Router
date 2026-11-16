@@ -7,11 +7,15 @@ import type { getModularSupervisor } from '@/electron/service-bridge/modular-sup
 const mocks = vi.hoisted(() => ({
     supervisor: {
         callProcess: vi.fn<ReturnType<typeof getModularSupervisor>['callProcess']>()
-    }
+    },
+    getSelfId: vi.fn<() => string | null>()
 }))
 
 vi.mock('@/electron/service-bridge/modular-supervisor', () => ({
     getModularSupervisor: () => mocks.supervisor
+}))
+vi.mock('@/electron/service-bridge/modular-state', () => ({
+    getModularBridgeState: () => ({ getSelfId: mocks.getSelfId })
 }))
 
 import { getEngineHubModels, warmEngineHubs } from '@/electron/service-bridge/model-catalog'
@@ -21,6 +25,7 @@ import { searchEngineHub } from '@/ui/utils/model-hub-search'
 describe('model catalog relay', () => {
     beforeEach(() => {
         mocks.supervisor.callProcess.mockReset().mockResolvedValue({ models: [] })
+        mocks.getSelfId.mockReset().mockReturnValue('self')
     })
 
     afterEach(() => {
@@ -213,8 +218,10 @@ describe('model catalog relay', () => {
         }
 
         // The catalog is served by this device's engine manager, which would
-        // otherwise answer with this device's source rather than the node's.
-        it("asks for the catalog from that node's saved download source", async () => {
+        // otherwise answer with this device's source rather than the peer's.
+        // Settings calls are budgeted for minutes of engine restart, so the
+        // read carries the catalog's bound rather than waiting that out.
+        it("asks for the catalog from that peer's saved download source", async () => {
             answer('modelscope')
 
             await getEngineHubModels('llama-cpp', 'mac', 'qwen')
@@ -223,7 +230,8 @@ describe('model catalog relay', () => {
                 1,
                 'broker',
                 'engine:get-settings',
-                { nodeId: 'mac', engine: 'llamacpp' }
+                { nodeId: 'mac', engine: 'llamacpp' },
+                MODULAR_CATALOG_CALL_TIMEOUT_MS
             )
             expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
                 'broker',
@@ -248,13 +256,44 @@ describe('model catalog relay', () => {
             )
         })
 
-        // Falling back to this device's source would list models the node
-        // then fetches from a different provider.
-        it('refuses a node that does not report its source', async () => {
+        // This device's engine manager already uses its own selection, and a
+        // settings read would broadcast a settings push on every search.
+        it("reads no settings for this device's own node", async () => {
+            answer('modelscope')
+
+            await getEngineHubModels('llama-cpp', 'self', 'qwen')
+
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledTimes(1)
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                'broker',
+                'engine:catalog',
+                { engine: 'llamacpp', query: 'qwen' },
+                MODULAR_CATALOG_CALL_TIMEOUT_MS
+            )
+        })
+
+        it('still reads the source while this device is not yet identified', async () => {
+            mocks.getSelfId.mockReturnValue(null)
+            answer('modelscope')
+
+            await getEngineHubModels('llama-cpp', 'mac')
+
+            expect(mocks.supervisor.callProcess).toHaveBeenLastCalledWith(
+                'broker',
+                'engine:catalog',
+                { engine: 'llamacpp', modelSource: 'modelscope' },
+                MODULAR_CATALOG_CALL_TIMEOUT_MS
+            )
+        })
+
+        // Falling back to this device's source would list models the peer
+        // then fetches from a different provider. The message names the peer,
+        // not the device showing it.
+        it('refuses a peer that does not report its source', async () => {
             answer(undefined)
 
             await expect(getEngineHubModels('llama-cpp', 'mac')).rejects.toThrow(
-                'does not report its model download source'
+                'That device does not report its model download source. Update PAIR on that device.'
             )
             expect(mocks.supervisor.callProcess).not.toHaveBeenCalledWith(
                 'broker',
@@ -267,7 +306,9 @@ describe('model catalog relay', () => {
         it('surfaces a failed settings read rather than an empty hub', async () => {
             mocks.supervisor.callProcess.mockRejectedValue(new Error('peer unreachable'))
 
-            await expect(getEngineHubModels('llama-cpp', 'mac')).rejects.toThrow('peer unreachable')
+            await expect(getEngineHubModels('llama-cpp', 'mac')).rejects.toThrow(
+                "Could not read that device's model download source: peer unreachable"
+            )
         })
 
         it('leaves engines with a fixed source alone', async () => {
