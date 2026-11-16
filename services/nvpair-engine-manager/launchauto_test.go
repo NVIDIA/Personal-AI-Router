@@ -269,7 +269,9 @@ func TestAutoContext_SkipsShardedLaunches(t *testing.T) {
 		})
 	}
 	test("--tensor-parallel-size")
+	test("-tp")
 	test("--pipeline-parallel-size")
+	test("-pp")
 }
 
 func TestPlanHFContext_LeavesCustomWorkerSizingToTheEngine(t *testing.T) {

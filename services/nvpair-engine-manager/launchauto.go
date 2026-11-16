@@ -367,11 +367,11 @@ func autoGPUShare(need, total, free int64) (float64, bool) {
 // launches also use the free-memory cap and keep the model's context target
 // without guessing what fits.
 func planHFContext(startupCtx context.Context, args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string, bin string) (extra []string, note string) {
-	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
-		return nil, ""
-	}
-	if _, ok := launchFlagValue(args, "--pipeline-parallel-size"); ok {
-		return nil, ""
+	// vLLM registers -tp and -pp as aliases of the long flags.
+	for _, flag := range []string{"--tensor-parallel-size", "-tp", "--pipeline-parallel-size", "-pp"} {
+		if _, ok := launchFlagValue(args, flag); ok {
+			return nil, ""
+		}
 	}
 	if _, ok := launchFlagValue(args, "--worker-cls"); ok {
 		return nil, ""
