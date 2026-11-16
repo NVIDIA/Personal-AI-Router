@@ -11,6 +11,12 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.25 — Proxy request hardening: 32 MiB body cap, loopback-only engine addresses, fail-closed peer TLS (#79)
+
+- The proxy now rejects inference request bodies over 32 MiB with 413 before routing, closing an unauthenticated OOM vector on the loopback ingress.
+- Engine addresses supplied via set-local-backend must be loopback; anything else is refused at store time.
+- A missing peer certificate pin now fails closed (every dial errors) instead of falling back to an unpinned transport.
+
 ## 1.0.24 — More reliable vLLM setup and model loading across supported devices (#188)
 
 - Install PAIR-managed vLLM outside the space-containing app-data directory to avoid GPU-kernel compilation failures.
