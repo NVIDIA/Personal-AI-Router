@@ -397,6 +397,9 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		}
 		return startErr
 	}
+	if engine == "lmstudio" && rt.CLI != "" {
+		e.startLMStudioHost(ctx, expandPath(rt.CLI))
+	}
 	for index := range rt.Start {
 		launch, err := resolveRuntimeCommand(rt, index, vars)
 		if err != nil {
