@@ -34,11 +34,26 @@ const (
 	minAutoUtil    = 0.15
 )
 
-// gpuMemory reports memory only when the launch has one unambiguous GPU.
-// It is a variable so tests can supply a machine.
-var gpuMemory = nvidiaSMIMemory
+// Shared-memory runtimes need room for their own startup allocations.
+const unifiedMemoryHeadroom = 3 * gib
 
-func nvidiaSMIMemory(env map[string]string) (total, free int64, ok bool) {
+var deviceMemory = detectDeviceMemory
+
+// gpuMemory leaves explicit CUDA device selection to the engine.
+// It is a variable so tests can supply a machine.
+var gpuMemory = func(ctx context.Context, bin string, env map[string]string) (deviceMemoryProbe, bool) {
+	if _, selected := os.LookupEnv("CUDA_VISIBLE_DEVICES"); selected {
+		return deviceMemoryProbe{}, false
+	}
+	for name := range env {
+		if environmentKey(name) == "CUDA_VISIBLE_DEVICES" {
+			return deviceMemoryProbe{}, false
+		}
+	}
+	return deviceMemory(ctx, bin, env)
+}
+
+func nvidiaSMIMemory(ctx context.Context, env map[string]string) (total, free int64, ok bool) {
 	// CUDA ordinals can differ from nvidia-smi's physical-device order. Leave
 	// memory sizing to the engine when it has an explicit device selection.
 	if _, selected := os.LookupEnv("CUDA_VISIBLE_DEVICES"); selected {
@@ -49,21 +64,18 @@ func nvidiaSMIMemory(env map[string]string) (total, free int64, ok bool) {
 			return 0, 0, false
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits").Output()
 	if err != nil {
 		return 0, 0, false
 	}
-	return parseGPUMemory(string(out), systemMemory)
+	return gpuMemoryFromQuery(string(out))
 }
 
-// parseGPUMemory reads a single GPU's memory.total,memory.free query, in MiB.
-// Multiple devices are ambiguous without reproducing CUDA's enumeration, so
-// the engine handles their memory sizing. On a unified-memory machine such as
-// DGX Spark the GPU shares system RAM and nvidia-smi reports [N/A]; system
-// memory then stands in, as it does in nvpair-node-info and vLLM itself.
-func parseGPUMemory(out string, system func() (total, available int64, ok bool)) (total, free int64, ok bool) {
+// gpuMemoryFromQuery accepts one unambiguous device with valid VRAM readings.
+// Missing telemetry requires the runtime probe to establish memory topology.
+func gpuMemoryFromQuery(out string) (total, free int64, ok bool) {
 	line := strings.TrimSpace(out)
 	if strings.ContainsAny(line, "\r\n") {
 		return 0, 0, false
@@ -72,57 +84,12 @@ func parseGPUMemory(out string, system func() (total, available int64, ok bool))
 	if len(parts) != 2 {
 		return 0, 0, false
 	}
-	if nvidiaSMINotApplicable(parts[0]) {
-		return system()
-	}
 	t, errT := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 	f, errF := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-	if errT != nil || errF != nil || t <= 0 {
+	if errT != nil || errF != nil || t <= 0 || f < 0 || f > t || t > math.MaxInt64/(1024*1024) {
 		return 0, 0, false
 	}
 	return t * 1024 * 1024, f * 1024 * 1024, true
-}
-
-// nvidiaSMINotApplicable reports an nvidia-smi field that holds no number, such
-// as the [N/A] or [Not Supported] a unified-memory GPU gives for its memory.
-func nvidiaSMINotApplicable(field string) bool {
-	value := strings.ToLower(strings.Trim(strings.TrimSpace(field), "[]"))
-	return value == "n/a" || value == "not supported"
-}
-
-// systemMemory reports total and available system memory from /proc/meminfo.
-func systemMemory() (total, available int64, ok bool) {
-	raw, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, 0, false
-	}
-	return parseMeminfo(string(raw))
-}
-
-// parseMeminfo reads MemTotal and MemAvailable, which /proc/meminfo gives in kB.
-// Available rather than free counts the page cache the kernel can reclaim.
-func parseMeminfo(text string) (total, available int64, ok bool) {
-	for _, line := range strings.Split(text, "\n") {
-		key, rest, found := strings.Cut(line, ":")
-		if !found {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			continue
-		}
-		kb, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil {
-			continue
-		}
-		switch key {
-		case "MemTotal":
-			total = kb * 1024
-		case "MemAvailable":
-			available = kb * 1024
-		}
-	}
-	return total, available, total > 0 && available > 0
 }
 
 // applyAutoLaunch appends the arguments the manifest's auto_launch asks for.
@@ -138,7 +105,7 @@ func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command lau
 	if rt.AutoLaunch == nil || rt.AutoLaunch.Kind != autoLaunchHFContext {
 		return command
 	}
-	extra, note := planHFContext(command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch, command.Env)
+	extra, note := planHFContext(ctx, command.Args, hub, int64(rt.AutoLaunch.ContextTokens), fetch, command.Env, command.Bin)
 	if tools, parser := planToolCalling(ctx, command.Args, hub, command.Bin, fetch); len(tools) > 0 {
 		extra = append(extra, tools...)
 		note = strings.TrimPrefix(note+"; tool calls parsed with "+parser, "; ")
@@ -342,6 +309,25 @@ func readHFConfig(snapshot string) (hfModelConfig, bool) {
 	return cfg, true
 }
 
+// canEstimateResidentWeights excludes MLX FP8 checkpoints: the loader expands
+// supported FP8 weights to BF16, so their disk size understates resident memory.
+// Let the worker profile those weights within the measured free-memory cap.
+func canEstimateResidentWeights(runtime, snapshot string) bool {
+	if runtime != "metal_mlx" {
+		return true
+	}
+	config, err := os.ReadFile(filepath.Join(snapshot, "config.json"))
+	if err != nil {
+		return false
+	}
+	quant, err := os.ReadFile(filepath.Join(snapshot, hfQuantConfigFile))
+	if err != nil && !os.IsNotExist(err) {
+		return false
+	}
+	format, _, err := weightFormat(config, quant)
+	return err == nil && format != weightFormatFP8
+}
+
 // autoGPUShare returns the --gpu-memory-utilization for a launch that needs
 // need bytes on a GPU with total and free bytes, and whether to set one. The
 // share is never below minAutoUtil, so a small model still gets room to work,
@@ -372,16 +358,22 @@ func autoGPUShare(need, total, free int64) (float64, bool) {
 //
 // A flag the user already set is never touched. Tensor or pipeline parallel
 // launches are left alone entirely: sizing them needs more than GPU 0.
+// Custom workers are also left alone because their memory budgeting may differ.
 //
 // The model is read at the revision vLLM loads (see findLaunchModel). One that
 // is not in the cache yet is read through fetch, when given, since vLLM
 // downloads it on this start. Without its size and config, only the memory
-// share is bounded.
-func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string) (extra []string, note string) {
+// share is bounded. MLX FP8 loading changes the resident weight size, so those
+// launches also use the free-memory cap and keep the model's context target
+// without guessing what fits.
+func planHFContext(startupCtx context.Context, args []string, hubDir string, target int64, fetch hfModelFetcher, env map[string]string, bin string) (extra []string, note string) {
 	if _, ok := launchFlagValue(args, "--tensor-parallel-size"); ok {
 		return nil, ""
 	}
 	if _, ok := launchFlagValue(args, "--pipeline-parallel-size"); ok {
+		return nil, ""
+	}
+	if _, ok := launchFlagValue(args, "--worker-cls"); ok {
 		return nil, ""
 	}
 	if model, ok := launchFlagValue(args, "--model"); !ok || model == "" {
@@ -400,11 +392,12 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 	// A dtype override changes how checkpoint bytes become runtime weights
 	// and cache storage. Let vLLM size those combinations instead of estimating
 	// them from the repository's dtype and on-disk size.
-	var total, free int64
+	var memory deviceMemoryProbe
 	var haveGPU bool
 	if !userDtype && !userCacheDtype {
-		total, free, haveGPU = gpuMemory(env)
+		memory, haveGPU = gpuMemory(startupCtx, bin, env)
 	}
+	total, free := memory.Total, memory.Free
 	found, known := findLaunchModel(args, hubDir, fetch)
 	if !known {
 		// Not downloaded yet and Hugging Face could not answer, so its size and
@@ -423,6 +416,10 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 		source = "model not in cache, sized from Hugging Face"
 	}
 	cfg, weights := found.cfg, found.weights
+	estimateWeights := canEstimateResidentWeights(memory.Runtime, found.snapshot)
+	if !estimateWeights {
+		source = "MLX profiles resident weights; memory share capped at free memory"
+	}
 	text := cfg.text()
 	native, layers, kvHeads, headDim, ok := text.kvShape()
 	if !ok {
@@ -450,7 +447,7 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 	case haveGPU:
 		budget = free - freeMargin
 	}
-	if haveGPU && budget > 0 && fixed+perToken*ctx > budget {
+	if haveGPU && estimateWeights && budget > 0 && fixed+perToken*ctx > budget {
 		fit := (budget - fixed) / perToken
 		fit -= fit % 1024
 		if fit >= minAutoContext {
@@ -490,7 +487,11 @@ func planHFContext(args []string, hubDir string, target int64, fetch hfModelFetc
 				}
 			}
 		}
-		if util, ok := autoGPUShare(fixed+perToken*utilCtx, total, free); ok {
+		need := fixed + perToken*utilCtx
+		if !estimateWeights {
+			need = total
+		}
+		if util, ok := autoGPUShare(need, total, free); ok {
 			extra = append(extra, "--gpu-memory-utilization", fmt.Sprintf("%.2f", util))
 		}
 	}

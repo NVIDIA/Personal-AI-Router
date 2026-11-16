@@ -119,6 +119,11 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "-I": // stand in for the memory probe's Python -I -c invocation
+			// Distinct readings in the service and engine environments let a test
+			// observe which environment the probe actually received.
+			fmt.Println(os.Getenv("PAIR_TEST_MEMORY_READING"))
+			return
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)

@@ -202,7 +202,7 @@ function ensureGoToolchain(): void {
  * explicit list rather than "everything that is not a .go file" so a README or a
  * stray editor file cannot invalidate every developer's build cache.
  */
-const EMBEDDED_ASSET_EXTENSIONS = ['.json', '.tmpl', '.html', '.css', '.svg']
+const EMBEDDED_ASSET_EXTENSIONS = ['.json', '.tmpl', '.html', '.css', '.svg', '.py']
 
 function listFingerprintFiles(repo: string): string[] {
     const out: string[] = []
