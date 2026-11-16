@@ -558,11 +558,11 @@ func (p *Proxy) Run(ctx context.Context) error {
 // jobDeadline governs the wait for an owner to exist at all — a wait that costs
 // no attempts and would otherwise be unbounded.
 //
-// Read only against dispatch failures the deadline looks unreachable, and the
-// arithmetic says so: five attempts at a 120s first-content cap plus 15s of
-// cumulative backoff span 615s, so every reschedule check before the last sees
-// a clock under 600s. It is not dead — it is the only bound on the no-owner
-// wait. Do not remove it as unreachable.
+// Both bounds are reachable. A node that sends headers and then stalls costs a
+// 180s first-content cap per attempt, so with backoff the fifth dispatch would
+// start past 600s and the deadline ends that job after four. The deadline is
+// also the only bound on the no-owner wait. Do not remove either as
+// unreachable.
 const maxDispatchAttempts = 5
 
 // jobDeadline is a var (not a const) only so a test can shorten it; production
@@ -756,7 +756,6 @@ func awaitFirstBody(body io.ReadCloser, budget time.Duration) (io.ReadCloser, er
 const (
 	proxyDialTimeout     = 10 * time.Second
 	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
 	proxyMaxIdleConns    = 50
 	proxyIdleConnTimeout = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
@@ -787,29 +786,23 @@ const (
 var idleClientWriteTimeout = 30 * time.Second
 
 // firstBodyTimeout bounds how long awaitFirstBody waits for an engine to emit
-// its first content byte. It matches proxyResponseTimeout, the budget the
-// transport applies to headers, because from the caller's point of view the two
-// bound the same thing: how long we wait for a node to start the work. Keeping
-// it generous is deliberate — it also covers a cold model load, which is real
-// work rather than a stall, and which cannot be told apart from a queue wait
-// from outside the engine.
+// its first content byte, measured from the arrival of headers. The wait for
+// headers itself is unbounded: the transport sets no response-header timeout.
+// Keeping it generous is deliberate — it also covers a cold model load, which
+// is real work rather than a stall, and which cannot be told apart from a queue
+// wait from outside the engine.
 //
 // It is a var (not a const) only so a test can shorten it; production never
 // reassigns it.
-var firstBodyTimeout = proxyResponseTimeout
+var firstBodyTimeout = 180 * time.Second
 
 // candidateCooldown is how long a node that spent a full first-byte deadline
-// without producing content is ordered behind its peers.
-//
-// One deadline, deliberately not a number of its own. The trigger is an attempt
-// that cost exactly that much, so waiting the same span before preferring the
-// node again states only what was measured, and it moves with whatever an
-// operator has set the deadline to instead of adding a knob nobody knows how to
-// tune.
+// without producing content is ordered behind its peers. It is set on its own,
+// not derived from firstBodyTimeout.
 //
 // It is a var (not a const) only so a test can shorten it; production never
 // reassigns it.
-var candidateCooldown = proxyResponseTimeout
+var candidateCooldown = 120 * time.Second
 
 var modelListClient = &http.Client{
 	Transport: &http.Transport{
@@ -876,10 +869,9 @@ func newProxyTransport(tlsCfg *tls.Config) *http.Transport {
 			Timeout:   proxyDialTimeout,
 			KeepAlive: proxyKeepAlive,
 		}).DialContext,
-		ResponseHeaderTimeout: proxyResponseTimeout,
-		MaxIdleConns:          proxyMaxIdleConns,
-		MaxIdleConnsPerHost:   proxyMaxIdleConns,
-		IdleConnTimeout:       proxyIdleConnTimeout,
+		MaxIdleConns:        proxyMaxIdleConns,
+		MaxIdleConnsPerHost: proxyMaxIdleConns,
+		IdleConnTimeout:     proxyIdleConnTimeout,
 	}
 	if tlsCfg != nil {
 		tr.TLSClientConfig = tlsCfg
@@ -1960,8 +1952,10 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// Measured, not classified from the error: a dial failure is bounded by
 		// the much shorter dial timeout and a status-based retry commits a
 		// response, so only an attempt that produced no content at all can reach
-		// the first-byte budget. That covers both shapes of silence — no headers
-		// and headers with no body — without naming either.
+		// the first-byte budget. Headers with no body are ended by the budget
+		// itself. No headers has no cap, so it reaches the budget only when
+		// something else ends it after that long: the connection failing or the
+		// target leaving discovery.
 		//
 		// A no-content attempt that did not reach the budget leaves the stamp
 		// untouched on purpose. It cost too little to be evidence of a stall, so
