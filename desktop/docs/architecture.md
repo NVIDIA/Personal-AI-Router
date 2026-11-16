@@ -39,19 +39,19 @@ them from `process.resourcesPath/cli-bin`.
 The canonical runtime inventory is
 `src/shared/constants/modular-binaries.ts`:
 
-| Binary                    | Owner            | Purpose                                                                           |
-| ------------------------- | ---------------- | --------------------------------------------------------------------------------- |
-| `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay                                        |
+| Binary                    | Owner            | Purpose                                     |
+| ------------------------- | ---------------- | ------------------------------------------- |
+| `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay  |
 | `nvpair-proxy`            | Broker           | Engine proxy and cluster routing; one process hosting a facade per enabled engine |
-| `nvpair-node-scanner`     | Broker           | LAN discovery and announcement                                                    |
-| `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint                                              |
-| `nvpair-workload-manager` | Broker, optional | Workload replication                                                              |
-| `nvpair-cluster-manager`  | Broker, optional | Cluster identity, pairing, and membership                                         |
-| `nvpair-node-settings`    | Broker           | Persisted node identity and settings                                              |
-| `nvpair-manual-nodes`     | Broker, optional | User-managed discovery entries                                                    |
-| `nvpair-engine-manager`   | Broker, optional | Engine lifecycle and model operations                                             |
-| `nvpair-errors`           | Broker, optional | Error registry and peer synchronization                                           |
-| `nvpair-job-scheduler`    | Broker, optional | Node-wide routing priority                                                        |
+| `nvpair-node-scanner`     | Broker           | LAN discovery and announcement              |
+| `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint        |
+| `nvpair-workload-manager` | Broker, optional | Workload replication                        |
+| `nvpair-cluster-manager`  | Broker, optional | Cluster identity, pairing, and membership   |
+| `nvpair-node-settings`    | Broker           | Persisted node identity and settings        |
+| `nvpair-manual-nodes`     | Broker, optional | User-managed discovery entries              |
+| `nvpair-engine-manager`   | Broker, optional | Engine lifecycle and model operations       |
+| `nvpair-errors`           | Broker, optional | Error registry and peer synchronization     |
+| `nvpair-job-scheduler`    | Broker, optional | Node-wide routing priority                  |
 
 `nvpair-tui` is bundled as a standalone terminal client; it is not supervised by
 Electron or the broker. It spawns and owns its own `nvpair-ui-broker`, so it runs
@@ -413,10 +413,10 @@ They list every PAIR-owned path (current and historical layouts) and are never
 shrunk — when storage moves, both old and new locations stay listed so upgrades
 from any prior version remain recoverable. No Node runtime is required.
 
-| Path                                                     | Behavior                                                                                                                                                                                                               |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Path                                                     | Behavior                                                                                               |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Settings → Service → **Reset app data**                  | Confirms → removes PAIR-installed engines → stop → wipe; stops before the wipe if an engine cannot be removed or the service is down; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
-| `scripts/wipe-app-data.sh` / `scripts/wipe-app-data.cmd` | Clean-only manual entrypoints; require confirmation; do not relaunch                                                                                                                                                   |
+| `scripts/wipe-app-data.sh` / `scripts/wipe-app-data.cmd` | Clean-only manual entrypoints; require confirmation; do not relaunch                                   |
 
 Packaged builds ship the same scripts under `resources/scripts/` so the app invokes
 the identical inventory. Platform uninstall scripts should stay aligned with these

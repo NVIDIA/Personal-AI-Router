@@ -125,8 +125,9 @@ loaded in vLLM; deleting an ejected or stopped vLLM's model leaves it with no mo
 selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo into
 that cache (no running engine needed), and `loadModel` on a cached model switches
 the served model by restarting vLLM on it.
-`searchHub(engineType, nodeId, query?)` serves Ollama's locked local catalog and cached
-live Hugging Face catalogs for LM Studio, llama.cpp and vLLM. For a peer's llama.cpp
+`searchHub(engineType, nodeId, query?)` serves Ollama's locked local catalog,
+cached live Hugging Face catalogs for LM Studio and vLLM, and llama.cpp's
+catalog from the node's selected download source. For a peer's llama.cpp
 it first reads that peer's saved model download source and lists that source,
 Hugging Face or ModelScope, even when this device selected the other; a peer
 whose source cannot be read, or that does not report one, rejects the call
