@@ -71,13 +71,19 @@ function osState(overrides: Partial<LoginItemSettings> = {}): LoginItemSettings 
 const WINDOWS_EXE = 'C:\\Program Files\\PAIR\\PAIR.exe'
 const MOVED_EXE = 'C:\\Old Location\\PAIR.exe'
 const MAC_EXE = '/Applications/PAIR.app/Contents/MacOS/PAIR'
+/** The `path` every Windows read passes; see `readLoginItem`. */
+const QUOTED_EXEC_PATH = `"${process.execPath}"`
 
-/** This app's per-user Run entry as registered with the hidden argument; a case overrides what it changes. */
+/**
+ * This app's per-user Run entry as Electron reports it; a case overrides what it
+ * changes. `args` is empty even for a value registered with the hidden argument:
+ * Electron leaves switches out of it, so only `openAtLogin` tells the two apart.
+ */
 function runEntry(overrides: Partial<LaunchItems> = {}): LaunchItems {
     return {
         name: APP_ID,
         path: WINDOWS_EXE,
-        args: [APP_HIDDEN_ARGUMENT],
+        args: [],
         scope: 'user',
         enabled: true,
         ...overrides
@@ -131,9 +137,18 @@ describe('planning the login item on Windows', () => {
         it('matches the executable path regardless of case and quoting', () => {
             const current = {
                 openAtLogin: false,
-                launchItems: [runEntry({ path: '"c:\\program files\\pair\\pair.exe"' })]
+                launchItems: [
+                    runEntry({ path: '"c:\\program files\\pair\\pair.exe"', enabled: false })
+                ]
             }
-            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'keep' })
+            expect(plan(ON_HIDDEN, current)).toEqual({ kind: 'opt-out' })
+        })
+
+        it('replaces an entry with the hidden argument when the window should open', () => {
+            // Electron reports the entry with `args: []` either way, so only
+            // openAtLogin, read under no arguments, shows it is stale.
+            const current = { openAtLogin: false, launchItems: [runEntry()] }
+            expect(plan(ON_VISIBLE, current)).toEqual({ kind: 'register', enabled: true })
         })
 
         it('registers when there is no entry', () => {
@@ -320,12 +335,18 @@ describe('reconciling the login item', () => {
         // Windows reports openAtLogin per argument list, so reading with the
         // wrong one describes a registered login item as missing.
         reconcileLoginItem(ON_HIDDEN)
-        expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({ args: ['--hidden'] })
+        expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({
+            args: ['--hidden'],
+            path: QUOTED_EXEC_PATH
+        })
     })
 
     it('reads the entry with no arguments when it would register none', () => {
         reconcileLoginItem(ON_VISIBLE)
-        expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({ args: [] })
+        expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({
+            args: [],
+            path: QUOTED_EXEC_PATH
+        })
     })
 
     it('reads macOS without arguments and opts out of a login item that is not enabled', () => {
@@ -488,9 +509,15 @@ describe('reading launch at login from the OS', () => {
             expect(readLaunchAtLogin(ON_HIDDEN)).toBe(true)
         })
 
-        it('asks the OS under the arguments the preference registers', () => {
+        it('asks the OS under the arguments the preference registers, about the quoted executable', () => {
+            // Electron before 44.10 splits an unquoted path at its first space,
+            // so `C:\Program Files\PAIR\PAIR.exe` matches no Run entry and the
+            // switch reads off right after it was turned on.
             readLaunchAtLogin(ON_HIDDEN)
-            expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({ args: ['--hidden'] })
+            expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({
+                args: ['--hidden'],
+                path: QUOTED_EXEC_PATH
+            })
         })
     })
 
@@ -741,7 +768,10 @@ describe('applying a change to the Startup switches', () => {
             next: ON_VISIBLE,
             registered: true
         })
-        expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({ args: [] })
+        expect(mocks.app.getLoginItemSettings).toHaveBeenCalledWith({
+            args: [],
+            path: QUOTED_EXEC_PATH
+        })
     })
 
     it('rewrites an existing entry when start minimized changes', () => {

@@ -890,6 +890,39 @@ func TestHandleHTTP_ReturnsLocalNotFoundForModelLookupWithoutOwner(t *testing.T)
 	assert.NotContains(t, events.String(), "workload:", "a model lookup must not emit workload events")
 }
 
+// TestHandleHTTP_LabelsLocalRejectionAsJSON: the proxy's own "no node" answer
+// is a JSON error body, and clients such as ollama-js read the error message
+// from it only when the response says application/json; otherwise they show
+// the raw body text.
+func TestHandleHTTP_LabelsLocalRejectionAsJSON(t *testing.T) {
+	test := func(name string, request *http.Request, profile engineProfile, wantStatus int, wantError string) {
+		t.Run(name, func(t *testing.T) {
+			p := testProxy(profile, NewDiscovery(), profile.FacadePort)
+
+			rec := httptest.NewRecorder()
+			p.soleFacade().handleHTTP(rec, request)
+
+			require.Equal(t, wantStatus, rec.Code, "local rejection status")
+			assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+			assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+			var body struct {
+				Error string `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body), "decode rejection body %q", rec.Body.String())
+			assert.Equal(t, wantError, body.Error)
+		})
+	}
+	ollama := ollamaCase(t)
+	test("inference without an owner", ollama.inferenceRequest(), ollama.profile,
+		http.StatusBadGateway, "no available node advertises the requested model")
+	test("model lookup without an owner",
+		httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)), ollama.profile,
+		http.StatusNotFound, "no available node advertises the requested model")
+	test("request without a model or node",
+		httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{}`)), ollama.profile,
+		http.StatusBadGateway, "no active node selected or available")
+}
+
 // TestHandleHTTP_ShowFailsOverOnOwner404: an advertised owner that answers 404
 // has a stale inventory, so the lookup moves on to the next owner.
 func TestHandleHTTP_FailsOverModelLookupWhenOwnerReturnsNotFound(t *testing.T) {

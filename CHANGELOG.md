@@ -11,6 +11,16 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.27 — Launch at login stays on after enabling it on Windows (#210)
+
+- On Windows, turning on Launch at login in Settings > Service now keeps the switch on. Before, the switch went back to off even though PAIR was set to start at sign-in, and it could not be turned off from Settings.
+- Turning Start minimized to tray on or off on Windows now updates the startup entry straight away.
+- A startup entry disabled in Windows Task Manager or the startup apps settings now reads off in Settings, and PAIR leaves it off.
+
+## 1.0.26 — Proxy "no node" errors are labelled as JSON (#199)
+
+- When no node can serve a request, the proxy's error response now carries `Content-Type: application/json`, like its other errors. Clients that read the error message only from JSON responses, such as the Ollama JavaScript library, now show the message instead of the raw `{"error": ...}` text.
+
 ## 1.0.25 — Proxy request hardening: 32 MiB body cap, loopback-only engine addresses, fail-closed peer TLS (#79)
 
 - The proxy now rejects inference request bodies over 32 MiB with 413 before routing, closing an unauthenticated OOM vector on the loopback ingress.
