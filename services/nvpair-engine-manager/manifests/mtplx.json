@@ -1,0 +1,63 @@
+{
+  "$schema": "../manifest.schema.json",
+  "engine": "mtplx",
+  "display_name": "MTPLX",
+  "manifest_version": 1,
+  "advertised_models": "loaded",
+  "platforms": {
+    "darwin/arm64": {
+      "detect": [
+        "~/.mtplx/bin/mtplx",
+        "~/Library/Application Support/MTPLX/runtime-venv/bin/mtplx",
+        "/opt/homebrew/bin/mtplx",
+        "~/.local/bin/mtplx"
+      ],
+      "runtime": {
+        "bin": "~/.mtplx/bin/mtplx",
+        "cli": "~/.mtplx/bin/mtplx",
+        "editable_launch": {
+          "fixed_args": ["serve"],
+          "controls": [
+            { "flags": ["--host"], "value": "{server.host}" },
+            { "flags": ["--port"], "value": "{server.port}" }
+          ]
+        },
+        "args": ["serve", "--host", "{host}", "--port", "{port}"],
+        "bind": "127.0.0.1",
+        "port": 8101,
+        "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 600 },
+        "stop": { "signal": "term", "grace_s": 15 },
+        "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5 }
+      },
+      "models_dir": "~/.mtplx/models"
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List the model packs in the local MTPLX cache (mtplx models). It reads the cache directory, so it needs no running engine. MTPLX serves one model per process, so the list is what could be loaded, not what is loaded. A pack with a missing runtime contract or required file still lists, and loading it fails and restores the previous model.",
+      "cmd": ["{cli}", "models", "--json"],
+      "result": { "array": "models", "field": "repo_id" }
+    },
+    "loaded_models": {
+      "description": "List the model this MTPLX server serves (it serves exactly one). MTPLX is started with --model-id set to the cache id, so the name it answers to is the same string list_models reports and what a client puts in its request.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "load_model": {
+      "description": "Serve a different model pack (params: {\"model\": \"<cache id>\"}). MTPLX serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored. --model-id is written beside --model so the served name stays the cache id.",
+      "launch_model": { "flags": ["--model", "--model-id"] }
+    },
+    "unload_model": {
+      "description": "Eject the model MTPLX is serving (params: {\"model\": \"<cache id>\"}). MTPLX cannot drop its model and keep running, so this stops the engine, which frees all of its memory. Load starts it again.",
+      "stop_engine": true
+    },
+    "pull_model": {
+      "description": "Download a model pack into the local MTPLX cache (params: {\"model\": \"<Hugging Face id>\"}). Needs no running engine, and the download runs in this process, so it is bounded by the action timeout. Once downloaded it appears in list_models and can be served with load_model.",
+      "cmd": ["{cli}", "pull", "{model}", "--json"]
+    },
+    "delete_model": {
+      "description": "Delete a model pack from the local MTPLX cache (params: {\"model\": \"<cache id>\"}). Eject it first: MTPLX has no in-use guard, so this deletes a pack the running server still has mapped, and it does not take the deleted pack out of the launch arguments of a stopped engine. Download it again to recover either way.",
+      "cmd": ["{cli}", "remove", "{model}", "--yes", "--json"]
+    }
+  }
+}

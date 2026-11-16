@@ -48,8 +48,8 @@ Concretely, the daemon:
   so an HTTP read cannot hold the lock needed by owned hardware notifications.
   Model inventory decoding reads at most 16 MiB. A JSON value that extends past
   that limit fails enrichment and leaves the last successful inventory intact.
-  `downloadedByEngine` retains downloaded models for engines such as vLLM even
-  while they are stopped; `modelsByEngine` records the models they serve.
+  `downloadedByEngine` retains downloaded models for engines such as vLLM and
+  MTPLX even while they are stopped; `modelsByEngine` records the models they serve.
   Queued and in-flight model results are discarded if the peer's authenticated
   address list changes, including a secondary address used for failover.
 - **Samples scheduling telemetry** from healthy nodes every two seconds with

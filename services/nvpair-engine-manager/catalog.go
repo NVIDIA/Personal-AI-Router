@@ -43,6 +43,11 @@ import (
 //     source as `repo:quantization`.
 //     Hugging Face browses approved publishers; ModelScope browses popular
 //     repositories. Both fetch live, with each source and search cached separately.
+//   - MTPLX loads packs rebuilt for its own decode path, so a Hugging Face browse
+//     would offer mostly weights it cannot run. Its list is the curated pack file
+//     the engine publishes, which is the only place its runnable packs are named.
+//     Fetched live and cached, and never searched: it holds a couple dozen
+//     entries, so a client filters them.
 
 // catalogSourceKind distinguishes how an engine's catalogue is obtained.
 type catalogSourceKind int
@@ -241,6 +246,7 @@ type catalogService struct {
 	lmStudio *listingCache
 	llamaCPP *listingCache
 	vllm     *listingCache
+	mtplx    *listingCache
 
 	// searchMu guards the llama.cpp searches, kept by lowercased query with
 	// searchOrder from least to most recently used.
@@ -253,7 +259,10 @@ type catalogService struct {
 	// it cannot be exercised against the live API.
 	baseURL            string
 	modelScopeEndpoint string
-	llamaSource        func() (string, error)
+	// mtplxURL overrides MTPLX's pack list, which is its own endpoint rather than
+	// a Hugging Face listing, and so is not covered by baseURL.
+	mtplxURL    string
+	llamaSource func() (string, error)
 }
 
 // listingCache holds one fetched catalogue. It serves from memory while the
@@ -297,6 +306,7 @@ func newCatalogService() *catalogService {
 	c.lmStudio = &listingCache{label: "lm studio catalog", fetch: c.fetchLmStudio}
 	c.llamaCPP = &listingCache{label: "llama.cpp catalog", fetch: c.fetchLlamaCPP}
 	c.vllm = &listingCache{label: "vllm catalog", fetch: c.fetchVLLM}
+	c.mtplx = &listingCache{label: "mtplx catalog", fetch: c.fetchMTPLX}
 	return c
 }
 
@@ -391,6 +401,22 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 			FetchedAt:  fetchedAt.UTC().Format(time.RFC3339),
 			Searchable: true,
 			Query:      query,
+		}, nil
+	case "mtplx":
+		models, fetchedAt, err := c.mtplx.get(ctx)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		return CatalogResult{
+			// Every pack is Apple Silicon only, so a target that is not one is
+			// handed an empty list rather than packs it cannot load. The list is
+			// still fetched first: the target names the machine the models go to,
+			// which is not always the machine asking.
+			Models:    filterForTarget(models, platform, arch),
+			Source:    mtplxCatalogURL,
+			Platform:  platform,
+			Arch:      arch,
+			FetchedAt: fetchedAt.UTC().Format(time.RFC3339),
 		}, nil
 	default:
 		return CatalogResult{}, fmt.Errorf("no model catalog for engine %q", engine)

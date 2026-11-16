@@ -790,7 +790,7 @@ func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.
 	// Switching the model is a launch-argument change plus a restart, since the
 	// engine has no load call.
 	if load := manifest.Actions["load_model"]; assert.NotNil(t, load.LaunchModel, "load_model must switch the model through a launch argument") {
-		assert.Equal(t, "--model", load.LaunchModel.Flag)
+		assert.Equal(t, []string{"--model"}, load.LaunchModel.Flags)
 	}
 	// vLLM cannot drop its model and keep running, so Eject stops the engine.
 	assert.True(t, manifest.Actions["unload_model"].StopEngine, "unload_model must stop the engine")

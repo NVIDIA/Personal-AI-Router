@@ -17,8 +17,8 @@ import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 
 describe('engine identity', () => {
     it('enables llama.cpp workflows on every platform', () => {
-        expect(EngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
-        expect(EnabledEngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
+        expect(EngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'mtplx'])
+        expect(EnabledEngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'mtplx'])
         expect(getWelcomeEngineCandidates('Windows')).toContain('llama-cpp')
         expect(getWelcomeEngineCandidates('MacOS')).toContain('llama-cpp')
         expect(getWelcomeEngineCandidates('Linux')).toContain('llama-cpp')
@@ -58,6 +58,39 @@ describe('engine identity', () => {
             hasEnginePort: true,
             engineHub: { label: 'vLLM' }
         })
+    })
+
+    it('maps MTPLX to its engine-manager wire id and one-pack-per-process capabilities', () => {
+        expect(EngineManagerNames.mtplx).toBe('mtplx')
+        expect(engineManagerName('mtplx')).toBe('mtplx')
+        expect(engineTypeFromManagerName('mtplx')).toBe('mtplx')
+        expect(isEngineType('mtplx')).toBe(true)
+        expect(EngineDisplayNames.mtplx).toBe('MTPLX')
+        // MTPLX serves one pack per process, the way vLLM serves one model: Eject
+        // stops the engine and Load starts it again on the chosen pack. Its manifest
+        // declares only darwin/arm64 and declares no installer, so PAIR drives an
+        // engine the user installed and never offers to install one.
+        expect(EngineCapabilities.mtplx).toMatchObject({
+            hasEject: true,
+            modelOpsWhenStopped: true,
+            hasModelSearchOnlyWhenRunning: false,
+            hasDeleteModel: true,
+            deleteBlockedWhileLoaded: true,
+            loadRestartsEngine: true,
+            hasInstall: [],
+            hasEnginePort: true,
+            engineHub: { label: 'MTPLX' }
+        })
+    })
+
+    it('keeps MTPLX out of onboarding because nothing is installable for it', () => {
+        // A source with no installable platform is dropped from the onboarding list
+        // rather than shown as a row the user cannot act on, and nothing is
+        // preselected for it.
+        for (const platform of ['Windows', 'MacOS', 'Linux'] as const) {
+            expect(getWelcomeEngineCandidates(platform)).not.toContain('mtplx')
+        }
+        expect(WELCOME_ENGINE_DEFAULT_SELECTED.mtplx).toBeUndefined()
     })
 
     it('keeps the capability and the supervisor agreeing on which model lists survive a stop', () => {

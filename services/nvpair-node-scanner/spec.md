@@ -423,8 +423,8 @@ Local publication uses retained models without waiting for HTTP while holding
 the local identity lock. A local registration also schedules the model sweep
 without waiting for its next periodic run.
 
-`downloadedByEngine` carries downloaded inventory for engines such as vLLM that
-advertise only their served model in `modelsByEngine`. It remains available while
+`downloadedByEngine` carries downloaded inventory for engines such as vLLM and MTPLX
+that advertise only their served model in `modelsByEngine`. It remains available while
 the engine is stopped, for example `{"downloadedByEngine":{"vllm":["Qwen/Qwen3.5-4B"]}}`.
 
 Scanner compares model lists without depending on their order. A present engine entry

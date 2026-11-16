@@ -169,6 +169,7 @@ func buildEngineProxyProfiles() []engineProxyProfile {
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
 		"llamacpp": {Ownership: managedEngine, HealthProbePath: "/health"},
 		"vllm":     {Ownership: managedEngine, HealthProbePath: "/health"},
+		"mtplx":    {Ownership: managedEngine, HealthProbePath: "/health"},
 	}
 	out := make([]engineProxyProfile, 0, len(engines.All()))
 	for _, e := range engines.All() {

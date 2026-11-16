@@ -42,8 +42,10 @@ These terms have specific meanings in PAIR:
 - **Cluster** — the set of nodes you have paired together. A node belongs to at
   most one cluster, and it must leave before it can join another.
 - **Engine** — the local inference server that runs models: Ollama, LM Studio,
-  llama.cpp, or vLLM. PAIR can install, start, stop, and uninstall these engines. It can
-  also adopt supported existing Ollama and LM Studio installations.
+  llama.cpp, or vLLM, plus MTPLX on an Apple Silicon Mac. PAIR can install, start,
+  stop, and uninstall these engines. It can
+  also adopt supported existing Ollama and LM Studio installations, and it drives an
+  existing MTPLX install without ever installing one.
 - **Model** — what you prepare on each node. Nodes do not share models, so a
   node can serve a request only for a model it already holds. Preparing the same
   model on several nodes is what makes those nodes interchangeable.

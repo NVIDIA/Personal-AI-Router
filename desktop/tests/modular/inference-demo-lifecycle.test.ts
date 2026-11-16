@@ -46,12 +46,18 @@ const POISONED_ENV: Record<string, string> = {
     Inference_Dispatcher_Debug_Error_Log: '/tmp/leak.log'
 }
 
-/** Proxy ports the fake broker reports. Mutable so a test can withhold one. */
+/**
+ * Proxy ports the fake broker reports. Mutable so a test can withhold one.
+ * `DEMO_ENGINE_PROBES` fixes which facades the demo may dial — vLLM and MTPLX
+ * report ports here, as a broker on Apple Silicon would, and the demo still
+ * never probes them.
+ */
 const proxyPorts: Record<EngineType, number | null> = {
     ollama: 11434,
     'lm-studio': 1234,
     'llama-cpp': 8080,
-    vllm: 8000
+    vllm: 8000,
+    mtplx: 8100
 }
 
 /** Model inventory each probe returns. Mutable so a test can return none. */

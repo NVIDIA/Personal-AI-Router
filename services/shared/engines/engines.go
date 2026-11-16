@@ -132,6 +132,7 @@ const (
 	NameLMStudio = "lmstudio"
 	NameLlamaCPP = "llamacpp"
 	NameVLLM     = "vllm"
+	NameMTPLX    = "mtplx"
 )
 
 // all is the ordered engine set. Ollama is first; see the package comment.
@@ -167,6 +168,16 @@ var all = []Engine{
 		FacadePort:       8000,
 		EnginePortBase:   8001,
 		PortFile:         "vllm-proxy-port.json",
+	},
+	{
+		// MTPLX's own default is also 8000, which vLLM's facade already claims.
+		// 8100/8101 are free in this table.
+		Name:             NameMTPLX,
+		DisplayName:      "MTPLX",
+		DiscoveryService: noderec.ServiceMTPLX,
+		FacadePort:       8100,
+		EnginePortBase:   8101,
+		PortFile:         "mtplx-proxy-port.json",
 	},
 }
 

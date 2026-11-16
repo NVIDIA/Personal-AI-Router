@@ -8,17 +8,19 @@ import ollamaIcon from '@/ui/assets/engine-icons/ollama.png?inline'
 import lmStudioIcon from '@/ui/assets/engine-icons/lm-studio.png?inline'
 import llamaCppIcon from '@/ui/assets/engine-icons/llama-cpp.svg?inline'
 import vllmIcon from '@/ui/assets/engine-icons/vllm.svg?inline'
+import mtplxIcon from '@/ui/assets/engine-icons/mtplx.png?inline'
 
-const engineIcons: Record<EngineType, string> = {
+const engineIcons: Partial<Record<EngineType, string>> = {
     ollama: ollamaIcon,
     'lm-studio': lmStudioIcon,
     'llama-cpp': llamaCppIcon,
-    vllm: vllmIcon
+    vllm: vllmIcon,
+    mtplx: mtplxIcon
 }
 
 export default function EngineIcon({ type, size = 32 }: { type: EngineType; size?: number }) {
-    if (!Object.hasOwn(engineIcons, type)) return null
     const icon = engineIcons[type]
+    if (icon === undefined) return null
 
     const dimension = `${size}px`
     const imgStyle: CSSProperties = {

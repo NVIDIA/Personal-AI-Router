@@ -127,7 +127,7 @@ func TestParseProxyEngines_ValidatesSelectedEngineNames(t *testing.T) {
 			require.Equal(t, append([]string{}, want...), append([]string{}, got...))
 		})
 	}
-	test("default set", "ollama,lmstudio,llamacpp,vllm", []string{"ollama", "lmstudio", "llamacpp", "vllm"}, false)
+	test("default set", "ollama,lmstudio,llamacpp,vllm,mtplx", []string{"ollama", "lmstudio", "llamacpp", "vllm", "mtplx"}, false)
 	test("single engine", "lmstudio", []string{"lmstudio"}, false)
 	test("whitespace and blanks are tolerated", " ollama , , lmstudio ", []string{"ollama", "lmstudio"}, false)
 	test("duplicates collapse", "ollama,ollama", []string{"ollama"}, false)

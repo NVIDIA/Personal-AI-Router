@@ -116,6 +116,11 @@ export async function getEngineHubModels(
  * nothing. Fire-and-forget: failures are logged by the call itself and the modal
  * will simply fetch again.
  *
+ * MTPLX is deliberately not warmed. Every one of its packs is Apple Silicon only,
+ * so warming it means a startup fetch on the hosts that can never load those
+ * packs, and the list is only reachable from an MTPLX card — a couple dozen
+ * entries that fetch faster than it takes to open that modal.
+ *
  * Called once the Overview renderer reports ready, deliberately not on service
  * connect: a network fetch started before the window has painted competes with
  * the renderer's own load, and a hanging one leaves an unpainted window behind.
