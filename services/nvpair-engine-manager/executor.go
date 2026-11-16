@@ -19,7 +19,12 @@ import (
 	"time"
 )
 
-var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
+var (
+	winEnvRe = regexp.MustCompile(`%([^%]+)%`)
+	// Match named variables only so shell parameters such as $1 and $@ reach
+	// manifest commands unchanged.
+	unixEnvRe = regexp.MustCompile(`\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)`)
+)
 
 const (
 	engineResponseHeaderTimeout     = 30 * time.Second
@@ -33,8 +38,11 @@ type EngineStatus struct {
 	DisplayName string `json:"display_name"`
 	Installed   bool   `json:"installed"`
 	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port,omitempty"`
+	// Starting is true while a start is launching the engine and waiting for
+	// it to become ready. Running is false until it is.
+	Starting bool `json:"starting,omitempty"`
+	Healthy  bool `json:"healthy"`
+	Port     int  `json:"port,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -43,27 +51,62 @@ type engineState struct {
 	plat       *Platform
 	logs       *logBuffer
 	installDir string
+	// modelsDir is the resolved {models_dir}: the engine's model store, which no
+	// removal this service performs may delete. Empty when the manifest declares
+	// none, in which case uninstall has nothing to preserve.
+	modelsDir string
 
-	// opMu serializes lifecycle operations (install / start / stop /
-	// restart / uninstall) for this engine, so concurrent calls can't
-	// double-spawn or interleave. Lock order is opMu → mu; the per-op
-	// st.mu is released around probes, and the background health loop
-	// never takes opMu.
+	// opMu serializes lifecycle operations and settings reads for this engine.
+	// Only operations that can change state use lockOperation to invalidate
+	// pending status checks. Passive status checks never take opMu.
+	// Lock order is opMu → mu; the background health loop only takes mu.
 	opMu sync.Mutex
 
-	mu         sync.Mutex
+	mu sync.Mutex
+	// revision changes at both ends of an operation and whenever a passive
+	// observation changes state. A probe may commit only against the revision
+	// it captured, so a Start/Stop/SetPort cannot be undone by old I/O.
+	revision   uint64
+	opDone     chan struct{} // non-nil while an operation is active
+	statusRuns map[statusProbeKey]*statusProbeRun
 	installed  bool
 	running    bool
 	healthy    bool
 	stopping   bool
+	// starting is true while a start launches the engine and waits for readiness.
+	starting   bool
 	adopted    bool  // started externally; we can't stop it
 	gen        int64 // bumped each start; gates stale health loops
 	port       int
 	binPath    string
 	proc       *managedProc
 	healthStop context.CancelFunc
-	// startCancel lets StopAll unblock doStart before waiting on opMu.
+	// startCancel lets StopAll, Stop and Eject unblock doStart before waiting
+	// on opMu.
 	startCancel context.CancelFunc
+	// stopsWaiting counts Stop and Eject calls waiting for opMu. While it is
+	// above zero no start begins, and a model switch that a stop cancelled
+	// puts its previous launch back without starting it.
+	stopsWaiting int
+}
+
+// lockOperation marks the entire serialized operation, including its external
+// I/O, as a state transition before any lifecycle fields can change.
+func (st *engineState) lockOperation() {
+	st.opMu.Lock()
+	st.mu.Lock()
+	st.opDone = make(chan struct{})
+	st.revision++
+	st.mu.Unlock()
+}
+
+func (st *engineState) unlockOperation() {
+	st.mu.Lock()
+	st.revision++
+	close(st.opDone)
+	st.opDone = nil
+	st.mu.Unlock()
+	st.opMu.Unlock()
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
@@ -82,7 +125,7 @@ type Executor struct {
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
 	progress *progressHub
-	baseDir  string // user-scoped install base
+	baseDir  string // default user-scoped install base
 	// desired persists explicit per-engine ON/OFF intent. Runtime state remains
 	// in-memory; shutdown cleanup must not rewrite this store.
 	desired *desiredStateStore
@@ -93,9 +136,18 @@ type Executor struct {
 	// detectTimeout bounds the post-install/uninstall detect poll
 	// (installers finish their file work asynchronously). Overridable.
 	detectTimeout time.Duration
-	// actionTimeout bounds a single engine:action call (HTTP or CLI) so a
-	// hung engine can't park the goroutine or starve the caller forever.
+	// actionTimeout bounds ordinary engine actions and CLI-driven model pulls so
+	// a hung engine can't park the goroutine or starve the caller forever.
 	actionTimeout time.Duration
+	// pullProgressTimeout bounds how long a streaming HTTP model pull may go
+	// without advancing a layer/file byte count. Advancing progress refreshes
+	// the deadline, allowing large active downloads to exceed actionTimeout.
+	pullProgressTimeout time.Duration
+	// pullStartTimeout lets an asynchronous pull finish its start handshake even
+	// after caller cancellation, so an accepted download can still be stopped.
+	pullStartTimeout time.Duration
+	// pullCleanupTimeout bounds the inventory check and download stop together.
+	pullCleanupTimeout time.Duration
 	// loadedPollInterval is the cadence of the loaded-model watcher
 	// (loadedwatch.go), which polls each running engine's resident set and emits
 	// engine:models-changed on change. 0 disables it. Overridable via
@@ -109,25 +161,39 @@ type Executor struct {
 	reservedPort atomic.Int32
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
 	shuttingDown atomic.Bool
-	mu           sync.Mutex
-	engines      map[string]*engineState
+	// stopAllOnce collapses the shutdown entry points into a single sweep.
+	// See StopAll.
+	stopAllOnce sync.Once
+	// failedStops holds the engines whose stop failed through a process handle
+	// or a stop command, which later StopAll callers retry. The sweep writes it
+	// without retryMu, since stopAllOnce returns to no caller before the sweep
+	// finishes; retryMu serializes the retries that follow.
+	retryMu       sync.Mutex
+	failedStops   []string
+	mu            sync.Mutex
+	engines       map[string]*engineState
+	modelScope    *http.Server
+	modelScopeURL string
 }
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
-		reg:                reg,
-		reporter:           reporter,
-		emit:               emit,
-		client:             newEngineHTTPClient(engineResponseHeaderTimeout),
-		ollamaLoadClient:   newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
-		progress:           newProgressHub(),
-		baseDir:            baseDir,
-		desired:            newDesiredStateStore(baseDir),
-		detectTimeout:      30 * time.Second,
-		actionTimeout:      30 * time.Minute,
-		loadedPollInterval: defaultLoadedPollSeconds * time.Second,
-		loadedPoke:         make(chan struct{}, 1),
-		engines:            make(map[string]*engineState),
+		reg:                 reg,
+		reporter:            reporter,
+		emit:                emit,
+		client:              newEngineHTTPClient(engineResponseHeaderTimeout),
+		ollamaLoadClient:    newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
+		progress:            newProgressHub(),
+		baseDir:             baseDir,
+		desired:             newDesiredStateStore(baseDir),
+		detectTimeout:       30 * time.Second,
+		actionTimeout:       30 * time.Minute,
+		pullProgressTimeout: 30 * time.Minute,
+		pullStartTimeout:    30 * time.Second,
+		pullCleanupTimeout:  5 * time.Second,
+		loadedPollInterval:  defaultLoadedPollSeconds * time.Second,
+		loadedPoke:          make(chan struct{}, 1),
+		engines:             make(map[string]*engineState),
 	}
 }
 
@@ -151,7 +217,8 @@ func (e *Executor) reservedPortError(port int) error {
 // Ollama's cold-load action gets a separate 10m client. Both set NO total
 // http.Client.Timeout: a multi-GB engine download can legitimately run
 // for many minutes and every call site already bounds total time with a
-// context deadline (download 30m, action actionTimeout, probe 3s). What
+// context deadline or inactivity watchdog (install download 30m, streaming
+// pull pullProgressTimeout, action actionTimeout, probe 3s). What
 // it adds over the zero-value client is (a) a bounded response-header
 // wait so a peer that accepts the connection but never replies can't park
 // a goroutine even inside a long context, and (b) a redirect policy that
@@ -202,29 +269,73 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	}
 	plat, ok := m.HostPlatform()
 	if !ok {
-		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("%s is not supported on %s/%s", m.DisplayName, runtime.GOOS, runtime.GOARCH)
+	}
+	installDir, err := engineInstallDir(e.baseDir, engine, plat.InstallDir)
+	if err != nil {
+		return nil, fmt.Errorf("engine %q: %w", engine, err)
 	}
 	st := &engineState{
 		manifest:   m,
 		plat:       plat,
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
-		installDir: filepath.Join(e.baseDir, engine),
+		installDir: installDir,
+	}
+	if plat.ModelsDir != "" {
+		st.modelsDir = expandPath(plat.ModelsDir)
 	}
 	e.engines[engine] = st
 	return st, nil
 }
 
-func progress(engine, stage string, pct int) map[string]any {
-	return map[string]any{"engine": engine, "stage": stage, "percent": pct}
+func engineInstallDir(defaultBase, engine, configured string) (string, error) {
+	if configured == "" {
+		return filepath.Join(defaultBase, engine), nil
+	}
+	dir := expandPath(configured)
+	// Clean turns an empty expansion into ".", which is unsafe as an uninstall target.
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("install_dir must not expand to an empty path")
+	}
+	return filepath.Clean(dir), nil
+}
+
+// pathVars are the directory placeholders every templated manifest string can
+// use. Both are absolute by the time they get here, so a manifest never has to
+// expand "~" itself — which it could not do, since only argv and a handful of
+// named fields pass through expandPath.
+func (st *engineState) pathVars() map[string]string {
+	vars := map[string]string{"install_dir": st.installDir}
+	// Omitted rather than empty when the manifest declares no store, so a
+	// template that references it fails to resolve instead of quietly becoming
+	// a path rooted at "/".
+	if st.modelsDir != "" {
+		vars["models_dir"] = st.modelsDir
+	}
+	return vars
 }
 
 // emitInstallProgress reports one install-progress step to both consumers: the
 // local engine:install-progress notification (this node's UI) and the progress
-// hub (so an ec streaming handler can relay it to a remote initiator).
+// hub (so an ec streaming handler can relay it to a remote initiator). A pct of
+// 0 marks a step with no measurable progress and is omitted from the wire.
 func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
-	e.notify("engine:install-progress", progress(engine, stage, pct))
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct})
+	e.emitInstallFrame(engine, stage, pct, "")
+}
+
+// emitInstallFrame is emitInstallProgress with an optional failure reason,
+// carried as "error" on the notification and Message on the hub event.
+func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string) {
+	params := map[string]any{"engine": engine, "stage": stage}
+	if wirePercentIncluded(pct) {
+		params["percent"] = pct
+	}
+	if errMsg != "" {
+		params["error"] = errMsg
+	}
+	e.notify("engine:install-progress", params)
+	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct, Message: errMsg})
 }
 
 // emitPullProgress reports one model-pull step to both consumers: the local
@@ -255,7 +366,13 @@ func expandPathForOS(s, goos string) string {
 			return os.Getenv(tok[1 : len(tok)-1])
 		})
 	} else {
-		s = os.ExpandEnv(s)
+		s = unixEnvRe.ReplaceAllStringFunc(s, func(tok string) string {
+			name := tok[1:]
+			if name[0] == '{' {
+				name = name[1 : len(name)-1]
+			}
+			return os.Getenv(name)
+		})
 	}
 	switch {
 	case s == "~":

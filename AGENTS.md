@@ -95,6 +95,28 @@ cross-process coverage. Some tests skip themselves rather than fail; refer to
 passing. Live engine and multi-node tests can modify real system state, so run
 them only when you intend to and only against systems and networks you control.
 
+## Go formatting and modernization
+
+- **Must:** Run `gofmt` on every Go file you change, including tests.
+- **Suggestion:** Consider `go fix` when upgrading Go or refactoring older
+  patterns. With a Go 1.26+ toolchain, use `go tool fix help` to discover
+  analyzers and `go fix -diff -<name> ./...` in the affected module to preview
+  scoped changes. Favor active analyzers compatible with the module's Go minimum;
+  review correctness and readability, preserve accurate comments, and run
+  relevant tests before accepting suggestions.
+
+Keep automated rewrites scoped to the task, review the resulting diff, and run
+relevant checks.
+
+## Test readability
+
+Follow [PAIR test style](.agents/skills/pair-test-style/SKILL.md) when writing,
+changing, or reviewing tests. Name Go tests `Test<Subject>_<ExpectedBehavior>`
+and consider three candidate names before selecting the clearest one. Use
+descriptive case names, keep inputs and expectations explicit, and avoid jargon
+in test comments where possible. Comments should explain intent or unusual setup.
+Apply this advice to tests in scope rather than starting unrelated rewrites.
+
 ## Checks
 
 On Linux and macOS the repository-root `Makefile` is the shortest path to a clean
@@ -110,8 +132,11 @@ On Windows, run the underlying npm and `go test` commands directly.
 
 ## Conventions
 
-- **No type casting.** No `as Type`, `as any`, `as unknown`, or `: any`, and no
-  `unknown` in signatures. If a cast seems necessary, the types are wrong.
+- **TypeScript: no type casting or `any`.** No `as Type`, `as any`, `as unknown`,
+  or `: any`, and no `unknown` in signatures. If a cast seems necessary, the
+  types are wrong.
+- **Go's `any` is allowed.** It is an alias for `interface{}` and may be used
+  when appropriate. Prefer concrete types when the value's type is known.
 - **Absolute imports across directories.** Use the `@/...` alias for anything
   that would otherwise need `../`. Within one directory, `./sibling` is correct.
 - **Static imports only.** No `await import()`.
@@ -140,7 +165,7 @@ On Windows, run the underlying npm and `go test` commands directly.
 - **Sign off every commit** with `git commit -s`. The Developer Certificate of
   Origin trailer has to match the commit author, so a missing or mismatched
   sign-off means rewriting the commit rather than fixing it in review.
-- **Prefer small, focused commits.** Work from a fork on a branch off `main`, and
+- **Prefer small, focused commits.** Work from a fork on a branch off `develop`, and
   open a pull request; only maintainers merge.
 
 ## Platform Support

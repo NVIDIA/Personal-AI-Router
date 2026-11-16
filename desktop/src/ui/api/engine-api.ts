@@ -48,6 +48,11 @@ export interface IEngineApi {
 
     /** Start or stop an engine process on a node. */
     toggle(engineType: EngineType, nodeId: string): void
+    /**
+     * Stop an engine, including one that is still starting (a slow start, or a
+     * vLLM Load restarting it), which cancels the start.
+     */
+    stop(engineType: EngineType, nodeId: string): void
     /** Install an engine on a node. */
     install(engineType: EngineType, nodeId: string): void
     /** Uninstall an engine from a node without removing downloaded models. */
@@ -62,8 +67,8 @@ export interface IEngineApi {
     deleteModel(engineType: EngineType, nodeId: string, model: string): void
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
-    /** Search the model registry/hub for available models. */
-    searchHub(engineType: EngineType): Promise<EngineHubSearchResponse>
+    /** Load an engine catalog or explicitly search its upstream registry. */
+    searchHub(engineType: EngineType, query?: string): Promise<EngineHubSearchResponse>
 
     /** Durable engine state changed. Prefer this for new renderer state. */
     onStateChanged(callback: (patch: EngineStatePatch) => void): () => void
@@ -94,6 +99,8 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
 
         toggle: (engineType, nodeId) =>
             fireCommand(transport, { command: 'toggle', engineType, nodeId }),
+        stop: (engineType, nodeId) =>
+            fireCommand(transport, { command: 'stop', engineType, nodeId }),
         install: (engineType, nodeId) =>
             fireCommand(transport, { command: 'install', engineType, nodeId }),
         uninstall: (engineType, nodeId) =>
@@ -114,7 +121,11 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 model,
                 expiry
             }),
-        searchHub: engineType => transport.invoke('engine:search-hub', { engineType }),
+        searchHub: (engineType, query) =>
+            transport.invoke(
+                'engine:search-hub',
+                query === undefined ? { engineType } : { engineType, query }
+            ),
 
         onStateChanged: cb => transport.subscribePush('engines:state-changed', cb),
         onProgress: cb => transport.subscribePush('engines:progress-changed', cb),

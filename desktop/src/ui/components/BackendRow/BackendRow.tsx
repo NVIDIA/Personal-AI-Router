@@ -45,6 +45,12 @@ function syntheticPendingStatus(
             return 'uninstalling'
         case 'toggle':
             return current === 'running' ? 'stopping' : 'starting'
+        case 'stop':
+            return 'stopping'
+        case 'loadModel':
+            // An engine that restarts to serve the model reports stopped on the
+            // way; it is starting again, not turned off.
+            return current === 'running' ? null : 'starting'
         default:
             return null
     }
@@ -151,6 +157,10 @@ export function BackendRow({
         window.pairApi.engines.toggle(backend.type, nodeId)
     }, [backend.type, nodeId])
 
+    const handleStop = useCallback(() => {
+        window.pairApi.engines.stop(backend.type, nodeId)
+    }, [backend.type, nodeId])
+
     const handleInstall = useCallback(() => {
         window.pairApi.engines.install(backend.type, nodeId)
     }, [backend.type, nodeId])
@@ -217,6 +227,7 @@ export function BackendRow({
                         isUnavailable={isUnavailable}
                         disabled={controlsDisabled}
                         onToggle={handleToggle}
+                        onStop={handleStop}
                         onExpand={handleExpand}
                         expanded={expanded}
                         isLocalNode={isLocalNode}
@@ -232,7 +243,7 @@ export function BackendRow({
                 open={confirmUninstall}
                 onOpenChange={setConfirmUninstall}
                 title="Uninstall"
-                message={`Are you sure you want to uninstall ${backend.displayName}?`}
+                message={`Uninstall ${backend.displayName}? Your downloaded models are kept.`}
                 confirmLabel="Uninstall"
                 confirmColor="danger"
                 onConfirm={handleUninstall}

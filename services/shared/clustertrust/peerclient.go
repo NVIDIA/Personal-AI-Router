@@ -35,9 +35,6 @@ const (
 	// instead: a warm POST to these endpoints is single-digit milliseconds, so
 	// hundreds of queued frames drain well inside the per-request timeout.
 	peerMaxConnsPerHost = 8
-	// peerMaxIdleConnsPerHost keeps the whole cap warm between bursts, so a
-	// steady trickle of events never re-handshakes.
-	peerMaxIdleConnsPerHost = peerMaxConnsPerHost
 	// peerMaxIdleConns bounds the pool across every peer in a cluster of this
 	// scale (~a dozen nodes).
 	peerMaxIdleConns = 64
@@ -73,6 +70,10 @@ const (
 type PeerClientOptions struct {
 	Timeout               time.Duration
 	ResponseHeaderTimeout time.Duration
+	// DialTimeout and MaxConnsPerHost override the defaults for tighter probes.
+	// Non-positive values retain the pool defaults.
+	DialTimeout     time.Duration
+	MaxConnsPerHost int
 	// ResolvePin overrides the Mesh's disk-backed peer-pin lookup. The resolver
 	// is the authorization source and is called without the pool lock held.
 	ResolvePin func(peerUUID string) ([]byte, bool)
@@ -162,7 +163,13 @@ func (p *PeerClientPool) Client(peerUUID string) (*http.Client, bool) {
 		pinnedDER: bytes.Clone(der),
 		selfDER:   bytes.Clone(self),
 	}
-	entry.client = &http.Client{Timeout: p.opts.Timeout, Transport: entry.transport}
+	// A redirect must not move an authenticated request onto another transport
+	// or endpoint. Cluster service endpoints do not require redirection.
+	entry.client = &http.Client{
+		Timeout:       p.opts.Timeout,
+		Transport:     entry.transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	p.entries[peerUUID] = entry
 	return entry.client, true
 }
@@ -188,6 +195,13 @@ func (p *PeerClientPool) newTransport(tlsCfg *tls.Config) *http.Transport {
 	if dialTimeout <= 0 {
 		dialTimeout = 30 * time.Second
 	}
+	if p.opts.DialTimeout > 0 {
+		dialTimeout = p.opts.DialTimeout
+	}
+	maxConns := peerMaxConnsPerHost
+	if p.opts.MaxConnsPerHost > 0 {
+		maxConns = p.opts.MaxConnsPerHost
+	}
 	return &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   dialTimeout,
@@ -196,9 +210,9 @@ func (p *PeerClientPool) newTransport(tlsCfg *tls.Config) *http.Transport {
 		TLSClientConfig:       tlsCfg,
 		TLSHandshakeTimeout:   dialTimeout,
 		ResponseHeaderTimeout: p.opts.ResponseHeaderTimeout,
-		MaxConnsPerHost:       peerMaxConnsPerHost,
+		MaxConnsPerHost:       maxConns,
 		MaxIdleConns:          peerMaxIdleConns,
-		MaxIdleConnsPerHost:   peerMaxIdleConnsPerHost,
+		MaxIdleConnsPerHost:   maxConns,
 		IdleConnTimeout:       PeerIdleTimeout,
 	}
 }

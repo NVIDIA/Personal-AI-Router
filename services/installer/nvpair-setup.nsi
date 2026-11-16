@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-; NVIDIA Personal AI Router - NSIS Installer Script
+; NVIDIA PAIR - NSIS Installer Script
 ; Requires NSIS 3.x with MUI2
 ;
 ; REFERENCE FILE. This is the NSIS definition NVIDIA builds the Windows services
@@ -13,12 +13,17 @@
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 ;---------------------------------------
 ; General
 ;---------------------------------------
+; PRODUCT_NAME keys the uninstall registry entry, the default install directory,
+; and the Start menu folder, all of which an earlier install's uninstaller finds
+; by this exact string. User-visible text uses PRODUCT_DISPLAY_NAME instead.
 !define PRODUCT_NAME "NVIDIA Personal AI Router"
-!define PRODUCT_PUBLISHER "NVIDIA"
+!define PRODUCT_DISPLAY_NAME "NVIDIA PAIR"
+!define PRODUCT_PUBLISHER "NVIDIA Corporation"
 !define PRODUCT_URL "https://github.com/NVIDIA/Personal-AI-Router"
 
 ; Version can be overridden from CLI: makensis /DPRODUCT_VERSION=1.2.3
@@ -33,7 +38,7 @@
 ; users whose profile paths contain non-ASCII characters.
 Unicode true
 
-Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
+Name "${PRODUCT_DISPLAY_NAME} ${PRODUCT_VERSION}"
 OutFile "..\dist\NVIDIA-Personal-AI-Router-${PRODUCT_VERSION}-Setup.exe"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "${ARP_KEY}" "InstallLocation"
@@ -85,7 +90,7 @@ Function .onInit
   ; installs just proceed.
   IfSilent done 0
   MessageBox MB_OKCANCEL|MB_ICONQUESTION \
-    "${PRODUCT_NAME} is already installed.$\n$\nClick OK to continue - the previous version will be removed when you click Install on the next screen. Click Cancel to abort." \
+    "${PRODUCT_DISPLAY_NAME} is already installed.$\n$\nClick OK to continue - the previous version will be removed when you click Install on the next screen. Click Cancel to abort." \
     /SD IDOK IDOK done
   Abort
 
@@ -106,7 +111,7 @@ FunctionEnd
 ; return code.
 ;---------------------------------------
 !macro CloseRunningInstance
-  DetailPrint "Checking for running ${PRODUCT_NAME} processes..."
+  DetailPrint "Checking for running ${PRODUCT_DISPLAY_NAME} processes..."
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-proxy.exe"'
   ; Pre-unification names. An orphan still holding 11434 or 1234 is exactly
   ; what the managed-facade planner has to block on, so kill it here too.
@@ -127,6 +132,38 @@ FunctionEnd
   Sleep 500
 !macroend
 
+; Install the centrally serviced Microsoft runtime required by the managed
+; llama.cpp binaries. Microsoft's x64 package also contains the ARM64 runtime.
+!macro InstallVcRuntime
+  DetailPrint "Installing Microsoft Visual C++ Runtime..."
+  ClearErrors
+  ExecWait '"$PLUGINSDIR\VC_redist.x64.exe" /install /quiet /norestart' $R4
+  ${if} ${Errors}
+    ClearErrors
+    Delete "$PLUGINSDIR\VC_redist.x64.exe"
+    MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_DISPLAY_NAME} could not start the Microsoft Visual C++ Runtime installer.$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+
+  Delete "$PLUGINSDIR\VC_redist.x64.exe"
+  ${if} $R4 == 0
+    DetailPrint "Microsoft Visual C++ Runtime installed."
+  ${elseIf} $R4 == 1638
+    DetailPrint "Microsoft Visual C++ Runtime is already installed."
+  ${elseIf} $R4 == 1641
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart initiated."
+    SetRebootFlag true
+  ${elseIf} $R4 == 3010
+    DetailPrint "Microsoft Visual C++ Runtime installed; Windows restart required."
+    SetRebootFlag true
+  ${else}
+    MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_DISPLAY_NAME} could not install the Microsoft Visual C++ Runtime (exit code $R4).$\n$\nRestart Windows and run this installer again. If the problem continues, install the latest supported Visual C++ Redistributable from https://aka.ms/vc14/vc_redist.x64.exe, then retry." /SD IDOK
+    SetErrorLevel 3
+    Quit
+  ${endif}
+!macroend
+
 ;---------------------------------------
 ; Installer Section
 ;---------------------------------------
@@ -135,6 +172,10 @@ Section "Install"
   ; to touch — otherwise File / the prior uninstaller's Delete will fail
   ; with a sharing violation and leave a half-installed mess.
   !insertmacro CloseRunningInstance
+
+  SetOutPath "$PLUGINSDIR"
+  File /oname=VC_redist.x64.exe "..\..\.build\vc-redist\VC_redist.x64.exe"
+  !insertmacro InstallVcRuntime
 
   ; If .onInit found a previous install, remove it now — at this point the
   ; user has clicked Install, so the destructive step is safe.
@@ -226,7 +267,7 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
   ; Add/Remove Programs registry
-  WriteRegStr   HKLM "${ARP_KEY}" "DisplayName"     "${PRODUCT_NAME}"
+  WriteRegStr   HKLM "${ARP_KEY}" "DisplayName"     "${PRODUCT_DISPLAY_NAME}"
   WriteRegStr   HKLM "${ARP_KEY}" "DisplayVersion"  "${PRODUCT_VERSION}"
   WriteRegStr   HKLM "${ARP_KEY}" "Publisher"        "${PRODUCT_PUBLISHER}"
   WriteRegStr   HKLM "${ARP_KEY}" "URLInfoAbout"     "${PRODUCT_URL}"

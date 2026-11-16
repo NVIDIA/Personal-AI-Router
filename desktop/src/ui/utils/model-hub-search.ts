@@ -3,7 +3,7 @@
 
 import { ModelEntry, SORT_FIELD } from '@/ui/types/model-hub'
 import { EngineType } from '@/shared/types/engines'
-import type { EngineHubModel } from '@/shared/types/engine-api'
+import type { EngineHubModel, EngineHubSearchResponse } from '@/shared/types/engine-api'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { EngineHubConfig } from '@/ui/types/engine-manifest'
 
@@ -38,13 +38,25 @@ function hubModelToEntry(m: EngineHubModel): ModelEntry {
     }
 }
 
+export function mergeModelHubResults(
+    populated: readonly ModelEntry[],
+    searched: readonly ModelEntry[]
+): ModelEntry[] {
+    const byId = new Map<string, ModelEntry>()
+    for (const model of populated) byId.set(model.id, model)
+    for (const model of searched) byId.set(model.id, model)
+    return Array.from(byId.values())
+}
+
 /**
- * Fetch an engine's full model hub catalog from the service. The Electron-main
- * module owns the upstream source (Ollama library scrape, LM Studio community
- * catalog); the renderer filters/sorts the returned rows locally.
+ * Fetch an engine's populated catalog or submit an explicit upstream query.
+ * Electron main owns every upstream source; the renderer only maps display rows.
  */
-export async function searchEngineHub(engine: EngineType): Promise<ModelEntry[]> {
-    if (!getEngineHub(engine)) return []
-    const { models } = await window.pairApi.engines.searchHub(engine)
-    return models.map(hubModelToEntry)
+export async function searchEngineHub(
+    engine: EngineType,
+    query?: string
+): Promise<EngineHubSearchResponse<ModelEntry>> {
+    if (!getEngineHub(engine)) return { models: [], searchable: false }
+    const { models, searchable } = await window.pairApi.engines.searchHub(engine, query)
+    return { models: models.map(hubModelToEntry), searchable }
 }

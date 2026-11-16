@@ -4,37 +4,26 @@
 import { Flex, Text } from '@nvidia/foundations-react-core'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LocalBadge } from '@/ui/components/LocalBadge'
-
-interface LabelSegment {
-    id: string
-    text: string
-}
+import { buildNodeLabelSegments } from '@/ui/utils/node-label-segments'
 
 export default function NodeLabel({
     name,
     ipAddress,
-    gpuLabel,
+    gpuLabels,
     isLocal
 }: {
     name: string
     ipAddress: string
-    gpuLabel: string | undefined
+    gpuLabels: string[]
     isLocal?: boolean
 }) {
     const segmentRefs = useRef<(HTMLDivElement | null)[]>([])
     const containerRef = useRef<HTMLDivElement | null>(null)
     const [separatorAfter, setSeparatorAfter] = useState<boolean[]>([])
-    const segments = useMemo(() => {
-        const primaryText = (name || ipAddress).toUpperCase()
-        const nextSegments: LabelSegment[] = [{ id: 'primary', text: primaryText }]
-        if (name && ipAddress) {
-            nextSegments.push({ id: 'ip', text: ipAddress })
-        }
-        if (gpuLabel) {
-            nextSegments.push({ id: 'gpu', text: gpuLabel })
-        }
-        return nextSegments
-    }, [gpuLabel, ipAddress, name])
+    const segments = useMemo(
+        () => buildNodeLabelSegments(name, ipAddress, gpuLabels),
+        [gpuLabels, ipAddress, name]
+    )
 
     const updateSeparators = useCallback(() => {
         const next = segments.map((_segment, index) => {

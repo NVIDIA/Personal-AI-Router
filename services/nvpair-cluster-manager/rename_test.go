@@ -3,14 +3,18 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // TestReconcileRefreshesRenamedPeerName verifies that when a still-trusted
 // peer renames its PC and reconciles, its own roster entry (sender == entry
 // uuid) refreshes both the member record and the persisted pin to the new
 // display name, keyed by the stable nodeUuid — and a second identical reconcile
 // is a no-op.
-func TestReconcileRefreshesRenamedPeerName(t *testing.T) {
+func TestReconcile_RefreshesRenamedPeerName(t *testing.T) {
 	m := newTestManager(t)
 	aUUID, aCert, aFP, _ := makeNode(t, "old-a")
 	pinTrusted(t, m, aUUID, aCert, aFP)
@@ -22,26 +26,22 @@ func TestReconcileRefreshesRenamedPeerName(t *testing.T) {
 	roster := &Roster{ClusterID: "cluster-1", Members: []RosterEntry{
 		{NodeUUID: aUUID, NodeID: "new-a", Name: "new-a", CertPem: aCert, CertFingerprint: aFP},
 	}}
-	if !m.mergeRoster(roster, aUUID) {
-		t.Fatal("rename should report a change")
-	}
+	require.True(t, m.mergeRoster(roster, aUUID), "rename should report a change")
 	n, ok := m.memberByNodeID(aUUID)
-	if !ok || n.ID != "new-a" || n.Name != "new-a" {
-		t.Fatalf("member not renamed: got id=%q name=%q", n.ID, n.Name)
-	}
+	require.True(t, ok, "member not renamed: got id")
+	require.Equal(t, "new-a", n.ID, "member not renamed: got id")
+	require.Equal(t, "new-a", n.Name, "member not renamed: got id")
 	pin, ok := m.trust.Get(aUUID)
-	if !ok || pin.NodeID != "new-a" || pin.Name != "new-a" {
-		t.Fatalf("pin not renamed: got nodeId=%q name=%q", pin.NodeID, pin.Name)
-	}
-	if m.mergeRoster(roster, aUUID) {
-		t.Fatal("re-applying the same name should be a no-op")
-	}
+	require.True(t, ok, "pin not renamed: got nodeId")
+	require.Equal(t, "new-a", pin.NodeID, "pin not renamed: got nodeId")
+	require.Equal(t, "new-a", pin.Name, "pin not renamed: got nodeId")
+	require.False(t, m.mergeRoster(roster, aUUID), "re-applying the same name should be a no-op")
 }
 
 // TestReconcileIgnoresThirdPartyName verifies the anti-flap guard: only a peer's
 // OWN self entry may rename it. A third party's (possibly stale) view of that
 // peer, carried in someone else's roster, must not overwrite the current name.
-func TestReconcileIgnoresThirdPartyName(t *testing.T) {
+func TestReconcile_IgnoresThirdPartyName(t *testing.T) {
 	m := newTestManager(t)
 	aUUID, aCert, aFP, _ := makeNode(t, "a")
 	bUUID, bCert, bFP, _ := makeNode(t, "b")
@@ -57,16 +57,15 @@ func TestReconcileIgnoresThirdPartyName(t *testing.T) {
 	m.mergeRoster(roster, aUUID)
 
 	n, _ := m.memberByNodeID(bUUID)
-	if n.ID != "b-current" || n.Name != "b-current" {
-		t.Fatalf("a third party's stale name must not rename B: got id=%q name=%q", n.ID, n.Name)
-	}
+	require.Equal(t, "b-current", n.ID, "a third party's stale name must not rename B: got id")
+	require.Equal(t, "b-current", n.Name, "a third party's stale name must not rename B: got id")
 }
 
 // TestRefreshSelfMemberIdentityOnRestart verifies that a self entry restored
 // from members.json under the PC's old name is re-stamped to the current
 // identity on startup, so the local node doesn't linger as a stale-named ghost
 // in its own roster.
-func TestRefreshSelfMemberIdentityOnRestart(t *testing.T) {
+func TestRestart_RefreshesLocalMemberIdentity(t *testing.T) {
 	m := newTestManager(t)
 	m.upsertMember(&ClusterNode{
 		NodeUUID: m.identity.NodeUUID, ID: "old-name", Name: "old-name",
@@ -76,11 +75,7 @@ func TestRefreshSelfMemberIdentityOnRestart(t *testing.T) {
 	m.refreshSelfMemberIdentity()
 
 	self, ok := m.memberByNodeID(m.identity.NodeUUID)
-	if !ok {
-		t.Fatal("self member missing after refresh")
-	}
-	if self.ID != m.identity.NodeID || self.Name != m.identity.Name {
-		t.Fatalf("self not re-stamped: got id=%q name=%q want id=%q name=%q",
-			self.ID, self.Name, m.identity.NodeID, m.identity.Name)
-	}
+	require.True(t, ok, "self member missing after refresh")
+	require.Equal(t, m.identity.NodeID, self.ID, "self not re-stamped: got id")
+	require.Equal(t, m.identity.Name, self.Name, "self not re-stamped: got id")
 }

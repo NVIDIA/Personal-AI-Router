@@ -12,7 +12,7 @@ import (
 )
 
 // handleSettingsPortRPC serves the port-only RPCs — engine:set-port,
-// proxy:set-port, and lmstudio-proxy:set-port — which nvpair-tui calls to move
+// <engine>-proxy:set-port — which nvpair-tui calls to move
 // a single port without rendering the full launch settings form. They keep
 // their own narrow request and response shapes, but run through the same
 // authoritative settings operation as the desktop editor, so a port change

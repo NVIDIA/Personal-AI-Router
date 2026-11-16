@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/noderec"
 )
 
@@ -50,62 +53,67 @@ func (a *answering) askedAddresses() []string {
 }
 
 func testKey() hostKey {
-	return hostKey{hostUUID: "uuid-peer", service: noderec.ServiceNodeInfo}
+	return hostKey{recordKey: "uuid-peer", service: noderec.ServiceNodeInfo}
 }
 
 // TestAskRememberedAsksOnlyTheAddressThatAnswered is why the memory exists: the
 // sweep repeats every peerRefreshInterval for as long as a node is advertised, so
 // starting at the top of its list each time paid the leading address's full fetch
 // timeout forever to reach the one that had already worked.
-func TestAskRememberedAsksOnlyTheAddressThatAnswered(t *testing.T) {
+func TestAskRemembered_AsksOnlyTheAddressThatAnswered(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"192.168.240.1", "169.254.7.7", "10.0.0.5"}
 
 	host, value, ok := askRemembered(mem, testKey(), hosts, net.ask)
-	if !ok || host != "10.0.0.5" || value != "inventory from 10.0.0.5" {
-		t.Fatalf("askRemembered = %q,%q,%v, want the address that answered", host, value, ok)
-	}
+	require.True(t, ok, "askRemembered (%v, %v, %v)", host, value, ok)
+	require.Equal(t, "10.0.0.5", host, "askRemembered (%v, %v, %v)", host, value, ok)
+	require.Equal(t, "inventory from 10.0.0.5", value, "askRemembered (%v, %v, %v)", host, value, ok)
 
 	for range 5 {
-		if host, _, ok := askRemembered(mem, testKey(), hosts, net.ask); !ok || host != "10.0.0.5" {
-			t.Fatalf("askRemembered = %q,%v, want the remembered address", host, ok)
-		}
+		host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+		require.True(t, ok, "askRemembered")
+		require.Equal(t, "10.0.0.5", host, "askRemembered")
 	}
 	asked := net.askedAddresses()
-	if len(asked) != len(hosts)+5 {
-		t.Fatalf("asked %v, want one walk then one address per sweep", asked)
-	}
+	require.Len(t, asked, len(hosts)+5, "asked")
 	for _, host := range asked[len(hosts):] {
-		if host != "10.0.0.5" {
-			t.Errorf("a later sweep asked %q, want only the remembered address", host)
-		}
+		assert.Equal(t, "10.0.0.5", host, "a later sweep asked")
 	}
+}
+
+func TestAskRemembered_SkipsWithdrawnAddresses(t *testing.T) {
+	var memory hostMemory
+	key := hostKey{recordKey: "peer", service: noderec.ServiceNodeInfo}
+	memory.set(key, "old-address")
+	host, _, ok := askRemembered(&memory, key, []string{"new-address"}, func(host string) (string, bool) { return host, true })
+	require.True(t, ok)
+	assert.Equal(t, "new-address", host)
 }
 
 // TestAskRememberedKeepsAWorkingAddressWhenABetterRankedOneComesUp: nothing is
 // wrong with the address in use, and switching changes the address this node is
 // enriched and reported at to learn nothing.
-func TestAskRememberedKeepsAWorkingAddressWhenABetterRankedOneComesUp(t *testing.T) {
+func TestAskRemembered_KeepsAWorkingAddressWhenABetterRankedOneComesUp(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"192.168.240.1", "10.0.0.5"}
-	if host, _, ok := askRemembered(mem, testKey(), hosts, net.ask); !ok || host != "10.0.0.5" {
-		t.Fatalf("askRemembered = %q,%v, want the address that answered", host, ok)
-	}
+	host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.5", host, "askRemembered")
 
 	net.mu.Lock()
 	net.accept["192.168.240.1"] = true
 	net.mu.Unlock()
 
-	if host, _, ok := askRemembered(mem, testKey(), hosts, net.ask); !ok || host != "10.0.0.5" {
-		t.Fatalf("askRemembered = %q,%v, want the address already known to work", host, ok)
-	}
+	host, _, ok = askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.5", host, "askRemembered")
 }
 
 // TestAskRememberedWalksAgainWhenTheRememberedAddressStops: its failure is the one
 // reason to look elsewhere, and the new answer is what gets remembered.
-func TestAskRememberedWalksAgainWhenTheRememberedAddressStops(t *testing.T) {
+func TestAskRemembered_WalksAgainWhenTheRememberedAddressStops(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"192.168.240.1", "10.0.0.5", "10.0.0.6"}
@@ -116,22 +124,20 @@ func TestAskRememberedWalksAgainWhenTheRememberedAddressStops(t *testing.T) {
 	net.accept["10.0.0.6"] = true
 	net.mu.Unlock()
 
-	if host, _, ok := askRemembered(mem, testKey(), hosts, net.ask); !ok || host != "10.0.0.6" {
-		t.Fatalf("askRemembered = %q,%v, want the address that took over", host, ok)
-	}
+	host, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.6", host, "askRemembered")
 	net.asked = nil
-	if host, _, ok := askRemembered(mem, testKey(), hosts, net.ask); !ok || host != "10.0.0.6" {
-		t.Fatalf("askRemembered = %q,%v, want the new address remembered", host, ok)
-	}
-	if asked := net.askedAddresses(); len(asked) != 1 {
-		t.Errorf("asked %v after settling on a new address, want one", asked)
-	}
+	host, _, ok = askRemembered(mem, testKey(), hosts, net.ask)
+	require.True(t, ok, "askRemembered")
+	require.Equal(t, "10.0.0.6", host, "askRemembered")
+	assert.Len(t, net.askedAddresses(), 1, "asked")
 }
 
 // TestAskRememberedForgetsAnAddressNobodyAnswersAt: with nothing answering there is
 // no address to remember, so the next sweep is free to find a recovery anywhere on
 // the list rather than being pinned to one that failed.
-func TestAskRememberedForgetsAnAddressNobodyAnswersAt(t *testing.T) {
+func TestAskRemembered_ForgetsAnAddressNobodyAnswersAt(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	mem := &hostMemory{}
 	hosts := []string{"10.0.0.5", "10.0.0.6"}
@@ -140,60 +146,72 @@ func TestAskRememberedForgetsAnAddressNobodyAnswersAt(t *testing.T) {
 	net.mu.Lock()
 	net.accept["10.0.0.5"] = false
 	net.mu.Unlock()
-	if _, _, ok := askRemembered(mem, testKey(), hosts, net.ask); ok {
-		t.Fatal("askRemembered reported success with nothing answering")
-	}
-	if got := mem.get(testKey()); got != "" {
-		t.Errorf("still remembers %q after it stopped answering", got)
-	}
+	_, _, ok := askRemembered(mem, testKey(), hosts, net.ask)
+	require.False(t, ok, "askRemembered reported success with nothing answering")
+	assert.Equal(t, "", mem.get(testKey()), "still remembers")
 }
 
 // TestAskTogetherPrefersRankOverArrivalOrder: the node's ranking decides, not the
 // stopwatch. Taking the fastest responder would let two working addresses swap
 // places between sweeps on nothing but timing noise.
-func TestAskTogetherPrefersRankOverArrivalOrder(t *testing.T) {
+func TestAskTogether_PrefersRankOverArrivalOrder(t *testing.T) {
 	net := newAnswering("10.0.0.5", "10.0.0.6")
 	net.slow["10.0.0.5"] = 40 * time.Millisecond
 
 	host, _, ok := askTogether([]string{"10.0.0.5", "10.0.0.6"}, net.ask)
-	if !ok || host != "10.0.0.5" {
-		t.Fatalf("askTogether = %q,%v, want the top-ranked address despite answering later", host, ok)
-	}
+	require.True(t, ok, "askTogether (%v, %v)", host, ok)
+	require.Equal(t, "10.0.0.5", host, "askTogether (%v, %v)", host, ok)
 }
 
-// TestAskTogetherPaysOneTimeoutForTheWholeList: an address that neither answers nor
-// refuses costs a whole fetch timeout, and asking in sequence paid that per address
-// — up to modelsFetchTimeout each — before reaching one that works.
-func TestAskTogetherPaysOneTimeoutForTheWholeList(t *testing.T) {
-	const stall = 150 * time.Millisecond
-	net := newAnswering("10.0.0.9")
-	for _, host := range []string{"192.168.240.1", "169.254.7.7", "172.17.0.1"} {
-		net.slow[host] = stall
-	}
+// Every address must be asked before any response is released. Sequential
+// probing would wait forever on the first address instead of reaching the rest.
+func TestAskTogether_ProbesAddressesConcurrently(t *testing.T) {
 	hosts := []string{"192.168.240.1", "169.254.7.7", "172.17.0.1", "10.0.0.9"}
-
-	start := time.Now()
-	host, _, ok := askTogether(hosts, net.ask)
-	elapsed := time.Since(start)
-
-	if !ok || host != "10.0.0.9" {
-		t.Fatalf("askTogether = %q,%v, want the address that answered", host, ok)
+	entered := make(chan string, len(hosts))
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	type probeResult struct {
+		host string
+		ok   bool
 	}
-	if elapsed > 2*stall {
-		t.Errorf("asking four addresses took %v with a %v stall each; they are not being asked together",
-			elapsed, stall)
+	finished := make(chan probeResult, 1)
+	go func() {
+		host, _, ok := askTogether(hosts, func(host string) (string, bool) {
+			entered <- host
+			<-release
+			return "inventory", host == "10.0.0.9"
+		})
+		finished <- probeResult{host: host, ok: ok}
+	}()
+
+	var asked []string
+	for range hosts {
+		select {
+		case host := <-entered:
+			asked = append(asked, host)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "addresses were not probed concurrently")
+		}
+	}
+	assert.ElementsMatch(t, hosts, asked)
+	unblock()
+
+	select {
+	case result := <-finished:
+		assert.True(t, result.ok)
+		assert.Equal(t, "10.0.0.9", result.host)
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "address probing did not finish after responses were released")
 	}
 }
 
 // TestAskTogetherSkipsBlankHosts guards the published-list edge: a record can carry
 // an empty entry, and it is not an address to fetch from.
-func TestAskTogetherSkipsBlankHosts(t *testing.T) {
+func TestAskTogether_SkipsBlankHosts(t *testing.T) {
 	net := newAnswering("10.0.0.5")
 	host, _, ok := askTogether([]string{"", "10.0.0.5"}, net.ask)
-	if !ok || host != "10.0.0.5" {
-		t.Fatalf("askTogether = %q,%v, want the only real address", host, ok)
-	}
-	if asked := net.askedAddresses(); len(asked) != 1 {
-		t.Errorf("asked %v, want the blank entry skipped", asked)
-	}
+	require.True(t, ok, "askTogether (%v, %v)", host, ok)
+	require.Equal(t, "10.0.0.5", host, "askTogether (%v, %v)", host, ok)
+	assert.Len(t, net.askedAddresses(), 1, "asked")
 }

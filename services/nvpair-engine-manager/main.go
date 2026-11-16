@@ -38,6 +38,7 @@ func main() {
 	clusterDir := flag.String("cluster-dir", "", "cluster identity/pin directory; when set and this node holds a cluster identity, the ec remote-control surface (--control-port) turns on with pin-based mTLS")
 	loadedPollSec := flag.Int("loaded-poll-interval", defaultLoadedPollSeconds, "seconds between loaded-model polls that drive engine:models-changed pushes; 0 disables the watcher")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	uninstallManaged := flag.Bool("uninstall-managed", false, "remove every engine PAIR installed, preserving downloaded models, then exit; for the platform uninstallers")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
 
@@ -47,6 +48,15 @@ func main() {
 	}
 
 	applog.Init("nvpair-engine-manager", resolveLevel())
+
+	// Runs from the platform uninstallers, which have already stopped every
+	// engine process and have no broker to talk to, so this path takes no
+	// transport and starts no service. It always exits 0: an uninstaller that
+	// aborts here would leave the app half-removed.
+	if *uninstallManaged {
+		runUninstallManaged()
+		os.Exit(0)
+	}
 
 	var transport io.ReadWriteCloser
 	if *ipcPath != "" {
@@ -146,14 +156,56 @@ func userPaths() (manifestDir, installBase string) {
 	return filepath.Join(root, "engines"), filepath.Join(root, "engine-bin")
 }
 
-// buildRegistry loads the embedded manifests then overlays user
-// manifests. A bad bundled manifest is a build defect (fatal); a bad
-// user manifest is logged and skipped so it can't brick startup.
-func buildRegistry(userManifestDir string) *Registry {
+// runUninstallManaged removes the engines PAIR installed, then returns.
+//
+// The same Executor.UninstallManaged the clients reach over JSON-RPC, so the
+// uninstaller gets the identical selection and safety path rather than a second
+// implementation of it. There is no broker here and no renderer listening, so
+// the reporter and notifier are inert; the work itself is unchanged.
+//
+// Never fails the caller. A platform uninstaller that aborted here would leave
+// the app half-removed, so every outcome is logged and the exit stays clean.
+func runUninstallManaged() {
+	manifestDir, installBase := userPaths()
+	reg := buildBundledRegistry()
+	reg.applyLocationOverrides(manifestDir)
+	exec := NewExecutor(reg, NewReporter(nil), func(string, any) {}, installBase)
+	ctx, cancel := context.WithTimeout(context.Background(), uninstallManagedTimeout)
+	defer cancel()
+	for _, result := range exec.UninstallManaged(ctx) {
+		switch {
+		case result.Removed:
+			slog.Info("engine removed", "engine", result.Engine)
+		case result.Error != "":
+			slog.Error("engine could not be removed", "engine", result.Engine, "err", result.Error)
+		default:
+			slog.Info("engine left in place; PAIR did not install it", "engine", result.Engine)
+		}
+	}
+}
+
+// buildBundledRegistry loads only the manifests compiled into this binary. A
+// bad one is a build defect, so it is fatal.
+//
+// This is the registry the uninstaller path uses. Overriding a manifest means
+// choosing commands to run and paths to delete, and the override directory sits
+// in the user's own data folder — writable by any process running as them —
+// while the Windows uninstaller is elevated (`perMachine`). Overlaying it there
+// would let an unprivileged user hand the uninstaller a command to run as
+// administrator.
+func buildBundledRegistry() *Registry {
 	reg := NewRegistry()
 	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
 		log.Fatalf("bundled manifests invalid: %v", err)
 	}
+	return reg
+}
+
+// buildRegistry loads the embedded manifests then overlays user
+// manifests. A bad bundled manifest is a build defect (fatal); a bad
+// user manifest is logged and skipped so it can't brick startup.
+func buildRegistry(userManifestDir string) *Registry {
+	reg := buildBundledRegistry()
 	if userManifestDir != "" {
 		// Deep-merge per-user overrides onto the bundled manifests (rather
 		// than wholesale replace) so a persisted port override pins only

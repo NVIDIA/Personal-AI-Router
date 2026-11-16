@@ -11,9 +11,10 @@ local network: each node advertises itself over mDNS as one consolidated
 node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
-discovery. A node may be running [Ollama](https://ollama.com/), LM Studio, both,
-or neither, and its model inventory is fetched over HTTP from its engine-manager
-rather than crammed into mDNS TXT records, which are too small to carry it.
+discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
+llama.cpp, vLLM, any combination, or none, and its model inventory is fetched over
+HTTP from its engine-manager rather than crammed into mDNS TXT records, which
+are too small to carry it.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
 OpenAI-compatible — so an unmodified client on that machine can reach any capable
@@ -26,6 +27,15 @@ free. If an inherited `OLLAMA_HOST` names a different local HTTP port, the broke
 can serve that loopback-only address from the same router when it is free —
 `localhost` is claimed on IPv4 and IPv6 together, and remote or HTTPS targets are
 never intercepted.
+
+The llama.cpp and vLLM facades are enabled by default alongside Ollama and LM Studio.
+The llama.cpp facade exposes OpenAI-compatible traffic on `http://localhost:8080`
+while the managed router runs on `8081`. The vLLM facade (the engine itself runs on
+Linux and Apple Silicon macOS) uses `http://localhost:8000` with its managed engine on `8001`. A safe fallback is reported when a facade port is
+occupied. The desktop and TUI expose each engine's managed lifecycle and
+inventory, plus llama.cpp's downloads and load/unload actions; vLLM serves one
+model per process, so loading another downloaded model restarts it on that model. `--proxy-engines` can still restrict the
+facades a standalone broker or TUI starts.
 
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the
@@ -41,9 +51,9 @@ This tree builds twelve Go binaries. `nvpair-ui-broker` is the parent service an
 | --- | --- |
 | `nvpair-ui-broker` | Parent service and JSON-RPC API surface used by the bundled UI and other clients. Supervises workers, relays consolidated discovery, and coordinates routing and scheduling. |
 | `nvpair-proxy` | The engine HTTP reverse proxy: one process hosting a facade per enabled engine, each enabled over `facade/enable` after spawn. Serves each engine's own dialect (Ollama-native and OpenAI-compatible), routes only to advertised model owners, and applies owner failover and scheduler priorities. |
-| `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
-| `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
-| `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
+| `nvpair-node-info` | Supplies local hardware over owned worker IPC and serves public hardware previews and pinned-mTLS peer inventory on `:14318` at `/v1/node-info`. |
+| `nvpair-node-scanner` | Advertises and browses `_nvpair-node._tcp`, maintains separate discovery candidates and verified peer records, and collects local IPC hardware, pinned-mTLS peer inventory and models, and unverified public previews. |
+| `nvpair-manual-nodes` | Tracks user-entered addresses independently of mDNS, probes engines and authenticated hardware every 10 s, and collects eligible public hardware previews separately. |
 | `nvpair-workload-manager` | Cluster-wide workload relay. |
 | `nvpair-errors` | Service-errors datastore + cross-node sync. |
 | `nvpair-engine-manager` | Config-driven control plane for local inference engines, model inventory, and trusted remote engine operations. |
@@ -54,14 +64,19 @@ This tree builds twelve Go binaries. `nvpair-ui-broker` is the parent service an
 
 Shared code lives in the local `shared/` Go module (imported as `nvpair-shared/…`, replaced via `replace nvpair-shared => ../shared`). It provides logging, wire types, JSON-RPC and IPC, discovery records, mDNS, network monitoring, stable node identity, application data paths, and cluster trust helpers.
 
-The mDNS responder is our own rather than the host's, because Windows ships none. It sets `SO_REUSEADDR` so it shares UDP 5353 with sibling PAIR processes and with a system responder — `avahi-daemon` on Linux, Bonjour where present — needing no configuration on either platform.
+The mDNS responder is our own rather than the host's, because Windows ships
+none. Its receive and per-interface send sockets bind UDP 5353 as RFC 6762
+requires. Socket reuse lets them coexist with sibling PAIR processes and with a
+system responder — `avahi-daemon` on Linux or Bonjour where present — without
+configuration.
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama and LM Studio together. Fresh maximum-GPU utilization is
-smoothed into pressure 0–3; missing or stale telemetry is neutral. Rankings use
-`pending + gpuPressure`, and each proxy adds local reservations before choosing,
-so bursts spread without waiting for workload feedback.
+node across Ollama, LM Studio, llama.cpp, and vLLM together. Fresh maximum-GPU
+utilization is smoothed into pressure 0–3; missing or stale telemetry is
+neutral. Rankings use `pending + gpuPressure`, and each facade adds local
+reservations before choosing, so bursts spread without waiting for workload
+feedback.
 
 ## Repository layout
 

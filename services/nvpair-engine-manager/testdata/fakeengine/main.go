@@ -73,7 +73,7 @@ func bstr(m map[string]any, k string) string {
 func main() {
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
-		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST"} {
+		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST", "MODEL_ENDPOINT"} {
 			values[key] = os.Getenv(key)
 		}
 		data, _ := json.Marshal(values)
@@ -81,11 +81,31 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	// "--fail-launch", or a model named org/fails-to-load, stands in for a launch
+	// the engine rejects, such as a model that does not fit in GPU memory.
 	for _, arg := range os.Args[1:] {
-		if arg == "--fail-launch" {
+		if arg == "--fail-launch" || arg == "org/fails-to-load" {
 			fmt.Fprintln(os.Stderr, "invalid launch", os.Args[1:])
 			os.Exit(2)
 		}
+	}
+	// Like vLLM, a server started with --model serves that one model and no
+	// other.
+	for i, arg := range os.Args[1:] {
+		served, ok := strings.CutPrefix(arg, "--model=")
+		if arg == "--model" && i+2 < len(os.Args) {
+			served, ok = os.Args[i+2], true
+		}
+		if ok {
+			models = map[string]bool{served: true}
+			loaded = map[string]bool{served: true}
+		}
+	}
+	// FAKE_SERVE_MODEL stands in for a server someone started on another model
+	// than the saved launch arguments name, which PAIR then adopted.
+	if served := os.Getenv("FAKE_SERVE_MODEL"); served != "" {
+		models = map[string]bool{served: true}
+		loaded = map[string]bool{served: true}
 	}
 	if path := os.Getenv("FAKE_START_LOG"); path != "" {
 		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
@@ -99,6 +119,11 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "-I": // stand in for the memory probe's Python -I -c invocation
+			// Distinct readings in the service and engine environments let a test
+			// observe which environment the probe actually received.
+			fmt.Println(os.Getenv("PAIR_TEST_MEMORY_READING"))
+			return
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)
@@ -130,6 +155,17 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, "Error: Failed to resolve artifact %q: The artifact does not exist or you do not have permission to read it\n", strings.ToLower(arg))
 			os.Exit(1)
+		case "failoncethentouch": // fail the first call, then write a marker — for stop-retry tests
+			// args: failoncethentouch <attemptfile> <marker>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			if _, err := os.Stat(os.Args[2]); err != nil {
+				_ = os.WriteFile(os.Args[2], []byte("1"), 0o644)
+				os.Exit(1)
+			}
+			_ = os.WriteFile(os.Args[3], []byte("ok"), 0o644)
+			return
 		case "noserve": // run but never bind — used to test readiness timeout
 			time.Sleep(time.Hour)
 			return
@@ -276,11 +312,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"models": ms})
 	})
-	// LM Studio-shape (OpenAI-compatible).
+	// LM Studio-shape (OpenAI-compatible). Each row also carries vLLM's root
+	// (the model it loaded). FAKE_SERVED_MODEL_NAME stands in for vLLM's
+	// --served-model-name: the id becomes that alias while root keeps the model.
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		data := make([]map[string]string, 0)
 		for _, n := range modelNames() {
-			data = append(data, map[string]string{"id": n, "object": "model"})
+			id := n
+			if alias := os.Getenv("FAKE_SERVED_MODEL_NAME"); alias != "" {
+				id = alias
+			}
+			data = append(data, map[string]string{"id": id, "root": n, "object": "model"})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

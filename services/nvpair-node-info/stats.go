@@ -80,17 +80,15 @@ func parseEngineInstance(s string) (luidKey, engtype string, ok bool) {
 		return "", "", false
 	}
 	rest := s[luidIdx:]
-	engIdx := strings.Index(rest, "_eng_")
-	if engIdx < 0 {
+	luidKey, _, ok = strings.Cut(rest, "_eng_")
+	if !ok {
 		return "", "", false
 	}
-	luidKey = rest[:engIdx]
 	const typeMarker = "_engtype_"
-	typeIdx := strings.Index(rest, typeMarker)
-	if typeIdx < 0 {
+	_, engtype, ok = strings.Cut(rest, typeMarker)
+	if !ok {
 		return "", "", false
 	}
-	engtype = rest[typeIdx+len(typeMarker):]
 	if engtype == "" {
 		return "", "", false
 	}

@@ -72,7 +72,10 @@ type Manager struct {
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
-	cancel     context.CancelFunc
+	// catalog answers engine:catalog: the models an engine can download, as
+	// opposed to the ones it already holds.
+	catalog *catalogService
+	cancel  context.CancelFunc
 }
 
 func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager {
@@ -91,9 +94,19 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		readyHTTP: clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
 			ResponseHeaderTimeout: remoteReadyResponseHeaderTimeout,
 		}),
-		cancel: func() {},
+		catalog: newCatalogService(),
+		cancel:  func() {},
 	}
 	m.settingsRelay.send = codec.Notify
+	m.catalog.llamaSource = func() (string, error) {
+		state, err := exec.state("llamacpp")
+		if err != nil {
+			return "", err
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return modelSource(state.plat.Runtime), nil
+	}
 	exec.settingsParent = m.settingsRelay.call
 	return m
 }
@@ -115,13 +128,22 @@ func (m *Manager) Run(ctx context.Context) error {
 		slog.Warn("failed to subscribe to discovery relay for ec peers", "err", err)
 	}
 
-	// Watch each running engine's loaded-model set and emit engine:models-changed
-	// on change (load/unload, JIT auto-load, TTL eviction). Bound to ctx: stops
+	// Watch each engine's model lists and emit engine:models-changed on change
+	// (load/unload, JIT auto-load, TTL eviction, pull, delete). Bound to ctx: stops
 	// when the read loop exits below.
 	go m.exec.watchLoaded(ctx)
 	go m.watchPeerSettings(ctx)
 
-	err := m.readLoop(ctx)
+	// The read blocks on stdin until the parent sends something or closes it, so
+	// a SIGTERM that cancels ctx would otherwise never reach the shutdown below:
+	// the process would sit there, with its engines running, until stdin closed.
+	readDone := make(chan error, 1)
+	go func() { readDone <- m.readLoop(ctx) }()
+	var err error
+	select {
+	case err = <-readDone:
+	case <-ctx.Done():
+	}
 	// Cancel first so any in-flight start aborts at its readiness wait,
 	// then stop engines so the parent's exit doesn't orphan them.
 	cancel()
@@ -208,6 +230,14 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.GetInstalled()})
 		}()
 
+	// Removes the engines PAIR installed. Long-running — each engine goes
+	// through the full uninstall — so it runs off the read loop like the other
+	// lifecycle operations.
+	case "engine:uninstall-managed":
+		go func() {
+			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.UninstallManaged(ctx)})
+		}()
+
 	case prepareShutdownMethod:
 		go func() {
 			m.exec.StopAll()
@@ -249,6 +279,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case "engine:models":
 		go m.runModels(ctx, msg)
+
+	case "engine:catalog":
+		go m.runCatalog(ctx, msg)
 
 	case "engine:install", "engine:uninstall", "engine:start", "engine:stop", "engine:restart":
 		go m.runOp(ctx, msg)
@@ -319,6 +352,11 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 	case "engine:restart":
 		err = m.exec.Restart(ctx, p.Engine)
 	}
+	// A start, restart or install-and-start that the user's Stop cut short
+	// answers with the status, stopped.
+	if errors.Is(err, errStartStopped) {
+		err = nil
+	}
 	if err != nil {
 		m.codec.RespondError(msg.ID, -32000, err.Error())
 		return
@@ -352,6 +390,28 @@ func (m *Manager) runSetPort(ctx context.Context, msg *Message) {
 // must not block the read loop.
 func (m *Manager) runModels(ctx context.Context, msg *Message) {
 	m.codec.Respond(msg.ID, m.exec.ModelsResult(ctx))
+}
+
+// runCatalog answers engine:catalog. It is off the request goroutine because the
+// LM Studio and llama.cpp sources are live fetches on a cold cache.
+func (m *Manager) runCatalog(ctx context.Context, msg *Message) {
+	var p catalogParams
+	if !m.parse(msg, &p) {
+		return
+	}
+	if p.Engine == "" {
+		m.codec.RespondError(msg.ID, -32602, "engine is required")
+		return
+	}
+	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch, p.Query, p.ModelSource)
+	if err != nil {
+		m.codec.RespondError(msg.ID, -32603, err.Error())
+		return
+	}
+	// A target whose engine cannot load some weights is not offered them, as
+	// filterForTarget does for MLX. The rule is the target's, not this host's.
+	res.Models = withoutUnsupportedWeights(res.Models, m.exec.unsupportedWeightsFor(normalizeCatalogEngine(p.Engine), res.Platform, res.Arch))
+	m.codec.Respond(msg.ID, res)
 }
 
 func (m *Manager) runAction(ctx context.Context, msg *Message) {
@@ -390,11 +450,11 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32000, err.Error())
 		return
 	}
-	// An action may have changed what's resident (load/unload/pull/delete/run, or
-	// a chat that JIT-loads); nudge the loaded watcher so engine:models-changed
-	// fires promptly instead of waiting for the next poll tick. Pure reads
-	// (list_models/loaded_models/list_downloaded) can't move residency, so skip
-	// the nudge and its wasted sweep for them.
+	// An action may have changed a model list (load/unload/pull/delete/run, or
+	// a chat that JIT-loads); nudge the watcher so engine:models-changed fires
+	// promptly instead of waiting for the next poll tick. Pure reads
+	// (list_models/loaded_models/list_downloaded) can't change one, so skip the
+	// nudge and its wasted sweep for them.
 	if !residencyNeutralActions[p.Action] {
 		m.exec.pokeLoaded()
 	}

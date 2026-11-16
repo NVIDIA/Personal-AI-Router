@@ -6,6 +6,8 @@ package main
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 )
 
@@ -22,7 +24,7 @@ import (
 // this writer's activate and clear. Every cluster-scoped service holds exactly
 // such a long-lived Mesh, so a read side that could only answer at construction
 // time would leave those services stuck in whatever mode they started in.
-func TestAdmissionReadSideMatchesWriter(t *testing.T) {
+func TestAdmissionReadSide_MatchesWriter(t *testing.T) {
 	dir := t.TempDir()
 	m := testManagerAt(t, dir, 15377)
 
@@ -30,19 +32,11 @@ func TestAdmissionReadSideMatchesWriter(t *testing.T) {
 	activateTestCluster(t, m, "cluster-guard")
 
 	mesh.Refresh()
-	if !mesh.Clustered() {
-		t.Fatal("clustertrust read an active admission as unclustered — " +
-			"admission.json filename or its clusterId/epoch JSON tags drifted from admission_store.go")
-	}
+	require.True(t, mesh.Clustered())
 
 	// Teardown clears the active admission (keypair stays on disk). The read side
 	// must now report the node as no longer a member.
-	if err := m.clearAdmission(); err != nil {
-		t.Fatalf("clearAdmission: %v", err)
-	}
+	require.NoError(t, m.clearAdmission(), "clearAdmission")
 	mesh.Refresh()
-	if mesh.Clustered() {
-		t.Fatal("clustertrust read a cleared admission as clustered — " +
-			"teardown/read-side admission semantics drifted")
-	}
+	require.False(t, mesh.Clustered())
 }

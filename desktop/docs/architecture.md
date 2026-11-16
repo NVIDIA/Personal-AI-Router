@@ -109,7 +109,7 @@ subscribes to broker relays after `app:ready`, and converts backend responses
 into stable UI contracts.
 
 Electron reports the service connected after broker `app:ready`. The
-broker-owned Ollama and LM Studio proxies remain asynchronous capabilities; a
+broker-owned engine proxies remain asynchronous capabilities; a
 late or failed proxy does not misreport the broker startup as failed. If
 `app:ready` does not arrive within the startup deadline, Overview opens Settings
 
@@ -126,11 +126,17 @@ on a service nobody is starting. When the connector reaches `connected` again,
 the renderer re-reads every domain snapshot, because the restarted broker builds
 a fresh state projection.
 
-The only direct backend HTTP polling in Electron is `/v1/node-info`: Electron
-polls healthy local and discovered nodes every two seconds because rich
-telemetry is not part of the broker JSON-RPC surface. Consecutive failures back
-off to 4, 8, 16, then 30 seconds; the first success or a changed endpoint
-restores the normal cadence.
+Electron and TUI receive hardware inventory and utilization through broker
+snapshots (`AvailableNode.info`) and live `discovery:node-info` updates.
+
+Service workers collect local measurements over private IPC, paired peer
+measurements over pinned mTLS, and public HTTP previews for eligible unverified
+discoveries and manual entries. Workers handle retries and address failover.
+
+Public previews update display fields only. They cannot establish identity or
+affect routing, node reachability, or scheduling. The broker preserves each
+sample's age and clears cached hardware when its source record or authentication
+changes.
 
 ## State flow
 
@@ -170,14 +176,16 @@ Important push domains include:
 `AvailableNode` snapshots and does not construct or interpret the backend's
 discovery service names.
 
-Personal AI Router keys every node by the backend's stable per-host UUID (`AvailableNode.id` /
-`hostUuid`), not the hostname. That same UUID keys workload attribution
-(`originatedFrom`/`scheduledOn`), errors (`nodeId`), proxy routing (`Node.ID`),
-`/v1/node-info`, and cluster membership (`ClusterNode.nodeUuid`), and it is the
-value of `selfId` (the cluster-manager `nodeUuid`, resolved as soon as the broker
-is ready). The hostname is retained only as the display `name`. This lets one
+Personal AI Router keys local and verified nodes by the backend's stable per-host
+UUID (`hostUuid`), and unverified records by their independent `discoveryRecordId`.
+The verified UUID keys workload attribution (`originatedFrom`/`scheduledOn`),
+errors (`nodeId`), proxy routing (`Node.ID`), hardware observations, and cluster
+membership (`ClusterNode.nodeUuid`). It is also the value of `selfId` (the
+cluster-manager `nodeUuid`, resolved as soon as the broker is ready).
+The hostname is retained only as the display `name`. This lets one
 merge collapse the broker- and proxy-reported views of a node into a single
-entry and makes cross-domain correlation exact. `AvailableNode` also carries the
+entry and makes cross-domain correlation exact. Unverified UUID claims and public
+hardware previews cannot merge into a verified node. `AvailableNode` also carries the
 `trusted` and `clustered` flags; Personal AI Router renders an already-`clustered` node as
 non-invitable.
 
@@ -227,7 +235,7 @@ ordinary environment assignments can be edited locally or by a pinned peer.
 authoritative settings operation rather than forwarding to the engine manager,
 so both entry points validate, restart, and persist identically.
 
-The Ollama and LM Studio proxies are cluster-aware. For model-bearing inference,
+All engine proxies are cluster-aware. For model-bearing inference,
 each proxy first keeps only nodes whose per-engine discovery inventory advertises
 the requested model. Empty and non-matching inventories are excluded; an empty
 owner set returns a local `502`. Routing precedence within the eligible set is:
@@ -236,7 +244,7 @@ owner set returns a local `502`. Routing precedence within the eligible set is:
 2. the priority list emitted by `nvpair-job-scheduler`;
 3. the proxy's deterministic default ordering.
 
-The scheduler combines total pending (queued and running) workload across both
+The scheduler combines total pending (queued and running) workload across all
 engines with a smoothed 0–3 pressure derived from the busiest GPU. Missing,
 invalid, or older-than-10-second telemetry has neutral pressure. It emits the
 order, pending count, and pressure, reranking on meaningful workload, discovery,
@@ -250,21 +258,39 @@ not select or pin proxy routes.
 An NVPAIR-launched engine binds to loopback and is never directly LAN-reachable.
 Peers reach it only through the node's proxy over a cluster-mTLS ingress, so
 discovery advertises the promoted proxy port for `ol`/`lm` rather than the
-engine's private port. This transport security is backend-owned; Electron only
+engine's private port; llama.cpp uses the additional `lc` key and vLLM the `vl` key. Transport
+security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.
 
-The model hub is Electron-main functionality in `src/electron/model-hub/`:
+The model catalogue is owned by `nvpair-engine-manager` and served over
+`engine:catalog`. Electron relays it through
+`src/electron/service-bridge/model-catalog.ts`; the terminal interface calls the
+same method, so both front ends browse one implementation.
 
 - Ollama models come from a locked, committed list
-  (`src/electron/model-hub/ollama-models.json`) bundled into the main process —
-  there is no runtime Ollama scraping. Devs regenerate the list with
+  (`services/nvpair-engine-manager/catalog/ollama-models.json`) compiled in with
+  `go:embed` — there is no runtime Ollama scraping. Devs regenerate the list with
   `npm run scrape:ollama-models` (`scripts/scrape-ollama-models.ts`) and commit
   it when Ollama's catalog changes;
 - LM Studio models come from the curated `lmstudio-community` catalog, still
-  fetched live from Hugging Face and cached for six hours. The cache is warmed
+  fetched live from Hugging Face and cached for six hours, with concurrent
+  callers coalesced onto one request and a failure backoff. The cache is warmed
   when the Overview renderer reports ready, not when the service connects, so a
   slow or hanging catalog fetch cannot compete with the window's first paint;
+- llama.cpp models come from the 50 most-downloaded GGUF repositories of each
+  approved publisher (`ggml-org`, `bartowski`, and `unsloth`), fetched and cached
+  the same way. It is the one searchable source: a `query` searches up to 50
+  public Hugging Face matches across publishers, each query cached on its own.
+  Both keep only public, generative repositories with a primary `Q4_K_M` file
+  and emit exact `owner/repository:Q4_K_M` pull IDs;
+- the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
+  rows, keeps them only for Apple Silicon, and echoes the target it filtered
+  for, so a client driving a peer is not offered models that peer cannot
+  install. The desktop names no target: the hub installs only to this machine,
+  which is also the one answering;
+- the Ollama reply is a single multi-megabyte frame, so every hop on its path
+  shares `jsonrpc.WorkerFrameBytes`. See `docs/services-backend.md`;
 - model pulls still run through `nvpair-engine-manager`.
 
 ## Inference Demo
@@ -273,14 +299,22 @@ The Inference Demo sends a fixed sixty-second burst of synthetic inference
 traffic through the local proxies so job activity is visible on Overview. It is
 the one place Electron launches a non-broker executable.
 
+Both front ends offer it. The terminal interface runs the same schedule from its
+Jobs tab (`services/nvpair-tui/ui/demoschedule.go`), against the same
+dispatcher, so a headless machine can demonstrate routing too. The two schedules
+are deliberately identical; neither drives the other, because demo state is
+node-local.
+
 - The schedule is built and owned by Electron main
   (`src/electron/inference-demo.ts` and
   `src/electron/inference-demo-schedule.ts`).
 - Each scheduled request spawns the bundled `inference-dispatcher` client, a
   standalone Go HTTP client that knows nothing about the broker, JSON-RPC, or
-  discovery. Its source is `scripts/inference-dispatcher` at the monorepo root
-  and it ships in `resources/tools`, outside the services `cli-bin` inventory.
-  See [Inference dispatcher](../../docs/inference-dispatcher.mdx).
+  discovery. Its source is `scripts/inference-dispatcher` at the monorepo root.
+  It ships inside `cli-bin` — it is still not a services component and has no
+  entry in `versions.json`, but sharing the directory is what lets `nvpair-tui`
+  find it beside its own executable in a packaged app as well as in a services
+  install. See [Inference dispatcher](../../docs/inference-dispatcher.mdx).
 - Requests are addressed to a proxy port reported by the broker, never to an
   engine's own port, so the backend places them exactly as it would place any
   third-party client's traffic. PAIR makes no routing decision.
@@ -291,7 +325,7 @@ the one place Electron launches a non-broker executable.
   `stdio: 'ignore'` and with the `INFERENCE_DISPATCHER_*` environment namespace
   stripped so an inherited variable cannot redirect output to disk.
 
-## Local HTTP endpoints
+## Local communication
 
 Backend-owned ports are reported at runtime where available. Constants that
 cannot yet be reported are centralized in
@@ -299,8 +333,10 @@ cannot yet be reported are centralized in
 
 - Ollama-compatible clients use the proxy port reported by the broker.
 - Cluster pairing currently uses port `14321`.
-- Node telemetry is read from `/v1/node-info` at each discovered node's
-  advertised port.
+- Desktop and TUI receive hardware snapshots and updates through broker IPC.
+- `nvpair-node-info` collects hardware measurements. Workers use owned IPC for
+  local measurements, pinned mTLS for approved peers, and public HTTP for
+  unverified previews.
 
 Browser access is decided by the engines, not by the proxies. A proxy passes
 through the upstream engine's CORS headers and its refusals, and adds no
@@ -318,8 +354,10 @@ Inference prompts, messages, chunks, and response bodies must not be logged.
 
 `npm run build:modular-binaries` compiles the sibling `services/` tree for the
 selected platform and architecture. The `cli-bin/manifest.json` it writes records
-the source path and fingerprint, the product and component versions, the target,
-and per-file hashes. The build rejects unexpected files in `cli-bin/`.
+the source path and fingerprint, the product and component versions, the release
+version stamped into `nvpair-tui`, the target, and per-file hashes. A change to
+any of them makes `cli-bin/` stale. The build rejects unexpected files in
+`cli-bin/`.
 
 Electron Builder produces:
 
@@ -327,9 +365,11 @@ Electron Builder produces:
 - Linux `.deb` packages;
 - macOS `.dmg` installers and `.zip` update payloads.
 
-`npm run build:tools` compiles the `inference-dispatcher` client into `tools/`,
-which is packaged as a separate `extraResources` directory with its own manifest
-and packaging assertion.
+The same build compiles the Inference Demo's `inference-dispatcher` client from
+`scripts/inference-dispatcher` at the monorepo root into `cli-bin/`, beside the
+binaries it is not one of, so the desktop app and `nvpair-tui` resolve it the
+same way. It is not a worker: it has no entry in `services/versions.json` or
+`modular-binaries.ts`, and carries the services version.
 
 The macOS build also compiles the `SMAppService` privileged helper used to
 configure Application Firewall rules. Firewall membership comes from
@@ -342,6 +382,13 @@ configure Application Firewall rules. Firewall membership comes from
 Personal AI Router and the Go services share one current per-user root:
 
 - `Nvidia Corporation/Personal AI Router`.
+
+Managed engine payloads normally live under that root. vLLM is the deliberate
+exception: its load-time GPU build tools cannot parse spaces in source/include
+paths, so PAIR installs its private environment at
+`~/.nvpair/engine-bin/vllm`. The append-only wipe inventory and every platform
+uninstaller include that exact PAIR-owned path; model weights remain in the
+separate Hugging Face cache.
 
 On first launch after the rename, Electron data under
 `NVIDIA Corporation/PAIR` is merged into the shared directory without
@@ -361,7 +408,7 @@ from any prior version remain recoverable. No Node runtime is required.
 
 | Path                                                     | Behavior                                                                                               |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Settings → Service → **Reset app data**                  | Confirms stop → wipe; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
+| Settings → Service → **Reset app data**                  | Confirms → removes PAIR-installed engines → stop → wipe; stops before the wipe if an engine cannot be removed or the service is down; packaged also relaunches into first-run; unpackaged quits and prompts to restart |
 | `scripts/wipe-app-data.sh` / `scripts/wipe-app-data.cmd` | Clean-only manual entrypoints; require confirmation; do not relaunch                                   |
 
 Packaged builds ship the same scripts under `resources/scripts/` so the app invokes
@@ -378,8 +425,11 @@ deletes finish. Unpackaged (`electron-vite dev`) builds omit relaunch and the UI
 tells the developer to run `npm start` again — quitting Electron tears down the Vite
 renderer server, so auto-relaunch would come up with nothing to load.
 
-Third-party model libraries (`~/.ollama`, `~/.lmstudio`) and the application install
-tree are never removed.
+The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`, `~/.cache/huggingface`) and
+the application install tree are never removed. The reset does uninstall the
+engines PAIR installed, through `engine:uninstall-managed` while the broker is
+still running, so an engine a vendor installer placed in the user's home is
+removed too rather than only those inside the app data folder.
 
 ## Sources of truth
 

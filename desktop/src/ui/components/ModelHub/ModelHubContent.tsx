@@ -8,10 +8,11 @@ import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import { ModelEntry, SortState } from '@/ui/types/model-hub'
 import { ModelHubList } from './ModelHubList'
-import { searchEngineHub } from '@/ui/utils/model-hub-search'
+import { mergeModelHubResults, searchEngineHub } from '@/ui/utils/model-hub-search'
 import { resolveStoredSort, writeStoredSort } from '@/ui/utils/model-hub-content-storage'
 import { isHubEntryDownloaded } from '@/ui/utils/match-downloaded-model'
 import { EngineType } from '@/shared/types/engines'
+import type { EngineHubSearchResponse } from '@/shared/types/engine-api'
 import type { ModelItem } from '@/ui/types/engine-info'
 import getErrorString from '@/shared/utils/get-error-string'
 
@@ -41,35 +42,46 @@ export const ModelHubContent = ({
 }: ModelHubContentProps) => {
     const [disabledListClick, setDisabledListClick] = useState(false)
     const [loading, setLoading] = useState(true)
-    const [allModels, setAllModels] = useState<ModelEntry[]>([])
+    const [catalog, setCatalog] = useState<EngineHubSearchResponse<ModelEntry>>({
+        models: [],
+        searchable: null
+    })
+    const allModels = catalog.models
+    const [remoteModels, setRemoteModels] = useState<ModelEntry[]>([])
     const [query, setQuery] = useState('')
+    const [composingQuery, setComposingQuery] = useState(false)
+    const [searching, setSearching] = useState(false)
     const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set())
     const [sort, setSort] = useState<SortState>(() =>
         engine ? resolveStoredSort(engine, SORT_DEFAULT_STATE) : { ...SORT_DEFAULT_STATE }
     )
     const [errors, setErrors] = useState<{ id: string; message: string }[]>([])
 
-    // Per-engine raw-response cache so reopening an engine is instant and
-    // keystrokes filter locally instead of re-invoking the search IPC.
-    const cacheRef = useRef<Map<EngineType, ModelEntry[]>>(new Map())
+    // Per-engine browse cache keeps local filtering immediate while upstream
+    // searches wait for a pause in typing.
+    const cacheRef = useRef<Map<EngineType, EngineHubSearchResponse<ModelEntry>>>(new Map())
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
     const fetchGenRef = useRef(0)
+    const searchGenRef = useRef(0)
+    const submittedQueryRef = useRef('')
+    const searchInFlightRef = useRef<ReturnType<typeof searchEngineHub> | null>(null)
 
     const loadModels = useCallback(async (backend: EngineType) => {
         const cached = cacheRef.current.get(backend)
         if (cached) {
-            setAllModels(cached)
+            setCatalog(cached)
             setLoading(false)
             return
         }
         const gen = ++fetchGenRef.current
         setLoading(true)
+        setCatalog({ models: [], searchable: null })
         try {
             const result = await searchEngineHub(backend)
             if (fetchGenRef.current !== gen) return
-            cacheRef.current.set(backend, result)
-            setAllModels(result)
+            if (result.searchable !== null) cacheRef.current.set(backend, result)
+            setCatalog(result)
             setLoading(false)
         } catch (error) {
             if (fetchGenRef.current !== gen) return
@@ -78,14 +90,18 @@ export const ModelHubContent = ({
                 ...prev,
                 { id: performance.now().toString(), message: getErrorString(error) }
             ])
-            setAllModels([])
+            setCatalog({ models: [], searchable: null })
             setLoading(false)
         }
     }, [])
 
     useEffect(() => {
+        setRemoteModels([])
+        setSearching(false)
+        setComposingQuery(false)
+        submittedQueryRef.current = ''
         if (!engine) {
-            setAllModels([])
+            setCatalog({ models: [], searchable: null })
             setQuery('')
             setSort({ ...SORT_DEFAULT_STATE })
             return
@@ -95,16 +111,18 @@ export const ModelHubContent = ({
         setSort(resolveStoredSort(engine, SORT_DEFAULT_STATE))
         void loadModels(engine)
         return () => {
-            // Invalidate any in-flight fetch for the previous engine.
+            // Invalidate in-flight population or search for the previous engine.
             fetchGenRef.current += 1
+            searchGenRef.current += 1
         }
     }, [engine, loadModels])
 
     const queryFiltered = useMemo(() => {
         const q = query.toLowerCase().trim()
         if (!q) return allModels
-        return allModels.filter(m => m.name.toLowerCase().includes(q))
-    }, [allModels, query])
+        const populatedMatches = allModels.filter(m => m.name.toLowerCase().includes(q))
+        return mergeModelHubResults(populatedMatches, remoteModels)
+    }, [allModels, query, remoteModels])
 
     const visibleModels = useMemo(() => {
         if (!engine || !downloadedModels || downloadedModels.length === 0) return queryFiltered
@@ -121,8 +139,8 @@ export const ModelHubContent = ({
         [engine]
     )
 
-    const modelsRef = useRef(allModels)
-    modelsRef.current = allModels
+    const modelsRef = useRef(queryFiltered)
+    modelsRef.current = queryFiltered
 
     const handleSubmit = useCallback(
         (ids: string[]) => {
@@ -162,7 +180,70 @@ export const ModelHubContent = ({
         [multiple, onToggleSelectModel, handleSubmit]
     )
 
-    const handleSearchSubmit = useCallback((q: string) => setQuery(q), [])
+    const handleQueryChange = useCallback((nextQuery: string) => {
+        setQuery(nextQuery)
+        if (nextQuery.trim() === submittedQueryRef.current) return
+        searchGenRef.current += 1
+        submittedQueryRef.current = ''
+        setRemoteModels([])
+        setSearching(false)
+    }, [])
+
+    const handleCompositionChange = useCallback((composing: boolean) => {
+        setComposingQuery(composing)
+        if (composing) {
+            searchGenRef.current += 1
+            submittedQueryRef.current = ''
+            setSearching(false)
+        }
+    }, [])
+
+    const handleSearch = useCallback(
+        async (nextQuery: string) => {
+            const normalized = nextQuery.trim()
+            setQuery(nextQuery)
+            // An unread catalog leaves support unknown, so an explicit query
+            // can still recover from a failed initial browse.
+            if (!engine || catalog.searchable === false || normalized.length === 0) return
+
+            const generation = ++searchGenRef.current
+            submittedQueryRef.current = normalized
+            setRemoteModels([])
+            setSearching(true)
+            // Wait for the active request; only the latest query may start next.
+            if (searchInFlightRef.current) {
+                await searchInFlightRef.current.catch(() => undefined)
+            }
+            if (searchGenRef.current !== generation) return
+            const request = searchEngineHub(engine, normalized)
+            searchInFlightRef.current = request
+            try {
+                const result = await request
+                if (searchGenRef.current !== generation) return
+                setRemoteModels(result.searchable ? result.models : [])
+            } catch (error) {
+                if (searchGenRef.current !== generation) return
+                setErrors(prev => [
+                    ...prev,
+                    { id: performance.now().toString(), message: getErrorString(error) }
+                ])
+            } finally {
+                if (searchInFlightRef.current === request) searchInFlightRef.current = null
+                if (searchGenRef.current === generation) setSearching(false)
+            }
+        },
+        [engine, catalog.searchable]
+    )
+
+    useEffect(() => {
+        if (!engine || catalog.searchable === false || composingQuery || query.trim().length < 2)
+            return
+        const timer = setTimeout(() => {
+            // Enter or the search button may already have submitted this text.
+            if (query.trim() !== submittedQueryRef.current) void handleSearch(query)
+        }, 300)
+        return () => clearTimeout(timer)
+    }, [engine, catalog.searchable, query, composingQuery, handleSearch])
 
     return (
         <Stack gap="0" className="overflow-hidden min-h-0 min-w-0 grow w-full">
@@ -183,7 +264,11 @@ export const ModelHubContent = ({
                     )}
                     <ModelHubSearchBar
                         onMenuOpenChange={setDisabledListClick}
-                        onSubmit={handleSearchSubmit}
+                        query={query}
+                        searching={searching}
+                        onQueryChange={handleQueryChange}
+                        onCompositionChange={handleCompositionChange}
+                        onSearch={handleSearch}
                         sort={sort}
                         onSort={handleSortPersist}
                     />

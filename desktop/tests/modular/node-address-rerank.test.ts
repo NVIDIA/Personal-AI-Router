@@ -10,8 +10,7 @@ import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 
 // A broker snapshot carries the node's whole ranked address list, so an address
 // it no longer ranks has to disappear from everything derived from that list —
-// otherwise the desktop keeps retrying a dead endpoint for the life of the
-// process and projects an address the broker no longer advertises. The proxy
+// otherwise the desktop projects an address the broker no longer advertises. The proxy
 // `node/*` feed discovers independently, so an address only it reported must
 // survive that replacement, behind the broker's order.
 describe('broker address re-rank', () => {
@@ -44,7 +43,7 @@ describe('broker address re-rank', () => {
             }
         })
 
-        expect(pollHosts(state, 'uuid-rerank')).toEqual([
+        expect(availableAddresses(state, 'uuid-rerank')).toEqual([
             '192.0.2.101',
             '192.0.2.102',
             '198.51.100.9'
@@ -68,7 +67,6 @@ describe('broker address re-rank', () => {
             }
         })
 
-        expect(pollHosts(state, 'uuid-rerank')).toEqual(['192.0.2.102', '198.51.100.9'])
         expect(availableAddresses(state, 'uuid-rerank')).toEqual(['192.0.2.102', '198.51.100.9'])
         expect(state.getNodesInitial().nodes['uuid-rerank'].allIpAddresses).toEqual([
             '192.0.2.102',
@@ -106,8 +104,8 @@ describe('broker address re-rank', () => {
         })
 
         // The proxy feed replaces only its own contribution: the broker's
-        // second-ranked address is still a poll candidate.
-        expect(pollHosts(state, 'uuid-proxy-refresh')).toEqual([
+        // second-ranked address is still displayed.
+        expect(availableAddresses(state, 'uuid-proxy-refresh')).toEqual([
             '192.0.2.201',
             '192.0.2.202',
             '203.0.113.7'
@@ -116,12 +114,6 @@ describe('broker address re-rank', () => {
 })
 
 type BridgeState = ReturnType<typeof getModularBridgeState>
-
-function pollHosts(state: BridgeState, nodeId: string): string[] {
-    const target = state.getNodeInfoPollTargets().find(entry => entry.id === nodeId)
-    expect(target).toBeDefined()
-    return target?.hosts ?? []
-}
 
 function availableAddresses(state: BridgeState, nodeId: string): string[] {
     const node = state.getAvailableNodes().find(entry => entry.id === nodeId)

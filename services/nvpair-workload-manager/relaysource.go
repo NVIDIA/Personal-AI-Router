@@ -54,9 +54,9 @@ func (r *relayPeerSource) Nodes(context.Context) ([]PeerNode, error) {
 	return out, nil
 }
 
-// set replaces the relay peer set from a discovery:nodes snapshot: it projects
-// every node advertising wl with a dialable IP (dropping the rest) and applies
-// the self-filter. The broker sends the full filtered set on every change, so
+// set replaces the relay peer set from a discovery:nodes snapshot, keeping
+// trusted pinned peers with a workload endpoint and excluding this node.
+// The broker sends the full filtered set on every change, so
 // this is a wholesale replace, not a per-node apply — a departed peer is simply
 // absent from the next snapshot.
 func (r *relayPeerSource) set(nodes []noderec.DirectoryNode) {
@@ -78,15 +78,18 @@ func (r *relayPeerSource) set(nodes []noderec.DirectoryNode) {
 	r.mu.Unlock()
 }
 
-// directoryToPeerNode projects a relay DirectoryNode onto a PeerNode for the wl
-// service, returning false when the node doesn't advertise wl or has no dialable
-// address. ID is the stable hostUuid — peerSet.Replace keys the broadcast set by
+// directoryToPeerNode projects a trusted pinned record with a workload service
+// and dialable address onto a PeerNode. ID is the stable hostUuid —
+// peerSet.Replace keys the broadcast set by
 // PeerNode.ID, so two peers sharing a hostname must key on distinct UUIDs or
 // they'd collapse into one and one would silently miss every broadcast.
 // Host stays the hostname (display / dial fallback); the peer is
 // dialed by its ip=/Addresses, not its ID. cluster-uuid= is reconstructed into
 // TXT so the broadcaster's mTLS pin lookup is unchanged.
 func directoryToPeerNode(n noderec.DirectoryNode) (PeerNode, bool) {
+	if n.IdentityVerification != noderec.IdentityPinned || !n.Trusted {
+		return PeerNode{}, false
+	}
 	svc, ok := n.Services[noderec.ServiceWorkload]
 	addresses := n.CandidateIPs()
 	if !ok || len(addresses) == 0 {

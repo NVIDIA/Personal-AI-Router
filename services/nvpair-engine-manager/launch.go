@@ -5,8 +5,9 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -26,6 +27,36 @@ func environmentKey(key string) string {
 	return key
 }
 
+// setEnvironmentValue replaces every platform-equivalent spelling of key.
+// Keep the supplied spelling and value, including an explicitly empty value.
+func setEnvironmentValue(env map[string]string, key, value string) {
+	for existing := range env {
+		if environmentKey(existing) == environmentKey(key) {
+			delete(env, existing)
+		}
+	}
+	env[key] = value
+}
+
+// launchArguments applies saved arguments to a manifest command. Settings
+// validation checks the editable policy before a launch; readers can also use
+// this composition without detecting or starting an engine.
+func launchArguments(rt Runtime, defaults []string, vars map[string]string) []string {
+	if rt.LaunchArgs == nil {
+		return defaults
+	}
+	var args []string
+	if p := rt.EditableLaunch; p != nil {
+		args = slices.Clone(p.FixedArgs)
+		for _, control := range p.Controls {
+			if value, managed := control.managedValue(vars["host"], vars["port"]); managed && control.flag() != "" {
+				args = append(args, control.flag(), value)
+			}
+		}
+	}
+	return append(args, rt.LaunchArgs...)
+}
+
 func validEnvironmentKey(key string) bool {
 	if key == "" {
 		return false
@@ -38,6 +69,11 @@ func validEnvironmentKey(key string) bool {
 	return true
 }
 
+// literalEnvironment parses explicit KEY=value assignments into an environment
+// map. For example, {"MODEL_DIR={install_dir}/models", "TOKEN=a=b"} becomes
+// MODEL_DIR="{install_dir}/models" and TOKEN="a=b". Values are not expanded
+// as manifest templates: preserving user input literally prevents a path or
+// secret containing braces, dollar signs, or spaces from changing at launch.
 func literalEnvironment(assignments []string) (map[string]string, error) {
 	if _, err := formatLaunchText(append([]string{"environment"}, assignments...)); err != nil {
 		return nil, err
@@ -71,7 +107,7 @@ func formatLaunchParts(environment map[string]string, args []string) (string, er
 	for key := range environment {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	tokens := make([]string, 0, len(keys)+1)
 	for _, key := range keys {
 		// Quote assignment values consistently, including simple values, so
@@ -103,9 +139,7 @@ func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (l
 	}
 	// Resolution must not change the caller's context (in particular {bin}).
 	resolvedVars := make(map[string]string, len(vars)+1)
-	for key, value := range vars {
-		resolvedVars[key] = value
-	}
+	maps.Copy(resolvedVars, vars)
 	resolvedVars["bin"] = binPath
 	args, err := resolveArgs(rt.Args, resolvedVars)
 	if err != nil {
@@ -117,6 +151,11 @@ func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (l
 		if err != nil {
 			return launchCommand{}, err
 		}
+		// Not path-expanded, here or in applyLiteralLaunch, so a default launch
+		// and a customised one produce the same environment. A manifest env
+		// value that names a directory therefore has to arrive already
+		// absolute: {models_dir} does, because the executor expands it once when
+		// it resolves the engine's state.
 		env[key] = resolved
 	}
 	return applyLiteralLaunch(rt, launchCommand{Bin: binPath, Args: args, Env: env}, resolvedVars)

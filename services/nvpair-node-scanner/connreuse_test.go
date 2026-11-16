@@ -14,13 +14,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 )
 
-// TestModelsClient_ReusesPeerConnections is the regression for the 15s
-// enrichment handshake storm: modelsClient used to build a fresh Transport
-// per peer fetch. Several /v1/models GETs must ride ONE connection.
+// Repeated model inventory reads reuse one authenticated peer connection.
 func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 	selfDir := t.TempDir()
 	peerDir := t.TempDir()
@@ -47,7 +48,7 @@ func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"models": []string{"m"}})
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"models": []string{"m"}}))
 	})
 	ts := httptest.NewUnstartedServer(mux)
 	ts.Config.ConnState = func(_ net.Conn, state http.ConnState) {
@@ -62,47 +63,28 @@ func TestModelsClient_ReusesPeerConnections(t *testing.T) {
 	defer ts.Close()
 
 	_, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// "localhost" is not a loopback IP literal, so modelsClient takes the
 	// pinned mTLS path instead of the plaintext self-fetch.
 	const rounds = 5
-	for i := 0; i < rounds; i++ {
-		models, _, _, ok := d.fetchModels("localhost", port, "uuid-peer")
-		if !ok || len(models) != 1 || models[0] != "m" {
-			t.Fatalf("round %d: ok=%v models=%v", i, ok, models)
-		}
+	for i := range rounds {
+		inventory, ok := d.fetchModels("localhost", port, "uuid-peer")
+		require.True(t, ok, "round %d", i)
+		assert.Equal(t, []string{"m"}, inventory.models, "round %d", i)
 	}
 
 	mu.Lock()
 	got := newConns
 	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("peer accepted %d connections for %d model fetches, want 1", got, rounds)
-	}
+	require.Equal(t, 1, got, "peer accepted (%v, %v)", got, rounds)
 }
 
 func writePinFromCert(t *testing.T, clusterDir, peerUUID, certPath string) {
 	t.Helper()
 	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	trusted := filepath.Join(clusterDir, "trusted")
-	if err := os.MkdirAll(trusted, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(map[string]string{"nodeUuid": peerUUID, "certPem": string(certPEM)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(trusted, peerUUID+".json"), body, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	clustertrusttest.WritePeerPinFromCertificate(t, clusterDir, peerUUID, certPEM)
 }

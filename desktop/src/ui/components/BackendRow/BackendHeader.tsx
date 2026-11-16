@@ -25,6 +25,7 @@ export function BackendHeader({
     isUnavailable,
     disabled,
     onToggle,
+    onStop,
     onExpand,
     expanded,
     isLocalNode,
@@ -37,6 +38,8 @@ export function BackendHeader({
     isUnavailable: boolean
     disabled: boolean
     onToggle: () => void
+    /** Stop an engine that is still starting; its switch stays on and usable. */
+    onStop: () => void
     onExpand: () => void
     expanded: boolean
     isLocalNode: boolean
@@ -114,7 +117,7 @@ export function BackendHeader({
                                     e.stopPropagation()
                                     handleCopy()
                                 }}
-                                title={`Copy ${backend.displayName} API http://127.0.0.1:${backend.proxyPort}`}
+                                title={`Copy ${backend.displayName} API ${proxyUrl}`}
                                 style={{ padding: '2px 6px', minWidth: 'auto' }}
                                 aria-label={`Copy ${backend.displayName} API URL`}
                             >
@@ -198,6 +201,24 @@ export function BackendHeader({
                                         aria-label={fullStatus}
                                     />
                                 </Flex>
+                                {/* A start can take minutes (vLLM loads for up to
+                                    eight), so it can be stopped while it runs. */}
+                                {backend.processStatus === 'starting' && (
+                                    <Flex
+                                        align="center"
+                                        justify="center"
+                                        className="h-7 w-7 shrink-0"
+                                    >
+                                        <Switch
+                                            size="small"
+                                            checked
+                                            onCheckedChange={onStop}
+                                            onClick={e => e.stopPropagation()}
+                                            aria-label={`Stop ${backend.displayName}`}
+                                            title={`Stop ${backend.displayName}`}
+                                        />
+                                    </Flex>
+                                )}
                             </Flex>
                         </DismissibleTooltip>
                     )

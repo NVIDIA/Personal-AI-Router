@@ -17,9 +17,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/engines"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
@@ -33,7 +39,7 @@ import (
 // method resolves to no facade — which looks like an unavailable proxy rather
 // than a broker bug. The two prefixes are deliberately different strings, so
 // the relay is a translation and this asserts both halves of it.
-func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
+func TestRelay_AddressesForwardedMethodToRequestedFacade(t *testing.T) {
 	for _, profile := range engineProxyProfiles {
 		t.Run(profile.Name, func(t *testing.T) {
 			client, server := net.Pipe()
@@ -48,11 +54,11 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 			go func() {
 				codec := NewCodec(server)
 				msg, err := codec.Read()
-				if err != nil {
+				if !assertRPCRead(t, err) {
 					return
 				}
 				seen <- msg.Method
-				_ = codec.Respond(msg.ID, map[string][]string{"nodes": {}})
+				assert.NoError(t, codec.Respond(msg.ID, map[string][]string{"nodes": {}}))
 			}()
 
 			b := &Broker{codec: NewCodec(rwDiscard{})}
@@ -66,12 +72,9 @@ func TestRelayAddressesTheMethodItSendsDownward(t *testing.T) {
 
 			select {
 			case got := <-seen:
-				want := profile.addressed("nodes/list")
-				if got != want {
-					t.Fatalf("relayed method = %q, want %q", got, want)
-				}
+				require.Equal(t, profile.addressed("nodes/list"), got, "relayed method")
 			case <-time.After(2 * time.Second):
-				t.Fatal("relay sent nothing downward")
+				require.FailNow(t, "relay sent nothing downward")
 			}
 		})
 	}
@@ -97,7 +100,7 @@ func (rwDiscard) Close() error                { return nil }
 // The call-site ordering itself is not reachable from a unit test — spawnProxy
 // launches a real binary — so this pins the property that makes the ordering
 // matter, and the sibling test below pins the other side of it.
-func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
+func TestBlockingAManagedFacade_KeepsTheAliasForTheRetry(t *testing.T) {
 	isolateOllamaHostTestConfig(t)
 	b := &Broker{
 		nodeID:            "local-node",
@@ -110,9 +113,8 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 
 	b.blockManagedOllamaFacade("the Ollama proxy facade could not be brought up")
 
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Errorf("blocking released the alias a retry still needs: %+v", got)
-	}
+	got := b.currentOllamaHostAlias()
+	assert.Equal(t, alias.Port, got.Port, "blocking released the alias a retry still needs (%v)", got)
 }
 
 // An engine that failed inside a process that is staying gets terminal
@@ -120,21 +122,19 @@ func TestBlockingAManagedFacadeKeepsTheAliasForTheRetry(t *testing.T) {
 //
 // Without this the broker would hold a reservation for a facade that is never
 // coming back, and engine-manager could never be given that port.
-func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
+func TestSurvivingProcess_ReleasesTheAliasForAFailedFacade(t *testing.T) {
 	b := &Broker{
 		ollamaPortReady:   make(chan struct{}),
 		lmstudioPortReady: make(chan struct{}),
 	}
 	alias := ollamaHostAlias{Address: "127.0.0.1:11433", Port: 11433}
 	b.setOllamaHostAlias(alias)
-	if got := b.currentOllamaHostAlias(); got.Port != alias.Port {
-		t.Fatalf("alias not established for the test: %+v", got)
-	}
+	got := b.currentOllamaHostAlias()
+	require.Equal(t, alias.Port, got.Port, "alias not established for the test (%v)", got)
 
 	b.blockAndFinishEngineProxy(ollamaProxyProfile)
-	if got := b.currentOllamaHostAlias(); got.Port != 0 {
-		t.Errorf("terminal treatment did not release the alias: %+v", got)
-	}
+	got = b.currentOllamaHostAlias()
+	assert.Equal(t, 0, got.Port, "terminal treatment did not release the alias (%v)", got)
 }
 
 // A facade that reported ready is kept when its enable call went unanswered,
@@ -143,46 +143,23 @@ func TestSurvivingProcessReleasesTheAliasForAFailedFacade(t *testing.T) {
 // Both halves matter and neither runs on the ordinary error return, so without
 // this test a later edit can either strand a live listener the broker reports
 // as unavailable, or publish a dead port the broker will never retry.
-func TestFacadeCameUpAnywayOnlyTrustsAnUnansweredEnable(t *testing.T) {
+func TestFacadeEnable_TrustsReadinessOnlyWhenRequestWasUnanswered(t *testing.T) {
 	engine := ollamaProxyProfile.Name
 	ready := &proxyProcess{facadeState: readyFacade(engine, 11434)}
 	notReady := &proxyProcess{}
 
-	for _, tc := range []struct {
-		name string
-		pp   *proxyProcess
-		err  error
-		want bool
-	}{
-		{
-			// A timeout or closed pipe: the child does the bind, two notifies
-			// and the serve inside the call, so it may genuinely be serving.
-			name: "unanswered enable, facade reported ready",
-			pp:   ready, err: context.DeadlineExceeded, want: true,
-		},
-		{
-			name: "unanswered enable, facade never reported ready",
-			pp:   notReady, err: context.DeadlineExceeded, want: false,
-		},
-		{
-			// The child answered, so it decided against the facade and
-			// withdrew it: an earlier ready from the same attempt is stale.
-			name: "answered rejection, stale ready ignored",
-			pp:   ready, err: fmt.Errorf("%w: rejected", errRPCAnswered), want: false,
-		},
-		{
-			name: "answered bind failure, stale ready ignored",
-			pp:   ready,
-			err:  fmt.Errorf("%w: %w: taken", errRPCAnswered, errFacadeBindFailed),
-			want: false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := facadeCameUpAnyway(tc.pp, engine, tc.err); got != tc.want {
-				t.Fatalf("facadeCameUpAnyway = %v, want %v", got, tc.want)
-			}
+	test := func(name string, pp *proxyProcess, err error, want bool) {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want, facadeCameUpAnyway(pp, engine, err))
 		})
 	}
+	// The child does the bind, notifications and serve inside an unanswered call,
+	// so it may genuinely be serving despite a timeout or closed pipe.
+	test("unanswered enable, facade reported ready", ready, context.DeadlineExceeded, true)
+	test("unanswered enable, facade never reported ready", notReady, context.DeadlineExceeded, false)
+	// An answered rejection withdraws the facade, making an earlier ready stale.
+	test("answered rejection, stale ready ignored", ready, fmt.Errorf("%w: rejected", errRPCAnswered), false)
+	test("answered bind failure, stale ready ignored", ready, fmt.Errorf("%w: %w: taken", errRPCAnswered, errFacadeBindFailed), false)
 }
 
 // readyFacade is the handle state one engine's facade would leave behind after
@@ -197,7 +174,7 @@ func readyFacade(engine string, port int) map[string]proxyFacadeState {
 // different ports. A single port for the process would be whichever facade
 // readied last, so get-status would hand a client the other engine's port —
 // and its inference traffic with it.
-func TestReadinessIsTrackedPerEngine(t *testing.T) {
+func TestReadiness_IsTrackedPerEngine(t *testing.T) {
 	all := engines.All()
 	if len(all) < 2 {
 		t.Skip("needs at least two engines")
@@ -216,21 +193,83 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 
 	for engine, wantPort := range map[string]int{first.Name: 11434, second.Name: 1234} {
 		ready, port := p.Status(engine)
-		if !ready {
-			t.Errorf("%s facade is not ready", engine)
-		}
-		if port != wantPort {
-			t.Errorf("%s facade port = %d, want %d", engine, port, wantPort)
-		}
-		if p.ReadyParams(engine) == nil {
-			t.Errorf("%s facade has no replayable ready payload", engine)
-		}
+		assert.True(t, ready, "engine %s must be ready", engine)
+		assert.Equal(t, wantPort, port, "engine %s facade port", engine)
+		assert.NotNil(t, p.ReadyParams(engine), "engine %s ready params", engine)
 	}
 
 	// An engine that never announced itself is not ready, rather than
 	// inheriting a sibling's port.
-	if ready, port := p.Status("vllm"); ready || port != 0 {
-		t.Errorf("an unannounced engine reported ready=%v port=%d", ready, port)
+	ready, port := p.Status("nosuchengine")
+	assert.False(t, ready, "an unannounced engine reported ready")
+	assert.Equal(t, 0, port, "an unannounced engine reported a port")
+}
+
+func TestBrokerFacadeMethods_FollowEngineProfile(t *testing.T) {
+	for _, profile := range engineProxyProfiles {
+		t.Run(profile.Name, func(t *testing.T) {
+			client, server := net.Pipe()
+			t.Cleanup(func() {
+				_ = client.Close()
+				_ = server.Close()
+			})
+			payload := json.RawMessage(fmt.Sprintf(`{"version":"test","port":%d}`, profile.FacadePort))
+			proxy := &proxyProcess{facadeState: map[string]proxyFacadeState{
+				profile.Name: {
+					ready:  true,
+					port:   profile.FacadePort,
+					params: payload,
+				},
+			}}
+			b := &Broker{codec: NewCodec(server)}
+			b.setEngineProxyHandle(profile, proxy)
+			reader := NewCodec(client)
+			nextID := 0
+			call := func(method string, frameCount int) []*Message {
+				t.Helper()
+				nextID++
+				id := json.RawMessage(fmt.Sprintf("%d", nextID))
+				done := make(chan struct{})
+				go func() {
+					b.handleMessage(&Message{JSONRPC: "2.0", ID: &id, Method: profile.ComponentName() + ":" + method})
+					close(done)
+				}()
+				frames := make([]*Message, 0, frameCount)
+				for range frameCount {
+					require.NoError(t, client.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
+					frame, err := reader.Read()
+					require.NoError(t, err, "read %s frame", method)
+					frames = append(frames, frame)
+				}
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					require.FailNowf(t, "handler did not finish", "%s after %d frame(s)", method, frameCount)
+				}
+				return frames
+			}
+
+			statusFrames := call("get-status", 1)
+			var status ProxyStatusResult
+			require.NoError(t, json.Unmarshal(statusFrames[0].Result, &status), "decode status")
+			assert.True(t, status.Ready)
+			assert.Equal(t, profile.FacadePort, status.Port)
+
+			subscribeFrames := call("subscribe", 2)
+			var subscribed SubscriptionResult
+			require.NoError(t, json.Unmarshal(subscribeFrames[0].Result, &subscribed), "subscribe response")
+			assert.True(t, subscribed.Subscribed)
+			assert.Equal(t, profile.ComponentName()+":ready", subscribeFrames[1].Method, "ready baseline after response")
+			assert.Equal(t, string(payload), string(subscribeFrames[1].Params), "ready baseline")
+
+			unsubscribeFrames := call("unsubscribe", 1)
+			require.NoError(t, json.Unmarshal(unsubscribeFrames[0].Result, &subscribed), "unsubscribe response")
+			assert.False(t, subscribed.Subscribed)
+			b.proxyMu.Lock()
+			stillSubscribed := b.engineProxySubscribed(profile)
+			b.proxyMu.Unlock()
+			assert.False(t, stillSubscribed, "facade remained subscribed after unsubscribe")
+		})
 	}
 }
 
@@ -238,7 +277,7 @@ func TestReadinessIsTrackedPerEngine(t *testing.T) {
 // has to track a subscription per engine. A single id per process let the second
 // facade's subscribe replace the first's, which unsubscribed a live facade and
 // left that engine with a routing set that never updated again.
-func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
+func TestSubscriptions_AreTrackedPerEngine(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -261,9 +300,7 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 		params, err := json.Marshal(noderec.SubscribeParams{
 			Services: []noderec.ServiceKey{service},
 		})
-		if err != nil {
-			t.Fatalf("marshal subscribe for %s: %v", engine, err)
-		}
+		require.NoError(t, err, "marshal subscribe for %s", engine)
 		p.handleSubscribe(engine, params)
 	}
 
@@ -273,142 +310,233 @@ func TestSubscriptionsAreTrackedPerEngine(t *testing.T) {
 
 	p.subMu.Lock()
 	defer p.subMu.Unlock()
-	if len(p.subIDs) != len(engines.All()) {
-		t.Fatalf("tracked %d subscriptions for %d engines: %v",
-			len(p.subIDs), len(engines.All()), p.subIDs)
-	}
+	require.Len(t, p.subIDs, len(engines.All()), "tracked")
 	seen := map[int]string{}
 	for engine, id := range p.subIDs {
-		if id == 0 {
-			t.Errorf("engine %q has subscription id 0", engine)
-		}
-		if other, dup := seen[id]; dup {
-			t.Errorf("engines %q and %q share subscription id %d", engine, other, id)
-		}
+		assert.NotEqual(t, 0, id, "engine (%v)", engine)
+		assert.NotContains(t, seen, id, "engine %s reused a subscription ID", engine)
 		seen[id] = engine
-	}
-}
-
-// A facade re-subscribing must drop only its own prior registration. Dropping
-// every one would silence the other engines, and dropping none would double-feed
-// this one.
-func TestResubscribeReplacesOnlyThatEnginesSubscription(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() {
-		_ = client.Close()
-		_ = server.Close()
-	})
-	go func() {
-		codec := NewCodec(server)
-		for {
-			if _, err := codec.Read(); err != nil {
-				return
-			}
-		}
-	}()
-
-	dir := relay.NewDirectory()
-	p := &proxyProcess{peer: NewPeer(NewCodec(client)), relayDir: dir}
-
-	all := engines.All()
-	if len(all) < 2 {
-		t.Skip("needs at least two engines to tell the subscriptions apart")
-	}
-	first, second := all[0], all[1]
-
-	params := func(e engines.Engine) json.RawMessage {
-		raw, err := json.Marshal(noderec.SubscribeParams{
-			Services: []noderec.ServiceKey{e.DiscoveryService},
-		})
-		if err != nil {
-			t.Fatalf("marshal subscribe: %v", err)
-		}
-		return raw
-	}
-
-	p.handleSubscribe(first.Name, params(first))
-	p.handleSubscribe(second.Name, params(second))
-
-	p.subMu.Lock()
-	firstID, secondID := p.subIDs[first.Name], p.subIDs[second.Name]
-	p.subMu.Unlock()
-
-	p.handleSubscribe(first.Name, params(first))
-
-	p.subMu.Lock()
-	defer p.subMu.Unlock()
-	if p.subIDs[first.Name] == firstID {
-		t.Errorf("re-subscribe kept %s's original id %d, so it is now double-fed",
-			first.Name, firstID)
-	}
-	if p.subIDs[second.Name] != secondID {
-		t.Errorf("re-subscribing %s changed %s's id from %d to %d",
-			first.Name, second.Name, secondID, p.subIDs[second.Name])
 	}
 }
 
 // The read pump reports ready and wires subscriptions by matching bare method
 // names, so it has to see through the address. An unaddressed notification is
 // process-scoped and passes through untouched.
-func TestFacadeMethodForStripsOnlyItsOwnEngine(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		profile engineProxyProfile
-		method  string
-		want    string
-		ok      bool
-	}{
-		{
-			name:    "own address is stripped",
-			profile: ollamaProxyProfile,
-			method:  ollamaProxyProfile.addressed("ready"),
-			want:    "ready",
-			ok:      true,
-		},
-		{
-			// forwardProxyProcessNotification routes by engine before this
-			// reader sees anything, so reaching it with another engine's
-			// address means addressing broke. Forwarding it would file one
-			// engine's event under another.
-			name:    "another engine's address is dropped",
-			profile: ollamaProxyProfile,
-			method:  lmstudioProxyProfile.addressed("ready"),
-			ok:      false,
-		},
-		{
-			name:    "process-scoped method passes through",
-			profile: ollamaProxyProfile,
-			method:  "workload:started",
-			want:    "workload:started",
-			ok:      true,
-		},
-		{
-			// The errors relay matches bare names, so an addressed error has to
-			// come out as errors:report and not as ollama:errors:report.
-			name:    "addressed error becomes a bare errors method",
-			profile: ollamaProxyProfile,
-			method:  ollamaProxyProfile.addressed(methodErrorsReport),
-			want:    methodErrorsReport,
-			ok:      true,
-		},
-		{
-			name:    "unaddressed error is untouched",
-			profile: lmstudioProxyProfile,
-			method:  methodErrorsReport,
-			want:    methodErrorsReport,
-			ok:      true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := facadeMethodFor(tc.profile, tc.method)
-			if ok != tc.ok {
-				t.Fatalf("facadeMethodFor(%s, %q) ok = %v, want %v",
-					tc.profile.Name, tc.method, ok, tc.ok)
-			}
-			if ok && got != tc.want {
-				t.Fatalf("facadeMethodFor(%s, %q) = %q, want %q",
-					tc.profile.Name, tc.method, got, tc.want)
+func TestFacadeMethodFor_StripsOnlyItsOwnEngine(t *testing.T) {
+	test := func(name string, profile engineProxyProfile, method, want string, wantOK bool) {
+		t.Run(name, func(t *testing.T) {
+			got, ok := facadeMethodFor(profile, method)
+			require.Equal(t, wantOK, ok)
+			if ok {
+				require.Equal(t, want, got)
 			}
 		})
 	}
+	test("own address is stripped", ollamaProxyProfile, ollamaProxyProfile.addressed("ready"), "ready", true)
+	// Another engine's address means routing broke: forwarding would file one
+	// engine's event under another.
+	test("another engine's address is dropped", ollamaProxyProfile, lmstudioProxyProfile.addressed("ready"), "", false)
+	test("process-scoped method passes through", ollamaProxyProfile, "workload:started", "workload:started", true)
+	// The errors relay matches bare names, so an addressed error must come out bare.
+	test("addressed error becomes a bare errors method", ollamaProxyProfile, ollamaProxyProfile.addressed(methodErrorsReport), methodErrorsReport, true)
+	test("unaddressed error is untouched", lmstudioProxyProfile, methodErrorsReport, methodErrorsReport, true)
+}
+
+// A proxy with a full stdin pipe must not hold discovery processing or prevent
+// pin withdrawal. After recovery it needs the latest empty routing snapshot,
+// rather than the intermediate records accumulated while it was not reading.
+func TestProxyDiscovery_CoalescesWhilePipeIsBlocked(t *testing.T) {
+	brokerSide, proxySide := net.Pipe()
+	t.Cleanup(func() {
+		assert.NoError(t, brokerSide.Close())
+		assert.NoError(t, proxySide.Close())
+	})
+	require.NoError(t, proxySide.SetDeadline(time.Now().Add(6*time.Second)))
+	writing := make(chan struct{})
+	writer := &observedProxyWriter{Conn: brokerSide, onWrite: sync.OnceFunc(func() { close(writing) })}
+	b := newManualTestBroker()
+	b.nodeID, b.clusterDir = "self", t.TempDir()
+	clustertrusttest.Join(t, b.clusterDir, "cluster", "self", "peer")
+	mesh := clustertrust.Open(b.clusterDir)
+	b.relayDir = relay.NewDirectory()
+	scanner := &scannerProcess{store: b.store, relayDir: b.relayDir, stateMu: &b.discoveryMu, mesh: mesh}
+	node := noderec.DirectoryNode{
+		HostUUID: "peer", Name: "initial", DiscoveryRecordID: mesh.PeerRecordID("peer"),
+		IdentityVerification: noderec.IdentityPinned, Trusted: true,
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
+	}
+	initialEvent, err := json.Marshal(noderec.NodeEvent{Node: node})
+	require.NoError(t, err)
+	scanner.handleNotify(noderec.NotifyNodeDiscovered, initialEvent)
+	proxy := &proxyProcess{peer: NewPeer(NewCodec(writer)), relayDir: b.relayDir}
+	params, err := json.Marshal(noderec.SubscribeParams{Services: []noderec.ServiceKey{noderec.ServiceOllama}})
+	require.NoError(t, err)
+	subscribed := make(chan struct{})
+	go func() {
+		proxy.handleSubscribe("ollama", params)
+		close(subscribed)
+	}()
+	select {
+	case <-writing:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the initial snapshot was not sent")
+	}
+	finished := func(done <-chan struct{}, operation string) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			assert.Fail(t, operation+" waited for the blocked proxy")
+		}
+	}
+	node.Name = "intermediate"
+	updatedEvent, err := json.Marshal(noderec.NodeEvent{Node: node})
+	require.NoError(t, err)
+	scanned := make(chan struct{})
+	go func() {
+		for range 20 {
+			scanner.handleNotify(noderec.NotifyNodeUpdated, updatedEvent)
+		}
+		close(scanned)
+	}()
+	finished(scanned, "scanner update")
+	owned := make(chan struct{})
+	go func() {
+		b.nodeInfoNotificationHandler(0)(noderec.NotifyInfoUpdated, localInfoPayload(t, noderec.NodeInfo{HostUUID: "self"}, time.Now()))
+		close(owned)
+	}()
+	clustertrusttest.RemovePeerPin(t, b.clusterDir, "peer")
+	withdrawn := make(chan struct{})
+	go func() {
+		b.reconcileDiscoveryTrust()
+		close(withdrawn)
+	}()
+	finished(owned, "local hardware update")
+	finished(withdrawn, "trust withdrawal")
+	finished(subscribed, "subscription setup")
+
+	codec := NewCodec(proxySide)
+	initial, err := codec.Read()
+	require.NoError(t, err)
+	require.Equal(t, "ollama:discovery:nodes", initial.Method)
+	var first noderec.GetNodesResult
+	require.NoError(t, json.Unmarshal(initial.Params, &first))
+	require.Len(t, first.Nodes, 1)
+	assert.Equal(t, "initial", first.Nodes[0].Name)
+	last, err := codec.Read()
+	require.NoError(t, err)
+	assert.Equal(t, "ollama:discovery:nodes", last.Method)
+	var final noderec.GetNodesResult
+	require.NoError(t, json.Unmarshal(last.Params, &final))
+	assert.NotNil(t, final.Nodes, "an empty authoritative snapshot is encoded as []")
+	assert.Empty(t, final.Nodes)
+	finished(scanned, "scanner after pipe recovery")
+	finished(owned, "local hardware after pipe recovery")
+	finished(withdrawn, "trust withdrawal after pipe recovery")
+	waitForProxySnapshotSender(t, proxy)
+}
+
+func waitForProxySnapshotSender(t *testing.T, proxy *proxyProcess) {
+	t.Helper()
+	// An idle sender also proves that no extra old snapshot remains blocked on
+	// the pipe after the expected complete snapshots have been consumed.
+	require.Eventually(t, func() bool {
+		proxy.subMu.Lock()
+		defer proxy.subMu.Unlock()
+		return !proxy.sendingNodes
+	}, time.Second, time.Millisecond)
+}
+
+// One facade changing its filter must not discard another facade's pending
+// update, or let its previous subscription overwrite the replacement's set.
+func TestProxyDiscovery_KeepsEachEnginesLatestSubscriptionSnapshot(t *testing.T) {
+	brokerSide, proxySide := net.Pipe()
+	t.Cleanup(func() {
+		assert.NoError(t, brokerSide.Close())
+		assert.NoError(t, proxySide.Close())
+	})
+	require.NoError(t, proxySide.SetDeadline(time.Now().Add(3*time.Second)))
+	writing := make(chan struct{})
+	writer := &observedProxyWriter{Conn: brokerSide, onWrite: sync.OnceFunc(func() { close(writing) })}
+	directory := relay.NewDirectory()
+	node := noderec.DirectoryNode{
+		HostUUID: "peer", DiscoveryRecordID: "peer:peer", Name: "initial",
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
+			noderec.ServiceOllama: {Port: 11434}, noderec.ServiceLMStudio: {Port: 1234},
+		},
+	}
+	directory.Apply(noderec.NotifyNodeDiscovered, node)
+	proxy := &proxyProcess{peer: NewPeer(NewCodec(writer)), relayDir: directory}
+	params := func(service noderec.ServiceKey) json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(noderec.SubscribeParams{Services: []noderec.ServiceKey{service}})
+		require.NoError(t, err)
+		return raw
+	}
+	ollamaParams, lmstudioParams, nodeInfoParams := params(noderec.ServiceOllama), params(noderec.ServiceLMStudio), params(noderec.ServiceNodeInfo)
+	subscribed := make(chan struct{})
+	go func() {
+		proxy.handleSubscribe("ollama", ollamaParams)
+		close(subscribed)
+	}()
+	select {
+	case <-writing:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the initial snapshot was not sent")
+	}
+	select {
+	case <-subscribed:
+	case <-time.After(time.Second):
+		require.FailNow(t, "subscription setup waited for the blocked writer")
+	}
+	node.Name = "latest"
+	var initialOllamaID, initialLMStudioID int
+	var currentOllamaID, currentLMStudioID int
+	updated := make(chan struct{})
+	go func() {
+		proxy.handleSubscribe("lmstudio", lmstudioParams)
+		// Capture the IDs after both facades have subscribed. Only Ollama's
+		// registration should change when it requests a different filter.
+		proxy.subMu.Lock()
+		initialOllamaID, initialLMStudioID = proxy.subIDs["ollama"], proxy.subIDs["lmstudio"]
+		proxy.subMu.Unlock()
+		proxy.handleSubscribe("ollama", nodeInfoParams)
+		proxy.subMu.Lock()
+		currentOllamaID, currentLMStudioID = proxy.subIDs["ollama"], proxy.subIDs["lmstudio"]
+		proxy.subMu.Unlock()
+		directory.Apply(noderec.NotifyNodeUpdated, node)
+		close(updated)
+	}()
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		require.FailNow(t, "updating subscriptions waited for the blocked writer")
+	}
+	// The channel close publishes the before/after IDs as well as completing
+	// both subscription changes while the first snapshot write is still held.
+	assert.NotEqual(t, initialOllamaID, currentOllamaID, "Ollama must replace its subscription")
+	assert.Equal(t, initialLMStudioID, currentLMStudioID, "Ollama's re-subscribe must leave LM Studio's subscription intact")
+
+	codec := NewCodec(proxySide)
+	initial, err := codec.Read()
+	require.NoError(t, err)
+	assert.Equal(t, "ollama:discovery:nodes", initial.Method)
+	var first noderec.GetNodesResult
+	require.NoError(t, json.Unmarshal(initial.Params, &first))
+	require.Len(t, first.Nodes, 1)
+	assert.Equal(t, "initial", first.Nodes[0].Name)
+	snapshots := make(map[string][]noderec.DirectoryNode)
+	for range 2 {
+		message, err := codec.Read()
+		require.NoError(t, err)
+		require.NotContains(t, snapshots, message.Method)
+		var result noderec.GetNodesResult
+		require.NoError(t, json.Unmarshal(message.Params, &result))
+		snapshots[message.Method] = result.Nodes
+	}
+	assert.Equal(t, map[string][]noderec.DirectoryNode{
+		"ollama:discovery:nodes":   {},
+		"lmstudio:discovery:nodes": {node},
+	}, snapshots)
+	waitForProxySnapshotSender(t, proxy)
 }

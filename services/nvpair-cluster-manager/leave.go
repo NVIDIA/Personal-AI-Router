@@ -144,11 +144,9 @@ func (m *Manager) leaveCluster() (bool, error) {
 		}
 		addrs := m.resolvePeerAddrs(n)
 		uuid := n.NodeUUID
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			m.reconcileWith(addrs, uuid)
-		}()
+		})
 	}
 	notified := make(chan struct{})
 	go func() {

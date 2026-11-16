@@ -7,12 +7,13 @@ import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cl
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import {
+    MODEL_SWITCH_TIMEOUT_MS,
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 import { engineManagerName } from '@/shared/utils/engines'
-import { getEngineHubModels } from '@/electron/model-hub'
+import { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import { getModularSupervisor } from './modular-supervisor'
 import {
     parseEngineSettings,
@@ -28,7 +29,6 @@ import {
 
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
 import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
-import { removeManualNodeEntry, resolveManualNodeKey } from './manual-nodes-store'
 
 type BridgeHandler<C extends WsInvokeChannel> = (
     payload?: WsInvokeRequest<C>
@@ -56,6 +56,47 @@ function stringValue(value: JsonValue | undefined): string {
 
 function booleanValue(value: JsonValue | undefined): boolean {
     return typeof value === 'boolean' ? value : false
+}
+
+/**
+ * When this app last asked each engine to stop, keyed by node and engine. A Stop
+ * or an Eject ends a vLLM Load that is still starting the engine, and the Load
+ * then replies `stopped`. A user who stopped it here needs no message about it;
+ * a stop from elsewhere (the terminal interface, or another node's app) is
+ * reported, or this app would go on showing the Load as in progress.
+ */
+const stopRequestedAt = new Map<string, number>()
+
+function stopKey(nodeId: string, engineType: EngineType): string {
+    return `${nodeId}:${engineType}`
+}
+
+function noteStopRequest(payload: WsInvokeRequest<'engine:command'>): void {
+    if (payload.command === 'stop' || payload.command === 'unloadModel') {
+        stopRequestedAt.set(stopKey(payload.nodeId, payload.engineType), Date.now())
+    }
+}
+
+/** Report a Load that a stop from outside this app ended. */
+function reportLoadStoppedElsewhere(
+    payload: WsInvokeRequest<'engine:command'>,
+    startedAt: number,
+    result: JsonValue | undefined
+): void {
+    if (!payload.model || !booleanValue(objectValue(result)?.stopped)) return
+    const stoppedHere = stopRequestedAt.get(stopKey(payload.nodeId, payload.engineType)) ?? -1
+    if (stoppedHere >= startedAt) return
+    getModularSupervisor().reportError(
+        `Loading ${payload.model} on ${engineManagerName(payload.engineType)} was stopped before it finished.`,
+        'info',
+        `engine-cmd:load model:${engineManagerName(payload.engineType)}`,
+        {
+            nodeId: payload.nodeId,
+            engineType: payload.engineType,
+            operation: 'load',
+            modelName: payload.model
+        }
+    )
 }
 
 /** Relay a `cluster:*` / `nodes:*` request to nvpair-cluster-manager via the broker. */
@@ -120,10 +161,11 @@ async function nodeSettingString(method: string): Promise<string> {
 async function toggleLocalEngine(engine: string, engineType: EngineType): Promise<void> {
     const supervisor = getModularSupervisor()
     try {
-        // `engine:status` is a fast detect (no lifecycle lock), so awaiting the
-        // read is fine. Lifecycle ops stay fire-and-forget to the renderer. A stop
-        // observes its eventual response because an ownership rejection has no
-        // resolving `engine:state-changed`; start keeps its existing push path.
+        // `engine:status` probes independently of lifecycle operations, so it
+        // cannot wait on their lock. Lifecycle ops stay fire-and-forget to the
+        // renderer. A stop observes its eventual response because an ownership
+        // rejection has no resolving `engine:state-changed`; start keeps its
+        // existing push path.
         const status = await supervisor.callProcess('broker', 'engine:status', { engine })
         const running = booleanValue(objectValue(status)?.running)
         // Synthesize the transitional status the engine-manager never emits, so
@@ -153,6 +195,31 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
             `engine-cmd:toggle:${engine}`
         )
     }
+}
+
+/**
+ * Stop a local engine, whatever it reports. A toggle reads the engine's status
+ * to decide, and an engine that is still starting reports not running, so the
+ * toggle would send another start; Stop is sent when the UI shows it starting.
+ * The engine-manager cancels the start in flight.
+ */
+function stopLocalEngine(engine: string, engineType: EngineType): void {
+    const supervisor = getModularSupervisor()
+    getModularBridgeState().beginLocalEngineOp(engineType, 'stopping')
+    supervisor.sendProcess(
+        'broker',
+        'engine:stop',
+        { engine },
+        error => {
+            getModularBridgeState().clearPendingEngineOp(engineType)
+            supervisor.reportError(
+                `Failed to stop ${engine}: ${error}`,
+                'error',
+                `engine-cmd:stop:${engine}`
+            )
+        },
+        true
+    )
 }
 
 /**
@@ -242,6 +309,9 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
         case 'toggle':
             void toggleLocalEngine(engine, payload.engineType)
             break
+        case 'stop':
+            stopLocalEngine(engine, payload.engineType)
+            break
         case 'pullModel':
             // Pulls need UI feedback the backend doesn't emit (progress + failure),
             // so the supervisor owns the optimistic-progress + awaited-completion
@@ -260,12 +330,39 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // first-class load action, so we POST its `run_model` HTTP action
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
-            // LM Studio declares a real `load_model` CLI action (`lms load`).
-            // Both require the engine running (HTTP/CLI action), matching the
-            // disabled rule in ModelRow.tsx.
+            // LM Studio and llama.cpp declare real `load_model` manifest actions.
+            // vLLM's `load_model` serves the model by restarting a running engine
+            // on it, or starting a stopped one, which takes minutes and can fail
+            // (the model may not fit), so like Ollama's its rejection is observed
+            // and attributed to the pending model row.
+            // Ollama, LM Studio and llama.cpp require the engine running (HTTP/CLI
+            // action); vLLM declares modelOpsWhenStopped. ModelRow.tsx applies
+            // the same rule.
             // See docs/services-parity.md#models.
             if (payload.model) {
-                if (payload.engineType === 'ollama') {
+                if (payload.engineType === 'vllm') {
+                    // The reply arrives once the new model is serving, or the
+                    // previous one is restored. The renderer's pending Load shows
+                    // the engine as starting while it restarts. A Stop or Eject
+                    // ends the Load with `stopped` in the reply, not an error.
+                    const startedAt = Date.now()
+                    void supervisor
+                        .callProcess(
+                            'broker',
+                            'engine:action',
+                            { engine, action: 'load_model', params: { model: payload.model } },
+                            MODEL_SWITCH_TIMEOUT_MS
+                        )
+                        .then(result => reportLoadStoppedElsewhere(payload, startedAt, result))
+                        .catch(err =>
+                            failAction('load model', {
+                                nodeId: payload.nodeId,
+                                engineType: payload.engineType,
+                                operation: 'load',
+                                modelName: payload.model
+                            })(getErrorString(err))
+                        )
+                } else if (payload.engineType === 'ollama') {
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',
@@ -360,6 +457,9 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
             break
+        case 'stop':
+            void supervisor.toggleEngineRemote(nodeId, engine, payload.engineType, true)
+            break
         case 'pullModel':
             if (payload.model) {
                 void supervisor.pullModelRemote(nodeId, engine, payload.engineType, payload.model)
@@ -375,13 +475,20 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
         case 'loadModel':
         case 'unloadModel':
             if (payload.model) {
-                void supervisor.modelActionRemote(
-                    nodeId,
-                    engine,
-                    payload.engineType,
-                    payload.model,
-                    payload.command
-                )
+                const startedAt = Date.now()
+                void supervisor
+                    .modelActionRemote(
+                        nodeId,
+                        engine,
+                        payload.engineType,
+                        payload.model,
+                        payload.command
+                    )
+                    .then(result => {
+                        if (payload.command === 'loadModel') {
+                            reportLoadStoppedElsewhere(payload, startedAt, result)
+                        }
+                    })
             }
             break
         default:
@@ -401,12 +508,12 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     // Proxy node selection is owned by the backend nvpair-job-scheduler (it drives
     // node/set-priority via the broker); PAIR UI never pins node/select, and a user
     // clicking "Load" must not pin a route. Ollama loads via its `run_model` HTTP
-    // action, LM Studio via its `load_model` CLI action — both handled locally in
-    // routeEngineManagerCommand.
+    // action; LM Studio and llama.cpp use their manifest `load_model` actions.
 
     // Remote peers: `nvpair-engine-manager` exposes `engine:remote-*` client methods
     // (cluster mTLS `ec` surface) for install/start/stop/pull and model ops.
     // Local-only ops are refused in {@link routeRemoteEngineCommand}.
+    noteStopRequest(payload)
     const selfId = getModularBridgeState().getSelfId()
     if (selfId && payload.nodeId && payload.nodeId !== selfId) {
         if (supervisor.hasProcess('broker')) {
@@ -631,20 +738,10 @@ async function handleNodeRemoveMember(
     const selfId = state.getSelfId()
     const isSelfLeave = selfId !== null && payload.nodeId === selfId
 
-    // `payload.nodeId` is the node's UUID, but the manual-nodes store and the
-    // broker's `node/remove` relay key a manual entry by the name it was added
-    // with — never the UUID. Map the UUID back through the node's reachable
-    // addresses to the persisted entry so it is actually pruned (and does not
-    // reappear on the next replay). If it is not a manual node (no address match)
-    // fall back to the display hostname, then the raw id; both are harmless
-    // no-ops for a purely-discovered peer. The broker supervises
-    // nvpair-manual-nodes and relays `node/*` verbatim.
-    const manualKey =
-        resolveManualNodeKey(state.getNodeAddresses(payload.nodeId)) ||
-        state.getNodeHostname(payload.nodeId) ||
-        payload.nodeId
-    removeManualNodeEntry(manualKey)
-    supervisor.callProcess('broker', 'node/remove', { id: manualKey }).catch(() => {})
+    // The broker resolves this node key to its manual entry, if any. Keeping it
+    // separate from the worker's entry ID prevents a matching user-supplied name
+    // from selecting a different configuration for removal.
+    supervisor.callProcess('broker', 'node/remove', { nodeId: payload.nodeId }).catch(() => {})
 
     if (isSelfLeave) {
         // Self-departure is `cluster:leave`, not `nodes:remove` (the cluster-manager
@@ -713,7 +810,9 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
         ),
     'engine:command': payload => handleEngineCommand(payload),
     'engine:search-hub': payload =>
-        payload ? getEngineHubModels(payload.engineType) : { models: [] },
+        payload
+            ? getEngineHubModels(payload.engineType, payload.query)
+            : { models: [], searchable: false },
 
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),

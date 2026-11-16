@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -15,12 +16,13 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -219,12 +221,14 @@ var errBodyTooLarge = stderrors.New("request body exceeds 32 MiB limit")
 
 // bufferBodyAndModel reads the request body once and returns the raw bytes
 // (so each failover attempt can replay it — see the loop in handleHTTP) along
-// with the JSON "model" field for workload tracking. Inference bodies are
-// small (prompt + model), so full buffering is cheap. Returns (nil, "", nil)
-// when the body is absent and an empty model when none is parseable. The
-// caller restores r.Body from the returned bytes before each forward attempt.
-// Bodies over maxInferenceBodyBytes are rejected with errBodyTooLarge.
-func bufferBodyAndModel(r *http.Request) ([]byte, string, error) {
+// with the JSON "model" field for workload tracking. With nameFallback set, an
+// empty "model" falls back to "name", which is how /api/show clients name the
+// model. Inference bodies are small (prompt + model), so full buffering is
+// cheap. Returns (nil, "", nil) when the body is absent and an empty model when
+// none is parseable. The caller restores r.Body from the returned bytes before
+// each forward attempt. Bodies over maxInferenceBodyBytes are rejected with
+// errBodyTooLarge.
+func bufferBodyAndModel(r *http.Request, nameFallback bool) ([]byte, string, error) {
 	if r.Body == nil {
 		return nil, "", nil
 	}
@@ -238,9 +242,13 @@ func bufferBodyAndModel(r *http.Request) ([]byte, string, error) {
 	}
 	var probe struct {
 		Model string `json:"model"`
+		Name  string `json:"name"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
 		return body, "", nil
+	}
+	if probe.Model == "" && nameFallback {
+		return body, probe.Name, nil
 	}
 	return body, probe.Model, nil
 }
@@ -389,6 +397,21 @@ type Proxy struct {
 	// redelivered or superseded one cannot clear reservations twice. See
 	// SetPrioritySnapshot.
 	appliedPriorityGeneration uint64
+
+	// coolMu guards coolUntil, the per-node first-byte cooldown: a candidate
+	// that just spent a whole first-byte deadline without producing content is
+	// ordered behind its peers until its stamp expires.
+	//
+	// Process-local and in-memory on purpose. The stamp records what this proxy
+	// measured on its own path to that node, which is the only thing it can
+	// honestly claim; nothing is shared between processes and nothing is
+	// persisted. Two proxies are therefore free to disagree about a peer, each
+	// reflecting its own experience, and a restart starts from no opinion.
+	//
+	// Shared across facades, like the reservations above: a stalled node is
+	// stalled for every engine this process fronts.
+	coolMu    sync.Mutex
+	coolUntil map[string]time.Time
 
 	// transportMu guards the long-lived HTTP transports reused across forwards
 	// and model-list fetches. Allocating a new http.Transport per request
@@ -571,10 +594,7 @@ func backoffFor(dispatches int, remaining time.Duration) time.Duration {
 	if len(retryBackoff) == 0 || remaining <= 0 {
 		return 0
 	}
-	i := dispatches - 1
-	if i < 0 {
-		i = 0
-	}
+	i := max(dispatches-1, 0)
 	if i >= len(retryBackoff) {
 		i = len(retryBackoff) - 1
 	}
@@ -778,6 +798,19 @@ var idleClientWriteTimeout = 30 * time.Second
 // reassigns it.
 var firstBodyTimeout = proxyResponseTimeout
 
+// candidateCooldown is how long a node that spent a full first-byte deadline
+// without producing content is ordered behind its peers.
+//
+// One deadline, deliberately not a number of its own. The trigger is an attempt
+// that cost exactly that much, so waiting the same span before preferring the
+// node again states only what was measured, and it moves with whatever an
+// operator has set the deadline to instead of adding a knob nobody knows how to
+// tune.
+//
+// It is a var (not a const) only so a test can shorten it; production never
+// reassigns it.
+var candidateCooldown = proxyResponseTimeout
+
 var modelListClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext: (&net.Dialer{
@@ -961,11 +994,11 @@ type modelListResult struct {
 // in candidate order, not completion order, so duplicate metadata is
 // deterministic while an unavailable peer cannot hide healthy inventories.
 //
-// role selects the wire dialect: which array the upstream envelope carries,
-// which field identifies a record, and how the federated response is shaped.
-func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role routeRole, candidates []candidate) (int, error) {
+// matchedRoute selects the wire dialect and the optional upstream path. The
+// client-facing path remains unchanged in telemetry and in the merged response.
+func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedRoute route, candidates []candidate) (int, error) {
 	p := f.host
-	openAI := role == roleModelListOpenAIGET
+	openAI := matchedRoute.Role == roleModelListOpenAIGET
 	writeJSON := func(status int, body []byte) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -976,8 +1009,12 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role rou
 	var wg sync.WaitGroup
 	for i, cand := range candidates {
 		target := *cand.url
-		target.Path = r.URL.Path
-		target.RawPath = r.URL.RawPath
+		target.Path = matchedRoute.upstreamPath()
+		if matchedRoute.UpstreamPath == "" {
+			target.RawPath = r.URL.RawPath
+		} else {
+			target.RawPath = ""
+		}
 		target.RawQuery = r.URL.RawQuery
 		upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
 		if err != nil {
@@ -999,10 +1036,8 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role rou
 			client.Transport = p.candidateTransport(cand)
 		}
 
-		wg.Add(1)
-		go func(i int, cand candidate, req *http.Request, client *http.Client) {
-			defer wg.Done()
-			resp, err := client.Do(req)
+		wg.Go(func() {
+			resp, err := client.Do(upstream)
 			if err != nil {
 				f.targets.Forget(cand.id)
 				results[i] = modelListResult{unavailable: true, err: err}
@@ -1075,7 +1110,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role rou
 				items = append(items, modelListItem{key: key, digest: identity.Digest, raw: raw})
 			}
 			results[i] = modelListResult{items: items, ok: true, headers: responseHeaders}
-		}(i, cand, upstream, client)
+		})
 	}
 	wg.Wait()
 
@@ -1112,9 +1147,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role rou
 		combinedHeaders, allowed = cors.Combine(r, headers)
 		if invalidInventory {
 			if allowed {
-				for key, values := range combinedHeaders {
-					w.Header()[key] = values
-				}
+				maps.Copy(w.Header(), combinedHeaders)
 			}
 			writeJSON(http.StatusBadGateway, []byte(`{"error":"model inventory unavailable"}`))
 			return http.StatusBadGateway, fmt.Errorf("model inventory unavailable")
@@ -1169,9 +1202,7 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, role rou
 		writeJSON(http.StatusInternalServerError, []byte(`{"error":"failed to encode model inventory"}`))
 		return http.StatusInternalServerError, err
 	}
-	for key, values := range combinedHeaders {
-		w.Header()[key] = values
-	}
+	maps.Copy(w.Header(), combinedHeaders)
 	writeJSON(http.StatusOK, body)
 	return http.StatusOK, nil
 }
@@ -1188,10 +1219,14 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// whether a matching Started was seen.
 	reqID := strconv.FormatUint(f.nextRequestID.Add(1), 10)
 
-	// Parse the request's model before choosing a node. Model eligibility only
-	// applies to inference routes; control endpoints retain their existing
-	// routing behavior even when their JSON happens to contain a model field.
-	bodyBytes, model, bodyErr := bufferBodyAndModel(r)
+	// Parse the request's model before choosing a node. Model eligibility
+	// applies to inference routes and model lookups (/api/show); other control
+	// endpoints retain their existing routing behavior even when their JSON
+	// happens to contain a model field.
+	isInf := isInferenceRequest(f.profile, r.Method, r.URL.Path)
+	role, routed := f.profile.roleFor(r.Method, r.URL.Path)
+	lookup := routed && role == roleModelLookupPOST
+	bodyBytes, model, bodyErr := bufferBodyAndModel(r, lookup)
 	if bodyErr != nil {
 		// errBodyTooLarge (413) is answered here so the oversized body never
 		// reaches candidate selection or an engine. Any other read error
@@ -1209,9 +1244,8 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Warn("request body read error", "id", reqID, "err", bodyErr)
 	}
-	isInf := isInferenceRequest(f.profile, r.Method, r.URL.Path)
 	routingModel := ""
-	if isInf {
+	if isInf || lookup {
 		routingModel = model
 	}
 	candidates := f.resolveCandidates(routingModel)
@@ -1255,13 +1289,13 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		p.releaseReservation(held)
 		held = reservation{}
 	}()
-	if role, ok := f.profile.roleFor(r.Method, r.URL.Path); ok && role.isModelList() {
+	if matchedRoute, ok := f.profile.routeFor(r.Method, r.URL.Path); ok && matchedRoute.Role.isModelList() {
 		if len(candidates) > 0 {
 			_ = f.notify("proxy/request-started", RequestStartedEvent{
 				ID: reqID, Method: r.Method, Path: r.URL.Path, Target: "cluster",
 			})
 		}
-		status, err := f.serveModelList(w, r, role, candidates)
+		status, err := f.serveModelList(w, r, matchedRoute, candidates)
 		errText := ""
 		if err != nil {
 			errText = err.Error()
@@ -1275,19 +1309,25 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(candidates) == 0 {
 		rejectionBody := `{"error":"no active node selected or available"}`
 		rejectionError := "no active node"
-		if isInf && model != "" {
+		rejectionStatus := http.StatusBadGateway
+		if routingModel != "" {
 			rejectionBody = `{"error":"no available node advertises the requested model"}`
 			rejectionError = "no node advertises requested model"
+			if lookup {
+				// A model lookup for a model nobody has is a not-found, as
+				// Ollama itself answers it, not a gateway failure.
+				rejectionStatus = http.StatusNotFound
+			}
 		}
 		slog.Warn("proxy request rejected",
 			"id", reqID, "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr, "reason", rejectionError)
-		http.Error(w, rejectionBody, http.StatusBadGateway)
+		http.Error(w, rejectionBody, rejectionStatus)
 		_ = f.notify("proxy/request", RequestEvent{
 			ID:       reqID,
 			Method:   r.Method,
 			Path:     r.URL.Path,
-			Status:   http.StatusBadGateway,
+			Status:   rejectionStatus,
 			Duration: time.Since(start).Milliseconds(),
 			Error:    rejectionError,
 		})
@@ -1295,7 +1335,8 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// shouldRetry reports whether an upstream status warrants failing over to
 	// the next candidate: busy/unavailable/gateway statuses, plus a 404 on an
-	// inference call (an advertised owner's inventory may have become stale).
+	// inference call or model lookup (an advertised owner's inventory may have
+	// become stale).
 	// Genuine client errors (400/401/422…) are not retried — they'd fail
 	// identically on every node.
 	shouldRetry := func(code int) bool {
@@ -1307,7 +1348,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			http.StatusGatewayTimeout:
 			return true
 		case http.StatusNotFound:
-			return isInf
+			return isInf || lookup
 		}
 		return code >= 500
 	}
@@ -1674,6 +1715,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// distinction is load-bearing: the disconnect watcher and the terminal
 		// classification both read r.Context(), the parent, so cancelling a
 		// child cannot be mistaken for the client going away.
+		attemptStart := time.Now()
 		attemptCtx, cancelAttempt := context.WithCancel(r.Context())
 		// claim decides, once, whether this attempt commits or is abandoned;
 		// see attemptClaim for why a pair of channels could not.
@@ -1914,6 +1956,25 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 		proxy.ServeHTTP(sc, attemptReq)
 		cancelAttempt()
+		// Record how this candidate behaved for the next request's ordering.
+		// Measured, not classified from the error: a dial failure is bounded by
+		// the much shorter dial timeout and a status-based retry commits a
+		// response, so only an attempt that produced no content at all can reach
+		// the first-byte budget. That covers both shapes of silence — no headers
+		// and headers with no body — without naming either.
+		//
+		// A no-content attempt that did not reach the budget leaves the stamp
+		// untouched on purpose. It cost too little to be evidence of a stall, so
+		// stamping would overstate it; and a fast failure is no evidence the node
+		// is serving either, so clearing an existing stamp would understate it.
+		// Only a byte clears, and only a full budget stamps.
+		if noContent := retry || respondedWithError; noContent {
+			if time.Since(attemptStart) >= firstBodyTimeout {
+				p.noteNoFirstByte(cand.id, time.Now())
+			}
+		} else {
+			p.noteFirstByte(cand.id)
+		}
 		if claim.abandoned() {
 			// Name the real reason rather than the bare "context canceled" the
 			// transport reports, which reads identically to a client hangup.
@@ -2013,7 +2074,9 @@ func (f *facade) resolveCandidates(model string) []candidate {
 	// iterates a map, whose order is randomized per call, which otherwise bounced
 	// back-to-back requests between nodes. The ID sort is also the
 	// fallback order for nodes the scheduler's priority list doesn't mention.
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	slices.SortFunc(nodes, func(a, b Node) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	byID := make(map[string]Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
@@ -2050,15 +2113,10 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			}
 			u = lb
 		case p.mesh.HasPin(n.ClusterUUID):
-			// A pinned cluster peer: reach it only over mTLS to its promoted
-			// proxy (the ol port now advertises the proxy, not the engine).
-			// The pin is read from the live mesh refreshed above, not from the
-			// relayed n.Trusted: that flag is the scanner's answer from whenever
-			// it last saw this peer's mDNS record, so a peer discovered before
-			// this node's pins were written stays false until its record next
-			// changes. It is also strictly weaker than what we hold here — the
-			// dial itself is gated on ClientTLSConfig finding the same pin — so
-			// the relayed value can only ever disagree by being stale.
+			// Reach this peer's proxy over mTLS using its current pin. Relay-fed
+			// remote records have already passed pinned-and-trusted admission;
+			// the refreshed mesh and the pinned client also authorize this dial
+			// against live membership and trust.
 			u.Scheme = "https"
 			peerUUID = n.ClusterUUID
 		case f.discovery.IsManual(n.ID):
@@ -2106,6 +2164,10 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			add(n)
 		}
 	}
+
+	// Last, so it holds over all three passes above: a candidate that just cost a
+	// full first-byte deadline is ordered behind the rest.
+	out = demoteCooling(out, p.coolingSet(time.Now()))
 
 	slog.Debug("resolveCandidates resolved",
 		"selected", id, "priority", len(priority), "candidates", len(out),
@@ -2164,6 +2226,10 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		candidateIndex[cand.id] = i
 	}
 
+	// Read before taking priorityMu: the cooldown has its own lock and nothing
+	// else nests the two.
+	cooling := p.coolingSet(time.Now())
+
 	p.priorityMu.Lock()
 	defer p.priorityMu.Unlock()
 	if len(p.priority) == 0 {
@@ -2173,9 +2239,19 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		p.priorityReservations = make(map[string]int)
 	}
 
-	bestIndex := -1
-	bestOrder := len(p.priority)
-	var bestLoad uint64
+	// The reserved head is picked by load, not by list position, so the ordering
+	// in resolveCandidates does not reach it: a cooling node would be chosen
+	// straight back to the front. Skipping it here is what makes the demotion hold
+	// for scheduler-ranked nodes.
+	//
+	// One pass, two bests tracked: the least-loaded node that is not cooling, and
+	// the least-loaded one that is. The second is kept rather than recomputed
+	// because demotion must not become exclusion — when every listed candidate is
+	// cooling there is nothing to prefer, and leaving the round unreserved would be
+	// worse than dispatching to one of them.
+	bestIndex, bestOrder := -1, len(p.priority)
+	coolIndex, coolOrder := -1, len(p.priority)
+	var bestLoad, coolLoad uint64
 	for order, id := range p.priority {
 		index, ok := candidateIndex[id]
 		if !ok {
@@ -2184,11 +2260,16 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		load := uint64(p.priorityPending[id]) +
 			uint64(p.priorityGPUPressure[id]) +
 			uint64(p.priorityReservations[id])
-		if bestIndex < 0 || load < bestLoad || (load == bestLoad && order < bestOrder) {
-			bestIndex = index
-			bestOrder = order
-			bestLoad = load
+		if cooling[id] {
+			if coolIndex < 0 || load < coolLoad || (load == coolLoad && order < coolOrder) {
+				coolIndex, coolOrder, coolLoad = index, order, load
+			}
+		} else if bestIndex < 0 || load < bestLoad || (load == bestLoad && order < bestOrder) {
+			bestIndex, bestOrder, bestLoad = index, order, load
 		}
+	}
+	if bestIndex < 0 {
+		bestIndex = coolIndex
 	}
 	if bestIndex < 0 {
 		return candidates, reservation{}
@@ -2205,6 +2286,86 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		generation: p.appliedPriorityGeneration,
 		held:       true,
 	}
+}
+
+// noteNoFirstByte records that a candidate consumed its whole first-byte budget
+// and produced nothing, so the ordering passes put it behind its peers for one
+// cooldown. Demotion, never exclusion: see demoteCooling.
+func (p *Proxy) noteNoFirstByte(id string, now time.Time) {
+	if id == "" {
+		return
+	}
+	p.coolMu.Lock()
+	defer p.coolMu.Unlock()
+	if p.coolUntil == nil {
+		p.coolUntil = make(map[string]time.Time)
+	}
+	p.coolUntil[id] = now.Add(candidateCooldown)
+}
+
+// noteFirstByte clears a candidate's cooldown on evidence that it is serving
+// again, rather than holding it down for the rest of the window. A node coming
+// back from its own silence is direct evidence about itself, and needs no
+// inference about anybody else.
+func (p *Proxy) noteFirstByte(id string) {
+	if id == "" {
+		return
+	}
+	p.coolMu.Lock()
+	defer p.coolMu.Unlock()
+	if len(p.coolUntil) == 0 {
+		return
+	}
+	delete(p.coolUntil, id)
+}
+
+// coolingSet returns the node ids still inside their cooldown, and nil when no
+// node has a stamp at all. That nil is the ordinary case, and both callers branch
+// on the length, so a process that has never met a stalled node does exactly what
+// it did before this existed.
+//
+// Expired stamps are dropped here rather than on a timer: the map is only read
+// on the routing path, so that is the only place a sweep is worth doing.
+func (p *Proxy) coolingSet(now time.Time) map[string]bool {
+	p.coolMu.Lock()
+	defer p.coolMu.Unlock()
+	if len(p.coolUntil) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(p.coolUntil))
+	for id, until := range p.coolUntil {
+		if now.Before(until) {
+			out[id] = true
+		} else {
+			delete(p.coolUntil, id)
+		}
+	}
+	return out
+}
+
+// demoteCooling moves cooling candidates to the back, keeping the relative order
+// of both groups so the scheduler's ranking still decides within each.
+//
+// Demotion, not exclusion. With a single candidate the back is also the front,
+// so a one-node cluster is unaffected, and a cooling node is still tried once the
+// others are exhausted.
+func demoteCooling(cands []candidate, cooling map[string]bool) []candidate {
+	if len(cooling) == 0 || len(cands) < 2 {
+		return cands
+	}
+	hot := make([]candidate, 0, len(cands))
+	cold := make([]candidate, 0, len(cands))
+	for _, c := range cands {
+		if cooling[c.id] {
+			cold = append(cold, c)
+		} else {
+			hot = append(hot, c)
+		}
+	}
+	if len(cold) == 0 {
+		return cands
+	}
+	return append(hot, cold...)
 }
 
 // releaseReservation drops an in-flight dispatch's reservation once its request
@@ -2557,12 +2718,21 @@ func (p *Proxy) setPriorityLocked(priority schedulerwire.Priority) int {
 	return len(cleaned)
 }
 
-// subscribedToNode projects a relay DirectoryNode onto the proxy's routable Node
-// for the ol service, returning false when the node doesn't advertise ol or has
-// no dialable address. The engine port comes from the ol service key (the real
-// Ollama port the broker's engine poller registered, not the proxy's listen
-// port).
+// subscribedToNode projects a local record or a trusted pinned peer into a
+// routable node for this engine. It requires the engine's advertised service
+// and a dialable IP. The service supplies the engine's registered server port.
 func subscribedToNode(p engineProfile, n noderec.DirectoryNode) (Node, bool) {
+	verification := n.IdentityVerification
+	if verification != noderec.IdentityLocal && verification != noderec.IdentityPinned {
+		// UUID, trusted, and loopback claims cannot make an unverified
+		// advertisement eligible for inference routing.
+		return Node{}, false
+	}
+	if verification == noderec.IdentityPinned && !n.Trusted {
+		// A proved remote identity still needs current trust. Local records
+		// come from the owned worker and do not require a peer pin.
+		return Node{}, false
+	}
 	svc, ok := n.Services[p.DiscoveryService]
 	if !ok || n.IP == "" {
 		return Node{}, false

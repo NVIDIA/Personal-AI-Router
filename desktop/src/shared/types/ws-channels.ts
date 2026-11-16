@@ -102,7 +102,10 @@ export interface WsInvokeChannelMap {
     'engines:preview-settings': { request: EngineSettingsRequest; response: EngineSettingsPreview }
     'engines:apply-settings': { request: EngineSettingsRequest; response: EngineSettingsReceipt }
     'engine:command': { request: EngineCommandPayload; response: null }
-    'engine:search-hub': { request: { engineType: EngineType }; response: EngineHubSearchResponse }
+    'engine:search-hub': {
+        request: { engineType: EngineType; query?: string }
+        response: EngineHubSearchResponse
+    }
 
     // Errors
     'errors:get-initial': { request: void; response: ServiceError[] }

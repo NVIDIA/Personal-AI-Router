@@ -4,13 +4,14 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 )
 
 // membersFile is the durable, lean roster persisted under the cluster dir. Only
@@ -38,7 +39,9 @@ func (m *Manager) persistMembersErr() error {
 		}
 	}
 	m.memMu.Unlock()
-	sort.Slice(durable, func(i, j int) bool { return durable[i].ID < durable[j].ID })
+	slices.SortFunc(durable, func(a, b ClusterNode) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 
 	data, err := json.MarshalIndent(durable, "", "  ")
 	if err != nil {

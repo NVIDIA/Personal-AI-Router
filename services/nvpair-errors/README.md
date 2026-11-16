@@ -103,6 +103,7 @@ Starter ids:
 |---|---|---|
 | `ollama-proxy:upstream-unreachable:<node-id>` | ollama-proxy | an upstream node dropped out of discovery |
 | `lmstudio-proxy:upstream-unreachable:<node-id>` | lmstudio-proxy | an upstream node dropped out of discovery |
+| `llamacpp-proxy:upstream-unreachable:<node-id>` | llamacpp-proxy | an upstream node dropped out of discovery |
 | `manual-nodes:probe-failed:<node-id>` | nvpair-manual-nodes | a manual node has failed N consecutive probes |
 | `engine-manager:install-failed:<engine>` | nvpair-engine-manager | installing the engine failed |
 | `engine-manager:pull-failed:<engine>:<model>` | nvpair-engine-manager | pulling a model for the engine failed |
@@ -247,6 +248,9 @@ producer --errors:report--> nvpair-errors A --POST /v1/errors--> nvpair-errors B
 (`{"nodeId": "...", "errors": [...]}`) and reconcile. `GET /v1/errors`
 — return this node's local-origin snapshot (the same body we push;
 handy for manual verification).
+
+Ingest JSON decoding reads at most 1 MiB. A snapshot whose JSON value extends
+past that limit returns `400` without reconciling any errors.
 
 Both require **pin-based cluster mTLS**. The caller must present a
 certificate this node currently pins; anything else is refused with

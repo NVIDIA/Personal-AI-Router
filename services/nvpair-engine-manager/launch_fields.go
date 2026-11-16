@@ -71,7 +71,7 @@ func normalizeCORSBoolean(value, _ string) (string, error) {
 func normalizeCORSOrigins(value string) (string, error) {
 	value = strings.Trim(strings.TrimSpace(value), "\"'")
 	origins := []string{}
-	for _, origin := range strings.Split(value, ",") {
+	for origin := range strings.SplitSeq(value, ",") {
 		origin = strings.TrimSpace(origin)
 		if origin == "" {
 			continue

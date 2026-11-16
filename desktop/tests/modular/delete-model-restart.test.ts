@@ -24,10 +24,11 @@ import type { EngineType } from '@/shared/types/engines'
 
 const MANIFEST_DIR = path.resolve(process.cwd(), '../services/nvpair-engine-manager/manifests')
 
-/** Manifest engine ids differ from our `EngineType` for LM Studio only. */
+/** Map engine-manager manifest ids to the desktop's closed engine ids. */
 const ENGINE_TYPE_BY_MANIFEST_ID: Record<string, EngineType> = {
     ollama: 'ollama',
-    lmstudio: 'lm-studio'
+    lmstudio: 'lm-studio',
+    llamacpp: 'llama-cpp'
 }
 
 interface ManifestAction {
@@ -63,6 +64,14 @@ describe('delete-model restart is scoped to LM Studio', () => {
         // so absent is the assertion that matters, not `false`.
         expect(EngineCapabilities.ollama.restartsOnModelDelete).toBeFalsy()
         expect(EngineCapabilities.ollama.hasDeleteModel).toBe(true)
+    })
+
+    it('llama.cpp deletes without restarting the router', () => {
+        const llamacpp = readManifests().find(m => m.engine === 'llamacpp')
+        expect(llamacpp?.actions?.delete_model).toBeDefined()
+        expect(llamacpp?.actions?.delete_model?.restart_after).toBeUndefined()
+        expect(EngineCapabilities['llama-cpp'].restartsOnModelDelete).toBeFalsy()
+        expect(EngineCapabilities['llama-cpp'].hasDeleteModel).toBe(true)
     })
 
     it('every engine that bounces on delete also warns the user first', () => {

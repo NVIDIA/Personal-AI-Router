@@ -64,14 +64,16 @@ type VersionResult struct {
 // AvailableNode is the per-node wire format used both as the array
 // element of the discovery:get-nodes response and as each element of
 // the discovery:nodes-changed notification payload. It is intentionally
-// narrower than the rich EnrichedNode the broker holds internally —
-// only the fields the external schema requires. JSON keys are
+// narrower than the internal EnrichedNode and includes the latest hardware
+// observation with its sample age. JSON keys are
 // camelCase here because the external consumer's schema demands it;
 // the rest of the NVPAIR codebase uses snake_case, so this is the
 // deliberate camelCase island at the broker's outer boundary.
 type AvailableNode struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	Name                 string                       `json:"name"`
 	// HostUUID is the node's stable per-host identity (the daemon's uuid= TXT).
 	// It is invariant across a PC rename and unique per physical machine, so it
 	// is the key clients should dedup/track nodes by; id/name stay the hostname
@@ -114,6 +116,17 @@ type AvailableNode struct {
 	// consumer show which of a remote node's models are loaded. Omitted
 	// when no engine reports loaded state.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// DownloadedByEngine lists every model an engine can load when that engine
+	// advertises only the one it is serving (vLLM), so ModelsByEngine holds just
+	// that one. It is reported even while the engine is stopped, so a remote
+	// node's model manager keeps its Load and Delete rows, and its LoadedByEngine
+	// entry names models the same way. An engine key with an empty list means the
+	// inventory was read and is empty; a missing key means it was not read.
+	// Omitted when no engine reports one.
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
+	// Info is the latest hardware observation for this record. Unverified
+	// records carry display-only public previews, never scheduling evidence.
+	Info *noderec.NodeInfo `json:"info,omitempty"`
 }
 
 // GetNodesResult is the response to "discovery:get-nodes". Wrapped in an
@@ -133,11 +146,11 @@ type SubscriptionResult struct {
 	Subscribed bool `json:"subscribed"`
 }
 
-// ProxyStatusResult is the response to "ollama-proxy:get-status". Ready is false
-// (and Port 0) until the supervised ollama-proxy has emitted its "ready"
-// notification — or always, if no proxy is being supervised. Clients poll
-// this to learn where the local proxy is listening, since the proxy is
-// optional and comes up asynchronously after app:ready.
+// ProxyStatusResult is the response to "<engine>-proxy:get-status". Ready is
+// false (and Port 0) until that facade has emitted its "ready" notification —
+// or always, if no proxy is being supervised. Clients poll this to learn where
+// the local facade is listening, since the proxy is optional and comes up
+// asynchronously after app:ready.
 type ProxyStatusResult struct {
 	Ready bool `json:"ready"`
 	Port  int  `json:"port"`
@@ -152,31 +165,39 @@ type Broker struct {
 	// is released while an engine restarts, so this is what keeps two applies —
 	// which may compete for the same port — from interleaving. Always take it
 	// before engineConfigMu, never the reverse.
-	settingsApplyMu      sync.Mutex
-	engineConfigMu       sync.Mutex
-	engineSettingsLoaded bool
-	engineSettingsError  error
-	engineSettingsEpoch  string
-	engineSettings       map[string]*engineSettingsRecord
-	settingsRelayMu      sync.Mutex
-	settingsCancels      map[string]context.CancelFunc
-	activeSettings       map[string]activeSettingsOperation
-	codec                *Codec
-	cancel               context.CancelFunc
-	startedAt            time.Time
-	nodeID               string
-	scannerPath          string
-	nodeInfoPath         string
-	proxyPath            string
-	proxyEngines         []string
-	workloadMgrPath      string
-	errorsPath           string
-	engineMgrPath        string
-	manualNodesPath      string
-	settingsPath         string
-	clusterMgrPath       string
-	schedulerPath        string
-	clusterDir           string
+	settingsApplyMu       sync.Mutex
+	engineConfigMu        sync.Mutex
+	engineSettingsLoaded  bool
+	engineSettingsError   error
+	engineSettingsEpoch   string
+	engineSettings        map[string]*engineSettingsRecord
+	settingsRelayMu       sync.Mutex
+	settingsCancels       map[string]context.CancelFunc
+	activeSettings        map[string]activeSettingsOperation
+	codec                 *Codec
+	cancel                context.CancelFunc
+	startedAt             time.Time
+	nodeID                string
+	scannerPath           string
+	nodeInfoPath          string
+	proxyPath             string
+	proxyEngines          []string
+	workloadMgrPath       string
+	errorsPath            string
+	engineMgrPath         string
+	manualNodesPath       string
+	manualNodesConfigPath string
+	settingsPath          string
+	clusterMgrPath        string
+	schedulerPath         string
+	clusterDir            string
+	// discoveryMu serializes worker events with trust invalidation and crash
+	// cleanup, so a queued event cannot restore a withdrawn source.
+	discoveryMu        sync.Mutex
+	discoveryMesh      *clustertrust.Mesh
+	discoveryMeshOnce  sync.Once
+	manualGeneration   uint64 // protected by discoveryMu
+	nodeInfoGeneration uint64 // protected by discoveryMu
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
@@ -205,6 +226,12 @@ type Broker struct {
 	lmstudioReadyMu                  sync.Mutex
 	store                            *discoveryStore
 	telemetry                        *telemetryCache
+	localInfoMu                      sync.Mutex
+	localInfo                        *localInfoObservation
+	peerMetadataMu                   sync.Mutex
+	localPeerMetadata                *noderec.PeerMetadataParams
+	peerMetadataSending              bool // guarded by peerMetadataMu
+	peerMetadataPending              bool // guarded by peerMetadataMu
 	// relayDir is the discovery directory, fed by the promoted daemon's
 	// discovery:node-* stream. It runs alongside the legacy store during the
 	// migration; the client-facing get-nodes/subscribe path moves onto it at the
@@ -255,11 +282,21 @@ type Broker struct {
 	clusterMgrSup  *supervisor
 	schedulerSup   *supervisor
 
-	// subMu guards subscribed. The discovery:nodes-changed stream is
-	// opt-in: emitNodesChanged (called on the scanner-event goroutine)
-	// reads this flag while the discovery:subscribe / discovery:unsubscribe
-	// handlers (called on the read-loop goroutine) flip it, so the two
-	// goroutines need a lock between them.
+	// startedWorkers are the supervisors whose first spawn succeeded, which is
+	// exactly the set teardown may join: supervisor.Stop waits on a monitor
+	// goroutine that only a successful Start launches. Written by Serve as it
+	// brings each worker up and read by its deferred stopWorkers, both on the
+	// same goroutine, so it needs no lock.
+	startedWorkers []*supervisor
+
+	// teardownPhases times the steps shutdownInferenceStack runs ahead of the
+	// worker joins, for stopWorkers' slow-teardown report. Both run on Serve's
+	// goroutine, so it needs no lock.
+	teardownPhases []teardownStep
+
+	// subMu guards subscribed and orders client discovery replies, baselines,
+	// and hardware pushes. Client requests use the store's own snapshot lock,
+	// independently of discoveryMu, so blocked worker delivery cannot stall them.
 	subMu      sync.Mutex
 	subscribed bool
 
@@ -310,22 +347,15 @@ type Broker struct {
 	engineRelayMu    sync.Mutex
 	engineRelaySubID int
 
-	// manualMu guards manualNodeKeys, mapping each manual node's id to the
-	// discovery-store key it currently occupies — its real hostUuid once
-	// node-info reports one, else its manual id until then. Tracked
-	// per manual id so the broker can (a) re-key the store entry when a manual
-	// node's node-info first reveals its stable UUID, and (b) evict the right
-	// key on removal or a manual-nodes crash — since the store key is no longer
-	// the manual id once the UUID is known. Several manual aliases (distinct
-	// names/addresses for one machine) can map to the same key; the store/proxy
-	// manual claim is dropped only once the last alias for a key is gone, and
-	// when an alias that a key was currently projecting from leaves, a surviving
-	// alias is reprojected from manualNodeStatuses (its last-seen payload) so the
-	// removed alias's address/models don't linger (the survivor's own periodic
-	// probe emits no update while its status is unchanged).
+	// manualMu guards manualNodeStatuses, indexed by manual entry ID. Each entry
+	// retains its discovery-store key, status, and original receipt time.
+	// Multiple aliases can share a verified host key. Removing or rekeying an
+	// alias reprojects that key from a surviving alias, preserving its sample age;
+	// only the final alias releases the manual store/proxy claim.
 	manualMu           sync.Mutex
-	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
+	manualPersistMu    sync.Mutex
+	manualMutationMu   sync.Mutex
 
 	// schedMu guards the cached ranking and its generation.
 	//
@@ -393,30 +423,30 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	return &Broker{
-		codec:              codec,
-		startedAt:          time.Now(),
-		nodeID:             nodeID,
-		scannerPath:        paths.scanner,
-		nodeInfoPath:       paths.nodeInfo,
-		proxyPath:          paths.proxy,
-		proxyEngines:       paths.proxyEngines,
-		workloadMgrPath:    paths.workloadMgr,
-		errorsPath:         paths.errors,
-		engineMgrPath:      paths.engineMgr,
-		manualNodesPath:    paths.manualNodes,
-		settingsPath:       paths.settings,
-		clusterMgrPath:     paths.clusterMgr,
-		schedulerPath:      paths.scheduler,
-		clusterDir:         paths.clusterDir,
-		store:              newDiscoveryStore(),
-		telemetry:          newTelemetryCache(),
-		relayDir:           relay.NewDirectory(),
-		regCache:           relay.NewRegistrationCache(),
-		manualNodeKeys:     make(map[string]string),
-		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
-		workloads:          workloadstore.New(),
-		ollamaPortReady:    make(chan struct{}),
-		lmstudioPortReady:  make(chan struct{}),
+		codec:                 codec,
+		startedAt:             time.Now(),
+		nodeID:                nodeID,
+		scannerPath:           paths.scanner,
+		nodeInfoPath:          paths.nodeInfo,
+		proxyPath:             paths.proxy,
+		proxyEngines:          paths.proxyEngines,
+		workloadMgrPath:       paths.workloadMgr,
+		errorsPath:            paths.errors,
+		engineMgrPath:         paths.engineMgr,
+		manualNodesPath:       paths.manualNodes,
+		manualNodesConfigPath: defaultManualNodesConfigPath(),
+		settingsPath:          paths.settings,
+		clusterMgrPath:        paths.clusterMgr,
+		schedulerPath:         paths.scheduler,
+		clusterDir:            paths.clusterDir,
+		store:                 newDiscoveryStore(),
+		telemetry:             newTelemetryCache(),
+		relayDir:              relay.NewDirectory(),
+		regCache:              relay.NewRegistrationCache(),
+		manualNodeStatuses:    make(map[string]manualNodeStatusEntry),
+		workloads:             workloadstore.New(),
+		ollamaPortReady:       make(chan struct{}),
+		lmstudioPortReady:     make(chan struct{}),
 	}
 }
 
@@ -537,14 +567,18 @@ func (b *Broker) restoreEnabledEnginesAfterPortGate(ctx context.Context) bool {
 
 func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
-	runOllama func(context.Context),
-	runLMStudio func(context.Context),
+	runners ...func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
-	go runOllama(ctx)
-	runLMStudio(ctx)
+	for index, run := range runners {
+		if index == len(runners)-1 {
+			run(ctx)
+			break
+		}
+		go run(ctx)
+	}
 	return true
 }
 
@@ -603,21 +637,27 @@ func (b *Broker) getClusterMgr() *clusterManagerProcess {
 // and returns it as a supervisedHandle for the supervisor to watch. A
 // spawn failure returns the error without storing a handle, leaving the
 // previous (dead) handle in place until the next successful (re)start.
+// spawnScanner also replays cached local inventory and service registrations.
 func (b *Broker) spawnScanner() (supervisedHandle, error) {
 	sp, err := startScanner(
 		b.scannerPath,
 		applog.LevelString(),
 		b.store,
+		&b.discoveryMu,
+		b.currentDiscoveryMesh(),
 		b.relayDir,
 		b.failWorkloadsForNode,
 		func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
 		func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
+		b.updateLocalPeerMetadata,
+		b.pushNodeInfo,
 		b.clusterDirArgs()...,
 	)
 	if err != nil {
 		return nil, err
 	}
 	b.setScanner(sp)
+	b.replayLocalInfo(sp)
 	// Replay cached registrations to the (re)started daemon so it re-advertises
 	// this node's services without any worker reconnect logic (epoch replay).
 	for _, p := range b.regCache.Snapshot() {
@@ -627,41 +667,45 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 	return sp, nil
 }
 
+// spawnNodeInfo starts the owned inventory worker, restores peer metadata,
+// and registers its service port with scanner.
 func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
-	// Deliberately NOT passed b.clusterDirArgs(): node-info stays plain HTTP even
-	// when clustered, and is the ONE documented exception to "the inter-node
-	// cluster data plane is always mTLS" (errors and workload-manager admit only
-	// pinned members, in either direction). Its GPU/CPU/memory inventory is the
-	// lowest-sensitivity inter-node surface and is read directly by consumers that
-	// hold no cluster identity — the desktop app's two-second telemetry poll and
-	// baseline LAN discovery — so gating it would remove node telemetry from the UI.
-	// The accepted risk and its compensating controls are recorded under
-	// "Documented Risk Acceptances" in desktop/SECURITY.md.
-	//
-	// node-info still implements the cluster-gated mode (pass it --cluster-dir and
-	// it admits only pinned peers). It is kept, unenabled, on purpose: it is the
-	// swap point if the desktop telemetry read is ever solved another way. Enabling
-	// it here without solving that first WILL blank the UI's node cards.
-	//
-	// Do pass --node-id: node-info reports the broker's already-resolved UUID so
-	// /v1/node-info agrees with the identity the fleet keys on, even on a custom
-	// --cluster-dir data root (node-info gets no cluster-dir, so it would
-	// otherwise resolve the default root and could report a different UUID).
-	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.forwardNodeInfoNotification, "--node-id", b.nodeID)
+	// One port serves public display HTTP and pinned peer mTLS. Local service
+	// measurements still use the owned worker's stdio, independent of membership.
+	extra := append(b.clusterDirArgs(), "--node-id", b.nodeID)
+	b.discoveryMu.Lock()
+	generation := b.nodeInfoGeneration
+	b.discoveryMu.Unlock()
+	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.nodeInfoNotificationHandler(generation), extra...)
 	if err != nil {
 		return nil, err
 	}
 	b.setNodeInfo(np)
-	// Tell it our membership: node-info reports the cluster principal on
-	// /v1/node-info but holds no cluster dir to read it from, so this push is the
-	// only source. It runs on every spawn, which also covers a supervised restart.
-	b.pushClusterIdentityToNodeInfo()
+	b.pushPeerMetadata()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.
 	b.registerService(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: nodeInfoHTTPPort})
 	slog.Info("node-info started", "path", b.nodeInfoPath, "pid", np.cmd.Process.Pid)
 	return np, nil
+}
+
+func (b *Broker) nodeInfoNotificationHandler(generation uint64) func(string, json.RawMessage) {
+	return func(method string, params json.RawMessage) {
+		receivedAt := time.Now()
+		b.discoveryMu.Lock()
+		defer b.discoveryMu.Unlock()
+		if generation == b.nodeInfoGeneration {
+			b.forwardNodeInfoNotification(method, params, receivedAt)
+		}
+	}
+}
+
+func (b *Broker) clearNodeInfoState() {
+	b.discoveryMu.Lock()
+	defer b.discoveryMu.Unlock()
+	b.nodeInfoGeneration++
+	b.setNodeInfo(nil)
 }
 
 // proxyArgs builds the child's argv. Only process-scoped flags remain: which
@@ -755,13 +799,30 @@ func (b *Broker) proxyBringUpContext() (context.Context, context.CancelFunc) {
 func (b *Broker) enableEngineFacade(
 	ctx context.Context, pp *proxyProcess, profile engineProxyProfile, alias ollamaHostAlias,
 ) error {
+	return b.enableEngineFacadeWithPortCheck(ctx, pp, profile, alias, tcpPortAvailable)
+}
+
+func (b *Broker) enableEngineFacadeWithPortCheck(
+	ctx context.Context,
+	pp *proxyProcess,
+	profile engineProxyProfile,
+	alias ollamaHostAlias,
+	available func(int) bool,
+) error {
 	switch profile.Name {
 	case ollamaProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.ollamaFacadeSpec(alias), b.ollamaFallbackPort)
 	case lmstudioProxyProfile.Name:
 		return b.enableProxyFacadeWithFallback(ctx, pp, b.lmstudioFacadeSpec(), b.lmstudioFallbackPort)
 	default:
-		return fmt.Errorf("no facade spec for engine %q", profile.Name)
+		return b.enableProxyFacadeWithFallback(
+			ctx,
+			pp,
+			b.defaultEngineFacadeSpec(profile),
+			func(failed int) int {
+				return b.defaultEngineFallbackPortWithCheck(profile, failed, available)
+			},
+		)
 	}
 }
 
@@ -787,7 +848,7 @@ func (b *Broker) blockAndFinishEngineProxy(profile engineProxyProfile) {
 		}
 		b.finishLMStudioProxyTerminal()
 	default:
-		slog.Warn("no terminal handling for engine", "engine", profile.Name)
+		// Other engines have no compatibility-port claim or startup gate.
 	}
 }
 
@@ -981,8 +1042,13 @@ func (b *Broker) forwardProxyProcessNotification(
 			slog.Debug("ignoring unaddressed proxy notification", "method", bare)
 		}
 	default:
-		slog.Warn("proxy addressed a notification to an unknown engine",
-			"engine", engine, "method", bare)
+		profile, known := engineProxyProfileFor(engine)
+		if known {
+			b.forwardDefaultEngineProxyNotification(profile, method, params)
+			return
+		}
+		slog.Warn("proxy addressed a notification without a handler",
+			"engine", engine, "method", bare, "known", known)
 	}
 }
 
@@ -1143,13 +1209,28 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 }
 
 func (b *Broker) spawnManualNodes() (supervisedHandle, error) {
-	w, err := startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), b.forwardManualNodesNotification)
+	b.discoveryMu.Lock()
+	generation := b.manualGeneration
+	b.discoveryMu.Unlock()
+	w, err := startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), b.manualNotificationHandler(generation))
 	if err != nil {
 		return nil, err
 	}
 	b.setManualNodes(w)
+	go b.replayPersistedManualNodes(w)
 	slog.Info("manual-nodes started", "path", b.manualNodesPath, "pid", w.cmd.Process.Pid)
 	return w, nil
+}
+
+func (b *Broker) manualNotificationHandler(generation uint64) func(string, json.RawMessage) {
+	return func(method string, params json.RawMessage) {
+		receivedAt := time.Now()
+		b.discoveryMu.Lock()
+		defer b.discoveryMu.Unlock()
+		if generation == b.manualGeneration {
+			b.handleManualNodesNotification(method, params, receivedAt)
+		}
+	}
 }
 
 func (b *Broker) spawnSettings() (supervisedHandle, error) {
@@ -1167,6 +1248,7 @@ func (b *Broker) spawnJobScheduler() (supervisedHandle, error) {
 	if err != nil {
 		return nil, err
 	}
+	b.reconcileDiscoveryTrust()
 
 	// workloadEmitMu prevents an accepted workload transition from interleaving
 	// with its baseline. schedulerFeedMu also holds discovery fanout until the
@@ -1176,7 +1258,7 @@ func (b *Broker) spawnJobScheduler() (supervisedHandle, error) {
 	b.setScheduler(w)
 	replayed := b.replayActiveWorkloadsToScheduler(w)
 	telemetryReplayed := b.replayTelemetryToScheduler(w)
-	if err := w.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
+	if err := w.Notify("discovery:nodes-changed", b.schedulingSnapshot()); err != nil {
 		slog.Warn("push discovery baseline to scheduler failed", "err", err)
 	}
 	b.schedulerFeedMu.Unlock()
@@ -1359,10 +1441,8 @@ func (b *Broker) clusterManagerConfigDir() string {
 // configured, else nil. Threaded into every worker that does cluster-scoped
 // inter-node mTLS (nvpair-errors, nvpair-workload-manager, nvpair-node-scanner,
 // nvpair-manual-nodes, nvpair-engine-manager) so each serves/dials pinned cluster
-// peers once this node is clustered; absent it, those workers stay on plain HTTP
-// (or, for engine-manager's ec surface, don't bind it at all). nvpair-node-info is
-// deliberately excluded — it stays plain HTTP even on a clustered node (see the
-// spawnNodeInfo call site), so it is never passed --cluster-dir.
+// peers once this node is clustered. Node-info also receives this directory for
+// its peer node inventory handler, alongside independent public display HTTP.
 func (b *Broker) clusterDirArgs() []string {
 	if b.clusterDir == "" {
 		return nil
@@ -1408,61 +1488,23 @@ func resolveLocalNodeID(clusterDir string) string {
 // the rest of its life — in the roster and ranked by the scheduler, yet
 // exchanging no cluster traffic.
 //
-// Two workers are told directly, because they publish this node's membership
-// rather than deriving it. The scanner owns the mDNS record: cluster-uuid= is how
-// a peer finds the pin for this node, so it should flip now rather than at the
-// scanner's next membership poll. node-info carries the same fact over plain
-// HTTP, which is a peer's only way to learn it when this node's mDNS record does
-// not reach it — and it holds no cluster dir, so the value has to be pushed. Both
-// are idempotent and run on their own goroutine, because they are
-// bounded-but-blocking writes and the caller is the cluster-manager's reader.
+// Withdraw obsolete proofs before accepting more worker events. Scanner also
+// updates its local announcement immediately. Node-info reads the shared cluster
+// directory itself.
+// Child writes run asynchronously because this is cluster-manager's reader.
 func (b *Broker) applyClusterIdentityChange() {
 	if b.clusterDir == "" {
 		return
 	}
+	b.reconcileDiscoveryTrust()
 	slog.Info("cluster identity changed; converging this node's advertised cluster identity")
 	if sc := b.getScanner(); sc != nil {
 		go sc.reloadIdentity()
 	}
-	go b.pushClusterIdentityToNodeInfo()
 }
 
-// clusterPrincipal is the cluster principal this node currently holds, or empty
-// when it belongs to no cluster. It is read from the trust store on each call
-// rather than cached: membership changes under the broker while it runs, and this
-// is the value peers key their pins on.
-func (b *Broker) clusterPrincipal() string {
-	if b.clusterDir == "" {
-		return ""
-	}
-	mesh := clustertrust.Open(b.clusterDir)
-	mesh.Refresh()
-	if !mesh.Clustered() {
-		return ""
-	}
-	return mesh.NodeUUID()
-}
-
-// pushClusterIdentityToNodeInfo sends node-info the current cluster principal.
-// Best-effort on a node-info that isn't running (never spawned, or mid-restart):
-// the next spawn pushes again. A failed write is warned about rather than traced,
-// because until the next push lands peers cannot learn this node's membership
-// over HTTP — which is the whole point of reporting it.
-func (b *Broker) pushClusterIdentityToNodeInfo() {
-	np := b.getNodeInfo()
-	if np == nil {
-		return
-	}
-	if err := np.SetClusterIdentity(b.clusterPrincipal()); err != nil {
-		slog.Warn("failed to push cluster identity to node-info", "err", err)
-	}
-}
-
-// forwardEngineNotification / forwardManualNodesNotification /
-// forwardSettingsNotification are the per-worker notification hooks. For
-// now they only demux errors:report / errors:clear into the nvpair-errors
-// pipeline; the rest of each worker's notification stream is logged and
-// dropped until its control-plane relay is wired in.
+// forwardEngineNotification handles engine-manager's settings and discovery
+// relay requests, routes service errors, and forwards client-facing events.
 func (b *Broker) forwardEngineNotification(method string, params json.RawMessage) {
 	if method == "engine:settings-request" {
 		b.handleSettingsRelay(params)
@@ -1561,7 +1603,9 @@ func (b *Broker) clearEngineRelaySub() {
 	b.engineRelayMu.Unlock()
 }
 
-func (b *Broker) forwardManualNodesNotification(method string, params json.RawMessage) {
+// handleManualNodesNotification runs with discoveryMu held after the spawn
+// callback has checked the worker generation.
+func (b *Broker) handleManualNodesNotification(method string, params json.RawMessage, receivedAt time.Time) {
 	if b.dispatchErrorsNotif("manual-nodes", method, params) {
 		return
 	}
@@ -1579,7 +1623,14 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 			slog.Warn("manual-nodes node payload missing id", "method", method)
 			return
 		}
-		b.upsertManualNode(s)
+		if s.IdentityVerification == noderec.IdentityPinned {
+			mesh := b.currentDiscoveryMesh()
+			mesh.Refresh()
+			if s.DiscoveryRecordID == "" || s.DiscoveryRecordID != mesh.PeerRecordID(s.HostUUID) {
+				s = s.withoutVerification()
+			}
+		}
+		b.upsertManualNodeAt(s, receivedAt)
 		slog.Debug("manual node event", "event", method, "id", s.ID)
 	case "node/removed":
 		var s manualNodeStatus
@@ -1596,58 +1647,63 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 	}
 }
 
-// trackManualNode records the discovery-store key a manual node currently
-// occupies and reports the previous key when it changed (a manual node's
-// node-info first reported its real hostUuid, moving it off the manual id). On a
-// rekey it drops the manual claim under the old key (the scanner's claim, if
-// any, survives); the caller rebridges the proxy overlay off the old key.
 // upsertManualNode ingests a manual node status: it records the alias's payload,
 // keys the discovery store by the node's operational identity (its hostUuid once
-// node-info reports one, else the manual id), and bridges the proxy candidate
+// authenticated over pinned mTLS, else the manual id), and bridges the proxy candidate
 // under that same key so scheduler priority and scheduledOn resolve to it. If
 // the alias's key changed (node-info revealed its real UUID) the
 // old key is reprojected from a surviving alias or released.
 func (b *Broker) upsertManualNode(s manualNodeStatus) {
-	en := manualToEnriched(s)
+	b.upsertManualNodeAt(s, time.Now())
+}
+
+// upsertManualNodeAt retains worker receipt time across discovery processing.
+func (b *Broker) upsertManualNodeAt(s manualNodeStatus, receivedAt time.Time) {
+	en := manualToEnriched(s, receivedAt)
 	key := en.storeKey()
-	receivedAt := time.Now()
 
 	b.manualMu.Lock()
-	oldKey, existed := b.manualNodeKeys[s.ID]
-	b.manualNodeKeys[s.ID] = key
-	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
+	previous, existed := b.manualNodeStatuses[s.ID]
+	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{key: key, status: s, receivedAt: receivedAt}
 	b.manualMu.Unlock()
 
+	// Discard the old measurement before the replacement record becomes visible
+	// to scheduler replay, which checks authorization against the current record.
+	if previous, present := b.store.sourceNode(key, sourceManual); present && previous.DiscoveryRecordID != en.DiscoveryRecordID {
+		b.removeTelemetry(sourceManual, key)
+	}
 	b.store.Upsert(en, sourceManual)
-	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
+	if s.IdentityVerification == noderec.IdentityPinned && s.HostUUID != "" {
+		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, s.HostUUID), receivedAt)
+	} else {
+		b.removeTelemetry(sourceManual, key)
+	}
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
 	// lmstudio-proxy) so inference can route to it; an unreachable engine is
 	// pulled back out. No-op for a proxy the broker doesn't supervise.
 	b.bridgeManualNode(s, key)
 
-	if existed && oldKey != key {
-		// This alias moved off oldKey: refresh oldKey from a surviving alias, or
+	if existed && previous.key != key {
+		// This alias changed keys: refresh its old key from a surviving alias, or
 		// release its store/proxy claim if this was its last owner.
-		b.reprojectOrRelease(oldKey)
+		b.reprojectOrRelease(previous.key)
 	}
 }
 
 // removeManualNode forgets a manual alias, then reprojects or releases the key
 // it occupied. When another alias for the same machine still owns the key, the
 // node stays and is reprojected from that survivor's last-seen payload — so the
-// removed alias's address/models don't linger (the survivor's steady-state probe
-// emits no update to restore itself); only the final alias's removal drops the
-// store/proxy claim.
+// removed alias's address/models don't linger until the next accepted probe.
+// Only the final alias's removal drops the store/proxy claim.
 func (b *Broker) removeManualNode(id string) {
 	b.manualMu.Lock()
-	key, ok := b.manualNodeKeys[id]
-	delete(b.manualNodeKeys, id)
+	entry, ok := b.manualNodeStatuses[id]
 	delete(b.manualNodeStatuses, id)
 	b.manualMu.Unlock()
 	if !ok {
 		return
 	}
-	b.reprojectOrRelease(key)
+	b.reprojectOrRelease(entry.key)
 }
 
 // reprojectOrRelease refreshes or drops a key's manual claim after an alias
@@ -1660,62 +1716,81 @@ func (b *Broker) reprojectOrRelease(key string) {
 		return
 	}
 	b.manualMu.Lock()
-	survivor, ok := b.survivingAliasLocked(key)
+	_, survivor, ok := b.survivingAliasLocked(key)
 	b.manualMu.Unlock()
 	if ok {
-		b.store.Upsert(manualToEnriched(survivor.status), sourceManual)
+		if b.clusterDir != "" && survivor.status.IdentityVerification == noderec.IdentityPinned {
+			mesh := b.currentDiscoveryMesh()
+			mesh.Refresh()
+			if survivor.status.DiscoveryRecordID == "" || survivor.status.DiscoveryRecordID != mesh.PeerRecordID(survivor.status.HostUUID) {
+				b.upsertManualNode(survivor.status.withoutVerification())
+				return
+			}
+		}
+		b.store.Upsert(manualToEnriched(survivor.status, survivor.receivedAt), sourceManual)
 		b.bridgeManualNode(survivor.status, key)
-		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
+		if survivor.status.IdentityVerification == noderec.IdentityPinned {
+			b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
+		}
 		return
 	}
+	previous, present := b.store.sourceNode(key, sourceManual)
 	b.store.Remove(key, sourceManual)
 	b.removeManualNodeFromProxies(key)
 	b.removeTelemetry(sourceManual, key)
+	if present {
+		b.failWorkloadsForWithdrawnPeer(previous)
+	}
 }
 
-// survivingAliasLocked returns the last-seen status of a manual alias still
+// survivingAliasLocked returns the ID and last-seen status of a manual alias still
 // resolving to key, picking the lexicographically smallest alias id for a stable
 // choice. Callers must hold manualMu.
-func (b *Broker) survivingAliasLocked(key string) (manualNodeStatusEntry, bool) {
+func (b *Broker) survivingAliasLocked(key string) (string, manualNodeStatusEntry, bool) {
 	best := ""
-	for id, k := range b.manualNodeKeys {
-		if k == key && (best == "" || id < best) {
+	for id, entry := range b.manualNodeStatuses {
+		if entry.key == key && (best == "" || id < best) {
 			best = id
 		}
 	}
 	if best == "" {
-		return manualNodeStatusEntry{}, false
+		return "", manualNodeStatusEntry{}, false
 	}
-	return b.manualNodeStatuses[best], true
+	return best, b.manualNodeStatuses[best], true
 }
 
 // clearManualNodesState is the manual-nodes supervisor's clearHandle: on a
 // crash it drops the worker handle and evicts every manual-origin node from
-// the discovery store. The restarted process comes up with no entries (it
-// keeps no persistent state and the broker doesn't re-feed them), so
-// leaving the old manual nodes in the snapshot would strand stale entries
-// that never age out. Clients re-add manual nodes after a restart.
+// the discovery store. The durable broker-owned list is left intact and is
+// replayed into the replacement worker after it starts.
 func (b *Broker) clearManualNodesState() {
+	b.discoveryMu.Lock()
+	defer b.discoveryMu.Unlock()
+	b.manualGeneration++
 	b.setManualNodes(nil)
 	b.manualMu.Lock()
-	keys := b.manualNodeKeys
-	b.manualNodeKeys = make(map[string]string)
+	entries := b.manualNodeStatuses
 	b.manualNodeStatuses = make(map[string]manualNodeStatusEntry)
 	b.manualMu.Unlock()
-	seen := make(map[string]bool, len(keys))
-	for _, key := range keys {
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		key := entry.key
 		// Aliases can share a key; drop each unique claim once.
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		// Drop only the manual claim; a co-located scanner node keeps its record.
+		previous, present := b.store.sourceNode(key, sourceManual)
 		b.store.Remove(key, sourceManual)
 		b.removeTelemetry(sourceManual, key)
 		// Pull the now-orphaned node out of every proxy too, so inference
-		// doesn't keep a stale manual target the crashed prober can no
-		// longer vouch for. Clients re-add manual nodes after the restart.
+		// doesn't keep a stale manual target while the replacement worker
+		// restores and re-probes the durable entry.
 		b.removeManualNodeFromProxies(key)
+		if present {
+			b.failWorkloadsForWithdrawnPeer(previous)
+		}
 	}
 }
 
@@ -1766,12 +1841,14 @@ func (b *Broker) forwardSchedulerNotification(method string, params json.RawMess
 	slog.Debug("ignoring scheduler notification", "method", method)
 }
 
-// forwardNodeInfoNotification is the hook startNodeInfo invokes on node-info's
-// reader goroutine for every notification it emits. Its observed local addresses
-// go to the scanner, which owns what this node advertises: node-info learns which
-// addresses peers actually reach us on, and that is the only direct evidence
-// address selection can have about reachability from somewhere else.
-func (b *Broker) forwardNodeInfoNotification(method string, params json.RawMessage) {
+// forwardNodeInfoNotification routes owned hardware snapshots and observed
+// addresses to scanner from node-info's stdout reader. Hardware supplies local
+// service measurements; observed addresses help rank this host's interfaces.
+func (b *Broker) forwardNodeInfoNotification(method string, params json.RawMessage, receivedAt time.Time) {
+	if method == noderec.NotifyInfoUpdated {
+		b.acceptLocalInfo(params, receivedAt)
+		return
+	}
 	if method != noderec.NotifyObservedAddresses {
 		slog.Debug("ignoring node-info notification", "method", method)
 		return
@@ -1913,6 +1990,7 @@ func (b *Broker) deliverPrioritySnapshot(generation uint64, deliver func(schedul
 // the handle — and a replay that misses the handle is dropped by the generation
 // check and never retried, leaving the new child with no ranking at all.
 func (b *Broker) replayProxyStateAfterSpawn() {
+	b.replayManualProxyTargets()
 	// Abandoned once teardown starts, which the onSpawned field comment
 	// requires of any callback that talks to the worker: this one calls the
 	// proxy, and a teardown is about to close that worker's stdin. It runs on
@@ -1977,8 +2055,8 @@ func (b *Broker) onErrorsUpdate(params json.RawMessage) {
 // worker, wires its crash/recovery callbacks (report into the pipeline,
 // drop the handle while down), and starts it. It returns the supervisor,
 // or nil when the binary wasn't resolved or the first spawn failed — in
-// both cases the broker simply runs without that worker. The caller defers
-// Stop on a non-nil result.
+// both cases the broker simply runs without that worker. A started worker is
+// registered for teardown here, so the caller needs no defer of its own.
 func (b *Broker) startOptionalWorker(name, path string, spawn func() (supervisedHandle, error), clearHandle func()) *supervisor {
 	if path == "" {
 		slog.Info("worker path not resolved; running without it", "worker", name)
@@ -1990,7 +2068,17 @@ func (b *Broker) startOptionalWorker(name, path string, spawn func() (supervised
 		slog.Warn("worker failed to start; continuing without it", "worker", name, "path", path, "err", err)
 		return nil
 	}
+	b.trackWorker(sup)
 	return sup
+}
+
+// trackWorker records a supervisor whose first spawn succeeded so the deferred
+// stopWorkers joins it. Every started worker must be tracked exactly once: an
+// untracked one is never asked to stop and outlives the broker, and one tracked
+// without a successful Start parks teardown on a monitor goroutine that was
+// never launched.
+func (b *Broker) trackWorker(s *supervisor) {
+	b.startedWorkers = append(b.startedWorkers, s)
 }
 
 // Serve runs the JSON-RPC loop until the peer disconnects, the context is
@@ -2069,6 +2157,12 @@ func (b *Broker) Serve(ctx context.Context) error {
 		defer stopFlusher()
 	}
 
+	// Join every started worker from one place, so the joins fan out (see
+	// stopWorkers). Registered after the flusher's stop so it runs BEFORE it
+	// (LIFO): the workers must be quiescent before the final workload-history
+	// flush.
+	defer b.stopWorkers()
+
 	// Bound how long a lost terminal event can keep a remote workload displaying
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
@@ -2080,11 +2174,11 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// it and (when auto-restart is enabled) respawns it on an unexpected
 	// exit instead of leaving the discovery snapshot frozen.
 	b.scannerSup = newSupervisor("scanner", defaultRestartPolicy(), b.spawnScanner)
-	b.scannerSup.onCrash, b.scannerSup.onRecovered = b.supervisedWorkerCallbacks("scanner", func() { b.setScanner(nil) })
+	b.scannerSup.onCrash, b.scannerSup.onRecovered = b.supervisedWorkerCallbacks("scanner", b.clearScannerState)
 	if err := b.scannerSup.Start(); err != nil {
 		return fmt.Errorf("start scanner: %w", err)
 	}
-	defer b.scannerSup.Stop()
+	b.trackWorker(b.scannerSup)
 
 	// nvpair-errors is the service-error datastore and the backbone of the
 	// error-surfacing pipeline: producers' errors:report / errors:clear
@@ -2103,7 +2197,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 			slog.Warn("nvpair-errors failed to start; continuing with the error pipeline disabled", "path", b.errorsPath, "err", err)
 			b.errorsSup = nil
 		} else {
-			defer b.errorsSup.Stop()
+			b.trackWorker(b.errorsSup)
 		}
 	} else {
 		slog.Info("nvpair-errors path not resolved; running with the error pipeline disabled")
@@ -2114,14 +2208,8 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// safely move an identified LM Studio command runtime. Unknown owners are
 	// never terminated; preparation instead selects an explicit fallback.
 	b.settingsSup = b.startOptionalWorker("settings", b.settingsPath, b.spawnSettings, func() { b.setSettings(nil) })
-	if b.settingsSup != nil {
-		defer b.settingsSup.Stop()
-	}
 	b.prepareOllamaHostAliasCandidate()
 	b.engineMgrSup = b.startOptionalWorker("engine-manager", b.engineMgrPath, b.spawnEngineMgr, func() { b.setEngineMgr(nil); b.clearEngineRelaySub() })
-	if b.engineMgrSup != nil {
-		defer b.engineMgrSup.Stop()
-	}
 	b.migrateLegacyEngineSettings()
 	b.prepareEnabledFacades()
 
@@ -2133,12 +2221,12 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// than tearing down discovery.
 	if b.nodeInfoPath != "" {
 		b.nodeInfoSup = newSupervisor("node-info", defaultRestartPolicy(), b.spawnNodeInfo)
-		b.nodeInfoSup.onCrash, b.nodeInfoSup.onRecovered = b.supervisedWorkerCallbacks("node-info", func() { b.setNodeInfo(nil) })
+		b.nodeInfoSup.onCrash, b.nodeInfoSup.onRecovered = b.supervisedWorkerCallbacks("node-info", b.clearNodeInfoState)
 		if err := b.nodeInfoSup.Start(); err != nil {
 			slog.Warn("node-info failed to start; continuing without local node advertisement", "path", b.nodeInfoPath, "err", err)
 			b.nodeInfoSup = nil
 		} else {
-			defer b.nodeInfoSup.Stop()
+			b.trackWorker(b.nodeInfoSup)
 		}
 	} else {
 		slog.Info("node-info path not resolved; running without local node advertisement")
@@ -2192,15 +2280,28 @@ func (b *Broker) Serve(ctx context.Context) error {
 			}
 			b.finishLMStudioProxyTerminal()
 		} else {
-			defer b.proxySup.Stop()
+			b.trackWorker(b.proxySup)
 		}
 	}
 
-	// Restore engines and begin both advertising loops only after both proxy
+	// Restore engines and begin advertising only after both managed proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	availabilityRunners := []func(context.Context){b.runAutoAdvertise, b.runAutoAdvertiseLMStudio}
+	for _, profile := range engineProxyProfiles {
+		if !b.proxyEnabled(profile) {
+			continue
+		}
+		if profile.Name == ollamaProxyProfile.Name || profile.Name == lmstudioProxyProfile.Name {
+			continue
+		}
+		profile := profile
+		availabilityRunners = append(availabilityRunners, func(ctx context.Context) {
+			b.runAutoAdvertiseEngine(ctx, profile)
+		})
+	}
+	go b.runEngineAvailabilityAfterPortGates(ctx, availabilityRunners...)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -2216,7 +2317,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 			slog.Warn("workload-manager failed to start; continuing without cluster workload relay", "path", b.workloadMgrPath, "err", err)
 			b.workloadMgrSup = nil
 		} else {
-			defer b.workloadMgrSup.Stop()
+			b.trackWorker(b.workloadMgrSup)
 		}
 	} else {
 		slog.Info("workload-manager path not resolved; running without cluster workload relay")
@@ -2228,23 +2329,14 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// crash surfacing); the broker demuxes their errors:* notifications
 	// into the pipeline and relays their control-plane requests.
 	b.manualNodesSup = b.startOptionalWorker("manual-nodes", b.manualNodesPath, b.spawnManualNodes, b.clearManualNodesState)
-	if b.manualNodesSup != nil {
-		defer b.manualNodesSup.Stop()
-	}
 	// nvpair-cluster-manager owns the node's cryptographic identity, the
 	// trusted-node store, and the PIN-based pairing flow, and answers
 	// cluster:* / nodes:* requests the broker relays.
 	b.clusterMgrSup = b.startOptionalWorker("cluster-manager", b.clusterMgrPath, b.spawnClusterManager, func() { b.setClusterMgr(nil) })
-	if b.clusterMgrSup != nil {
-		defer b.clusterMgrSup.Stop()
-	}
 	// nvpair-job-scheduler ranks the discovered nodes least-loaded-first and emits
 	// schedule:priority; the broker fans it out to the proxies. Non-fatal like
 	// the other auxiliaries — absent it, the proxies keep their default order.
 	b.schedulerSup = b.startOptionalWorker("scheduler", b.schedulerPath, b.spawnJobScheduler, func() { b.setScheduler(nil) })
-	if b.schedulerSup != nil {
-		defer b.schedulerSup.Stop()
-	}
 
 	if err := b.codec.Notify("app:ready", ReadyParams{Version: Version}); err != nil {
 		return fmt.Errorf("send app:ready: %w", err)
@@ -2280,12 +2372,22 @@ func (b *Broker) shutdownInferenceStack() {
 	// engine's facade, so this closes all of them at once — the child drains
 	// each facade before releasing the shared transport pool.
 	if b.proxySup != nil {
-		b.proxySup.Stop()
-		for _, profile := range engineProxyProfiles {
-			b.setEngineProxyHandle(profile, nil)
-		}
+		b.timeTeardownPhase("proxy", func() {
+			b.proxySup.Stop()
+			for _, profile := range engineProxyProfiles {
+				b.setEngineProxyHandle(profile, nil)
+			}
+		})
 	}
-	b.prepareEngineManagerShutdown()
+	b.timeTeardownPhase("engine-sweep", b.prepareEngineManagerShutdown)
+}
+
+// timeTeardownPhase runs one teardown step ahead of the worker joins and
+// records how long it took for the slow-teardown report.
+func (b *Broker) timeTeardownPhase(name string, phase func()) {
+	at := time.Now()
+	phase()
+	b.teardownPhases = append(b.teardownPhases, teardownStep{name: name, took: time.Since(at)})
 }
 
 // prepareEngineManagerShutdown requests a synchronous engine shutdown from
@@ -2324,17 +2426,18 @@ func (b *Broker) emitNodesChanged() {
 	b.fanDiscoveryToScheduler()
 
 	b.subMu.Lock()
-	subscribed := b.subscribed
-	b.subMu.Unlock()
-	if !subscribed {
+	defer b.subMu.Unlock()
+	if !b.subscribed {
 		return
 	}
 	b.pushNodesChanged()
 }
 
-// fanDiscoveryToScheduler pushes the current discovery snapshot to the scheduler
-// child as a discovery:nodes-changed notification (same bare-array shape the
-// client stream uses). A no-op when no scheduler is running.
+// fanDiscoveryToScheduler sends SchedulingSnapshot to the scheduler child as a
+// discovery:nodes-changed notification. That snapshot includes local and verified
+// discoveries plus explicitly configured manual engine targets, excluding
+// unverified scanner claims. It uses the client's bare-array wire shape and is
+// a no-op when no scheduler is running.
 func (b *Broker) fanDiscoveryToScheduler() {
 	b.schedulerFeedMu.Lock()
 	defer b.schedulerFeedMu.Unlock()
@@ -2343,9 +2446,28 @@ func (b *Broker) fanDiscoveryToScheduler() {
 	if sc == nil {
 		return
 	}
-	if err := sc.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
+	if err := sc.Notify("discovery:nodes-changed", b.schedulingSnapshot()); err != nil {
 		slog.Warn("fan discovery:nodes-changed to scheduler failed", "err", err)
 	}
+}
+
+// schedulingSnapshot checks authorization at send time, including when a
+// scheduler starts before the cluster-manager's trust notification arrives.
+func (b *Broker) schedulingSnapshot() []AvailableNode {
+	nodes := b.store.SchedulingSnapshot()
+	if b.clusterDir == "" {
+		return nodes
+	}
+	mesh := b.currentDiscoveryMesh()
+	mesh.Refresh()
+	current := make([]AvailableNode, 0, len(nodes))
+	for _, node := range nodes {
+		if node.IdentityVerification == noderec.IdentityPinned && (node.DiscoveryRecordID == "" || node.DiscoveryRecordID != mesh.PeerRecordID(node.HostUUID)) {
+			continue
+		}
+		current = append(current, node)
+	}
+	return current
 }
 
 // pushNodesChanged takes a fresh snapshot and writes it to the peer as a
@@ -2357,9 +2479,22 @@ func (b *Broker) fanDiscoveryToScheduler() {
 // subscription flag, so callers must gate on it themselves (the hook
 // path via emitNodesChanged; the subscribe path because it has just set
 // the flag true and wants an immediate baseline regardless of races).
+// The caller holds subMu through snapshot capture and the client write.
 func (b *Broker) pushNodesChanged() {
 	if err := b.codec.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
 		slog.Warn("emit discovery:nodes-changed failed", "err", err)
+	}
+}
+
+// pushNodeInfo orders an accepted hardware update with client discovery
+// snapshots. Include time waiting for the client writer in the sample's age.
+func (b *Broker) pushNodeInfo(value noderec.NodeInfoEvent) {
+	receivedAt := time.Now()
+	b.subMu.Lock()
+	defer b.subMu.Unlock()
+	value.Info = value.Info.Aged(time.Since(receivedAt))
+	if err := b.codec.Notify(noderec.NotifyNodeInfo, value); err != nil {
+		slog.Warn("forward node-info failed", "host_uuid", value.HostUUID, "err", err)
 	}
 }
 
@@ -2728,33 +2863,110 @@ func (b *Broker) forwardClusterManagerNotification(method string, params json.Ra
 		}
 		b.applyClusterIdentityChange()
 	}
-	// A pairing or removal changed the pin set. The cluster-scoped workers read
-	// their gates live and need nothing, but the node-scanner caches a per-peer
-	// trusted annotation it can only otherwise refresh when that peer's mDNS
-	// record moves — which a peer already advertising when we joined never does.
+	// A pairing or removal changed the pin set. Withdraw stale proofs and
+	// measurements, then ask scanner to authenticate against current pins.
 	if method == "cluster:trust-changed" {
 		b.applyClusterTrustChange()
 	}
 }
 
-// applyClusterTrustChange re-derives the scanner's per-peer trust annotation
-// after nvpair-cluster-manager reports a pin-set change. Fire-and-forget on its
-// own goroutine, for the same reason as applyClusterIdentityChange: it is a
-// bounded-but-blocking RPC and the caller is the cluster-manager's reader.
-//
-// node-info is pushed here too, not only from applyClusterIdentityChange: a pin
-// on its own can decide membership (a cluster dir predating admission.json is
-// clustered on pins alone — see clustertrust.Mesh), so this event can change the
-// principal we publish without any identity change being reported. Peers now
-// read that value over HTTP in preference to our mDNS record, so it must not have
-// fewer refresh triggers than the record does — otherwise a peer converges on a
-// principal we have already stopped advertising.
+// applyClusterTrustChange withdraws obsolete scanner and manual proofs, then
+// prompts scanner to reauthenticate matching candidates. Node-info follows live
+// membership from the same cluster directory.
 func (b *Broker) applyClusterTrustChange() {
 	slog.Info("cluster pin set changed; re-deriving peer trust")
+	b.reconcileDiscoveryTrust()
 	if sc := b.getScanner(); sc != nil {
 		go sc.reloadTrust()
 	}
-	go b.pushClusterIdentityToNodeInfo()
+}
+
+// currentDiscoveryMesh retains one live view of trust so temporary read
+// failures cannot discard previously readable pins.
+func (b *Broker) currentDiscoveryMesh() *clustertrust.Mesh {
+	b.discoveryMeshOnce.Do(func() {
+		if b.discoveryMesh == nil {
+			b.discoveryMesh = clustertrust.Open(b.clusterDir)
+		}
+	})
+	return b.discoveryMesh
+}
+
+func (b *Broker) reconcileDiscoveryTrust() {
+	b.discoveryMu.Lock()
+	defer b.discoveryMu.Unlock()
+	mesh := b.currentDiscoveryMesh()
+	mesh.Refresh()
+	for _, node := range b.store.sourceNodes(sourceScanner) {
+		if node.IdentityVerification == noderec.IdentityPinned && node.DiscoveryRecordID != mesh.PeerRecordID(node.HostUUID) {
+			b.removeScannerNode(node)
+		}
+	}
+	b.manualMu.Lock()
+	var invalid []manualNodeStatus
+	for _, entry := range b.manualNodeStatuses {
+		status := entry.status
+		if status.IdentityVerification == noderec.IdentityPinned && (status.DiscoveryRecordID == "" || status.DiscoveryRecordID != mesh.PeerRecordID(status.HostUUID)) {
+			invalid = append(invalid, status.withoutVerification())
+		}
+	}
+	b.manualMu.Unlock()
+	for _, status := range invalid {
+		b.upsertManualNode(status)
+	}
+}
+
+// failWorkloadsForWithdrawnPeer checks the old record against live trust and any
+// surviving current record. A failed probe or worker crash alone must not retire
+// jobs. Callers hold discoveryMu so a new authenticated record cannot race this
+// decision.
+func (b *Broker) failWorkloadsForWithdrawnPeer(previous EnrichedNode) {
+	if b.workloads == nil || b.clusterDir == "" || previous.IdentityVerification != noderec.IdentityPinned {
+		return
+	}
+	mesh := b.currentDiscoveryMesh()
+	mesh.Refresh()
+	currentRecordID := mesh.PeerRecordID(previous.HostUUID)
+	if previous.DiscoveryRecordID == currentRecordID {
+		return
+	}
+	for _, source := range []nodeSource{sourceScanner, sourceManual} {
+		node, present := b.store.sourceNode(previous.HostUUID, source)
+		if present && (node.IdentityVerification == noderec.IdentityLocal ||
+			(node.IdentityVerification == noderec.IdentityPinned && node.Trusted && currentRecordID != "" && node.DiscoveryRecordID == currentRecordID)) {
+			return
+		}
+	}
+	b.failWorkloadsForNode(previous.HostUUID, previous.ID)
+}
+
+// clearScannerState withdraws the crashed worker's complete directory. Its
+// replacement must authenticate remote records again; owned local inventory
+// stays in the separate cache and is replayed with its original receipt time.
+// A local scanner crash alone gives no evidence that a peer's workloads failed.
+func (b *Broker) clearScannerState() {
+	b.discoveryMu.Lock()
+	defer b.discoveryMu.Unlock()
+	if scanner := b.getScanner(); scanner != nil {
+		scanner.stopped = true
+	}
+	b.setScanner(nil)
+	for _, node := range b.store.sourceNodes(sourceScanner) {
+		b.removeScannerNode(node)
+	}
+}
+
+// removeScannerNode withdraws the scanner's record and measurements. Workloads
+// are retired only if trust also changed and no current verified record survives.
+func (b *Broker) removeScannerNode(node EnrichedNode) {
+	if b.relayDir != nil {
+		b.relayDir.Apply(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: node.HostUUID, DiscoveryRecordID: node.DiscoveryRecordID})
+	}
+	b.store.Remove(node.storeKey(), sourceScanner)
+	if node.IdentityVerification == noderec.IdentityPinned || node.IdentityVerification == noderec.IdentityLocal {
+		b.removeTelemetry(sourceScanner, node.HostUUID)
+	}
+	b.failWorkloadsForWithdrawnPeer(node)
 }
 
 // forwardWorkloadManagerNotification is the hook startWorkloadManager
@@ -2898,17 +3110,12 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 	}
 }
 
-// failWorkloadsForNode marks every non-terminal workload pinned to a node that
-// just dropped out of discovery as failed. A node leaves the directory only
-// after the scanner's miss-threshold + TCP-probe liveness guard has given up on
-// it — a full minute of unbroken silence, a failed probe on every scan of the
-// last three quarters of it, and no inference traffic from the node in that time
-// either, not a transient mDNS miss — so this is a strong
-// "the node is really gone" signal. That node's own proxy can no
-// longer emit a terminal workload:completed/errored (its process or host is
-// gone), so the broker synthesizes a workloads:upsert transition to "failed"
-// for each affected workload — clearing the stale "in progress" line while
-// keeping the entry in clients' history (we upsert, never remove).
+// failWorkloadsForNode marks non-terminal workloads for a node as failed after
+// the scanner's liveness guard declares it offline or its cluster trust is
+// withdrawn. Callers must not use a local scanner crash as evidence of peer loss.
+// The broker may no longer receive terminal workload:completed/errored events,
+// so it synthesizes a workloads:upsert transition to "failed" for each affected
+// workload, keeping the entry in clients' history.
 //
 // A workload is affected if the departed node is either its origin
 // (originatedFrom — the node that submitted it) or its executor (scheduledOn —
@@ -3060,7 +3267,7 @@ func (b *Broker) nodeDisplayNames() map[string]string {
 	nodes := b.store.Snapshot()
 	names := make(map[string]string, len(nodes))
 	for _, n := range nodes {
-		if n.HostUUID != "" && n.Name != "" {
+		if n.IdentityVerification != noderec.IdentityUnverified && n.HostUUID != "" && n.Name != "" {
 			names[n.HostUUID] = n.Name
 		}
 	}
@@ -3142,6 +3349,13 @@ func (b *Broker) handleMessage(msg *Message) {
 		return
 	}
 
+	if profile, ok := engineProxyProfileForMethod(msg.Method); ok {
+		method := strings.TrimPrefix(msg.Method, profile.ComponentName()+":")
+		if b.handleEngineProxyBrokerRequest(profile, method, msg) {
+			return
+		}
+	}
+
 	switch msg.Method {
 	case "engine:get-settings", "engine:preview-settings", "engine:apply-settings":
 		go b.handleEngineSettings(msg)
@@ -3160,15 +3374,19 @@ func (b *Broker) handleMessage(msg *Message) {
 		}
 
 	case "discovery:get-nodes":
+		b.subMu.Lock()
+		defer b.subMu.Unlock()
 		if err := b.codec.Respond(msg.ID, GetNodesResult{Nodes: b.store.Snapshot()}); err != nil {
 			log.Printf("failed to respond to discovery:get-nodes: %v", err)
 		}
 
 	case "discovery:subscribe":
+		// Serialize the baseline with hardware pushes so an older snapshot
+		// cannot follow a newer sample and overwrite it in the client.
 		b.subMu.Lock()
+		defer b.subMu.Unlock()
 		wasSubscribed := b.subscribed
 		b.subscribed = true
-		b.subMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
 			log.Printf("failed to respond to discovery:subscribe: %v", err)
 		}
@@ -3183,100 +3401,14 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "discovery:unsubscribe":
 		b.subMu.Lock()
+		defer b.subMu.Unlock()
 		b.subscribed = false
-		b.subMu.Unlock()
 		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
 			log.Printf("failed to respond to discovery:unsubscribe: %v", err)
 		}
 
-	case "ollama-proxy:get-status":
-		// Answered locally from the proxy handle's captured state — no
-		// round-trip to the proxy. When no proxy is supervised the
-		// zero value ({ready:false, port:0}) is a valid "not available"
-		// answer, so the method never errors.
-		var result ProxyStatusResult
-		if p := b.getProxy(); p != nil {
-			ready, port := p.Status(ollamaProxyProfile.Name)
-			result.Ready = ready
-			result.Port = port
-		}
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to respond to proxy:get-status: %v", err)
-		}
-
-	case "ollama-proxy:subscribe":
-		b.proxyMu.Lock()
-		wasSubscribed := b.setEngineProxySubscribed(ollamaProxyProfile, true)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
-			log.Printf("failed to respond to proxy:subscribe: %v", err)
-		}
-		// On a fresh subscription replay the proxy's last "ready" payload
-		// (if it has come up) as a baseline proxy:ready, so a subscriber
-		// learns the port without a separate proxy:get-status. Sent after
-		// the ack. A redundant re-subscribe doesn't re-emit.
-		if !wasSubscribed {
-			if p := b.getProxy(); p != nil {
-				if rp := p.ReadyParams(ollamaProxyProfile.Name); rp != nil {
-					if err := b.codec.Notify("ollama-proxy:ready", rp); err != nil {
-						slog.Warn("emit baseline proxy:ready failed", "err", err)
-					}
-				}
-			}
-		}
-
-	case "ollama-proxy:unsubscribe":
-		b.proxyMu.Lock()
-		b.setEngineProxySubscribed(ollamaProxyProfile, false)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
-			log.Printf("failed to respond to proxy:unsubscribe: %v", err)
-		}
-
 	case "engine:set-port":
 		go b.handleSettingsPortRPC(msg, "")
-	case "ollama-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "ollama")
-	case "lmstudio-proxy:set-port":
-		go b.handleSettingsPortRPC(msg, "lmstudio")
-
-	case "lmstudio-proxy:get-status":
-		// Answered locally from the lmstudio-proxy handle's captured state,
-		// mirroring proxy:get-status. Zero value when none is supervised.
-		var result ProxyStatusResult
-		if p := b.getLMStudioProxy(); p != nil {
-			ready, port := p.Status(lmstudioProxyProfile.Name)
-			result.Ready = ready
-			result.Port = port
-		}
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to respond to lmstudio-proxy:get-status: %v", err)
-		}
-
-	case "lmstudio-proxy:subscribe":
-		b.proxyMu.Lock()
-		wasSubscribed := b.setEngineProxySubscribed(lmstudioProxyProfile, true)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
-			log.Printf("failed to respond to lmstudio-proxy:subscribe: %v", err)
-		}
-		if !wasSubscribed {
-			if p := b.getLMStudioProxy(); p != nil {
-				if rp := p.ReadyParams(lmstudioProxyProfile.Name); rp != nil {
-					if err := b.codec.Notify("lmstudio-proxy:ready", rp); err != nil {
-						slog.Warn("emit baseline lmstudio-proxy:ready failed", "err", err)
-					}
-				}
-			}
-		}
-
-	case "lmstudio-proxy:unsubscribe":
-		b.proxyMu.Lock()
-		b.setEngineProxySubscribed(lmstudioProxyProfile, false)
-		b.proxyMu.Unlock()
-		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
-			log.Printf("failed to respond to lmstudio-proxy:unsubscribe: %v", err)
-		}
 
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
@@ -3364,8 +3496,8 @@ func (b *Broker) handleMessage(msg *Message) {
 	default:
 		// Any remaining method under an engine's <component>: prefix is
 		// relayed verbatim to that engine's proxy (the reserved broker-local
-		// ones — get-status and the subscription methods — are handled by
-		// their own cases above). This makes the broker a thin pass-through
+		// ones — get-status, set-port and the subscription methods — are handled by
+		// the profile-driven block above). This makes the broker a thin pass-through
 		// for each proxy's whole control plane without enumerating methods.
 		//
 		// The prefixes are the engines' ComponentName values, so this loop
@@ -3437,7 +3569,20 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	}
 
 	requestedEngine, requestedPort, isEnginePortAssignment := enginePortAssignmentRequest(msg.Method, msg.Params)
-	if isEnginePortAssignment || msg.Method == "engine:stop" || msg.Method == "engine:start" || msg.Method == "engine:restart" {
+	switch {
+	case msg.Method == "engine:stop":
+		// A Stop must reach the engine manager while a Start is still waiting for
+		// readiness, which can take minutes, because cancelling that Start is
+		// what it is for. The Start holds the lock for that whole time, so a
+		// Stop that waited for it would only arrive after the Start had finished
+		// on its own. A Stop changes no launch settings, so it takes the lock
+		// only afterwards, to reconcile, once its reply is sent.
+		defer func() {
+			b.engineConfigMu.Lock()
+			defer b.engineConfigMu.Unlock()
+			b.reconcileLegacySettingsLocked()
+		}()
+	case isEnginePortAssignment || msg.Method == "engine:start" || msg.Method == "engine:restart":
 		b.engineConfigMu.Lock()
 		defer b.engineConfigMu.Unlock()
 		defer b.reconcileLegacySettingsLocked()
@@ -3533,8 +3678,8 @@ func (b *Broker) relayToSettings(msg *Message) {
 // nodes/list) to nvpair-manual-nodes and relays its response back. node/add
 // kicks off an initial probe, so the relay uses the no-timeout async
 // RelayRequest rather than the bounded Call. The resulting node/discovered
-// notification is merged into the discovery store by
-// forwardManualNodesNotification, so the snapshot stays in sync.
+// notification reaches manualNotificationHandler and is merged into the
+// discovery store, so the snapshot stays in sync.
 func (b *Broker) relayToManualNodes(msg *Message) {
 	mn := b.getManualNodes()
 	if mn == nil {
@@ -3545,7 +3690,43 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 	}
 	id := msg.ID
 	method := msg.Method
-	relayErr := mn.RelayRequest(method, msg.Params, func(result json.RawMessage, rpcErr *RPCError, err error) {
+	params := append(json.RawMessage(nil), msg.Params...)
+	var remove manualNodeRemoveParams
+	if method == "node/remove" {
+		if err := json.Unmarshal(params, &remove); err != nil || (remove.ID == "") == (remove.NodeID == "") {
+			if err := b.codec.RespondError(id, -32602, "exactly one of id or nodeId is required"); err != nil {
+				log.Printf("failed to respond to invalid node/remove: %v", err)
+			}
+			return
+		}
+	}
+	mutates := method == "node/add" || method == "node/remove"
+	if mutates {
+		b.manualMutationMu.Lock()
+	}
+	var added persistedManualNode
+	removeID := ""
+	if method == "node/add" {
+		_ = json.Unmarshal(params, &added)
+	}
+	if method == "node/remove" {
+		removeID = remove.ID
+		if remove.NodeID != "" {
+			removeID = b.manualAliasForKey(remove.NodeID)
+		}
+		if removeID == "" {
+			b.manualMutationMu.Unlock()
+			if err := b.codec.Respond(id, map[string]bool{"removed": false}); err != nil {
+				log.Printf("failed to respond to unmatched node/remove: %v", err)
+			}
+			return
+		}
+		params, _ = json.Marshal(manualNodeRemoveParams{ID: removeID})
+	}
+	relayErr := mn.RelayRequest(method, params, func(result json.RawMessage, rpcErr *RPCError, err error) {
+		if mutates {
+			defer b.manualMutationMu.Unlock()
+		}
 		switch {
 		case err != nil:
 			if e := b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes call failed: %v", err)); e != nil {
@@ -3556,12 +3737,33 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 				log.Printf("failed to relay manual-nodes error for %s: %v", method, e)
 			}
 		default:
+			if method == "node/add" && added.Address != "" {
+				var status struct {
+					ID string `json:"id"`
+				}
+				if json.Unmarshal(result, &status) == nil {
+					added.ID = status.ID
+				}
+				if err := b.persistManualNode(added); err != nil {
+					_ = b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes persistence failed: %v", err))
+					return
+				}
+			}
+			if method == "node/remove" && removeID != "" {
+				if err := b.removePersistedManualNode(removeID); err != nil {
+					_ = b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes persistence failed: %v", err))
+					return
+				}
+			}
 			if e := b.codec.Respond(id, result); e != nil {
 				log.Printf("failed to relay manual-nodes result for %s: %v", method, e)
 			}
 		}
 	})
 	if relayErr != nil {
+		if mutates {
+			b.manualMutationMu.Unlock()
+		}
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("manual-nodes call failed: %v", relayErr)); err != nil {
 			log.Printf("failed to respond to %s: %v", msg.Method, err)
 		}

@@ -13,11 +13,17 @@ import {
 // Ports are the proxy facades PAIR routes through, never an engine's own
 // backend port. At runtime these come from the broker's proxy registry.
 function targets(count: number): DemoTarget[] {
-    return Array.from({ length: count }, (_, index) => ({
-        backend: index % 2 === 0 ? ('ollama' as const) : ('lmstudio' as const),
-        port: index % 2 === 0 ? 11434 : 1234,
-        model: `model-${index}`
-    }))
+    return Array.from({ length: count }, (_, index) => {
+        const model = `model-${index}`
+        switch (index % 3) {
+            case 0:
+                return { backend: 'ollama', port: 11434, model }
+            case 1:
+                return { backend: 'lmstudio', port: 1234, model }
+            default:
+                return { backend: 'llamacpp', port: 8080, model }
+        }
+    })
 }
 
 function key(target: DemoTarget): string {

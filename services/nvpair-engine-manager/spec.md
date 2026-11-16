@@ -6,7 +6,13 @@ SPDX-License-Identifier: Apache-2.0
 # Microservice: Engine Manager (`nvpair-engine-manager`)
 
 ## 1. Purpose
-A declarative, config-driven control plane for **local inference engines** (Ollama today; Intel / llama.cpp / others later). It owns an engine's entire lifecycle *except serving inference* — locate, install, launch, stop, restart, health, and config-declared actions — so one uniform API manages any engine across OSes with no per-engine code. A third party drops in a JSON manifest and their engine's install/launch/controls "just appear" over the same API: the core extensibility story for an open-source product.
+A declarative, config-driven control plane for **local inference engines**
+(currently Ollama, LM Studio, and llama.cpp). It owns an engine's entire
+lifecycle *except serving inference* — locate, install, launch, stop, restart,
+health, and config-declared actions — so one uniform API manages any engine
+across OSes with no per-engine code. A third party drops in a JSON manifest and
+their engine's install/launch/controls "just appear" over the same API: the core
+extensibility story for an open-source product.
 
 ## 2. Scope
 **In scope**
@@ -22,15 +28,39 @@ A declarative, config-driven control plane for **local inference engines** (Olla
   host-platform port overrides, deleting the file only when it has no other
   settings. Host-platform precedence must not override a successfully saved port
   on reload; malformed existing overrides fail the save and remain intact.
-- Config-declared **actions** covering the full model lifecycle — Ollama: `list_models`, `loaded_models`, `pull_model`, `run_model`, `unload_model`, `delete_model`; LM Studio: `list_models`/`list_downloaded`, `loaded_models`, `pull_model`, `load_model`, `chat`, `unload_model`, `delete_model` (`remove_path` with `lms-disk-path` resolution) — mapped to each engine's local control API. `loaded_models` reports the models currently resident in memory (Ollama `GET /api/ps`, LM Studio `GET /api/v1/models` filtered by nonempty `loaded_instances`), name-extracted via the same declarative `result` spec (with an optional `match` row filter).
+- Config-declared **actions** mapped to each engine's local control API:
+  Ollama declares `list_models`, `loaded_models`, `pull_model`, `run_model`,
+  `unload_model`, and `delete_model`; LM Studio declares
+  `list_models`/`list_downloaded`, `loaded_models`, `pull_model`, `load_model`,
+  `chat`, `unload_model`, and `delete_model` (`remove_path` with
+  `lms-disk-path` resolution);
+  llama.cpp declares list, loaded-list, pull, load, unload, and native cache
+  delete with exact model ids. `loaded_models` reports
+  models currently resident in memory, name-extracted via the same declarative
+  `result` spec with optional nested-path and row filters: Ollama uses
+  `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
+  `GET /api/v1/models`, and llama.cpp matches nested `status.value == loaded`
+  records from `GET /models`.
+- The bundled llama.cpp launch fixes `--sleep-idle-seconds 300`: after five
+  minutes without inference work, a loaded model releases its model and
+  KV-cache memory and wakes on the next request. The router child remains alive
+  and can retain a residual backend GPU context. Its readiness probe requires
+  `/props` to report `role:"router"`; a single-model listener is incompatible
+  and must not be started or adopted because its `/models` contract does not
+  expose router residency state.
 - Per-engine stdout/stderr log capture and structured operational error records, surfaced via the errors pipeline.
-- A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls the loaded set and pushes `engine:models-changed` when it changes (explicit load/unload, JIT auto-load, TTL/idle eviction).
+- vLLM memory sizing uses native device telemetry or the installed runtime.
+  Missing telemetry never implies shared memory: only verified integrated
+  CUDA/ROCm or XPU devices, Apple Silicon Metal, or an explicit CPU engine use
+  system RAM. Shared-memory readings reserve 3 GiB for runtime startup.
+- A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). An engine with `advertised_models: "loaded"` (vLLM) advertises only its served model in `modelsByEngine` and reports its `list_models` inventory as `downloadedByEngine`, read even while it is stopped; its `loadedByEngine` names models the way that inventory does. A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls these lists and pushes `engine:models-changed` when one changes (explicit load/unload, JIT auto-load, TTL/idle eviction, a pull or a delete).
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
 
 **Out of scope**
 - **Inference traffic** — stays with `nvpair-proxy`; this service never proxies `/api/chat` etc.
 - **Multi-instance per engine and an MCP server** — future-additive, not v1.
 - **The node's error list** — owned by `nvpair-errors`, which holds it as in-memory session state; this service only emits `errors:report` / `errors:clear`.
+- Automatic deletion of persistent llama.cpp model-cache files.
 
 ## 3. Key Use Cases
 - **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
@@ -41,6 +71,34 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - **Edge case — checksum mismatch**: install fails before `run`, is reported, and never executes an unverified payload.
 - **Edge case — readiness timeout / crash**: failed readiness returns to Stopped; a later crash flips health and is reported.
 
+### llama.cpp model sources
+
+The node-owned engine settings `modelSource` field selects `huggingface` (default)
+or `modelscope` for llama.cpp catalogue queries and downloads. It is saved as
+host-platform `runtime.model_source` and included in launch snapshots. Changing
+the source uses the existing preview/apply, revision, restart and paired-device
+settings protocol; stopped engines stay stopped. Omitting the source in a
+settings request preserves the current choice. Adopted process engines expose
+read-only settings and reject source changes. Other engines omit the field.
+The `engine:catalog` request accepts `modelSource` for a peer's saved choice.
+Omitting it uses this node's setting. Only `huggingface` and `modelscope` are
+accepted for llama.cpp; each source keeps its own browse/search cache.
+
+ModelScope's public GGUF catalogue is normalized through the same quantization
+and generative-model filters as Hugging Face. A loopback-only adapter translates
+ModelScope metadata and streams file requests without forwarding Hugging Face
+credentials. Requests must match the listener's exact Host and include a random
+256-bit path token, which is redacted from engine output. Streams are bounded to
+the accepted file size and must match the metadata SHA-256. The adapter advertises
+`Accept-Ranges: none` and ignores Range/If-Range, returning complete files so
+retries cannot accept unverified cached prefixes. Interrupted downloads restart
+from zero. A transfer's final byte is withheld until size and checksum validation
+succeeds. The pinned llama.cpp router remains
+responsible for GGUF selection, cache layout, split files, progress and
+cancellation. Its `MODEL_ENDPOINT` is overridden only for ModelScope; existing
+Hugging Face endpoint configuration is preserved. No TypeScript download
+implementation is used.
+
 ## 4. Open Questions / Risks
 - **`engine:*` method stability**: the Broker forwards the namespace verbatim; evolve it additively and preserve `engine:get-installed` as the installed-engine query.
 - **`severity` / `action` enums**: current wire values are `info|warning|error` and `dismiss|retry|none`; coordinate any future shared-enum expansion without changing existing values.
@@ -49,18 +107,27 @@ A declarative, config-driven control plane for **local inference engines** (Olla
 - **Risk — admin-only installers**: `mode: "admin"` is a flagged, refused exception, not the default; product direction is strictly user-mode.
 - **Risk — LAN-open inference bind (interim)**: inference engines default `runtime.bind` to `0.0.0.0` (ordinary engines stay loopback; a per-call `bind` re-pins). This is a deliberate, temporary exception to the loopback-only posture; narrow it once authenticated inference transport exists. The engine-manager `ec` control surface is already protected independently by pin-based mTLS.
 - **Future — declared/tunable env layer**: `runtime.env` is static today. A "declared tunables" layer (manifest-declared knobs, UI/broker-overridable per start) is worth adding; by env-richness the priority is Ollama → llama.cpp/Jan → vLLM (LM Studio / GPT4All are flags/settings-driven, not env). Related: `runtime.env` is process-mode-only — extending it to command-mode start commands is a deliberate, still-open choice. See `MANIFEST.md` → "Engine config reference".
-- **Model deletion where the vendor has no command (LM Studio)**: implemented via the generic **`remove_path`** action kind — a manifest-declared, param-templated path the runner removes with safety rails (must resolve under a declared allowed root, reject `..`/symlink escapes). LM Studio's `delete_model` uses `model_resolution: "lms-disk-path"` to map logical ids to on-disk files via `lms ls --json` before deleting under `{models_dir}`, then `restart_after` to bounce a running server: LM Studio answers `/v1/models` from an index built at startup and exposes no rescan, so clients keep being offered the deleted model until it restarts. Ollama deletes via `DELETE /api/delete` (no restart needed) and ejects via `unload_model` (`POST /api/generate` with `keep_alive: 0`).
+- **Model deletion where the vendor has no command (LM Studio)**: implemented via the generic **`remove_path`** action kind — a manifest-declared, param-templated path the runner removes with safety rails (must resolve under a declared allowed root, reject `..`/symlink escapes). LM Studio's `delete_model` uses `model_resolution: "lms-disk-path"` to map logical ids to on-disk files via `lms ls --json` before deleting under `{models_dir}`, then `restart_after` to bounce a running server: LM Studio answers `/v1/models` from an index built at startup and exposes no rescan, so clients keep being offered the deleted model until it restarts. Ollama deletes via `DELETE /api/delete` (no restart needed) and ejects via `unload_model` (`POST /api/generate` with `keep_alive: 0`). llama.cpp deletes native cache entries via `DELETE /models` with the exact model id in a URL-encoded query parameter; the router updates its inventory in-process, so it also needs no restart.
 
 ## 5. Requirements
 
 **Functional**
-- Load + validate per-engine JSON manifests (bundled + user dir); select the host `<goos>/<goarch>` block; resolve placeholders (`{bin}`, `{cli}`, `{port}`, `{download}`, `{install_dir}`).
+- Load + validate per-engine JSON manifests (bundled + user dir); select the host `<goos>/<goarch>` block; resolve placeholders (`{bin}`, `{cli}`, `{port}`, `{download}`, `{install_dir}`). Install commands also receive resolved download and destination paths in child-scoped `NVPAIR_INSTALL_*` environment variables so shell reparsing cannot corrupt them.
 - Support both `process` (owned foreground) and `command` (daemon + control-CLI) runtimes; execute detect / install / uninstall / start / stop / restart / status / health and HTTP **or** CLI actions; emit `engine:*` results and notifications.
+- Bound process-mode stops: on Unix send SIGTERM to the owned process group, then SIGKILL after `runtime.stop.grace_s` (five seconds by default, capped at three seconds while the service shuts down); the SIGKILL also takes any helper processes left in the group; `signal:"kill"` skips the grace. On Windows, windowless managed engines require immediate `taskkill /T /F`.
 - Emit `errors:report` / `errors:clear` on its stdio for the Broker to forward to `nvpair-errors`.
 
 **Non-functional**
 - Compiles and runs on Windows / macOS / Linux × amd64 / arm64.
-- **User mode, no runtime admin/sudo**; stdio / `--ipc` is the primary control channel, with an optional plain-HTTP model-list listener and a clustered pin-gated mTLS control listener; engines bind loopback by default, but a manifest's `runtime.bind` can open an inference engine to the LAN (Ollama ships `0.0.0.0` to serve the cluster), overridable per-call via `engine:start {bind}`; HTTPS-only downloads, checksum-verified when the manifest pins a `sha256`.
+- **User mode, no runtime admin/sudo**. The primary control channel is stdio
+  or `--ipc`. The optional model-list listener uses plain HTTP on loopback and
+  mutual TLS for pinned LAN peers. The cluster-control listener also requires
+  mutual TLS for pinned peers.
+- Engines bind loopback by default, but `runtime.bind` can open an inference
+  engine to the LAN. Ollama defaults to `0.0.0.0`; `engine:start {bind}` can
+  override this for one call.
+- Downloads use HTTPS, except for loopback HTTP, and are checksum-verified
+  when the manifest pins a `sha256`.
 - Fully testable end-to-end with no real engines, network, or installers in the test path.
 - Small, readable, minimal-dependency.
 
@@ -109,17 +176,21 @@ Requests (caller → service):
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
+| `engine:get-installed` | — | `{ engines: [EngineStatus] }` for every engine this host can run; an engine whose manifest has no block for the host's OS and CPU is left out |
 | `engine:describe` | `{ engine }` | the engine's manifest |
-| `engine:status` | `{ engine }` | `EngineStatus` |
+| `engine:status` | `{ engine, port? }` | `EngineStatus`; an error for an engine this host cannot run |
 | `engine:install` | `{ engine }` | `EngineStatus` (after install) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
+| `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes the engines this service installed, selected by their install marker, each through the `engine:uninstall` path. Backs both clients' "reset all data"; the platform uninstallers reach the same code through `--uninstall-managed` because they have no broker. Neither `removed` nor `error` means the engine was left alone as not ours. |
 | `engine:start` | `{ engine }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:action` | `{ engine, action, params }` | the engine's raw response |
+| `engine:set-port` | `{ engine, port }` | `EngineStatus` (after saving and applying the port) |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
+| `engine:models` | — | `{ models: [string], modelsByEngine?, loadedByEngine?, downloadedByEngine? }` — advertised, loaded, and downloaded model lists |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` from the remote node |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status }` after the remote install |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull |
@@ -128,14 +199,34 @@ Requests (caller → service):
 | `engine:remote-delete-model` | `{ node, engine, model }` | the remote action result |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (manifest `runtime.bind`; no per-call bind on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
+| `engine:prepare-shutdown` | — | `null` once the shutdown sweep, and any retry of a failed stop, has finished; per-engine stop failures are logged, not returned |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-Notifications (service → caller): `ready{version}`, `engine:state-changed{EngineStatus}`, `engine:models-changed{engine, models}` (pushed when an engine's loaded-in-memory model set changes; `models` is the full `engine:models` shape incl. `loadedByEngine`), `engine:install-progress{engine, stage, percent}`, `engine:pull-progress{engine, op, stage, percent, message}` (live progress for a local model pull driven via `engine:action{action:"pull_model"}` — the local counterpart of `engine:remote-progress`), `engine:remote-progress{opId, node, engine, op, stage, percent, message}` (live progress relayed from a remote install/pull), and `errors:report` / `errors:clear` (consumed by `nvpair-errors` via the Broker). `install` / `start` / `stop` / `restart` / `action` / `remote-*` each run in their own goroutine so the read loop never blocks; their responses arrive when the op completes.
+Ordinary `engine:status` and `engine:get-installed` calls return the current
+state while an engine is starting, stopping, or changing ports. They do not
+wait for the operation to finish. A positive `port` in `engine:status` selects
+the port for that request without changing the saved port. It waits for an
+active operation before checking. A delayed check cannot overwrite a newer
+stop or port change.
+
+Reading, previewing, or validating launch settings does not invalidate a pending
+status check. Applying settings still does.
+
+`engine:models` waits up to five seconds for active operations and model
+queries. If that time expires or a status check cannot complete, this RPC can
+return a partial list. `GET /v1/models` instead returns 503 in those cases, so
+peers keep their previous model list. If only one engine's model-list action
+fails, the HTTP response still includes results from engines that succeeded.
+
+Notifications (service → caller): `ready{version}`, `engine:state-changed{EngineStatus}`, `engine:models-changed{engine, models}` (pushed when an engine's served, loaded-in-memory or downloaded model list changes; `models` is the full `engine:models` shape), `engine:install-progress{engine, stage, percent?, error?}` (`error` on the terminal `failed` frame), `engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a local model pull driven via `engine:action{action:"pull_model"}` — the local counterpart of `engine:remote-progress`), `engine:remote-progress{opId, node, engine, op, stage, percent?, message}` (live progress relayed from a remote install/pull), and `errors:report` / `errors:clear` (consumed by `nvpair-errors` via the Broker). `install` / `start` / `stop` / `restart` / `action` / `remote-*` each run in their own goroutine so the read loop never blocks; their responses arrive when the op completes.
+
+`percent` on all three progress notifications follows one rule: it is present only when the step is measurable (download bytes, byte-progress pulls) or terminal (`100` on install `done` / `already-installed`, `-1` on install `failed` and pull `error`). An indeterminate step omits it — the install `verified` and `installing` stages always do, because the install command is opaque — and a consumer renders the stage alone rather than a percentage.
 
 Example `engine:install-progress` (stdout):
 ```json
 {"jsonrpc":"2.0","method":"engine:install-progress","params":{"engine":"ollama","stage":"downloading","percent":42}}
+{"jsonrpc":"2.0","method":"engine:install-progress","params":{"engine":"ollama","stage":"installing"}}
 ```
 
 Example `engine:pull-progress` (stdout):
@@ -150,7 +241,18 @@ Example `engine:pull-progress` (stdout):
 ### 7.2 Remote engine management (the `ec` surface)
 With `--control-port` and a clustered `--cluster-dir`, engine-manager serves a cluster-scoped remote-control surface over pin-based mTLS (`nvpair-shared/clustertrust`): it presents this node's cluster leaf, requires a client cert, and `403`s any caller that isn't a byte-for-byte pinned cluster peer. The listener is bound whenever `--control-port` is set and admits callers by live membership — its leaf is resolved per handshake, so an unclustered node presents none and every handshake is refused — so no restart is needed on `cluster:identity-changed`; the broker registers `ec` whenever a cluster dir is configured. Routes under `/v1`: `GET /engines`, streaming `POST /engines/install` and `/models/pull` (chunked NDJSON — zero+ `{"type":"progress"}` frames then one terminal `{"type":"result"}`/`{"type":"error"}` frame), non-streaming `POST /models/{load,unload,delete}`, and non-streaming `POST /engines/{start,stop}` returning `EngineStatus`.
 
-The `engine:remote-*` methods are the client half: engine-manager resolves the target `node` in an `ec` peer directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker relay), dials the peer's `ec` surface with the same pinned identity, relays each streamed progress frame up as `engine:remote-progress` (keyed by a minted `opId`), and settles the request on the terminal frame. Remote install/pull run for the operation's full duration (no broker-imposed timeout); remote stop and model unload/delete are fast request/response, remote Ollama model load uses the readiness-sized response budget, and remote start waits for the engine's bounded readiness result. They error if this node isn't clustered or the target isn't a pinned peer.
+The `engine:remote-*` methods are the client half. Engine-manager subscribes to the broker relay with `discovery:subscribe{services:[ec]}` and replaces its `ec` directory from each `discovery:nodes` snapshot. Admission requires `identityVerification: "local"`, or `identityVerification: "pinned"` with `trusted: true`, together with an `ec` service, a nonzero service port, and at least one candidate address. Entries are keyed by verified `hostUuid`; owned local records need no peer pin for directory admission, and unverified records are excluded.
+
+For each call, engine-manager resolves the target `node` from that directory, refreshes the live mesh, and requires clustered membership and a current target pin before dialing the `ec` surface over mTLS. It relays each streamed progress frame up as `engine:remote-progress` (keyed by a minted `opId`) and settles the request on the terminal frame. Remote install/pull run for the operation's full duration (no broker-imposed timeout); remote stop and model unload/delete are fast request/response, remote Ollama and vLLM model loads use the readiness-sized response budget (a vLLM load restarts the engine on the new model), and remote start waits for the engine's bounded readiness result.
+
+The remote client reads NDJSON one line at a time with the shared worker-path
+8 MiB buffer limit (`remoteStreamFrameBytes = maxFrameBytes`), including the line
+delimiter. This accommodates terminal model-pull results containing accumulated
+CLI output. The limit applies to each progress, result, or error frame
+independently; the total stream may exceed 8 MiB over a long operation. Blank
+lines are ignored. An oversized frame, a read error, malformed frame JSON, or
+EOF without a result frame fails the remote request; a terminal error frame also
+fails it with the peer's error message.
 
 ## 8. Dependencies
 - **Upstream**: the orchestrator that spawns it and forwards `engine:*` (`nvpair-ui-broker`).
@@ -160,13 +262,39 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
 ## 9. Data Ownership
 - **Owned**: the in-memory engine registry (parsed manifests + per-engine runtime state) and per-engine log/error ring buffers — transient only.
 - **Source of truth**: no — `nvpair-errors` owns the node's error list (in memory, for the session); model inventories belong to the engines; manifests on disk are authored elsewhere.
-- **Storage**: in-memory; manifests read from the per-user data dir's `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on macOS) plus bundled `manifests/*.json`. No database.
+- **Storage**: in-memory; manifests read from the per-user data dir's
+  `engines/*.json` (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on
+  Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, and
+  `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on
+  macOS) plus bundled `manifests/*.json`. Each engine's model store is declared
+  as `models_dir` outside that data dir (`~/.ollama`, `~/.llamacpp`,
+  `~/.lmstudio/models`, `~/.cache/huggingface`) so neither an engine uninstall nor the app-level data
+  purge removes downloaded models; clearing one is the user's own choice, made
+  per model through `delete_model`.
+
+  Removing an engine deletes only the paths its manifest's `uninstall.remove`
+  names, and never its `models_dir`. The store is recognised by file identity,
+  not by path: a store reached through a symlink keeps both the link and the
+  directory it leads to, and a spelling that differs only in case is the store
+  wherever the filesystem says so. Removal unlinks a symlink or junction rather
+  than following it, and refuses a target that is the store or inside it.
+
+  One persisted file: `installed-by-pair.json` in the engine's managed install
+  directory (normally `engine-bin/<engine>` under app data, or the platform's
+  explicit `install_dir`), written after an install this service performed. It is the only record distinguishing an
+  install PAIR made from one the user made themselves, which an engine whose
+  vendor script chooses its own destination cannot be told apart any other way,
+  and it gates both `engine:uninstall` for such an engine and
+  `engine:uninstall-managed`. No database.
 
 ## 10. Design Constraints
-- **Performance**: control plane, not inference; sub-second RPCs except install (network-bound) and start (bounded by the readiness timeout).
+- **Performance**: each shared check started by a status request has a
+  four-second limit. These checks do not hold the lock used by start, stop, or
+  port changes. Engine operations retain their own readiness and shutdown time
+  limits.
 - **Scalability**: a handful of engines per node; one managed instance per engine in v1.
 - **Reliability**: best-effort; readiness + health probes; automatic restart on crash is planned but **not yet implemented** (see §4); install is one-shot and idempotent (detect short-circuits).
-- **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install time); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN (Ollama defaults to `0.0.0.0`, overridable per-call); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
+- **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install and uninstall time: the Windows uninstaller is elevated and runs `--uninstall-managed`, which for that reason loads only the manifests compiled into the binary, never the user-writable override directory); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN (Ollama defaults to `0.0.0.0`, overridable per-call); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
 - **Compliance**: no PII; payloads carry engine/model identifiers and error messages only.
 
 ## 11. Assumptions
@@ -179,12 +307,21 @@ The `engine:remote-*` methods are the client half: engine-manager resolves the t
 - **Download / checksum failure on install**: engine stays NotInstalled. → Fail fast before `run`; `engine:install-progress` error + `errors:report` (`engine-manager:install-failed:<engine>`); never execute an unverified payload.
 - **Engine fails its readiness probe**: start never reaches Running. → Bounded ready timeout → back to Stopped; structured error; no half-started state.
 - **Engine process crashes**: engine unavailable. → A watcher flips state, emits `engine:state-changed` + `errors:report` (`engine-manager:exited:<engine>`); the parent's supervisor reports if the *manager itself* dies. (Automatic restart is planned — see §4 — not yet implemented.)
+- **A status check overlaps a stop or port change**: an old result could restore
+  the previous state. → Ignore the result when engine state has changed since
+  the check began. A later status read sees the newer state.
 - **`nvpair-errors` unavailable**: failures absent from the node's error list. → The Broker no-ops the forward; local applog + ring buffers still hold everything.
 - **Invalid / unknown-OS manifest**: that engine is unusable. → Reject at load with a specific error; other engines unaffected.
+- **Remote stream frame exceeds its limit**: the initiating node fails the
+  remote request and closes the response body. An oversized terminal result can
+  arrive after the peer has completed the install or model pull; failure to read
+  that result does not roll back the peer's completed operation.
 
 ## 13. Observability
 - **Logging**: structured `slog` to stderr via `nvpair-shared/applog` (captured by the parent's debug panel); per-engine stdout/stderr ring buffers; key events — install fetch/verify/run outcomes, start/ready/stop transitions, health flips, action invocations, every failure.
-- **Metrics**: lightweight in-process counters (installs, starts, failures, health transitions per engine), surfaced via `engine:status` and `engine:errors`; no separate metrics endpoint in v1.
+- **Metrics**: no dedicated counters or metrics endpoint in v1.
+  `engine:status` reports current state, and `engine:errors` reports recent
+  failures.
 - **Alerts**: surfaced through the errors pipeline — `errors:report` for install/start/health failures and manager crashes; the UI's error list is the alerting surface for v1.
 
 ## 14. Sample usage
@@ -194,7 +331,33 @@ The operator starts it: `engine:start {engine:"ollama"}` resolves the manifest r
 
 The operator stops it: `engine:stop {engine:"ollama"}` signals a process the service owns. For an **adopted** engine (no owned process), it resolves the PID bound to the port and terminates it only when that process is running the binary we manage — reclaiming an orphan a prior run left on our own managed port; a genuinely foreign listener (a different image on a different port) is declined with an error naming its PID and image. A user-initiated `stop` records the OFF intent regardless (even when the RPC returns an error), so the health loop and restore-on-restart don't flip the engine back on — clients must not treat a stop error as proof the OFF choice was discarded. The cluster `ec` stop endpoint shares this semantics and may return HTTP 500 while OFF is persisted.
 
-The operator pulls a model: `engine:action {engine:"ollama", action:"pull_model", params:{name:"llama3.2"}}` issues the manifest-declared `POST 127.0.0.1:{port}/api/pull`. Because the action is `pull_model`, the request is routed through the streaming pull path (not the buffered `engine:action` reader): each `/api/pull` status line is emitted as an `engine:pull-progress` notification — so a local pull shows live download progress just like a remote pull's `engine:remote-progress` — and the request settles with the pull's terminal result line. Frames are coalesced (only a change in `stage` or `percent` is emitted) so a chatty engine that streams many byte-progress lines per layer doesn't flood subscribers. The engine's terminal `{"status":"success"}` surfaces as a `stage:"success"` frame; a **failed** pull emits a terminal `stage:"error", percent:-1, message:<why>` frame in addition to the JSON-RPC error, so a UI whose synchronous call already timed out on a long download still converges off "pulling". A CLI-driven pull (LM Studio's `lms get`) has no line-level progress, so it emits one `stage:"pulling"` marker and returns the command's result. On `shutdown` (or stdin EOF) the service stops every running engine first, so none are orphaned.
+The operator pulls a model: `engine:action {engine:"ollama", action:"pull_model", params:{name:"llama3.2"}}` issues the manifest-declared `POST 127.0.0.1:{port}/api/pull`.
+Because the action is `pull_model`, the request is routed through the streaming pull path (not the buffered `engine:action` reader): each `/api/pull` status line is emitted as an `engine:pull-progress` notification — so a local pull shows live download progress just like a remote pull's `engine:remote-progress` — and the request settles with the pull's terminal result line.
+Frames are coalesced (only a change in `stage` or `percent` is emitted) so a chatty engine that streams many byte-progress lines per layer doesn't flood subscribers.
+Streaming Ollama and llama.cpp pulls use a 30-minute inactivity watchdog that is refreshed only when a layer/file completed-byte count advances, allowing active downloads to exceed 30 minutes without letting duplicate progress or heartbeat frames keep a stalled pull alive.
+The engine's terminal `{"status":"success"}` surfaces as a `stage:"success"` frame; a **failed** pull emits a terminal `stage:"error", percent:-1, message:<why>` frame in addition to the JSON-RPC error, so a UI whose synchronous call already timed out on a long download still converges off "pulling".
+A CLI-driven pull (LM Studio's `lms get`) has no line-level progress, so it emits one `stage:"pulling"` marker and retains the fixed 30-minute action timeout before returning the command's result.
+On `shutdown` (or stdin EOF) the service stops every running engine first, so none are orphaned.
+`engine:prepare-shutdown` requests that same sweep while the service is still fully up, which is how the parent drains engines before it starts tearing the worker tree down.
+The sweep runs **once per process** no matter how many of these paths ask for it, and a caller that arrives while it is already running waits for it to finish — responding earlier would report engines stopped while they were still running, and the parent would exit and orphan them.
+A later caller does not repeat the sweep; it retries only an engine whose stop failed through a process handle or a stop command, not an adopted engine whose stop was declined.
+
+For the `llamacpp-models-sse` adapter, the monitored model must match
+`params.model`. Subscribe before starting, and bound the `POST /models`
+acknowledgement by a separate 30-second total timeout that survives caller
+cancellation. Once accepted, any exit before a matching `download_finished` or
+`download_failed` event performs cleanup before returning: caller cancellation,
+remote disconnect, inactivity timeout, SSE read failure, and premature SSE EOF
+all take this path. Using the same captured router URL and a fresh five-second
+context, query `GET /models` and send `POST /models/unload` with the exact model
+only if its status is still `downloading`. Missing or completed models need no
+stop request, and persistent cache files are retained. Validate the unload
+acknowledgement (`success:true`); join cleanup failures to the original error
+without losing cancellation or inactivity causes. A lost or malformed start
+acknowledgement means acceptance and cancellation cannot be confirmed: do not
+unload a download without confirmed ownership. Neither terminal SSE event
+triggers cleanup. These operations retain the existing JSON-RPC and progress
+payloads and do not terminate the entire engine when cleanup fails.
 
 ## 15. Current integration / wiring
 
