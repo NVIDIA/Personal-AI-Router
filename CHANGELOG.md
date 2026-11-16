@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.29 — vLLM launches that use -tp or -pp are left as written (#204)
+
+- A vLLM launch that sets tensor or pipeline parallelism with the short `-tp` or `-pp` flags is no longer given a 64K `--max-model-len`, YaRN rope scaling or a GPU memory share. The long `--tensor-parallel-size` and `--pipeline-parallel-size` flags already behaved this way.
+
 ## 1.0.28 — Release LM Studio daemon memory when stopping the engine (#198)
 
 - Turning off LM Studio shuts down headless llmster and releases its models. GUI-hosted engines stop their HTTP server while leaving the GUI open. Restart and application shutdown use the same policy.
