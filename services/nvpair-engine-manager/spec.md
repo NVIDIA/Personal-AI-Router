@@ -150,6 +150,13 @@ implementation is used.
 
 Errors are emitted with the `nvpair-shared/errors.ServiceError` wire shape (`id`, `message`, `severity`, `action`, …), mirrored locally in `reporter.go` with identical JSON tags. `id` follows `engine-manager:<class>:<engine>`; the Broker stamps `nodeId` / `timestamp`.
 
+When startup output identifies a Metal out-of-memory failure, the error message
+first explains that available GPU memory is insufficient and advises unloading
+models from other engines or freeing memory before retrying. It retains the
+bounded, redacted diagnostic tail and the original error cause. Detection occurs
+after redaction and survives subsequent traceback truncation. Unrelated failures
+and explicit cancellation keep their existing explanations and lifecycle behavior.
+
 Example request:
 ```json
 {"jsonrpc":"2.0","id":1,"method":"engine:install","params":{"engine":"ollama"}}

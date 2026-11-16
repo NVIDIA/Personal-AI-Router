@@ -84,6 +84,11 @@ func main() {
 	// "--fail-launch", or a model named org/fails-to-load, stands in for a launch
 	// the engine rejects, such as a model that does not fit in GPU memory.
 	for _, arg := range os.Args[1:] {
+		if arg == "--fail-metal-oom" {
+			fmt.Fprintln(os.Stderr, "RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).")
+			fmt.Fprintln(os.Stderr, "RuntimeError: Engine core initialization failed.")
+			os.Exit(1)
+		}
 		if arg == "--fail-launch" || arg == "org/fails-to-load" {
 			fmt.Fprintln(os.Stderr, "invalid launch", os.Args[1:])
 			os.Exit(2)

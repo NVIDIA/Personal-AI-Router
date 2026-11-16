@@ -320,6 +320,31 @@ func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
 }
 
+func TestEngineStartup_ReportsMemoryRecoveryAdviceForMetalOOM(t *testing.T) {
+	manifest := testEngineManifest(fakeEngineBin)
+	platform := manifest.Platforms[hostKey()]
+	platform.Runtime.Args = append(platform.Runtime.Args, "--fail-metal-oom")
+	manifest.Platforms[hostKey()] = platform
+	executor, _ := capturingExecutor(t, manifest)
+	t.Cleanup(func() { _ = executor.Stop("fake") })
+
+	err := executor.Start(t.Context(), "fake")
+
+	require.ErrorContains(t, err, "Not enough available GPU memory")
+	require.ErrorContains(t, err, "Unload models from other engines or free memory")
+	require.ErrorContains(t, err, "kIOGPUCommandBufferCallbackErrorOutOfMemory")
+	require.NotContains(t, err.Error(), "check the launch options")
+	reported := executor.Errors()
+	require.Len(t, reported, 1)
+	assert.Equal(t, startFailedID("fake"), reported[0].ID)
+	assert.Equal(t, err.Error(), reported[0].Message)
+	assert.Equal(t, "retry", reported[0].Action)
+	state, statusErr := executor.Status("fake")
+	require.NoError(t, statusErr)
+	assert.False(t, state.Running)
+	assert.False(t, state.Healthy)
+}
+
 func TestNormalStop_IsSilent(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	require.NoError(t, ex.Start(context.Background(), "fake"), "start")

@@ -5,6 +5,8 @@ package main
 
 import (
 	"cmp"
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -15,15 +17,18 @@ import (
 
 const maxStartupOutput = 8 * 1024
 
-// startupOutput retains a bounded diagnostic tail without interpreting vendor
-// messages or option names. It is discarded when startup succeeds.
+var metalMemoryMessage = regexp.MustCompile(`\[metal\][^\r\n]*insufficient memory`)
+
+// startupOutput retains a bounded, redacted diagnostic tail and remembers
+// recognized Metal memory failures. It is discarded when startup succeeds.
 type startupOutput struct {
-	mu       sync.Mutex
-	tail     string
-	pending  string
-	private  *regexp.Regexp
-	lookback int
-	closed   bool
+	mu                 sync.Mutex
+	tail               string
+	pending            string
+	private            *regexp.Regexp
+	lookback           int
+	closed             bool
+	metalMemoryFailure bool
 }
 
 func (o *startupOutput) Write(p []byte) (int, error) {
@@ -67,6 +72,13 @@ func (o *startupOutput) flush(final bool) {
 }
 
 func (o *startupOutput) appendTail(text string) {
+	// Classify only redacted output. Remember the reason before bounding the
+	// tail: a long follow-up traceback can otherwise displace the root failure.
+	if !o.metalMemoryFailure {
+		diagnostic := strings.ToLower(o.tail + text)
+		o.metalMemoryFailure = strings.Contains(diagnostic, "kiogpucommandbuffercallbackerroroutofmemory") ||
+			metalMemoryMessage.MatchString(diagnostic)
+	}
 	if len(text) > maxStartupOutput {
 		text = text[len(text)-maxStartupOutput:]
 	}
@@ -82,7 +94,18 @@ func (o *startupOutput) close() {
 	o.closed = true
 	o.tail = ""
 	o.pending = ""
+	o.metalMemoryFailure = false
 }
+
+// Keep the original cause available to errors.Is without presenting generic
+// launch-options advice as the explanation for a recognized memory failure.
+type startupMemoryError struct{ cause error }
+
+func (e *startupMemoryError) Error() string {
+	return "Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again."
+}
+
+func (e *startupMemoryError) Unwrap() error { return e.cause }
 
 func newStartupOutput(args []string, env map[string]string) *startupOutput {
 	// Redact supplied values generically, while preserving flag names such as
@@ -121,7 +144,12 @@ func (o *startupOutput) failure(err error) error {
 	o.mu.Lock()
 	o.flush(true)
 	text := o.tail
+	memoryFailure := o.metalMemoryFailure
 	o.mu.Unlock()
+	memoryFailure = memoryFailure && !errors.Is(err, context.Canceled)
+	if memoryFailure {
+		err = &startupMemoryError{cause: err}
+	}
 	text = strings.TrimSpace(strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return -1
@@ -130,6 +158,9 @@ func (o *startupOutput) failure(err error) error {
 	}, strings.ToValidUTF8(text, "")))
 	if text == "" {
 		return err
+	}
+	if memoryFailure {
+		return fmt.Errorf("%w\n\nEngine details:\n%s", err, text)
 	}
 	return fmt.Errorf("%w: %s", err, text)
 }

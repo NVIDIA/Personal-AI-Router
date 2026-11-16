@@ -4,12 +4,112 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestStartupOutput_ExplainsMetalMemoryFailures(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		output    string
+		chunkSize int
+	}{
+		{name: "reported Metal command-buffer failure", output: "RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).", chunkSize: 4096},
+		{name: "Metal memory message without callback code", output: "RuntimeError: [METAL] Insufficient Memory", chunkSize: 4096},
+		{name: "callback code split across writes", output: "kIOGPUCommandBufferCallbackErrorOutOfMemory", chunkSize: 1},
+		{name: "case-insensitive Metal message", output: "[metal] insufficient memory", chunkSize: 4096},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output := newStartupOutput(nil, nil)
+			for offset := 0; offset < len(test.output); offset += test.chunkSize {
+				_, err := output.Write([]byte(test.output[offset:min(offset+test.chunkSize, len(test.output))]))
+				require.NoError(t, err)
+			}
+			cause := errors.New("process exited before readiness; check the launch options")
+			err := output.failure(cause)
+			require.ErrorIs(t, err, cause)
+			require.True(t, strings.HasPrefix(err.Error(), "Not enough available GPU memory to start this engine."))
+			require.ErrorContains(t, err, "Unload models from other engines or free memory, then try again.")
+			require.ErrorContains(t, err, "\n\nEngine details:\n")
+			require.ErrorContains(t, err, test.output)
+			require.NotContains(t, err.Error(), "check the launch options")
+		})
+	}
+}
+
+func TestStartupOutput_RemembersMetalMemoryFailureAfterTheTailRolls(t *testing.T) {
+	output := newStartupOutput(nil, nil)
+	_, err := output.Write([]byte("[METAL] Insufficient Memory\n" + strings.Repeat("follow-up traceback\n", maxStartupOutput) + "Engine core initialization failed."))
+	require.NoError(t, err)
+	cause := errors.New("process exited before readiness")
+	err = output.failure(cause)
+	require.ErrorIs(t, err, cause)
+	require.ErrorContains(t, err, "Not enough available GPU memory")
+	require.ErrorContains(t, err, "Engine core initialization failed.")
+	require.NotContains(t, err.Error(), "[METAL]", "the original line must have rolled out of the bounded diagnostic tail")
+	require.Less(t, len(err.Error()), maxStartupOutput+256)
+}
+
+func TestStartupOutput_PreservesOtherFailureExplanations(t *testing.T) {
+	for _, diagnostic := range []string{
+		"unknown option --future-option",
+		"[METAL] device unavailable",
+		"[METAL] device available\nCPU: Insufficient Memory",
+		"Insufficient Memory while reading a CPU-only file",
+		"CUDA error: illegal memory access",
+		"Engine core initialization failed.",
+	} {
+		t.Run(diagnostic, func(t *testing.T) {
+			output := newStartupOutput(nil, nil)
+			_, err := output.Write([]byte(diagnostic))
+			require.NoError(t, err)
+			cause := errors.New("process exited before readiness; check the launch options")
+			err = output.failure(cause)
+			require.ErrorIs(t, err, cause)
+			require.EqualError(t, err, cause.Error()+": "+diagnostic)
+		})
+	}
+}
+
+func TestStartupOutput_RedactsValuesInMemoryFailures(t *testing.T) {
+	output := newStartupOutput(nil, map[string]string{"CUSTOM": "private-value"})
+	_, err := output.Write([]byte("[METAL] Insufficient Memory; environment=private-value"))
+	require.NoError(t, err)
+	err = output.failure(errors.New("process exited before readiness"))
+	require.ErrorContains(t, err, "Not enough available GPU memory")
+	require.ErrorContains(t, err, "environment=[redacted]")
+	require.NotContains(t, err.Error(), "private-value")
+}
+
+func TestStartupOutput_DoesNotClassifyPrivateValuesAsMemoryFailures(t *testing.T) {
+	private := "[METAL] Insufficient Memory"
+	output := newStartupOutput([]string{"--future-value=" + private}, nil)
+	_, err := output.Write([]byte("invalid value: " + private))
+	require.NoError(t, err)
+	require.EqualError(t, output.failure(errors.New("failed")), "failed: invalid value: [redacted]")
+}
+
+func TestStartupOutput_ClearsTheMemoryReasonAfterSuccessfulStartup(t *testing.T) {
+	output := newStartupOutput(nil, nil)
+	_, err := output.Write([]byte("[METAL] Insufficient Memory"))
+	require.NoError(t, err)
+	output.close()
+	cause := errors.New("later failure")
+	require.Same(t, cause, output.failure(cause))
+}
+
+func TestStartupOutput_PreservesCancellationAfterMetalMemoryOutput(t *testing.T) {
+	output := newStartupOutput(nil, nil)
+	_, err := output.Write([]byte("[METAL] Insufficient Memory"))
+	require.NoError(t, err)
+	err = output.failure(context.Canceled)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotContains(t, err.Error(), "Not enough available GPU memory")
+}
 
 func TestStartupOutput_PreservesExplanationAndRedactsValues(t *testing.T) {
 	o := newStartupOutput([]string{"--future-option", "private-value"}, map[string]string{"FUTURE_ENV": "private-env"})

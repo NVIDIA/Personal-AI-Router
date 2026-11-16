@@ -530,6 +530,12 @@ notifications using the `nvpair-shared/errors` wire shape. The broker
 (`nvpair-ui-broker`) forwards them to the `nvpair-errors` registry.
 Ids follow `engine-manager:<class>:<engine>`.
 
+A recognized Metal out-of-memory failure during startup leads with advice to
+unload models from other engines or free memory before retrying. The bounded,
+redacted engine diagnostic tail remains available after that summary, even if
+later traceback lines have displaced the original memory-error line. Other
+startup failures keep their existing explanations.
+
 ## Security posture
 
 Runs **user mode only** — no admin/sudo at runtime (privilege escalation
