@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.28 — Release LM Studio daemon memory when stopping the engine (#198)
+
+- Turning off LM Studio shuts down headless llmster and releases its models. GUI-hosted engines stop their HTTP server while leaving the GUI open. Restart and application shutdown use the same policy.
+
 ## 1.0.27 — Launch at login stays on after enabling it on Windows (#210)
 
 - On Windows, turning on Launch at login in Settings > Service now keeps the switch on. Before, the switch went back to off even though PAIR was set to start at sign-in, and it could not be turned off from Settings.
