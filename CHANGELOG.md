@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.26 — Proxy "no node" errors are labelled as JSON (#199)
+
+- When no node can serve a request, the proxy's error response now carries `Content-Type: application/json`, like its other errors. Clients that read the error message only from JSON responses, such as the Ollama JavaScript library, now show the message instead of the raw `{"error": ...}` text.
+
 ## 1.0.25 — Proxy request hardening: 32 MiB body cap, loopback-only engine addresses, fail-closed peer TLS (#79)
 
 - The proxy now rejects inference request bodies over 32 MiB with 413 before routing, closing an unauthenticated OOM vector on the loopback ingress.
