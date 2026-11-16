@@ -261,9 +261,9 @@ func TestBuildResponseUnifiedMemory_UsesSystemSnapshot(t *testing.T) {
 }
 
 // Apple Silicon shares physical memory but ioreg reports the GPU-specific
-// mapped allocation. It must flow through the normal per-adapter stats path,
+// in-use memory. It must flow through the normal per-adapter stats path,
 // not be replaced with whole-system memory usage.
-func TestBuildResponseAppleUnifiedMemory_UsesGPUAllocation(t *testing.T) {
+func TestBuildResponseAppleUnifiedMemory_UsesGPUInUseMemory(t *testing.T) {
 	static := []GPUInfo{{
 		Name:      "Apple M3 Max",
 		VramBytes: 36 << 30,

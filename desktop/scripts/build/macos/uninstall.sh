@@ -156,10 +156,13 @@ echo "Removing user data..."
 # scripts/wipe-app-data.sh — do not silently diverge.
 rm -rf "$APP_SUPPORT/Nvidia Corporation/Personal AI Router" 2>/dev/null || true
 rm -rf "$APP_SUPPORT/NVIDIA Corporation/PAIR" 2>/dev/null || true
+rm -rf "$target_home/.nvpair/engine-bin/vllm" 2>/dev/null || true
 # Remove the current and previous parents only when empty so other NVIDIA
 # applications survive.
 rmdir "$APP_SUPPORT/Nvidia Corporation" 2>/dev/null || true
 rmdir "$APP_SUPPORT/NVIDIA Corporation" 2>/dev/null || true
+rmdir "$target_home/.nvpair/engine-bin" 2>/dev/null || true
+rmdir "$target_home/.nvpair" 2>/dev/null || true
 
 # Best-effort removal of macOS framework state keyed on the bundle id.
 rm -rf "$target_home/Library/Preferences/$PACKAGE_ID.plist" 2>/dev/null || true

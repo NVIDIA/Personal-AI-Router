@@ -209,7 +209,7 @@ func TestDynamicGPUReading_ExtractsIORegistryMetrics(t *testing.T) {
 	reading, err := dynamicGPUReadingFromIORegistry([]byte(ioRegistryGPUFixture), 36<<30)
 	require.NoError(t, err, "dynamicGPUReadingFromIORegistry() error")
 	apple := reading.stats["ioreg:2a"]
-	require.Equal(t, uint64(8<<30), apple.VRAMUsed, "unexpected Apple stats (%v)", apple)
+	require.Equal(t, uint64(4<<30), apple.VRAMUsed, "unexpected Apple stats (%v)", apple)
 	require.Equal(t, uint32(100), apple.UtilizationPct, "unexpected Apple stats (%v)", apple)
 	discrete := reading.stats["ioreg:63"]
 	require.Equal(t, uint64(2<<30), discrete.VRAMUsed, "unexpected discrete stats (%v)", discrete)

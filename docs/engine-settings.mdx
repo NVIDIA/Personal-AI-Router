@@ -140,7 +140,8 @@ launch settings apply to PAIR's own requests, downloads and deletes too:
 then shows. Arguments you add to the launch text,
 such as your own `--max-model-len`, `--gpu-memory-utilization` or
 `--max-num-seqs`, take precedence, and a launch with
-`--tensor-parallel-size` or `--pipeline-parallel-size` is left as written. PAIR
+`--tensor-parallel-size` (`-tp`) or `--pipeline-parallel-size` (`-pp`) is left
+as written. PAIR
 also turns on tool calling, which agent clients require: it checks how the
 model's chat template writes a tool call and picks the vLLM parser that reads
 that format (for example `hermes` for Qwen3, `qwen3_coder` for Qwen3.5 and

@@ -11,6 +11,44 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.31 — Long requests are no longer cut off while an engine is still working (#209)
+
+- The router no longer gives up on an engine after two minutes without a response. Queued Ollama requests and long non-streaming generations now run to completion instead of being restarted on another machine.
+- An engine that starts responding but then stalls is still failed over, now after three minutes instead of two.
+
+## 1.0.30 — fix(node-info): report Apple Silicon GPU memory in use (#213)
+
+- Apple Silicon Macs now report GPU memory in use instead of allocated GPU memory. GPU memory usage is unavailable when the driver does not provide an in-use reading.
+
+## 1.0.29 — vLLM launches that use -tp or -pp are left as written (#204)
+
+- A vLLM launch that sets tensor or pipeline parallelism with the short `-tp` or `-pp` flags is no longer given a 64K `--max-model-len`, YaRN rope scaling or a GPU memory share. The long `--tensor-parallel-size` and `--pipeline-parallel-size` flags already behaved this way.
+
+## 1.0.28 — Release LM Studio daemon memory when stopping the engine (#198)
+
+- Turning off LM Studio shuts down headless llmster and releases its models. GUI-hosted engines stop their HTTP server while leaving the GUI open. Restart and application shutdown use the same policy.
+
+## 1.0.27 — Launch at login stays on after enabling it on Windows (#210)
+
+- On Windows, turning on Launch at login in Settings > Service now keeps the switch on. Before, the switch went back to off even though PAIR was set to start at sign-in, and it could not be turned off from Settings.
+- Turning Start minimized to tray on or off on Windows now updates the startup entry straight away.
+- A startup entry disabled in Windows Task Manager or the startup apps settings now reads off in Settings, and PAIR leaves it off.
+
+## 1.0.26 — Proxy "no node" errors are labelled as JSON (#199)
+
+- When no node can serve a request, the proxy's error response now carries `Content-Type: application/json`, like its other errors. Clients that read the error message only from JSON responses, such as the Ollama JavaScript library, now show the message instead of the raw `{"error": ...}` text.
+
+## 1.0.25 — Proxy request hardening: 32 MiB body cap, loopback-only engine addresses, fail-closed peer TLS (#79)
+
+- The proxy now rejects inference request bodies over 32 MiB with 413 before routing, closing an unauthenticated OOM vector on the loopback ingress.
+- Engine addresses supplied via set-local-backend must be loopback; anything else is refused at store time.
+- A missing peer certificate pin now fails closed (every dial errors) instead of falling back to an unpinned transport.
+
+## 1.0.24 — More reliable vLLM setup and model loading across supported devices (#188)
+
+- Install PAIR-managed vLLM outside the space-containing app-data directory to avoid GPU-kernel compilation failures.
+- Size vLLM memory allocations using reliable device readings, including verified shared-memory systems.
+
 ## 1.0.23 — Authenticate peer inventory before using it for service decisions (#179)
 
 - Verify discovered peers before using their identities, service endpoints, models, or hardware measurements.

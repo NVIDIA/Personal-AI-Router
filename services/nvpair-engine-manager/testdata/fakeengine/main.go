@@ -237,6 +237,25 @@ func main() {
 		case "holdoutput": // the helper downloadleavesahelper starts
 			time.Sleep(time.Minute)
 			os.Exit(2)
+		case "daemon", "server":
+			if strings.Join(os.Args[1:], " ") == "daemon status --json" {
+				if os.Getenv("PAIR_TEST_LMS_STATUS") == "command-error" {
+					fmt.Fprintln(os.Stderr, "host status unavailable")
+					os.Exit(1)
+				}
+				fmt.Println(os.Getenv("PAIR_TEST_LMS_STATUS"))
+				return
+			}
+			data, err := json.Marshal(os.Args[1:])
+			if err != nil || os.WriteFile(os.Getenv("PAIR_TEST_LMS_STOP"), data, 0o600) != nil {
+				os.Exit(1)
+			}
+			return
+		case "-I": // stand in for the memory probe's Python -I -c invocation
+			// Distinct readings in the service and engine environments let a test
+			// observe which environment the probe actually received.
+			fmt.Println(os.Getenv("PAIR_TEST_MEMORY_READING"))
+			return
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)

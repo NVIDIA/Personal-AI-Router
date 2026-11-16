@@ -312,10 +312,12 @@ func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	require.NoError(t, err)
 	// The /exit route makes the fake engine os.Exit(1) — a crash.
 	_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/exit", st.Port))
+	// The watcher clears running state before publishing the crash error.
+	// Wait for both observations instead of requiring an atomic update.
 	waitFor(t, 6*time.Second, func() bool {
 		s, err := ex.Status("fake")
 		require.NoError(t, err)
-		return !s.Running
+		return !s.Running && hasErr(ex.Errors(), exitedID("fake"))
 	})
 	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
 }

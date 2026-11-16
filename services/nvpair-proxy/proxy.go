@@ -215,34 +215,42 @@ type workloadParams struct {
 	WorkloadInfo Workload `json:"workloadInfo"`
 }
 
+// errBodyTooLarge is returned by bufferBodyAndModel when the request body
+// exceeds maxInferenceBodyBytes.
+var errBodyTooLarge = stderrors.New("request body exceeds 32 MiB limit")
+
 // bufferBodyAndModel reads the request body once and returns the raw bytes
 // (so each failover attempt can replay it — see the loop in handleHTTP) along
 // with the JSON "model" field for workload tracking. With nameFallback set, an
 // empty "model" falls back to "name", which is how /api/show clients name the
 // model. Inference bodies are small (prompt + model), so full buffering is
-// cheap. Returns (nil, "") when the body is absent and an empty model when none
-// is parseable. The caller restores r.Body from the returned bytes before each
-// forward attempt.
-func bufferBodyAndModel(r *http.Request, nameFallback bool) ([]byte, string) {
+// cheap. Returns (nil, "", nil) when the body is absent and an empty model when
+// none is parseable. The caller restores r.Body from the returned bytes before
+// each forward attempt. Bodies over maxInferenceBodyBytes are rejected with
+// errBodyTooLarge.
+func bufferBodyAndModel(r *http.Request, nameFallback bool) ([]byte, string, error) {
 	if r.Body == nil {
-		return nil, ""
+		return nil, "", nil
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxInferenceBodyBytes+1))
 	_ = r.Body.Close()
 	if err != nil {
-		return body, ""
+		return body, "", err
+	}
+	if len(body) > maxInferenceBodyBytes {
+		return nil, "", errBodyTooLarge
 	}
 	var probe struct {
 		Model string `json:"model"`
 		Name  string `json:"name"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
-		return body, ""
+		return body, "", nil
 	}
 	if probe.Model == "" && nameFallback {
-		return body, probe.Name
+		return body, probe.Name, nil
 	}
-	return body, probe.Model
+	return body, probe.Model, nil
 }
 
 type statusCapture struct {
@@ -550,11 +558,10 @@ func (p *Proxy) Run(ctx context.Context) error {
 // jobDeadline governs the wait for an owner to exist at all — a wait that costs
 // no attempts and would otherwise be unbounded.
 //
-// Read only against dispatch failures the deadline looks unreachable, and the
-// arithmetic says so: five attempts at a 120s first-content cap plus 15s of
-// cumulative backoff span 615s, so every reschedule check before the last sees
-// a clock under 600s. It is not dead — it is the only bound on the no-owner
-// wait. Do not remove it as unreachable.
+// Both bounds are reachable. A node that sends headers and then stalls costs a
+// 180s first-content cap per attempt, so with backoff the fifth dispatch would
+// start past 600s and the deadline ends that job after four. The deadline is
+// also the only bound on the no-owner wait.
 const maxDispatchAttempts = 5
 
 // jobDeadline is a var (not a const) only so a test can shorten it; production
@@ -748,7 +755,6 @@ func awaitFirstBody(body io.ReadCloser, budget time.Duration) (io.ReadCloser, er
 const (
 	proxyDialTimeout     = 10 * time.Second
 	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
 	proxyMaxIdleConns    = 50
 	proxyIdleConnTimeout = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
@@ -756,6 +762,12 @@ const (
 	proxyReadHeaderTimeout = 10 * time.Second
 	proxyServerIdleTimeout = 90 * time.Second
 	maxModelListBytes      = 16 << 20
+	// maxInferenceBodyBytes caps a single proxied request body. handleHTTP
+	// buffers the whole body to replay it across failover attempts, so an
+	// uncapped read lets any loopback client grow the proxy until it OOMs.
+	// Bodies over the cap are rejected with 413 before any routing work
+	// happens.
+	maxInferenceBodyBytes = 32 << 20
 )
 
 // idleClientWriteTimeout bounds how long a single write of streamed response
@@ -773,29 +785,23 @@ const (
 var idleClientWriteTimeout = 30 * time.Second
 
 // firstBodyTimeout bounds how long awaitFirstBody waits for an engine to emit
-// its first content byte. It matches proxyResponseTimeout, the budget the
-// transport applies to headers, because from the caller's point of view the two
-// bound the same thing: how long we wait for a node to start the work. Keeping
-// it generous is deliberate — it also covers a cold model load, which is real
-// work rather than a stall, and which cannot be told apart from a queue wait
-// from outside the engine.
+// its first content byte, measured from the arrival of headers. The wait for
+// headers itself is unbounded: the transport sets no response-header timeout.
+// Keeping it generous is deliberate — it also covers a cold model load, which
+// is real work rather than a stall, and which cannot be told apart from a queue
+// wait from outside the engine.
 //
 // It is a var (not a const) only so a test can shorten it; production never
 // reassigns it.
-var firstBodyTimeout = proxyResponseTimeout
+var firstBodyTimeout = 180 * time.Second
 
 // candidateCooldown is how long a node that spent a full first-byte deadline
-// without producing content is ordered behind its peers.
-//
-// One deadline, deliberately not a number of its own. The trigger is an attempt
-// that cost exactly that much, so waiting the same span before preferring the
-// node again states only what was measured, and it moves with whatever an
-// operator has set the deadline to instead of adding a knob nobody knows how to
-// tune.
+// without producing content is ordered behind its peers. It is set on its own,
+// not derived from firstBodyTimeout.
 //
 // It is a var (not a const) only so a test can shorten it; production never
 // reassigns it.
-var candidateCooldown = proxyResponseTimeout
+var candidateCooldown = 120 * time.Second
 
 var modelListClient = &http.Client{
 	Transport: &http.Transport{
@@ -862,10 +868,9 @@ func newProxyTransport(tlsCfg *tls.Config) *http.Transport {
 			Timeout:   proxyDialTimeout,
 			KeepAlive: proxyKeepAlive,
 		}).DialContext,
-		ResponseHeaderTimeout: proxyResponseTimeout,
-		MaxIdleConns:          proxyMaxIdleConns,
-		MaxIdleConnsPerHost:   proxyMaxIdleConns,
-		IdleConnTimeout:       proxyIdleConnTimeout,
+		MaxIdleConns:        proxyMaxIdleConns,
+		MaxIdleConnsPerHost: proxyMaxIdleConns,
+		IdleConnTimeout:     proxyIdleConnTimeout,
 	}
 	if tlsCfg != nil {
 		tr.TLSClientConfig = tlsCfg
@@ -893,11 +898,11 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 		delete(p.peerTransports, peerUUID)
 	}
 	if p.mesh == nil {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	cfg, ok := p.mesh.ClientTLSConfig(peerUUID)
 	if !ok {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	tr := newProxyTransport(cfg)
 	if p.peerTransports == nil {
@@ -905,6 +910,22 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 	}
 	p.peerTransports[peerUUID] = tr
 	return tr
+}
+
+// errPeerUnpinned is the dial error of a fail-closed peer transport: the
+// peer's certificate pin was absent when the transport was built.
+var errPeerUnpinned = stderrors.New("peer is not a pinned cluster member")
+
+// unpinnedPeerTransport returns a transport that fails every dial. It is the
+// fail-closed answer when a peer has no live certificate pin — used instead
+// of an unpinned (plaintext-auth) transport so a vanished pin can never
+// silently downgrade a peer connection.
+func unpinnedPeerTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errPeerUnpinned
+		},
+	}
 }
 
 // dropUnpinnedPeerTransports closes idle conns for peer Transports whose pins
@@ -1196,7 +1217,24 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	isInf := isInferenceRequest(f.profile, r.Method, r.URL.Path)
 	role, routed := f.profile.roleFor(r.Method, r.URL.Path)
 	lookup := routed && role == roleModelLookupPOST
-	bodyBytes, model := bufferBodyAndModel(r, lookup)
+	bodyBytes, model, bodyErr := bufferBodyAndModel(r, lookup)
+	if bodyErr != nil {
+		// errBodyTooLarge (413) is answered here so the oversized body never
+		// reaches candidate selection or an engine. Any other read error
+		// leaves bodyBytes as whatever was read before the failure.
+		if stderrors.Is(bodyErr, errBodyTooLarge) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(`{"error":"request body exceeds 32 MiB limit"}`))
+			_ = f.notify("proxy/request", RequestEvent{
+				ID: reqID, Method: r.Method, Path: r.URL.Path, Target: "rejected",
+				Status: http.StatusRequestEntityTooLarge, Duration: time.Since(start).Milliseconds(),
+				Error: bodyErr.Error(),
+			})
+			return
+		}
+		slog.Warn("request body read error", "id", reqID, "err", bodyErr)
+	}
 	routingModel := ""
 	if isInf || lookup {
 		routingModel = model
@@ -1275,7 +1313,12 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("proxy request rejected",
 			"id", reqID, "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr, "reason", rejectionError)
-		http.Error(w, rejectionBody, rejectionStatus)
+		// Not http.Error: it labels the body text/plain, so clients that read
+		// the error from a JSON response (ollama-js, for one) show it raw.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(rejectionStatus)
+		w.Write([]byte(rejectionBody))
 		_ = f.notify("proxy/request", RequestEvent{
 			ID:       reqID,
 			Method:   r.Method,
@@ -1913,16 +1956,21 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// Measured, not classified from the error: a dial failure is bounded by
 		// the much shorter dial timeout and a status-based retry commits a
 		// response, so only an attempt that produced no content at all can reach
-		// the first-byte budget. That covers both shapes of silence — no headers
-		// and headers with no body — without naming either.
+		// the first-byte budget. Headers with no body are ended by the budget
+		// itself. No headers has no cap, so it reaches the budget only when
+		// something else ends it after that long: the connection failing or the
+		// target leaving discovery.
 		//
 		// A no-content attempt that did not reach the budget leaves the stamp
 		// untouched on purpose. It cost too little to be evidence of a stall, so
 		// stamping would overstate it; and a fast failure is no evidence the node
 		// is serving either, so clearing an existing stamp would understate it.
 		// Only a byte clears, and only a full budget stamps.
+		//
+		// A requester that gave up leaves it untouched too. The attempt measured
+		// the client's patience, not the node, which may still be generating.
 		if noContent := retry || respondedWithError; noContent {
-			if time.Since(attemptStart) >= firstBodyTimeout {
+			if time.Since(attemptStart) >= firstBodyTimeout && r.Context().Err() == nil {
 				p.noteNoFirstByte(cand.id, time.Now())
 			}
 		} else {

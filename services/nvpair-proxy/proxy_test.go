@@ -4,6 +4,11 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -114,4 +119,126 @@ func TestNodeURL_FormatsIPv4IPv6AndServicePort(t *testing.T) {
 	test("ipv6", Node{Addresses: []string{"2001:db8::1"}, Port: 11434}, "[2001:db8::1]:11434", "http://[2001:db8::1]:11434")
 	test("hostname", Node{Addresses: []string{"gpu-host.lan"}, Port: 11434}, "gpu-host.lan:11434", "http://gpu-host.lan:11434")
 	test("fallback to host", Node{Host: "gpu-host.lan", Port: 11434}, "gpu-host.lan:11434", "http://gpu-host.lan:11434")
+}
+
+func ollamaFacadeForTest(t *testing.T) *facade {
+	t.Helper()
+	profile, ok := profileFor("ollama")
+	require.True(t, ok)
+	return testProxy(profile, NewDiscovery(), profile.StandalonePort).soleFacade()
+}
+
+// handleHTTP buffers the whole request body so every failover attempt can
+// replay it. Without a cap, any loopback client could grow the proxy until it
+// ran out of memory.
+func TestBufferBodyAndModel_RejectsBodyOverCap(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(strings.Repeat("x", maxInferenceBodyBytes+1)))
+
+	_, _, err := bufferBodyAndModel(req, false)
+
+	assert.ErrorIs(t, err, errBodyTooLarge)
+}
+
+func TestBufferBodyAndModel_AcceptsBodyExactlyAtCap(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(strings.Repeat("x", maxInferenceBodyBytes)))
+
+	body, _, err := bufferBodyAndModel(req, false)
+
+	require.NoError(t, err)
+	assert.Len(t, body, maxInferenceBodyBytes)
+}
+
+func TestBufferBodyAndModel_ParsesModelFromSmallBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama3"}`))
+
+	_, model, err := bufferBodyAndModel(req, false)
+
+	require.NoError(t, err)
+	assert.Equal(t, "llama3", model)
+}
+
+// An over-cap POST is answered before any routing or engine work happens.
+func TestHandleHTTP_RejectsBodyOverCapWithJSON413(t *testing.T) {
+	f := ollamaFacadeForTest(t)
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte(strings.Repeat("x", maxInferenceBodyBytes+1024)))
+		_ = pw.Close()
+	}()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", pr)
+	rec := httptest.NewRecorder()
+
+	f.handleHTTP(rec, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	var payload map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	assert.Equal(t, "request body exceeds 32 MiB limit", payload["error"])
+}
+
+// The fixture has no engine to route to, so a small body takes the ordinary
+// no-candidate rejection instead of the 413 path.
+func TestHandleHTTP_DoesNotReject413ForBodyUnderCap(t *testing.T) {
+	f := ollamaFacadeForTest(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama3"}`))
+	rec := httptest.NewRecorder()
+
+	f.handleHTTP(rec, req)
+
+	assert.NotEqual(t, http.StatusRequestEntityTooLarge, rec.Code)
+}
+
+// The local engine must stay on loopback. Enforcing it where the backend is
+// stored means the mTLS ingress can never become a forwarder to a LAN address.
+func TestSetLocalBackend_AcceptsLoopbackHosts(t *testing.T) {
+	test := func(name, host string) {
+		t.Run(name, func(t *testing.T) {
+			f := ollamaFacadeForTest(t)
+
+			err := f.setLocalBackend(localBackend{Engine: "ollama", Host: host, Port: 11436, Healthy: true})
+
+			assert.NoError(t, err)
+		})
+	}
+	test("accepts an empty host", "")
+	test("accepts IPv4 loopback", "127.0.0.1")
+	test("accepts another IPv4 loopback address", "127.0.0.2")
+	test("accepts IPv6 loopback", "::1")
+}
+
+func TestSetLocalBackend_RejectsNonLoopbackHosts(t *testing.T) {
+	test := func(name, host string) {
+		t.Run(name, func(t *testing.T) {
+			f := ollamaFacadeForTest(t)
+
+			err := f.setLocalBackend(localBackend{Engine: "ollama", Host: host, Port: 11436, Healthy: true})
+
+			assert.Error(t, err)
+		})
+	}
+	test("rejects a private 192.168 address", "192.168.1.5")
+	test("rejects a private 10.x address", "10.0.0.2")
+	test("rejects a hostname", "example.com")
+	test("rejects an IPv4-mapped private address", "::ffff:192.168.1.5")
+}
+
+// If a peer's certificate pin disappears between candidate selection and dial
+// time, the dial must fail instead of downgrading to an unauthenticated
+// connection.
+func TestPeerHTTPTransport_FailsClosedWithoutPin(t *testing.T) {
+	profile, ok := profileFor("ollama")
+	require.True(t, ok)
+	p := testProxy(profile, NewDiscovery(), profile.StandalonePort) // no mesh: unclustered
+
+	tr := p.peerHTTPTransport("no-such-peer")
+	require.NotNil(t, tr)
+	assert.Nil(t, tr.TLSClientConfig)
+
+	conn, err := tr.DialContext(t.Context(), "tcp", "192.0.2.10:443")
+	if conn != nil {
+		assert.NoError(t, conn.Close())
+	}
+	assert.ErrorIs(t, err, errPeerUnpinned)
+	assert.Nil(t, conn)
 }

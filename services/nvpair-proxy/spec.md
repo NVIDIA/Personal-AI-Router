@@ -27,7 +27,7 @@ that choice good under bursts.
 ### 1.1 What a caller is promised
 
 The proxy aims to get every inference request **started** on some node that can
-serve it, and spends a bounded amount of effort doing so. Stated precisely:
+serve it, and spends a bounded number of dispatches doing so. Stated precisely:
 
 > While budget remains (§5.1), a failure that happens *before* the engine begins
 > producing output is retried rather than returned. Once output begins, the
@@ -40,9 +40,10 @@ at all, so a node blinking out does not spend the budget.
 
 Four things bound that aim, and a caller should design for them.
 
-**Effort is bounded, and which bound ran out changes what the caller gets.**
-Absorption holds only while budget remains. Past that there are two shapes, both
-detailed in §5.4:
+**Dispatches are bounded, elapsed time is not, and which bound ran out changes
+what the caller gets.** Absorption holds only while budget remains. Past that
+there are two shapes, both detailed in §5.4, and a third where no bound is
+reached:
 
 - **The dispatch budget ran out.** The final permitted attempt is never
   retried, so its own failure is the answer: the upstream's status and body
@@ -51,9 +52,13 @@ detailed in §5.4:
 - **The deadline passed between attempts, or no owner came back.** Nothing is
   in flight to answer, so the proxy generates a `503` with `Retry-After` that
   names which of those it was.
+- **An attempt never ends.** A node that withholds its headers holds the
+  attempt until it answers, the connection fails, the node leaves discovery, or
+  the caller gives up (§5.1, §5.6). Nothing is returned until one of those
+  happens.
 
-Either way this is a persistent, bounded attempt to start — not an assurance
-that every submission eventually runs.
+In every case this is a persistent attempt to start, bounded in dispatches but
+not in time — not an assurance that every submission eventually runs.
 
 **"Started" is the guarantee, not "finished".** Commitment ends at the first
 byte of response body (§5.2), so `completed` means the engine began generating,
@@ -69,10 +74,12 @@ it would mean parsing response bodies, which §9 forbids.
 
 **A non-streaming request is the weakest case.** Its headers arrive only when
 the response is complete, so "queued inside the engine" and "generating right
-now" look identical from outside. The attempt cap therefore has to cover whole
-generation, and when it expires the proxy cannot tell whether it abandoned a
-stalled request or a working one — so retrying may discard real progress. That
-is a genuine limitation, not a safety margin (§5.6).
+now" look identical from outside. The proxy puts no cap on that wait, so a long
+generation is never restarted, but a node that stalls before responding is never
+failed over for being slow either: the attempt lasts until the engine answers,
+the connection fails, the node leaves discovery (for a manual node, only when
+the user removes it), or the caller gives up. That is a genuine limitation, not
+a safety margin (§5.6).
 
 ## 2. Scope
 
@@ -191,7 +198,7 @@ not inventory scope. Its inference routes remain `/v1/*`.
 | --- | --- | --- |
 | `maxDispatchAttempts` | 5 | how many dispatches may fail |
 | `jobDeadline` | 10 minutes from request creation | how long new attempts may keep being started, including while waiting for an owner to exist |
-| `firstBodyTimeout` | `proxyResponseTimeout` (120s) | one attempt's wait for first content, measured from the arrival of headers |
+| `firstBodyTimeout` | 180s | one attempt's wait for first content, measured from the arrival of headers |
 
 The retry budget applies only to inference requests. Routes not classified in
 the engine's route table are still forwarded verbatim, and some perform
@@ -206,20 +213,20 @@ candidates, back off between rounds, or apply the inference deadline.
 eligible owner sends nothing, so a job whose only owner briefly drops out does
 not burn its budget while the node comes back.
 
-**Elapsed time per attempt is the sum of three budgets, not one.** They run in
-sequence: the dial (`proxyDialTimeout`, 10s), then headers
-(`proxyResponseTimeout`, 120s, enforced by the transport), then first content
-(`firstBodyTimeout`, 120s, which starts only once headers arrive). One attempt
-can therefore occupy around 240s — the two 120s caps back to back, since a slow
-dial is a LAN rarity — and nothing caps their sum.
+**Elapsed time per attempt is not capped.** The dial is bounded
+(`proxyDialTimeout`, 10s), and so is the wait for first content once headers
+arrive (`firstBodyTimeout`, 180s). The wait for headers is not: the transport
+sets no response-header timeout, so an engine that accepts a request and
+withholds its headers holds the attempt until it answers, the connection fails,
+the target leaves discovery (for a manual node, only when the user removes it),
+or the client disconnects.
 
 Both bounds are checked before every dispatch and **never truncate an attempt
 already in flight**. Killing one seconds from its first token and then failing
 the job for being out of time would spend the entire wait and discard the
 result. `jobDeadline` is therefore a "no new attempts after" line rather than a
 ceiling on elapsed time, and the worst case is the deadline plus one whole
-attempt: a last dispatch starting just under 600s and running its full 240s
-puts time to first content near fourteen minutes.
+attempt. Since an attempt's wait for headers has no cap, neither does that sum.
 
 Which bound ends a job depends on how its attempts fail, and all three cases
 are real:
@@ -227,16 +234,19 @@ are real:
 - **Fast failures** — a refused connection, a prompt `503` — cost about a
   second, so all five attempts fit well inside the deadline and the dispatch
   budget is what ends the job. This is the common case.
-- **Slow failures** — an engine that accepts and then withholds everything —
-  cost close to a whole attempt each, so the deadline arrives first. At 240s
-  per attempt the fourth dispatch would start past 600s, so the job ends after
-  three attempts with budget unspent.
+- **Slow failures** — an engine that sends headers and then produces nothing —
+  cost about 180s each, so the deadline arrives first. With backoff between
+  them the fifth dispatch would start past 600s, so the job ends after four
+  attempts with budget unspent.
 - **No owner at all** costs no attempt, so the deadline is the only thing that
   can end the wait.
 
 The last case is why the deadline cannot be dropped as redundant with the
 attempt count, and the middle one is why five attempts is a ceiling rather than
-a promise. **Do not remove either bound as unreachable.**
+a promise.
+
+An engine that withholds its headers never fails for being slow, so neither
+bound ends that job; only the attempt ending does.
 
 #### Waiting for an owner
 
@@ -269,9 +279,8 @@ node.
 **Commit is the first byte of response body, not the response headers.**
 
 Headers are not a valid commit signal: they may show only that the engine
-accepted the request. Treating them as commitment would disable the header
-timeout and prevent failover while the request remains queued inside the
-engine. The first content byte is the first engine-independent evidence that
+accepted the request. Treating them as commitment would prevent failover while
+the request remains queued inside the engine. The first content byte is the first engine-independent evidence that
 generation has begun.
 
 The difference is engine-specific and large. Measured against LM Studio 0.4.x
@@ -374,6 +383,7 @@ These are the statuses the proxy itself returns:
 
 | Condition | Status |
 | --- | --- |
+| Request body exceeds 32 MiB, nothing dispatched | `413` |
 | No owner advertises the model, nothing dispatched | `502` |
 | Final permitted attempt returned a status | that status and body, unchanged |
 | Final permitted attempt failed at the transport | `502` |
@@ -457,22 +467,25 @@ treat an absent `scheduledOn` as "not placed" rather than assuming a node.
 
 ### 5.6 Coverage gap: non-streaming requests
 
-A non-streaming request is the case the retry policy serves worst, and the
-weakness is the opposite of too little retrying.
+A non-streaming request is the case the retry policy serves worst: once
+dispatched, it is never retried for being slow.
 
 Its headers arrive only when the response is complete, so from outside the
-engine "queued behind other work" and "generating right now" are
-indistinguishable. The 120s header cap therefore has to cover whole generation
-— the first-content wait adds nothing here, since the body arrives with the
-headers — and when it expires the proxy retries without being able to tell
-whether it just abandoned a stalled request or a working one. A generation
-legitimately slower than that cap is restarted elsewhere, discarding real
-progress, and the restart faces the same cap.
+engine "queued behind other work", "generating right now" and "stalled" are
+indistinguishable. The transport sets no response-header timeout, and the
+first-content wait adds nothing here, since the body arrives with the headers.
+A long generation therefore runs to completion rather than being restarted
+elsewhere, but a node that stalls before responding holds the attempt until it
+answers, the connection fails, the target leaves discovery (for a manual node,
+only when the user removes it), or the client disconnects, and it is never
+failed over for being slow. An engine that withholds headers on a streaming
+request too, as Ollama does until generation begins, shares this gap.
 
 Nothing in the current engine surface fixes this: there is no progress signal
 before the response is complete. A caller that cares should prefer a streaming
-request, where the first content byte gives the proxy the evidence it lacks
-here.
+request on an engine that sends headers before generating, such as LM Studio,
+where the first content byte gives the proxy the evidence it lacks here. On
+Ollama streaming does not help, because its headers are withheld as well.
 
 ### 5.7 Accepted behavior
 
@@ -709,6 +722,7 @@ new supervisor, and no new relay wiring.
 | Mode | Behavior |
 | --- | --- |
 | Requested port taken at enable | Tagged bind failure; broker retries on a fallback port |
+| Request body exceeds 32 MiB | Local `413`, rejected before candidate selection, no engine contacted |
 | No advertised owner for the model | Local `502`, no engine contacted |
 | All owners refuse retryably | Last upstream status surfaced |
 | Transport error with candidates left | Forget the node's confirmed address, fail over |
