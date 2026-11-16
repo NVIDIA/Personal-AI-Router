@@ -151,11 +151,16 @@ implementation is used.
 Errors are emitted with the `nvpair-shared/errors.ServiceError` wire shape (`id`, `message`, `severity`, `action`, …), mirrored locally in `reporter.go` with identical JSON tags. `id` follows `engine-manager:<class>:<engine>`; the Broker stamps `nodeId` / `timestamp`.
 
 When startup output identifies a Metal out-of-memory failure, the error message
-first explains that available GPU memory is insufficient and advises unloading
-models from other engines or freeing memory before retrying. It retains the
-bounded, redacted diagnostic tail and the original error cause. Detection occurs
-after redaction and survives subsequent traceback truncation. Unrelated failures
-and explicit cancellation keep their existing explanations and lifecycle behavior.
+includes an explanation that available GPU memory is insufficient and advice to
+unload models from other engines or free memory before retrying. Classification
+is shared across engine names, process and privately captured command launches,
+and host platforms; it depends on the emitted Metal diagnostic rather than the
+engine or OS. Commands use this capture when custom launch arguments or environment
+are supplied. The public error retains its existing engine or command context before the advice
+and appends the bounded, redacted diagnostic tail under `Engine details:`. The
+original error cause remains available. Detection occurs after redaction and
+survives subsequent traceback truncation. Unrelated failures and explicit
+cancellation keep their existing explanations and lifecycle behavior.
 
 Example request:
 ```json

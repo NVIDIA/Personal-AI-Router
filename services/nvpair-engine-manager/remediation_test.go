@@ -320,26 +320,66 @@ func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
 }
 
-func TestEngineStartup_ReportsMemoryRecoveryAdviceForMetalOOM(t *testing.T) {
+func TestEngineStartup_ReportsFullMetalMemoryErrorForProcessEngines(t *testing.T) {
+	for _, test := range []struct {
+		engine  string
+		context string
+	}{
+		{engine: "vllm", context: `engine "vllm" did not become ready: `},
+		{engine: "llamacpp", context: `engine "llamacpp" did not become ready: `},
+	} {
+		t.Run(test.engine, func(t *testing.T) {
+			manifest := testEngineManifest(fakeEngineBin)
+			manifest.Engine = test.engine
+			platform := manifest.Platforms[hostKey()]
+			platform.Runtime.Args = []string{"--fail-metal-oom"}
+			manifest.Platforms[hostKey()] = platform
+			executor, _ := capturingExecutor(t, manifest)
+			t.Cleanup(func() { assert.NoError(t, executor.Stop(test.engine)) })
+
+			err := executor.Start(t.Context(), test.engine)
+
+			want := test.context + "Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again.\n\nEngine details:\n" +
+				"RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).\n" +
+				"RuntimeError: Engine core initialization failed."
+			require.EqualError(t, err, want)
+			reported := executor.Errors()
+			require.Len(t, reported, 1)
+			assert.Equal(t, startFailedID(test.engine), reported[0].ID)
+			assert.Equal(t, want, reported[0].Message)
+			assert.Equal(t, "retry", reported[0].Action)
+			state, statusErr := executor.Status(test.engine)
+			require.NoError(t, statusErr)
+			assert.False(t, state.Running)
+			assert.False(t, state.Healthy)
+		})
+	}
+}
+
+func TestEngineStartup_ReportsFullMetalMemoryErrorForCustomCommand(t *testing.T) {
 	manifest := testEngineManifest(fakeEngineBin)
+	manifest.Engine = "lmstudio"
 	platform := manifest.Platforms[hostKey()]
-	platform.Runtime.Args = append(platform.Runtime.Args, "--fail-metal-oom")
+	platform.Runtime.Mode = "command"
+	platform.Runtime.Start = [][]string{{fakeEngineBin, "--fail-metal-oom"}}
+	platform.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "echo", "down"}}
+	platform.Runtime.LaunchEnv = []string{"PAIR_TEST_MODE=metal-oom"}
 	manifest.Platforms[hostKey()] = platform
 	executor, _ := capturingExecutor(t, manifest)
-	t.Cleanup(func() { _ = executor.Stop("fake") })
+	t.Cleanup(func() { assert.NoError(t, executor.Stop("lmstudio")) })
 
-	err := executor.Start(t.Context(), "fake")
+	err := executor.Start(t.Context(), "lmstudio")
 
-	require.ErrorContains(t, err, "Not enough available GPU memory")
-	require.ErrorContains(t, err, "Unload models from other engines or free memory")
-	require.ErrorContains(t, err, "kIOGPUCommandBufferCallbackErrorOutOfMemory")
-	require.NotContains(t, err.Error(), "check the launch options")
+	want := "start command failed: Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again.\n\nEngine details:\n" +
+		"RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).\n" +
+		"RuntimeError: Engine core initialization failed."
+	require.EqualError(t, err, want)
 	reported := executor.Errors()
 	require.Len(t, reported, 1)
-	assert.Equal(t, startFailedID("fake"), reported[0].ID)
-	assert.Equal(t, err.Error(), reported[0].Message)
+	assert.Equal(t, startFailedID("lmstudio"), reported[0].ID)
+	assert.Equal(t, want, reported[0].Message)
 	assert.Equal(t, "retry", reported[0].Action)
-	state, statusErr := executor.Status("fake")
+	state, statusErr := executor.Status("lmstudio")
 	require.NoError(t, statusErr)
 	assert.False(t, state.Running)
 	assert.False(t, state.Healthy)
