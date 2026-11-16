@@ -4,8 +4,10 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,7 +49,7 @@ func TestParseIORegistryGPUs_ExtractsGPUInventoryAndMetrics(t *testing.T) {
 	require.Equal(t, "ioreg:2a", apple.statsKey, "unexpected Apple identity (%v)", apple)
 	require.Equal(t, "Apple M3 Max", apple.name, "unexpected Apple identity (%v)", apple)
 	require.Equal(t, systemMemory, apple.vramTotal, "unexpected Apple memory (%v)", apple)
-	require.Equal(t, uint64(8<<30), apple.vramUsed, "unexpected Apple memory (%v)", apple)
+	assert.Equal(t, uint64(4<<30), apple.vramUsed)
 	require.Equal(t, uint32(100), apple.utilizationPct, "Apple utilization")
 	require.True(t, apple.utilizationValid, "Apple utilization")
 
@@ -58,6 +60,57 @@ func TestParseIORegistryGPUs_ExtractsGPUInventoryAndMetrics(t *testing.T) {
 	require.Equal(t, uint64(2<<30), discrete.vramUsed, "unexpected discrete memory (%v)", discrete)
 	require.Equal(t, uint32(25), discrete.utilizationPct, "discrete utilization")
 	require.True(t, discrete.utilizationValid, "discrete utilization")
+}
+
+func TestParseIORegistryGPUs_ReportsAppleInUseMemory(t *testing.T) {
+	test := func(name, memoryCounters string, expectedUsed uint64) {
+		t.Run(name, func(t *testing.T) {
+			fixture := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><array><dict>
+  <key>IORegistryEntryID</key><integer>42</integer>
+  <key>IOObjectClass</key><string>AGXAcceleratorG15X</string>
+  <key>PerformanceStatistics</key><dict>%s</dict>
+</dict></array></plist>`, memoryCounters)
+
+			records, err := parseIORegistryGPUs([]byte(fixture), 16<<30)
+			require.NoError(t, err)
+			require.Len(t, records, 1)
+			record := records[0]
+			assert.Equal(t, uint64(16<<30), record.vramTotal)
+			assert.Equal(t, expectedUsed, record.vramUsed)
+
+			static := []GPUInfo{{Name: record.name, VramBytes: record.vramTotal, statsKey: record.statsKey}}
+			snap := statsSnapshot{
+				GPU:          map[string]gpuStat{record.statsKey: {VRAMUsed: record.vramUsed}},
+				MemUsedBytes: 12 << 30,
+			}
+			typed, raw := buildResponseDecode(t, static, nil, 16<<30, snap)
+			require.Len(t, typed.GPUs, 1)
+			assert.Equal(t, expectedUsed, typed.GPUs[0].VramUsedBytes)
+			gpus, ok := raw["GPUs"].([]any)
+			require.True(t, ok)
+			require.Len(t, gpus, 1)
+			gpu, ok := gpus[0].(map[string]any)
+			require.True(t, ok)
+			if expectedUsed == 0 {
+				assert.NotContains(t, gpu, "vram_used_bytes")
+			} else {
+				assert.Contains(t, gpu, "vram_used_bytes")
+			}
+		})
+	}
+
+	test("allocation exceeds capacity but usage does not", `
+    <key>Alloc system memory</key><integer>34359738368</integer>
+    <key>In use system memory</key><integer>4294967296</integer>`, 4<<30)
+	test("missing in-use counter omits usage despite allocation", `
+    <key>Alloc system memory</key><integer>8589934592</integer>`, 0)
+	test("zero in-use counter omits usage despite allocation", `
+    <key>Alloc system memory</key><integer>8589934592</integer>
+    <key>In use system memory</key><integer>0</integer>`, 0)
+	test("in-use counter is reported without clamping", `
+    <key>Alloc system memory</key><integer>34359738368</integer>
+    <key>In use system memory</key><integer>25769803776</integer>`, 24<<30)
 }
 
 func TestParseIORegistryGPUs_RecursesAndOmitsMissingMetrics(t *testing.T) {
