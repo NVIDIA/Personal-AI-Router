@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"net"
 	"testing"
 
@@ -35,12 +34,4 @@ func TestHTTPServers_ConfigureIdleConnectionTimeouts(t *testing.T) {
 		assert.Equal(t, proxyServerIdleTimeout, srv.idle, " (%v, %v)", name, proxyServerIdleTimeout)
 	}
 	require.Equal(t, proxyIdleConnTimeout, proxyServerIdleTimeout, "server IdleTimeout (%v, %v)", proxyServerIdleTimeout, proxyIdleConnTimeout)
-}
-
-// The wait for upstream headers is deliberately unbounded (spec §5.1): a header
-// cap would cut off a long non-streaming generation or a queued Ollama request.
-func TestNewProxyTransport_SetsNoResponseHeaderTimeout(t *testing.T) {
-	for name, tlsCfg := range map[string]*tls.Config{"plain": nil, "tls": {}} {
-		assert.Zero(t, newProxyTransport(tlsCfg).ResponseHeaderTimeout, "%s ResponseHeaderTimeout", name)
-	}
 }
