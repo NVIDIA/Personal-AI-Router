@@ -32,29 +32,32 @@ const (
 )
 
 // modelScopeNonChatMarkers are tags and repo-name words of models that do not
-// answer chat requests. They decide only for a repository that declares no
-// task: ModelScope leaves it empty for many chat GGUF repos, so an undeclared
-// task is taken as chat unless one of these says otherwise. A blocklist cannot
+// answer chat requests. They override a declared task, which ModelScope sets
+// to text-generation on some embedding and speech repos. ModelScope also
+// leaves the task empty for many chat GGUF repos, so a repository without one
+// is taken as chat unless a marker says otherwise. A blocklist cannot
 // name every non-chat model; it covers the families seen on ModelScope.
 var modelScopeNonChatMarkers = map[string]bool{
 	"embed": true, "embedding": true, "embeddings": true, "feature-extraction": true, "sentence-similarity": true,
-	"sentence-embedding": true, "rerank": true, "reranker": true, "reranking": true, "text-ranking": true,
+	"sentence-embedding": true, "sentence-transformers": true, "text-embeddings-inference": true,
+	"rerank": true, "reranker": true, "reranking": true, "text-ranking": true,
 	"audio": true, "speech": true, "tts": true, "asr": true, "whisper": true, "voice-cloning": true,
 	"text-to-speech": true, "speech-to-speech": true, "speech-to-text": true, "text-to-audio": true, "audio-to-audio": true,
 	"automatic-speech-recognition": true, "speech-recognition": true,
-	"text-to-image": true, "text-to-image-synthesis": true, "image-to-image": true, "text-to-video": true, "image-to-video": true,
-	"video-generation": true, "diffusion": true, "stable-diffusion": true, "stable-diffusion.cpp": true,
-	"sdxl": true, "sd3": true, "flux": true, "vae": true, "comfy": true, "comfyui": true, "wan": true, "hunyuanvideo": true, "ltxv": true,
+	"text-to-image": true, "text-to-image-synthesis": true, "image-to-image": true, "image-generation": true,
+	"text-to-video": true, "image-to-video": true, "video-generation": true,
+	"diffusion": true, "stable-diffusion": true, "stable-diffusion.cpp": true, "sdxl": true, "sd3": true, "flux": true, "vae": true,
+	"comfy": true, "comfyui": true, "wan": true, "hunyuanvideo": true, "ltx": true, "ltxv": true,
 }
 
-// modelScopeChatByDefault reports a repository with no declared task that
-// carries no non-chat marker in its tags or its name. A name is matched by
-// word, and by word without a trailing version number so wan2 matches wan,
-// and a multi-word marker is matched as consecutive words.
-func modelScopeChatByDefault(repo string, tags []string) bool {
+// modelScopeMarkedNonChat reports a repository with a non-chat marker in its
+// tags or its name. A name is matched by word, and by word without a trailing
+// version number so wan2 matches wan, and a multi-word marker is matched as
+// consecutive words.
+func modelScopeMarkedNonChat(repo string, tags []string) bool {
 	for _, tag := range tags {
 		if modelScopeNonChatMarkers[strings.ToLower(strings.TrimSpace(tag))] {
-			return false
+			return true
 		}
 	}
 	words := strings.NewReplacer("_", "-", ".", "-")
@@ -62,15 +65,15 @@ func modelScopeChatByDefault(repo string, tags []string) bool {
 	name = words.Replace(name)
 	for _, word := range strings.Split(name, "-") {
 		if modelScopeNonChatMarkers[word] || modelScopeNonChatMarkers[strings.TrimRight(word, "0123456789")] {
-			return false
+			return true
 		}
 	}
 	for marker := range modelScopeNonChatMarkers {
 		if phrase := words.Replace(marker); strings.Contains(phrase, "-") && strings.Contains("-"+name+"-", "-"+phrase+"-") {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]CatalogModel, error) {
@@ -126,14 +129,12 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 				row.Tags[j] = value
 			}
 		}
+		if modelScopeMarkedNonChat(row.ID, row.Tags) {
+			continue
+		}
+		row.PipelineTag = "text-generation"
 		if len(entry.Tasks) > 0 {
 			row.PipelineTag = entry.Tasks[0]
-		} else if modelScopeChatByDefault(row.ID, row.Tags) {
-			row.PipelineTag = "text-generation"
-		} else {
-			// Without this, isGenerative would still accept a marked repo
-			// through a text-generation or conversational tag.
-			continue
 		}
 		if row.Private || string(row.Gated) != "false" || !hfRepoPattern.MatchString(row.ID) || !hasTag(row.Tags, "gguf") || !isGenerative(row) {
 			continue
@@ -170,10 +171,16 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 		}
 	}
 	if failed > 0 {
+		// An expired timeout is what failed the fetch, whichever listing
+		// happened to fail first.
+		expired := ctx.Err()
+		if expired != nil {
+			firstErr = expired
+		}
 		// One summary rather than every listing's error: a timeout fails them
-		// all alike, and the message reaches the desktop and terminal as is.
+		// all alike, and the terminal shows the message as is.
 		err := fmt.Errorf("%d of %d ModelScope file lists failed: %w", failed, failed+succeeded, firstErr)
-		if ctx.Err() != nil || failed*modelScopeFileListFailureLimit > failed+succeeded {
+		if expired != nil || failed*modelScopeFileListFailureLimit > failed+succeeded {
 			return nil, err
 		}
 		// Repository ids are left out: an exact-name search would log the

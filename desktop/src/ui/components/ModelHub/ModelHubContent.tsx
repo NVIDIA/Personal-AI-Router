@@ -129,6 +129,12 @@ export const ModelHubContent = ({
         return queryFiltered.filter(m => !isHubEntryDownloaded(engine, m, downloadedModels))
     }, [engine, queryFiltered, downloadedModels])
 
+    // A searchable source browses only a sample of its upstream, so a search
+    // can reach models this list does not show, even when every listed model
+    // is already installed.
+    const browsingSample =
+        catalog.searchable === true && !loading && query.trim() === '' && allModels.length > 0
+
     const handleSortPersist = useCallback(
         (next: SortState) => {
             setSort(next)
@@ -272,17 +278,11 @@ export const ModelHubContent = ({
                         sort={sort}
                         onSort={handleSortPersist}
                     />
-                    {/* A searchable source browses only a sample of its upstream, so
-                        a search can reach models this list does not show, even
-                        when every listed model is already installed. */}
-                    {catalog.searchable === true &&
-                        !loading &&
-                        query.trim() === '' &&
-                        allModels.length > 0 && (
-                            <Text kind="body/regular/sm" className="text-subtle-color mt-2 ml-2">
-                                Showing popular models. Search to find more.
-                            </Text>
-                        )}
+                    {browsingSample && visibleModels.length > 0 && (
+                        <Text kind="body/regular/sm" className="text-subtle-color mt-2 ml-2">
+                            Showing popular models. Search to find more.
+                        </Text>
+                    )}
                 </Stack>
                 <ModelHubList
                     className="grow min-h-0"
@@ -290,6 +290,11 @@ export const ModelHubContent = ({
                     multiple={multiple}
                     loading={loading}
                     models={visibleModels}
+                    emptyMessage={
+                        browsingSample
+                            ? 'Popular models are already installed. Search to find more.'
+                            : undefined
+                    }
                     selectedModels={selectedModels}
                     onToggleSelectModel={handleListToggle}
                     sort={sort}

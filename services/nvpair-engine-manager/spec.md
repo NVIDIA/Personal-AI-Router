@@ -87,14 +87,18 @@ accepted for llama.cpp; each source keeps its own browse/search cache.
 ModelScope's public GGUF catalogue is normalized through the same quantization
 and generative-model filters as Hugging Face. Browse and search each read one
 50-entry page by downloads, the largest ModelScope serves, and list each
-candidate's files at most eight at a time. ModelScope declares no task for many
-chat repos, so a repo without one counts as chat unless a speech, audio, image,
-video, embedding or reranking marker appears in its tags or as words of its
-name. The markers are a blocklist of the families seen on ModelScope, so an
-unmarked non-chat repo can still be listed. A repo whose file list fails is left
-out; the fetch fails instead when more than one file list in four fails or the
-catalogue timeout expires, and an empty browse list is a failure, so the cache
-keeps its previous list rather than one cut short.
+candidate's files at most eight at a time. A repo with a speech, audio, image,
+video, embedding or reranking marker in its tags or as words of its name is
+dropped, even when it declares a chat task, as ModelScope does for some
+embedding and speech repos. ModelScope declares no task for many chat repos, so
+an unmarked repo without one counts as chat. The markers are a blocklist of the
+families seen on ModelScope, so an unmarked non-chat repo can still be listed,
+and a chat repo named after one, such as a prompt generator for an image model,
+is dropped. A repo whose file list fails is left out of the cached list; the
+fetch fails instead when more than one file list in four fails or the request
+ends or times out first, and an empty browse list is a failure, so the cache
+keeps its previous list rather than one cut short. The browse list is cached
+apart from searches, so searches never evict it.
 
 A loopback-only adapter translates ModelScope metadata and streams file
 requests without forwarding Hugging Face

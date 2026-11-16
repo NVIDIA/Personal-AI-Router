@@ -113,6 +113,8 @@ func TestModelScopeCatalog_TreatsUndeclaredTaskAsChatUnlessMarkedOtherwise(t *te
 				{"id":"owner/MiniMax-H3-GGUF","gated":false,"tags":["library:gguf","custom_tag:text-to-video"],"last_modified":"2026-01-01T00:00:00Z"},
 				{"id":"owner/Wan2.2-Animate-14B-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
 				{"id":"owner/Open_Text_To_Video-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/image-studio-ltx-video","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/studio-GGUF","gated":false,"tags":["library:gguf","custom_tag:image-generation"],"last_modified":"2026-01-01T00:00:00Z"},
 				{"id":"owner/Qwen3-Embedding-8B-GGUF","gated":false,"tags":["library:gguf"],"last_modified":"2026-01-01T00:00:00Z"},
 				{"id":"owner/bge-m3-GGUF","gated":false,"tags":["library:gguf","custom_tag:sentence-embedding"],"last_modified":"2026-01-01T00:00:00Z"},
 				{"id":"owner/declared-embedding","gated":false,"tags":["library:gguf"],"tasks":["sentence-embedding"],"last_modified":"2026-01-01T00:00:00Z"}
@@ -139,12 +141,17 @@ func TestModelScopeCatalog_TreatsUndeclaredTaskAsChatUnlessMarkedOtherwise(t *te
 	assert.ElementsMatch(t, []string{"owner/DeepSeek-R1-GGUF:Q4_K_M", "owner/Qwen3.6-35B-A3B-GGUF:Q4_K_M"}, ids)
 }
 
-func TestModelScopeCatalog_DropsMarkedRepositoryThatCarriesAChatTag(t *testing.T) {
+func TestModelScopeCatalog_DropsMarkedRepositoryThatCarriesAChatTaskOrTag(t *testing.T) {
 	var fileListRequests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/openapi/v1/models" {
 			_, err := w.Write([]byte(`{"success":true,"data":{"models":[
-				{"id":"owner/voice-GGUF","gated":false,"tags":["library:gguf","custom_tag:tts","task:text-generation"],"last_modified":"2026-01-01T00:00:00Z"}
+				{"id":"owner/voice-GGUF","gated":false,"tags":["library:gguf","custom_tag:tts","task:text-generation"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/nomic-embed-code-GGUF","gated":false,"tags":["library:gguf","custom_tag:sentence-similarity"],"tasks":["text-generation"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/whisper-large-v3-turbo-gguf","gated":false,"tags":["library:gguf"],"tasks":["text-generation"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/awesome-comfyui-models","gated":false,"tags":["library:gguf"],"tasks":["any-to-any"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/klein-GGUF","gated":false,"tags":["library:gguf","custom_tag:text-to-image"],"tasks":["image-text-to-text"],"last_modified":"2026-01-01T00:00:00Z"},
+				{"id":"owner/code-GGUF","gated":false,"tags":["library:gguf","custom_tag:sentence-transformers"],"tasks":["text-generation"],"last_modified":"2026-01-01T00:00:00Z"}
 			]}}`))
 			assert.NoError(t, err)
 			return
@@ -159,8 +166,8 @@ func TestModelScopeCatalog_DropsMarkedRepositoryThatCarriesAChatTag(t *testing.T
 	models, err := c.fetchModelScope(context.Background(), "")
 	require.NoError(t, err)
 
-	// A text-generation tag would otherwise pass the generative check that a
-	// repository without a declared task falls back to.
+	// ModelScope declares a chat task on some embedding, speech, and image
+	// repos, which would otherwise pass the generative check.
 	assert.Empty(t, models)
 	assert.Equal(t, int32(0), fileListRequests.Load())
 }
@@ -223,8 +230,8 @@ func TestModelScopeCatalog_FailsWhenEveryFileListFails(t *testing.T) {
 	c := newCatalogService()
 	c.modelScopeEndpoint = srv.URL
 
-	// One summary line rather than one per repository: the message is shown
-	// as is in the desktop error banner and the terminal status line.
+	// One summary line rather than one per repository: the terminal status
+	// line shows the message as is.
 	_, err := c.fetchModelScope(context.Background(), "")
 	assert.EqualError(t, err, "2 of 2 ModelScope file lists failed: ModelScope metadata returned HTTP 503")
 }
@@ -250,27 +257,34 @@ func TestModelScopeCatalog_FailsWhenOnlyOversizedListingsSurviveAFailure(t *test
 	assert.EqualError(t, err, "1 of 1 ModelScope file lists failed: ModelScope metadata returned HTTP 503")
 }
 
-func TestModelScopeCatalog_FailsWhenTheTimeoutExpiresBeforeEveryListingReturns(t *testing.T) {
+func TestModelScopeCatalog_FailsWhenTheRequestEndsBeforeEveryListingReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var answered sync.WaitGroup
+	answered.Add(8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/openapi/v1/models":
 			writeModelScopeChatPage(t, w, "owner/a", "owner/b", "owner/c", "owner/d", "owner/e", "owner/f", "owner/g", "owner/h", "owner/slow")
 		case "/api/v1/models/owner/slow/repo/files":
+			answered.Wait()
+			cancel()
 			<-r.Context().Done()
 		default:
 			writeModelScopeQ4Listing(t, w)
+			answered.Done()
 		}
 	}))
 	t.Cleanup(srv.Close)
 	c := newCatalogService()
 	c.modelScopeEndpoint = srv.URL
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	t.Cleanup(cancel)
 
-	// One failure in nine is under the failure limit, so only the expired
-	// timeout fails this fetch rather than caching the eight that returned.
+	// The slow listing alone is under the failure limit, so only the ended
+	// request fails this fetch rather than caching the eight that returned,
+	// and it is named as the cause.
 	_, err := c.fetchModelScope(ctx, "")
-	assert.ErrorContains(t, err, "1 of 9 ModelScope file lists failed")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.ErrorContains(t, err, " of 9 ModelScope file lists failed: context canceled")
 }
 
 func TestModelScopeCatalog_RunsEightFileListRequestsAtOnce(t *testing.T) {
@@ -329,6 +343,39 @@ func TestCatalog_FailsAnEmptyModelScopeBrowseList(t *testing.T) {
 	// empty; caching it would show no models for catalogCacheTTL.
 	_, err := catalog.Catalog(context.Background(), "llamacpp", "", "", "", "modelscope")
 	assert.ErrorContains(t, err, "ModelScope catalog returned no models")
+}
+
+func TestCatalog_KeepsTheModelScopeBrowseListThroughManySearches(t *testing.T) {
+	var browses atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path != "/openapi/v1/models":
+			writeModelScopeQ4Listing(t, w)
+		case r.URL.Query().Get("search") == "":
+			browses.Add(1)
+			writeModelScopeChatPage(t, w, "owner/popular")
+		default:
+			writeModelScopeChatPage(t, w)
+		}
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.modelScopeEndpoint = server.URL
+
+	// The browse list is the fallback through a ModelScope outage, so searches
+	// past the search cache's limit must not evict it.
+	for i := 0; i <= searchCacheLimit; i++ {
+		query := ""
+		if i > 0 {
+			query = fmt.Sprintf("query-%d", i)
+		}
+		_, err := catalog.Catalog(context.Background(), "llamacpp", "", "", query, "modelscope")
+		require.NoError(t, err)
+	}
+	result, err := catalog.Catalog(context.Background(), "llamacpp", "", "", "", "modelscope")
+	require.NoError(t, err)
+	require.Len(t, result.Models, 1)
+	assert.Equal(t, int32(1), browses.Load())
 }
 
 func TestModelScopeCatalog_AcceptsAnEmptySearchResult(t *testing.T) {

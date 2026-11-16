@@ -31,7 +31,7 @@ func (c *catalogService) vllmCatalog(ctx context.Context, query string) ([]Catal
 	if query == "" {
 		return c.vllm.get(ctx)
 	}
-	return c.searchCache("vllm:"+strings.ToLower(query), "vllm search", true, func(ctx context.Context) ([]CatalogModel, error) {
+	return c.searchCache("vllm:"+strings.ToLower(query), "vllm search", func(ctx context.Context) ([]CatalogModel, error) {
 		rows, err := c.fetchListings(ctx, vllmListings("search", []string{query}))
 		if err != nil {
 			return nil, err

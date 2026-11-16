@@ -65,6 +65,7 @@ type ModelHubListProps = {
     className?: string
     multiple: boolean
     disabled: boolean
+    emptyMessage?: string
 }
 
 const ESTIMATE_ROW_HEIGHT = 80
@@ -77,7 +78,8 @@ export const ModelHubList = ({
     onToggleSelectModel,
     sort,
     className,
-    multiple
+    multiple,
+    emptyMessage = 'No models found'
 }: ModelHubListProps) => {
     const sortedModels = useMemo(() => {
         const copy = [...models]
@@ -218,7 +220,7 @@ export const ModelHubList = ({
             {!loading && sortedModels.length === 0 && (
                 <Stack align="center" justify="center" gap="2" className="grow min-h-0 p-4">
                     <Text kind="body/regular/sm" className="text-center">
-                        No models found
+                        {emptyMessage}
                     </Text>
                 </Stack>
             )}
