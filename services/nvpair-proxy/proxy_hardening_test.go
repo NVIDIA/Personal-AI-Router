@@ -19,14 +19,14 @@ import (
 func TestBufferBodyAndModelRejectsOversizedBody(t *testing.T) {
 	big := strings.NewReader(strings.Repeat("x", maxInferenceBodyBytes+1))
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", big)
-	if _, _, err := bufferBodyAndModel(req); err != errBodyTooLarge {
+	if _, _, err := bufferBodyAndModel(req, false); err != errBodyTooLarge {
 		t.Fatalf("oversized body err = %v, want errBodyTooLarge", err)
 	}
 
 	// Exactly at the cap still passes.
 	exact := strings.NewReader(strings.Repeat("x", maxInferenceBodyBytes))
 	req = httptest.NewRequest(http.MethodPost, "/api/chat", exact)
-	body, _, err := bufferBodyAndModel(req)
+	body, _, err := bufferBodyAndModel(req, false)
 	if err != nil {
 		t.Fatalf("at-cap body err = %v, want nil", err)
 	}
@@ -36,7 +36,7 @@ func TestBufferBodyAndModelRejectsOversizedBody(t *testing.T) {
 
 	// Small bodies still parse the model field.
 	req = httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama3"}`))
-	_, model, err := bufferBodyAndModel(req)
+	_, model, err := bufferBodyAndModel(req, false)
 	if err != nil || model != "llama3" {
 		t.Fatalf("small body model = %q, err = %v; want %q, nil", model, err, "llama3")
 	}
