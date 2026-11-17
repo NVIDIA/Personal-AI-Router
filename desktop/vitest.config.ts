@@ -21,6 +21,9 @@ import * as path from 'path'
  * to the public internet) trips a hard fail before a test body runs.
  */
 export default defineConfig({
+    esbuild: {
+        jsx: 'automatic'
+    },
     resolve: {
         alias: {
             '@': path.resolve(__dirname, 'src')

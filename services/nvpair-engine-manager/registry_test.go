@@ -17,6 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestManifest_RejectsWaitingWithoutModelSelection(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.Runtime.WaitForModel = true
+	m.Platforms["linux/amd64"] = p
+	require.ErrorContains(t, m.Validate(), "wait_for_model requires process mode and a launch_model action")
+}
+
 // validManifest is a minimal well-formed manifest used as the base for
 // validation tests; individual tests mutate a copy to introduce one
 // fault at a time.
@@ -813,6 +821,9 @@ func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *te
 			}
 
 			rt := platform.Runtime
+			assert.True(t, rt.WaitForModel, "first enable must wait for explicit model selection")
+			_, selected := launchFlagValue(rt.Args, "--model")
+			assert.False(t, selected, "the bundled launch must not select a model")
 			require.NotNil(t, rt.EditableLaunch)
 			assert.Equal(t, []string{"serve"}, rt.EditableLaunch.FixedArgs, "launch must start with the fixed serve subcommand")
 			assert.Equal(t, "~/.cache/huggingface", platform.ModelsDir, "models_dir must be the Hugging Face cache")
@@ -827,7 +838,7 @@ func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *te
 			assert.Equal(t, autoLaunchHFContext, rt.AutoLaunch.Kind)
 			assert.Equal(t, 65536, rt.AutoLaunch.ContextTokens, "vllm must aim for a 64K window")
 			// vLLM's default of 256 concurrent requests does not fit a hybrid model
-			// such as the default Qwen3.5-4B on a 16 GiB GPU.
+			// such as Qwen3.5-4B on a 16 GiB GPU.
 			assert.Equal(t, 32, rt.AutoLaunch.MaxNumSeqs, "vllm must run at most 32 requests at a time")
 			assert.NotContains(t, rt.Args, "--gpu-memory-utilization", "must not be pinned in the default launch")
 			assert.NotContains(t, rt.Args, "--max-model-len", "must not be pinned in the default launch")
@@ -846,13 +857,13 @@ func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.
 
 	assert.Contains(t, manifest.Actions, "list_models")
 	assert.Contains(t, manifest.Actions, "loaded_models")
-	// list_models is what is on disk; only the model being served is advertised.
+	// list_models is what is on disk; enabled vLLM can load these on request.
 	// Listing, Delete and Pull use the hub cache vLLM itself uses, resolved from
 	// its launch environment ({hf_hub_cache}).
 	if list := manifest.Actions["list_models"]; assert.NotNil(t, list.HFCache, "list_models must list the Hugging Face cache") {
 		assert.Equal(t, "{hf_hub_cache}", list.HFCache.Dir)
 	}
-	assert.Equal(t, advertisedModelsLoaded, manifest.AdvertisedModels, "peers and the proxy must only be offered the served model")
+	assert.Equal(t, advertisedModelsAvailable, manifest.AdvertisedModels, "enabled vLLM must offer cached models for request-triggered loading")
 	if loaded := manifest.Actions["loaded_models"]; assert.NotNil(t, loaded.HTTP, "loaded_models must read vLLM's /v1/models") {
 		assert.Equal(t, "/v1/models", loaded.HTTP.Path)
 	}

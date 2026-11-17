@@ -42,10 +42,17 @@ func cachedModelAt(t *testing.T, cache, id, config string, weightBytes int64) {
 // weight bytes. Like the fetch a start builds, it runs once.
 func pendingModel(t *testing.T, cache, id, config string, weightBytes int64) hfModelFetcher {
 	t.Helper()
-	return sync.OnceValues(func() (hfPendingModel, bool) {
-		repo := writeHFRepo(t, cache, id, map[string]string{"config.json": config, "tokenizer.json": "{}"})
-		return hfPendingModel{snapshot: filepath.Join(repo, "snapshots", "abc123"), weights: weightBytes}, true
-	})
+	// Fixture assertions can stop the test without returning. OnceValues turns
+	// that into a panic that aborts the suite. Once.Do lets only this test fail.
+	var once sync.Once
+	var model hfPendingModel
+	return func() (hfPendingModel, bool) {
+		once.Do(func() {
+			repo := writeHFRepo(t, cache, id, map[string]string{"config.json": config, "tokenizer.json": "{}"})
+			model = hfPendingModel{snapshot: filepath.Join(repo, "snapshots", "abc123"), weights: weightBytes}
+		})
+		return model, true
+	}
 }
 
 func withGPU(t *testing.T, totalGiB, freeGiB int64) {

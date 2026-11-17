@@ -230,17 +230,23 @@ export function BackendHeader({
                 (() => {
                     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
                     const prereqsMet = missingPrereqs.length === 0
-                    const isStartDisabled = !prereqsMet && backend.processStatus !== 'running'
+                    const isStartDisabled =
+                        !prereqsMet &&
+                        backend.processStatus !== 'running' &&
+                        backend.processStatus !== 'awaiting-model'
 
                     const toggle = (
                         <Flex align="center" justify="center" className="h-7 w-7 shrink-0">
                             <Switch
                                 size="small"
-                                checked={backend.processStatus === 'running'}
+                                checked={
+                                    backend.processStatus === 'running' ||
+                                    backend.processStatus === 'awaiting-model'
+                                }
                                 onCheckedChange={onToggle}
                                 onClick={e => e.stopPropagation()}
                                 disabled={disabled || isStartDisabled}
-                                aria-label={`${backend.processStatus === 'running' ? 'Stop' : 'Start'} ${backend.displayName}`}
+                                aria-label={`${backend.processStatus === 'running' || backend.processStatus === 'awaiting-model' ? 'Stop' : 'Start'} ${backend.displayName}`}
                             />
                         </Flex>
                     )

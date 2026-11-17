@@ -23,6 +23,7 @@
     "runtime": {
       "type": "object",
       "properties": {
+        "wait_for_model": { "type": "boolean" },
         "model_source": {
           "enum": ["huggingface", "modelscope"]
         },

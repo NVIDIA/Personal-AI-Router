@@ -317,6 +317,7 @@ func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	waitFor(t, 6*time.Second, func() bool {
 		s, err := ex.Status("fake")
 		require.NoError(t, err)
+		// Process exit and its error notification are published asynchronously.
 		return !s.Running && hasErr(ex.Errors(), exitedID("fake"))
 	})
 	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
@@ -360,10 +361,17 @@ func TestEngineStartup_ReportsFullMetalMemoryErrorForCustomCommand(t *testing.T)
 	manifest.Engine = "lmstudio"
 	platform := manifest.Platforms[hostKey()]
 	platform.Runtime.Mode = "command"
-	platform.Runtime.Start = [][]string{{fakeEngineBin, "--fail-metal-oom"}}
+	platform.Runtime.Start = [][]string{{fakeEngineBin}}
 	platform.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "echo", "down"}}
-	platform.Runtime.LaunchEnv = []string{"PAIR_TEST_MODE=metal-oom"}
+	platform.Runtime.EditableLaunch = &EditableLaunch{
+		Controls: []LaunchControl{{
+			Value: "{server.host}:{server.port}",
+			Env:   []string{"OLLAMA_HOST"},
+		}},
+	}
+	platform.Runtime.LaunchArgs = []string{"--fail-metal-oom"}
 	manifest.Platforms[hostKey()] = platform
+	require.NoError(t, manifest.Validate())
 	executor, _ := capturingExecutor(t, manifest)
 	t.Cleanup(func() { assert.NoError(t, executor.Stop("lmstudio")) })
 

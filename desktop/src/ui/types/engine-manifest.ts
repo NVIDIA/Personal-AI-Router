@@ -32,8 +32,6 @@ export interface EngineCaps {
     hasCrashAlert: boolean
     /** When true, show the model search/pull dropdown only while the engine process is running. */
     hasModelSearchOnlyWhenRunning: boolean
-    /** When true, model operations work while the engine process is stopped (file-based weights). */
-    modelOpsWhenStopped: boolean
     /** When true, show the Delete action in the model action menu. */
     hasDeleteModel: boolean
     /**

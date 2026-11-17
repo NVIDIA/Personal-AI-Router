@@ -228,6 +228,11 @@ result. `jobDeadline` is therefore a "no new attempts after" line rather than a
 ceiling on elapsed time, and the worst case is the deadline plus one whole
 attempt. Since an attempt's wait for headers has no cap, neither does that sum.
 
+vLLM model preparation has a separate ten-minute limit, including queueing
+behind active responses. It runs before inference, whose response-header wait
+remains uncapped as described above. The preparation budget is not an overall
+inference deadline; streaming after first content has its own idle deadlines.
+
 Which bound ends a job depends on how its attempts fail, and all three cases
 are real:
 
@@ -728,3 +733,59 @@ new supervisor, and no new relay wiring.
 | Transport error with candidates left | Forget the node's confirmed address, fail over |
 | Client disconnects mid-stream | Terminal workload event emitted at once; upstream cancelled |
 | Broker link closed | Facades stop serving, then the shared transport pool closes |
+
+## Request-triggered model preparation
+
+The vLLM profile supports preparing an advertised cached model before inference.
+The broker's `node/set-local-backend` payload includes optional
+`loadOnRequest:true` while this engine is enabled, including awaiting-model and
+starting states. This permits a loopback routing target while the serving process
+is not yet healthy. It never permits a non-loopback local target.
+
+Only inference requests with an `application/json` content type and no `Origin`
+header may trigger preparation. Other requests retain the native engine's
+behavior and CORS decision without starting or switching a model.
+Their model-bearing inference responses still hold admission until completion,
+so an automatic switch cannot interrupt a response accepted by the native engine.
+
+The proxy sends operational `{id, engine, model}` metadata in `model:prepare` to
+its broker, receives `model:prepared {id, engine, port?, error?, status?}`, and
+sends `model:cancel` if that preparation is abandoned. Engine-manager rechecks
+cached inventory and enabled intent under the launch lock. Request content is
+never sent over this control channel. Non-retryable preparation failures retain
+an actionable error response rather than repeatedly restarting a failing model.
+Requests for the last successfully prepared model skip this relay until a
+lifecycle change, engine-manager restart, or upstream failure invalidates it.
+Concurrent same-model requests share one preparation and its result. Each request
+can stop waiting independently; the shared load is cancelled only when its last
+waiting request leaves. Preparation retains its own 10-minute budget rather than
+inheriting the initiating request's cancellation or deadline. An already-serving
+model can also be confirmed by engine-manager without taking its launch operation
+lock; an overlapping lifecycle change falls back to the locked admission path.
+
+A per-facade gate allows concurrent same-model local inference and FIFO groups
+for different models. Admission spans the complete response, including streams;
+only after existing responses finish can another model be prepared. Both local
+requests and terminal pinned-mTLS ingress use this gate. The terminal ingress
+still never routes onward. Preparation has a bounded 10-minute allowance before
+ordinary inference begins. Local and peer requests share the standard transport
+pools, with no response-header timeout. Pin revocation, cancellation and
+connection cleanup remain enforced.
+
+The broker acknowledges `node/set-local-models {engine, id, enginePort, enabled,
+models}` before exposing initial model snapshots or model-change events to the
+UI. The proxy projects this authoritative inventory onto this node's stable ID,
+superseding only its stale self-discovery entry. This makes an immediate request
+after download routable and removes deleted local models immediately. The port
+comes from engine-manager lifecycle state, including custom server ports. Cached
+model listings through PAIR do not load a model. Browser-origin requests retain
+the native engine's CORS decision.
+
+A manager restart settles pending proxy preparations with a retryable failure;
+a proxy restart cancels preparations orphaned by the old process.
+
+For vLLM, the aggregated `/v1/models` response is limited to each peer's
+advertised model-owner inventory. A peer's fresher HTTP list cannot expose a
+new model before this facade can route an inference request to it. The model
+appears after discovery convergence; removed models disappear when the peer no
+longer reports them. Other engines retain their existing aggregation behavior.

@@ -1605,3 +1605,11 @@ func TestEngineTable_ShowsAnEngineThatIsStarting(t *testing.T) {
 	d.refreshEngines()
 	assert.Contains(t, d.View(), "starting")
 }
+
+func TestNodeDetail_ShowsModelSelectionWhenEngineIsEnabledWithoutModel(t *testing.T) {
+	d := localDetail()
+	d.engines = []engineStatus{{Engine: "vllm", Installed: true, AwaitingModel: true}}
+	d.refreshEngines()
+	assert.Contains(t, d.View(), "no model")
+	assert.NotContains(t, d.emptyModelsHint(), "start an engine")
+}
