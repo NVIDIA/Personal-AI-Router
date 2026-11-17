@@ -29,21 +29,23 @@ describe('model hub service bridge', () => {
         mocks.getEngineHubModels.mockResolvedValue({ models: [], searchable: true })
     })
 
-    it('forwards an explicit llama.cpp query to the catalog relay', async () => {
+    it('forwards an explicit llama.cpp query and its target node to the catalog relay', async () => {
         await handleServiceBridgeInvoke('engine:search-hub', {
             engineType: 'llama-cpp',
+            nodeId: 'mac',
             query: 'qwen coder'
         })
 
-        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', 'qwen coder')
+        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', 'mac', 'qwen coder')
     })
 
     it('preserves populated-catalog requests without a query', async () => {
         const result = await handleServiceBridgeInvoke('engine:search-hub', {
-            engineType: 'llama-cpp'
+            engineType: 'llama-cpp',
+            nodeId: 'mac'
         })
 
-        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', undefined)
+        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', 'mac', undefined)
         expect(result).toEqual({ models: [], searchable: true })
     })
 })

@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mergeModelHubResults, searchEngineHub } from '@/ui/utils/model-hub-search'
+import {
+    addModelHubError,
+    mergeModelHubResults,
+    searchEngineHub
+} from '@/ui/utils/model-hub-search'
 import type { IEngineApi } from '@/ui/api/engine-api'
 import type { ModelEntry } from '@/ui/types/model-hub'
 
@@ -45,9 +49,9 @@ describe('model hub catalog display', () => {
             searchable: true
         })
 
-        const result = await searchEngineHub('vllm', 'model')
+        const result = await searchEngineHub('vllm', 'peer', 'model')
 
-        expect(searchHub).toHaveBeenCalledWith('vllm', 'model')
+        expect(searchHub).toHaveBeenCalledWith('vllm', 'peer', 'model')
         expect(result).toEqual({
             models: [
                 {
@@ -65,10 +69,26 @@ describe('model hub catalog display', () => {
     it('retains local filtering when the backend reports no search capability', async () => {
         searchHub.mockResolvedValue({ models: [], searchable: false })
 
-        await expect(searchEngineHub('vllm')).resolves.toEqual({
+        await expect(searchEngineHub('vllm', 'peer')).resolves.toEqual({
             models: [],
             searchable: false
         })
+    })
+})
+
+describe('model hub error banners', () => {
+    it('shows a repeated failure once and keeps the list unchanged', () => {
+        const errors = addModelHubError([], 'peer unreachable', '1')
+        expect(addModelHubError(errors, 'peer unreachable', '2')).toBe(errors)
+        expect(errors).toEqual([{ id: '1', message: 'peer unreachable' }])
+    })
+
+    it('adds a different failure as its own banner', () => {
+        const errors = addModelHubError([], 'peer unreachable', '1')
+        expect(addModelHubError(errors, 'catalog timed out', '2')).toEqual([
+            { id: '1', message: 'peer unreachable' },
+            { id: '2', message: 'catalog timed out' }
+        ])
     })
 })
 

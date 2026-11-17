@@ -97,7 +97,8 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `toggle`, `install`, `uninstall`, and `update` manage engine lifecycle.
 - `pullModel`, `loadModel`, `unloadModel`, `deleteModel`, and
   `setModelExpiry` manage models.
-- `searchHub(engineType)` returns the curated model catalog for an engine.
+- `searchHub(engineType, nodeId)` returns the curated model catalog for a
+  node's engine.
 - `onStateChanged`, `onProgress`, and `onProgressRemove` expose backend truth.
 - `getSettings(target)` reads the owning node's authoritative settings snapshot
   (server port, proxy port, engine arguments) for one engine.
@@ -124,14 +125,21 @@ loaded in vLLM; deleting an ejected or stopped vLLM's model leaves it with no mo
 selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo into
 that cache (no running engine needed), and `loadModel` on a cached model switches
 the served model by restarting vLLM on it.
-`searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
-live Hugging Face catalogs for LM Studio, llama.cpp and vLLM. It returns the model
+`searchHub(engineType, nodeId, query?)` serves Ollama's locked local catalog,
+cached live Hugging Face catalogs for LM Studio and vLLM, and llama.cpp's
+catalog from the node's selected download source. For a peer's llama.cpp
+it first reads that peer's saved model download source and lists that source,
+Hugging Face or ModelScope, even when this device selected the other; a peer
+whose source cannot be read, or that does not report one, rejects the call
+rather than falling back. This device's own llama.cpp uses its own selection
+without a settings read. It returns the model
 rows and the backend's `searchable` flag, which controls whether the model hub
 submits an upstream query or filters the populated list locally. An unavailable
 catalog reports `searchable: null`, so an explicit query can retry after an
 initial browse failure. A non-empty
-llama.cpp or vLLM query performs an explicit bounded search across public
-Hugging Face repositories (GGUF for llama.cpp, safetensors chat models for vLLM);
+llama.cpp or vLLM query performs an explicit bounded search: GGUF repositories
+in the node's llama.cpp download source, or public Hugging Face safetensors chat
+models for vLLM;
 other calls return the populated engine catalog. llama.cpp pull
 IDs are exact `owner/repository:quantization` values; load, unload, and delete
 all use that same exact id.
@@ -176,27 +184,27 @@ Commands return no state. Renderer stores update from
 
 ## Logical invoke channels
 
-| Channel                     | Request                      | Response                  |
-| --------------------------- | ---------------------------- | ------------------------- |
-| `app:get-initial`           | `void`                       | `AppInitialSnapshot`      |
-| `nodes:get-initial`         | `void`                       | node map and fetch status |
-| `nodes:remove-member`       | `{ nodeId }`                 | `{ nodeId, removed }`     |
-| `discovery:get-nodes`       | `void`                       | `AvailableNode[]`         |
-| `cluster:get-initial`       | `void`                       | `ClusterInitialSnapshot`  |
-| `cluster:invite-node`       | `{ ipAddress }`              | `Invite`                  |
-| `cluster:invite-status`     | `{ inviteId }`               | `Invite`                  |
-| `cluster:respond-to-invite` | `{ inviteId, accept, pin? }` | `Invite`                  |
-| `cluster:cancel-invite`     | `{ inviteId }`               | `Invite`                  |
-| `cluster:abandon-if-solo`   | `void`                       | `null`                    |
-| `engines:get-initial`       | `void`                       | `EngineInitialState`      |
-| `engines:get-settings`      | `EngineSettingsTarget`       | `EngineSettingsSnapshot`  |
-| `engines:preview-settings`  | `EngineSettingsRequest`      | `EngineSettingsPreview`   |
-| `engines:apply-settings`    | `EngineSettingsRequest`      | `EngineSettingsReceipt`   |
-| `engine:command`            | `EngineCommandPayload`       | `null`                    |
-| `engine:search-hub`         | `{ engineType, query? }`     | `EngineHubSearchResponse` |
-| `errors:get-initial`        | `void`                       | `ServiceError[]`          |
-| `errors:clear`              | error ID                     | `null`                    |
-| `workloads:get-initial`     | `void`                       | workload map              |
+| Channel                     | Request                          | Response                  |
+| --------------------------- | -------------------------------- | ------------------------- |
+| `app:get-initial`           | `void`                           | `AppInitialSnapshot`      |
+| `nodes:get-initial`         | `void`                           | node map and fetch status |
+| `nodes:remove-member`       | `{ nodeId }`                     | `{ nodeId, removed }`     |
+| `discovery:get-nodes`       | `void`                           | `AvailableNode[]`         |
+| `cluster:get-initial`       | `void`                           | `ClusterInitialSnapshot`  |
+| `cluster:invite-node`       | `{ ipAddress }`                  | `Invite`                  |
+| `cluster:invite-status`     | `{ inviteId }`                   | `Invite`                  |
+| `cluster:respond-to-invite` | `{ inviteId, accept, pin? }`     | `Invite`                  |
+| `cluster:cancel-invite`     | `{ inviteId }`                   | `Invite`                  |
+| `cluster:abandon-if-solo`   | `void`                           | `null`                    |
+| `engines:get-initial`       | `void`                           | `EngineInitialState`      |
+| `engines:get-settings`      | `EngineSettingsTarget`           | `EngineSettingsSnapshot`  |
+| `engines:preview-settings`  | `EngineSettingsRequest`          | `EngineSettingsPreview`   |
+| `engines:apply-settings`    | `EngineSettingsRequest`          | `EngineSettingsReceipt`   |
+| `engine:command`            | `EngineCommandPayload`           | `null`                    |
+| `engine:search-hub`         | `{ engineType, nodeId, query? }` | `EngineHubSearchResponse` |
+| `errors:get-initial`        | `void`                           | `ServiceError[]`          |
+| `errors:clear`              | error ID                         | `null`                    |
+| `workloads:get-initial`     | `void`                           | workload map              |
 
 ## Logical push channels
 

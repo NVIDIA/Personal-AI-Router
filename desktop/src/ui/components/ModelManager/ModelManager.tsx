@@ -267,6 +267,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     </Button>
                     <ModelHubModal
                         engine={openModelHubModal ? backend.type : null}
+                        nodeId={nodeId}
                         onOpenChange={setOpenModelHubModal}
                         onSubmit={handleDownload}
                         downloadedModels={models}

@@ -63,7 +63,9 @@ export const MODEL_SWITCH_TIMEOUT_MS = 20 * 60_000
 // still working — and the modal renders its empty state, which reads as "this
 // engine has no models" rather than "the catalogue could not be read". Hugging
 // Face has been observed holding the request open far longer than its nominal
-// timeout, so the margin is generous.
+// timeout, so the margin is generous. The same bound applies to reading a
+// peer's llama.cpp download source before its catalog: settings calls are
+// budgeted for minutes of engine restart, and the modal should not wait that out.
 export const MODULAR_CATALOG_CALL_TIMEOUT_MS = 30_000
 
 // Poll interval for `cluster:invite-status` while a pairing handshake is open.
