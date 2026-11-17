@@ -212,6 +212,9 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 }
 
 func statusLocked(engine string, st *engineState, enabled bool) EngineStatus {
+	// Enabled model-selecting engines remain available for another Load or
+	// request after their serving process exits unexpectedly.
+	awaitingModel := st.awaitingModel || (enabled && st.plat != nil && st.plat.Runtime.WaitForModel)
 	return EngineStatus{
 		Engine:        engine,
 		DisplayName:   st.manifest.DisplayName,
@@ -219,7 +222,7 @@ func statusLocked(engine string, st *engineState, enabled bool) EngineStatus {
 		Enabled:       enabled || st.enabling || st.modelSwitching || st.awaitingModel,
 		Running:       st.running,
 		Starting:      (st.starting || st.modelSwitching) && !st.running,
-		AwaitingModel: st.installed && st.awaitingModel && !st.running && !st.starting && !st.modelSwitching,
+		AwaitingModel: st.installed && awaitingModel && !st.running && !st.starting && !st.modelSwitching,
 		Healthy:       st.healthy,
 		Port:          st.port,
 	}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"nvpair-shared/modelrequest"
 	"strings"
@@ -93,9 +94,59 @@ type modelRequestRelay struct {
 	mu      sync.Mutex
 	next    atomic.Uint64
 	pending map[string]chan modelrequest.Reply
+	// Lifecycle changes invalidate the last successful preparation. Concurrent
+	// requests share the initial preparation without repeating the broker relay.
+	preparedModel string
+	generation    uint64
+	preparing     chan struct{}
 }
 
 func (f *facade) prepareRequestedModel(ctx context.Context, model string) error {
+	relay := &f.modelRequests
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		relay.mu.Lock()
+		if relay.preparedModel == model {
+			relay.mu.Unlock()
+			return nil
+		}
+		if done := relay.preparing; done != nil {
+			relay.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		relay.preparing = done
+		relay.preparedModel = ""
+		generation := relay.generation
+		relay.mu.Unlock()
+
+		err := f.requestModelPreparation(ctx, model)
+		relay.mu.Lock()
+		if err == nil && generation == relay.generation {
+			relay.preparedModel = model
+		}
+		relay.preparing = nil
+		close(done)
+		relay.mu.Unlock()
+		return err
+	}
+}
+
+func (f *facade) invalidatePreparedModel() {
+	f.modelRequests.mu.Lock()
+	f.modelRequests.generation++
+	f.modelRequests.preparedModel = ""
+	f.modelRequests.mu.Unlock()
+}
+
+func (f *facade) requestModelPreparation(ctx context.Context, model string) error {
 	relay := &f.modelRequests
 	id := fmt.Sprintf("%s:%s:%d", f.host.runID, f.profile.Name, relay.next.Add(1))
 	reply := make(chan modelrequest.Reply, 1)
@@ -132,6 +183,7 @@ func (f *facade) prepareRequestedModel(ctx context.Context, model string) error 
 func (p *Proxy) handleModelPrepared(msg *Message) bool {
 	if msg.Method == modelrequest.Reset && msg.IsNotification() {
 		for _, f := range p.enabledFacades() {
+			f.invalidatePreparedModel()
 			f.modelRequests.mu.Lock()
 			for id, pending := range f.modelRequests.pending {
 				select {
@@ -199,8 +251,12 @@ func (t prepareModelTransport) RoundTrip(request *http.Request) (*http.Response,
 	}
 	response, err := t.next.RoundTrip(request)
 	if err != nil {
+		t.facade.invalidatePreparedModel()
 		release()
 		return nil, err
+	}
+	if response.StatusCode == http.StatusNotFound || response.StatusCode >= http.StatusInternalServerError {
+		t.facade.invalidatePreparedModel()
 	}
 	response.Body = &modelResponseBody{ReadCloser: response.Body, release: release}
 	return response, nil
@@ -221,7 +277,11 @@ func (b *modelResponseBody) Read(p []byte) (int, error) {
 func (b *modelResponseBody) Close() error { defer b.release(); return b.ReadCloser.Close() }
 
 func (f *facade) requestTransport(next http.RoundTripper, r *http.Request, model string) http.RoundTripper {
-	if !f.profile.LoadOnRequest || model == "" || !isInferenceRequest(f.profile, r.Method, r.URL.Path) {
+	if !f.profile.LoadOnRequest || model == "" || !isInferenceRequest(f.profile, r.Method, r.URL.Path) || len(r.Header.Values("Origin")) != 0 {
+		return next
+	}
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/json" {
 		return next
 	}
 	backend := f.currentLocalBackend()
@@ -237,35 +297,10 @@ func (f *facade) requestTransport(next http.RoundTripper, r *http.Request, model
 
 func (f *facade) requestTransportForCandidate(c candidate, r *http.Request, model string) http.RoundTripper {
 	next := http.RoundTripper(f.host.candidateTransport(c))
-	if f.profile.LoadOnRequest && isInferenceRequest(f.profile, r.Method, r.URL.Path) {
-		next = f.host.modelLoadingTransport(c)
-	}
 	copy := r.Clone(r.Context())
 	copy.URL.Scheme = c.url.Scheme
 	copy.URL.Host = c.url.Host
 	return f.requestTransport(next, copy, model)
-}
-
-// Cold loading happens before a peer can return inference headers. Keep its
-// bounded preparation allowance separate from the ordinary inference deadline,
-// while retaining one pooled transport per peer and the existing pin checks.
-func (p *Proxy) modelLoadingTransport(c candidate) http.RoundTripper {
-	if c.peerUUID != "" && (p.mesh == nil || !p.mesh.HasPin(c.peerUUID)) {
-		return modelTransportFailure{err: errors.New("model-loading peer is no longer trusted")}
-	}
-	base := p.candidateTransport(c)
-	p.transportMu.Lock()
-	defer p.transportMu.Unlock()
-	if transport := p.modelTransports[c.peerUUID]; transport != nil {
-		return transport
-	}
-	transport := base.Clone()
-	transport.ResponseHeaderTimeout = modelrequest.Budget + proxyResponseTimeout
-	if p.modelTransports == nil {
-		p.modelTransports = make(map[string]*http.Transport)
-	}
-	p.modelTransports[c.peerUUID] = transport
-	return transport
 }
 
 type modelPreparationFailure struct {
@@ -274,10 +309,6 @@ type modelPreparationFailure struct {
 }
 
 func (e modelPreparationFailure) Error() string { return e.message }
-
-type modelTransportFailure struct{ err error }
-
-func (t modelTransportFailure) RoundTrip(r *http.Request) (*http.Response, error) { return nil, t.err }
 
 func availableModelItems(models []string) ([]modelListItem, error) {
 	items := make([]modelListItem, 0, len(models))
@@ -326,6 +357,7 @@ func (f *facade) serveLocalAvailableModels(w http.ResponseWriter, r *http.Reques
 func (f *facade) setLocalModelInventory(inventory modelrequest.LocalInventory) error {
 	f.localInventoryMu.Lock()
 	defer f.localInventoryMu.Unlock()
+	lifecycleOnly := inventory.Models == nil
 	selfPort, _ := f.selfAddresses()
 	if inventory.EnginePort < 1 || inventory.EnginePort > 65535 || inventory.EnginePort == selfPort {
 		return errors.New("invalid local engine port")
@@ -336,6 +368,9 @@ func (f *facade) setLocalModelInventory(inventory modelrequest.LocalInventory) e
 		inventory.Models = append([]string{}, inventory.Models...)
 	}
 	previous := f.currentLocalBackend()
+	if lifecycleOnly {
+		f.invalidatePreparedModel()
+	}
 	if err := f.setLocalBackend(localBackend{Engine: f.profile.Name, Host: "127.0.0.1", Port: inventory.EnginePort, Healthy: inventory.Enabled && previous.Healthy && previous.Port == inventory.EnginePort, LoadOnRequest: inventory.Enabled}); err != nil {
 		return err
 	}

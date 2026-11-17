@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -84,10 +85,11 @@ func TestModelRequestGate_RemovesCancelledWaiters(t *testing.T) {
 }
 
 type modelPreparationWriter struct {
-	proxy    *Proxy
-	port     int
-	requests chan modelrequest.Preparation
-	failure  string
+	proxy       *Proxy
+	port        int
+	requests    chan modelrequest.Preparation
+	failure     string
+	beforeReply func() error
 }
 
 func (w *modelPreparationWriter) Read(data []byte) (int, error) { return 0, io.EOF }
@@ -105,6 +107,11 @@ func (w *modelPreparationWriter) Write(data []byte) (int, error) {
 		return 0, err
 	}
 	w.requests <- request
+	if w.beforeReply != nil {
+		if err := w.beforeReply(); err != nil {
+			return 0, err
+		}
+	}
 	raw, err := json.Marshal(modelrequest.Reply{ID: request.ID, Engine: request.Engine, Port: w.port, Error: w.failure, Status: http.StatusConflict})
 	if err != nil {
 		return 0, err
@@ -146,6 +153,209 @@ func TestPrepareModelTransport_PreparesTheRequestedModelBeforeForwarding(t *test
 	assert.Equal(t, "vllm", prepared.Engine)
 	assert.Equal(t, "org/model-a", prepared.Model)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
+}
+
+func TestRequestTransport_PreparesOnlyNonBrowserJSONInference(t *testing.T) {
+	test := func(name string, headers http.Header, wantPreparation bool) {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			f, writer := modelRequestFacade(t, server.URL, "")
+			require.NoError(t, f.setLocalModelInventory(modelrequest.LocalInventory{
+				Engine: "vllm", ID: "local-node", EnginePort: writer.port,
+				Enabled: true, Models: []string{"org/model-a"},
+			}))
+			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"org/model-a","messages":[]}`))
+			request.RemoteAddr = "127.0.0.1:40000"
+			request.Header = headers.Clone()
+			recorder := httptest.NewRecorder()
+
+			f.handlePlain(recorder, request)
+
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			if wantPreparation {
+				require.Len(t, writer.requests, 1)
+				assert.Equal(t, "org/model-a", (<-writer.requests).Model)
+			} else {
+				assert.Empty(t, writer.requests, "forwarding must not trigger model preparation")
+			}
+			assert.Empty(t, recorder.Header().Get("Access-Control-Allow-Origin"))
+		})
+	}
+	test("JSON without an Origin", http.Header{"Content-Type": {"application/json"}}, true)
+	test("JSON with a charset", http.Header{"Content-Type": {"application/json; charset=utf-8"}}, true)
+	test("browser Origin", http.Header{"Content-Type": {"application/json"}, "Origin": {"https://website.example"}}, false)
+	test("null Origin", http.Header{"Content-Type": {"application/json"}, "Origin": {"null"}}, false)
+	test("empty Origin header", http.Header{"Content-Type": {"application/json"}, "Origin": {""}}, false)
+	test("plain text", http.Header{"Content-Type": {"text/plain"}}, false)
+	test("form submission", http.Header{"Content-Type": {"application/x-www-form-urlencoded"}}, false)
+	test("missing content type", http.Header{}, false)
+	test("malformed content type", http.Header{"Content-Type": {"application/json; charset"}}, false)
+}
+
+func TestPrepareModelTransport_ReusesPreparationForTheServingModel(t *testing.T) {
+	test := func(name string, models []string, wantPreparations []string) {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			f, writer := modelRequestFacade(t, server.URL, "")
+			for _, model := range models {
+				request := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil)
+				response, err := (prepareModelTransport{next: http.DefaultTransport, facade: f, model: model}).RoundTrip(request)
+				require.NoError(t, err)
+				require.NoError(t, response.Body.Close())
+			}
+
+			prepared := make([]string, 0, len(writer.requests))
+			for len(writer.requests) > 0 {
+				prepared = append(prepared, (<-writer.requests).Model)
+			}
+			assert.Equal(t, wantPreparations, prepared)
+		})
+	}
+	test("same-model requests reuse preparation", []string{"org/a", "org/a", "org/a"}, []string{"org/a"})
+	test("switching back requires preparation", []string{"org/a", "org/b", "org/a"}, []string{"org/a", "org/b", "org/a"})
+}
+
+func TestPrepareModelTransport_SharesPreparationForConcurrentSameModelRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	f, writer := modelRequestFacade(t, server.URL, "")
+	finished := make(chan error, 8)
+	for range cap(finished) {
+		go func() {
+			request := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil)
+			response, err := (prepareModelTransport{next: http.DefaultTransport, facade: f, model: "org/a"}).RoundTrip(request)
+			if err == nil {
+				err = response.Body.Close()
+			}
+			finished <- err
+		}()
+	}
+	for range cap(finished) {
+		require.NoError(t, <-finished)
+	}
+	assert.Len(t, writer.requests, 1)
+}
+
+func TestPrepareModelTransport_RechecksPreparationAfterLifecycleChanges(t *testing.T) {
+	test := func(name string, change func(*testing.T, *facade)) {
+		t.Run(name, func(t *testing.T) {
+			f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
+			backend := f.currentLocalBackend()
+			backend.Healthy = true
+			require.NoError(t, f.setLocalBackend(backend))
+			require.NoError(t, f.prepareRequestedModel(t.Context(), "org/a"))
+			require.Len(t, writer.requests, 1)
+			<-writer.requests
+
+			change(t, f)
+			require.NoError(t, f.prepareRequestedModel(t.Context(), "org/a"))
+
+			require.Len(t, writer.requests, 1)
+			assert.Equal(t, "org/a", (<-writer.requests).Model)
+		})
+	}
+	test("engine manager restarts", func(t *testing.T, f *facade) {
+		require.True(t, f.host.handleModelPrepared(&Message{Method: modelrequest.Reset}))
+	})
+	test("engine becomes unhealthy", func(t *testing.T, f *facade) {
+		backend := f.currentLocalBackend()
+		backend.Healthy = false
+		require.NoError(t, f.setLocalBackend(backend))
+	})
+	test("engine lifecycle changes while still enabled", func(t *testing.T, f *facade) {
+		require.NoError(t, f.setLocalModelInventory(modelrequest.LocalInventory{
+			Engine: "vllm", ID: "local-node", EnginePort: 8001, Enabled: true,
+		}))
+	})
+}
+
+func TestPrepareModelTransport_DoesNotReusePreparationAcrossAnOverlappingLifecycleChange(t *testing.T) {
+	f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
+	writer.beforeReply = func() error { return f.setLocalBackend(f.currentLocalBackend()) }
+	require.NoError(t, f.prepareRequestedModel(t.Context(), "org/a"))
+	writer.beforeReply = nil
+
+	require.NoError(t, f.prepareRequestedModel(t.Context(), "org/a"))
+
+	assert.Len(t, writer.requests, 2)
+}
+
+func TestPrepareModelTransport_PreservesPreparationAcrossAnInventoryRefresh(t *testing.T) {
+	f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
+	backend := f.currentLocalBackend()
+	backend.Healthy = true
+	require.NoError(t, f.setLocalBackend(backend))
+	require.NoError(t, f.prepareRequestedModel(t.Context(), "org/a"))
+
+	require.NoError(t, f.setLocalModelInventory(modelrequest.LocalInventory{
+		Engine: "vllm", ID: "local-node", EnginePort: 8001, Enabled: true, Models: []string{"org/a", "org/new-download"},
+	}))
+	require.NoError(t, f.prepareRequestedModel(t.Context(), "org/a"))
+
+	assert.Len(t, writer.requests, 1)
+}
+
+func TestPrepareModelTransport_CancelsARequestWaitingForSharedPreparation(t *testing.T) {
+	f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
+	started, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(resume) }) }
+	defer release()
+	writer.beforeReply = func() error {
+		close(started)
+		<-resume
+		return nil
+	}
+	first := make(chan error, 1)
+	go func() { first <- f.prepareRequestedModel(t.Context(), "org/a") }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the initial preparation did not start")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	defer cancel()
+
+	err := f.prepareRequestedModel(ctx, "org/a")
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	release()
+	require.NoError(t, <-first)
+	assert.Len(t, writer.requests, 1)
+}
+
+func TestPrepareModelTransport_RechecksPreparationAfterAnEngineError(t *testing.T) {
+	test := func(name string, status int) {
+		t.Run(name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) == 1 {
+					w.WriteHeader(status)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			f, writer := modelRequestFacade(t, server.URL, "")
+			for range 2 {
+				request := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil)
+				response, err := (prepareModelTransport{next: http.DefaultTransport, facade: f, model: "org/a"}).RoundTrip(request)
+				require.NoError(t, err)
+				require.NoError(t, response.Body.Close())
+			}
+			assert.Len(t, writer.requests, 2)
+		})
+	}
+	test("model no longer served", http.StatusNotFound)
+	test("engine unavailable", http.StatusServiceUnavailable)
 }
 
 func TestPrepareModelTransport_DoesNotForwardWhenPreparationFails(t *testing.T) {
@@ -237,14 +447,14 @@ func TestLocalModelInventory_RoutesANewDownloadBeforeDiscoveryRefresh(t *testing
 func TestLocalModelInventory_EmptySnapshotOverridesStaleDiscovery(t *testing.T) {
 	f, _ := modelRequestFacade(t, "http://127.0.0.1:8001", "")
 	f.discovery.SetSubscribed([]Node{{ID: "local-node", Host: "127.0.0.1", Port: 8000, Addresses: []string{"127.0.0.1"}, Models: []string{"org/deleted-model"}}})
-	inventory, err := json.Marshal(modelrequest.LocalInventory{Engine: "vllm", ID: "local-node", EnginePort: 8001, Models: []string{}})
+	inventory, err := json.Marshal(modelrequest.LocalInventory{Engine: "vllm", ID: "local-node", EnginePort: 8001, Enabled: true, Models: []string{}})
 	require.NoError(t, err)
 	id := json.RawMessage(`1`)
 
 	f.host.handleMessage(&Message{ID: &id, Method: "vllm:node/set-local-models", Params: inventory})
 
 	assert.Empty(t, f.resolveCandidates("org/deleted-model"))
-	assert.False(t, f.currentLocalBackend().LoadOnRequest)
+	assert.True(t, f.currentLocalBackend().LoadOnRequest)
 }
 
 func TestAvailableModelList_DoesNotStartAnEjectedEngine(t *testing.T) {
@@ -298,7 +508,8 @@ func TestAvailableModelList_EnabledEmptyCacheReturnsAnEmptyList(t *testing.T) {
 	assert.Empty(t, writer.requests)
 }
 
-func TestClusterIngress_PreparesTheRequestedModelOnTheServingNode(t *testing.T) {
+func modelRequestCluster(t *testing.T) (*facade, string, *modelPreparationWriter) {
+	t.Helper()
 	callerDir, servingDir := t.TempDir(), t.TempDir()
 	clustertrusttest.Join(t, callerDir, "cluster", "caller")
 	clustertrusttest.Join(t, servingDir, "cluster", "serving")
@@ -323,21 +534,27 @@ func TestClusterIngress_PreparesTheRequestedModelOnTheServingNode(t *testing.T) 
 		assert.Equal(t, "org/requested-model", request.Model)
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]string{"model": request.Model}))
 	}))
-	defer native.Close()
+	t.Cleanup(native.Close)
 	serving, preparations := modelRequestFacade(t, native.URL, "")
 	serving.host.mesh = clustertrust.Open(servingDir)
 	ingress := httptest.NewUnstartedServer(http.HandlerFunc(serving.handleClusterIngress))
 	ingress.TLS = serving.host.mesh.ServerTLSConfig()
 	ingress.StartTLS()
-	defer ingress.Close()
+	t.Cleanup(ingress.Close)
 	caller := testProxy(serving.profile, NewDiscovery(), serving.profile.StandalonePort).soleFacade()
 	caller.host.mesh = clustertrust.Open(callerDir)
-	defer caller.host.closeIdleTransports()
+	t.Cleanup(caller.host.closeIdleTransports)
 	node := nodeFor(t, "serving", ingress.URL)
 	node.ClusterUUID = "serving"
 	node.Models = []string{"org/requested-model"}
 	caller.discovery.SetSubscribed([]Node{node})
+	return caller, ingress.URL, preparations
+}
+
+func TestClusterIngress_PreparesTheRequestedModelOnTheServingNode(t *testing.T) {
+	caller, _, preparations := modelRequestCluster(t)
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"org/requested-model","messages":[]}`))
+	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "127.0.0.1:40000"
 	recorder := httptest.NewRecorder()
 
@@ -347,6 +564,19 @@ func TestClusterIngress_PreparesTheRequestedModelOnTheServingNode(t *testing.T) 
 	require.Len(t, preparations.requests, 1)
 	prepared := <-preparations.requests
 	assert.Equal(t, "org/requested-model", prepared.Model)
+}
+
+func TestClusterIngress_RejectsOversizedRequestsBeforeModelPreparation(t *testing.T) {
+	caller, ingressURL, preparations := modelRequestCluster(t)
+	client := &http.Client{Transport: caller.host.candidateTransport(candidate{peerUUID: "serving"}), Timeout: 5 * time.Second}
+	body := `{"model":"org/requested-model","messages":[]}` + strings.Repeat(" ", maxInferenceBodyBytes)
+
+	response, err := client.Post(ingressURL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, response.Body.Close()) }()
+	assert.Equal(t, http.StatusRequestEntityTooLarge, response.StatusCode)
+	assert.Empty(t, preparations.requests)
 }
 
 func TestLocalModelInventory_RestoresCachedRoutesImmediatelyAfterEnabling(t *testing.T) {

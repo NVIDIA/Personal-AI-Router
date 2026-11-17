@@ -684,9 +684,13 @@ Build and staging: `services/build.sh` and `services/build.bat` read the compone
 The broker relays the engine manager's optional `awaiting_model` status field
 unchanged on local and paired-peer status/operation responses and state events.
 This is enabled intent without a serving process: `running` and `healthy` remain
-false, so routing and model advertisement do not treat it as ready. The desktop
-and terminal clients display model-selection guidance while allowing explicit
-Stop and model selection. No broker-owned model default is added.
+false, and no resident model is advertised. Enabled vLLM can nevertheless
+advertise complete cached models as request-loadable capabilities. The proxy
+must prepare the requested model before forwarding inference; this state does
+not claim the native engine is already healthy. An enabled engine that loses
+its serving process returns to this state and can load on the next request.
+The desktop and terminal clients display model-selection guidance while allowing
+explicit Stop and model selection. No broker-owned model default is added.
 
 
 ### Internal model-preparation relay

@@ -366,7 +366,8 @@ func (l *launchEdit) awaitModelAfterEject(ctx context.Context) error {
 // servingModels asks a running engine which models it is serving, through its
 // loaded_models action, and returns every name it reports for them: the name
 // requests use and, for an engine that declares an inventory_field, the cached
-// model id too. Callers hold st.opMu; this does not take it.
+// model id too. Callers that change launch settings hold st.opMu; read-only
+// callers must verify the lifecycle revision around the query.
 func (e *Executor) servingModels(ctx context.Context, st *engineState, engine string) ([]string, error) {
 	act, ok := st.manifest.Actions["loaded_models"]
 	if !ok || act.Result == nil {

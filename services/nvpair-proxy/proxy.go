@@ -420,10 +420,9 @@ type Proxy struct {
 	//
 	// Shared across facades: the pool is keyed by peer, not by engine, so a
 	// second copy would double the connections this node opens to every peer.
-	transportMu     sync.Mutex
-	plainTransport  *http.Transport
-	peerTransports  map[string]*http.Transport
-	modelTransports map[string]*http.Transport
+	transportMu    sync.Mutex
+	plainTransport *http.Transport
+	peerTransports map[string]*http.Transport
 
 	// runID is a per-process nonce minted at startup and stamped on every
 	// workload this proxy emits. Shared across facades is correct: a workload's
@@ -938,13 +937,6 @@ func unpinnedPeerTransport() *http.Transport {
 func (p *Proxy) dropUnpinnedPeerTransports() {
 	p.transportMu.Lock()
 	defer p.transportMu.Unlock()
-	for uuid, tr := range p.modelTransports {
-		if uuid == "" || (p.mesh != nil && p.mesh.HasPin(uuid)) {
-			continue
-		}
-		tr.CloseIdleConnections()
-		delete(p.modelTransports, uuid)
-	}
 	for uuid, tr := range p.peerTransports {
 		if p.mesh != nil && p.mesh.HasPin(uuid) {
 			continue
@@ -957,10 +949,6 @@ func (p *Proxy) dropUnpinnedPeerTransports() {
 func (p *Proxy) closeIdleTransports() {
 	p.transportMu.Lock()
 	defer p.transportMu.Unlock()
-	for key, tr := range p.modelTransports {
-		tr.CloseIdleConnections()
-		delete(p.modelTransports, key)
-	}
 	if p.plainTransport != nil {
 		p.plainTransport.CloseIdleConnections()
 	}

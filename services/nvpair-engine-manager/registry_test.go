@@ -17,6 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestManifest_RejectsWaitingWithoutModelSelection(t *testing.T) {
+	m := validManifest()
+	p := m.Platforms["linux/amd64"]
+	p.Runtime.WaitForModel = true
+	m.Platforms["linux/amd64"] = p
+	require.ErrorContains(t, m.Validate(), "wait_for_model requires process mode and a launch_model action")
+}
+
 // validManifest is a minimal well-formed manifest used as the base for
 // validation tests; individual tests mutate a copy to introduce one
 // fault at a time.

@@ -43,7 +43,7 @@ type EngineStatus struct {
 	// Starting is true while a start is launching the engine and waiting for
 	// it to become ready. Running is false until it is.
 	Starting bool `json:"starting,omitempty"`
-	// AwaitingModel is enabled user intent with no selected serving model.
+	// AwaitingModel is enabled user intent without a running serving process.
 	AwaitingModel bool `json:"awaiting_model,omitempty"`
 	Healthy       bool `json:"healthy"`
 	Port          int  `json:"port,omitempty"`

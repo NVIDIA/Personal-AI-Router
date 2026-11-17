@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"nvpair-shared/modelrequest"
+	"slices"
 	"sync"
 )
 
@@ -36,6 +37,9 @@ func (e *Executor) prepareRequestedModel(ctx context.Context, engine, model stri
 	if !allowed || flag == "" {
 		return 0, errors.New("this engine does not support request-triggered model loading")
 	}
+	if port, serving, err := e.servingRequestModel(ctx, st, engine, model); err != nil || serving {
+		return port, err
+	}
 	params, err := json.Marshal(map[string]string{"model": model})
 	if err != nil {
 		return 0, err
@@ -51,6 +55,34 @@ func (e *Executor) prepareRequestedModel(ctx context.Context, engine, model stri
 		return 0, fmt.Errorf("engine %q was stopped before model preparation finished", engine)
 	}
 	return state.Port, nil
+}
+
+// An already-serving model needs no launch transaction. Check the revision
+// around the read-only model query so an overlapping lifecycle operation sends
+// the caller through the normal locked admission path instead.
+func (e *Executor) servingRequestModel(ctx context.Context, st *engineState, engine, model string) (int, bool, error) {
+	enabled, known, err := e.desired.get(engine)
+	if err != nil {
+		return 0, false, err
+	}
+	if !known || !enabled {
+		return 0, false, fmt.Errorf("%w: %q", errRequestEngineDisabled, engine)
+	}
+	st.mu.Lock()
+	ready := st.running && st.healthy && !st.stopping && st.opDone == nil
+	revision, port := st.revision, st.port
+	st.mu.Unlock()
+	if !ready {
+		return 0, false, nil
+	}
+	models, err := e.servingModels(ctx, st, engine)
+	if err != nil {
+		return 0, false, ctx.Err()
+	}
+	st.mu.Lock()
+	unchanged := st.revision == revision && st.opDone == nil && st.running && st.healthy && !st.stopping
+	st.mu.Unlock()
+	return port, unchanged && slices.Contains(models, model), nil
 }
 
 func (m *Manager) handleModelPreparation(ctx context.Context, msg *Message) bool {

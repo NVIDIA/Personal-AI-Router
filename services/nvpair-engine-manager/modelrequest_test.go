@@ -63,6 +63,72 @@ func TestPrepareRequestedModel_DoesNotRestartTheAlreadyLoadedModel(t *testing.T)
 	assert.Equal(t, before, startGeneration(t, e))
 }
 
+func TestPrepareRequestedModel_ServesTheLoadedModelWithoutALaunchTransaction(t *testing.T) {
+	e := requestedModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	wantPort, err := e.prepareRequestedModel(t.Context(), "fake", "org/first")
+	require.NoError(t, err)
+	st, err := e.state("fake")
+	require.NoError(t, err)
+	// A settings read holds opMu without starting a lifecycle operation.
+	st.opMu.Lock()
+	defer st.opMu.Unlock()
+	type result struct {
+		port int
+		err  error
+	}
+	finished := make(chan result, 1)
+	go func() {
+		port, err := e.prepareRequestedModel(t.Context(), "fake", "org/first")
+		finished <- result{port, err}
+	}()
+
+	select {
+	case got := <-finished:
+		require.NoError(t, got.err)
+		assert.Equal(t, wantPort, got.port)
+	case <-time.After(time.Second):
+		t.Fatal("an already-serving model waited for the launch operation lock")
+	}
+}
+
+func TestPrepareRequestedModel_RecoversAnEnabledEngineAfterACrash(t *testing.T) {
+	test := func(name, requestedModel string) {
+		t.Run(name, func(t *testing.T) {
+			e := requestedModelExecutor(t)
+			require.NoError(t, e.Start(t.Context(), "fake"))
+			_, err := e.prepareRequestedModel(t.Context(), "fake", "org/first")
+			require.NoError(t, err)
+			st, err := e.state("fake")
+			require.NoError(t, err)
+			st.mu.Lock()
+			proc := st.proc
+			st.mu.Unlock()
+			require.NotNil(t, proc)
+
+			require.NoError(t, proc.cmd.Process.Kill())
+
+			require.Eventually(t, func() bool {
+				return !e.snapshot("fake", st).Running && hasErr(e.Errors(), exitedID("fake"))
+			}, 5*time.Second, time.Millisecond)
+			status, err := e.Status("fake")
+			require.NoError(t, err)
+			assert.True(t, status.Enabled)
+			assert.True(t, status.AwaitingModel)
+			assert.False(t, status.Running)
+			assert.False(t, status.Healthy)
+
+			_, err = e.prepareRequestedModel(t.Context(), "fake", requestedModel)
+
+			require.NoError(t, err)
+			assert.True(t, mustStatus(t, e).Running)
+			assert.Equal(t, []string{requestedModel}, e.ModelsResult(t.Context()).LoadedByEngine["fake"])
+		})
+	}
+	test("the previously loaded model", "org/first")
+	test("another cached model", "org/second")
+}
+
 func TestPrepareRequestedModel_RefusesAnExplicitlyDisabledEngine(t *testing.T) {
 	e := requestedModelExecutor(t)
 	require.NoError(t, e.Start(t.Context(), "fake"))

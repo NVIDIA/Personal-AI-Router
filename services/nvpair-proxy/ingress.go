@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -54,6 +55,9 @@ func (f *facade) setLocalBackend(b localBackend) error {
 	}
 	f.backendMu.Lock()
 	defer f.backendMu.Unlock()
+	if f.backend != b || !b.Healthy || !b.LoadOnRequest {
+		f.invalidatePreparedModel()
+	}
 	f.backend = b
 	return nil
 }
@@ -128,7 +132,15 @@ func (f *facade) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("cluster ingress forwarding to local backend",
 		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host)
 	if f.profile.LoadOnRequest && f.currentLocalBackend().LoadOnRequest && isInferenceRequest(f.profile, r.Method, r.URL.Path) {
-		body, model := bufferBodyAndModel(r, false)
+		body, model, err := bufferBodyAndModel(r, false)
+		if err != nil {
+			status, message := http.StatusBadRequest, "request body could not be read"
+			if errors.Is(err, errBodyTooLarge) {
+				status, message = http.StatusRequestEntityTooLarge, "request body exceeds 32 MiB limit"
+			}
+			writeIngressError(w, status, "request-body", message)
+			return
+		}
 		if body != nil {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}

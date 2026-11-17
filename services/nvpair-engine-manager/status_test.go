@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,25 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestEngineStatus_ReportsAwaitingModelOnTheWire(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	status, err := e.Status("fake")
+	require.NoError(t, err)
+	raw, err := json.Marshal(status)
+	require.NoError(t, err)
+	var wire struct {
+		AwaitingModel bool `json:"awaiting_model"`
+		Running       bool `json:"running"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &wire))
+	assert.True(t, wire.AwaitingModel)
+	assert.False(t, wire.Running)
+}
 
 // Status and GetInstalled serve UI and discovery reads while lifecycle actions
 // may spend seconds in external I/O. Neither read should wait for that action.
