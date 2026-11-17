@@ -16,6 +16,8 @@ import type {
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
+import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import type {
     EngineSettingsTarget,
     EngineSettingsRequest,
@@ -85,6 +87,19 @@ export interface IEngineApi {
 }
 
 function fireCommand(transport: ServiceTransport, payload: EngineCommandPayload): void {
+    // Remember the user's setup interaction across the backend's install/start
+    // reports. Only an awaiting-model report opens the picker; a saved model
+    // resuming normally needs no intervention. This covers onboarding and Retry
+    // as well as both engine switches.
+    if (
+        payload.engineType === 'vllm' &&
+        (payload.command === 'install' ||
+            (payload.command === 'toggle' &&
+                useEngineStatusStore.getState().statusByNode.get(payload.nodeId)?.get('vllm')
+                    ?.processStatus === 'stopped'))
+    ) {
+        useOverviewUiStore.getState().requestModelSelection(payload.nodeId)
+    }
     // Optimistically flip the clicked control to a "working"/disabled state so
     // the user gets immediate feedback even when the backend push lags (esp.
     // remote nodes). The entry clears itself on the superseding push / timeout.

@@ -5,7 +5,7 @@
 import { act, createElement, type ComponentProps, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ButtonProps, DropdownProps } from '@nvidia/foundations-react-core'
+import type { BannerProps, ButtonProps, DropdownProps } from '@nvidia/foundations-react-core'
 import { EngineDisplayNames, EngineTypes } from '@/shared/constants/engines'
 import type { EngineProcessStatus, EngineType, ModelItemStatus } from '@/shared/types/engines'
 import type { BackendInfo } from '@/ui/types/engine-info'
@@ -26,6 +26,7 @@ vi.mock('@nvidia/foundations-react-core', () => {
         Flex: container,
         Stack: container,
         Text: container,
+        Banner: ({ children, role }: BannerProps) => createElement('div', { role }, children),
         Divider: () => createElement('hr'),
         Button: ({ children, disabled, onClick }: ButtonProps) =>
             createElement('button', { disabled, onClick }, children),
@@ -298,6 +299,62 @@ describe.each<EngineType>(['ollama', 'llama-cpp', 'vllm'])('%s direct deletion',
 })
 
 describe('vLLM model controls', () => {
+    it('shows the waiting banner above models without a redundant action', async () => {
+        await render('vllm', 'awaiting-model')
+
+        const banner = host.querySelector('[role="status"]')
+        expect(banner?.textContent).toContain('No model loaded')
+        expect(banner?.textContent).toContain(
+            'Load a downloaded model from the list below, or add one.'
+        )
+        expect(banner?.textContent).toContain(
+            'Requests to the PAIR vLLM endpoint can also load downloaded models.'
+        )
+        expect(banner?.querySelector('button')).toBeNull()
+        expect(banner?.compareDocumentPosition(button('Load'))).toBe(
+            Node.DOCUMENT_POSITION_FOLLOWING
+        )
+        expect(button('Load').disabled).toBe(false)
+        expect(button('Add model').disabled).toBe(false)
+    })
+
+    it('hides the waiting banner as soon as a model load is pending', async () => {
+        await render('vllm', 'awaiting-model')
+        expect(host.textContent).toContain('No model loaded')
+
+        await act(() =>
+            usePendingActionsStore.getState().begin({
+                command: 'loadModel',
+                engineType: 'vllm',
+                nodeId: 'test-node',
+                model: 'org/cached-model'
+            })
+        )
+
+        expect(host.textContent).not.toContain('No model loaded')
+    })
+
+    it('restores the waiting banner after Eject without opening a dialog', async () => {
+        await render('vllm', 'running', 'loaded')
+        expect(host.textContent).not.toContain('No model loaded')
+        await click('Eject')
+
+        await render('vllm', 'awaiting-model')
+
+        expect(host.textContent).toContain('No model loaded')
+        expect(host.querySelector('[role="dialog"]')).toBeNull()
+    })
+
+    it.each<EngineProcessStatus>(['starting', 'stopping', 'stopped', 'running', 'not-installed'])(
+        'hides the waiting banner when the engine is %s',
+        async processStatus => {
+            await render('vllm', 'awaiting-model')
+            await render('vllm', processStatus)
+
+            expect(host.textContent).not.toContain('No model loaded')
+        }
+    )
+
     it('keeps Load and Add model available with an unloaded model while running', async () => {
         await render('vllm', 'running')
         expect(button('Load').disabled).toBe(false)

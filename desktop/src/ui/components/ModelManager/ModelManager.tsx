@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
+import { Banner, Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
@@ -72,6 +72,9 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         return parts.join('|')
     })
     void modelPendingFingerprint
+    const modelLoadPending = usePendingActionsStore(
+        state => state.getLifecyclePending(nodeId, backend.type) === 'loadModel'
+    )
 
     const displayName = useCallback(
         (name: string) => formatModelDisplayName(name, backend.type),
@@ -202,11 +205,23 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
     return (
         <Stack gap="4">
-            {backend.processStatus === 'awaiting-model' && (
-                <Text kind="body/regular/sm" className="text-subtle-color pl-2">
-                    Select a downloaded model and choose Load, or add a model to get started.
-                </Text>
-            )}
+            {backend.type === 'vllm' &&
+                backend.processStatus === 'awaiting-model' &&
+                !modelLoadPending &&
+                !models.some(model => model.status === 'loading') && (
+                    <Banner
+                        kind="inline"
+                        status="warning"
+                        role="status"
+                        attributes={{ BannerHeader: { className: 'min-w-0 flex-1' } }}
+                    >
+                        <Text kind="body/regular/sm">
+                            <strong>No model loaded.</strong> Load a downloaded model from the list
+                            below, or add one. Requests to the PAIR vLLM endpoint can also load
+                            downloaded models.
+                        </Text>
+                    </Banner>
+                )}
             {transientModel && (
                 <TransientModelStatusRow
                     transientModel={transientModel}

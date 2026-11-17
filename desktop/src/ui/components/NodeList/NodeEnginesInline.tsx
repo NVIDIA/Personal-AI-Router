@@ -6,7 +6,6 @@ import { EngineType } from '@/shared/types/engines'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
-import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { getEnginesForNode } from '@/ui/utils/get-engines-for-node'
 import { Button, Flex, Switch, Text } from '@nvidia/foundations-react-core'
@@ -150,19 +149,6 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                         >
                             {b.name}
                         </Text>
-                        {b.status === 'awaiting-model' && (
-                            <Button
-                                kind="tertiary"
-                                size="tiny"
-                                disabled={isRemote && isDisconnected}
-                                onClick={event => {
-                                    event.stopPropagation()
-                                    useOverviewUiStore.getState().focusNodeEngineSettings(nodeId)
-                                }}
-                            >
-                                Select a model
-                            </Button>
-                        )}
                     </Flex>
                 )
             })}

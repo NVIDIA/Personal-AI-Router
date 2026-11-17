@@ -109,9 +109,12 @@ When you install an engine, consider the following:
   remove that managed environment while preserving downloaded models.
   Installation uses prebuilt wheels; loading a model may compile FlashInfer or
   DeepGEMM kernels. vLLM serves a single model per process. On first enable, PAIR
-  shows **Select a model** without downloading a
-  default model or starting a serving process. A previously saved selection can
-  resume normally. While enabled, its model list shows complete text models in
+  opens **Choose a model for vLLM** when you install or turn on the engine without
+  a saved model. Click a downloaded model to load it, or choose **Add model**.
+  Canceling or closing the picker turns the engine off. PAIR does not download a
+  default model or start a serving process until you choose one. A previously
+  saved selection can resume normally without the picker.
+  While enabled, its model list shows complete text models in
   your Hugging Face cache (`~/.cache/huggingface`). **Add model** browses Hugging
   Face and downloads the model you choose into that cache, with a progress bar.
   Invalid model repositories, such as unnumbered weights without an index, are
@@ -128,7 +131,10 @@ When you install an engine, consider the following:
 
   **Eject** stops the serving process and releases its model memory while keeping
   the switch on. It clears the saved model selection; another **Load** or request
-  can start a model. Turning the switch off prevents local request-triggered
+  can start a model. Eject does not open the picker. An orange **No model loaded**
+  banner appears above the model list whenever the enabled engine is waiting
+  for a model, including after Eject or when you return to the app.
+  Turning the switch off prevents local request-triggered
   startup and hides model controls. An eligible cluster peer can still serve the
   request. Both Eject and OFF can cancel a load in progress. **Delete** removes a
   cached model except the one currently loaded; eject it first. If PAIR cannot

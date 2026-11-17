@@ -242,7 +242,9 @@ describe('enabled vLLM before model selection', () => {
             })
         )
         expect(html).toContain('Add model')
-        expect(html).toContain('Select a downloaded model and choose Load')
+        expect(html).toContain('No model loaded')
+        expect(html).toContain('Load a downloaded model from the list below, or add one.')
+        expect(html).not.toContain('Choose model')
         expect(html).not.toContain('Start engine to see models')
     })
 
