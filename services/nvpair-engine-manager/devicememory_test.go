@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/pythontest"
 )
 
 func withDeviceMemoryProviders(t *testing.T, native func(context.Context) (int64, int64, bool), probe func(context.Context, string, map[string]string) (deviceMemoryProbe, error)) {
@@ -169,10 +171,7 @@ func runDeviceMemoryProbeFixture(python, input string) ([]byte, error) {
 }
 
 func TestDeviceMemoryProbe_UsesSystemRAMOnlyForVerifiedSharedDevices(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("Python 3 is required to exercise the embedded vLLM memory probe")
-	}
+	python := pythontest.Python3(t)
 	accept := func(name, input string, expected deviceMemoryProbe) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
@@ -226,10 +225,7 @@ func TestDeviceMemoryProbe_UsesSystemRAMOnlyForVerifiedSharedDevices(t *testing.
 }
 
 func TestDeviceMemoryProbe_UsesTheSelectedPlatformWhenOtherAcceleratorsAreAvailable(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("Python 3 is required to exercise the embedded vLLM memory probe")
-	}
+	python := pythontest.Python3(t)
 	test := func(name, input string, expected deviceMemoryProbe) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
@@ -253,10 +249,7 @@ func TestDeviceMemoryProbe_UsesTheSelectedPlatformWhenOtherAcceleratorsAreAvaila
 }
 
 func TestDeviceMemoryProbe_RejectsUnavailableMemoryWithoutGuessingTopology(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("Python 3 is required to exercise the embedded vLLM memory probe")
-	}
+	python := pythontest.Python3(t)
 	reject := func(name, input, expectedMessage string) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {

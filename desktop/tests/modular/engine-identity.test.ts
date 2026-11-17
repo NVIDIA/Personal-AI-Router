@@ -7,7 +7,6 @@ import {
     EngineDefaultLinks,
     EngineDisplayNames,
     EngineManagerNames,
-    EnginesListingModelsWhenStopped,
     EngineTypes
 } from '@/shared/constants/engines'
 import { engineManagerName, engineTypeFromManagerName, isEngineType } from '@/shared/utils/engines'
@@ -50,7 +49,6 @@ describe('engine identity', () => {
         // is serving, and its model list is on disk, so it works while stopped.
         expect(EngineCapabilities.vllm).toMatchObject({
             hasEject: true,
-            modelOpsWhenStopped: true,
             hasModelSearchOnlyWhenRunning: false,
             hasDeleteModel: true,
             deleteBlockedWhileLoaded: true,
@@ -58,14 +56,6 @@ describe('engine identity', () => {
             hasEnginePort: true,
             engineHub: { label: 'vLLM' }
         })
-    })
-
-    it('keeps the capability and the supervisor agreeing on which model lists survive a stop', () => {
-        for (const engineType of EngineTypes) {
-            expect(EngineCapabilities[engineType].modelOpsWhenStopped).toBe(
-                EnginesListingModelsWhenStopped.includes(engineType)
-            )
-        }
     })
 
     it('maps the desktop id to the sole engine-manager wire id', () => {
@@ -94,7 +84,6 @@ describe('engine identity', () => {
             hasPreferredNode: false,
             hasCrashAlert: false,
             hasModelSearchOnlyWhenRunning: true,
-            modelOpsWhenStopped: false,
             hasDeleteModel: true,
             engineHub: { label: 'llama.cpp' }
         })

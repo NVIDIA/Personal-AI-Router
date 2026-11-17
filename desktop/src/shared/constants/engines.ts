@@ -14,7 +14,8 @@ export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'llama-c
 /**
  * Engines whose model list is read from disk, so it is available while the engine
  * is stopped. For every other engine the list comes from the running engine and is
- * cleared when it stops. The `modelOpsWhenStopped` capability must agree.
+ * cleared when it stops. Stopped engines keep that inventory internally; the UI
+ * exposes model controls only while enabled.
  */
 export const EnginesListingModelsWhenStopped: readonly EngineType[] = ['vllm']
 
@@ -68,6 +69,7 @@ export const ModelExpiryLabels: Record<ModelExpiry, string> = {
 
 export const EngineProcessStatuses = [
     'running',
+    'awaiting-model',
     'stopped',
     'not-installed',
     'installing',

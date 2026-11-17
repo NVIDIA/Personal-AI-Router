@@ -11,6 +11,12 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.36 — Choose vLLM models and load downloaded models on request (#203)
+
+- New vLLM setups wait for model selection without downloading a default model. Requests can load models that are already fully downloaded.
+- Eject frees model memory while keeping vLLM enabled. Model changes wait for active responses to finish, and cancelling one request does not interrupt a shared model load.
+- Model lists reflect what each computer can serve and refresh after remote downloads or deletions.
+
 ## 1.0.35 — Add model shows more ModelScope models and says the list is partial (#212)
 
 - With ModelScope as the llama.cpp download source, Add model now lists more models when the search box is empty, including popular chat models it used to leave out. Before, it could show as few as three.
