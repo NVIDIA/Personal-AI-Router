@@ -321,39 +321,35 @@ func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 }
 
 func TestEngineStartup_ReportsFullMetalMemoryErrorForProcessEngines(t *testing.T) {
-	for _, test := range []struct {
-		engine  string
-		context string
-	}{
-		{engine: "vllm", context: `engine "vllm" did not become ready: `},
-		{engine: "llamacpp", context: `engine "llamacpp" did not become ready: `},
-	} {
-		t.Run(test.engine, func(t *testing.T) {
+	test := func(engine, prefix string) {
+		t.Run(engine, func(t *testing.T) {
 			manifest := testEngineManifest(fakeEngineBin)
-			manifest.Engine = test.engine
+			manifest.Engine = engine
 			platform := manifest.Platforms[hostKey()]
 			platform.Runtime.Args = []string{"--fail-metal-oom"}
 			manifest.Platforms[hostKey()] = platform
 			executor, _ := capturingExecutor(t, manifest)
-			t.Cleanup(func() { assert.NoError(t, executor.Stop(test.engine)) })
+			t.Cleanup(func() { assert.NoError(t, executor.Stop(engine)) })
 
-			err := executor.Start(t.Context(), test.engine)
+			err := executor.Start(t.Context(), engine)
 
-			want := test.context + "Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again.\n\nEngine details:\n" +
+			want := prefix + "Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again.\n\nEngine details:\n" +
 				"RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).\n" +
 				"RuntimeError: Engine core initialization failed."
 			require.EqualError(t, err, want)
 			reported := executor.Errors()
 			require.Len(t, reported, 1)
-			assert.Equal(t, startFailedID(test.engine), reported[0].ID)
+			assert.Equal(t, startFailedID(engine), reported[0].ID)
 			assert.Equal(t, want, reported[0].Message)
 			assert.Equal(t, "retry", reported[0].Action)
-			state, statusErr := executor.Status(test.engine)
+			state, statusErr := executor.Status(engine)
 			require.NoError(t, statusErr)
 			assert.False(t, state.Running)
 			assert.False(t, state.Healthy)
 		})
 	}
+	test("vllm", `engine "vllm" did not become ready: `)
+	test("llamacpp", `engine "llamacpp" did not become ready: `)
 }
 
 func TestEngineStartup_ReportsFullMetalMemoryErrorForCustomCommand(t *testing.T) {
