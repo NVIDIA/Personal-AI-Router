@@ -1663,6 +1663,27 @@ func TestDownloadCancel_FrameFromAnEarlierVisitLeavesTheNextVisitsDownloadAlone(
 	test("this machine", nodeRow{key: "self", name: "this-host", self: true, presence: presenceOnline})
 }
 
+// Two pulls of one peer's download can run from this machine at once, this
+// screen's and another client's, and only the last of them to end sends the
+// frame saying how the download ended, under its own opId. It names the pulls
+// that ended before it in opIds, so a screen whose pull was one of those sees
+// its download end, even once its reply has timed out.
+func TestDownloadStart_EndsWithTheLastFrameAnotherPullOfThePeersDownloadSent(t *testing.T) {
+	d := newNodeDetail(nil, nodeRow{key: "peer", name: "peer-host", presence: presenceOnline})
+	d.SetSize(100, 30)
+	d.pane = detailModels
+	require.NotNil(t, d.startDownload("ollama", "llama3.2"), "setup: the download was not sent")
+	own := downloadOf(t, d, "ollama", "llama3.2")
+
+	d.update(progressPush(t, "engine:remote-progress", map[string]any{
+		"node": "peer", "engine": "ollama", "model": "llama3.2", "op": "pull", "stage": "success", "percent": 100,
+		"message": "llama3.2", "opId": "another-client", "opIds": []string{own.opID},
+	}))
+
+	assert.Empty(t, d.downloads, "the download stayed in flight after its last frame")
+	assert.Contains(t, d.status.render(), "done", "the download's outcome was not reported")
+}
+
 // An earlier visit's reply that lands on the next visit says nothing about
 // that visit's download, but it does say the earlier visit's download ended.
 // Unrecorded, that download's late last frame, arriving once the next visit's

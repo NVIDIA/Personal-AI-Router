@@ -895,6 +895,8 @@ type pullFrame struct {
 	OpID string `json:"opId"`
 	// OpIDs are the opIds of the requests running as this machine's download,
 	// on engine:pull-progress: the one that started it and any that joined it.
+	// On the engine:remote-progress frame a peer's download ends on, they are
+	// this machine's other pulls of it that ended first.
 	OpIDs []string `json:"opIds"`
 }
 
