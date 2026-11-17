@@ -88,6 +88,57 @@ func (rwDiscard) Read([]byte) (int, error)    { return 0, io.EOF }
 func (rwDiscard) Write(p []byte) (int, error) { return len(p), nil }
 func (rwDiscard) Close() error                { return nil }
 
+// The custom facade joins the relay by being in the engine table, not by each
+// relay learning a special case — this pins that the "for free" claim actually
+// holds end to end through handleMessage dispatch, for the method the Custom
+// add/remove flow uses. The client-side prefix is the facade's component
+// name ("custom-proxy:") and the downward wire address is the engine id
+// ("custom:"); a drift in either half would strand custom control traffic,
+// and only the wire end is visible to nvpair-proxy.
+func TestRelay_AddressesCustomFacadeMethods(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	proxy := &proxyProcess{peer: NewPeer(NewCodec(client))}
+	go proxy.peer.Serve(nil, nil)
+
+	seen := make(chan string, 1)
+	go func() {
+		codec := NewCodec(server)
+		msg, err := codec.Read()
+		if !assertRPCRead(t, err) {
+			return
+		}
+		seen <- msg.Method
+		assert.NoError(t, codec.Respond(msg.ID, map[string]any{"ok": true}))
+	}()
+
+	b := &Broker{codec: NewCodec(rwDiscard{})}
+	custom, ok := engineProxyProfileFor("custom")
+	require.True(t, ok, "no profile for engine custom")
+	resolved, ok := engineProxyProfileForMethod("custom-proxy:node/add-manual")
+	require.True(t, ok, "custom-proxy: prefix did not resolve to a profile")
+	require.Equal(t, "custom", resolved.Name, "prefix resolution")
+	b.setEngineProxyHandle(custom, proxy)
+
+	id := json.RawMessage(`1`)
+	b.handleMessage(&Message{
+		JSONRPC: "2.0",
+		Method:  "custom-proxy:node/add-manual",
+		ID:      &id,
+		Params:  json.RawMessage(`{"id":"mtplx","base_url":"http://10.0.0.9:8000"}`),
+	})
+
+	select {
+	case got := <-seen:
+		require.Equal(t, "custom:node/add-manual", got, "relayed method")
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "relay sent nothing downward")
+	}
+}
+
 // Giving up the managed claim keeps the OLLAMA_HOST alias reservation, so a
 // spawn whose every facade failed still has it when the supervisor retries.
 //

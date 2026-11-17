@@ -7,9 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
+	"nvpair-shared/engines"
 	"nvpair-shared/httpcon"
 	"nvpair-shared/noderec"
 )
@@ -223,6 +227,244 @@ func (b *Broker) reconcileAdvertiseEngine(profile engineProxyProfile, client *ht
 	}
 	b.unregisterService(profile.DiscoveryService)
 	b.setProxyLocalBackend(b.engineProxyHandle(profile), profile.Name, enginePort, false)
+}
+
+// runCustomAdvertise reconciles the Custom plane on the same 5 s cadence the
+// engine advertisers use. Custom has no local engine to poll: its truth is
+// the discovery store's custom slot (what the bridge currently routes) plus
+// the custom facade's own readiness. That is also why it cannot ride the
+// generic runAutoAdvertiseEngine loop — that loop's up-condition requires a
+// local engine port, which Custom by definition never has.
+func (b *Broker) runCustomAdvertise(ctx context.Context) {
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileCustomAdvertise()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileCustomAdvertise()
+		}
+	}
+}
+
+// reconcileCustomAdvertise brings three things in line with what this node
+// can currently serve through the custom facade:
+//
+//   - the cu service registration, advertised only while at least one routed
+//     endpoint exists AND the facade reports ready. A peer that saw cu and
+//     routed into a down facade would dial a dead port, so advertisement
+//     follows routability, not configuration (D1: nothing to toggle).
+//   - the engine-manager model inventory. The push carries the union only
+//     while the facade is ready; with the facade down it is empty, which
+//     clears ByEngine["custom"] on the next /v1/models fetch. A peer must not
+//     keep attributing (or routing toward) models this node cannot serve.
+//   - the proxy's ingress backend set (G4). A peer request that reaches this
+//     node must land on the endpoint serving its model, and only the broker
+//     knows which endpoints this node owns and which credential each needs —
+//     the key is injected here, on the owner, and never travels onward. Like
+//     the other two it is gated on facade readiness: with no listener there is
+//     nothing to receive a set, and resetting the gate while down lets a
+//     respawned proxy re-learn the current set instead of inheriting a gate
+//     keyed to state it never received.
+func (b *Broker) reconcileCustomAdvertise() {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+
+	facadePort := b.engineProxyListenPort(customProxyProfile)
+	if facadePort == 0 {
+		b.unregisterService(noderec.ServiceCustom)
+		b.customIngress = customIngressState{}
+		b.pushCustomModelsToEngineMgr(nil)
+		return
+	}
+
+	models := b.store.customModelUnion()
+	if len(models) > 0 {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceCustom, Port: facadePort})
+	} else {
+		b.unregisterService(noderec.ServiceCustom)
+	}
+	b.pushCustomBackendSet()
+	b.pushCustomModelsToEngineMgr(models)
+}
+
+// customSetModelsMethod is the broker→engine-manager notification carrying
+// this node's custom model set. Engine-manager publishes it into
+// ModelsResult.ByEngine["custom"] without knowing anything about the
+// endpoints behind it — least of all their credentials, which never travel
+// this hop (or any hop out of the broker's config code).
+const customSetModelsMethod = "custom:set-models"
+
+// customSetModelsPayload is the notification envelope. The flat-list shape
+// matches every other model-set payload on the wire.
+type customSetModelsPayload struct {
+	Models []string `json:"models"`
+}
+
+// customAdvertiseState is the push change gate, guarded by engineConfigMu
+// (every reader/writer reconciles under it). Keying on the model set alone
+// would strand a respawned engine-manager on an empty inventory; keying on
+// the worker too replays the set to a replacement without an event, which is
+// how custom state survives an engine-manager restart.
+type customAdvertiseState struct {
+	pushKey string
+	pushEm  *rpcWorker
+}
+
+// pushCustomModelsToEngineMgr writes the current custom inventory to
+// engine-manager when it differs from the last thing THAT worker was told.
+// A missing worker resets the gate instead (see customAdvertiseState). A
+// never-used gate with nothing to push adopts quietly: a fresh
+// engine-manager already has an empty inventory, so an empty replay would be
+// wire noise on every quiet tick, forever.
+func (b *Broker) pushCustomModelsToEngineMgr(models []string) {
+	em := b.getEngineMgr()
+	if em == nil {
+		b.customAdvertise.pushKey = ""
+		b.customAdvertise.pushEm = nil
+		return
+	}
+	key := strings.Join(models, "\x1f")
+	if key == b.customAdvertise.pushKey && em == b.customAdvertise.pushEm {
+		return
+	}
+	if key == "" && b.customAdvertise.pushKey == "" {
+		b.customAdvertise.pushKey = ""
+		b.customAdvertise.pushEm = em
+		return
+	}
+	payload := customSetModelsPayload{Models: models}
+	if payload.Models == nil {
+		payload.Models = []string{}
+	}
+	if err := em.Notify(customSetModelsMethod, payload); err != nil {
+		slog.Warn("custom:set-models push failed; retrying next tick", "err", err)
+		return
+	}
+	b.customAdvertise.pushKey = key
+	b.customAdvertise.pushEm = em
+}
+
+// proxyBackendEntry is the wire shape of one endpoint in the Custom facade's
+// ingress backend set. The key rides this broker↔proxy stdio hop because the
+// ingress cannot authenticate to the endpoint without it — the one place a
+// key may appear in a JSON-RPC frame, per the custom-plane policy — and it
+// is never logged, never emitted as an event, and never leaves this node.
+type proxyBackendEntry struct {
+	URL        string   `json:"url"`
+	APIKey     string   `json:"apiKey,omitempty"`
+	ModelNames []string `json:"modelNames,omitempty"`
+}
+
+// proxyBackendSetParams is the whole node/set-local-backend payload for a
+// Custom facade. Backends is always marshaled as an (possibly empty) array,
+// never null: the proxy reads a null/absent key as the single-backend class,
+// so a null "clear" would silently fail to retract a stale set and the
+// ingress would keep forwarding to removed endpoints.
+type proxyBackendSetParams struct {
+	Engine   string              `json:"engine"`
+	Backends []proxyBackendEntry `json:"backends"`
+}
+
+// customIngressState is the change gate for the backend-set push, guarded by
+// engineConfigMu like customAdvertise (both are touched only under it, by the
+// reconcile). Keying on the serialized set — with the API keys inside, so a
+// key-only edit re-pushes rather than leaving the ingress presenting a
+// revoked credential — and on the proxy handle identity, so a replaced
+// process re-receives the set without any event. Reset whenever the facade
+// goes down: a re-enabled facade must not inherit a gate keyed to a backend
+// set it never received.
+type customIngressState struct {
+	pushKey string
+	pushP   *proxyProcess
+}
+
+// customBackendSet builds the set this node's custom ingress may forward to,
+// from the two halves of its truth: the discovery store's custom slot records
+// which endpoints currently route (healthy with models at bridge time), and
+// the persisted config supplies the URL and credential. A slot whose config
+// was deleted stops routing at once — the config is the truth about what may
+// be used, the same rule the candidate bridge applies. Entries are ordered by
+// endpoint key and each entry's models are sorted, so the same configuration
+// produces the same bytes every tick and on every proxy build: the change
+// gate and the wire both stay quiet under map-iteration shuffle.
+func (b *Broker) customBackendSet() []proxyBackendEntry {
+	slots := b.store.customSlots()
+	keys := make([]string, 0, len(slots))
+	for key := range slots {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	set := make([]proxyBackendEntry, 0, len(keys))
+	for _, key := range keys {
+		entry, configured := b.findCustomEndpoint(key)
+		if !configured {
+			continue
+		}
+		models := append([]string(nil), slots[key]...)
+		sort.Strings(models)
+		set = append(set, proxyBackendEntry{URL: entry.BaseURL, APIKey: entry.APIKey, ModelNames: models})
+	}
+	return set
+}
+
+// customBackendSetKey serializes a set into the change-gate key. Credentials
+// are deliberately inside the key: this string exists only as gate state, is
+// never logged, never emitted, never sent anywhere.
+func customBackendSetKey(set []proxyBackendEntry) string {
+	var sb strings.Builder
+	for _, e := range set {
+		sb.WriteString(e.URL)
+		sb.WriteByte('\x1f')
+		sb.WriteString(e.APIKey)
+		sb.WriteByte('\x1f')
+		sb.WriteString(strings.Join(e.ModelNames, "\x1e"))
+		sb.WriteByte('\x1d')
+	}
+	return sb.String()
+}
+
+// pushCustomBackendSet hands the custom facade its ingress endpoint set when
+// it differs from what that proxy handle last received. The call is the same
+// bounded inline bridge the manual-node path uses: a lost or rejected push
+// leaves the gate untouched so the next tick (≤5 s) retries, rather than
+// stranding the proxy on a stale set until the configuration changes again.
+// An empty set with nothing previously pushed adopts quietly — a fresh proxy
+// or facade starts empty, so an empty replay would clear nothing and repaint
+// the wire every five seconds forever.
+func (b *Broker) pushCustomBackendSet() {
+	set := b.customBackendSet()
+	key := customBackendSetKey(set)
+	p := b.customProxyHandle()
+	if p == nil {
+		b.customIngress = customIngressState{}
+		return
+	}
+	if key == b.customIngress.pushKey && p == b.customIngress.pushP {
+		return
+	}
+	if key == "" && b.customIngress.pushKey == "" {
+		b.customIngress = customIngressState{pushP: p}
+		return
+	}
+	payload := proxyBackendSetParams{Engine: customProxyProfile.Name, Backends: set}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		slog.Warn("custom ingress set: marshal failed", "err", err)
+		return
+	}
+	method := engines.AddressMethod(customProxyProfile.Name, "node/set-local-backend")
+	if _, rpcErr, err := p.Call(context.Background(), method, raw); err != nil {
+		slog.Warn("custom ingress set push failed; retrying next tick", "err", err)
+		return
+	} else if rpcErr != nil {
+		slog.Warn("custom ingress set push rejected; retrying next tick", "code", rpcErr.Code, "msg", rpcErr.Message)
+		return
+	}
+	b.customIngress = customIngressState{pushKey: key, pushP: p}
 }
 
 // proxyLocalBackend is the node/set-local-backend payload: the loopback engine

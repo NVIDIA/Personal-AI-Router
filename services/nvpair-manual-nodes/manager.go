@@ -16,6 +16,7 @@ import (
 	"net/http/httptrace"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,6 +217,11 @@ type Manager struct {
 
 	mu    sync.RWMutex
 	nodes map[string]*trackedNode
+
+	// customs tracks user-added Custom endpoints (custom.go). The broker
+	// owns their config and replays it onto a freshly spawned prober;
+	// this map is only the probe cache.
+	customs map[string]*trackedCustom
 }
 
 func NewManager(codec *Codec, mesh *clustertrust.Mesh) *Manager {
@@ -227,7 +233,8 @@ func NewManager(codec *Codec, mesh *clustertrust.Mesh) *Manager {
 			Timeout:   probeTimeout,
 			Transport: noKeepAliveTransport(),
 		},
-		nodes: make(map[string]*trackedNode),
+		nodes:   make(map[string]*trackedNode),
+		customs: make(map[string]*trackedCustom),
 	}
 }
 
@@ -412,6 +419,10 @@ func (m *Manager) probeAll(ctx context.Context) {
 	for _, tn := range m.nodes {
 		entries = append(entries, tn.entry)
 	}
+	customs := make([]*trackedCustom, 0, len(m.customs))
+	for _, tc := range m.customs {
+		customs = append(customs, tc)
+	}
 	m.mu.RUnlock()
 
 	for _, entry := range entries {
@@ -419,6 +430,16 @@ func (m *Manager) probeAll(ctx context.Context) {
 			return
 		}
 		m.probeNode(entry)
+	}
+
+	// Custom endpoints ride the same cadence, with the same
+	// snapshot-then-probe-outside-the-lock shape as nodes, so one slow
+	// endpoint cannot hold up the rest of the cycle.
+	for _, tc := range customs {
+		if ctx.Err() != nil {
+			return
+		}
+		m.probeCustom(tc)
 	}
 }
 
@@ -934,6 +955,64 @@ func (m *Manager) handleMessage(msg *Message) {
 		if err := m.codec.Respond(msg.ID, map[string][]ManualNodeStatus{"nodes": nodes}); err != nil {
 			log.Printf("failed to respond to nodes/list: %v", err)
 		}
+
+	case "custom/add":
+		var entry CustomEntry
+		if err := json.Unmarshal(msg.Params, &entry); err != nil {
+			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"baseUrl\": \"...\", \"apiKey\": \"...\"}")
+			return
+		}
+		if strings.TrimSpace(entry.BaseURL) == "" {
+			m.codec.RespondError(msg.ID, -32602, "baseUrl is required")
+			return
+		}
+		tc, status := m.addCustom(entry)
+		if err := m.codec.Respond(msg.ID, status); err != nil {
+			log.Printf("failed to respond to custom/add: %v", err)
+		}
+		// The add response is the unprobed state, then the background
+		// probe reports the truth through custom/updated: an add can be
+		// acknowledged before the endpoint has answered anything.
+		go m.probeCustom(tc)
+		log.Printf("custom endpoint added: %s", status.ID)
+
+	case "custom/remove":
+		var params struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"id\": \"...\"}")
+			return
+		}
+		removed := m.removeCustom(params.ID)
+		if err := m.codec.Respond(msg.ID, map[string]bool{"removed": removed}); err != nil {
+			log.Printf("failed to respond to custom/remove: %v", err)
+		}
+		if removed {
+			log.Printf("custom endpoint removed: %s", params.ID)
+		}
+
+	case "custom/probe":
+		var params struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"id\": \"...\"}")
+			return
+		}
+		// The probe cycle runs in the background: three seconds per
+		// endpoint is far too long to stall the stdio read loop, and the
+		// reply is only truthful after the cycle finishes. A named id
+		// probes just that endpoint; empty params refresh every tracked
+		// endpoint. Change-gated custom/updated events still fire during
+		// the cycle — the response is in addition, for a reader waiting
+		// on the answer rather than subscribed to events.
+		go func() {
+			endpoints := m.customProbeSnapshot(params.ID)
+			if err := m.codec.Respond(msg.ID, map[string][]CustomEndpointStatus{"endpoints": endpoints}); err != nil {
+				log.Printf("failed to respond to custom/probe: %v", err)
+			}
+		}()
 
 	case "shutdown":
 		if err := m.codec.Respond(msg.ID, nil); err != nil {

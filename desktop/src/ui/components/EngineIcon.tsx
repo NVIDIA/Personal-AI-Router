@@ -9,7 +9,9 @@ import lmStudioIcon from '@/ui/assets/engine-icons/lm-studio.png?inline'
 import llamaCppIcon from '@/ui/assets/engine-icons/llama-cpp.svg?inline'
 import vllmIcon from '@/ui/assets/engine-icons/vllm.svg?inline'
 
-const engineIcons: Record<EngineType, string> = {
+// Custom has no icon: it fronts user-configured endpoints, not a packaged
+// engine, and its surfaces use the Custom endpoints vocabulary instead.
+const engineIcons: Partial<Record<EngineType, string>> = {
     ollama: ollamaIcon,
     'lm-studio': lmStudioIcon,
     'llama-cpp': llamaCppIcon,
@@ -17,8 +19,8 @@ const engineIcons: Record<EngineType, string> = {
 }
 
 export default function EngineIcon({ type, size = 32 }: { type: EngineType; size?: number }) {
-    if (!Object.hasOwn(engineIcons, type)) return null
     const icon = engineIcons[type]
+    if (!icon) return null
 
     const dimension = `${size}px`
     const imgStyle: CSSProperties = {

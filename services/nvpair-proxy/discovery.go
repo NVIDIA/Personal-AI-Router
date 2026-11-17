@@ -47,6 +47,19 @@ type Node struct {
 	// stamped onto outbound node/* notifications only (see withPrimaryIP) so a
 	// downstream consumer agrees on the same address the proxy routes to.
 	IP string `json:"ip,omitempty"`
+	// APIKey is the user-configured credential for an external
+	// OpenAI-API-compatible endpoint, carried per candidate so the dial path
+	// can inject it. Internal routing plumbing, like ClusterUUID: it never
+	// belongs in a log line, a telemetry payload, or an outward node/*
+	// notification, which is what Node.redacted is for. The tag exists only
+	// so the broker's local overlay push and node/add-manual params can
+	// carry it; it is stripped before anything leaves the process.
+	APIKey string `json:"apiKey,omitempty"`
+	// Scheme overrides the dial scheme for a manual endpoint ("https");
+	// empty means plain http. It selects the TLS dial but never pinning:
+	// an external endpoint rides the plain shared transport, so it gets
+	// system-root verification without a pin, unlike a clustered peer.
+	Scheme string `json:"scheme,omitempty"`
 	// ClusterUUID is the relay peer's cluster principal (its mTLS cert UUID),
 	// carried from the discovery DirectoryNode. Non-empty only for a clustered
 	// peer; it is the key used to pin the peer's server cert when dialing its
@@ -65,6 +78,15 @@ func (n Node) withPrimaryIP() Node {
 	return n
 }
 
+// redacted returns a copy with the per-candidate credential cleared. Every
+// outward projection of a Node must pass through it: the endpoint key is
+// dial-time plumbing, and a "temporary" passthrough on a notification path
+// is exactly how a secret reaches a UI, a feed, or a paired peer.
+func (n Node) redacted() Node {
+	n.APIKey = ""
+	return n
+}
+
 // Discovery holds the proxy's routing targets: the relay-fed subscribed overlay
 // and the user-added manual overlay.
 type Discovery struct {
@@ -74,12 +96,18 @@ type Discovery struct {
 	// relay (discovery:nodes snapshots for the ol service), keyed by node ID (the
 	// directory instance name).
 	subscribedNodes map[string]Node
+	// probeMisses counts consecutive authorization refusals (HTTP 401/403)
+	// per manual endpoint. It lives here because AddManual and RemoveManual
+	// own the lifetime of an endpoint's routing episode, and the reset rule
+	// is that both of them clear the count.
+	probeMisses map[string]int
 }
 
 func NewDiscovery() *Discovery {
 	return &Discovery{
 		manualNodes:     make(map[string]Node),
 		subscribedNodes: make(map[string]Node),
+		probeMisses:     make(map[string]int),
 	}
 }
 
@@ -158,6 +186,11 @@ func nodeEqual(a, b Node) bool {
 func (d *Discovery) AddManual(node Node) (added bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// A (re-)add begins a fresh probe-failure episode: an endpoint removed
+	// after repeated authorization refusals may be re-added once a probe
+	// succeeds, and it then gets its full budget back rather than being
+	// removed on its first refused request.
+	delete(d.probeMisses, node.ID)
 	_, exists := d.manualNodes[node.ID]
 	d.manualNodes[node.ID] = node
 	return !exists
@@ -166,6 +199,7 @@ func (d *Discovery) AddManual(node Node) (added bool) {
 func (d *Discovery) RemoveManual(id string) (removed bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	delete(d.probeMisses, id)
 	_, exists := d.manualNodes[id]
 	if exists {
 		delete(d.manualNodes, id)
@@ -178,4 +212,35 @@ func (d *Discovery) IsManual(id string) bool {
 	defer d.mu.RUnlock()
 	_, exists := d.manualNodes[id]
 	return exists
+}
+
+// probeFailThreshold matches the nvpair-manual-nodes probe rule: three
+// consecutive failures remove an endpoint. A wrong API key answers
+// identically on every try, so three is enough to call an endpoint dead,
+// while one transient 401 never drops a working server.
+const probeFailThreshold = 3
+
+// recordProbeMiss records one authorization refusal against a manual
+// endpoint and reports whether it has now reached the probe-failure
+// threshold. Only manual endpoints count misses: a 401 from a clustered
+// peer or a managed engine is that engine's own business, while the
+// manual-plane counter exists precisely because a user-entered credential
+// can be wrong in a way that makes every retry pointless.
+func (d *Discovery) recordProbeMiss(id string) (failed bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.manualNodes[id]; !ok {
+		return false
+	}
+	d.probeMisses[id]++
+	return d.probeMisses[id] >= probeFailThreshold
+}
+
+// recordProbeSuccess clears the authorization-refusal count for a manual
+// endpoint: one accepted request proves the configured credential works,
+// which is the whole question the counter asks.
+func (d *Discovery) recordProbeSuccess(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.probeMisses, id)
 }

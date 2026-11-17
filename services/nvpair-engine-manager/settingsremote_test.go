@@ -72,10 +72,16 @@ func TestNotifyPeerSettings_ForwardsEverySupportedEngine(t *testing.T) {
 		emitted = append(emitted, snapshot)
 	}}
 	manager := &Manager{exec: exec}
+	// "custom" is a declared engine but an unmanaged kind: there are no
+	// launch settings to observe or relay for it, and feeding it into the
+	// settings-changed stream would render a settings editor for an engine
+	// that has no launch policy. "unsupported" is not in the engine table
+	// at all.
 	manager.notifyPeerSettings("peer-node", []settings.Snapshot{
 		{NodeID: "untrusted-node", Engine: "ollama"},
 		{NodeID: "untrusted-node", Engine: "lmstudio"},
 		{NodeID: "untrusted-node", Engine: "llamacpp"},
+		{NodeID: "untrusted-node", Engine: "custom"},
 		{NodeID: "untrusted-node", Engine: "unsupported"},
 	})
 

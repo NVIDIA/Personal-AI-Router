@@ -61,7 +61,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 
 func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 5)
+	ports := make([]int, 6)
 	releases := make([]func(), len(ports))
 	for i := range ports {
 		ports[i], releases[i] = reserveSettingsPort(t)
@@ -74,10 +74,13 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	h.b.setEngineMgr(worker)
 	proxyWorker, proxyCodec := newTestRPCWorkerPipe(t)
 	proxy := &proxyProcess{peer: proxyWorker.peer, facadeState: map[string]proxyFacadeState{
+		// The fake proxy hosts a facade per engine in the table, matching
+		// the real unified binary: the harness starts all five.
 		"ollama":   {ready: true, port: ports[1]},
 		"lmstudio": {ready: true, port: ports[2]},
 		"llamacpp": {ready: true, port: ports[3]},
 		"vllm":     {ready: true, port: ports[4]},
+		"custom":   {ready: true, port: ports[5]},
 	}}
 	for _, profile := range engineProxyProfiles {
 		h.b.setEngineProxyHandle(profile, proxy)

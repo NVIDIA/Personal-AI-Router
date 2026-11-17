@@ -19,17 +19,19 @@ import { engineManagerName } from '@/shared/utils/engines'
 
 describe('proxy engine identity', () => {
     it('declares the complete proxy set in stable order', () => {
-        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
+        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'custom'])
         expect(PROXY_NODE_SOURCES).toEqual([
             'ollama-proxy',
             'lmstudio-proxy',
             'llamacpp-proxy',
-            'vllm-proxy'
+            'vllm-proxy',
+            'custom-proxy'
         ])
         expect(isProxyEngine('ollama')).toBe(true)
         expect(isProxyEngine('lm-studio')).toBe(true)
         expect(isProxyEngine('llama-cpp')).toBe(true)
         expect(isProxyEngine('vllm')).toBe(true)
+        expect(isProxyEngine('custom')).toBe(true)
     })
 
     it('round-trips engine, manager, and relay source identities', () => {
@@ -106,7 +108,11 @@ describe('proxy engine identity', () => {
                 ]
             }
         })
-        // A peer lists every engine it can run; one it leaves out is unsupported.
+        // A peer lists every manifest engine it can run; one it leaves out is
+        // unsupported. Custom is declared unmanaged in the engine table, so a
+        // peer's engine manager never lists it — the listing says nothing about
+        // it, and the desktop resolves Custom from the custom-proxy plane, not
+        // from these facts.
         state.applyRemoteEngineFacts(nodeId, {
             engines: [
                 { engine: 'ollama', installed: true, running: true, healthy: true, port: 11435 },
@@ -142,7 +148,8 @@ describe('proxy engine identity', () => {
                 enginePort: 8081,
                 proxyPort: 8080
             }),
-            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' })
+            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' }),
+            expect.objectContaining({ engineType: 'custom', processStatus: 'unsupported' })
         ])
 
         const llamaModels = state
@@ -152,6 +159,65 @@ describe('proxy engine identity', () => {
             expect.objectContaining({ name: 'owner/alpha:Q4_K_M', status: 'loaded' }),
             expect.objectContaining({ name: 'owner/beta:Q4_K_M', status: 'idle' })
         ])
+    })
+
+    it('routes custom-facade presence and attribution through the proxy plane', () => {
+        const state = getModularBridgeState()
+        const nodeId = 'custom-plane-remote'
+        state.setSelfId('custom-plane-self')
+
+        // The custom facade announces its bound port before any endpoint is
+        // configured; the desktop trusts the reported port, never a default.
+        state.handleNotification({
+            source: 'custom-proxy',
+            method: 'ready',
+            params: { port: 8000 }
+        })
+        state.handleNotification({
+            source: 'custom-proxy',
+            method: 'node/discovered',
+            params: {
+                id: nodeId,
+                host: 'custom-plane-host',
+                port: 8000,
+                addresses: ['192.0.2.60'],
+                ip: '192.0.2.60'
+            }
+        })
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'custom-plane-host',
+                        ipAddress: '192.0.2.60',
+                        port: 14318,
+                        models: ['vendor/remote-model:latest'],
+                        modelsByEngine: { custom: ['vendor/remote-model:latest'] },
+                        loadedByEngine: {}
+                    }
+                ]
+            }
+        })
+
+        expect(state.getProxyPort('custom')).toBe(8000)
+
+        const initial = state.getEngineInitialState()
+        expect(
+            initial.statuses.find(
+                status => status.nodeId === nodeId && status.engineType === 'custom'
+            )
+        ).toMatchObject({
+            processStatus: 'running',
+            proxyPort: 8000
+        })
+        expect(
+            initial.models.find(
+                models => models.nodeId === nodeId && models.engineType === 'custom'
+            )?.models
+        ).toEqual([expect.objectContaining({ name: 'vendor/remote-model:latest', status: 'idle' })])
     })
 
     it('projects local llama.cpp lifecycle and residency into the initial snapshot', () => {

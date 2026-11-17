@@ -16,6 +16,7 @@
 - none ✅
 
 ### Requests the backend handles but the bridge never calls (unused capability)
+- ⚠️ nvpair-engine-manager → custom:remote-refresh
 - ⚠️ nvpair-engine-manager → engine:configure-launch
 - ⚠️ nvpair-engine-manager → engine:configured-ports
 - ⚠️ nvpair-engine-manager → engine:describe
@@ -33,6 +34,7 @@
 - ⚠️ nvpair-job-scheduler → scheduler:get-status
 - ⚠️ nvpair-job-scheduler → scheduler:set-interval
 - ⚠️ nvpair-job-scheduler → scheduler:tick
+- ⚠️ nvpair-manual-nodes → custom/probe
 - ⚠️ nvpair-node-info → n/a
 - ⚠️ nvpair-node-settings → settings/get-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/get-force-ports
@@ -91,6 +93,12 @@
 | `engine:state-changed` | notification (we consume) | ✅ yes |
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
+| `custom:remote-add` | request (we call) | ➖ ignored |
+| `custom:remote-get-port` | request (we call) | ➖ ignored |
+| `custom:remote-list` | request (we call) | ➖ ignored |
+| `custom:remote-refresh` | request (we call) | ⚠️ not called |
+| `custom:remote-remove` | request (we call) | ➖ ignored |
+| `custom:remote-set-port` | request (we call) | ➖ ignored |
 | `engine:action` | request (we call) | ✅ yes |
 | `engine:catalog` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
@@ -156,12 +164,17 @@
 
 | Method | Direction | In bridge? |
 |---|---|---|
+| `custom/removed` | notification (we consume) | ➖ ignored |
+| `custom/updated` | notification (we consume) | ➖ ignored |
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `node/discovered` | notification (we consume) | ✅ yes |
 | `node/removed` | notification (we consume) | ✅ yes |
 | `node/updated` | notification (we consume) | ✅ yes |
 | `ready` | notification (we consume) | ✅ yes |
+| `custom/add` | request (we call) | ✅ yes |
+| `custom/probe` | request (we call) | ⚠️ not called |
+| `custom/remove` | request (we call) | ✅ yes |
 | `node/add` | request (we call) | ✅ yes |
 | `node/remove` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
@@ -252,6 +265,8 @@
 | Method | Direction | In bridge? |
 |---|---|---|
 | `app:ready` | notification (we consume) | ✅ yes |
+| `custom:relay-reply` | notification (we consume) | ➖ ignored |
+| `custom:set-models` | notification (we consume) | ➖ ignored |
 | `discovery:nodes-changed` | notification (we consume) | ✅ yes |
 | `engine:restore-enabled` | notification (we consume) | ➖ ignored |
 | `engine:settings-changed` | notification (we consume) | ✅ yes |
@@ -263,6 +278,14 @@
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
 | `connection/cluster-identity` | request (we call) | ✅ yes |
+| `custom/add` | request (we call) | ✅ yes |
+| `custom/get-port` | request (we call) | ✅ yes |
+| `custom/list` | request (we call) | ✅ yes |
+| `custom/refresh` | request (we call) | ✅ yes |
+| `custom/remove` | request (we call) | ✅ yes |
+| `custom/removed` | request (we call) | ➖ ignored |
+| `custom/set-port` | request (we call) | ✅ yes |
+| `custom/updated` | request (we call) | ➖ ignored |
 | `discovery:get-nodes` | request (we call) | ✅ yes |
 | `discovery:subscribe` | request (we call) | ✅ yes |
 | `discovery:unsubscribe` | request (we call) | ⚠️ not called |

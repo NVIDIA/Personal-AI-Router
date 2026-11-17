@@ -92,5 +92,22 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
             label: 'vLLM',
             url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
         }
+    },
+    // Custom fronts user-configured external endpoints: nothing to install,
+    // pull, eject or delete, no engine port of its own (only the custom-proxy
+    // facade port), and no model catalog to hub-search — models live on the
+    // endpoint provider's side and arrive through discovery attribution.
+    custom: {
+        hasExpiry: false,
+        hasEject: false,
+        hasInstall: [],
+        hasEnginePort: false,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: false,
+        modelOpsWhenStopped: false,
+        hasDeleteModel: false
     }
 }

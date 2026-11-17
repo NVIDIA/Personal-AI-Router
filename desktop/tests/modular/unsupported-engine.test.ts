@@ -123,10 +123,15 @@ describe('engines a node cannot run', () => {
 
         const rows = getEnginesForNode(nodeId, statuses).map(s => [s.engineType, s.processStatus])
 
+        // The unfiltered default enumerates every enabled type, Custom last:
+        // it has no install state, so until the custom-proxy plane reports it
+        // it stays an unknown placeholder (and compact surfaces that enumerate
+        // manifest engines only pass MANIFEST_ENGINE_TYPES instead).
         expect(rows).toEqual([
             ['ollama', 'running'],
             ['lm-studio', 'initializing'],
-            ['llama-cpp', 'initializing']
+            ['llama-cpp', 'initializing'],
+            ['custom', 'initializing']
         ])
     })
 })
