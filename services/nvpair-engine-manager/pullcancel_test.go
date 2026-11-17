@@ -1316,6 +1316,39 @@ func TestEmitPullProgress_NamesTheRequestsThatRunAsTheDownload(t *testing.T) {
 			{Stage: "success", OpIDs: []string{"retry"}},
 		}, client.sent())
 	})
+	t.Run("a request a cancel stopped along with the download before it started", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		client := &namedFrames{}
+		ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())
+		first, releaseFirst := ex.claimPull(ctx, "ollama", "demo", "first")
+		defer releaseFirst()
+		downloading := make(chan struct{})
+		firstDone := make(chan outcome, 1)
+		go func() {
+			var got outcome
+			got.result, got.err = ex.trackedPull(first, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+				close(downloading)
+				<-runCtx.Done()
+				return nil, runCtx.Err()
+			})
+			firstDone <- got
+		}()
+		<-downloading
+		stopped, releaseStopped := ex.claimPull(ctx, "ollama", "demo", "stopped")
+		defer releaseStopped()
+
+		require.NoError(t, ex.CancelModelPull(ctx, "ollama", "demo"))
+		firstGot := awaitOutcome(t, ctx, firstDone)
+		stoppedResult, stoppedRan := claimedPull(t, ex, stopped)
+
+		require.NoError(t, firstGot.err)
+		assertPullStatus(t, firstGot.result, "cancelled")
+		assert.False(t, stoppedRan, "the stopped request started a download")
+		assertPullStatus(t, stoppedResult, "cancelled")
+		assert.Equal(t, []namedFrame{{Stage: "cancelled", OpIDs: []string{"first", "stopped"}}}, client.sent(),
+			"the download's last frame went out before the stopped request got there")
+	})
 	t.Run("a request reporting the cancel that stopped it before it started", func(t *testing.T) {
 		client := &namedFrames{}
 		ex := NewExecutor(NewRegistry(), NewReporter(nil), client.emit, t.TempDir())

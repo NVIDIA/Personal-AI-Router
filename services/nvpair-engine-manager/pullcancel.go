@@ -188,10 +188,11 @@ type pullClaim struct {
 	// ended. Guarded by the executor's pullMu.
 	reported bool
 	// download is the ID of the download the request runs as, once it has
-	// registered one, joined one, or reported its cancellation as a
-	// placeholder: the download whose frames are this request's. A request
-	// stopped before it started without a frame of its own has none. Guarded
-	// by the executor's pullMu.
+	// registered one, joined one, been stopped along with one by a cancel, or
+	// reported its cancellation as a placeholder: the download whose frames
+	// are this request's. One a cancel stopped before it started, with no
+	// download of its model to settle on, has none unless it reports that
+	// cancellation itself. Guarded by the executor's pullMu.
 	download uint64
 	once     sync.Once
 }
@@ -339,8 +340,11 @@ func (e *Executor) latchPullCancel(engine, model string) func(context.Context) e
 	p := e.pulls[key]
 	for _, claim := range e.pullClaims[key] {
 		claim.cancelled = true
-		if claim.stopped == nil {
+		if claim.stopped == nil && p != nil {
 			claim.stopped = p
+			if claim.download == 0 {
+				claim.runsAs(key, p)
+			}
 		}
 	}
 	if p != nil {
@@ -401,7 +405,6 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// installed the model reports its own success.
 		if claim != nil && claim.key == key && claim.cancelled {
 			if stopped := claim.stopped; stopped != nil {
-				claim.runsAs(key, stopped)
 				e.pullMu.Unlock()
 				return joinPull(ctx, stopped)
 			}
