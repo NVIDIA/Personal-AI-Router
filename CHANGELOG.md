@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.32 — No console windows when LM Studio starts on Windows (#211)
+
+- Starting the LM Studio engine on Windows no longer opens empty console windows.
+
 ## 1.0.31 — Long requests are no longer cut off while an engine is still working (#209)
 
 - The router no longer gives up on an engine after two minutes without a response. Queued Ollama requests and long non-streaming generations now run to completion instead of being restarted on another machine.
