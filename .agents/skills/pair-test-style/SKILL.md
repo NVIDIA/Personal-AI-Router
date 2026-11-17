@@ -73,6 +73,11 @@ when it makes each scenario understandable on its own. Extract helpers that
 remove distracting details while keeping the important inputs and expectations
 visible; avoid shared mutable fixtures that hide how those values are set.
 
+Before adding Go test utilities, look in `services/shared/*test/` for helpers
+to reuse or extend, such as `clustertrusttest` and `pythontest`. Prefer a
+focused package there for utilities that are generally useful across service
+modules, with imports limited to `_test.go` files.
+
 For Go cases with the same setup and assertions, prefer a local helper closure
 that captures shared setup and calls `t.Run`. List explicit, named calls below
 it. A signature such as `test := func(name, input string)` often makes cases

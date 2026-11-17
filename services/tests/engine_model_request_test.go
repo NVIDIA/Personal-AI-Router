@@ -46,8 +46,12 @@ func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
 		"engine": "vllm", "display_name": "Request Model Test", "manifest_version": 1, "advertised_models": "available",
 		"platforms": map[string]any{runtime.GOOS + "/" + runtime.GOARCH: map[string]any{
 			"detect": []string{executable},
+			// Overrides inherit bundled defaults. The fake server needs neither
+			// the vendor installer nor the real engine's memory-sizing probe.
+			"install": nil,
 			"runtime": map[string]any{
 				"bin": executable, "args": []string{"serve"}, "port": enginePort, "wait_for_model": true,
+				"auto_launch":     nil,
 				"env":             map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}", "HF_HUB_CACHE": cache},
 				"ready":           map[string]any{"http": "http://127.0.0.1:{port}/", "status": http.StatusOK, "timeout_s": 5},
 				"editable_launch": map[string]any{"fixed_args": []string{"serve"}, "controls": []map[string]any{{"env": []string{"OLLAMA_HOST"}, "value": "{server.host}:{server.port}"}}},
