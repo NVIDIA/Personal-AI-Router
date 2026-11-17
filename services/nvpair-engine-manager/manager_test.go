@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,6 +226,99 @@ func TestManager_DownloadsARetrySentRightAfterACancel(t *testing.T) {
 			require.FailNow(t, "the retry never answered")
 		}
 	}
+}
+
+// firstReply reads the first message a manager writes to clientConn: the
+// reply, when nothing else is written there.
+func firstReply(clientConn net.Conn) <-chan *Message {
+	reply := make(chan *Message, 1)
+	go func() {
+		msg, err := NewCodec(clientConn).Read()
+		if err == nil {
+			reply <- msg
+		}
+	}()
+	return reply
+}
+
+// A client names its pull request with an opId beside params, and the frames
+// of the download the request runs as carry it, so the client can tell them
+// from those of another download of the same model, such as the one a retry
+// replaced.
+func TestManager_NamesAPullOnItsFramesByTheOpIDItWasSentWith(t *testing.T) {
+	transfer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, err := w.Write([]byte(`{"status":"success"}` + "\n"))
+		assert.NoError(t, err, "send the pull's success record")
+	}))
+	t.Cleanup(transfer.Close)
+	ex := newHTTPPullTestExecutor(t, transfer, Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+	client := &namedFrames{}
+	ex.emit = client.emit
+	managerConn, clientConn := net.Pipe()
+	defer managerConn.Close()
+	defer clientConn.Close()
+	m := NewManager(NewCodec(managerConn), ex, nil)
+	reply := firstReply(clientConn)
+
+	id := json.RawMessage("1")
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
+		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"},"opId":"t41"}`)})
+
+	select {
+	case msg := <-reply:
+		require.Empty(t, msg.Error, "the pull should download, not fail")
+		assertPullStatus(t, msg.Result, "success")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the pull never answered")
+	}
+	assert.Equal(t, []namedFrame{{Stage: "success", OpIDs: []string{"t41"}}}, client.sent())
+}
+
+// An opId the client could never find on its download's frames is refused as
+// invalid params rather than dropped. The read loop claims a pull before
+// runAction sees it, so a request about to be refused claims nothing there:
+// a cancel latched in between has no claim of it to count among the requests
+// it stopped.
+func TestManager_RefusesAPullWithAnInvalidOpIDAndClaimsNothingForIt(t *testing.T) {
+	test := func(name, opID string) {
+		t.Run(name, func(t *testing.T) {
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+			managerConn, clientConn := net.Pipe()
+			defer managerConn.Close()
+			defer clientConn.Close()
+			m := NewManager(NewCodec(managerConn), ex, nil)
+			reply := firstReply(clientConn)
+			// With a single P, the goroutine handleMessage starts for the pull
+			// cannot run until this one blocks, so whatever the read loop
+			// claimed for it is still claimed below.
+			previous := runtime.GOMAXPROCS(1)
+			t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+			params, err := json.Marshal(map[string]any{
+				"engine": "fake", "action": pullModelAction, "params": map[string]string{"name": "demo"}, "opId": opID,
+			})
+			require.NoError(t, err, "encode params")
+
+			id := json.RawMessage("1")
+			m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action", Params: params})
+			ex.pullMu.Lock()
+			claims := len(ex.pullClaims[pullKey{engine: "fake", model: "demo"}])
+			ex.pullMu.Unlock()
+
+			assert.Zero(t, claims, "the read loop claimed a request runAction refuses")
+			select {
+			case msg := <-reply:
+				require.NotNil(t, msg.Error, "the pull was not refused: %s", msg.Result)
+				assert.Equal(t, -32602, msg.Error.Code)
+				assert.Equal(t, invalidOpIDMessage, msg.Error.Message)
+			case <-time.After(10 * time.Second):
+				require.FailNow(t, "the pull never answered")
+			}
+		})
+	}
+	test("a space", "t 41")
+	test("a slash", "t/41")
+	test("a letter outside ASCII", "tö41")
+	test("longer than 128 characters", strings.Repeat("t", 129))
 }
 
 func mustContain(t *testing.T, s, sub string) {

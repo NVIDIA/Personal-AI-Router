@@ -290,7 +290,7 @@ Requests (caller → service):
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind) |
-| `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). It must name its model in `params.name` or `params.model`, which keys the download's frames and its cancel; one that names none is refused with `-32602`. An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
+| `engine:action` | `{ engine, action, params, opId? }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). It must name its model in `params.name` or `params.model`, which keys the download's frames and its cancel; one that names none is refused with `-32602`. It may name itself with a top-level `opId`, beside `params` rather than in them, since they go to the engine verbatim: 1 to 128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`, an empty one counting as none. Any other is refused with `-32602`. The download's frames list the `opId`s of the requests they speak for in `opIds`; telling its own requests apart is the client's job, so an `opId` need not be unique. An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy |
 | `engine:cancel-pull` | `{ engine, model }` | `null`, once the transfer has stopped **and** its cleanup has settled — so a UI can hold "Canceling" until the backend is genuinely done. See "Cancelling a pull" below |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
@@ -298,7 +298,7 @@ Requests (caller → service):
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"` (vLLM), `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
-| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`). Held until every `engine:remote-cancel-pull` of that download sent before it has ended, so a retry cannot reach the peer ahead of the cancel it follows and be stopped by it |
+| `engine:remote-pull-model` | `{ node, engine, model?, params?, opId? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`). An `opId`, under the same rules as `engine:action`'s, names the pull in place of a minted one: on its `engine:remote-progress` frames, in the reply, and to the peer. Held until every `engine:remote-cancel-pull` of that download sent before it has ended, so a retry cannot reach the peer ahead of the cancel it follows and be stopped by it |
 | `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result. Held until every `engine:remote-pull-model` of that download sent before it has been accepted by the peer or has ended, so a cancel dispatched right behind a pull, or behind a duplicate of it, cannot reach the peer first |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
@@ -327,14 +327,15 @@ is pushed too; `models` is the full `engine:models` shape so a consumer swaps
 its whole snapshot,
 `engine:install-progress{engine, stage, percent?, error?}` (`error` on the
 terminal `failed` frame),
-`engine:pull-progress{engine, model, op, stage, percent?, message}` (live
-progress for a local model pull driven via `engine:action{action:"pull_model"}`
-— the local counterpart of `engine:remote-progress`; frames are coalesced to
-changes in stage/percent. Whichever engine runs it, a pull ends with exactly
-one terminal frame — `stage:"success", percent:100` once the model is
-installed (an Ollama stream that closes before its success record is a failed
-pull), `stage:"cancelled"` when a cancel stopped it, or
-`stage:"error", percent:-1, message` with the reason — so a UI converges even
+`engine:pull-progress{engine, model, op, stage, percent?, message, opIds?}`
+(live progress for a local model pull driven via
+`engine:action{action:"pull_model"}` — the local counterpart of
+`engine:remote-progress`; frames are coalesced to changes in stage/percent.
+Whichever engine runs it, a pull ends with exactly one terminal frame —
+`stage:"success", percent:100` once the model is installed (an Ollama stream
+that closes before its success record is a failed pull), `stage:"cancelled"`
+when a cancel stopped it, or `stage:"error", percent:-1, message` with the
+reason — so a UI converges even
 if its synchronous call already timed out; a request that joins a download
 already in flight shares that download's frames rather than adding its own, as
 does a request a cancel stopped before it started while another download of
@@ -356,12 +357,21 @@ them. A retry sent after a cancel is therefore a download of its own, and the
 cancelled download still sends its outcome while the retry is outstanding.
 `model` names the download the frame belongs to, so a consumer can tell two
 pulls on one engine apart; a pull waiting on another of the same engine's
-downloads reports `stage:"queued"` until its turn),
+downloads reports `stage:"queued"` until its turn. `opIds` names the requests
+the frame speaks for, by the `opId` each was sent with and in the order they
+were claimed, and is absent when none named one: the request that started
+the download, on every frame; any joined to it, or settling on it after a
+cancel stopped them along with it; and a request reporting the cancel that
+stopped it before it started. A retry waiting for a cancelled download to
+stop runs as no download yet, so that download's frames leave it out, and a
+client that names its requests can tell the cancelled download's late frames
+from its retry's, which name the same engine and model),
 `engine:remote-progress{opId, node, engine, model, op, stage, percent?, message}`
 (relayed live progress for a remote install/pull, a pull's terminal frame
 included, which the initiator sends itself when the peer's stream dropped it;
-`model` is carried through from the peer's frame for the same
-reason it appears on the local notification), and — for the error
+`opId` is the one the client named an `engine:remote-pull-model` with, or else
+one minted for the operation; `model` is carried through from the peer's frame
+for the same reason it appears on the local notification), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
 
@@ -400,7 +410,8 @@ The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
 relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
-`remote-install` / `remote-pull-model` — mints an `opId`, relays each streamed
+`remote-install` / `remote-pull-model` — keys the operation by an `opId`, the
+one the caller named a pull with or else one it mints, relays each streamed
 progress frame up as `engine:remote-progress`, and settles the request with the
 terminal result. Each NDJSON progress or terminal frame uses the shared
 worker-path 8 MiB limit, accommodating terminal model-pull results containing

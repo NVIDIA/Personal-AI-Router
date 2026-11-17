@@ -46,17 +46,27 @@ type actionParam struct {
 	Engine string          `json:"engine"`
 	Action string          `json:"action"`
 	Params json.RawMessage `json:"params,omitempty"`
+	// OpID is the client's name for a pull_model request, which the frames of
+	// the download it runs as carry; see validOpID. It sits beside params, not
+	// in them, because params go to the engine verbatim. Other actions ignore
+	// it.
+	OpID string `json:"opId,omitempty"`
 }
 
-// pullClaimFrom reports the engine and model of an engine:action that starts a
-// download, for Executor.claimPull, and nothing for any other action.
-// Malformed params are left to the handler, which owns the error response.
-func pullClaimFrom(params json.RawMessage) (engine, model string) {
+// pullClaimFrom reports the engine, model and opId of an engine:action that
+// starts a download, for Executor.claimPull, and nothing for any other action.
+// Malformed params are left to the handler, which owns the error response, and
+// so is an opId runAction refuses: a request about to be refused claims
+// nothing, so no cancel can count it among the requests it stopped.
+func pullClaimFrom(params json.RawMessage) (engine, model, opID string) {
 	var p actionParam
 	if err := json.Unmarshal(params, &p); err != nil || p.Action != pullModelAction {
-		return "", ""
+		return "", "", ""
 	}
-	return p.Engine, modelFromParams(p.Params)
+	if p.OpID != "" && !validOpID(p.OpID) {
+		return "", "", ""
+	}
+	return p.Engine, modelFromParams(p.Params), p.OpID
 }
 
 // setPortParam is the engine:set-port input: the engine whose server port to
@@ -321,8 +331,8 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		// Claim a pull here rather than in the goroutine, as engine:cancel-pull
 		// below latches its cancel here. Each dispatches its own goroutine, so
 		// only the read loop sees the two in the order the client sent them.
-		engine, model := pullClaimFrom(msg.Params)
-		actionCtx, release := m.exec.claimPull(ctx, engine, model)
+		engine, model, opID := pullClaimFrom(msg.Params)
+		actionCtx, release := m.exec.claimPull(ctx, engine, model, opID)
 		go func() {
 			defer release()
 			m.runAction(actionCtx, msg)
@@ -482,6 +492,13 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 		// and its frames could not be told apart from the engine's others.
 		if model == "" {
 			m.codec.RespondError(msg.ID, -32602, "model is required")
+			return
+		}
+		// An opId names the request on its download's frames. An invalid one
+		// is refused rather than dropped, since its client would look for it
+		// on frames that never carry it.
+		if p.OpID != "" && !validOpID(p.OpID) {
+			m.codec.RespondError(msg.ID, -32602, invalidOpIDMessage)
 			return
 		}
 		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)

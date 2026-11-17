@@ -360,23 +360,29 @@ func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string
 // ec streaming handler can relay it to a remote initiator). It mirrors
 // emitInstallProgress; pull carries op/message so a local UI renders the same
 // "Pulling · %" feed a remote pull already gets via engine:remote-progress.
+//
+// The notification names, in opIds, the requests the frame speaks for, so a
+// client can tell a retry's frames from those of the download it replaced,
+// which name the same engine and model.
 func (e *Executor) emitPullProgress(ev ProgressEvent) {
 	params := map[string]any{
 		"engine": ev.Engine, "op": ev.Op, "stage": ev.Stage, "message": ev.Message,
 	}
 	if ev.Model != "" {
 		params["model"] = ev.Model
+		// A download publishes frames only while it is registered, and no
+		// other download of its model registers until it has settled, so the
+		// one registered is the one this frame is from.
+		var opIDs []string
+		ev.Download, opIDs = e.registeredDownloadRequests(ev.Engine, ev.Model)
+		if len(opIDs) > 0 {
+			params["opIds"] = opIDs
+		}
 	}
 	if wirePercentIncluded(ev.Percent) {
 		params["percent"] = ev.Percent
 	}
 	e.notify("engine:pull-progress", params)
-	// A download publishes frames only while it is registered, and no other
-	// download of its model registers until it has settled, so the one
-	// registered is the one this frame is from.
-	if ev.Model != "" {
-		ev.Download = e.registeredDownload(ev.Engine, ev.Model)
-	}
 	e.progress.publish(ev)
 }
 

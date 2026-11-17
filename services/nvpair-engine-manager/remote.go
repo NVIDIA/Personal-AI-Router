@@ -29,6 +29,10 @@ type remoteParam struct {
 	Port   int             `json:"port,omitempty"`
 	Model  string          `json:"model,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
+	// OpID is the client's name for an engine:remote-pull-model, which the
+	// pull's frames and reply carry in place of a minted one; see validOpID.
+	// Only that method reads it.
+	OpID string `json:"opId,omitempty"`
 }
 
 // remoteProgress is the engine:remote-progress notification payload the broker
@@ -181,7 +185,8 @@ type remotePullKey struct {
 // engine:remote-cancel-pull names. A pull can name its model inside params, as
 // the peer reads it; a cancel names it at the top level, as runRemote sends it.
 // Malformed or incomplete params name none and are left to runRemote, which
-// owns the error response.
+// owns the error response, and so does a pull whose opId pullRemote refuses:
+// no cancel waits for it, and it is never counted among its download's pulls.
 func remotePullKeyFrom(method string, params json.RawMessage) (remotePullKey, bool) {
 	if method != "engine:remote-pull-model" && method != "engine:remote-cancel-pull" {
 		return remotePullKey{}, false
@@ -192,6 +197,9 @@ func remotePullKeyFrom(method string, params json.RawMessage) (remotePullKey, bo
 	}
 	model := p.Model
 	if method == "engine:remote-pull-model" {
+		if p.OpID != "" && !validOpID(p.OpID) {
+			return remotePullKey{}, false
+		}
 		if fromParams := modelFromParams(p.Params); fromParams != "" {
 			model = fromParams
 		}
@@ -471,15 +479,19 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder
 // pullRemote streams a model pull from the peer, relaying its progress, and
 // settles the request with the peer's result.
 //
+// Its frames and its reply carry the opId the client named it with, or else
+// one minted for it. An opId the client named that is not valid is refused
+// before the pull sets off.
+//
 // A download ends on a frame saying how, which is all a UI that stopped waiting
-// for the reply has to go on. The UIs know a download's frames by node, engine
-// and model alone, so while another pull of the same download is outstanding
-// here its frames speak for this one too, and only the last of them to end
-// sends that frame. Every pull's stream carries the peer's copy, so each holds
-// its copy until it knows whether it is the last. A retry sent after a cancel
-// runs as a download of its own, so the cancelled pull does not wait for it;
-// see remotePullRequest.sharesDownload. The peer names the download each frame
-// is from, and the stream records it for that.
+// for the reply has to go on. A UI can know a download's frames by node, engine
+// and model alone, as the desktop app does, so while another pull of the same
+// download is outstanding here its frames speak for this one too, and only the
+// last of them to end sends that frame. Every pull's stream carries the peer's
+// copy, so each holds its copy until it knows whether it is the last. A retry
+// sent after a cancel runs as a download of its own, so the cancelled pull does
+// not wait for it; see remotePullRequest.sharesDownload. The peer names the
+// download each frame is from, and the stream records it for that.
 //
 // The last sends the copy only if it agrees with its own result. The peer's
 // progress hub drops what a slow stream has no room for, the outcome included,
@@ -487,10 +499,17 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder
 // authority, so otherwise the frame is built from it, the way emitPullOutcome
 // builds a local pull's.
 func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteClient, node string, p remoteParam, order remoteOrder) {
+	if p.OpID != "" && !validOpID(p.OpID) {
+		m.codec.RespondError(msg.ID, -32602, invalidOpIDMessage)
+		return
+	}
 	// Let the cancels this pull was sent after finish first; see
 	// remotePullGate.
 	order.awaitCancelsAhead(ctx)
-	opID := newOpID()
+	opID := p.OpID
+	if opID == "" {
+		opID = newOpID()
+	}
 	body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
 	relay := m.remoteProgressFn(opID, node)
 	var outcome *streamFrame
@@ -546,8 +565,8 @@ func (m *Manager) notifyRemotePullOutcome(opID, node, engine, model string, term
 }
 
 // remoteProgressFn returns an onProgress callback that relays a peer's stream
-// frames up as engine:remote-progress notifications, stamped with our opId and
-// the target node id.
+// frames up as engine:remote-progress notifications, stamped with the
+// operation's opId and the target node id.
 func (m *Manager) remoteProgressFn(opID, node string) func(streamFrame) {
 	return func(f streamFrame) {
 		p := remoteProgress{

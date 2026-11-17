@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -130,9 +131,13 @@ func TestRemotePullKeyFrom_KeysAPullAndItsCancelByNodeEngineAndModel(t *testing.
 	}
 	accept("pull with a top-level model", "engine:remote-pull-model", `{"node":"uuid-b","engine":"ollama","model":"demo"}`)
 	accept("pull naming its model in params", "engine:remote-pull-model", `{"node":"uuid-b","engine":"ollama","params":{"name":"demo"}}`)
+	accept("pull its client named", "engine:remote-pull-model", `{"node":"uuid-b","engine":"ollama","model":"demo","opId":"t41"}`)
 	accept("cancel", "engine:remote-cancel-pull", `{"node":"uuid-b","engine":"ollama","model":"demo"}`)
 	reject("install", "engine:remote-install", `{"node":"uuid-b","engine":"ollama"}`)
 	reject("pull without a model", "engine:remote-pull-model", `{"node":"uuid-b","engine":"ollama"}`)
+	// pullRemote refuses a pull with an invalid opId, so no cancel waits for it
+	// and it never counts among its download's pulls.
+	reject("pull with an invalid opId", "engine:remote-pull-model", `{"node":"uuid-b","engine":"ollama","model":"demo","opId":"t 41"}`)
 	// runRemote refuses a cancel without a top-level model, so it chases nothing.
 	reject("cancel naming its model only in params", "engine:remote-cancel-pull", `{"node":"uuid-b","engine":"ollama","params":{"name":"demo"}}`)
 	reject("malformed params", "engine:remote-pull-model", `{`)
@@ -334,19 +339,42 @@ func (s sentUp) stages() []string {
 // is frames, and decodes what it sent up.
 func pullRemoteOver(t *testing.T, order remoteOrder, frames ...streamFrame) sentUp {
 	t.Helper()
+	sent, _ := pullRemoteNamed(t, "", order, frames...)
+	return sent
+}
+
+// peerTransport is the peer's side of a remote client's requests.
+type peerTransport func(*http.Request) (*http.Response, error)
+
+func (f peerTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// pullRemoteNamed is pullRemoteOver for a pull its client named opID, or named
+// nothing when it is empty. It also reports the opId of the pull request the
+// peer was sent, which is empty when the peer was sent none.
+func pullRemoteNamed(t *testing.T, opID string, order remoteOrder, frames ...streamFrame) (sentUp, string) {
+	t.Helper()
+	client := newRemoteStreamTestClient(t, frames...)
+	peer := client.http.Transport
+	var toPeer pullRequest
+	client.http.Transport = peerTransport(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&toPeer); err != nil {
+			return nil, err
+		}
+		return peer.RoundTrip(r)
+	})
 	var out bytes.Buffer
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
 	id := json.RawMessage("1")
-	params := remoteParam{Node: demoOnNodeB.node, Engine: demoOnNodeB.engine, Model: demoOnNodeB.model}
+	params := remoteParam{Node: demoOnNodeB.node, Engine: demoOnNodeB.engine, Model: demoOnNodeB.model, OpID: opID}
 	m.pullRemote(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:remote-pull-model"},
-		newRemoteStreamTestClient(t, frames...), demoOnNodeB.node, params, order)
+		client, demoOnNodeB.node, params, order)
 
 	var sent sentUp
 	codec := NewCodec(&out)
 	for {
 		msg, err := codec.Read()
 		if errors.Is(err, io.EOF) {
-			return sent
+			return sent, toPeer.OpID
 		}
 		require.NoError(t, err, "decode what the pull sent up")
 		require.Nil(t, sent.reply, "the pull sent %s after its reply", msg.Method)
@@ -405,10 +433,11 @@ func TestRemotePull_AddsNoOutcomeToAStreamThatCarriedOne(t *testing.T) {
 	assert.Equal(t, []string{"downloading", "success"}, sent.stages())
 }
 
-// The UIs know a download's frames by node, engine and model alone, so while
-// another pull of the same download is outstanding, its frames speak for this
-// one too. Sending an outcome for the first of two to end would tell the UI a
-// download had ended that the second is still reporting on.
+// A UI can know a download's frames by node, engine and model alone, as the
+// desktop app does, so while another pull of the same download is
+// outstanding, its frames speak for this one too. Sending an outcome for the
+// first of two to end would tell the UI a download had ended that the second
+// is still reporting on.
 func TestRemotePull_LeavesTheOutcomeToTheLastPullOfTheDownload(t *testing.T) {
 	var gate remotePullGate
 	first := placePull(t, &gate)
@@ -491,4 +520,48 @@ func TestRemotePull_EndsOnTheOutcomeItsResultReports(t *testing.T) {
 	sent := pullRemoteOver(t, placePull(t, &gate), pullFrame("cancelled"), pullFrame("downloading"), pullResult(`{"status":"success"}`))
 
 	assert.Equal(t, []string{"downloading", "success"}, sent.stages())
+}
+
+// A client names its remote pull with an opId so that it can tell the pull's
+// frames from those of a retry of the same model. The pull's progress, the
+// frame it ends on, whether its stream carried that frame or it was built from
+// the result, and its reply carry that opId, and so does the request sent to
+// the peer, whose own frames of the download then name it too.
+func TestRemotePull_CarriesTheOpIDItsClientNamedIt(t *testing.T) {
+	test := func(name string, frames ...streamFrame) {
+		t.Run(name, func(t *testing.T) {
+			var gate remotePullGate
+
+			sent, toPeer := pullRemoteNamed(t, "t41", placePull(t, &gate), frames...)
+
+			assert.Equal(t, "t41", toPeer, "the pull request sent to the peer")
+			require.Equal(t, []string{"downloading", "cancelled"}, sent.stages())
+			for _, p := range sent.progress {
+				assert.Equal(t, "t41", p.OpID, "the %s frame", p.Stage)
+			}
+			require.NotNil(t, sent.reply, "the pull was never answered")
+			require.Nil(t, sent.reply.Error, "the pull failed")
+			var reply struct {
+				OpID string `json:"opId"`
+			}
+			require.NoError(t, json.Unmarshal(sent.reply.Result, &reply), "decode the reply %s", sent.reply.Result)
+			assert.Equal(t, "t41", reply.OpID, "the reply")
+		})
+	}
+	test("an outcome its stream carried", pullFrame("downloading"), pullFrame("cancelled"), pullResult(`{"status":"cancelled"}`))
+	test("an outcome built from its result", pullFrame("downloading"), pullResult(`{"status":"cancelled"}`))
+}
+
+// An opId the client could never find on the pull's frames is refused as
+// invalid params before the pull sets off for the peer. The read loop gives
+// such a pull no place in the gate, so it runs on an order that does nothing.
+func TestRemotePull_RefusesAnInvalidOpID(t *testing.T) {
+	sent, toPeer := pullRemoteNamed(t, "t 41", remoteOrder{}, pullFrame("downloading"), pullResult(`{"status":"success"}`))
+
+	assert.Empty(t, toPeer, "the refused pull reached the peer")
+	assert.Empty(t, sent.progress, "the refused pull sent progress")
+	require.NotNil(t, sent.reply, "the pull was never answered")
+	require.NotNil(t, sent.reply.Error, "the pull was not refused: %s", sent.reply.Result)
+	assert.Equal(t, -32602, sent.reply.Error.Code)
+	assert.Equal(t, invalidOpIDMessage, sent.reply.Error.Message)
 }

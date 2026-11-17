@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -171,6 +172,11 @@ func pullResultCancelled(result json.RawMessage) bool {
 type pullClaim struct {
 	key      pullKey
 	executor *Executor
+	// opID is the client's name for the request, or empty when it gave none.
+	// The frames of the download the request runs as carry it, so the client
+	// can tell them from another download's of the same model, a retry's
+	// included; see registeredDownloadRequests. Fixed when the claim is taken.
+	opID string
 	// cancelled is set by a cancel that found this request outstanding, and
 	// stops it before it starts a download. stopped is the model's download the
 	// first such cancel to find one registered stopped along with it, whose
@@ -224,28 +230,57 @@ func (e *Executor) registerPull(key pullKey, p *activePull, claim *pullClaim) {
 	claim.runsAs(key, p)
 }
 
-// registeredDownload reports the ID of the download registered for engine and
-// model, or zero when none is.
-func (e *Executor) registeredDownload(engine, model string) uint64 {
+// registeredDownloadRequests reports the ID of the download registered for
+// engine and model, or zero when none is, and the opIDs of the requests that
+// run as it, in the order they were claimed; a request that named none is left
+// out. Those are the requests the download's frames speak for: the one that
+// started it, whose claim is released only after the download has ended, so
+// it is named on every frame; any joined to it, or settling on it after a
+// cancel stopped them along with it; and a placeholder's own. A retry waiting
+// for a cancelled download to stop runs as no download yet, so that
+// download's frames leave it out.
+func (e *Executor) registeredDownloadRequests(engine, model string) (id uint64, opIDs []string) {
+	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
 	defer e.pullMu.Unlock()
-	if p := e.pulls[pullKey{engine: engine, model: model}]; p != nil {
-		return p.id
+	p := e.pulls[key]
+	if p == nil {
+		return 0, nil
 	}
-	return 0
+	for _, claim := range e.pullClaims[key] {
+		if claim.download == p.id && claim.opID != "" {
+			opIDs = append(opIDs, claim.opID)
+		}
+	}
+	return p.id, opIDs
 }
+
+// opIDPattern is the form of the opId a client names a pull request with.
+var opIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// invalidOpIDMessage is the -32602 reply to a pull request whose opId
+// validOpID refuses.
+const invalidOpIDMessage = "opId must be 1 to 128 characters from A-Z, a-z, 0-9, '.', '_', ':' and '-'"
+
+// validOpID reports whether s can name a pull request: 1 to 128 characters
+// from A-Z, a-z, 0-9, ".", "_", ":" and "-". A client names its request so it
+// can tell the frames of the download the request runs as from another
+// download's of the same model. Telling its own requests apart is the client's
+// job, so the name need not be unique.
+func validOpID(s string) bool { return opIDPattern.MatchString(s) }
 
 // claimPull marks a pull request accepted and not yet finished. It has to be
 // taken where the request is accepted, in the order the client sent it, rather
 // than where the download starts. The returned context carries the claim to
 // the request's trackedPull, and the returned function releases it once the
 // request settles. A request that names no engine and model is not a pull and
-// claims nothing.
-func (e *Executor) claimPull(ctx context.Context, engine, model string) (context.Context, func()) {
+// claims nothing. opID is the client's name for the request, empty for none,
+// which the caller has checked with validOpID.
+func (e *Executor) claimPull(ctx context.Context, engine, model, opID string) (context.Context, func()) {
 	if engine == "" || model == "" {
 		return ctx, func() {}
 	}
-	claim := &pullClaim{key: pullKey{engine: engine, model: model}, executor: e}
+	claim := &pullClaim{key: pullKey{engine: engine, model: model}, executor: e, opID: opID}
 	e.pullMu.Lock()
 	if e.pullClaims == nil {
 		e.pullClaims = make(map[pullKey][]*pullClaim)
@@ -353,16 +388,17 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// model as it is stopped, or end on a stop its engine could not
 		// confirm, and "cancelled" sooner would deny either.
 		//
-		// Frames name only the engine and model, so while a download of this
-		// model is registered — the cancelled one still settling, or a retry
-		// accepted after the cancel — the model's frames are that download's.
-		// It reports its own outcome; a "cancelled" frame from this request
-		// would repeat it, or tell every UI that a live retry had ended. Once
-		// the model's terminal frame has gone out while this request was
-		// outstanding, from a download or from another request stopped like
-		// this one, a frame from this request would repeat that too. Either
-		// way this request answers "cancelled", never another download's
-		// result: a retry that installed the model reports its own success.
+		// A UI can know frames by engine and model alone, as the desktop app
+		// does, so while a download of this model is registered — the
+		// cancelled one still settling, or a retry accepted after the cancel —
+		// the model's frames are that download's. It reports its own outcome;
+		// a "cancelled" frame from this request would repeat it, or tell such
+		// a UI that a live retry had ended. Once the model's terminal frame
+		// has gone out while this request was outstanding, from a download
+		// or from another request stopped like this one, a frame from this
+		// request would repeat that too. Either way this request answers
+		// "cancelled", never another download's result: a retry that
+		// installed the model reports its own success.
 		if claim != nil && claim.key == key && claim.cancelled {
 			if stopped := claim.stopped; stopped != nil {
 				claim.runsAs(key, stopped)

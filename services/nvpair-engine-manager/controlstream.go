@@ -127,7 +127,15 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 	// The initiator's cancel arrives as its own request, so claim the pull
 	// before starting it: a cancel that beats the download to the executor then
 	// stops this request instead of being read as a cancel for nothing.
-	claimed, release := s.exec.claimPull(r.Context(), req.Engine, req.Model)
+	//
+	// The claim names the request by the initiator's opId, as this node's own
+	// frames of the download then do. One that is not valid here is left off
+	// rather than refused, so an initiator on another version still pulls.
+	opID := ""
+	if validOpID(req.OpID) {
+		opID = req.OpID
+	}
+	claimed, release := s.exec.claimPull(r.Context(), req.Engine, req.Model, opID)
 	defer release()
 	download := s.exec.claimedDownload(claimed)
 	s.streamOp(w, r.WithContext(claimed), req.OpID, req.Engine, "pull", download, func(ctx context.Context) (streamFrame, error) {

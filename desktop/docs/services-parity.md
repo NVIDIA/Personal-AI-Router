@@ -376,9 +376,11 @@ the engine simply shows as stopped and then running.
 
 A local `pull_model` streams live download progress: the engine-manager routes
 `engine:action{pull_model}` through its streaming pull path and emits
-`engine:pull-progress` (`{ engine, model, op, stage, percent?, message }`;
-`percent` is omitted when the engine cannot measure progress) — the local
-counterpart of `engine:remote-progress`. Personal AI Router consumes it in
+`engine:pull-progress`
+(`{ engine, model, op, stage, percent?, message, opIds? }`; `percent` is
+omitted when the engine cannot measure progress, and `opIds` names the
+requests a frame speaks for, as described below) — the local counterpart of
+`engine:remote-progress`. Personal AI Router consumes it in
 `applyLocalEngineProgress` (`modular-supervisor.ts` → `modular-state.ts`),
 keying the frame to its optimistic pull entry by model and advancing that
 entry's percent in place, so a local pull shows "Pulling · N%"
@@ -473,22 +475,27 @@ when the cancel RPC's own budget elapses first — the backend is still working,
 so the row is not dropped back to "Downloading". The download's last frame is
 the exception: it says how the download ended — it may have finished before
 the stop reached it, or its engine could not confirm the stop — so the row
-shows that instead, and a cancel rejected after it leaves it there. The wire
-names a download by engine and model alone, so each UI numbers the downloads
-it tracks, a retry of the same model included, and keeps every reply to the
-attempt it was sent for. The terminal UI numbers attempts across all its node
-screens, since a screen's replies reach the next screen of its node, and acts
-on a pull's or a cancel's reply only while that attempt is the newest it has
-seen of the model, so a late reply for a stopped download leaves its retry
-alone, running or ended. The desktop app holds a cancel's in-flight guard per
-row attempt: a cancel still awaited after its download ended neither refuses
-the retry's cancel nor, rejected late, restores the retry's row. Progress
-frames still match by engine and model, since the engine-manager sends a
-stopped download's last frame before it starts the retry. A terminal-UI
-screen opened while an earlier one's cancel was still cleaning up has not
-seen that download, though, so it can start the model again before that last
-frame arrives, and the frame then retires the retry until the retry's next
-one. Ollama closes the pull request and removes the partial blobs named by its
+shows that instead, and a cancel rejected after it leaves it there. Each UI
+numbers the downloads it tracks, a retry of the same model included, and
+keeps every reply to the attempt it was sent for. The terminal UI numbers
+attempts across all its node screens, since a screen's replies reach the next
+screen of its node, and acts on a pull's or a cancel's reply only while that
+attempt is the newest it has seen of the model, so a late reply for a stopped
+download leaves its retry alone, running or ended. The desktop app holds a
+cancel's in-flight guard per row attempt: a cancel still awaited after its
+download ended neither refuses the retry's cancel nor, rejected late, restores
+the retry's row. A pull can also name itself with an `opId` beside `params`
+on `engine:action` and `engine:remote-pull-model`. `engine:remote-progress`
+carries the pull's `opId`, its caller's or else one minted for it, and
+`engine:pull-progress` lists in `opIds` the requests that run as the frame's
+download, which leaves out a retry still waiting for a cancelled download to
+stop. The terminal UI names each attempt and goes by these, so a stopped
+download's last frame leaves its retry alone, even on a screen opened while an
+earlier one's cancel was still cleaning up. The desktop app names none and
+matches frames by engine and model, which is enough there: it sends no retry
+of a model until the pull before it has replied, and the engine-manager sends
+a download's last frame before that reply.
+Ollama closes the pull request and removes the partial blobs named by its
 progress digests, judging each blob's data file and `-partial-N` resume files
 together: any one of them that predates the pull, whether or not it is still
 there, or that changes, first appears, or vanishes after the grace, keeps them

@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,7 +72,7 @@ func TestStreamOp_EmitsErrorFrame(t *testing.T) {
 func TestStreamOp_CarriesOnlyTheDownloadItsRequestRunsAs(t *testing.T) {
 	exec := &Executor{progress: newProgressHub()}
 	s := &controlServer{exec: exec}
-	claimed, release := exec.claimPull(t.Context(), "ollama", "demo")
+	claimed, release := exec.claimPull(t.Context(), "ollama", "demo", "")
 	defer release()
 	exec.pullMu.Lock()
 	claimed.Value(pullClaimKey{}).(*pullClaim).download = 7
@@ -126,7 +127,7 @@ func TestStreamOp_CarriesNoFrameOfTheDownloadARetryReplaces(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	original, releaseOriginal := ex.claimPull(ctx, "ollama", "demo")
+	original, releaseOriginal := ex.claimPull(ctx, "ollama", "demo", "")
 	defer releaseOriginal()
 	downloading := make(chan struct{})
 	stopping := make(chan struct{})
@@ -146,7 +147,7 @@ func TestStreamOp_CarriesNoFrameOfTheDownloadARetryReplaces(t *testing.T) {
 	cancelled := make(chan error, 1)
 	go func() { cancelled <- ex.CancelModelPull(ctx, "ollama", "demo") }()
 	<-stopping
-	retry, releaseRetry := ex.claimPull(ctx, "ollama", "demo")
+	retry, releaseRetry := ex.claimPull(ctx, "ollama", "demo", "")
 	defer releaseRetry()
 	retryDone := make(chan []streamFrame, 1)
 	go func() {
@@ -178,7 +179,7 @@ func TestStreamOp_CarriesTheFramesOfTheDownloadADuplicateJoined(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
-	first, releaseFirst := ex.claimPull(ctx, "ollama", "demo")
+	first, releaseFirst := ex.claimPull(ctx, "ollama", "demo", "")
 	defer releaseFirst()
 	downloading := make(chan struct{})
 	finish := make(chan struct{})
@@ -192,7 +193,7 @@ func TestStreamOp_CarriesTheFramesOfTheDownloadADuplicateJoined(t *testing.T) {
 		})
 	}()
 	<-downloading
-	duplicate, releaseDuplicate := ex.claimPull(ctx, "ollama", "demo")
+	duplicate, releaseDuplicate := ex.claimPull(ctx, "ollama", "demo", "")
 	defer releaseDuplicate()
 	duplicateDone := make(chan []streamFrame, 1)
 	go func() {
@@ -262,6 +263,39 @@ func TestHandlePull_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) 
 	terminal := frames[len(frames)-1]
 	require.Equal(t, "result", terminal.Type, "the pull should settle as cancelled, not fail: %+v", terminal)
 	assertPullStatus(t, terminal.Result, "cancelled")
+}
+
+// The initiator names its pull with an opId, and the peer claims the request
+// under it, so the peer's own frames of the download name the request as the
+// initiator's do. An opId the peer would refuse from its own client is left off
+// rather than failing the pull, so an initiator on another version still pulls.
+func TestHandlePull_ClaimsThePullUnderTheInitiatorsOpID(t *testing.T) {
+	test := func(name, opID string, want []string) {
+		t.Run(name, func(t *testing.T) {
+			transfer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, err := w.Write([]byte(`{"status":"success"}` + "\n"))
+				assert.NoError(t, err, "send the pull's success record")
+			}))
+			t.Cleanup(transfer.Close)
+			ex := newHTTPPullTestExecutor(t, transfer, Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+			client := &namedFrames{}
+			ex.emit = client.emit
+			body, err := json.Marshal(pullRequest{OpID: opID, Engine: "fake", Model: "demo"})
+			require.NoError(t, err, "encode the pull request")
+			rec := httptest.NewRecorder()
+
+			(&controlServer{exec: ex}).handlePull(rec, httptest.NewRequest(http.MethodPost, controlPullPath, bytes.NewReader(body)))
+
+			frames := decodeFrames(t, rec.Body.String())
+			require.NotEmpty(t, frames, "the pull's stream was empty")
+			terminal := frames[len(frames)-1]
+			require.Equal(t, "result", terminal.Type, "the pull should succeed: %+v", terminal)
+			assertPullStatus(t, terminal.Result, "success")
+			assert.Equal(t, []namedFrame{{Stage: "success", OpIDs: want}}, client.sent())
+		})
+	}
+	test("an opId it accepts", "t41", []string{"t41"})
+	test("an opId it would refuse", "t 41", nil)
 }
 
 // TestHandleInstallRejectsMissingEngine verifies request-body validation.
