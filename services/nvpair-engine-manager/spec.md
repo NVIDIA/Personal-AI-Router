@@ -94,8 +94,26 @@ Omitting it uses this node's setting. Only `huggingface` and `modelscope` are
 accepted for llama.cpp; each source keeps its own browse/search cache.
 
 ModelScope's public GGUF catalogue is normalized through the same quantization
-and generative-model filters as Hugging Face. A loopback-only adapter translates
-ModelScope metadata and streams file requests without forwarding Hugging Face
+and generative-model filters as Hugging Face. Browse and search each read one
+50-entry page by downloads, the largest ModelScope serves, and list each
+candidate's files at most eight at a time. A repo with a speech, audio, image,
+video, embedding or reranking marker in its tags or as words of its name is
+dropped, even when it declares a chat task, as ModelScope does for some
+embedding and speech repos. ModelScope declares no task for many chat repos, so
+an unmarked repo without one counts as chat. The markers are a blocklist of the
+families seen on ModelScope, so an unmarked non-chat repo can still be listed,
+and a chat repo named after one, such as a prompt generator for an image model,
+is dropped. A repo whose file list fails is left out of the cached list. The
+fetch fails instead when more than a quarter of the file lists fail, when a
+failure leaves no model, or when a browse list is empty, so the cache keeps
+its previous list rather than one cut short. A fetch whose request ends or
+times out first returns the models it listed. They are served when no complete
+list is cached, but only until the two-minute failure backoff ends rather than
+for the six-hour cache lifetime, and they never replace a complete list. The
+browse list is cached apart from searches, so searches never evict it.
+
+A loopback-only adapter translates ModelScope metadata and streams file
+requests without forwarding Hugging Face
 credentials. Requests must match the listener's exact Host and include a random
 256-bit path token, which is redacted from engine output. Streams are bounded to
 the accepted file size and must match the metadata SHA-256. The adapter advertises

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Stack } from '@nvidia/foundations-react-core'
+import { Stack, Text } from '@nvidia/foundations-react-core'
 import { ModelHubSearchBar } from './ModelHubSearchBar'
 import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
@@ -139,6 +139,12 @@ export const ModelHubContent = ({
         if (!engine || !downloadedModels || downloadedModels.length === 0) return queryFiltered
         return queryFiltered.filter(m => !isHubEntryDownloaded(engine, m, downloadedModels))
     }, [engine, queryFiltered, downloadedModels])
+
+    // A searchable source browses only a sample of its upstream, so a search
+    // can reach models this list does not show, even when every listed model
+    // is already installed.
+    const browsingSample =
+        catalog.searchable === true && !loading && query.trim() === '' && allModels.length > 0
 
     const handleSortPersist = useCallback(
         (next: SortState) => {
@@ -280,6 +286,11 @@ export const ModelHubContent = ({
                         sort={sort}
                         onSort={handleSortPersist}
                     />
+                    {browsingSample && visibleModels.length > 0 && (
+                        <Text kind="body/regular/sm" className="text-subtle-color mt-2 ml-2">
+                            Showing popular models. Search to find more.
+                        </Text>
+                    )}
                 </Stack>
                 <ModelHubList
                     className="grow min-h-0"
@@ -287,6 +298,11 @@ export const ModelHubContent = ({
                     multiple={multiple}
                     loading={loading}
                     models={visibleModels}
+                    emptyMessage={
+                        browsingSample
+                            ? 'Popular models are already installed. Search to find more.'
+                            : undefined
+                    }
                     selectedModels={selectedModels}
                     onToggleSelectModel={handleListToggle}
                     sort={sort}
