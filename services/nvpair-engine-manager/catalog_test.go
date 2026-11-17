@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -196,6 +197,54 @@ func TestLmStudioCatalog_BacksOffWithNothingCached(t *testing.T) {
 	_, _, err := c.lmStudio.get(t.Context())
 	assert.Error(t, err, "retry against a failing upstream must still report failure")
 	assert.Equal(t, int32(2), requests.Load(), "backoff expiry must permit a second attempt")
+}
+
+func TestListingCache_RefetchesAnIncompleteListOnceTheBackoffEnds(t *testing.T) {
+	var fetches atomic.Int32
+	cache := &listingCache{label: "test catalog", fetch: func(context.Context) ([]CatalogModel, error) {
+		models := []CatalogModel{{ID: "owner/a:Q4_K_M"}}
+		if fetches.Add(1) > 1 {
+			models = append(models, CatalogModel{ID: "owner/b:Q4_K_M"})
+		}
+		return models, fmt.Errorf("%w: request ended", errCatalogPartial)
+	}}
+
+	for range 2 {
+		models, _, err := cache.get(t.Context())
+		require.NoError(t, err)
+		assert.Len(t, models, 1)
+	}
+	assert.Equal(t, int32(1), fetches.Load(), "an incomplete list is served through the backoff")
+
+	// An incomplete list is not kept for catalogCacheTTL, and a longer
+	// incomplete list replaces it.
+	cache.mu.Lock()
+	cache.failed = time.Now().Add(-2 * catalogRetryAfterFailure)
+	cache.mu.Unlock()
+	models, _, err := cache.get(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, models, 2)
+	assert.Equal(t, int32(2), fetches.Load())
+}
+
+func TestListingCache_KeepsACompleteListThroughAnIncompleteRefresh(t *testing.T) {
+	incomplete := false
+	cache := &listingCache{label: "test catalog", fetch: func(context.Context) ([]CatalogModel, error) {
+		if incomplete {
+			return []CatalogModel{{ID: "owner/a:Q4_K_M"}}, fmt.Errorf("%w: request ended", errCatalogPartial)
+		}
+		return []CatalogModel{{ID: "owner/a:Q4_K_M"}, {ID: "owner/b:Q4_K_M"}}, nil
+	}}
+	_, _, err := cache.get(t.Context())
+	require.NoError(t, err, "seed fetch")
+	incomplete = true
+	cache.mu.Lock()
+	cache.fetched = time.Now().Add(-2 * catalogCacheTTL)
+	cache.mu.Unlock()
+
+	models, _, err := cache.get(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, models, 2, "a stale complete list beats a fresh incomplete one")
 }
 
 func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {

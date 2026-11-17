@@ -94,11 +94,14 @@ embedding and speech repos. ModelScope declares no task for many chat repos, so
 an unmarked repo without one counts as chat. The markers are a blocklist of the
 families seen on ModelScope, so an unmarked non-chat repo can still be listed,
 and a chat repo named after one, such as a prompt generator for an image model,
-is dropped. A repo whose file list fails is left out of the cached list; the
-fetch fails instead when more than one file list in four fails or the request
-ends or times out first, and an empty browse list is a failure, so the cache
-keeps its previous list rather than one cut short. The browse list is cached
-apart from searches, so searches never evict it.
+is dropped. A repo whose file list fails is left out of the cached list. The
+fetch fails instead when more than a quarter of the file lists fail, when a
+failure leaves no model, or when a browse list is empty, so the cache keeps
+its previous list rather than one cut short. A fetch whose request ends or
+times out first returns the models it listed. They are served when no complete
+list is cached, but only until the two-minute failure backoff ends rather than
+for the six-hour cache lifetime, and they never replace a complete list. The
+browse list is cached apart from searches, so searches never evict it.
 
 A loopback-only adapter translates ModelScope metadata and streams file
 requests without forwarding Hugging Face

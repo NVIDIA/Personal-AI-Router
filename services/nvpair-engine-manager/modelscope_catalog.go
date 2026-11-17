@@ -24,11 +24,11 @@ const (
 	// modelScopeFileListConcurrency bounds the file-list requests in flight, so
 	// a full page fits the timeout without opening one connection per entry.
 	modelScopeFileListConcurrency = 8
-	// modelScopeFileListFailureLimit fails the fetch when more than one file
-	// list in this many fails. A few broken repositories are skipped; more than
-	// that is an upstream problem, and a list cut short by it would be cached
-	// as the catalogue for catalogCacheTTL.
-	modelScopeFileListFailureLimit = 4
+	// modelScopeFileListFailureRate fails the fetch when more than this share
+	// of the file lists fails. A few broken repositories are skipped; more
+	// than that is an upstream problem, and a list cut short by it would be
+	// cached as the catalogue for catalogCacheTTL.
+	modelScopeFileListFailureRate = 0.25
 )
 
 // modelScopeNonChatMarkers are tags and repo-name words of models that do not
@@ -139,8 +139,8 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 		if row.Private || string(row.Gated) != "false" || !hfRepoPattern.MatchString(row.ID) || !hasTag(row.Tags, "gguf") || !isGenerative(row) {
 			continue
 		}
+		slots <- struct{}{}
 		wg.Go(func() {
-			slots <- struct{}{}
 			defer func() { <-slots }()
 			files, err := fetchModelScopeFiles(ctx, c.client, endpoint, row.ID, "master")
 			if errors.Is(err, errModelScopeListingTooLarge) {
@@ -170,27 +170,35 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 			succeeded++
 		}
 	}
-	if failed > 0 {
-		// An expired timeout is what failed the fetch, whichever listing
-		// happened to fail first.
-		expired := ctx.Err()
-		if expired != nil {
-			firstErr = expired
-		}
-		// One summary rather than every listing's error: a timeout fails them
-		// all alike, and the terminal shows the message as is.
-		err := fmt.Errorf("%d of %d ModelScope file lists failed: %w", failed, failed+succeeded, firstErr)
-		if expired != nil || failed*modelScopeFileListFailureLimit > failed+succeeded {
-			return nil, err
-		}
-		// Repository ids are left out: an exact-name search would log the
-		// operator's query.
-		slog.Warn("skipping ModelScope repositories whose file list is unavailable", "err", err)
-	}
 	models := normalizeListing(rows, llamaCPPModel)
 	for i := range models {
 		repo, _, _ := strings.Cut(models[i].ID, ":")
 		models[i].URL = modelScopeURL + "/models/" + repo
 	}
+	if failed == 0 {
+		return models, nil
+	}
+	// An ended request is what failed the fetch, whichever listing happened
+	// to fail first.
+	ended := ctx.Err()
+	if ended != nil {
+		firstErr = ended
+	}
+	// One summary rather than every listing's error: a timeout fails them all
+	// alike, and the terminal shows the message as is.
+	summary := fmt.Errorf("%d of %d ModelScope file lists failed: %w", failed, failed+succeeded, firstErr)
+	switch {
+	case len(models) == 0:
+		// A failed listing may have held the only model the filters would
+		// keep, so an empty answer here is not a real one.
+		return nil, summary
+	case ended != nil:
+		return models, fmt.Errorf("%w: %w", errCatalogPartial, summary)
+	case float64(failed) > modelScopeFileListFailureRate*float64(failed+succeeded):
+		return nil, summary
+	}
+	// Repository ids are left out: an exact-name search would log the
+	// operator's query.
+	slog.Warn("skipping ModelScope repositories whose file list is unavailable", "err", summary)
 	return models, nil
 }

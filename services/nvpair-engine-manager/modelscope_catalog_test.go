@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -78,14 +79,36 @@ func TestModelScopeCatalog_ReturnsOnlyOpenGenerativeQ4Models(t *testing.T) {
 // model file.
 func writeModelScopeQ4Listing(t *testing.T, w http.ResponseWriter) {
 	t.Helper()
+	writeModelScopeListing(t, w, "model-Q4_K_M.gguf")
+}
+
+// writeModelScopeListing answers a file-list request with one valid file.
+func writeModelScopeListing(t *testing.T, w http.ResponseWriter, path string) {
+	t.Helper()
 	assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 		"Success": true,
 		"Data": map[string]any{"Files": []modelScopeFile{{
-			Path: "model-Q4_K_M.gguf", Type: "blob", Revision: "0123456789012345678901234567890123456789",
+			Path: path, Type: "blob", Revision: "0123456789012345678901234567890123456789",
 			SHA256: "0123456789012345678901234567890123456789012345678901234567890123", Size: 42,
 		}}},
 	}))
 }
+
+// closeNotifyingBody reports when the client has finished with a response.
+type closeNotifyingBody struct {
+	io.ReadCloser
+	closed func()
+}
+
+func (b closeNotifyingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closed()
+	return err
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // writeModelScopeChatPage answers a catalog request with one page of open GGUF
 // repositories that each declare text generation.
@@ -176,7 +199,7 @@ func TestModelScopeCatalog_SkipsRepositoryWhoseFileListFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/openapi/v1/models":
-			writeModelScopeChatPage(t, w, "owner/a", "owner/b", "owner/c", "owner/d", "owner/broken")
+			writeModelScopeChatPage(t, w, "owner/a", "owner/b", "owner/c", "owner/broken")
 		case "/api/v1/models/owner/broken/repo/files":
 			w.WriteHeader(http.StatusInternalServerError)
 		default:
@@ -187,6 +210,7 @@ func TestModelScopeCatalog_SkipsRepositoryWhoseFileListFails(t *testing.T) {
 	c := newCatalogService()
 	c.modelScopeEndpoint = srv.URL
 
+	// One in four is the most the failure rate allows.
 	models, err := c.fetchModelScope(context.Background(), "")
 	require.NoError(t, err)
 
@@ -194,7 +218,7 @@ func TestModelScopeCatalog_SkipsRepositoryWhoseFileListFails(t *testing.T) {
 	for _, model := range models {
 		ids = append(ids, model.ID)
 	}
-	assert.ElementsMatch(t, []string{"owner/a:Q4_K_M", "owner/b:Q4_K_M", "owner/c:Q4_K_M", "owner/d:Q4_K_M"}, ids)
+	assert.ElementsMatch(t, []string{"owner/a:Q4_K_M", "owner/b:Q4_K_M", "owner/c:Q4_K_M"}, ids)
 }
 
 func TestModelScopeCatalog_FailsWhenMoreThanAQuarterOfFileListsFail(t *testing.T) {
@@ -257,35 +281,65 @@ func TestModelScopeCatalog_FailsWhenOnlyOversizedListingsSurviveAFailure(t *test
 	assert.EqualError(t, err, "1 of 1 ModelScope file lists failed: ModelScope metadata returned HTTP 503")
 }
 
-func TestModelScopeCatalog_FailsWhenTheRequestEndsBeforeEveryListingReturns(t *testing.T) {
+func TestModelScopeCatalog_ReturnsWhatItListedWhenTheRequestEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	var answered sync.WaitGroup
-	answered.Add(8)
+	const slowListing = "/api/v1/models/owner/slow/repo/files"
+	var read sync.WaitGroup
+	read.Add(8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/openapi/v1/models":
 			writeModelScopeChatPage(t, w, "owner/a", "owner/b", "owner/c", "owner/d", "owner/e", "owner/f", "owner/g", "owner/h", "owner/slow")
-		case "/api/v1/models/owner/slow/repo/files":
-			answered.Wait()
+		case slowListing:
+			read.Wait()
 			cancel()
 			<-r.Context().Done()
 		default:
 			writeModelScopeQ4Listing(t, w)
-			answered.Done()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newCatalogService()
+	c.modelScopeEndpoint = srv.URL
+	transport := c.client.Transport
+	c.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		resp, err := transport.RoundTrip(r)
+		if err == nil && strings.HasSuffix(r.URL.Path, "/repo/files") && r.URL.Path != slowListing {
+			resp.Body = closeNotifyingBody{ReadCloser: resp.Body, closed: read.Done}
+		}
+		return resp, err
+	})
+
+	// The request ends once the client has read every other listing, so the
+	// slow one is the only failure: under the failure rate, which this fetch
+	// would otherwise pass as complete.
+	models, err := c.fetchModelScope(ctx, "")
+	require.ErrorIs(t, err, errCatalogPartial)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.ErrorContains(t, err, "1 of 9 ModelScope file lists failed: context canceled")
+	assert.Len(t, models, 8)
+}
+
+func TestModelScopeCatalog_FailsAnEmptyResultWhenAFileListFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/v1/models":
+			writeModelScopeChatPage(t, w, "owner/q8-a", "owner/q8-b", "owner/q8-c", "owner/broken")
+		case "/api/v1/models/owner/broken/repo/files":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			writeModelScopeListing(t, w, "model-Q8_0.gguf")
 		}
 	}))
 	t.Cleanup(srv.Close)
 	c := newCatalogService()
 	c.modelScopeEndpoint = srv.URL
 
-	// The slow listing, and a fast one still being read when the request
-	// ends, are under the failure limit, so only the ended request fails this
-	// fetch rather than caching the listings that returned. It is named as the
-	// cause.
-	_, err := c.fetchModelScope(ctx, "")
-	require.ErrorIs(t, err, context.Canceled)
-	assert.ErrorContains(t, err, " of 9 ModelScope file lists failed: context canceled")
+	// One failure in four is under the failure rate, but the failed listing
+	// may have held the only model the filters keep.
+	_, err := c.fetchModelScope(context.Background(), "Qwen")
+	assert.EqualError(t, err, "1 of 4 ModelScope file lists failed: ModelScope metadata returned HTTP 503")
 }
 
 func TestModelScopeCatalog_RunsEightFileListRequestsAtOnce(t *testing.T) {
@@ -377,6 +431,42 @@ func TestCatalog_KeepsTheModelScopeBrowseListThroughManySearches(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Models, 1)
 	assert.Equal(t, int32(1), browses.Load())
+}
+
+func TestCatalog_KeepsAModelScopeSearchResultThroughAnEmptyRefreshWithAFailure(t *testing.T) {
+	var broken atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/v1/models":
+			writeModelScopeChatPage(t, w, "owner/a", "owner/q8-b", "owner/q8-c", "owner/q8-d")
+		case "/api/v1/models/owner/a/repo/files":
+			if broken.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			writeModelScopeQ4Listing(t, w)
+		default:
+			writeModelScopeListing(t, w, "model-Q8_0.gguf")
+		}
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.modelScopeEndpoint = server.URL
+	result, err := catalog.Catalog(context.Background(), "llamacpp", "", "", "qwen", "modelscope")
+	require.NoError(t, err)
+	require.Len(t, result.Models, 1)
+
+	broken.Store(true)
+	catalog.searchMu.Lock()
+	search := catalog.searches["modelscope:qwen"]
+	catalog.searchMu.Unlock()
+	search.mu.Lock()
+	search.fetched = time.Now().Add(-2 * catalogCacheTTL)
+	search.mu.Unlock()
+
+	result, err = catalog.Catalog(context.Background(), "llamacpp", "", "", "qwen", "modelscope")
+	require.NoError(t, err)
+	assert.Len(t, result.Models, 1, "an empty refresh with a failed listing must not replace the result")
 }
 
 func TestModelScopeCatalog_AcceptsAnEmptySearchResult(t *testing.T) {

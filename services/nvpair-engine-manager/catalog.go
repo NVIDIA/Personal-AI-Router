@@ -257,6 +257,10 @@ type catalogService struct {
 	llamaSource        func() (string, error)
 }
 
+// errCatalogPartial marks a fetch that ended before it read the whole
+// catalogue. The fetch returns the models it did read alongside it.
+var errCatalogPartial = errors.New("catalog incomplete")
+
 // listingCache holds one fetched catalogue. It serves from memory while the
 // list is fresh, keeps the previous list through a failed refresh, retries a
 // failing upstream on a backoff rather than on every call, and gives any number
@@ -272,6 +276,10 @@ type listingCache struct {
 	mu      sync.Mutex
 	models  []CatalogModel
 	fetched time.Time
+	// partial marks models from an incomplete fetch. They are served until
+	// the failure backoff ends rather than for catalogCacheTTL, and never
+	// replace a complete list.
+	partial bool
 	// failed is when the last fetch failed, so a dead upstream is retried on a
 	// backoff rather than on every call.
 	failed   time.Time
@@ -546,7 +554,7 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	// re-fetching on every call against a dead upstream just made each caller
 	// wait out the full timeout for the same stale answer.
 	haveList := !l.fetched.IsZero()
-	fresh := haveList && time.Since(l.fetched) < catalogCacheTTL
+	fresh := haveList && !l.partial && time.Since(l.fetched) < catalogCacheTTL
 	backingOff := !l.failed.IsZero() && time.Since(l.failed) < catalogRetryAfterFailure
 	if fresh || (haveList && backingOff) {
 		models, at := l.models, l.fetched
@@ -589,9 +597,15 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	}
 
 	l.mu.Lock()
-	if err == nil {
-		l.models, l.fetched, l.failed = models, time.Now(), time.Time{}
-	} else {
+	keptPartial := false
+	switch {
+	case err == nil:
+		l.models, l.fetched, l.failed, l.partial = models, time.Now(), time.Time{}, false
+	case errors.Is(err, errCatalogPartial) && len(models) > 0 &&
+		(l.fetched.IsZero() || (l.partial && len(models) > len(l.models))):
+		l.models, l.fetched, l.failed, l.partial = models, time.Now(), time.Now(), true
+		keptPartial = true
+	default:
 		l.failed = time.Now()
 	}
 	served, at := l.models, l.fetched
@@ -606,7 +620,11 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	if at.IsZero() {
 		return nil, time.Time{}, err
 	}
-	if err != nil {
+	switch {
+	case keptPartial:
+		slog.Warn("model catalog fetch incomplete; serving what it read",
+			"catalog", l.label, "models", len(served), "err", err)
+	case err != nil:
 		slog.Warn("model catalog refresh failed; serving the previous list",
 			"catalog", l.label, "models", len(served), "err", err)
 	}
