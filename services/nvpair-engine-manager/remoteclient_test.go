@@ -28,7 +28,7 @@ func TestRemoteStream_AcceptsAccumulatedCLIOutput(t *testing.T) {
 	c := newRemoteStreamTestClient(t, streamFrame{
 		Type: "result", Result: resultJSON,
 	})
-	result, err := c.stream(t.Context(), controlPullPath, pullRequest{Engine: "lmstudio", Model: "test-model"}, nil)
+	result, err := c.stream(t.Context(), controlPullPath, pullRequest{Engine: "lmstudio", Model: "test-model"}, nil, nil)
 	require.NoError(t, err, "read 6.4 MiB command result")
 	var gotOutput string
 	require.NoError(t, json.Unmarshal(result.Result, &gotOutput), "decode command output")
@@ -45,7 +45,7 @@ func TestRemoteStream_RejectsFramesAboveWorkerLimit(t *testing.T) {
 	progressCount := 0
 	_, err := c.stream(t.Context(), controlPullPath, pullRequest{Engine: "lmstudio", Model: "test-model"}, func(streamFrame) {
 		progressCount++
-	})
+	}, nil)
 	assert.ErrorIs(t, err, bufio.ErrTooLong)
 	assert.Zero(t, progressCount, "oversized progress frames must not be relayed")
 }
@@ -68,7 +68,7 @@ func TestRemoteStream_AllowsStreamLargerThanFrameLimit(t *testing.T) {
 	result, err := c.stream(t.Context(), controlPullPath, pullRequest{Engine: "lmstudio", Model: "test-model"}, func(frame streamFrame) {
 		assert.Equal(t, wantMessage, frame.Message, "progress frame %d", received)
 		received++
-	})
+	}, nil)
 	require.NoError(t, err, "read stream exceeding the per-frame limit in total")
 	assert.Equal(t, progressCount, received)
 	var gotResult struct {
@@ -167,6 +167,14 @@ func TestRemoteReadinessBudget_CoversEngineStartupAllowance(t *testing.T) {
 	test("Ollama load waits", controlLoadPath, "ollama", true)
 	test("vLLM load waits", controlLoadPath, "vllm", true)
 	test("LM Studio load does not wait", controlLoadPath, "lmstudio", false)
+	// Cancelling is the peer stopping a live transfer, not answering a
+	// question: it stops the download, waits for that to be confirmed, and
+	// cleans up before writing a header. That can outlast the ordinary
+	// budget, and being cut off there reports a cancel that succeeded as
+	// failed.
+	test("LM Studio cancel waits", controlCancelPullPath, "lmstudio", true)
+	test("Ollama cancel waits", controlCancelPullPath, "ollama", true)
+	test("llama.cpp cancel waits", controlCancelPullPath, "llamacpp", true)
 	test("stop does not wait", controlStopPath, "ollama", false)
 	test("unload does not wait", controlUnloadPath, "ollama", false)
 	test("listing does not wait", controlEnginesPath, "", false)

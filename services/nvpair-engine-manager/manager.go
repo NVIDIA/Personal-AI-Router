@@ -46,6 +46,27 @@ type actionParam struct {
 	Engine string          `json:"engine"`
 	Action string          `json:"action"`
 	Params json.RawMessage `json:"params,omitempty"`
+	// OpID is the client's name for a pull_model request, which the frames of
+	// the download it runs as carry; see validOpID. It sits beside params, not
+	// in them, because params go to the engine verbatim. Other actions ignore
+	// it.
+	OpID string `json:"opId,omitempty"`
+}
+
+// pullClaimFrom reports the engine, model and opId of an engine:action that
+// starts a download, for Executor.claimPull, and nothing for any other action.
+// Malformed params are left to the handler, which owns the error response, and
+// so is an opId runAction refuses: a request about to be refused claims
+// nothing, so no cancel can count it among the requests it stopped.
+func pullClaimFrom(params json.RawMessage) (engine, model, opID string) {
+	var p actionParam
+	if err := json.Unmarshal(params, &p); err != nil || p.Action != pullModelAction {
+		return "", "", ""
+	}
+	if p.OpID != "" && !validOpID(p.OpID) {
+		return "", "", ""
+	}
+	return p.Engine, modelFromParams(p.Params), p.OpID
 }
 
 // setPortParam is the engine:set-port input: the engine whose server port to
@@ -70,9 +91,13 @@ type Manager struct {
 	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
-	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
+	// carries the longer header budget, for the calls waitsForEngineReadiness
+	// selects.
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
+	// remotePulls orders an engine:remote-cancel-pull behind the remote pulls
+	// it targets, the way claimPull orders a local one.
+	remotePulls remotePullGate
 	// catalog answers engine:catalog: the models an engine can download, as
 	// opposed to the ones it already holds.
 	catalog *catalogService
@@ -307,12 +332,44 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		m.codec.Respond(msg.ID, map[string]int{"port": p.Port})
 
 	case "engine:action":
-		go m.runAction(ctx, msg)
+		// Claim a pull here rather than in the goroutine, as engine:cancel-pull
+		// below latches its cancel here. Each dispatches its own goroutine, so
+		// only the read loop sees the two in the order the client sent them.
+		engine, model, opID := pullClaimFrom(msg.Params)
+		actionCtx, release := m.exec.claimPull(ctx, engine, model, opID)
+		go func() {
+			defer release()
+			m.runAction(actionCtx, msg)
+		}()
+
+	case "engine:cancel-pull":
+		var p remoteParam
+		if !m.parse(msg, &p) {
+			return
+		}
+		if p.Engine == "" || p.Model == "" {
+			m.codec.RespondError(msg.ID, -32602, "engine and model are required")
+			return
+		}
+		// Latched here so the cancel stops the requests read before it and
+		// leaves a retry read after it alone. Only the wait for the download
+		// to stop and clean up runs off the read loop.
+		wait := m.exec.latchPullCancel(p.Engine, p.Model)
+		go func() { m.respondOrErr(msg, nil, wait(ctx)) }()
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
-		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
+		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull",
 		"engine:remote-start", "engine:remote-stop":
-		go m.runRemote(ctx, msg)
+		// Place a remote pull, and a cancel chasing one, here for the same
+		// reason engine:action claims a local pull: each dispatches its own
+		// goroutine, so a cancel can otherwise reach the peer first, and only
+		// here can it tell the pulls sent before it from a retry sent after.
+		// See remotePullGate.
+		order := m.remotePulls.place(msg.Method, msg.Params)
+		go func() {
+			defer order.end()
+			m.runRemote(ctx, msg, order)
+		}()
 
 	default:
 		m.codec.RespondError(msg.ID, -32601, fmt.Sprintf("method not found: %s", msg.Method))
@@ -435,15 +492,22 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 	var err error
 	if p.Action == pullModelAction {
 		model := modelFromParams(p.Params)
+		// The model keys the download: one naming none could not be cancelled,
+		// and its frames could not be told apart from the engine's others.
+		if model == "" {
+			m.codec.RespondError(msg.ID, -32602, "model is required")
+			return
+		}
+		// An opId names the request on its download's frames. An invalid one
+		// is refused rather than dropped, since its client would look for it
+		// on frames that never carry it.
+		if p.OpID != "" && !validOpID(p.OpID) {
+			m.codec.RespondError(msg.ID, -32602, invalidOpIDMessage)
+			return
+		}
 		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)
 		if err != nil {
-			// A pull can fail after the client's synchronous call has already
-			// timed out (long downloads), so the RPC error alone can't reach a
-			// UI that stopped waiting. Emit one terminal engine:pull-progress
-			// error frame so a local subscriber converges off "pulling" even in
-			// that case, mirroring install's failed progress step.
 			userMsg := m.exec.reportPullFailed(p.Engine, model, err)
-			m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Op: "pull", Stage: "error", Percent: -1, Message: userMsg})
 			m.codec.RespondError(msg.ID, -32000, userMsg)
 			return
 		}

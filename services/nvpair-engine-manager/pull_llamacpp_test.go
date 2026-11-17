@@ -246,6 +246,76 @@ func TestLlamaCPPPullCancelledBeforeStart_DoesNotDownload(t *testing.T) {
 	require.Zero(t, f.inventories.Load(), "cancelled pull attempted cleanup without starting")
 }
 
+// A cancel someone asked for is the outcome they wanted. Once the router's
+// download has stopped, or before it was ever requested, it is reported as
+// "cancelled" the way every engine reports one, rather than as a failed pull.
+func TestLlamaCPPPull_ReportsARequestedCancellationAsCancelled(t *testing.T) {
+	test := func(name string, cancelWhen func(f *llamaCPPPullFixture) <-chan struct{}, wantUnloads int32) {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			f := newLlamaCPPPullFixture(t)
+			reached := cancelWhen(f)
+			cancelled := make(chan error, 1)
+			go func() {
+				select {
+				case <-reached:
+					cancelled <- f.ex.CancelModelPull(ctx, "fake", llamaCPPPullTestModel)
+				case <-ctx.Done():
+					cancelled <- ctx.Err()
+				}
+			}()
+
+			result, err := f.ex.PullModelStream(ctx, "fake", llamaCPPPullTestModel, nil)
+
+			require.NoError(t, err)
+			assertPullStatus(t, result, "cancelled")
+			assert.NoError(t, <-cancelled)
+			assert.False(t, f.downloading.Load(), "the download must stop")
+			assert.Equal(t, wantUnloads, f.unloads.Load())
+		})
+	}
+	test("after the router accepted the download", func(f *llamaCPPPullFixture) <-chan struct{} {
+		return f.started
+	}, 1)
+	test("before the download was requested", func(f *llamaCPPPullFixture) <-chan struct{} {
+		subscribing := make(chan struct{})
+		f.stream = func(_ http.ResponseWriter, r *http.Request) {
+			close(subscribing)
+			<-r.Context().Done()
+		}
+		return subscribing
+	}, 0)
+}
+
+// A stop the router did not confirm may have left the download running, so
+// even a cancel someone asked for is reported as the failure it is, and the
+// cancel fails with it — as does a cancel asking again once the pull settled.
+func TestLlamaCPPPull_FailsARequestedCancellationTheRouterDidNotConfirm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	f := newLlamaCPPPullFixture(t)
+	f.unload = func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "busy", http.StatusInternalServerError)
+	}
+	cancelled := make(chan error, 1)
+	go func() {
+		select {
+		case <-f.started:
+			cancelled <- f.ex.CancelModelPull(ctx, "fake", llamaCPPPullTestModel)
+		case <-ctx.Done():
+			cancelled <- ctx.Err()
+		}
+	}()
+
+	_, err := f.ex.PullModelStream(ctx, "fake", llamaCPPPullTestModel, nil)
+
+	require.ErrorContains(t, err, "could not confirm download stopped")
+	assert.ErrorContains(t, <-cancelled, "could not confirm download stopped")
+	assert.ErrorContains(t, f.ex.CancelModelPull(ctx, "fake", llamaCPPPullTestModel), "could not confirm download stopped",
+		"a cancel asking after the pull settled")
+}
+
 func TestLlamaCPPPull_RejectsInvalidModelParamsBeforeStarting(t *testing.T) {
 	test := func(name, params string) {
 		t.Run(name, func(t *testing.T) {
