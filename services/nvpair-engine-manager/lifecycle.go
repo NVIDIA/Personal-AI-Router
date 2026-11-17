@@ -1033,7 +1033,7 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("not ready after %s", timeout)
+			return &readyTimeoutError{timeout: timeout}
 		}
 		select {
 		case <-ctx.Done():
