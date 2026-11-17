@@ -11,6 +11,12 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.37 — vLLM starts on DGX Spark, and a timed-out start explains itself (#215)
+
+- Enabling vLLM on Linux now installs vLLM 0.34.0 and loads model weights into memory first, which fixes starts that took over eight minutes on DGX Spark and failed with "not ready after 8m0s".
+- vLLM now has 30 minutes to become ready before PAIR reports a failure, and the app, terminal interface and cluster peers wait that long too.
+- A start that times out now shows the last lines of the engine's output instead of a long, cut-off log tail.
+
 ## 1.0.36 — Choose vLLM models and load downloaded models on request (#203)
 
 - New vLLM setups wait for model selection without downloading a default model. Requests can load models that are already fully downloaded.
