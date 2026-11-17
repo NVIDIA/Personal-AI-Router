@@ -756,9 +756,12 @@ never sent over this control channel. Non-retryable preparation failures retain
 an actionable error response rather than repeatedly restarting a failing model.
 Requests for the last successfully prepared model skip this relay until a
 lifecycle change, engine-manager restart, or upstream failure invalidates it.
-Concurrent same-model requests share preparation. An already-serving model can
-also be confirmed by engine-manager without taking its launch operation lock;
-an overlapping lifecycle change falls back to the locked admission path.
+Concurrent same-model requests share one preparation and its result. Each request
+can stop waiting independently; the shared load is cancelled only when its last
+waiting request leaves. Preparation retains its own 10-minute budget rather than
+inheriting the initiating request's cancellation or deadline. An already-serving
+model can also be confirmed by engine-manager without taking its launch operation
+lock; an overlapping lifecycle change falls back to the locked admission path.
 
 A per-facade gate allows concurrent same-model local inference and FIFO groups
 for different models. Admission spans the complete response, including streams;

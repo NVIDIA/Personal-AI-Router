@@ -88,6 +88,8 @@ type modelPreparationWriter struct {
 	proxy       *Proxy
 	port        int
 	requests    chan modelrequest.Preparation
+	cancelled   chan modelrequest.Preparation
+	deferReply  bool
 	failure     string
 	beforeReply func() error
 }
@@ -99,14 +101,23 @@ func (w *modelPreparationWriter) Write(data []byte) (int, error) {
 	if err := json.Unmarshal(data, &message); err != nil {
 		return 0, err
 	}
-	if message.Method != modelrequest.Request {
+	if message.Method != modelrequest.Request && message.Method != modelrequest.Cancel {
 		return len(data), nil
 	}
 	var request modelrequest.Preparation
 	if err := json.Unmarshal(message.Params, &request); err != nil {
 		return 0, err
 	}
+	if message.Method == modelrequest.Cancel {
+		if w.cancelled != nil {
+			w.cancelled <- request
+		}
+		return len(data), nil
+	}
 	w.requests <- request
+	if w.deferReply {
+		return len(data), nil
+	}
 	if w.beforeReply != nil {
 		if err := w.beforeReply(); err != nil {
 			return 0, err
@@ -358,6 +369,8 @@ func TestPrepareModelTransport_PreservesPreparationAcrossAnInventoryRefresh(t *t
 	assert.Len(t, writer.requests, 1)
 }
 
+// A request joining an existing load must be able to time out independently
+// without stopping the load that another request still needs.
 func TestPrepareModelTransport_CancelsARequestWaitingForSharedPreparation(t *testing.T) {
 	f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
 	started, resume := make(chan struct{}), make(chan struct{})
@@ -385,6 +398,121 @@ func TestPrepareModelTransport_CancelsARequestWaitingForSharedPreparation(t *tes
 	release()
 	require.NoError(t, <-first)
 	assert.Len(t, writer.requests, 1)
+}
+
+// Observing Done synchronizes with a caller waiting for shared preparation,
+// before another caller is cancelled or the engine manager replies.
+type preparationWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *preparationWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func sendPreparationReply(t *testing.T, f *facade, reply modelrequest.Reply) {
+	t.Helper()
+	raw, err := json.Marshal(reply)
+	require.NoError(t, err)
+	require.True(t, f.host.handleModelPrepared(&Message{Method: modelrequest.ReplyMethod, Params: raw}))
+}
+
+// A client that started a shared load can disconnect while another client
+// still needs the model. Keep the original load alive for the remaining request.
+func TestPrepareRequestedModel_KeepsLoadingForRemainingRequests(t *testing.T) {
+	f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
+	writer.deferReply = true
+	writer.cancelled = make(chan modelrequest.Preparation, 2)
+	firstCtx, cancelFirst := context.WithCancel(t.Context())
+	defer cancelFirst()
+	first := make(chan error, 1)
+	go func() { first <- f.prepareRequestedModel(firstCtx, "org/a") }()
+	waitForCond(t, time.Second, "the initial model preparation", func() bool { return len(writer.requests) == 1 })
+	request := <-writer.requests
+	secondCtx := &preparationWaitContext{Context: t.Context(), waiting: make(chan struct{})}
+	second := make(chan error, 1)
+	go func() { second <- f.prepareRequestedModel(secondCtx, "org/a") }()
+	select {
+	case <-secondCtx.waiting:
+	case <-time.After(time.Second):
+		t.Fatal("the second request did not wait for preparation")
+	}
+
+	cancelFirst()
+
+	waitForCond(t, time.Second, "the initiating request to return", func() bool { return len(first) == 1 })
+	require.ErrorIs(t, <-first, context.Canceled)
+	assert.Empty(t, writer.cancelled, "the remaining request still needs the model")
+	sendPreparationReply(t, f, modelrequest.Reply{ID: request.ID, Engine: "vllm", Port: writer.port})
+	waitForCond(t, time.Second, "the remaining request to finish preparation", func() bool { return len(second) == 1 })
+	require.NoError(t, <-second)
+	assert.Empty(t, writer.requests, "both requests must share one preparation")
+	assert.Empty(t, writer.cancelled)
+}
+
+// Once no request needs the model, stop loading and clear the pending state
+// so abandoned work does not consume resources or block a later request.
+func TestPrepareRequestedModel_CancelsLoadingAfterTheLastRequestLeaves(t *testing.T) {
+	f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
+	writer.deferReply = true
+	writer.cancelled = make(chan modelrequest.Preparation, 2)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() { finished <- f.prepareRequestedModel(ctx, "org/a") }()
+	waitForCond(t, time.Second, "the model preparation", func() bool { return len(writer.requests) == 1 })
+	request := <-writer.requests
+
+	cancel()
+
+	waitForCond(t, time.Second, "the cancelled request to return", func() bool { return len(finished) == 1 })
+	require.ErrorIs(t, <-finished, context.Canceled)
+	waitForCond(t, time.Second, "the model preparation cancellation", func() bool { return len(writer.cancelled) == 1 })
+	assert.Equal(t, request, <-writer.cancelled)
+	waitForCond(t, time.Second, "pending preparation cleanup", func() bool {
+		f.modelRequests.mu.Lock()
+		defer f.modelRequests.mu.Unlock()
+		return len(f.modelRequests.pending) == 0 && f.modelRequests.preparing == nil
+	})
+}
+
+// A failed load must give every waiting request the same error. Retrying it
+// for each request would repeat expensive startup that is already known to fail.
+func TestPrepareRequestedModel_SharesPreparationFailuresWithWaitingRequests(t *testing.T) {
+	f, writer := modelRequestFacade(t, "http://127.0.0.1:8001", "")
+	writer.deferReply = true
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { first <- f.prepareRequestedModel(ctx, "org/a") }()
+	waitForCond(t, time.Second, "the initial model preparation", func() bool { return len(writer.requests) == 1 })
+	request := <-writer.requests
+	secondCtx := &preparationWaitContext{Context: ctx, waiting: make(chan struct{})}
+	second := make(chan error, 1)
+	go func() { second <- f.prepareRequestedModel(secondCtx, "org/a") }()
+	select {
+	case <-secondCtx.waiting:
+	case <-time.After(time.Second):
+		t.Fatal("the second request did not wait for preparation")
+	}
+
+	sendPreparationReply(t, f, modelrequest.Reply{ID: request.ID, Engine: "vllm", Error: "model does not fit in memory", Status: http.StatusUnprocessableEntity})
+
+	waitForCond(t, time.Second, "both preparation failures", func() bool { return len(first) == 1 && len(second) == 1 })
+	test := func(name string, result error) {
+		t.Run(name, func(t *testing.T) {
+			var failure modelPreparationFailure
+			require.ErrorAs(t, result, &failure)
+			assert.Equal(t, http.StatusUnprocessableEntity, failure.status)
+			assert.Equal(t, "model does not fit in memory", failure.message)
+		})
+	}
+	test("initiating request", <-first)
+	test("waiting request", <-second)
+	assert.Empty(t, writer.requests, "a shared failure must not restart preparation for another waiter")
 }
 
 func TestPrepareModelTransport_RechecksPreparationAfterAnEngineError(t *testing.T) {

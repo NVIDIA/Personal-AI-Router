@@ -98,7 +98,15 @@ type modelRequestRelay struct {
 	// requests share the initial preparation without repeating the broker relay.
 	preparedModel string
 	generation    uint64
-	preparing     chan struct{}
+	preparing     *sharedModelPreparation
+}
+
+type sharedModelPreparation struct {
+	model   string
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int
+	err     error
 }
 
 func (f *facade) prepareRequestedModel(ctx context.Context, model string) error {
@@ -112,31 +120,60 @@ func (f *facade) prepareRequestedModel(ctx context.Context, model string) error 
 			relay.mu.Unlock()
 			return nil
 		}
-		if done := relay.preparing; done != nil {
+		preparation := relay.preparing
+		if preparation != nil && (preparation.model != model || preparation.waiters == 0) {
+			// An abandoned preparation must finish cleanup before another starts.
 			relay.mu.Unlock()
 			select {
-			case <-done:
+			case <-preparation.done:
 				continue
 			case <-ctx.Done():
 				return ctx.Err()
 			}
 		}
-		done := make(chan struct{})
-		relay.preparing = done
-		relay.preparedModel = ""
-		generation := relay.generation
+		if preparation == nil {
+			// No individual request owns the shared load. Its own budget remains
+			// bounded, and the last interested request cancels it when leaving.
+			sharedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelrequest.Budget)
+			preparation = &sharedModelPreparation{model: model, done: make(chan struct{}), cancel: cancel}
+			relay.preparing = preparation
+			relay.preparedModel = ""
+			go f.runModelPreparation(sharedCtx, preparation, relay.generation)
+		}
+		preparation.waiters++
 		relay.mu.Unlock()
 
-		err := f.requestModelPreparation(ctx, model)
-		relay.mu.Lock()
-		if err == nil && generation == relay.generation {
-			relay.preparedModel = model
+		select {
+		case <-preparation.done:
+		case <-ctx.Done():
 		}
-		relay.preparing = nil
-		close(done)
+		relay.mu.Lock()
+		preparation.waiters--
+		if preparation.waiters == 0 {
+			preparation.cancel()
+		}
 		relay.mu.Unlock()
-		return err
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return preparation.err
 	}
+}
+
+// runModelPreparation shares one result with the waiting requests. A successful
+// load is reused only if the engine has not changed while it was loading.
+func (f *facade) runModelPreparation(ctx context.Context, preparation *sharedModelPreparation, generation uint64) {
+	err := f.requestModelPreparation(ctx, preparation.model)
+	preparation.cancel()
+	relay := &f.modelRequests
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	preparation.err = err
+	if err == nil && generation == relay.generation && preparation.waiters > 0 {
+		relay.preparedModel = preparation.model
+	}
+	relay.preparing = nil
+	close(preparation.done)
 }
 
 func (f *facade) invalidatePreparedModel() {
@@ -147,6 +184,9 @@ func (f *facade) invalidatePreparedModel() {
 }
 
 func (f *facade) requestModelPreparation(ctx context.Context, model string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	relay := &f.modelRequests
 	id := fmt.Sprintf("%s:%s:%d", f.host.runID, f.profile.Name, relay.next.Add(1))
 	reply := make(chan modelrequest.Reply, 1)
@@ -167,6 +207,10 @@ func (f *facade) requestModelPreparation(ctx context.Context, model string) erro
 	}
 	select {
 	case result := <-reply:
+		if err := ctx.Err(); err != nil {
+			_ = f.host.codec.Notify(modelrequest.Cancel, request)
+			return err
+		}
 		if result.Error != "" {
 			return modelPreparationFailure{status: result.Status, message: result.Error}
 		}
