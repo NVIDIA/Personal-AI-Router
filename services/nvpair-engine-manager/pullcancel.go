@@ -179,11 +179,8 @@ type pullClaim struct {
 	stopped   *activePull
 	// reported is set once the model's terminal frame goes out while this
 	// request is outstanding, so its client has heard how the model's download
-	// ended. installed and result keep that download's result if it installed
-	// the model. Guarded by the executor's pullMu.
-	reported  bool
-	installed bool
-	result    json.RawMessage
+	// ended. Guarded by the executor's pullMu.
+	reported bool
 	// download is the ID of the download the request runs as, once it has
 	// registered one, joined one, or reported its cancellation as a
 	// placeholder: the download whose frames are this request's. A request
@@ -354,8 +351,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// is one the request settles on, as a request joined to it does: once
 		// it has stopped, with how it ended. It can finish installing the
 		// model as it is stopped, or end on a stop its engine could not
-		// confirm, and "cancelled" sooner would deny either. A model installed
-		// meanwhile is the answer instead, as below.
+		// confirm, and "cancelled" sooner would deny either.
 		//
 		// Frames name only the engine and model, so while a download of this
 		// model is registered — the cancelled one still settling, or a retry
@@ -364,22 +360,17 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 		// would repeat it, or tell every UI that a live retry had ended. Once
 		// the model's terminal frame has gone out while this request was
 		// outstanding, from a download or from another request stopped like
-		// this one, a frame from this request would repeat that too. And if
-		// that download installed the model, its result is this request's, as
-		// though the request had joined it: "cancelled" would say the model is
-		// not there.
+		// this one, a frame from this request would repeat that too. Either
+		// way this request answers "cancelled", never another download's
+		// result: a retry that installed the model reports its own success.
 		if claim != nil && claim.key == key && claim.cancelled {
-			if stopped := claim.stopped; stopped != nil && !claim.installed {
+			if stopped := claim.stopped; stopped != nil {
 				claim.runsAs(key, stopped)
 				e.pullMu.Unlock()
 				return joinPull(ctx, stopped)
 			}
 			if _, registered := e.pulls[key]; registered || claim.reported {
-				installed, result := claim.installed, claim.result
 				e.pullMu.Unlock()
-				if installed {
-					return result, nil
-				}
 				return cancelledPull(), nil
 			}
 			// Nothing has reported how the model's download ended, so this
@@ -390,7 +381,7 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 			p.placeholder = true
 			p.requested.Store(true)
 			e.registerPull(key, p, claim)
-			e.pullOutcomeReported(key, false, nil)
+			e.pullOutcomeReported(key)
 			e.pullMu.Unlock()
 			e.emitPullOutcome(engine, model, true, nil)
 			e.pullMu.Lock()
@@ -482,7 +473,7 @@ waitForPredecessors:
 	e.emitPullOutcome(engine, model, cancelled, err)
 	e.pullMu.Lock()
 	delete(e.pulls, key)
-	e.pullOutcomeReported(key, err == nil && !pullResultCancelled(result), result)
+	e.pullOutcomeReported(key)
 	if errors.As(err, new(stopUnconfirmedError)) {
 		if e.stopsUnconfirmed == nil {
 			e.stopsUnconfirmed = make(map[pullKey]error)
@@ -496,16 +487,10 @@ waitForPredecessors:
 }
 
 // pullOutcomeReported records, on every request for key still outstanding, that
-// the model's terminal frame has gone out, and the result if the download
-// installed the model. A later outcome that did not install it leaves an
-// earlier install in place, since a cancel never deletes a model. Called with
-// pullMu held.
-func (e *Executor) pullOutcomeReported(key pullKey, installed bool, result json.RawMessage) {
+// the model's terminal frame has gone out. Called with pullMu held.
+func (e *Executor) pullOutcomeReported(key pullKey) {
 	for _, claim := range e.pullClaims[key] {
 		claim.reported = true
-		if installed {
-			claim.installed, claim.result = true, result
-		}
 	}
 }
 

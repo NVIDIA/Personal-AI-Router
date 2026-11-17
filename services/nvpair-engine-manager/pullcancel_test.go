@@ -192,9 +192,9 @@ func TestCancelModelPull_StopsARequestThatHasNotRegisteredYet(t *testing.T) {
 // cancel belongs to the original whichever of the two reaches the executor
 // first. Keyed by engine and model alone, it was consumed by the retry, which
 // reported "cancelled" while the original went on to download. Here the
-// original arrives once the retry has installed the model, so it settles on
-// that success rather than a "cancelled" that says the model is not there.
-func TestCancelModelPull_StopsTheOriginalRequestEvenWhenItsRetryRegistersFirst(t *testing.T) {
+// original arrives once the retry has installed the model, and still answers
+// "cancelled": the retry reports its own success.
+func TestCancelModelPull_OriginalRequestReportsCancelledEvenWhenItsRetryInstalls(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	original, releaseOriginal := ex.claimPull(t.Context(), "ollama", "demo")
 	defer releaseOriginal()
@@ -208,7 +208,40 @@ func TestCancelModelPull_StopsTheOriginalRequestEvenWhenItsRetryRegistersFirst(t
 	assert.True(t, retryRan, "the retry inherited the original request's cancellation")
 	assertPullStatus(t, retryResult, "success")
 	assert.False(t, originalRan, "the original request started after its cancellation was acknowledged")
-	assertPullStatus(t, originalResult, "success")
+	assertPullStatus(t, originalResult, "cancelled")
+}
+
+// A request the cancel stopped along with a registered download answers with
+// how that download ended, even when it gets there only after a retry has
+// installed the model: the retry's success is the retry's.
+func TestCancelModelPull_StoppedRequestAnswersItsDownloadsOutcomeEvenWhenARetryInstalls(t *testing.T) {
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	downloading := make(chan struct{})
+	first := make(chan json.RawMessage, 1)
+	go func() {
+		result, err := ex.trackedPull(t.Context(), "ollama", "demo", func(ctx context.Context) (json.RawMessage, error) {
+			close(downloading)
+			<-ctx.Done()
+			return nil, context.Canceled
+		})
+		assert.NoError(t, err)
+		first <- result
+	}()
+	<-downloading
+	stopped, releaseStopped := ex.claimPull(t.Context(), "ollama", "demo")
+	defer releaseStopped()
+	require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
+	assertPullStatus(t, <-first, "cancelled")
+	retry, releaseRetry := ex.claimPull(t.Context(), "ollama", "demo")
+	defer releaseRetry()
+
+	retryResult, retryRan := claimedPull(t, ex, retry)
+	stoppedResult, stoppedRan := claimedPull(t, ex, stopped)
+
+	assert.True(t, retryRan, "the retry inherited the earlier cancellation")
+	assertPullStatus(t, retryResult, "success")
+	assert.False(t, stoppedRan, "the stopped request started a download")
+	assertPullStatus(t, stoppedResult, "cancelled")
 }
 
 // A cancel can find nothing outstanding: the download it targets already
@@ -770,10 +803,12 @@ func TestTrackedPull_RequestsCancelledBeforeAnyRegistersSendOneTerminalFrame(t *
 
 // A duplicate request can still be on its way to the executor when the
 // download it would have joined finishes, and a cancel sent after that stops
-// only the duplicate. Its client has heard "success" and the model is
-// installed: a "cancelled" frame or result from the duplicate said otherwise,
-// and the terminal interface showed the download as cancelled.
-func TestTrackedPull_CancelledDuplicateOfAFinishedDownloadSettlesOnItsSuccess(t *testing.T) {
+// only the duplicate. The duplicate answers "cancelled", as a request a cancel
+// stopped does when the cancel found no download running, and never the
+// download's result. It sends no frame, though: every UI has heard the
+// download's "success", and a "cancelled" frame after it showed the installed
+// model's download as cancelled.
+func TestTrackedPull_CancelledDuplicateOfAFinishedDownloadAnswersCancelledWithoutAFrame(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 	events, unsubscribe := ex.progress.subscribe("ollama")
 	defer unsubscribe()
@@ -789,7 +824,7 @@ func TestTrackedPull_CancelledDuplicateOfAFinishedDownloadSettlesOnItsSuccess(t 
 	duplicateResult, duplicateRan := claimedPull(t, ex, duplicate)
 
 	assert.False(t, duplicateRan, "the cancelled duplicate started a download")
-	assertPullStatus(t, duplicateResult, "success")
+	assertPullStatus(t, duplicateResult, "cancelled")
 	assert.Equal(t, []ProgressEvent{
 		{Engine: "ollama", Model: "demo", Op: "pull", Stage: "success", Percent: 100, Message: "demo", Download: 1},
 	}, publishedFrames(events), "the model's download ended once")

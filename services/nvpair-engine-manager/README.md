@@ -342,18 +342,18 @@ that model is still registered, or once the model's outcome has been reported
 while the request was outstanding. Such a request settles as one joined to the
 download the cancel stopped along with it would, once that download has
 stopped and with how it ended, or answers `cancelled` when the cancel found no
-download running. Either way, if a download installed the model meanwhile, it
-answers with that download's result. A peer's progress hub drops frames a slow
-stream has no room for, the terminal one included, and streams one download's
-frames to every pull that shares it, and to no other. So a remote initiator
-holds back the terminal frame a stream carries, and only the last of the
-download's pulls outstanding there sends one: the frame it held when that
-agrees with its result, or else one built from the result. The peer names the
-download on a pull's progress frames and on its result, and the initiator takes
-two pulls for one download when the peer named the same download for both or,
-until it has named both, when no cancel was sent between them. A retry sent
-after a cancel is therefore a download of its own, and the cancelled download
-still sends its outcome while the retry is outstanding.
+download running. It never takes another download's result: a retry that
+installed the model meanwhile reports its own success. A peer's progress hub
+drops frames a slow stream has no room for, the terminal one included, and
+streams one download's frames to every pull that shares it, and to no other.
+So a remote initiator holds back the terminal frame a stream carries, and only
+the last of the download's pulls outstanding there sends one: the frame it
+held when that agrees with its result, or else one built from the result. The
+peer names the download on a pull's progress frames and on its result, and the
+initiator takes two pulls for one download when the peer named the same
+download for both or, until it has named both, when no cancel was sent between
+them. A retry sent after a cancel is therefore a download of its own, and the
+cancelled download still sends its outcome while the retry is outstanding.
 `model` names the download the frame belongs to, so a consumer can tell two
 pulls on one engine apart; a pull waiting on another of the same engine's
 downloads reports `stage:"queued"` until its turn),
