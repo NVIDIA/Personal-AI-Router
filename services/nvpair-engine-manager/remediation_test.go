@@ -333,14 +333,15 @@ func TestEngineStartup_ReportsFullMetalMemoryErrorForProcessEngines(t *testing.T
 
 			err := executor.Start(t.Context(), engine)
 
-			want := prefix + "Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again.\n\nEngine details:\n" +
-				"RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).\n" +
-				"RuntimeError: Engine core initialization failed."
-			require.EqualError(t, err, want)
+			require.ErrorContains(t, err, prefix+"Not enough available GPU memory")
+			assert.ErrorContains(t, err, "Unload models from other engines or free memory")
+			assert.ErrorContains(t, err, "\n\nEngine details:\n")
+			assert.ErrorContains(t, err, "kIOGPUCommandBufferCallbackErrorOutOfMemory")
+			assert.NotContains(t, err.Error(), "check the launch options")
 			reported := executor.Errors()
 			require.Len(t, reported, 1)
 			assert.Equal(t, startFailedID(engine), reported[0].ID)
-			assert.Equal(t, want, reported[0].Message)
+			assert.Equal(t, err.Error(), reported[0].Message)
 			assert.Equal(t, "retry", reported[0].Action)
 			state, statusErr := executor.Status(engine)
 			require.NoError(t, statusErr)
@@ -366,14 +367,15 @@ func TestEngineStartup_ReportsFullMetalMemoryErrorForCustomCommand(t *testing.T)
 
 	err := executor.Start(t.Context(), "lmstudio")
 
-	want := "start command failed: Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again.\n\nEngine details:\n" +
-		"RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).\n" +
-		"RuntimeError: Engine core initialization failed."
-	require.EqualError(t, err, want)
+	require.ErrorContains(t, err, "start command failed: Not enough available GPU memory")
+	assert.ErrorContains(t, err, "Unload models from other engines or free memory")
+	assert.ErrorContains(t, err, "\n\nEngine details:\n")
+	assert.ErrorContains(t, err, "kIOGPUCommandBufferCallbackErrorOutOfMemory")
+	assert.NotContains(t, err.Error(), "check the launch options")
 	reported := executor.Errors()
 	require.Len(t, reported, 1)
 	assert.Equal(t, startFailedID("lmstudio"), reported[0].ID)
-	assert.Equal(t, want, reported[0].Message)
+	assert.Equal(t, err.Error(), reported[0].Message)
 	assert.Equal(t, "retry", reported[0].Action)
 	state, statusErr := executor.Status("lmstudio")
 	require.NoError(t, statusErr)

@@ -159,8 +159,11 @@ engine or OS. Commands use this capture when custom launch arguments or environm
 are supplied. The public error retains its existing engine or command context before the advice
 and appends the bounded, redacted diagnostic tail under `Engine details:`. The
 original error cause remains available. Detection occurs after redaction and
-survives subsequent traceback truncation. Unrelated failures and explicit
-cancellation keep their existing explanations and lifecycle behavior.
+survives subsequent traceback truncation. The tail is bounded to 8 KiB. Unrelated
+failures keep their existing explanations and lifecycle behavior. Cancellation
+and expired operation deadlines are identified from the operation context as
+well as the returned error; both the interruption and any underlying subprocess
+error remain available, without being reclassified as memory failures.
 
 Example request:
 ```json

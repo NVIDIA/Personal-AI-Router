@@ -15,7 +15,7 @@ import (
 	"unicode"
 )
 
-const maxStartupOutput = 8 * 1024
+const maxStartupOutputBytes = 8 * 1024
 
 var metalMemoryMessage = regexp.MustCompile(`\[metal\][^\r\n]*insufficient memory`)
 
@@ -36,7 +36,7 @@ func (o *startupOutput) Write(p []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for !o.closed && len(p) > 0 {
-		size := min(len(p), maxStartupOutput)
+		size := min(len(p), maxStartupOutputBytes)
 		o.pending += string(p[:size])
 		p = p[size:]
 		o.flush(false)
@@ -79,12 +79,12 @@ func (o *startupOutput) appendTail(text string) {
 		o.metalMemoryFailure = strings.Contains(diagnostic, "kiogpucommandbuffercallbackerroroutofmemory") ||
 			metalMemoryMessage.MatchString(diagnostic)
 	}
-	if len(text) > maxStartupOutput {
-		text = text[len(text)-maxStartupOutput:]
+	if len(text) > maxStartupOutputBytes {
+		text = text[len(text)-maxStartupOutputBytes:]
 	}
 	o.tail += text
-	if len(o.tail) > maxStartupOutput {
-		o.tail = o.tail[len(o.tail)-maxStartupOutput:]
+	if len(o.tail) > maxStartupOutputBytes {
+		o.tail = o.tail[len(o.tail)-maxStartupOutputBytes:]
 	}
 }
 
@@ -140,13 +140,18 @@ func newStartupOutput(args []string, env map[string]string) *startupOutput {
 	return o
 }
 
-func (o *startupOutput) failure(err error) error {
+func (o *startupOutput) failure(ctx context.Context, err error) error {
 	o.mu.Lock()
 	o.flush(true)
 	text := o.tail
 	memoryFailure := o.metalMemoryFailure
 	o.mu.Unlock()
-	memoryFailure = memoryFailure && !errors.Is(err, context.Canceled)
+	// CommandContext may return an ExitError when it kills the child. Preserve
+	// that cause, but use the operation context to identify cancellation/timeouts.
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+		err = errors.Join(err, ctxErr)
+	}
+	memoryFailure = memoryFailure && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	if memoryFailure {
 		err = &startupMemoryError{cause: err}
 	}
