@@ -11,6 +11,13 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.38 — Cancel model downloads and see their progress (#111)
+
+- Model downloads show live progress and a Cancel button for Ollama, LM Studio, llama.cpp, and vLLM, including downloads running on remote nodes.
+- Canceling an Ollama or LM Studio download removes the partial files PAIR can attribute to it, while preserving completed models, other quantizations, and downloads belonging to other clients on the same machine. llama.cpp and vLLM keep a canceled download's files so the next download can resume them.
+- Downloads for one engine queue behind each other instead of failing, a second request for a model that is already downloading joins that download, and a queued download can be canceled or retried before it starts.
+- The terminal interface can cancel a download from a node's detail screen, on this machine or a peer.
+
 ## 1.0.37 — vLLM starts on DGX Spark, and a timed-out start explains itself (#215)
 
 - Enabling vLLM on Linux now installs vLLM 0.34.0 and loads model weights into memory first, which fixes starts that took over eight minutes on DGX Spark and failed with "not ready after 8m0s".
