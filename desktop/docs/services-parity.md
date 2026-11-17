@@ -503,7 +503,8 @@ feed, which may be that one, is in flight: then the frame is shown, and a last
 frame ends that download. Downloads picked up from the feed are still matched
 by engine and model, since the opIds a frame names change as requests join and
 leave the download, so on a peer's screen a stopped download's last frame can
-retire another client's retry until its next one. The desktop app names none
+retire a retry an earlier visit started, which this screen picked up, until the
+retry's next frame. The desktop app names none
 and matches frames by engine and model, which is enough there: it sends no
 retry of a model until the pull before it has replied, and the engine-manager
 sends a download's last frame before that reply. Ollama closes the pull

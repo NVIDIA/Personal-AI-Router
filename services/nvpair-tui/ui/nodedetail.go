@@ -184,13 +184,13 @@ type detailModelRow struct {
 // manager names on its frames, so they are told apart by attempt too; see
 // followDownload. One picked up from the feed is kept with none: the opIds a
 // frame names are the requests running as the download, which change as
-// requests join and leave it, and the desktop app sends none. Its frames are
-// matched by engine and model, so the window they always had stays open for
-// it: a progress frame of one this screen cancelled, arriving after the
-// cancel's acknowledgement, tracks it again until its last frame, and on a
-// peer's screen, whose frames for two downloads are relayed independently, a
-// stopped download's last frame can arrive after another client's retry of
-// the model was picked up, and retire the retry until its next frame.
+// requests join and leave it. Its frames are matched by engine and model, so
+// the window that leaves stays open for it: a progress frame of one this
+// screen cancelled, arriving after the cancel's acknowledgement, tracks it
+// again until its last frame, and on a peer's screen, whose frames for two
+// downloads are relayed independently, a stopped download's last frame can
+// arrive after a retry an earlier visit started was picked up, and retire the
+// retry until its next frame.
 type detailDownload struct {
 	engine  string
 	model   string

@@ -1665,7 +1665,7 @@ func TestDownloadCancel_FrameFromAnEarlierVisitLeavesTheNextVisitsDownloadAlone(
 }
 
 // Two pulls of one peer's download can run from this machine at once, this
-// screen's and another client's, and only the last of them to end sends the
+// screen's and an earlier visit's, and only the last of them to end sends the
 // frame saying how the download ended, under its own opId. It names the pulls
 // that ended before it in opIds, so a screen whose pull was one of those sees
 // its download end, even once its reply has timed out.
@@ -1678,7 +1678,7 @@ func TestDownloadStart_EndsWithTheLastFrameAnotherPullOfThePeersDownloadSent(t *
 
 	d.update(progressPush(t, "engine:remote-progress", map[string]any{
 		"node": "peer", "engine": "ollama", "model": "llama3.2", "op": "pull", "stage": "success", "percent": 100,
-		"message": "llama3.2", "opId": "another-client", "opIds": []string{own.opID},
+		"message": "llama3.2", "opId": "earlier-visit", "opIds": []string{own.opID},
 	}))
 
 	assert.Empty(t, d.downloads, "the download stayed in flight after its last frame")
@@ -1827,8 +1827,7 @@ func TestMarkDownloadEnded_RemembersOnlyTheLatestDownloads(t *testing.T) {
 	assert.Len(t, endedDownloads, endedDownloadsKept)
 }
 
-// The desktop app sends its downloads without an opId, so their frames name
-// no request. Those frames still put the download in flight, to be cancelled
+// Frames that name no request still put a download in flight, to be cancelled
 // from here, and its outcome still ends it, on this machine's screen and on a
 // peer's.
 func TestFeedDownload_IsTrackedAndEndedByFramesNamingNoRequest(t *testing.T) {
