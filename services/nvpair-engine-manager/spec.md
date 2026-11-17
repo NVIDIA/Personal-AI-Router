@@ -14,6 +14,65 @@ across OSes with no per-engine code. A third party drops in a JSON manifest and
 their engine's install/launch/controls "just appear" over the same API: the core
 extensibility story for an open-source product.
 
+### vLLM first enable and model selection
+
+Enabling a newly configured vLLM installs the engine and leaves it enabled while
+waiting for a model choice. It does not select, download, or load a default model.
+The status has `installed:true`, `awaiting_model:true`, `running:false`, and
+`healthy:false`; no vLLM serving process or loaded model is advertised. The
+optional `awaiting_model` field is false or omitted in other lifecycle states.
+The desktop shows **Select a model**, keeps the switch on, and offers **Add model**
+and **Load** for downloaded models. A stopped engine hides its model controls.
+
+An explicit Load saves the chosen model and performs the normal readiness-probed
+start. Existing saved model arguments remain in effect, so upgrading preserves
+an existing user's selection. Stop turns enabled intent off; normal shutdown
+preserves it, including waiting for a choice. A failed first Load restores the
+previous model-free enabled state. Eject stops the serving process, releases model
+memory, clears the saved model selection, and returns to the enabled state waiting
+for a choice. Eject during a Load cancels that load and returns to the same state.
+Only explicit Stop disables the engine. No inactivity unload policy is added.
+An enabled, installed model-selecting engine whose serving process crashes is
+reported as awaiting a model again, keeping clients' ON state consistent with
+the request-loading capability. The crash error remains available to the user.
+
+
+### Request-triggered model loading
+
+Requests through the PAIR vLLM endpoint may select a model that is already
+completely downloaded on an enabled node. A request while awaiting a model loads
+that model; a request for B while A is loaded switches to B after active A
+responses finish. Requests for the same model can run concurrently. Other-model
+requests form FIFO groups, so an ongoing stream is not interrupted by an automatic
+switch and a queued switch is not starved by new requests for the old model.
+
+A custom `--served-model-name` restricts advertisement to the currently served
+aliases. Requests for an already served alias keep the current process. Cached
+repository IDs are not advertised as API names while this option is configured.
+After Eject, an alias alone cannot identify the cached repository to load; select
+a model explicitly or remove the custom alias before relying on cached requests.
+
+The proxy owns inference and response lifetimes; engine-manager alone validates
+cached inventory and enabled intent and changes the serving process using the
+normal launch transaction. Unknown or incomplete downloads are refused, explicit
+OFF remains authoritative even with stale discovery, and failed switches restore
+the previous model. Client cancellation removes queued work and cancels its pending
+model preparation. Eject and Stop can still cancel a load. Preparation has a
+10-minute budget including queueing; normal stream/body deadlines still apply
+once inference starts. Clients must allow for cold model startup latency.
+
+Before starting a model for a request, its effective `--revision` (default `main`)
+must resolve to a complete cached snapshot. Another complete revision in the disk
+inventory does not authorize a download of the selected revision. This check does
+not restart an already served model or restrict explicit Load.
+
+`modelsByEngine` for this engine lists complete cached models only while enabled;
+`downloadedByEngine` remains the disk inventory even while disabled, and
+`loadedByEngine` continues to identify only resident models. Enabled-but-empty
+vLLM has no serving process and downloads nothing merely because it was enabled.
+Native vLLM's direct engine port retains vLLM's own behavior; request-triggered
+loading is provided by the PAIR proxy endpoint.
+
 ## 2. Scope
 **In scope**
 - Broker-coordinated argument/server/proxy settings, literal argument
@@ -62,7 +121,20 @@ extensibility story for an open-source product.
   Missing telemetry never implies shared memory: only verified integrated
   CUDA/ROCm or XPU devices, Apple Silicon Metal, or an explicit CPU engine use
   system RAM. Shared-memory readings reserve 3 GiB for runtime startup.
-- A normalized node-level model list (`engine:models`): union of every running engine's `list_models`, name-extracted via each action's declarative `result` spec, plus the per-engine set of models loaded in memory (`loadedByEngine`, from each engine's `loaded_models` action). An engine with `advertised_models: "loaded"` (vLLM) advertises only its served model in `modelsByEngine` and reports its `list_models` inventory as `downloadedByEngine`, read even while it is stopped; its `loadedByEngine` names models the way that inventory does. A successful explicit empty inventory remains an engine key with `[]`; a missing/malformed/failed inventory omits that engine key instead of being mislabeled as authoritative empty. A watcher polls these lists and pushes `engine:models-changed` when one changes (explicit load/unload, JIT auto-load, TTL/idle eviction, a pull or a delete).
+- A normalized node-level model list (`engine:models`): the union of each
+  engine's advertised `modelsByEngine`, name-extracted through its declarative
+  action result, plus the resident `loadedByEngine` from `loaded_models`.
+  Engines using `advertised_models: "loaded"` advertise only served names.
+  Enabled vLLM uses `advertised_models: "available"` to advertise complete cached
+  models for request-triggered loading, subject to the custom alias restriction
+  above. Its `list_models` disk inventory is also reported as
+  `downloadedByEngine`, including while disabled; its `loadedByEngine` uses those
+  cached repository IDs to identify resident rows. `requestableByEngine` carries
+  loader capability independently of ON/OFF intent for the broker's local route
+  updates. A successful empty inventory retains an engine key with `[]`; a
+  missing, malformed or failed inventory omits the key. A watcher polls these
+  lists and pushes `engine:models-changed` after load, unload, idle eviction,
+  download or deletion changes them.
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
 
 **Out of scope**
@@ -94,8 +166,26 @@ Omitting it uses this node's setting. Only `huggingface` and `modelscope` are
 accepted for llama.cpp; each source keeps its own browse/search cache.
 
 ModelScope's public GGUF catalogue is normalized through the same quantization
-and generative-model filters as Hugging Face. A loopback-only adapter translates
-ModelScope metadata and streams file requests without forwarding Hugging Face
+and generative-model filters as Hugging Face. Browse and search each read one
+50-entry page by downloads, the largest ModelScope serves, and list each
+candidate's files at most eight at a time. A repo with a speech, audio, image,
+video, embedding or reranking marker in its tags or as words of its name is
+dropped, even when it declares a chat task, as ModelScope does for some
+embedding and speech repos. ModelScope declares no task for many chat repos, so
+an unmarked repo without one counts as chat. The markers are a blocklist of the
+families seen on ModelScope, so an unmarked non-chat repo can still be listed,
+and a chat repo named after one, such as a prompt generator for an image model,
+is dropped. A repo whose file list fails is left out of the cached list. The
+fetch fails instead when more than a quarter of the file lists fail, when a
+failure leaves no model, or when a browse list is empty, so the cache keeps
+its previous list rather than one cut short. A fetch whose request ends or
+times out first returns the models it listed. They are served when no complete
+list is cached, but only until the two-minute failure backoff ends rather than
+for the six-hour cache lifetime, and they never replace a complete list. The
+browse list is cached apart from searches, so searches never evict it.
+
+A loopback-only adapter translates ModelScope metadata and streams file
+requests without forwarding Hugging Face
 credentials. Requests must match the listener's exact Host and include a random
 256-bit path token, which is redacted from engine output. Streams are bounded to
 the accepted file size and must match the metadata SHA-256. The adapter advertises
@@ -151,6 +241,8 @@ implementation is used.
   display_name: string
   installed: boolean
   running: boolean
+  starting?: boolean
+  awaiting_model?: boolean
   healthy: boolean
   port: number
 }
@@ -162,6 +254,21 @@ implementation is used.
 ```
 
 Errors are emitted with the `nvpair-shared/errors.ServiceError` wire shape (`id`, `message`, `severity`, `action`, …), mirrored locally in `reporter.go` with identical JSON tags. `id` follows `engine-manager:<class>:<engine>`; the Broker stamps `nodeId` / `timestamp`.
+
+When startup output identifies a Metal out-of-memory failure, the error message
+includes an explanation that available GPU memory is insufficient and advice to
+unload models from other engines or free memory before retrying. Classification
+is shared across engine names, process and privately captured command launches,
+and host platforms; it depends on the emitted Metal diagnostic rather than the
+engine or OS. Commands use this capture when custom launch arguments or environment
+are supplied. The public error retains its existing engine or command context before the advice
+and appends the bounded, redacted diagnostic tail under `Engine details:`. The
+original error cause remains available. Detection occurs after redaction and
+survives subsequent traceback truncation. The tail is bounded to 8 KiB. Unrelated
+failures keep their existing explanations and lifecycle behavior. Cancellation
+and expired operation deadlines are identified from the operation context as
+well as the returned error; both the interruption and any underlying subprocess
+error remain available, without being reclassified as memory failures.
 
 Example request:
 ```json
@@ -398,3 +505,10 @@ end over stdio. Current product wiring is:
 
 The retired desktop wiring is intentionally omitted; its implementation record
 remains available in Git history and is not part of the current architecture.
+
+`EngineStatus.enabled` is authoritative ON intent, independent of process
+residency. Model switching preserves `enabled` and reports `starting` until the
+replacement is ready. The broker acknowledges local availability updates before
+forwarding lifecycle events. `requestableByEngine` is retained loader capability
+independent of ON/OFF state; only enabled inventories are advertised for routing.
+It must not be interpreted as loaded models by desktop, TUI or discovery clients.

@@ -17,6 +17,7 @@ export function ModelRowSecondaryRow({
     progress,
     busyLabel,
     hasExpiry,
+    disabled,
     expiryDd,
     onExpiryChange
 }: {
@@ -25,6 +26,7 @@ export function ModelRowSecondaryRow({
     /** Optimistic "working" label (load/eject/delete in flight) shown with a spinner. */
     busyLabel?: string | null
     hasExpiry: boolean
+    disabled: boolean
     expiryDd: ModelRowDropdownControl
     onExpiryChange: (modelName: string, value: ModelExpiry) => void
 }) {
@@ -32,11 +34,12 @@ export function ModelRowSecondaryRow({
         () =>
             EXPIRY_OPTIONS.map(item => ({
                 children: item.children,
+                disabled,
                 onSelect: () => {
                     if (isModelExpiry(item.id)) onExpiryChange(model.name, item.id)
                 }
             })),
-        [model.name, onExpiryChange]
+        [disabled, model.name, onExpiryChange]
     )
 
     return (
@@ -83,6 +86,7 @@ export function ModelRowSecondaryRow({
                 {hasExpiry && (
                     <Dropdown
                         items={expiryItems}
+                        disabled={disabled}
                         size="small"
                         className="compact-dropdown"
                         onOpenChange={expiryDd.onOpenChange}

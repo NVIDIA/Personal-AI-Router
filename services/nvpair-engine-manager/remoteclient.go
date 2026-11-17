@@ -25,7 +25,7 @@ import (
 
 const (
 	remoteResponseHeaderTimeout      = 30 * time.Second
-	remoteReadyResponseHeaderTimeout = 11 * time.Minute
+	remoteReadyResponseHeaderTimeout = 31 * time.Minute
 	remoteStreamFrameBytes           = maxFrameBytes
 )
 

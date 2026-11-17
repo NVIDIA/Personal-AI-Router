@@ -82,6 +82,7 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
+	preparations  modelPreparations
 	settingsRelay settingsRelay
 	codec         *Codec
 	exec          *Executor
@@ -202,6 +203,9 @@ func (m *Manager) readLoop(ctx context.Context) error {
 }
 
 func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
+	if m.handleModelPreparation(ctx, msg) {
+		return
+	}
 	if m.handleSettingsMessage(ctx, msg) {
 		return
 	}

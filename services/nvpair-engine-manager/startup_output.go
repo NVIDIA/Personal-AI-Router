@@ -5,25 +5,31 @@ package main
 
 import (
 	"cmp"
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
-const maxStartupOutput = 8 * 1024
+const maxStartupOutputBytes = 8 * 1024
 
-// startupOutput retains a bounded diagnostic tail without interpreting vendor
-// messages or option names. It is discarded when startup succeeds.
+var metalMemoryMessage = regexp.MustCompile(`\[metal\][^\r\n]*insufficient memory`)
+
+// startupOutput retains a bounded, redacted diagnostic tail and remembers
+// recognized Metal memory failures. It is discarded when startup succeeds.
 type startupOutput struct {
-	mu       sync.Mutex
-	tail     string
-	pending  string
-	private  *regexp.Regexp
-	lookback int
-	closed   bool
+	mu                 sync.Mutex
+	tail               string
+	pending            string
+	private            *regexp.Regexp
+	lookback           int
+	closed             bool
+	metalMemoryFailure bool
 }
 
 func (o *startupOutput) Write(p []byte) (int, error) {
@@ -31,7 +37,7 @@ func (o *startupOutput) Write(p []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for !o.closed && len(p) > 0 {
-		size := min(len(p), maxStartupOutput)
+		size := min(len(p), maxStartupOutputBytes)
 		o.pending += string(p[:size])
 		p = p[size:]
 		o.flush(false)
@@ -67,12 +73,19 @@ func (o *startupOutput) flush(final bool) {
 }
 
 func (o *startupOutput) appendTail(text string) {
-	if len(text) > maxStartupOutput {
-		text = text[len(text)-maxStartupOutput:]
+	// Classify only redacted output. Remember the reason before bounding the
+	// tail: a long follow-up traceback can otherwise displace the root failure.
+	if !o.metalMemoryFailure {
+		diagnostic := strings.ToLower(o.tail + text)
+		o.metalMemoryFailure = strings.Contains(diagnostic, "kiogpucommandbuffercallbackerroroutofmemory") ||
+			metalMemoryMessage.MatchString(diagnostic)
+	}
+	if len(text) > maxStartupOutputBytes {
+		text = text[len(text)-maxStartupOutputBytes:]
 	}
 	o.tail += text
-	if len(o.tail) > maxStartupOutput {
-		o.tail = o.tail[len(o.tail)-maxStartupOutput:]
+	if len(o.tail) > maxStartupOutputBytes {
+		o.tail = o.tail[len(o.tail)-maxStartupOutputBytes:]
 	}
 }
 
@@ -82,6 +95,43 @@ func (o *startupOutput) close() {
 	o.closed = true
 	o.tail = ""
 	o.pending = ""
+	o.metalMemoryFailure = false
+}
+
+// Keep the original cause available to errors.Is without presenting generic
+// launch-options advice as the explanation for a recognized memory failure.
+type startupMemoryError struct{ cause error }
+
+func (e *startupMemoryError) Error() string {
+	return "Not enough available GPU memory to start this engine. Unload models from other engines or free memory, then try again."
+}
+
+func (e *startupMemoryError) Unwrap() error { return e.cause }
+
+// readyTimeoutError reports that the readiness probe never passed in time.
+type readyTimeoutError struct{ timeout time.Duration }
+
+func (e *readyTimeoutError) Error() string { return fmt.Sprintf("not ready after %s", e.timeout) }
+
+const (
+	readyTimeoutDetailLines = 12
+	readyTimeoutLineWidth   = 240
+)
+
+// recentLines keeps the last few non-empty lines, each cut to a readable width,
+// so a timeout shows what the engine was doing instead of a raw log tail that
+// starts mid-line and may hold one multi-kilobyte configuration line.
+func recentLines(text string, maxLines, width int) string {
+	var lines []string
+	for line := range strings.SplitSeq(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			if runes := []rune(line); len(runes) > width {
+				line = string(runes[:width]) + "…"
+			}
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines[max(0, len(lines)-maxLines):], "\n")
 }
 
 func newStartupOutput(args []string, env map[string]string) *startupOutput {
@@ -117,11 +167,21 @@ func newStartupOutput(args []string, env map[string]string) *startupOutput {
 	return o
 }
 
-func (o *startupOutput) failure(err error) error {
+func (o *startupOutput) failure(ctx context.Context, err error) error {
 	o.mu.Lock()
 	o.flush(true)
 	text := o.tail
+	memoryFailure := o.metalMemoryFailure
 	o.mu.Unlock()
+	// CommandContext may return an ExitError when it kills the child. Preserve
+	// that cause, but use the operation context to identify cancellation/timeouts.
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+		err = errors.Join(err, ctxErr)
+	}
+	memoryFailure = memoryFailure && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+	if memoryFailure {
+		err = &startupMemoryError{cause: err}
+	}
 	text = strings.TrimSpace(strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return -1
@@ -130,6 +190,13 @@ func (o *startupOutput) failure(err error) error {
 	}, strings.ToValidUTF8(text, "")))
 	if text == "" {
 		return err
+	}
+	if memoryFailure {
+		return fmt.Errorf("%w\n\nEngine details:\n%s", err, text)
+	}
+	var timedOut *readyTimeoutError
+	if errors.As(err, &timedOut) {
+		return fmt.Errorf("%w\n\nLast engine output:\n%s", err, recentLines(text, readyTimeoutDetailLines, readyTimeoutLineWidth))
 	}
 	return fmt.Errorf("%w: %s", err, text)
 }

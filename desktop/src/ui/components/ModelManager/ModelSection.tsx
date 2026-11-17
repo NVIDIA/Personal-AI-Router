@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Divider, Text } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import { ModelManager } from './ModelManager'
@@ -23,6 +23,13 @@ export function ModelSection({
     /** Remote node: render the model list read-only (no pull/load/delete). */
     disabled?: boolean
 }) {
+    const accordionRef = useRef<HTMLDetailsElement>(null)
+    useEffect(() => {
+        if (backend.processStatus === 'awaiting-model' && accordionRef.current) {
+            accordionRef.current.open = true
+        }
+    }, [backend.processStatus])
+
     const [edit, setEdit] = useState<EditState>({
         serverPort: String(backend.port ?? ''),
         proxyPort: String(backend.proxyPort ?? ''),
@@ -47,7 +54,7 @@ export function ModelSection({
     const anyLoading = edit.serverLoading || edit.proxyLoading || isTransitioning || disabled
 
     return (
-        <details className="pair-accordion translucent-bg-accordion">
+        <details ref={accordionRef} className="pair-accordion translucent-bg-accordion">
             <summary className="pair-accordion-summary">
                 <Text kind="body/semibold/sm">Models</Text>
             </summary>

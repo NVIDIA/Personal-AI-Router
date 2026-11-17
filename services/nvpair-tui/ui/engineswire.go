@@ -27,9 +27,10 @@ type engineStatus struct {
 	Running     bool   `json:"running"`
 	// Starting is true while a start is launching the engine and waiting for
 	// it to become ready, which for vLLM can be minutes.
-	Starting bool `json:"starting"`
-	Healthy  bool `json:"healthy"`
-	Port     int  `json:"port"`
+	Starting      bool `json:"starting"`
+	AwaitingModel bool `json:"awaiting_model"`
+	Healthy       bool `json:"healthy"`
+	Port          int  `json:"port"`
 }
 
 func (e engineStatus) label() string {
@@ -43,9 +44,8 @@ func (e engineStatus) label() string {
 // reply and the engine:models-changed payload. LoadedByEngine names the models
 // currently resident in memory, which the engine-manager polls for and pushes —
 // so a client never has to poll to know what is loaded. DownloadedByEngine is
-// the inventory of an engine that advertises only the model it is serving
-// (vLLM): ModelsByEngine then holds just that one, and this holds every model it
-// can load, even while it is stopped.
+// the disk inventory, including while stopped. RequestableByEngine is broker
+// loader capability and is intentionally ignored here; it is not residency.
 type modelsResult struct {
 	Models             []string            `json:"models"`
 	ModelsByEngine     map[string][]string `json:"modelsByEngine"`
@@ -424,7 +424,7 @@ func cancelPullCmd(client *rpc.Client, node, engine, model string, attempt int, 
 // Start and restart belong here too. The engine manager answers only once the
 // engine passes its readiness probe, and the manifests allow that probe six
 // hundred seconds for Ollama and sixty for LM Studio — the desktop app gives
-// the same calls a fourteen-minute envelope for exactly this reason. Held to
+// the same calls a thirty-four-minute envelope for exactly this reason. Held to
 // the thirty-five-second reply deadline, a cold start behind a slow probe
 // reported failure while the engine went on to come up.
 //

@@ -28,11 +28,13 @@ import { getWelcomeEngineCandidates } from '@/ui/constants/welcome'
 import { hasWelcomeEngineStatuses } from '@/ui/utils/welcome-install'
 import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import { InferenceDemoToast } from '@/ui/components/InferenceDemoToast'
+import { EngineModelSelectionModal } from '@/ui/components/ModelManager/EngineModelSelectionModal'
 
 function MainApp() {
     const { connected, selfId } = useConnectionStore(state => state)
     const { fetchedNodes, clearNodes } = useNodesStore(state => state)
     const activeTab = useOverviewUiStore(state => state.activeTab)
+    const modelSelectionNodeId = useOverviewUiStore(state => state.modelSelectionNodeId)
     const settingsSubTab = useOverviewUiStore(state => state.settingsSubTab)
     const serviceSettingsOpen = activeTab === 'settings' && settingsSubTab === 'service'
     const serviceStatus = useServiceStatusStore(state => state.status)
@@ -134,6 +136,14 @@ function MainApp() {
             ) : null}
 
             <InferenceDemoToast />
+
+            {/* Keep setup intent in sync while Overview's node controls are unmounted. */}
+            {modelSelectionNodeId && (
+                <EngineModelSelectionModal
+                    key={modelSelectionNodeId}
+                    nodeId={modelSelectionNodeId}
+                />
+            )}
         </Stack>
     )
 }

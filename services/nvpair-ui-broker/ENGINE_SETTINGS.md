@@ -99,7 +99,7 @@ limited to 64 KiB and cannot forward another hop. The authenticated caller ID is
 carried through correlated `engine:settings-request` / `engine:settings-reply`
 notifications to the local broker. Cancellation and pin removal cancel queued
 work; the broker rechecks the caller after acquiring the node lock. Once
-durably accepted, the target completes under its own eleven-minute deadline even
+durably accepted, the target completes under its own thirty-one-minute deadline even
 if the initiating peer disconnects.
 
 `engine:settings-projection` seeds the worker's subscription hub with full local

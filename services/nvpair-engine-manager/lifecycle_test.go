@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"runtime"
 	"strconv"
@@ -13,7 +14,102 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	settings "nvpair-shared/enginesettings"
 )
+
+func waitingModelExecutor(t *testing.T) *Executor {
+	t.Helper()
+	e := settingsExecutor(t, false)
+	m, ok := e.reg.Get("fake")
+	require.True(t, ok)
+	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	p := m.Platforms[key]
+	p.Runtime.WaitForModel = true
+	m.Platforms[key] = p
+	st, err := e.state("fake")
+	require.NoError(t, err)
+	st.plat.Runtime.WaitForModel = true
+	require.NoError(t, m.Validate())
+	return e
+}
+
+func TestStart_AwaitsModelWithoutLaunchingAProcess(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+
+	status, err := e.Status("fake")
+	require.NoError(t, err)
+	assert.True(t, status.Installed)
+	assert.True(t, status.AwaitingModel)
+	assert.False(t, status.Running)
+	assert.False(t, status.Starting)
+	assert.False(t, status.Healthy)
+	enabled, known, err := e.desired.get("fake")
+	require.NoError(t, err)
+	assert.True(t, enabled)
+	assert.True(t, known)
+}
+
+func TestStop_DisablesAnEngineAwaitingModel(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	require.NoError(t, e.Stop("fake"))
+
+	status, err := e.Status("fake")
+	require.NoError(t, err)
+	assert.False(t, status.AwaitingModel)
+	assert.False(t, status.Running)
+	enabled, known, err := e.desired.get("fake")
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, enabled)
+}
+
+func TestStop_CancelsFirstModelLoadAndLeavesEngineDisabled(t *testing.T) {
+	e := waitingModelExecutor(t)
+	before, err := e.LaunchSettings("fake")
+	require.NoError(t, err)
+	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{ServerPort: before.ServerPort, LaunchText: "FAKE_START_DELAY=8s " + before.LaunchText}}, func() error { return nil })
+	require.NoError(t, err)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	result := make(chan error, 1)
+	go func() {
+		_, err := e.Action(t.Context(), "fake", "load_model", json.RawMessage(`{"model":"org/first"}`))
+		result <- err
+	}()
+	waitForStartInFlight(t, e)
+	require.NoError(t, e.Stop("fake"))
+	require.NoError(t, <-result)
+	status, err := e.Status("fake")
+	require.NoError(t, err)
+	assert.False(t, status.Running)
+	assert.False(t, status.AwaitingModel)
+	enabled, known, err := e.desired.get("fake")
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, enabled)
+}
+
+func TestStop_ReportsStoppedAfterARepeatedStop(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	require.NoError(t, e.Stop("fake"))
+	var states []EngineStatus
+	e.emit = func(method string, params any) {
+		if method != "engine:state-changed" {
+			return
+		}
+		status, ok := params.(EngineStatus)
+		require.True(t, ok, "state notification must carry EngineStatus")
+		states = append(states, status)
+	}
+	require.NoError(t, e.Stop("fake"))
+	require.NotEmpty(t, states, "an explicit Stop must resolve a client's stopping state even when already off")
+	assert.False(t, states[len(states)-1].Running)
+	assert.False(t, states[len(states)-1].Starting)
+	assert.False(t, states[len(states)-1].AwaitingModel)
+}
 
 // Shutdown is bounded by the parent, so the force kill has to come well inside
 // that bound however long the manifest's grace is.

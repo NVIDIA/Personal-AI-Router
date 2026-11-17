@@ -1937,6 +1937,8 @@ func (d *nodeDetail) refreshEngines() {
 		running := yesNo(e.Running)
 		if e.Starting {
 			running = "starting"
+		} else if e.AwaitingModel {
+			running = "no model"
 		}
 		row := table.Row{e.label(), yesNo(e.Installed), running, yesNo(e.Healthy), port}
 		if d.proxy != nil {
@@ -2360,7 +2362,7 @@ func (d *nodeDetail) emptyModelsHint() string {
 		return "  No models downloaded on this node's engines."
 	case len(d.models.DownloadedByEngine) > 0:
 		return "  No models installed. Press p to download one."
-	case !d.anyEngineRunning():
+	case !d.anyEngineEnabled():
 		return "  No models reported - start an engine to see its models."
 	case d.remote():
 		return "  No models reported by this node's engines."
@@ -2369,9 +2371,9 @@ func (d *nodeDetail) emptyModelsHint() string {
 	}
 }
 
-func (d *nodeDetail) anyEngineRunning() bool {
+func (d *nodeDetail) anyEngineEnabled() bool {
 	for _, e := range d.engines {
-		if e.Running {
+		if e.Running || e.AwaitingModel {
 			return true
 		}
 	}

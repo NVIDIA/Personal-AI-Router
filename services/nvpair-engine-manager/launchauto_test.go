@@ -42,10 +42,17 @@ func cachedModelAt(t *testing.T, cache, id, config string, weightBytes int64) {
 // weight bytes. Like the fetch a start builds, it runs once.
 func pendingModel(t *testing.T, cache, id, config string, weightBytes int64) hfModelFetcher {
 	t.Helper()
-	return sync.OnceValues(func() (hfPendingModel, bool) {
-		repo := writeHFRepo(t, cache, id, map[string]string{"config.json": config, "tokenizer.json": "{}"})
-		return hfPendingModel{snapshot: filepath.Join(repo, "snapshots", "abc123"), weights: weightBytes}, true
-	})
+	// Fixture assertions can stop the test without returning. OnceValues turns
+	// that into a panic that aborts the suite. Once.Do lets only this test fail.
+	var once sync.Once
+	var model hfPendingModel
+	return func() (hfPendingModel, bool) {
+		once.Do(func() {
+			repo := writeHFRepo(t, cache, id, map[string]string{"config.json": config, "tokenizer.json": "{}"})
+			model = hfPendingModel{snapshot: filepath.Join(repo, "snapshots", "abc123"), weights: weightBytes}
+		})
+		return model, true
+	}
 }
 
 func withGPU(t *testing.T, totalGiB, freeGiB int64) {
@@ -1127,4 +1134,40 @@ func TestPlanHFContext_LeavesTheShareToVLLMWhenAUnifiedMemoryMachineHasNothingFr
 	extra, _ := planHFContext(t.Context(), []string{"serve", "--model", "nvidia/Llama-3.1-8B-Instruct-FP8"}, t.TempDir(), 65536, nil, nil, "")
 
 	assert.Empty(t, flagOf(t, extra, "--gpu-memory-utilization"))
+}
+
+func TestApplyAutoLaunch_LoadsWeightsEagerlyUnlessTheUserChoosesAStrategy(t *testing.T) {
+	withoutGPU(t)
+	test := func(name string, enabled bool, args []string, want string) {
+		t.Run(name, func(t *testing.T) {
+			rt := Runtime{AutoLaunch: &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536, EagerSafetensors: enabled}}
+
+			out := applyAutoLaunch(t.Context(), "vllm", rt, launchCommand{Bin: "vllm", Args: args}, t.TempDir(), nil)
+
+			assert.Equal(t, want, flagOf(t, out.Args, "--safetensors-load-strategy"))
+			assert.LessOrEqual(t, strings.Count(strings.Join(out.Args, " "), "--safetensors-load-strategy"), 1)
+		})
+	}
+	test("added when enabled", true, []string{"serve", "--model", "org/m"}, "eager")
+	test("the user's own strategy wins", true, []string{"serve", "--model", "org/m", "--safetensors-load-strategy", "lazy"}, "lazy")
+	test("the user's own strategy in = form wins", true, []string{"serve", "--model", "org/m", "--safetensors-load-strategy=prefetch"}, "prefetch")
+	test("not enabled leaves vLLM's default", false, []string{"serve", "--model", "org/m"}, "")
+}
+
+func TestBundledVLLMLaunch_LinuxLoadsEagerlyWhenLaunchArgumentsAreAlreadySaved(t *testing.T) {
+	// An install that already loaded another model keeps its saved launch
+	// arguments, so the manifest defaults never reach it. The flag must still be
+	// added when the launch is built.
+	withoutGPU(t)
+	reg := loadWithOverrides(t, t.TempDir())
+	manifest, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+	rt := manifest.Platforms["linux/amd64"].Runtime
+	rt.LaunchArgs = []string{"--model", "org/other-model"}
+	args := launchArguments(rt, rt.Args, map[string]string{"host": "127.0.0.1", "port": "8001"})
+
+	out := applyAutoLaunch(t.Context(), "vllm", rt, launchCommand{Bin: "vllm", Args: args}, t.TempDir(), nil)
+
+	assert.Equal(t, "eager", flagOf(t, out.Args, "--safetensors-load-strategy"))
+	assert.Equal(t, "org/other-model", flagOf(t, out.Args, "--model"))
 }

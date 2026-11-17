@@ -48,15 +48,34 @@ export function mergeModelHubResults(
     return Array.from(byId.values())
 }
 
+export interface ModelHubError {
+    id: string
+    message: string
+}
+
 /**
- * Fetch an engine's populated catalog or submit an explicit upstream query.
- * Electron main owns every upstream source; the renderer only maps display rows.
+ * Add an error banner unless one with the same message is showing: a failure
+ * such as an unreadable peer repeats on every debounced search.
+ */
+export function addModelHubError(
+    errors: ModelHubError[],
+    message: string,
+    id: string
+): ModelHubError[] {
+    return errors.some(e => e.message === message) ? errors : [...errors, { id, message }]
+}
+
+/**
+ * Fetch the populated catalog for a node's engine or submit an explicit
+ * upstream query. Electron main owns every upstream source; the renderer only
+ * maps display rows.
  */
 export async function searchEngineHub(
     engine: EngineType,
+    nodeId: string,
     query?: string
 ): Promise<EngineHubSearchResponse<ModelEntry>> {
     if (!getEngineHub(engine)) return { models: [], searchable: false }
-    const { models, searchable } = await window.pairApi.engines.searchHub(engine, query)
+    const { models, searchable } = await window.pairApi.engines.searchHub(engine, nodeId, query)
     return { models: models.map(hubModelToEntry), searchable }
 }

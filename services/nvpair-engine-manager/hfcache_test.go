@@ -22,10 +22,10 @@ import (
 	settings "nvpair-shared/enginesettings"
 )
 
-// writeHFRepo builds a repository the way the Hugging Face hub cache lays it
-// out: content in blobs/, and snapshots/<rev>/<name> symlinks into it. A
-// file content of "" is written empty; names ending in ".incomplete" go to
-// blobs/ only, as an interrupted download leaves them.
+// writeHFRepo builds a hub cache with content in blobs/ and links from each
+// snapshot. Windows uses hard links so blob updates remain visible without
+// requiring symlink privileges. Names ending in ".incomplete" stay in blobs/,
+// as an interrupted download leaves them.
 func writeHFRepo(t *testing.T, cache, id string, files map[string]string) string {
 	t.Helper()
 	repo := filepath.Join(cache, "models--"+strings.ReplaceAll(id, "/", "--"))
@@ -42,9 +42,18 @@ func writeHFRepo(t *testing.T, cache, id string, files map[string]string) string
 		if strings.HasSuffix(name, ".incomplete") {
 			continue
 		}
-		require.NoError(t, os.Symlink(blob, filepath.Join(snapshot, name)))
+		linkHFSnapshotFile(t, blob, filepath.Join(snapshot, name))
 	}
 	return repo
+}
+
+func linkHFSnapshotFile(t *testing.T, blob, snapshotFile string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		require.NoError(t, os.Link(blob, snapshotFile))
+		return
+	}
+	require.NoError(t, os.Symlink(blob, snapshotFile))
 }
 
 func llmFiles(extra map[string]string) map[string]string {
@@ -111,10 +120,6 @@ func TestScanHFCache_ListsCompleteModelsOnly(t *testing.T) {
 		"model.safetensors.incomplete": "partial",
 	}))
 
-	// A file whose blob is gone is not a file we have.
-	broken := writeHFRepo(t, cache, "broken/link", llmFiles(map[string]string{"model.safetensors": "w"}))
-	require.NoError(t, os.Remove(filepath.Join(broken, "blobs", "blob-model.safetensors")))
-
 	// Not a model repository, and not a directory at all.
 	require.NoError(t, os.MkdirAll(filepath.Join(cache, "datasets--org--data", "snapshots", "x"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(cache, "models--stray-file"), nil, 0o644))
@@ -127,6 +132,23 @@ func TestScanHFCache_ListsCompleteModelsOnly(t *testing.T) {
 		"Qwen/Qwen3-VL-8B-Instruct",
 		"sentence-transformers/all-MiniLM-L6-v2",
 	}, scannedIDs(t, cache))
+}
+
+// Removing a blob must leave its snapshot symlink dangling
+func TestScanHFCache_ExcludesASnapshotWithAMissingWeightBlob(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires symlink privileges or Developer Mode on Windows")
+	}
+	cache := t.TempDir()
+	repo := writeHFRepo(t, cache, "org/model", llmFiles(nil))
+	blob := filepath.Join(repo, "blobs", "blob-model.safetensors")
+	require.NoError(t, os.WriteFile(blob, []byte("weights"), 0o644))
+	require.NoError(t, os.Symlink(blob, filepath.Join(repo, "snapshots", "abc123", "model.safetensors")))
+	require.Equal(t, []string{"org/model"}, scannedIDs(t, cache))
+
+	require.NoError(t, os.Remove(blob))
+
+	assert.Empty(t, scannedIDs(t, cache))
 }
 
 func TestScanHFCache_ReportsSnapshotSize(t *testing.T) {
@@ -339,13 +361,11 @@ func TestDeleteHFModel_LeavesAStoppedEngineWithNoModelSelected(t *testing.T) {
 	assert.True(t, state.Running, "the engine runs after a model is loaded")
 }
 
-// With the bundled manifest and no saved settings the served model is the
-// default launch's, even in a manager that has not been asked about the engine
-// yet. Deleting also fails closed, rather than assuming nothing is served, when
-// the served model cannot be told.
-func TestDeleteHFModel_RefusesTheBundledDefaultModel(t *testing.T) {
+// Cached models are not implicitly selected by the bundled launch. Explicit
+// selection and a running model remain protected by the other deletion cases.
+func TestDeleteHFModel_AllowsCachedModelsWhenNoModelIsSelected(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("the bundled vllm manifest is Linux only")
+		t.Skip("uses Linux cache paths")
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -366,9 +386,8 @@ func TestDeleteHFModel_RefusesTheBundledDefaultModel(t *testing.T) {
 		return err
 	}
 
-	// The bundled default launch serves Qwen/Qwen3.5-4B.
-	require.Error(t, act("Qwen/Qwen3.5-4B"), "the default served model was deleted by a manager that had not detected the engine")
-	require.DirExists(t, filepath.Join(cache, "models--Qwen--Qwen3.5-4B"), "the served model must stay in the cache")
+	assert.NoError(t, act("Qwen/Qwen3.5-4B"))
+	assert.NoDirExists(t, filepath.Join(cache, "models--Qwen--Qwen3.5-4B"))
 	assert.NoError(t, act("org/other"), "another model should be deletable")
 }
 
@@ -675,8 +694,8 @@ func TestScanHFCache_ListsACompleteSnapshotBesideAnUnfinishedDownload(t *testing
 	test("another revision, still downloading", func(t *testing.T, repo string) {
 		newer := filepath.Join(repo, "snapshots", "def456")
 		require.NoError(t, os.MkdirAll(newer, 0o755))
-		require.NoError(t, os.Symlink(filepath.Join(repo, "blobs", "blob-config.json"), filepath.Join(newer, "config.json")))
-		require.NoError(t, os.Symlink(filepath.Join(repo, "blobs", "blob-tokenizer.json"), filepath.Join(newer, "tokenizer.json")))
+		linkHFSnapshotFile(t, filepath.Join(repo, "blobs", "blob-config.json"), filepath.Join(newer, "config.json"))
+		linkHFSnapshotFile(t, filepath.Join(repo, "blobs", "blob-tokenizer.json"), filepath.Join(newer, "tokenizer.json"))
 		partial(t, repo, "fedcba98.incomplete")
 	}, []string{"org/model"})
 	test("only an unfinished revision", func(t *testing.T, repo string) {

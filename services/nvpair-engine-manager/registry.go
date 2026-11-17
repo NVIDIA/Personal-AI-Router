@@ -77,7 +77,8 @@ type Manifest struct {
 	Actions         map[string]Action   `json:"actions,omitempty"`
 	// AdvertisedModels says which models this node tells its peers and its own
 	// proxy it can serve: "list" (the default) advertises list_models, "loaded"
-	// advertises loaded_models. An engine that serves one model per process
+	// advertises loaded_models; "available" advertises cached models while enabled
+	// and prepares them on request. An engine that serves one model per process
 	// can list many models it has on disk but only answer for the one it is
 	// running, and the proxy sends a request to any node advertising its model.
 	AdvertisedModels string `json:"advertised_models,omitempty"`
@@ -164,6 +165,9 @@ type InstallArtifact struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
+	// WaitForModel keeps an installed engine enabled without starting a serving
+	// process until the user selects a model through its launch_model action.
+	WaitForModel bool `json:"wait_for_model,omitempty"`
 	// ModelSource selects llama.cpp's model catalogue and download provider.
 	ModelSource string `json:"model_source,omitempty"`
 	// EditableLaunch declares which startup arguments and environment controls
@@ -234,6 +238,11 @@ type AutoLaunch struct {
 	// hybrid model such as Qwen3.5 cannot fit one state block per sequence for
 	// 256 of them and refuses to start. 0 leaves the engine's default.
 	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
+	// EagerSafetensors adds --safetensors-load-strategy eager unless the user set
+	// it. The default memory-mapped load is very slow on integrated-GPU machines
+	// such as DGX Spark. It is a launch-time argument rather than a manifest
+	// default so installs with saved launch arguments get it too.
+	EagerSafetensors bool `json:"eager_safetensors,omitempty"`
 }
 
 const autoLaunchHFContext = "hf_context"
@@ -824,6 +833,11 @@ func (m *Manifest) Validate() error {
 			return err
 		}
 	}
+	for key, p := range m.Platforms {
+		if p.Runtime.WaitForModel && (p.Runtime.modeOrDefault() != "process" || modelLaunchFlag(m) == "") {
+			return fmt.Errorf("platform %q: wait_for_model requires process mode and a launch_model action", key)
+		}
+	}
 	for name, a := range m.Actions {
 		if err := a.validate(name); err != nil {
 			return err
@@ -856,16 +870,27 @@ func (m *Manifest) Validate() error {
 			}
 		}
 	}
+	if m.AdvertisedModels == advertisedModelsAvailable {
+		action, ok := m.Actions["list_models"]
+		if !ok || action.HFCache == nil {
+			return fmt.Errorf("advertised_models available requires a cached model inventory")
+		}
+		for _, platform := range m.Platforms {
+			if !platform.Runtime.WaitForModel {
+				return fmt.Errorf("advertised_models available requires wait_for_model")
+			}
+		}
+	}
 	switch m.AdvertisedModels {
 	case "", advertisedModelsList:
-	case advertisedModelsLoaded:
+	case advertisedModelsLoaded, advertisedModelsAvailable:
 		if _, ok := m.Actions["loaded_models"]; !ok {
 			return fmt.Errorf("advertised_models %q requires a loaded_models action", m.AdvertisedModels)
 		}
 	default:
-		return fmt.Errorf("advertised_models %q invalid (want %q or %q)", m.AdvertisedModels, advertisedModelsList, advertisedModelsLoaded)
+		return fmt.Errorf("advertised_models %q invalid (want %q, %q or %q)", m.AdvertisedModels, advertisedModelsList, advertisedModelsLoaded, advertisedModelsAvailable)
 	}
-	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded {
+	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded && m.AdvertisedModels != advertisedModelsAvailable {
 		return fmt.Errorf("action %q: result.inventory_field requires advertised_models %q", "loaded_models", advertisedModelsLoaded)
 	}
 	return m.validatePlaceholders()
@@ -873,8 +898,9 @@ func (m *Manifest) Validate() error {
 
 // advertisedModels values for Manifest.AdvertisedModels.
 const (
-	advertisedModelsList   = "list"
-	advertisedModelsLoaded = "loaded"
+	advertisedModelsList      = "list"
+	advertisedModelsLoaded    = "loaded"
+	advertisedModelsAvailable = "available"
 )
 
 func (p *Platform) validate(key string) error {

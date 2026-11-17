@@ -15,7 +15,24 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	settings "nvpair-shared/enginesettings"
 )
+
+func TestConfigureLaunch_StartsASelectedModelWhenEnabled(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	before, err := e.LaunchSettings("fake")
+	require.NoError(t, err)
+	text, _, err := withLaunchFlag(before.LaunchText, "--model", "org/settings-choice")
+	require.NoError(t, err)
+	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{ServerPort: before.ServerPort, LaunchText: text}}, func() error { return nil })
+	require.NoError(t, err)
+
+	status, err := e.Status("fake")
+	require.NoError(t, err)
+	assert.True(t, status.Running)
+	assert.False(t, status.AwaitingModel)
+}
 
 // Render the legacy full command only for migration and argv regression tests.
 func (command launchCommand) text() (string, error) {

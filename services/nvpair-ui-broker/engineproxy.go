@@ -90,6 +90,8 @@ func (p engineProxyProfile) blocksOnOccupiedFacade() bool {
 // noted per field. The map itself is built once and never mutated afterwards,
 // so resolving a runtime needs no lock — only its fields do.
 type engineProxyRuntime struct {
+	requestEnabled atomic.Bool
+
 	// profile is the descriptor this runtime belongs to.
 	profile engineProxyProfile
 
@@ -530,6 +532,9 @@ func (b *Broker) forwardDefaultEngineProxyNotification(profile engineProxyProfil
 // be handled once per process: dispatching them through each engine's handler
 // in turn would file every workload twice.
 func (b *Broker) routeProcessScopedProxyNotification(method string, params json.RawMessage) bool {
+	if b.relayModelPreparation(method, params) {
+		return true
+	}
 	switch {
 	case proxyWorkloadMethods[method]:
 		b.routeProxyWorkload(method, params)

@@ -201,7 +201,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// Only operations engineOps actually declares: the TUI offers no engine
 	// update, so listing one here would assert against a path nothing reaches.
 	// Start and restart wait on the engine's readiness probe, which the
-	// manifests allow up to ten minutes, so a deadline on either is a slow
+	// manifests allow up to thirty minutes, so a deadline on either is a slow
 	// reply rather than a failed start.
 	longRunning := func(name, op string) {
 		t.Run(name, func(t *testing.T) {

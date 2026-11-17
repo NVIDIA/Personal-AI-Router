@@ -11,6 +11,40 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.37 — vLLM starts on DGX Spark, and a timed-out start explains itself (#215)
+
+- Enabling vLLM on Linux now installs vLLM 0.34.0 and loads model weights into memory first, which fixes starts that took over eight minutes on DGX Spark and failed with "not ready after 8m0s".
+- vLLM now has 30 minutes to become ready before PAIR reports a failure, and the app, terminal interface and cluster peers wait that long too.
+- A start that times out now shows the last lines of the engine's output instead of a long, cut-off log tail.
+
+## 1.0.36 — Choose vLLM models and load downloaded models on request (#203)
+
+- New vLLM setups wait for model selection without downloading a default model. Requests can load models that are already fully downloaded.
+- Eject frees model memory while keeping vLLM enabled. Model changes wait for active responses to finish, and cancelling one request does not interrupt a shared model load.
+- Model lists reflect what each computer can serve and refresh after remote downloads or deletions.
+
+## 1.0.35 — Add model shows more ModelScope models and says the list is partial (#212)
+
+- With ModelScope as the llama.cpp download source, Add model now lists more models when the search box is empty, including popular chat models it used to leave out. Before, it could show as few as three.
+- Add model now says it is showing popular models and that a search finds more, for llama.cpp and vLLM.
+- Add model no longer offers ModelScope embedding, speech and image models that ModelScope labels as text generation.
+- During a ModelScope outage, Add model keeps the last list it loaded, even after many searches. A few models whose details ModelScope fails to return can be missing until the list refreshes.
+- On a slow connection, Add model shows the ModelScope models it loaded in time instead of none, and tries again for the rest two minutes later.
+
+## 1.0.34 — Add model for a peer's llama.cpp lists that peer's download source (#214)
+
+- Opening Add model for llama.cpp on another device now lists models from that device's Model download source, Hugging Face or ModelScope. Before, it listed this device's source, so a device set to ModelScope showed Hugging Face models when opened from a peer.
+- If that device runs a PAIR version older than 1.0.18, Add model for its llama.cpp asks you to update PAIR on that device instead of listing models.
+
+## 1.0.33 — Explain Metal startup memory failures (#208)
+
+- When an engine reports a recognized Metal memory shortage during captured startup, PAIR includes advice to unload models from other engines or free memory before retrying. Existing engine or command context remains before the advice, followed by bounded, redacted diagnostics.
+- Cancelled or timed-out startup operations retain their interruption cause instead of being relabelled as memory failures because of earlier Metal output.
+
+## 1.0.32 — No console windows when LM Studio starts on Windows (#211)
+
+- Starting the LM Studio engine on Windows no longer opens empty console windows.
+
 ## 1.0.31 — Long requests are no longer cut off while an engine is still working (#209)
 
 - The router no longer gives up on an engine after two minutes without a response. Queued Ollama requests and long non-streaming generations now run to completion instead of being restarted on another machine.

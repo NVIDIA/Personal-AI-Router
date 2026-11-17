@@ -39,7 +39,7 @@ vi.mock('@/electron/service-bridge/model-catalog', () => ({
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 
-// A start can take minutes (vLLM loads for up to eight), and while it runs the
+// A start can take minutes (vLLM loads for up to thirty minutes), and while it runs the
 // engine reports not running, so a toggle would send a second start. Stop is
 // explicit, and the engine-manager cancels the start in flight.
 describe('stopping an engine that is still starting', () => {
