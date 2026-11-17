@@ -601,7 +601,7 @@ The broker owns the combined settings operation for each engine: its server port
 - Workers are cooperative children: they speak newline-delimited JSON-RPC on stdio, exit when their stdin closes, and write diagnostics to stderr.
 - A worker's JSON-RPC error is meaningful to the client as-is, which is why it is relayed with its original code and message rather than being rewrapped.
 - `nvpair-errors` is best-effort; its absence degrades error surfacing to local logs and never fails an operation.
-- `nvpair-engine-manager` bounds its own `StopAll` inside the 5 seconds the broker allows `engine:prepare-shutdown`, waiting at most 4 of them for its model downloads to stop.
+- `nvpair-engine-manager` waits at most 4 of the 5 seconds the broker allows `engine:prepare-shutdown` for its model downloads to stop, though an engine's own stop, such as LM Studio's server waiting out its grace, can take longer.
 - The parent — the desktop app or `nvpair-tui` — allows at least 15 seconds for the broker to exit after asking it to shut down, which covers the 10-second teardown budget plus the 5-second workload-history flush.
 - The per-user data dir is writable; if it is not, workload history runs purely in memory and startup still succeeds.
 - `nvpair-cluster-manager` and `nvpair-node-settings` resolve the same cluster directory the broker resolved, because a mismatch would leave a node that looks clustered while no worker reads the tree the manager writes.
