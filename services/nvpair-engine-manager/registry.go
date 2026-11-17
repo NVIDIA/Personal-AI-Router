@@ -234,6 +234,11 @@ type AutoLaunch struct {
 	// hybrid model such as Qwen3.5 cannot fit one state block per sequence for
 	// 256 of them and refuses to start. 0 leaves the engine's default.
 	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
+	// EagerSafetensors adds --safetensors-load-strategy eager unless the user set
+	// it. The default memory-mapped load is very slow on integrated-GPU machines
+	// such as DGX Spark. It is a launch-time argument rather than a manifest
+	// default so installs with saved launch arguments get it too.
+	EagerSafetensors bool `json:"eager_safetensors,omitempty"`
 }
 
 const autoLaunchHFContext = "hf_context"

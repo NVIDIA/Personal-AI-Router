@@ -624,13 +624,10 @@ func TestBundledVLLM_LinuxLoadsWeightsEagerly(t *testing.T) {
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	m, ok := reg.Get("vllm")
 	require.True(t, ok, "vllm manifest not loaded")
-	eager := []string{"--safetensors-load-strategy", "eager"}
 	for key, p := range m.Platforms {
-		if strings.HasPrefix(key, "linux/") {
-			assert.Subset(t, p.Runtime.Args, eager, "the Linux launch must load safetensors eagerly (%v)", key)
-		} else {
-			assert.NotContains(t, p.Runtime.Args, "--safetensors-load-strategy", "only Linux loads eagerly (%v)", key)
-		}
+		require.NotNil(t, p.Runtime.AutoLaunch, "vllm must size its launch on every platform (%v)", key)
+		assert.Equal(t, strings.HasPrefix(key, "linux/"), p.Runtime.AutoLaunch.EagerSafetensors, "only Linux loads eagerly (%v)", key)
+		assert.NotContains(t, p.Runtime.Args, "--safetensors-load-strategy", "eager loading is added at launch, not saved as a default (%v)", key)
 	}
 }
 

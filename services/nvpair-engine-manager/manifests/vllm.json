@@ -37,7 +37,7 @@
   "platforms": {
     "linux/amd64": {
       "runtime": {
-        "args": ["serve", "--model", "Qwen/Qwen3.5-4B", "--host", "{host}", "--port", "{port}", "--safetensors-load-strategy", "eager"]
+        "auto_launch": { "eager_safetensors": true }
       },
       "install": {
         "fetch": {
@@ -48,7 +48,7 @@
     },
     "linux/arm64": {
       "runtime": {
-        "args": ["serve", "--model", "Qwen/Qwen3.5-4B", "--host", "{host}", "--port", "{port}", "--safetensors-load-strategy", "eager"]
+        "auto_launch": { "eager_safetensors": true }
       },
       "install": {
         "fetch": {

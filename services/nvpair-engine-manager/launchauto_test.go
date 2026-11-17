@@ -1128,3 +1128,39 @@ func TestPlanHFContext_LeavesTheShareToVLLMWhenAUnifiedMemoryMachineHasNothingFr
 
 	assert.Empty(t, flagOf(t, extra, "--gpu-memory-utilization"))
 }
+
+func TestApplyAutoLaunch_LoadsWeightsEagerlyUnlessTheUserChoosesAStrategy(t *testing.T) {
+	withoutGPU(t)
+	test := func(name string, enabled bool, args []string, want string) {
+		t.Run(name, func(t *testing.T) {
+			rt := Runtime{AutoLaunch: &AutoLaunch{Kind: autoLaunchHFContext, ContextTokens: 65536, EagerSafetensors: enabled}}
+
+			out := applyAutoLaunch(t.Context(), "vllm", rt, launchCommand{Bin: "vllm", Args: args}, t.TempDir(), nil)
+
+			assert.Equal(t, want, flagOf(t, out.Args, "--safetensors-load-strategy"))
+			assert.LessOrEqual(t, strings.Count(strings.Join(out.Args, " "), "--safetensors-load-strategy"), 1)
+		})
+	}
+	test("added when enabled", true, []string{"serve", "--model", "org/m"}, "eager")
+	test("the user's own strategy wins", true, []string{"serve", "--model", "org/m", "--safetensors-load-strategy", "lazy"}, "lazy")
+	test("the user's own strategy in = form wins", true, []string{"serve", "--model", "org/m", "--safetensors-load-strategy=prefetch"}, "prefetch")
+	test("not enabled leaves vLLM's default", false, []string{"serve", "--model", "org/m"}, "")
+}
+
+func TestBundledVLLMLaunch_LinuxLoadsEagerlyWhenLaunchArgumentsAreAlreadySaved(t *testing.T) {
+	// An install that already loaded another model keeps its saved launch
+	// arguments, so the manifest defaults never reach it. The flag must still be
+	// added when the launch is built.
+	withoutGPU(t)
+	reg := loadWithOverrides(t, t.TempDir())
+	manifest, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+	rt := manifest.Platforms["linux/amd64"].Runtime
+	rt.LaunchArgs = []string{"--model", "org/other-model"}
+	args := launchArguments(rt, rt.Args, map[string]string{"host": "127.0.0.1", "port": "8001"})
+
+	out := applyAutoLaunch(t.Context(), "vllm", rt, launchCommand{Bin: "vllm", Args: args}, t.TempDir(), nil)
+
+	assert.Equal(t, "eager", flagOf(t, out.Args, "--safetensors-load-strategy"))
+	assert.Equal(t, "org/other-model", flagOf(t, out.Args, "--model"))
+}
