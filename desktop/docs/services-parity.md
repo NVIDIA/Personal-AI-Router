@@ -223,7 +223,7 @@ restart. The pending Load in the renderer's pending-actions store (the one owner
 of optimistic engine and model state) also covers the engine, because vLLM's
 capabilities declare `loadRestartsEngine`: its card shows starting rather than
 stopped, and its toggle stays locked, until the model is reported loaded, the
-load fails, or the 20-minute switch budget runs out. Its model list is read from
+load fails, or the 62-minute switch budget runs out. Its model list is read from
 disk while stopped, so it is kept throughout. Local and remote Loads are covered
 the same way.
 
@@ -233,8 +233,8 @@ engine), its switch stays on and usable: turning it off sends an explicit
 `stop` command (`engine:stop`, or `engine:remote-stop` for a peer), because a
 toggle reads the engine's status and an engine that is still starting reports
 not running. The engine-manager cancels the start in flight. Its safety net is the awaited lifecycle envelope
-(`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 14 minutes), which outlasts every
-engine's readiness window (vLLM 8 minutes, Ollama 10), so a slow start is never
+(`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 34 minutes), which outlasts every
+engine's readiness window (vLLM 30 minutes, Ollama 10), so a slow start is never
 shown as stopped while it is still loading. Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
 never remove.
@@ -343,7 +343,7 @@ Several model-action timeouts have to be ordered correctly. For a
 restart-backed delete, the reply is withheld until the engine is ready again
 (LM Studio's `ready.timeout_s` alone is 60s), so
 `MODULAR_MODEL_ACTION_TIMEOUT_MS` anchors the delete-specific observers. Ollama
-Load uses a separate 10/11-minute response-header budget:
+Load uses a separate 10/31-minute response-header budget:
 
 | Budget                                                        | Value | Why                                                                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -352,9 +352,9 @@ Load uses a separate 10/11-minute response-header budget:
 | `engineResponseHeaderTimeout` (`executor.go`)                 | 30s   | Downloads and ordinary local HTTP actions retain a prompt response-header bound; probe contexts stay shorter.                                                                                                                                                                       |
 | `pullProgressTimeout` (`executor.go`)                         | 30min | Streaming Ollama and llama.cpp pulls may run indefinitely while layer/file completed bytes advance; 30 minutes without advancing bytes cancels the stalled pull.                                                                                                                    |
 | `ollamaLoadResponseHeaderTimeout` (`executor.go`)             | 10min | Only Ollama's local `run_model` action gets the cold-load allowance.                                                                                                                                                                                                                |
-| `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 12min | Ollama's Load control stays locked beyond the remote path's 11-minute header budget, while backend success or failure still clears it immediately.                                                                                                                                  |
+| `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 32min | Ollama's Load control stays locked beyond the remote path's 31-minute header budget, while backend success or failure still clears it immediately.                                                                                                                                  |
 | `PENDING_TIMEOUT_MS`                                          | 60s   | Unchanged for every other command, including an Ollama delete.                                                                                                                                                                                                                      |
-| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 11min | Remote start/delete responses can wait on engine readiness, and a cold Ollama model load or a vLLM load (which restarts vLLM on the new model) can withhold headers for minutes, so those calls use the readiness-sized client. Other model actions retain the ordinary 30s budget. |
+| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 31min | Remote start/delete responses can wait on engine readiness, and a cold Ollama model load or a vLLM load (which restarts vLLM on the new model) can withhold headers for minutes, so those calls use the readiness-sized client. Other model actions retain the ordinary 30s budget. |
 
 The net is a backstop, not the mechanism: a delete now ends the spinner on real
 backend truth either way. On success the refreshed `list_models` drops the model;
@@ -363,7 +363,7 @@ is what lets the store attribute it and clear that row.
 
 Local Ollama Load also observes its eventual JSON-RPC rejection and reports the
 same model context; the resulting attributed `errors:update` clears `Loading…`
-without waiting for the 12-minute net.
+without waiting for the 32-minute net.
 
 A failed restart is reported as `Deleted <model>, but <engine> failed to
 restart: …`, never as a failed delete — the files really are gone, and telling

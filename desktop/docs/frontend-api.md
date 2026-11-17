@@ -107,8 +107,8 @@ They do not imply a WebSocket connection. Browser clients are not supported.
   errors, any port conflict, and whether applying restarts or rebinds.
 - `applySettings(request)` commits a draft and waits for the owner's stop,
   rebind, and restart/readiness operation before returning its receipt. This
-  can take minutes (Ollama permits ten minutes for readiness; the desktop call
-  allows fourteen minutes). The receipt identifies the accepted operation;
+  can take minutes (vLLM permits thirty minutes for readiness; the desktop call
+  allows thirty-four minutes). The receipt identifies the accepted operation;
   use `onSettingsChanged` for its authoritative applied or failed state. Once
   durably accepted, the owner continues even if the caller disconnects or
   loses the response; reload the snapshot before retrying.

@@ -202,7 +202,7 @@ export function BackendHeader({
                                     />
                                 </Flex>
                                 {/* A start can take minutes (vLLM loads for up to
-                                    eight), so it can be stopped while it runs. */}
+                                    thirty minutes), so it can be stopped while it runs. */}
                                 {backend.processStatus === 'starting' && (
                                     <Flex
                                         align="center"

@@ -36,6 +36,7 @@ vi.mock('@/electron/service-bridge/model-catalog', () => ({
 }))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
+import { MODEL_SWITCH_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 
 describe('local model load command', () => {
     beforeEach(() => {
@@ -105,7 +106,7 @@ describe('local model load command', () => {
                 'broker',
                 'engine:action',
                 { engine: 'vllm', action: 'load_model', params: { model: 'Qwen/Qwen3-8B' } },
-                20 * 60_000
+                MODEL_SWITCH_TIMEOUT_MS
             )
             reply.resolve(undefined)
             await flush()

@@ -624,6 +624,21 @@ func TestBundledVLLM_StartFitsTheRemoteReadinessBudget(t *testing.T) {
 	}
 }
 
+// On integrated-GPU Linux machines such as DGX Spark the default memory-mapped
+// safetensors load took longer than ten minutes for a 4B model. Linux reads the
+// weights into host memory first; the macOS launch is left as it was.
+func TestBundledVLLM_LinuxLoadsWeightsEagerly(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
+	m, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+	for key, p := range m.Platforms {
+		require.NotNil(t, p.Runtime.AutoLaunch, "vllm must size its launch on every platform (%v)", key)
+		assert.Equal(t, strings.HasPrefix(key, "linux/"), p.Runtime.AutoLaunch.EagerSafetensors, "only Linux loads eagerly (%v)", key)
+		assert.NotContains(t, p.Runtime.Args, "--safetensors-load-strategy", "eager loading is added at launch, not saved as a default (%v)", key)
+	}
+}
+
 func writeManifest(t *testing.T, dir, name string, m Manifest) {
 	t.Helper()
 	data, err := json.MarshalIndent(m, "", "  ")
@@ -792,8 +807,13 @@ func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *te
 			// argument of get_lark_from_jinja required that vLLM 0.32 does not pass,
 			// so with the Mistral tool-call parser every request to a Mistral model
 			// fails. vLLM 0.33 makes the same call; drop the pin only with a vLLM
-			// release that itself requires mistral_common 1.13.
-			assert.Contains(t, script, "mistral_common==1.12.0", "the install must pin mistral_common==1.12.0 for vLLM 0.32")
+			// release that itself requires mistral_common 1.13. vLLM 0.34 does, so
+			// Linux must not pin it: the pin makes the install unsolvable.
+			if strings.HasPrefix(key, "darwin/") {
+				assert.Contains(t, script, "mistral_common==1.12.0", "the install must pin mistral_common==1.12.0 for vLLM 0.32")
+			} else {
+				assert.NotContains(t, script, "mistral_common", "vLLM 0.34 requires mistral_common>=1.13, so the Linux install must not pin it")
+			}
 			if strings.HasPrefix(key, "darwin/") {
 				// The macOS wheels are downloaded by the script itself, so each one
 				// has to be checked against a digest before it is installed.

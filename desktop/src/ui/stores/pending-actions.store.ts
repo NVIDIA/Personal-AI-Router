@@ -38,8 +38,8 @@ import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 
 /** Re-enable a control after this long if no superseding push ever arrives. */
 const PENDING_TIMEOUT_MS = 60_000
-/** Keep Ollama Load locked one safety-net interval beyond the longest (11m) backend path. */
-const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 12 * 60_000
+/** Keep Ollama Load locked one safety-net interval beyond the longest (31m) backend path. */
+const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 32 * 60_000
 /** vLLM Load restarts the engine on the new model; keep the row locked as long as the app waits for it. */
 const VLLM_LOAD_PENDING_TIMEOUT_MS = MODEL_SWITCH_TIMEOUT_MS
 /**

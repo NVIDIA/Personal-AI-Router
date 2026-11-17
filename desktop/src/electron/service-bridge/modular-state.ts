@@ -433,7 +433,7 @@ const INSTALL_PENDING_OP_IDLE_TIMEOUT_MS = 30 * 60_000
 /**
  * How long an optimistic status may stand without the backend resolving it.
  * A start is resolved by `engine:state-changed` once the engine passes its
- * readiness probe, and engines allow that probe minutes (vLLM 8, Ollama 10),
+ * readiness probe, and engines allow that probe minutes (vLLM 30, Ollama 10),
  * so a start keeps its marker for the awaited lifecycle envelope that already
  * outlasts every engine's readiness window. A shorter net shows a still-loading
  * engine as stopped, and its toggle then sends another Start instead of Stop.

@@ -31,14 +31,14 @@ export const MODULAR_DEFAULT_LOG_LEVEL: ModularLogLevel = 'warn'
 // user to Service settings instead of loading indefinitely.
 export const MODULAR_STARTUP_READY_TIMEOUT_MS = 90_000
 
-// Awaited engine lifecycle calls can include the bundled Ollama manifest's
-// 10-minute readiness probe and the broker's combined settings operation. The
+// Awaited engine lifecycle calls can include the bundled vLLM manifest's
+// 30-minute readiness probe and the broker's combined settings operation. The
 // shared enginesettings/timeouts.go defines the ladder above that probe:
-// 10.5 minutes for configure, 11 minutes for the owner-side
-// operation, 12 for a client call, 13 for a call relayed on a peer's behalf.
+// 30.5 minutes for configure, 31 minutes for the owner-side
+// operation, 32 for a client call, 33 for a call relayed on a peer's behalf.
 // This envelope is the outermost rung and has to outlast all of them, or a
 // desktop timeout would report failure for an operation still running.
-export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 14 * 60_000
+export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 34 * 60_000
 
 // Upper bound for a local model load/unload/delete action. A delete on an
 // engine whose manifest declares `restart_after` (LM Studio) does not reply
@@ -51,11 +51,11 @@ export const MODULAR_MODEL_ACTION_TIMEOUT_MS = 120_000
 
 /**
  * How long a model switch on an engine that restarts to change model (vLLM) may
- * take before the app stops waiting for it. The restart can need up to eight
+ * take before the app stops waiting for it. The restart can need up to thirty
  * minutes to become ready, and a failed switch restores the previous model with a
  * second restart.
  */
-export const MODEL_SWITCH_TIMEOUT_MS = 20 * 60_000
+export const MODEL_SWITCH_TIMEOUT_MS = 62 * 60_000
 
 // Upper bound for `engine:catalog`. The engine manager allows its own LM Studio
 // fetch 20s, and only replies once that resolves, so the RPC envelope has to sit

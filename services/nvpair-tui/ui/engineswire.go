@@ -302,7 +302,7 @@ func classifyModelOpResult(what, engine, op string, msg *rpc.Message, err error)
 // Start and restart belong here too. The engine manager answers only once the
 // engine passes its readiness probe, and the manifests allow that probe six
 // hundred seconds for Ollama and sixty for LM Studio — the desktop app gives
-// the same calls a fourteen-minute envelope for exactly this reason. Held to
+// the same calls a thirty-four-minute envelope for exactly this reason. Held to
 // the thirty-five-second reply deadline, a cold start behind a slow probe
 // reported failure while the engine went on to come up.
 //

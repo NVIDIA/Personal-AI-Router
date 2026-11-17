@@ -63,12 +63,13 @@ through the vLLM-Metal plugin). There is no native Windows path, so on Windows
 `engine:get-installed` leaves vLLM out and PAIR does not offer it. The
 macOS install builds a managed Python 3.12 venv with a sha256-pinned `uv` and
 installs the pinned vLLM core and vLLM-Metal wheels, each checked against a
-digest, so no compiler is needed. Every platform also pins `mistral_common==1.12.0`:
+digest, so no compiler is needed. The macOS install also pins `mistral_common==1.12.0`:
 vLLM 0.32 asks only for 1.11.6 or newer, but 1.13 made an argument of the
 tool-call grammar builder required that vLLM 0.32 does not pass, so with the
 Mistral tool-call parser every request to a Mistral model failed. vLLM 0.33
 makes the same call, so the pin changes only with an upgrade to a vLLM release
-that itself requires `mistral_common` 1.13. `vllm serve` listens on loopback `8001`, and
+that itself requires `mistral_common` 1.13. The Linux install runs vLLM 0.34, which
+requires 1.13 and so cannot take the pin; the resolver chooses `mistral_common`. `vllm serve` listens on loopback `8001`, and
 the proxy facade owns `8000`. vLLM serves **one model per process** and has no
 load, unload, pull or delete API of its own, so the manifest provides them as
 manager actions: `load_model`, `unload_model`, `pull_model` and `delete_model`,
@@ -199,7 +200,7 @@ Shared-memory platforms keep 3 GiB for runtime startup in addition to the normal
 the probe's interpreter or packages are missing, PAIR logs a warning and leaves
 memory sizing to vLLM.
 
-Readiness polls `/health` for up to eight minutes while weights load.
+Readiness polls `/health` for up to thirty minutes while weights load. Linux launches add `--safetensors-load-strategy eager` at start (the manifest's `auto_launch.eager_safetensors`, skipped when you set a strategy yourself), which reads each weight file into host memory before copying it to the GPU: on integrated-GPU machines such as DGX Spark the default memory-mapped load was slow enough to miss the old eight-minute limit.
 
 The model list is the Hugging Face cache (`~/.cache/huggingface/hub`, or the
 one `HF_HUB_CACHE` or `HF_HOME` in vLLM's launch settings names), not what
