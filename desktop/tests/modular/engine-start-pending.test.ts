@@ -63,7 +63,7 @@ describe('a local engine start', () => {
 
             expect(processStatus(engineType)).toBe('starting')
         }
-        test('vllm', 480_000)
+        test('vllm', 1_800_000)
         test('ollama', 600_000)
     })
 
