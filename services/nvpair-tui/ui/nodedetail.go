@@ -93,8 +93,8 @@ type nodeDetail struct {
 	// than refusing them.
 	downloads []detailDownload
 	// latestAttempts is the attempt each model's newest download on this
-	// screen was given, keyed by its engine and model with no attempt, and kept
-	// once that download ends: a reply carrying any other attempt is about a
+	// screen was given, keyed by its engine and model alone, and kept once
+	// that download ends: a reply carrying any other attempt is about a
 	// download of the model that was started before it.
 	latestAttempts map[detailDownload]int
 
@@ -174,21 +174,30 @@ type detailModelRow struct {
 // detailDownload is one model download in flight, named the way a cancel
 // names it, and numbered when a screen first saw it.
 //
-// The wire names a download by engine and model alone, so only that number
+// A cancel names a download by engine and model alone, so only that number
 // tells a retry of a model from the attempt before it. A reply to a pull or a
 // cancel carries the attempt it was sent for, and one that arrives after that
 // attempt has ended and the model has been started again leaves the retry
-// alone, running or ended. Frames carry no number and are matched by engine
-// and model: each describes whichever download of the model is running, and
-// the engine manager sends a stopped download's last frame before it starts
-// the retry. A screen opened while an earlier one's cancel was still cleaning
-// up has not seen that download, though, so it can start the model again
-// before that last frame arrives, and the frame then retires the retry until
-// the retry's next one.
+// alone, running or ended.
+//
+// A download a screen starts is also sent with an opId, which the engine
+// manager names on its frames, so they are told apart by attempt too; see
+// followDownload. One picked up from the feed is kept with none: the opIds a
+// frame names are the requests running as the download, which change as
+// requests join and leave it, and the desktop app sends none. Its frames are
+// matched by engine and model, so the window they always had stays open for
+// it: a progress frame of one this screen cancelled, arriving after the
+// cancel's acknowledgement, tracks it again until its last frame, and on a
+// peer's screen, whose frames for two downloads are relayed independently, a
+// stopped download's last frame can arrive after another client's retry of
+// the model was picked up, and retire the retry until its next frame.
 type detailDownload struct {
 	engine  string
 	model   string
 	attempt int
+	// opID is the opId the download was sent with, set only on one this
+	// screen started.
+	opID string
 }
 
 // sameModel reports whether two downloads are of the same model on the same
@@ -245,6 +254,13 @@ var detailRefreshes int
 // node, which must not give a download of its own a number one of them
 // carries.
 var downloadAttempts int
+
+// endedDownloads holds the opId of every download a screen started that has
+// since ended, by its outcome frame or by a reply that says so, so that a late
+// frame naming it changes nothing while no download of its model is in flight
+// on the screen; see followDownload. Package-level for the same reason: the
+// replies and frames of a screen's downloads outlive it.
+var endedDownloads = map[string]bool{}
 
 func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	ti := textinput.New()
@@ -821,11 +837,13 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		}
 		var p pullFrame
 		decodeOrLog(msg.Method, msg.Params, &p)
-		d.followDownload(p)
-		d.showPullProgress(p)
+		if d.followDownload(p) {
+			d.showPullProgress(p)
+		}
 		// engine:models-changed follows the loaded set, not the inventory, so a
-		// finished download is announced only here. A peer's inventory arrives
-		// with discovery instead.
+		// finished download is announced only here, whichever download the
+		// frame turns out to be. A peer's inventory arrives with discovery
+		// instead.
 		if p.Stage == "success" {
 			return d.modelsCmd()
 		}
@@ -844,8 +862,9 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		// and all, and a download that outlasted its reply has no other way
 		// to say how it went.
 		if p.Op == "pull" {
-			d.followDownload(p.pullFrame)
-			d.showPullProgress(p.pullFrame)
+			if d.followDownload(p.pullFrame) {
+				d.showPullProgress(p.pullFrame)
+			}
 			return nil
 		}
 		if d.promptArmed() {
@@ -871,6 +890,20 @@ type pullFrame struct {
 	Stage   string `json:"stage"`
 	Percent *int   `json:"percent"`
 	Message string `json:"message"`
+	// OpID is the opId a peer's download was sent with, on
+	// engine:remote-progress.
+	OpID string `json:"opId"`
+	// OpIDs are the opIds of the requests running as this machine's download,
+	// on engine:pull-progress: the one that started it and any that joined it.
+	OpIDs []string `json:"opIds"`
+}
+
+// named returns every opId the frame names, from either feed.
+func (p pullFrame) named() []string {
+	if p.OpID == "" {
+		return p.OpIDs
+	}
+	return append([]string{p.OpID}, p.OpIDs...)
 }
 
 // ended reports whether the frame is the outcome its pull ended on. Every pull
@@ -931,21 +964,50 @@ func (d *nodeDetail) promptArmed() bool {
 	return d.pending != nil || d.settingsConfirm != nil
 }
 
-// followDownload keeps downloads current from a progress frame: a frame that
-// is still under way, queued included, marks its download in flight, and the
-// outcome a download ends on retires it. A frame naming no model cannot be
-// told apart from another download on its engine, so it is not followed.
-func (d *nodeDetail) followDownload(p pullFrame) {
+// followDownload keeps downloads current from a progress frame, and reports
+// whether the frame should be shown. A frame naming no model cannot be told
+// apart from another download on its engine, so it is shown but not followed.
+//
+// A frame naming the opId of a download this screen started is that
+// download's, and its outcome retires it. No other frame retires such a
+// download: while one is in flight, a frame of its model that does not name
+// it is an earlier attempt's, and changes nothing and is not shown. A frame
+// naming an attempt that has ended, while nothing of its model is in flight,
+// is dropped the same way, or it would bring that attempt back as one to
+// cancel, or report its outcome over a later attempt's. Any other frame is
+// matched by engine and model against a download picked up from the feed:
+// progress, queued included, tracks one when the model has none in flight,
+// and an outcome retires it. That includes a frame of an ended attempt while
+// a picked-up download of its model is in flight, which may be that very
+// attempt as a later screen picked it up, where no other frame retires it.
+func (d *nodeDetail) followDownload(p pullFrame) bool {
 	if p.Engine == "" || p.Model == "" {
-		return
+		return true
 	}
-	if !p.ended() {
+	named := p.named()
+	own := slices.IndexFunc(d.downloads, func(dl detailDownload) bool {
+		return dl.opID != "" && slices.Contains(named, dl.opID)
+	})
+	if own >= 0 {
+		if p.ended() {
+			d.retireDownload(d.downloads[own])
+		}
+		return true
+	}
+	dl, tracked := d.trackedDownload(p.Engine, p.Model)
+	switch {
+	case tracked && dl.opID != "":
+		return false
+	case !tracked && slices.ContainsFunc(named, func(opID string) bool { return endedDownloads[opID] }):
+		return false
+	case p.ended():
+		if tracked {
+			d.retireDownload(dl)
+		}
+	default:
 		d.trackDownload(p.Engine, p.Model)
-		return
 	}
-	if dl, ok := d.trackedDownload(p.Engine, p.Model); ok {
-		d.retireDownload(dl)
-	}
+	return true
 }
 
 // trackedDownload returns the download of model on engine in flight, if any.
@@ -975,13 +1037,36 @@ func (d *nodeDetail) trackDownload(engine, model string) detailDownload {
 	return dl
 }
 
-// retireDownload forgets a download that has ended. A cancellation armed
-// against that attempt is withdrawn too: confirming it would stop nothing, and
-// the outcome is the thing to show.
+// trackOwnDownload is trackDownload for a download this screen is starting,
+// which it names by the opId it sends the download with. startDownload has
+// refused a model already in flight, so the download is always a new one.
+func (d *nodeDetail) trackOwnDownload(engine, model string) detailDownload {
+	dl := d.trackDownload(engine, model)
+	i := slices.Index(d.downloads, dl)
+	dl.opID = downloadOpID(dl.attempt)
+	d.downloads[i] = dl
+	return dl
+}
+
+// retireDownload forgets a download that has ended, and marks it ended if
+// this screen started it. A cancellation armed against that attempt is
+// withdrawn too: confirming it would stop nothing, and the outcome is the
+// thing to show.
 func (d *nodeDetail) retireDownload(dl detailDownload) {
+	markDownloadEnded(dl)
 	d.downloads = slices.DeleteFunc(d.downloads, func(x detailDownload) bool { return x == dl })
 	if p := d.pending; p != nil && p.download != nil && *p.download == dl {
 		d.pending = nil
+	}
+}
+
+// markDownloadEnded records that a download a screen started has ended, so a
+// frame naming it that arrives afterwards changes nothing on a screen with no
+// download of its model in flight; see followDownload. A download picked up
+// from the feed has no opId to record.
+func markDownloadEnded(dl detailDownload) {
+	if dl.opID != "" {
+		endedDownloads[dl.opID] = true
 	}
 }
 
@@ -1031,7 +1116,7 @@ func (d *nodeDetail) cancelDownload() tea.Cmd {
 		dismissed: "still downloading " + what,
 		run: func() tea.Cmd {
 			d.status.busy("cancelling download %s...", what)
-			return d.own(cancelPullCmd(d.client, d.nodeArg(), target.engine, target.model, target.attempt))
+			return d.own(cancelPullCmd(d.client, d.nodeArg(), target.engine, target.model, target.attempt, target.opID))
 		},
 	}
 	d.status.arm("stop downloading %s into %s? press y to stop it, any other key to keep it",
@@ -1041,9 +1126,14 @@ func (d *nodeDetail) cancelDownload() tea.Cmd {
 
 // settlePull reports how a download this screen started settled. A reply for
 // an attempt that ended, with the model started again since, says nothing
-// about the retry and is dropped.
+// about the retry and is dropped. One that says the download is over marks it
+// ended first, so its late frames change nothing even on a later screen of
+// the node, which never saw it.
 func (d *nodeDetail) settlePull(msg pullDoneMsg) {
-	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt}
+	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt, opID: msg.opID}
+	if !msg.detached {
+		markDownloadEnded(dl)
+	}
 	if d.retried(dl) {
 		return
 	}
@@ -1083,15 +1173,20 @@ func (d *nodeDetail) settlePull(msg pullDoneMsg) {
 // frame has retired it and said what happened; that outcome stays on screen,
 // as it does when the cancel's reply deadline passes after it. By then the
 // model may have been started again, and the reply, which is about the attempt
-// it stopped, leaves the retry alone.
+// it stopped, leaves the retry alone. It still marks that attempt ended, as a
+// pull's reply does, wherever it lands.
 func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
-	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt}
+	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt, opID: msg.opID}
+	acknowledged := msg.err == nil && !msg.detached
+	if acknowledged {
+		markDownloadEnded(dl)
+	}
 	if d.retried(dl) {
 		return
 	}
 	what := d.downloadLabel(msg.engine, msg.model)
 	inFlight := slices.Contains(d.downloads, dl)
-	if msg.err == nil && !msg.detached {
+	if acknowledged {
 		d.retireDownload(dl)
 	}
 	if d.promptArmed() {
@@ -1589,15 +1684,16 @@ func (d *nodeDetail) downloadFromCatalog(engine, model string) tea.Cmd {
 // second request would share the first's entry and attempt, so the replies of
 // the first, or of a cancel stopping it, would retire the second too, leaving
 // it running with nothing on screen to cancel. Once the first has ended, the
-// model starts again as a new attempt, which its replies leave alone.
+// model starts again as a new attempt, under an opId of its own, which the
+// first's replies and frames leave alone.
 func (d *nodeDetail) startDownload(engine, model string) tea.Cmd {
 	if _, ok := d.trackedDownload(engine, model); ok {
 		d.status.error("download %s is already in progress", d.downloadLabel(engine, model))
 		return nil
 	}
-	dl := d.trackDownload(engine, model)
+	dl := d.trackOwnDownload(engine, model)
 	d.status.busy("download %s: %s...", d.engineLabel(engine), model)
-	return d.own(pullCmd(d.client, d.nodeArg(), engine, model, dl.attempt))
+	return d.own(pullCmd(d.client, d.nodeArg(), engine, model, dl.attempt, dl.opID))
 }
 
 func (d *nodeDetail) modelOp(op string) tea.Cmd {

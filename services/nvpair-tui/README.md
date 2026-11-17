@@ -105,7 +105,10 @@ ships in `cli-bin` and the app's updater replaces it.
   already downloading, or still being cancelled, cannot be downloaded again
   until that download ends, and a reply for the ended download that arrives
   once the model has been started again, on this visit to the node's screen
-  or a later one, leaves the new download alone, running or ended.
+  or a later one, leaves the new download alone, running or ended. Each
+  download this program starts is also sent with an identifier of its own,
+  which its progress reports carry, so a late report from the ended download
+  is not taken for the new one's and does not bring the ended one back.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a
