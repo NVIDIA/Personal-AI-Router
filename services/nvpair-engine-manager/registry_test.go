@@ -784,8 +784,13 @@ func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *te
 			// argument of get_lark_from_jinja required that vLLM 0.32 does not pass,
 			// so with the Mistral tool-call parser every request to a Mistral model
 			// fails. vLLM 0.33 makes the same call; drop the pin only with a vLLM
-			// release that itself requires mistral_common 1.13.
-			assert.Contains(t, script, "mistral_common==1.12.0", "the install must pin mistral_common==1.12.0 for vLLM 0.32")
+			// release that itself requires mistral_common 1.13. vLLM 0.34 does, so
+			// Linux must not pin it: the pin makes the install unsolvable.
+			if strings.HasPrefix(key, "darwin/") {
+				assert.Contains(t, script, "mistral_common==1.12.0", "the install must pin mistral_common==1.12.0 for vLLM 0.32")
+			} else {
+				assert.NotContains(t, script, "mistral_common", "vLLM 0.34 requires mistral_common>=1.13, so the Linux install must not pin it")
+			}
 			if strings.HasPrefix(key, "darwin/") {
 				// The macOS wheels are downloaded by the script itself, so each one
 				// has to be checked against a digest before it is installed.
