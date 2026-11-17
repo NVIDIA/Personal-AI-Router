@@ -11,6 +11,14 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.35 — Add model shows more ModelScope models and says the list is partial (#212)
+
+- With ModelScope as the llama.cpp download source, Add model now lists more models when the search box is empty, including popular chat models it used to leave out. Before, it could show as few as three.
+- Add model now says it is showing popular models and that a search finds more, for llama.cpp and vLLM.
+- Add model no longer offers ModelScope embedding, speech and image models that ModelScope labels as text generation.
+- During a ModelScope outage, Add model keeps the last list it loaded, even after many searches. A few models whose details ModelScope fails to return can be missing until the list refreshes.
+- On a slow connection, Add model shows the ModelScope models it loaded in time instead of none, and tries again for the rest two minutes later.
+
 ## 1.0.34 — Add model for a peer's llama.cpp lists that peer's download source (#214)
 
 - Opening Add model for llama.cpp on another device now lists models from that device's Model download source, Hugging Face or ModelScope. Before, it listed this device's source, so a device set to ModelScope showed Hugging Face models when opened from a peer.
