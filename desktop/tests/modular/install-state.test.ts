@@ -9,6 +9,7 @@ vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
 import type { EngineProcessStatus, EngineProgress } from '@/shared/types/engines'
 import { subscribePush } from '@/electron/service-bridge/push-bus'
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
+import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 
 let unsubscribe = (): void => {}
 
@@ -77,10 +78,10 @@ describe('LM Studio install state', () => {
         vi.advanceTimersByTime(1)
         expect(statuses.at(-1)).toBe('not-installed')
 
-        // A start has its own, shorter net: the awaited lifecycle envelope that
-        // outlasts every engine's readiness window, not the installer's 30 minutes.
+        // A start has its own net: the awaited lifecycle envelope that
+        // outlasts every engine's readiness window, separate from the installer's 30 minutes.
         state.beginLocalEngineOp('lm-studio', 'starting')
-        vi.advanceTimersByTime(14 * 60_000)
+        vi.advanceTimersByTime(MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS)
         expect(statuses.at(-1)).toBe('not-installed')
     })
 })

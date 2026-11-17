@@ -616,6 +616,24 @@ func TestBundledVLLM_StartFitsTheRemoteReadinessBudget(t *testing.T) {
 	}
 }
 
+// On integrated-GPU Linux machines such as DGX Spark the default memory-mapped
+// safetensors load took longer than ten minutes for a 4B model. Linux reads the
+// weights into host memory first; the macOS launch is left as it was.
+func TestBundledVLLM_LinuxLoadsWeightsEagerly(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
+	m, ok := reg.Get("vllm")
+	require.True(t, ok, "vllm manifest not loaded")
+	eager := []string{"--safetensors-load-strategy", "eager"}
+	for key, p := range m.Platforms {
+		if strings.HasPrefix(key, "linux/") {
+			assert.Subset(t, p.Runtime.Args, eager, "the Linux launch must load safetensors eagerly (%v)", key)
+		} else {
+			assert.NotContains(t, p.Runtime.Args, "--safetensors-load-strategy", "only Linux loads eagerly (%v)", key)
+		}
+	}
+}
+
 func writeManifest(t *testing.T, dir, name string, m Manifest) {
 	t.Helper()
 	data, err := json.MarshalIndent(m, "", "  ")

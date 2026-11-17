@@ -221,7 +221,7 @@ restart. The pending Load in the renderer's pending-actions store (the one owner
 of optimistic engine and model state) also covers the engine, because vLLM's
 capabilities declare `loadRestartsEngine`: its card shows starting rather than
 stopped, and its toggle stays locked, until the model is reported loaded, the
-load fails, or the 20-minute switch budget runs out. Its model list is read from
+load fails, or the 62-minute switch budget runs out. Its model list is read from
 disk while stopped, so it is kept throughout. Local and remote Loads are covered
 the same way.
 
@@ -231,8 +231,8 @@ engine), its switch stays on and usable: turning it off sends an explicit
 `stop` command (`engine:stop`, or `engine:remote-stop` for a peer), because a
 toggle reads the engine's status and an engine that is still starting reports
 not running. The engine-manager cancels the start in flight. Its safety net is the awaited lifecycle envelope
-(`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 14 minutes), which outlasts every
-engine's readiness window (vLLM 8 minutes, Ollama 10), so a slow start is never
+(`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 34 minutes), which outlasts every
+engine's readiness window (vLLM 30 minutes, Ollama 10), so a slow start is never
 shown as stopped while it is still loading. Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
 never remove.

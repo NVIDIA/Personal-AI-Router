@@ -30,12 +30,15 @@
     "env": { "HF_HOME": "{models_dir}", "VLLM_USE_FLASHINFER_SAMPLER": "0" },
     "bind": "127.0.0.1",
     "port": 8001,
-    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 480 },
+    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 1800 },
     "stop": { "signal": "term", "grace_s": 15 },
     "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5 }
   },
   "platforms": {
     "linux/amd64": {
+      "runtime": {
+        "args": ["serve", "--model", "Qwen/Qwen3.5-4B", "--host", "{host}", "--port", "{port}", "--safetensors-load-strategy", "eager"]
+      },
       "install": {
         "fetch": {
           "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-x86_64-unknown-linux-gnu.tar.gz",
@@ -44,6 +47,9 @@
       }
     },
     "linux/arm64": {
+      "runtime": {
+        "args": ["serve", "--model", "Qwen/Qwen3.5-4B", "--host", "{host}", "--port", "{port}", "--safetensors-load-strategy", "eager"]
+      },
       "install": {
         "fetch": {
           "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-aarch64-unknown-linux-gnu.tar.gz",

@@ -194,7 +194,7 @@ Shared-memory platforms keep 3 GiB for runtime startup in addition to the normal
 the probe's interpreter or packages are missing, PAIR logs a warning and leaves
 memory sizing to vLLM.
 
-Readiness polls `/health` for up to eight minutes while weights load.
+Readiness polls `/health` for up to thirty minutes while weights load. Linux launches pass `--safetensors-load-strategy eager`, which reads each weight file into host memory before copying it to the GPU: on integrated-GPU machines such as DGX Spark the default memory-mapped load was slow enough to miss the old eight-minute limit.
 
 The model list is the Hugging Face cache (`~/.cache/huggingface/hub`, or the
 one `HF_HUB_CACHE` or `HF_HOME` in vLLM's launch settings names), not what
