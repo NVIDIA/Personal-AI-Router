@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.33 — Explain Metal startup memory failures (#208)
+
+- When an engine reports a recognized Metal memory shortage during captured startup, PAIR includes advice to unload models from other engines or free memory before retrying. Existing engine or command context remains before the advice, followed by bounded, redacted diagnostics.
+- Cancelled or timed-out startup operations retain their interruption cause instead of being relabelled as memory failures because of earlier Metal output.
+
 ## 1.0.32 — No console windows when LM Studio starts on Windows (#211)
 
 - Starting the LM Studio engine on Windows no longer opens empty console windows.
