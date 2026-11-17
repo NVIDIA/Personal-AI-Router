@@ -12,12 +12,22 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // withDownloadStopGraces installs the graces a download's tool is given on
 // ctx, in place of the tool's own.
 func withDownloadStopGraces(ctx context.Context, graces downloadStopGraces) context.Context {
 	return context.WithValue(ctx, downloadStopGracesKey{}, graces)
+}
+
+// setShutdownDownloadStopGraces shortens the graces a stop has once shutdown
+// begins, for the rest of the test.
+func setShutdownDownloadStopGraces(t *testing.T, graces downloadStopGraces) {
+	t.Helper()
+	previous := shutdownDownloadStopGraces
+	shutdownDownloadStopGraces = graces
+	t.Cleanup(func() { shutdownDownloadStopGraces = previous })
 }
 
 // fakeDownloadProcess records the signals stopDownload sends it, and exits on
@@ -106,4 +116,41 @@ func TestStopDownload_KillsAtOnceWhenItCannotAsk(t *testing.T) {
 	assert.Equal(t, downloadStop{interruptErr: process.interruptErr, killed: true, exited: true}, got)
 	assert.Equal(t, []string{"kill"}, process.sent)
 	assert.Less(t, time.Since(start), 5*time.Second, "the interrupt's grace was waited out")
+}
+
+// Shutdown leaves a download's tool only a few seconds before engine-manager
+// exits, so once it begins no stage of a stop waits longer than
+// shutdownDownloadStopGraces allow, whatever the tool's own graces, the stage
+// already waiting included.
+func TestStopDownload_ShortensItsWaitsOnceShutdownBegins(t *testing.T) {
+	short := 50 * time.Millisecond
+	setShutdownDownloadStopGraces(t, downloadStopGraces{interrupt: short, retry: short, reap: short})
+	test := func(name string, process *fakeDownloadProcess, want downloadStop) {
+		t.Run(name, func(t *testing.T) {
+			shutdown := make(chan struct{})
+			p := process.process()
+			interrupt := p.interrupt
+			p.interrupt = func() error {
+				if len(process.sent) == 0 {
+					// Shutdown begins while the tool has the hour its own
+					// graces give it to answer.
+					time.AfterFunc(short, func() { close(shutdown) })
+				}
+				return interrupt()
+			}
+			graces := downloadStopGraces{interrupt: time.Hour, retry: time.Hour, reap: time.Hour, shutdown: shutdown}
+			stopped := make(chan downloadStop, 1)
+			go func() { stopped <- stopDownload(p, graces) }()
+
+			select {
+			case got := <-stopped:
+				assert.Equal(t, want, got)
+				assert.Equal(t, "interrupt interrupt kill", strings.Join(process.sent, " "))
+			case <-time.After(10 * time.Second):
+				require.FailNow(t, "the stop waited out the tool's own graces once shutdown had begun")
+			}
+		})
+	}
+	test("only the kill removes it", newFakeDownloadProcess(3), downloadStop{killed: true, exited: true})
+	test("not even the kill removes it", newFakeDownloadProcess(0), downloadStop{killed: true})
 }

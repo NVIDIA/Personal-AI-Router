@@ -153,6 +153,143 @@ func isClosed(done <-chan struct{}) bool {
 	}
 }
 
+// A download's tool is no engine, so stopping the engines would leave it
+// running past engine-manager's exit, above all one a peer started, whose
+// request nothing else cancels; these run on the test's context, which nothing
+// cancels either. StopAll stops every download, one queued behind another
+// included, and returns only once each has stopped. Shutdown is no cancel
+// someone asked for, which alone may delete partial files, and each download
+// reports that shutdown stopped it.
+func TestStopAll_StopsAndWaitsForEveryDownload(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	type stop struct {
+		requested bool
+		cause     error
+	}
+	downloading := make(chan struct{})
+	stopped := make(chan stop, 1)
+	first := make(chan error, 1)
+	go func() {
+		_, err := ex.trackedPull(t.Context(), "fake", "first", func(ctx context.Context) (json.RawMessage, error) {
+			close(downloading)
+			<-ctx.Done()
+			// Its tool takes a moment to exit.
+			time.Sleep(100 * time.Millisecond)
+			stopped <- stop{requested: cancelRequested(ctx), cause: context.Cause(ctx)}
+			return nil, pullStopped(ctx, "first")
+		})
+		first <- err
+	}()
+	<-downloading
+	queued := make(chan error, 1)
+	go func() {
+		_, err := ex.trackedPull(t.Context(), "fake", "queued", func(context.Context) (json.RawMessage, error) {
+			t.Error("a download queued behind another started once shutdown had begun")
+			return nil, nil
+		})
+		queued <- err
+	}()
+	require.Eventually(t, func() bool { return ex.registeredDownload("fake", "queued") != 0 }, 5*time.Second, 5*time.Millisecond,
+		"the second download never queued")
+
+	ex.StopAll()
+
+	select {
+	case got := <-stopped:
+		assert.False(t, got.requested, "shutdown was taken for a cancel someone asked for, which may delete partial files")
+		assert.ErrorIs(t, got.cause, errShuttingDown)
+	default:
+		require.FailNow(t, "StopAll returned before the download had stopped")
+	}
+	assert.Zero(t, ex.registeredDownload("fake", "queued"), "StopAll returned before the queued download had stopped")
+	assert.ErrorIs(t, <-first, errShuttingDown)
+	assert.ErrorIs(t, <-queued, errShuttingDown)
+}
+
+// A cancel can land while a download shutdown stopped is still stopping. The
+// download stopped, as was asked, so whichever engine ran it, it settles as
+// the cancellation rather than failing as shutdown's, and so does the cancel.
+func TestStopAll_SettlesACancelThatLandsAfterItAsCancelled(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	stopping := make(chan struct{})
+	cancelled := make(chan struct{})
+	done := make(chan outcome, 1)
+	go func() {
+		var got outcome
+		got.result, got.err = ex.trackedPull(t.Context(), "fake", "demo", func(ctx context.Context) (json.RawMessage, error) {
+			<-ctx.Done()
+			close(stopping)
+			<-cancelled
+			return nil, pullStopped(ctx, "demo")
+		})
+		done <- got
+	}()
+	require.Eventually(t, func() bool { return ex.registeredDownload("fake", "demo") != 0 }, 5*time.Second, 5*time.Millisecond,
+		"the download never registered")
+	stoppedAll := make(chan struct{})
+	go func() {
+		defer close(stoppedAll)
+		ex.StopAll()
+	}()
+	<-stopping
+	wait := ex.latchPullCancel("fake", "demo")
+	close(cancelled)
+
+	require.NoError(t, wait(t.Context()), "the cancel should report the download stopped")
+	got := <-done
+	require.NoError(t, got.err)
+	assertPullStatus(t, got.result, "cancelled")
+	<-stoppedAll
+}
+
+// setDownloadShutdownBudget changes how long StopAll waits for the downloads
+// it stopped, for the rest of the test.
+func setDownloadShutdownBudget(t *testing.T, budget time.Duration) {
+	t.Helper()
+	previous := downloadShutdownBudget
+	downloadShutdownBudget = budget
+	t.Cleanup(func() { downloadShutdownBudget = previous })
+}
+
+// The broker gives the whole shutdown sweep a few seconds, so StopAll waits for
+// a download no longer than downloadShutdownBudget, and one still stopping then
+// is left to engine-manager's exit rather than holding up the sweep's reply. A
+// later StopAll, which retries only failed engine stops, does not wait for it
+// again.
+func TestStopAll_StopsWaitingForADownloadAfterItsBudget(t *testing.T) {
+	setDownloadShutdownBudget(t, 100*time.Millisecond)
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	downloading := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	go func() {
+		_, _ = ex.trackedPull(t.Context(), "fake", "demo", func(context.Context) (json.RawMessage, error) {
+			close(downloading)
+			<-release
+			return nil, context.Canceled
+		})
+	}()
+	<-downloading
+	stopAll := func(t *testing.T, failure string) {
+		t.Helper()
+		returned := make(chan struct{})
+		go func() {
+			defer close(returned)
+			ex.StopAll()
+		}()
+		select {
+		case <-returned:
+		case <-time.After(10 * time.Second):
+			require.FailNow(t, failure)
+		}
+	}
+
+	stopAll(t, "StopAll waited for a download past its budget")
+	assert.NotZero(t, ex.registeredDownload("fake", "demo"), "the download should still be stopping")
+	setDownloadShutdownBudget(t, time.Hour)
+	stopAll(t, "a later StopAll waited for the download again")
+}
+
 // commandDaemon stands in for a command-mode engine's daemon: it serves the
 // readiness endpoint once startMarker exists and closes its listener once
 // stopMarker does, as a daemon told to stop by its control CLI would. It

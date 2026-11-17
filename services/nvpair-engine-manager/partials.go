@@ -71,16 +71,30 @@ const (
 // partialSettleKey addresses the wait override a test installs on a context.
 type partialSettleKey struct{}
 
-// waitForNextSample waits out one sample interval. Cleanup runs after the pull's
-// own context is already cancelled, so this deliberately does not observe
-// ctx.Done: callers hand it a context.WithoutCancel of the pull's, and
+// waitForNextSample waits out one sample interval, and reports false instead
+// once shutdown has begun, when cleanup stops sampling. Cleanup runs after the
+// pull's own context is already cancelled, so this deliberately does not
+// observe ctx.Done: callers hand it a context.WithoutCancel of the pull's, and
 // partialCleanupSamples is what limits the total wait.
-func waitForNextSample(ctx context.Context) {
+func waitForNextSample(ctx context.Context) bool {
+	shutdown := shutdownSignalFrom(ctx)
 	if settle, ok := ctx.Value(partialSettleKey{}).(func()); ok {
 		settle()
-		return
+		select {
+		case <-shutdown:
+			return false
+		default:
+			return true
+		}
 	}
-	time.Sleep(partialSampleInterval)
+	timer := time.NewTimer(partialSampleInterval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-shutdown:
+		return false
+	}
 }
 
 // observation is one stat of a candidate path. A path that could not be read
@@ -184,7 +198,8 @@ type quietGroup struct {
 // removeQuiescentPartials deletes the groups candidates lists once each has
 // held still for partialQuietSamples samples in a row, and leaves the rest in
 // place: a group that changes or first appears after the stopped transfer's
-// grace at once, and any other when partialCleanupSamples run out.
+// grace at once, and any other when partialCleanupSamples run out or shutdown
+// begins, which stops it between samples.
 //
 // candidates is the engine's attribution: the partial files this pull created,
 // grouped by the transfer that needs them. It is asked again at every sample,
@@ -205,8 +220,8 @@ func removeQuiescentPartials(ctx context.Context, candidates func() ([]partialGr
 	shared := make(map[string]bool)
 	var failure error
 	for sample := range partialCleanupSamples {
-		if sample > 0 {
-			waitForNextSample(ctx)
+		if sample > 0 && !waitForNextSample(ctx) {
+			break
 		}
 		groups, err := candidates()
 		if err != nil {

@@ -311,6 +311,109 @@ func TestTrackedPull_DownloadsARetryOnceTheCancelledDownloadHasStopped(t *testin
 	}, publishedFrames(events), "the retry's frames must follow the cancelled download's outcome, as a download of its own")
 }
 
+// Shutdown stops and waits for the downloads registered when it begins, so one
+// registered after would outlive engine-manager. Once it has begun, a request
+// starts no download, registers none, and sends no frame. That holds for a new
+// request, and for a retry that was waiting for a cancelled download to stop,
+// which would otherwise start its own once that download had.
+func TestTrackedPull_RefusesADownloadOnceShutdownHasBegun(t *testing.T) {
+	noDownload := func(t *testing.T) func(context.Context) (json.RawMessage, error) {
+		return func(context.Context) (json.RawMessage, error) {
+			t.Error("a download started once shutdown had begun")
+			return nil, nil
+		}
+	}
+	t.Run("a new request", func(t *testing.T) {
+		ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+		events, unsubscribe := ex.progress.subscribe("ollama")
+		defer unsubscribe()
+		ex.StopAll()
+
+		_, err := ex.trackedPull(t.Context(), "ollama", "demo", noDownload(t))
+
+		assert.ErrorIs(t, err, errShuttingDown)
+		assert.Zero(t, ex.registeredDownload("ollama", "demo"))
+		assert.Empty(t, publishedFrames(events))
+	})
+	t.Run("a retry waiting for a cancelled download", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+		events, unsubscribe := ex.progress.subscribe("ollama")
+		defer unsubscribe()
+		downloading := make(chan struct{})
+		cleaningUp := make(chan struct{})
+		finishCleanup := make(chan struct{})
+		original := make(chan outcome, 1)
+		go func() {
+			var got outcome
+			got.result, got.err = ex.trackedPull(ctx, "ollama", "demo", func(runCtx context.Context) (json.RawMessage, error) {
+				close(downloading)
+				<-runCtx.Done()
+				close(cleaningUp)
+				<-finishCleanup
+				return nil, runCtx.Err()
+			})
+			original <- got
+		}()
+		<-downloading
+		cancelled := make(chan error, 1)
+		go func() { cancelled <- ex.CancelModelPull(ctx, "ollama", "demo") }()
+		<-cleaningUp
+		retry, release := ex.claimPull(ctx, "ollama", "demo")
+		defer release()
+		retryDone := make(chan outcome, 1)
+		go func() {
+			var got outcome
+			got.result, got.err = ex.trackedPull(retry, "ollama", "demo", noDownload(t))
+			retryDone <- got
+		}()
+		select {
+		case got := <-retryDone:
+			require.FailNow(t, "the retry settled before the cancelled download had stopped", "result %s, error %v", got.result, got.err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			ex.StopAll()
+		}()
+		require.Eventually(t, ex.shuttingDown.Load, 5*time.Second, 5*time.Millisecond, "shutdown never began")
+
+		close(finishCleanup)
+		retryGot := awaitOutcome(t, ctx, retryDone)
+
+		assert.ErrorIs(t, retryGot.err, errShuttingDown)
+		require.NoError(t, <-cancelled)
+		originalGot := awaitOutcome(t, ctx, original)
+		require.NoError(t, originalGot.err)
+		assertPullStatus(t, originalGot.result, "cancelled")
+		<-stopped
+		assert.Equal(t, []ProgressEvent{
+			{Engine: "ollama", Model: "demo", Op: "pull", Stage: "cancelled", Message: "demo", Download: 1},
+		}, publishedFrames(events), "only the cancelled download should have reported")
+	})
+}
+
+// A request a cancel stopped before it registered starts no download anyway,
+// so shutdown leaves its answer alone: it settles as the cancellation that was
+// asked for rather than as refused.
+func TestTrackedPull_StillSettlesACancelledRequestOnceShutdownHasBegun(t *testing.T) {
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	claimed, release := ex.claimPull(t.Context(), "ollama", "demo")
+	defer release()
+	require.NoError(t, ex.CancelModelPull(t.Context(), "ollama", "demo"))
+	ex.StopAll()
+
+	result, err := ex.trackedPull(claimed, "ollama", "demo", func(context.Context) (json.RawMessage, error) {
+		t.Error("a request a cancel stopped started a download")
+		return nil, nil
+	})
+
+	require.NoError(t, err)
+	assertPullStatus(t, result, "cancelled")
+}
+
 // A stop the engine could not confirm leaves a download that may still be
 // running. Asked about once the pull has settled, a cancel would find nothing
 // registered and answer as though the download had stopped, which the UI reads
@@ -429,7 +532,7 @@ func TestTrackedPull_JoinsADuplicateRequestOntoTheActiveDownload(t *testing.T) {
 			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
 			events, unsubscribe := ex.progress.subscribe("ollama")
 			defer unsubscribe()
-			active := &activePull{cancel: func() {}, done: make(chan struct{})}
+			active := &activePull{cancel: func(error) {}, done: make(chan struct{})}
 			ex.pulls = map[pullKey]*activePull{{engine: "ollama", model: "demo"}: active}
 
 			joined := make(chan outcome, 1)

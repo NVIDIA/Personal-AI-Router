@@ -13,9 +13,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type activePull struct {
@@ -24,15 +28,15 @@ type activePull struct {
 	// settling and the retry waiting on it name the same engine and model.
 	// emitPullProgress stamps it on the download's frames.
 	id     uint64
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	done   chan struct{}
 	result json.RawMessage
 	err    error
 	// requested records that someone asked for this download to stop. A
-	// context dies for three other reasons — the manager's run context ending
-	// when PAIR quits, a remote initiator's connection dropping, the action
-	// timeout elapsing — and none of them mean the user gave up on the bytes
-	// already on disk. Only a requested cancellation may delete partial files.
+	// context dies for three other reasons — PAIR quitting, a remote
+	// initiator's connection dropping, the action timeout elapsing — and none
+	// of them mean the user gave up on the bytes already on disk. Only a
+	// requested cancellation may delete partial files.
 	requested atomic.Bool
 	// placeholder marks a request a cancel stopped before it started, held
 	// registered only while it reports that, so a retry of the model waits for
@@ -48,6 +52,80 @@ type activePullKey struct{}
 func cancelRequested(ctx context.Context) bool {
 	p, ok := ctx.Value(activePullKey{}).(*activePull)
 	return ok && p.requested.Load()
+}
+
+// errShuttingDown is why shutdown stopped a download or refused a pull request.
+var errShuttingDown = errors.New("engine manager is shutting down")
+
+// downloadShutdownBudget bounds how long shutdown waits for the downloads it
+// stopped. The broker gives the whole sweep 5s, the engines stop meanwhile, and
+// shutdownDownloadStopGraces have a tool's stop wait 3s at most once shutdown
+// begins; the rest covers sending the tool its signals, the runner reporting,
+// and the reply. Other stops keep their own bounds, which this one caps. Tests
+// shorten it.
+var downloadShutdownBudget = 4 * time.Second
+
+type shutdownSignalKey struct{}
+
+// withShutdownSignal carries shutdown, which closes once shutdown begins, on
+// the context a download runs on.
+func withShutdownSignal(ctx context.Context, shutdown <-chan struct{}) context.Context {
+	return context.WithValue(ctx, shutdownSignalKey{}, shutdown)
+}
+
+// shutdownSignalFrom returns the channel withShutdownSignal carries on ctx, or
+// nil, which never closes, when it carries none.
+func shutdownSignalFrom(ctx context.Context) <-chan struct{} {
+	shutdown, _ := ctx.Value(shutdownSignalKey{}).(<-chan struct{})
+	return shutdown
+}
+
+// shutdownSignal returns the channel that closes once shutdown begins. Called
+// with pullMu held.
+func (e *Executor) shutdownSignal() chan struct{} {
+	if e.shutdown == nil {
+		e.shutdown = make(chan struct{})
+	}
+	return e.shutdown
+}
+
+// stopDownloads stops every registered download for shutdown and returns them
+// for the caller to wait on. Shutdown never marks a stop as one someone asked
+// for, so a download only it stopped keeps its partial files for the next
+// attempt to resume. Closing the shutdown signal has each tool's stop shorten
+// its waits, and partial cleanup stop sampling, a requested cancel's included.
+// Called once, by stopAllNow, after it has set shuttingDown, from which point
+// trackedPull starts no download.
+func (e *Executor) stopDownloads() map[pullKey]*activePull {
+	e.pullMu.Lock()
+	defer e.pullMu.Unlock()
+	close(e.shutdownSignal())
+	stopping := maps.Clone(e.pulls)
+	for _, p := range stopping {
+		p.cancel(errShuttingDown)
+	}
+	return stopping
+}
+
+// awaitDownloads waits for the downloads stopDownloads stopped to finish, for
+// at most downloadShutdownBudget in all, and logs each still stopping then,
+// since engine-manager exits soon after without waiting for it.
+func awaitDownloads(stopping map[pullKey]*activePull) {
+	ctx, cancel := context.WithTimeout(context.Background(), downloadShutdownBudget)
+	defer cancel()
+	for key, p := range stopping {
+		select {
+		case <-p.done:
+			continue
+		case <-ctx.Done():
+		}
+		select {
+		case <-p.done:
+		default:
+			slog.Warn("download still stopping at shutdown; engine-manager will not wait for it",
+				"engine", key.engine, "model", key.model)
+		}
+	}
 }
 
 // pullKey identifies a download: one engine fetching one model.
@@ -235,7 +313,7 @@ func (e *Executor) latchPullCancel(engine, model string) func(context.Context) e
 	}
 	if p != nil {
 		p.requested.Store(true)
-		p.cancel()
+		p.cancel(nil)
 	}
 	unconfirmed := e.stopsUnconfirmed[key]
 	e.pullMu.Unlock()
@@ -257,12 +335,13 @@ func (e *Executor) latchPullCancel(engine, model string) func(context.Context) e
 
 func (e *Executor) trackedPull(ctx context.Context, engine, model string, run func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
 	claim, _ := ctx.Value(pullClaimKey{}).(*pullClaim)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	p := &activePull{cancel: cancel, done: make(chan struct{})}
 	ctx = context.WithValue(ctx, activePullKey{}, p)
 	key := pullKey{engine: engine, model: model}
 	e.pullMu.Lock()
+	ctx = withShutdownSignal(ctx, e.shutdownSignal())
 	if e.pulls == nil {
 		e.pulls = make(map[pullKey]*activePull)
 	}
@@ -321,6 +400,17 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model string, run fu
 			e.pullMu.Unlock()
 			return cancelledPull(), nil
 		}
+		// Shutdown stops and waits for the downloads registered when it
+		// begins, and one registered after would outlive engine-manager. So
+		// from then on, unless a cancel stopped it as above, a request starts
+		// and joins nothing, and sends no frame. shuttingDown is set before
+		// stopDownloads takes pullMu to list the downloads, and this check
+		// holds pullMu, so a request either registers before that list is
+		// taken or sees the flag. A retry that waited below checks again.
+		if e.shuttingDown.Load() {
+			e.pullMu.Unlock()
+			return nil, fmt.Errorf("pull %q: %w", model, errShuttingDown)
+		}
 		active := e.pulls[key]
 		if active == nil {
 			break
@@ -375,7 +465,7 @@ waitForPredecessors:
 		}
 	}
 	if ctx.Err() != nil {
-		err = ctx.Err()
+		err = pullStopped(ctx, model)
 	} else {
 		result, err = run(ctx)
 	}

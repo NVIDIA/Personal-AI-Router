@@ -210,7 +210,7 @@ Requests (caller → service):
 | `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (manifest `runtime.bind`; no per-call bind on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
-| `engine:prepare-shutdown` | — | `null` once the shutdown sweep, and any retry of a failed stop, has finished; per-engine stop failures are logged, not returned |
+| `engine:prepare-shutdown` | — | `null` once the shutdown sweep, and any retry of a failed stop, has finished; the sweep also stops every download, waiting up to 4 s for them; per-engine stop failures, and downloads still stopping, are logged, not returned |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
@@ -356,6 +356,7 @@ On `shutdown` (or stdin EOF) the service stops every running engine first, so no
 `engine:prepare-shutdown` requests that same sweep while the service is still fully up, which is how the parent drains engines before it starts tearing the worker tree down.
 The sweep runs **once per process** no matter how many of these paths ask for it, and a caller that arrives while it is already running waits for it to finish — responding earlier would report engines stopped while they were still running, and the parent would exit and orphan them.
 A later caller does not repeat the sweep; it retries only an engine whose stop failed through a process handle or a stop command, not an adopted engine whose stop was declined.
+The sweep stops every download too, a peer's included, so that a download's tool (`lms get`, `hf`) is stopped rather than left running when the service exits, and from then on the service starts none: a pull request a cancel has not already stopped fails, reporting that the engine manager is shutting down. Shutdown is no cancel anyone asked for, so a download only it stopped keeps its partial files for the next attempt to resume, while a cancel someone asked for counts as one even if shutdown stopped the download first. A cancelled download's cleanup stops at its next sample once shutdown begins, leaving what it has not removed. Each tool's stop waits at most 3 s from then: 1.25 s for the tool to exit once interrupted, 1.25 s after a second interrupt for `lms get`, which can miss its first, and 0.5 s after the kill. Other stops keep their own bounds, such as the request that asks llama.cpp's server to stop a download, but the sweep waits at most 4 s for all the downloads, while the engines stop, and logs any still stopping.
 
 For the `llamacpp-models-sse` adapter, the monitored model must match
 `params.model`. Subscribe before starting, and bound the `POST /models`

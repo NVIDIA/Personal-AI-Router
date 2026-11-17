@@ -559,6 +559,57 @@ func TestLMSPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T) {
 	assertPresent(t, partial)
 }
 
+// Quitting PAIR stops a download's `lms get` and waits for it, even with LM
+// Studio's server off, when stopping the engines has nothing to wait for, as
+// here. A CLI that misses its first interrupt is asked again within the few
+// seconds shutdown allows, rather than left running once engine-manager has
+// exited, and confirms. Nobody asked to cancel, so the pull fails rather than
+// settling as cancelled, and the partial stays for the next attempt to resume.
+func TestLMSPull_ShutdownStopsTheCLIAndKeepsItsPartial(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
+	defer cancel()
+	ex, partial, done := startLMSDownload(t, ctx, "downloadmissesfirstinterrupt", "owner/repo")
+	start := time.Now()
+
+	ex.StopAll()
+
+	assert.Less(t, time.Since(start), downloadShutdownBudget, "the download should stop within shutdown's budget")
+	assert.Zero(t, ex.registeredDownload("fake", "owner/repo"), "StopAll returned before the download had stopped")
+	got := awaitOutcome(t, ctx, done)
+	// A CLI that never confirmed would fail the download as a stop it could
+	// not confirm instead.
+	assert.ErrorIs(t, got.err, errShuttingDown)
+	assertPresent(t, partial)
+}
+
+// On stdin EOF, Run ends the local downloads' context before it calls StopAll,
+// so a download can already be stopping, on the CLI's own long graces, when
+// shutdown begins: here the CLI has missed its first interrupt, which those
+// graces give 15 seconds to answer. Shutdown still waits for it and has it
+// stop in time. Stopped by that bare cancel, the download reports one, and
+// keeps its partial.
+func TestLMSPull_ShutdownShortensAStopAlreadyUnderWay(t *testing.T) {
+	ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
+	defer cancel()
+	runCtx, endRun := context.WithCancel(ctx)
+	defer endRun()
+	ex, partial, done := startLMSDownload(t, runCtx, "downloadmissesfirstinterrupt", "owner/repo")
+
+	endRun()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(partial + ".missed")
+		return err == nil
+	}, 10*time.Second, 5*time.Millisecond, "the CLI never received its first interrupt")
+	start := time.Now()
+	ex.StopAll()
+
+	assert.Less(t, time.Since(start), downloadShutdownBudget, "the download should stop within shutdown's budget")
+	assert.Zero(t, ex.registeredDownload("fake", "owner/repo"), "StopAll returned before the download had stopped")
+	got := awaitOutcome(t, ctx, done)
+	assert.ErrorIs(t, got.err, context.Canceled)
+	assertPresent(t, partial)
+}
+
 // A download the action timeout stopped says so. The CLI confirms that
 // interrupt as it does a cancel's, and the frame the download ended on used to
 // give the bare "context canceled" it was stopped with as the reason.

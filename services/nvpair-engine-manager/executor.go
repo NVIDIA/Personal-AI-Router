@@ -123,6 +123,10 @@ type Executor struct {
 	// download whose engine could not confirm it stopped, until the next
 	// download of that model registers. See stopUnconfirmed.
 	stopsUnconfirmed map[pullKey]error
+	// shutdown closes when shutdown begins, so that stopping a download's tool
+	// then shortens its waits, and partial cleanup stops sampling. Made on
+	// first use; see shutdownSignal.
+	shutdown chan struct{}
 	// pullClaims holds the accepted pull requests per engine+model that have
 	// not finished, so a cancel can stop one that has not registered its
 	// download yet. Claimed where the request is accepted; see claimPull.

@@ -260,7 +260,10 @@ before tearing down its workers, so engines are not orphaned during teardown.
 `engine:prepare-shutdown` stops managed engine
 processes without changing the persisted desired state; the broker restores
 enabled engines on the next launch. Personal AI Router leaves that ordering to the broker
-rather than stopping the engines itself first. The broker joins its workers
+rather than stopping the engines itself first. `engine:prepare-shutdown` also
+stops every model download, waiting up to 4 seconds for them to stop; that stop
+is not a user's cancel, so it leaves their partial files for the next download
+to resume. The broker joins its workers
 concurrently within one shared teardown budget and escalates a worker that
 misses its grace, except engine-manager on Windows. Stopping a managed engine itself sends a stop signal,
 waits up to the manifest's stop grace (5 seconds by default) for it to exit,

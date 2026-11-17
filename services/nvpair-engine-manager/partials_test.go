@@ -167,6 +167,48 @@ func TestRemoveQuiescentPartials_WaitsOutTheStoppedTransfersLastWrites(t *testin
 	assertRemoved(t, partial)
 }
 
+// A requested cancel's cleanup can still be sampling when shutdown begins,
+// which leaves engine-manager only a few seconds. Cleanup stops between samples
+// then, and what it has not removed stays for the next attempt to resume.
+func TestRemoveQuiescentPartials_StopsOnceShutdownBegins(t *testing.T) {
+	partial := filepath.Join(t.TempDir(), "partial.part")
+	writePartial(t, partial, "data")
+	shutdown := make(chan struct{})
+	waits := 0
+	ctx := withPartialSettle(withShutdownSignal(t.Context(), shutdown), func() {
+		waits++
+		// The partial has held still since the first sample, so the next
+		// sample would remove it.
+		if waits == partialQuietSamples {
+			close(shutdown)
+		}
+	})
+
+	require.NoError(t, removeQuiescentPartials(ctx, listing(partial)))
+
+	assertPresent(t, partial)
+	assert.Equal(t, partialQuietSamples, waits, "cleanup should stop at the first wait once shutdown has begun")
+}
+
+// Shutdown ends cleanup at its next sample, and a failure from the sample
+// before is still reported, as when the samples run out.
+func TestRemoveQuiescentPartials_ReportsAFailureWhenShutdownStopsIt(t *testing.T) {
+	shutdown := make(chan struct{})
+	ctx := withPartialSettle(withShutdownSignal(t.Context(), shutdown), func() { close(shutdown) })
+	failing := func() ([]partialGroup, error) { return nil, fs.ErrPermission }
+
+	assert.ErrorIs(t, removeQuiescentPartials(ctx, failing), fs.ErrPermission)
+}
+
+// Outside tests the wait between samples is a real one, and shutdown ends it
+// as the hook's case does.
+func TestWaitForNextSample_ReportsShutdownInsteadOfWaiting(t *testing.T) {
+	shutdown := make(chan struct{})
+	close(shutdown)
+
+	assert.False(t, waitForNextSample(withShutdownSignal(t.Context(), shutdown)))
+}
+
 // Once the grace is over this pull's writer has stopped, so a write is another
 // client resuming the file: both vendors coalesce a new download onto a partial
 // already there. Holding still again afterwards proves nothing, since a

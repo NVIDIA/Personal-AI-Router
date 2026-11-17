@@ -40,6 +40,21 @@ type downloadStopGraces struct {
 	// reap bounds the wait for a killed process. Reaching it means the kill
 	// did not remove the process, which is then abandoned.
 	reap time.Duration
+	// shutdown closes once shutdown begins. From then on no stage waits longer
+	// than shutdownDownloadStopGraces allow it.
+	shutdown <-chan struct{}
+}
+
+// shutdownDownloadStopGraces bound each stage of a stop once shutdown has
+// begun, so that a stop waits 3s at most, well within the broker's budget for
+// the shutdown sweep, however long the tool's own graces are. A stage already
+// waiting when shutdown begins waits at most its share from then. A second
+// interrupt gets as long as the first, since a CLI that missed the first still
+// has to answer its prompt. Tests shorten them.
+var shutdownDownloadStopGraces = downloadStopGraces{
+	interrupt: 1250 * time.Millisecond,
+	retry:     1250 * time.Millisecond,
+	reap:      500 * time.Millisecond,
 }
 
 // downloadStopGracesKey addresses the shortened graces a test installs on a
@@ -47,12 +62,14 @@ type downloadStopGraces struct {
 type downloadStopGracesKey struct{}
 
 // downloadStopGracesFrom returns the graces installed on ctx, or else the
-// tool's own.
+// tool's own, shortened once shutdown begins.
 func downloadStopGracesFrom(ctx context.Context, tool downloadStopGraces) downloadStopGraces {
-	if graces, ok := ctx.Value(downloadStopGracesKey{}).(downloadStopGraces); ok {
-		return graces
+	graces := tool
+	if installed, ok := ctx.Value(downloadStopGracesKey{}).(downloadStopGraces); ok {
+		graces = installed
 	}
-	return tool
+	graces.shutdown = shutdownSignalFrom(ctx)
+	return graces
 }
 
 // downloadStop is how stopping a download's process went.
@@ -77,11 +94,12 @@ func stopDownload(p downloadProcess, graces downloadStopGraces) downloadStop {
 		}
 		return p.interrupt()
 	}
+	short := shutdownDownloadStopGraces
 	var stop downloadStop
 	if stop.interruptErr = interrupt(); stop.interruptErr == nil {
-		stop.exited = waitForExit(p.exited, graces.interrupt)
+		stop.exited = waitForExit(p.exited, graces.interrupt, graces.shutdown, short.interrupt)
 		if !stop.exited && graces.retry > 0 && interrupt() == nil {
-			stop.exited = waitForExit(p.exited, graces.retry)
+			stop.exited = waitForExit(p.exited, graces.retry, graces.shutdown, short.retry)
 		}
 	}
 	// A process that exited by itself — before it could be asked, or just
@@ -91,7 +109,7 @@ func stopDownload(p downloadProcess, graces downloadStopGraces) downloadStop {
 	}
 	stop.killed = true
 	p.kill()
-	stop.exited = waitForExit(p.exited, graces.reap)
+	stop.exited = waitForExit(p.exited, graces.reap, graces.shutdown, short.reap)
 	return stop
 }
 
@@ -109,14 +127,23 @@ func processExited(exited <-chan struct{}) bool {
 	}
 }
 
-// waitForExit reports whether the process was reaped within grace.
-func waitForExit(exited <-chan struct{}, grace time.Duration) bool {
+// waitForExit reports whether the process was reaped within grace, or within
+// short of shutdown closing, if that comes first.
+func waitForExit(exited <-chan struct{}, grace time.Duration, shutdown <-chan struct{}, short time.Duration) bool {
+	deadline := time.Now().Add(grace)
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
-	select {
-	case <-exited:
-		return true
-	case <-timer.C:
-		return false
+	for {
+		select {
+		case <-exited:
+			return true
+		case <-timer.C:
+			return false
+		case <-shutdown:
+			shutdown = nil
+			if time.Until(deadline) > short {
+				timer.Reset(short)
+			}
+		}
 	}
 }

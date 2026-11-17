@@ -237,7 +237,7 @@ func (e *Executor) pullModelNDJSON(
 					"engine", engine, "model", model, "err", err)
 			}
 		}
-		resultErr = context.Canceled
+		resultErr = pullStopped(ctx, model)
 	}()
 	pullCtx, watchdog := newPullProgressWatchdog(ctx, e.pullProgressTimeout)
 	defer watchdog.stop()
@@ -451,12 +451,15 @@ func (e *Executor) pullModelLlamaCPPSSE(ctx context.Context, engine, model strin
 // pullStopped is the error for a pull its context stopped. A plain
 // cancellation comes back bare, the way every engine returns one, so that
 // trackedPull can tell a cancel someone asked for from a context that died on
-// its own. Any other cause, such as the progress watchdog's, is a failure.
+// its own. So does shutdown's once someone has asked to cancel as well: the
+// download stopped, as they asked. Any other cause, such as the progress
+// watchdog's or shutdown's alone, is a failure.
 func pullStopped(ctx context.Context, model string) error {
-	if cause := context.Cause(ctx); cause != context.Canceled {
-		return fmt.Errorf("pull %q: %w", model, cause)
+	cause := context.Cause(ctx)
+	if cause == context.Canceled || (cause == errShuttingDown && cancelRequested(ctx)) {
+		return context.Canceled
 	}
-	return context.Canceled
+	return fmt.Errorf("pull %q: %w", model, cause)
 }
 
 // A lost acknowledgement gives us no ownership of a router download: another

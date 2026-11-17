@@ -397,6 +397,38 @@ func TestOllamaPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T
 	assert.Equal(t, "partial", string(data))
 }
 
+// Quitting PAIR stops an Ollama transfer, a peer's included, whose request
+// nothing else cancels. Nobody asked to cancel, so the pull fails, reporting
+// that shutdown stopped it, rather than settling as cancelled, and the partial
+// blob stays for the next attempt to resume.
+func TestOllamaPull_ShutdownStopsTheTransferAndKeepsItsPartial(t *testing.T) {
+	partial := filepath.Join(newOllamaBlobsDir(t), blobA+"-partial")
+	server, disconnected := ollamaTransfer(t, partial, "pulling layer")
+	ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
+	defer cancel()
+	ex, done := startOllamaPull(t, ctx, server)
+	// The engine is marked running on the fake server's port, which this test
+	// process holds. Marked stopped, it leaves the sweep only the download to
+	// stop, as an engine whose server is already off does.
+	st, err := ex.state("ollama")
+	require.NoError(t, err)
+	st.mu.Lock()
+	st.running = false
+	st.mu.Unlock()
+
+	ex.StopAll()
+
+	assert.Zero(t, ex.registeredDownload("ollama", "demo"), "StopAll returned before the transfer had stopped")
+	got := awaitOutcome(t, ctx, done)
+	assert.ErrorIs(t, got.err, errShuttingDown)
+	select {
+	case <-disconnected:
+	case <-ctx.Done():
+		require.FailNow(t, "the HTTP transfer did not disconnect")
+	}
+	assertPresent(t, partial)
+}
+
 // Ollama's success record is its last: the model is installed. The pull
 // reports success on it even while the connection stays open, and a cancel
 // that lands afterwards finds nothing to stop and leaves the files alone.

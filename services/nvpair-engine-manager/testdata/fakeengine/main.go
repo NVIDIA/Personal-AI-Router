@@ -116,13 +116,18 @@ func resolveLMSArtifact(arg string) {
 }
 
 // downloadUntilInterrupted reports progress and then blocks until this process
-// is interrupted, the way `lms get` waits while it downloads. A partial file
-// named in os.Args[3] is written first, as a transfer under way would have,
-// once the model in os.Args[4], if any, resolves. It listens for the interrupt
-// before reporting: the caller cancels as soon as it reads progress, and an
-// interrupt nothing is listening for ends the process before it can answer,
-// which is what a CLI that exits without confirming looks like.
-func downloadUntilInterrupted() {
+// has been interrupted the given number of times, the way `lms get` waits
+// while it downloads. A partial file named in os.Args[3] is written first, as a
+// transfer under way would have, once the model in os.Args[4], if any,
+// resolves. It listens for the interrupt before reporting: the caller cancels
+// as soon as it reads progress, and an interrupt nothing is listening for ends
+// the process before it can answer, which is what a CLI that exits without
+// confirming looks like.
+//
+// When it waits for more than one interrupt, it writes a file named after the
+// partial with ".missed" added once the first lands, for a test that must act
+// only after the stop has begun.
+func downloadUntilInterrupted(interrupts int) {
 	if len(os.Args) > 4 {
 		resolveLMSArtifact(os.Args[4])
 	}
@@ -133,7 +138,12 @@ func downloadUntilInterrupted() {
 		writeAnnouncedPartial(os.Args[3])
 	}
 	reportDownloadProgress()
-	<-signals
+	for i := range interrupts {
+		<-signals
+		if i == 0 && interrupts > 1 && len(os.Args) > 3 {
+			_ = os.WriteFile(os.Args[3]+".missed", nil, 0600)
+		}
+	}
 }
 
 func main() {
@@ -185,12 +195,19 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		// The four download subcommands stand in for `lms get` and cover the
+		// The five download subcommands stand in for `lms get` and cover the
 		// ways it can answer an interrupt. Each takes the percentage to report
 		// so the caller owns that number and can assert on the same constant it
 		// passed in, then optionally the partial file its transfer leaves.
-		case "canceldownload": // answers the prompt and confirms the cancellation
-			downloadUntilInterrupted()
+		case "canceldownload", "downloadmissesfirstinterrupt": // answers the prompt and confirms the cancellation
+			// The first interrupt can land while `lms get` is mid-redraw and
+			// never reach the handler that prints the prompt, and then the
+			// second is the one it answers.
+			interrupts := 1
+			if os.Args[1] == "downloadmissesfirstinterrupt" {
+				interrupts = 2
+			}
+			downloadUntilInterrupted(interrupts)
 			fmt.Fprint(os.Stderr, "Continue to download in the background? (Y/N): ")
 			answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 			if err != nil || strings.TrimSpace(answer) != "n" {
@@ -199,11 +216,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Download canceled.")
 			os.Exit(1)
 		case "downloadcompletes": // finishes as the interrupt lands
-			downloadUntilInterrupted()
+			downloadUntilInterrupted(1)
 			fmt.Fprintln(os.Stderr, "Download completed.")
 			return
 		case "downloadsilent": // exits without answering the prompt
-			downloadUntilInterrupted()
+			downloadUntilInterrupted(1)
 			os.Exit(1)
 		case "downloadignoresinterrupt": // never acknowledges, so it has to be killed
 			// Take delivery of the interrupt and do nothing with it. Calling
