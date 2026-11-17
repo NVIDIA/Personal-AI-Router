@@ -38,14 +38,18 @@ type remoteParam struct {
 // remoteProgress is the engine:remote-progress notification payload the broker
 // forwards to a subscribed UI.
 type remoteProgress struct {
-	Model   string `json:"model,omitempty"`
-	OpID    string `json:"opId"`
-	Node    string `json:"node"`
-	Engine  string `json:"engine,omitempty"`
-	Op      string `json:"op,omitempty"`
-	Stage   string `json:"stage,omitempty"`
-	Percent int    `json:"percent,omitempty"`
-	Message string `json:"message,omitempty"`
+	Model string `json:"model,omitempty"`
+	OpID  string `json:"opId"`
+	// OpIDs, on the frame a pull's download ends on, are the opIds of the
+	// download's other pulls that ended here before that pull did, which the
+	// frame speaks for too; see pullRemote.
+	OpIDs   []string `json:"opIds,omitempty"`
+	Node    string   `json:"node"`
+	Engine  string   `json:"engine,omitempty"`
+	Op      string   `json:"op,omitempty"`
+	Stage   string   `json:"stage,omitempty"`
+	Percent int      `json:"percent,omitempty"`
+	Message string   `json:"message,omitempty"`
 }
 
 // newOpID mints a random correlation id for a remote operation.
@@ -108,6 +112,12 @@ type remotePullRequest struct {
 	// download is the peer's ID for the download the request runs as there,
 	// once the request's stream has carried it. Guarded by the gate's mu.
 	download uint64
+	// opID is the opId the request's frames carry, once pullRemote has it, and
+	// endedBefore the opIds of the pulls of its download that ended here
+	// while it was outstanding, which the frame it ends on names if it is the
+	// last; see end. Guarded by the gate's mu.
+	opID        string
+	endedBefore []string
 }
 
 func (r *remotePullRequest) land() { r.settle.Do(func() { close(r.landed) }) }
@@ -123,6 +133,17 @@ func (r *remotePullRequest) sharesDownload(other *remotePullRequest) bool {
 		return r.download == other.download
 	}
 	return r.generation == other.generation
+}
+
+// outlived records that a pull of r's download ended while r was still
+// outstanding, so the frame r ends on, if it is the last, names that pull and
+// those that ended before it. Called with the gate's mu held.
+func (r *remotePullRequest) outlived(ended *remotePullRequest) {
+	for _, opID := range append(slices.Clone(ended.endedBefore), ended.opID) {
+		if opID != "" && !slices.Contains(r.endedBefore, opID) {
+			r.endedBefore = append(r.endedBefore, opID)
+		}
+	}
 }
 
 // awaitCancelsAhead waits until every cancel the request was sent after has
@@ -271,6 +292,28 @@ func (o remoteOrder) runsAs(download uint64) {
 	o.pull.download = download
 }
 
+// named records the opId a remote pull's frames carry.
+func (o remoteOrder) named(opID string) {
+	if o.pull == nil {
+		return
+	}
+	o.gate.mu.Lock()
+	defer o.gate.mu.Unlock()
+	o.pull.opID = opID
+}
+
+// endedBefore returns the opIds of the pulls of a remote pull's download that
+// ended here before it, for the frame it ends on once end has reported it the
+// last.
+func (o remoteOrder) endedBefore() []string {
+	if o.pull == nil {
+		return nil
+	}
+	o.gate.mu.Lock()
+	defer o.gate.mu.Unlock()
+	return slices.Clone(o.pull.endedBefore)
+}
+
 // accepted is the callback remoteClient.stream runs once the peer has taken a
 // remote pull, freeing the cancels waiting on it. Nothing else has one.
 func (o remoteOrder) accepted() func() {
@@ -318,8 +361,10 @@ func (o remoteOrder) awaitCancelsAhead(ctx context.Context) {
 // end takes a request out of the gate. A pull that ended frees any cancel
 // still waiting on it — it has nothing left for one to chase — and end reports
 // whether it was the last pull of its download outstanding here; see
-// sharesDownload. A cancel that ended frees the pulls sent after it. Only the
-// first call for a request does anything.
+// sharesDownload. One that was not leaves its opId, and those of the pulls
+// that ended before it, to the pulls of its download still outstanding, so
+// the frame the last of them ends on names them all. A cancel that ended frees
+// the pulls sent after it. Only the first call for a request does anything.
 func (o remoteOrder) end() (last bool) {
 	if o.cancel != nil {
 		o.gate.endCancel(o.key, o.cancel)
@@ -337,7 +382,13 @@ func (o remoteOrder) end() (last bool) {
 		return false
 	}
 	pulls = slices.Delete(pulls, i, i+1)
-	last = !slices.ContainsFunc(pulls, o.pull.sharesDownload)
+	last = true
+	for _, other := range pulls {
+		if o.pull.sharesDownload(other) {
+			last = false
+			other.outlived(o.pull)
+		}
+	}
 	if len(pulls) == 0 {
 		delete(g.pulls, o.key)
 		g.forgetGenerations(o.key)
@@ -487,11 +538,13 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder
 // for the reply has to go on. A UI can know a download's frames by node, engine
 // and model alone, as the desktop app does, so while another pull of the same
 // download is outstanding here its frames speak for this one too, and only the
-// last of them to end sends that frame. Every pull's stream carries the peer's
-// copy, so each holds its copy until it knows whether it is the last. A retry
-// sent after a cancel runs as a download of its own, so the cancelled pull does
-// not wait for it; see remotePullRequest.sharesDownload. The peer names the
-// download each frame is from, and the stream records it for that.
+// last of them to end sends that frame. It names those that ended before it in
+// opIds, for a UI that knows its pull's frames by opId instead, as the
+// terminal UI does. Every pull's stream carries the peer's copy, so each holds
+// its copy until it knows whether it is the last. A retry sent after a cancel
+// runs as a download of its own, so the cancelled pull does not wait for it;
+// see remotePullRequest.sharesDownload. The peer names the download each frame
+// is from, and the stream records it for that.
 //
 // The last sends the copy only if it agrees with its own result. The peer's
 // progress hub drops what a slow stream has no room for, the outcome included,
@@ -510,6 +563,7 @@ func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteCl
 	if opID == "" {
 		opID = newOpID()
 	}
+	order.named(opID)
 	body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
 	relay := m.remoteProgressFn(opID, node)
 	var outcome *streamFrame
@@ -523,10 +577,11 @@ func (m *Manager) pullRemote(ctx context.Context, msg *Message, client *remoteCl
 	}, order.accepted())
 	order.runsAs(terminal.Download)
 	if order.end() {
+		endedBefore := order.endedBefore()
 		if outcome != nil && outcome.Stage == remotePullOutcomeStage(terminal, err) {
-			relay(*outcome)
+			m.remoteProgressFn(opID, node, endedBefore...)(*outcome)
 		} else {
-			m.notifyRemotePullOutcome(opID, node, p.Engine, order.key.model, terminal, err)
+			m.notifyRemotePullOutcome(opID, endedBefore, node, p.Engine, order.key.model, terminal, err)
 		}
 	}
 	if err != nil {
@@ -552,8 +607,9 @@ func remotePullOutcomeStage(terminal streamFrame, err error) string {
 
 // notifyRemotePullOutcome sends the engine:remote-progress frame a remote pull
 // ends on, built from how its stream settled; a failure carries its reason.
-func (m *Manager) notifyRemotePullOutcome(opID, node, engine, model string, terminal streamFrame, err error) {
-	p := remoteProgress{Model: model, OpID: opID, Node: node, Engine: engine, Op: "pull", Message: model,
+// endedBefore are the frame's opIds; see remoteProgress.OpIDs.
+func (m *Manager) notifyRemotePullOutcome(opID string, endedBefore []string, node, engine, model string, terminal streamFrame, err error) {
+	p := remoteProgress{Model: model, OpID: opID, OpIDs: endedBefore, Node: node, Engine: engine, Op: "pull", Message: model,
 		Stage: remotePullOutcomeStage(terminal, err)}
 	switch p.Stage {
 	case "error":
@@ -566,12 +622,12 @@ func (m *Manager) notifyRemotePullOutcome(opID, node, engine, model string, term
 
 // remoteProgressFn returns an onProgress callback that relays a peer's stream
 // frames up as engine:remote-progress notifications, stamped with the
-// operation's opId and the target node id.
-func (m *Manager) remoteProgressFn(opID, node string) func(streamFrame) {
+// operation's opId and the target node id, and with opIDs as their opIds.
+func (m *Manager) remoteProgressFn(opID, node string, opIDs ...string) func(streamFrame) {
 	return func(f streamFrame) {
 		p := remoteProgress{
 			Model: f.Model,
-			OpID:  opID, Node: node, Engine: f.Engine, Op: f.Op,
+			OpID:  opID, OpIDs: opIDs, Node: node, Engine: f.Engine, Op: f.Op,
 			Stage: f.Stage, Message: f.Message,
 		}
 		if wirePercentIncluded(f.Percent) {

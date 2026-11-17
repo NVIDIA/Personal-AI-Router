@@ -320,6 +320,31 @@ func TestRemotePullGate_GoesByTheDownloadsThePeerNamed(t *testing.T) {
 	})
 }
 
+// A pull that ends while another of its download is outstanding sends no frame
+// saying how the download ended, so it leaves its opId, and those it was left,
+// to the pulls still outstanding, for the last of them to name. A retry sent
+// after a cancel runs as a download of its own and is left none.
+func TestRemotePullGate_LeavesTheLastPullTheOpIDsOfThoseThatEndedFirst(t *testing.T) {
+	var gate remotePullGate
+	first := placePull(t, &gate)
+	first.named("t41")
+	second := placePull(t, &gate)
+	second.named("t42")
+	require.False(t, first.end())
+	third := placePull(t, &gate)
+	third.named("t43")
+	cancel := placeCancel(t, &gate)
+	retry := placePull(t, &gate)
+	retry.named("t44")
+	cancel.end()
+
+	require.False(t, second.end())
+	require.True(t, third.end())
+	assert.Equal(t, []string{"t41", "t42"}, third.endedBefore(), "the last pull of the download")
+	require.True(t, retry.end())
+	assert.Empty(t, retry.endedBefore(), "the retry")
+}
+
 // sentUp is what a remote pull sent this node's UI: its engine:remote-progress
 // frames, in order, and the reply that settled it.
 type sentUp struct {
@@ -550,6 +575,31 @@ func TestRemotePull_CarriesTheOpIDItsClientNamedIt(t *testing.T) {
 	}
 	test("an outcome its stream carried", pullFrame("downloading"), pullFrame("cancelled"), pullResult(`{"status":"cancelled"}`))
 	test("an outcome built from its result", pullFrame("downloading"), pullResult(`{"status":"cancelled"}`))
+}
+
+// A UI that knows its pull's frames by opId, as the terminal UI does, never
+// heard how the pull's download ended when another pull of the download here
+// ended after it and sent the only frame saying so. That frame names the
+// pulls that ended before it in opIds; the progress before it names none.
+func TestRemotePull_NamesThePullsThatEndedFirstOnTheOutcome(t *testing.T) {
+	test := func(name string, lastStream ...streamFrame) {
+		t.Run(name, func(t *testing.T) {
+			var gate remotePullGate
+			first := placePull(t, &gate)
+			last := placePull(t, &gate)
+
+			sentByFirst, _ := pullRemoteNamed(t, "t41", first, pullFrame("downloading"), pullResult(`{"status":"success"}`))
+			sentByLast, _ := pullRemoteNamed(t, "t42", last, lastStream...)
+
+			assert.Equal(t, []string{"downloading"}, sentByFirst.stages(), "the first pull to end")
+			require.Equal(t, []string{"downloading", "success"}, sentByLast.stages(), "the last pull to end")
+			assert.Empty(t, sentByLast.progress[0].OpIDs, "the progress named other pulls")
+			assert.Equal(t, "t42", sentByLast.progress[1].OpID)
+			assert.Equal(t, []string{"t41"}, sentByLast.progress[1].OpIDs, "the outcome")
+		})
+	}
+	test("an outcome its stream carried", pullFrame("downloading"), pullFrame("success"), pullResult(`{"status":"success"}`))
+	test("an outcome built from its result", pullFrame("downloading"), pullResult(`{"status":"success"}`))
 }
 
 // An opId the client could never find on the pull's frames is refused as

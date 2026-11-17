@@ -487,9 +487,11 @@ row attempt: a cancel still awaited after its download ended neither refuses
 the retry's cancel nor, rejected late, restores the retry's row. A pull can
 also name itself with an `opId` beside `params` on `engine:action` and
 `engine:remote-pull-model`. `engine:remote-progress` carries the pull's
-`opId`, its caller's or else one minted for it, and `engine:pull-progress`
-lists in `opIds` the requests that run as the frame's download, which leaves
-out a retry still waiting for a cancelled download to stop. The terminal UI
+`opId`, its caller's or else one minted for it, and the last frame of a peer's
+download, which only the last of this machine's pulls of it to end sends, also
+lists in `opIds` those that ended first. `engine:pull-progress` lists in
+`opIds` the requests that run as the frame's download, which leaves out a
+retry still waiting for a cancelled download to stop. The terminal UI
 sends each download it starts with an `opId` of its own — `tui-`, a prefix
 minted once per run, and the attempt — and follows that download only by
 frames naming it, so a stopped download's late frame leaves the retry alone,

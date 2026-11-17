@@ -366,11 +366,13 @@ stopped it before it started. A retry waiting for a cancelled download to
 stop runs as no download yet, so that download's frames leave it out, and a
 client that names its requests can tell the cancelled download's late frames
 from its retry's, which name the same engine and model),
-`engine:remote-progress{opId, node, engine, model, op, stage, percent?, message}`
+`engine:remote-progress{opId, node, engine, model, op, stage, percent?, message, opIds?}`
 (relayed live progress for a remote install/pull, a pull's terminal frame
 included, which the initiator sends itself when the peer's stream dropped it;
 `opId` is the one the client named an `engine:remote-pull-model` with, or else
-one minted for the operation; `model` is carried through from the peer's frame
+one minted for the operation; only the last of this machine's pulls of one
+download to end sends its terminal frame, which names the others, those that
+ended first, in `opIds`; `model` is carried through from the peer's frame
 for the same reason it appears on the local notification), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
