@@ -322,6 +322,69 @@ func TestEngineLifecycle_ReportsUnexpectedExit(t *testing.T) {
 	require.True(t, hasErr(ex.Errors(), exitedID("fake")), "expected an 'exited' error after a crash")
 }
 
+func TestEngineStartup_ReportsFullMetalMemoryErrorForProcessEngines(t *testing.T) {
+	test := func(engine, prefix string) {
+		t.Run(engine, func(t *testing.T) {
+			manifest := testEngineManifest(fakeEngineBin)
+			manifest.Engine = engine
+			platform := manifest.Platforms[hostKey()]
+			platform.Runtime.Args = []string{"--fail-metal-oom"}
+			manifest.Platforms[hostKey()] = platform
+			executor, _ := capturingExecutor(t, manifest)
+			t.Cleanup(func() { assert.NoError(t, executor.Stop(engine)) })
+
+			err := executor.Start(t.Context(), engine)
+
+			require.ErrorContains(t, err, prefix+"Not enough available GPU memory")
+			assert.ErrorContains(t, err, "Unload models from other engines or free memory")
+			assert.ErrorContains(t, err, "\n\nEngine details:\n")
+			assert.ErrorContains(t, err, "kIOGPUCommandBufferCallbackErrorOutOfMemory")
+			assert.NotContains(t, err.Error(), "check the launch options")
+			reported := executor.Errors()
+			require.Len(t, reported, 1)
+			assert.Equal(t, startFailedID(engine), reported[0].ID)
+			assert.Equal(t, err.Error(), reported[0].Message)
+			assert.Equal(t, "retry", reported[0].Action)
+			state, statusErr := executor.Status(engine)
+			require.NoError(t, statusErr)
+			assert.False(t, state.Running)
+			assert.False(t, state.Healthy)
+		})
+	}
+	test("vllm", `engine "vllm" did not become ready: `)
+	test("llamacpp", `engine "llamacpp" did not become ready: `)
+}
+
+func TestEngineStartup_ReportsFullMetalMemoryErrorForCustomCommand(t *testing.T) {
+	manifest := testEngineManifest(fakeEngineBin)
+	manifest.Engine = "lmstudio"
+	platform := manifest.Platforms[hostKey()]
+	platform.Runtime.Mode = "command"
+	platform.Runtime.Start = [][]string{{fakeEngineBin, "--fail-metal-oom"}}
+	platform.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "echo", "down"}}
+	platform.Runtime.LaunchEnv = []string{"PAIR_TEST_MODE=metal-oom"}
+	manifest.Platforms[hostKey()] = platform
+	executor, _ := capturingExecutor(t, manifest)
+	t.Cleanup(func() { assert.NoError(t, executor.Stop("lmstudio")) })
+
+	err := executor.Start(t.Context(), "lmstudio")
+
+	require.ErrorContains(t, err, "start command failed: Not enough available GPU memory")
+	assert.ErrorContains(t, err, "Unload models from other engines or free memory")
+	assert.ErrorContains(t, err, "\n\nEngine details:\n")
+	assert.ErrorContains(t, err, "kIOGPUCommandBufferCallbackErrorOutOfMemory")
+	assert.NotContains(t, err.Error(), "check the launch options")
+	reported := executor.Errors()
+	require.Len(t, reported, 1)
+	assert.Equal(t, startFailedID("lmstudio"), reported[0].ID)
+	assert.Equal(t, err.Error(), reported[0].Message)
+	assert.Equal(t, "retry", reported[0].Action)
+	state, statusErr := executor.Status("lmstudio")
+	require.NoError(t, statusErr)
+	assert.False(t, state.Running)
+	assert.False(t, state.Healthy)
+}
+
 func TestNormalStop_IsSilent(t *testing.T) {
 	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
 	require.NoError(t, ex.Start(context.Background(), "fake"), "start")

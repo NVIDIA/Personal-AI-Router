@@ -368,7 +368,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
-		werr := fmt.Errorf("engine %q did not become ready: %w", engine, diagnostics.failure(err))
+		werr := fmt.Errorf("engine %q did not become ready: %w", engine, diagnostics.failure(ctx, err))
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return werr
@@ -462,7 +462,7 @@ func runPrivateLaunchCommand(ctx context.Context, argv []string, environment map
 	}
 	configureSysProcAttr(cmd)
 	if err := cmd.Run(); err != nil {
-		return diagnostics.failure(fmt.Errorf("launch command failed: %w", err))
+		return diagnostics.failure(ctx, fmt.Errorf("launch command failed: %w", err))
 	}
 	return nil
 }

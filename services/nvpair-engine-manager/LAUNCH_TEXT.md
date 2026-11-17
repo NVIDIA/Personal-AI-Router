@@ -118,13 +118,24 @@ no guessed network aliases or nested-assignment checks. An adapter must identify
 the controls PAIR manages; arbitrary vendor options remain opaque.
 Changes to declared CORS origin lists, switches and explicit booleans are local to the engine's device; other
 environment assignments can be edited through the same local or pinned-peer API.
-On startup failure, PAIR returns a bounded tail of the engine output alongside
-the exit/readiness failure. It does not classify vendor messages or interpret
-options. Supplied positional/assignment values and explicit environment values
-are redacted by exact match; engine-transformed values cannot be guaranteed to
-match. Do not put secrets in launch values. Custom output is still excluded from
-ongoing exported engine logs, and desktop subprocess logs redact launch text,
-argument arrays and environment maps. Successful startup discards the capture.
+On a captured startup failure, PAIR returns a tail of at most 8 KiB of engine
+output alongside the exit/readiness failure. It recognizes explicit Metal
+insufficient-memory diagnostics and includes advice to unload models from other
+engines or free memory before retrying. The existing engine or command context
+precedes the advice, followed by the diagnostic tail under `Engine details:`.
+Recognition is shared across engine names and host platforms; other vendor
+diagnostics retain their existing explanations. PAIR does not interpret vendor
+options. Cancellation and expired operation deadlines are not reclassified as
+memory failures, including when terminating a child produces a subprocess exit
+error; the interruption and underlying error remain available to callers.
+
+Supplied positional/assignment values and explicit environment values are
+redacted by exact match before memory classification. The memory reason survives
+later traceback lines displacing the original diagnostic from the tail.
+Engine-transformed values cannot be guaranteed to match. Do not put secrets in
+launch values. Custom output is still excluded from ongoing exported engine
+logs, and desktop subprocess logs redact launch text, argument arrays and
+environment maps. Successful startup discards the capture.
 
 The effective argv and explicit environment are revalidated immediately before
 execution, so saved settings from older versions cannot bypass mandatory checks

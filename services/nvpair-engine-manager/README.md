@@ -583,6 +583,19 @@ notifications using the `nvpair-shared/errors` wire shape. The broker
 (`nvpair-ui-broker`) forwards them to the `nvpair-errors` registry.
 Ids follow `engine-manager:<class>:<engine>`.
 
+A recognized Metal out-of-memory failure during startup includes advice to
+unload models from other engines or free memory before retrying. This shared
+handling applies to any engine whose process or privately captured start command
+emits the recognized Metal diagnostic, including vLLM and llama.cpp; it is not
+gated on the engine name or host OS. The existing engine or command context
+remains before the advice. Start commands use private capture when custom launch
+arguments or environment are supplied. The bounded, redacted engine diagnostic
+tail follows under `Engine details:`, even if later traceback lines have displaced
+the original memory-error line. The tail is limited to 8 KiB. Other startup
+failures keep their existing explanations. Cancellation and expired operation
+deadlines retain both their interruption cause and any underlying subprocess
+error, without being reclassified as memory failures.
+
 ## Security posture
 
 Runs **user mode only** — no admin/sudo at runtime (privilege escalation
