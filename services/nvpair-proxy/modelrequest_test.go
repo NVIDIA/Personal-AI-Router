@@ -195,6 +195,61 @@ func TestRequestTransport_PreparesOnlyNonBrowserJSONInference(t *testing.T) {
 	test("malformed content type", http.Header{"Content-Type": {"application/json; charset"}}, false)
 }
 
+// Browser and non-JSON requests cannot automatically load models, but the
+// engine can still accept them for an already loaded model. A later request
+// for another model must wait until that response finishes or closes,
+// because switching models can restart vLLM and cut the response short.
+func TestRequestTransport_DrainsResponsesWithoutModelPreparation(t *testing.T) {
+	test := func(name string, headers http.Header) {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				assert.NoError(t, http.NewResponseController(w).Flush())
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			f, writer := modelRequestFacade(t, server.URL, "")
+			firstRequest := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil)
+			firstRequest.Header = headers.Clone()
+			first, err := f.requestTransport(http.DefaultTransport, firstRequest, "org/a").RoundTrip(firstRequest)
+			require.NoError(t, err)
+			defer first.Body.Close()
+			require.Empty(t, writer.requests, "this request must not prepare a model")
+
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			finished := make(chan error, 1)
+			go func() {
+				request := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil).WithContext(ctx)
+				request.Header.Set("Content-Type", "application/json")
+				response, err := f.requestTransport(http.DefaultTransport, request, "org/b").RoundTrip(request)
+				if err == nil {
+					err = response.Body.Close()
+				}
+				finished <- err
+			}()
+			waitForCond(t, time.Second, "model B to wait for the active response", func() bool {
+				f.modelGate.mu.Lock()
+				defer f.modelGate.mu.Unlock()
+				return len(f.modelGate.queue) == 1
+			})
+			assert.Empty(t, writer.requests, "switching must wait even when the active request cannot prepare models")
+
+			require.NoError(t, first.Body.Close())
+			select {
+			case err := <-finished:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("model B did not proceed after the response closed")
+			}
+			require.Len(t, writer.requests, 1)
+			assert.Equal(t, "org/b", (<-writer.requests).Model)
+		})
+	}
+	test("browser JSON", http.Header{"Content-Type": {"application/json"}, "Origin": {"https://website.example"}})
+	test("non-JSON native request", http.Header{"Content-Type": {"text/plain"}})
+}
+
 func TestPrepareModelTransport_ReusesPreparationForTheServingModel(t *testing.T) {
 	test := func(name string, models []string, wantPreparations []string) {
 		t.Run(name, func(t *testing.T) {

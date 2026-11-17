@@ -221,9 +221,10 @@ func (p *Proxy) handleModelPrepared(msg *Message) bool {
 // prepareModelTransport holds admission until the entire response body is
 // consumed or closed, including streaming responses and failed forwards.
 type prepareModelTransport struct {
-	next   http.RoundTripper
-	facade *facade
-	model  string
+	next            http.RoundTripper
+	facade          *facade
+	model           string
+	skipPreparation bool
 }
 
 func (t prepareModelTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -233,21 +234,23 @@ func (t prepareModelTransport) RoundTrip(request *http.Request) (*http.Response,
 	if err != nil {
 		return nil, err
 	}
-	if err := t.facade.prepareRequestedModel(ctx, t.model); err != nil {
-		release()
-		var failure modelPreparationFailure
-		if !errors.As(err, &failure) {
-			return nil, err
+	if !t.skipPreparation {
+		if err := t.facade.prepareRequestedModel(ctx, t.model); err != nil {
+			release()
+			var failure modelPreparationFailure
+			if !errors.As(err, &failure) {
+				return nil, err
+			}
+			status := failure.status
+			if status < 400 || status > 599 {
+				status = http.StatusServiceUnavailable
+			}
+			body, encodeErr := json.Marshal(map[string]string{"error": failure.message})
+			if encodeErr != nil {
+				return nil, encodeErr
+			}
+			return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, nil
 		}
-		status := failure.status
-		if status < 400 || status > 599 {
-			status = http.StatusServiceUnavailable
-		}
-		body, encodeErr := json.Marshal(map[string]string{"error": failure.message})
-		if encodeErr != nil {
-			return nil, encodeErr
-		}
-		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, nil
 	}
 	response, err := t.next.RoundTrip(request)
 	if err != nil {
@@ -277,11 +280,7 @@ func (b *modelResponseBody) Read(p []byte) (int, error) {
 func (b *modelResponseBody) Close() error { defer b.release(); return b.ReadCloser.Close() }
 
 func (f *facade) requestTransport(next http.RoundTripper, r *http.Request, model string) http.RoundTripper {
-	if !f.profile.LoadOnRequest || model == "" || !isInferenceRequest(f.profile, r.Method, r.URL.Path) || len(r.Header.Values("Origin")) != 0 {
-		return next
-	}
-	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || contentType != "application/json" {
+	if !f.profile.LoadOnRequest || model == "" || !isInferenceRequest(f.profile, r.Method, r.URL.Path) {
 		return next
 	}
 	backend := f.currentLocalBackend()
@@ -292,7 +291,11 @@ func (f *facade) requestTransport(next http.RoundTripper, r *http.Request, model
 	if !ok || target.Host != r.URL.Host {
 		return next
 	}
-	return prepareModelTransport{next: next, facade: f, model: model}
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	// Native requests still hold the model until their responses finish, even
+	// when their origin or content type forbids automatic model preparation.
+	skipPreparation := len(r.Header.Values("Origin")) != 0 || err != nil || contentType != "application/json"
+	return prepareModelTransport{next: next, facade: f, model: model, skipPreparation: skipPreparation}
 }
 
 func (f *facade) requestTransportForCandidate(c candidate, r *http.Request, model string) http.RoundTripper {

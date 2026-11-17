@@ -745,6 +745,8 @@ is not yet healthy. It never permits a non-loopback local target.
 Only inference requests with an `application/json` content type and no `Origin`
 header may trigger preparation. Other requests retain the native engine's
 behavior and CORS decision without starting or switching a model.
+Their model-bearing inference responses still hold admission until completion,
+so an automatic switch cannot interrupt a response accepted by the native engine.
 
 The proxy sends operational `{id, engine, model}` metadata in `model:prepare` to
 its broker, receives `model:prepared {id, engine, port?, error?, status?}`, and
