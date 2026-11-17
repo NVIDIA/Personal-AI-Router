@@ -565,7 +565,13 @@ func TestLMSPull_KeepsItsPartialWhenStoppedWithoutACancelRequest(t *testing.T) {
 // seconds shutdown allows, rather than left running once engine-manager has
 // exited, and confirms. Nobody asked to cancel, so the pull fails rather than
 // settling as cancelled, and the partial stays for the next attempt to resume.
+//
+// The shutdown graces are shortened, as in this package's other stop tests:
+// on Windows each interrupt goes through a helper process, whose start-up a
+// loaded machine can stretch past what the full graces leave of the budget.
 func TestLMSPull_ShutdownStopsTheCLIAndKeepsItsPartial(t *testing.T) {
+	short := 100 * time.Millisecond
+	setShutdownDownloadStopGraces(t, downloadStopGraces{interrupt: short, retry: short, reap: short})
 	ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
 	defer cancel()
 	ex, partial, done := startLMSDownload(t, ctx, "downloadmissesfirstinterrupt", "owner/repo")
@@ -587,8 +593,11 @@ func TestLMSPull_ShutdownStopsTheCLIAndKeepsItsPartial(t *testing.T) {
 // shutdown begins: here the CLI has missed its first interrupt, which those
 // graces give 15 seconds to answer. Shutdown still waits for it and has it
 // stop in time. Stopped by that bare cancel, the download reports one, and
-// keeps its partial.
+// keeps its partial. The shutdown graces are shortened for the reason the test
+// above gives.
 func TestLMSPull_ShutdownShortensAStopAlreadyUnderWay(t *testing.T) {
+	short := 100 * time.Millisecond
+	setShutdownDownloadStopGraces(t, downloadStopGraces{interrupt: short, retry: short, reap: short})
 	ctx, cancel := context.WithTimeout(settledContext(t), 30*time.Second)
 	defer cancel()
 	runCtx, endRun := context.WithCancel(ctx)

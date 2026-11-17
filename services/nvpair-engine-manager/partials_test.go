@@ -194,10 +194,17 @@ func TestRemoveQuiescentPartials_StopsOnceShutdownBegins(t *testing.T) {
 // before is still reported, as when the samples run out.
 func TestRemoveQuiescentPartials_ReportsAFailureWhenShutdownStopsIt(t *testing.T) {
 	shutdown := make(chan struct{})
-	ctx := withPartialSettle(withShutdownSignal(t.Context(), shutdown), func() { close(shutdown) })
+	waits := 0
+	ctx := withPartialSettle(withShutdownSignal(t.Context(), shutdown), func() {
+		waits++
+		if waits == 1 {
+			close(shutdown)
+		}
+	})
 	failing := func() ([]partialGroup, error) { return nil, fs.ErrPermission }
 
 	assert.ErrorIs(t, removeQuiescentPartials(ctx, failing), fs.ErrPermission)
+	assert.Equal(t, 1, waits, "cleanup should stop at its next sample once shutdown has begun")
 }
 
 // Outside tests the wait between samples is a real one, and shutdown ends it
