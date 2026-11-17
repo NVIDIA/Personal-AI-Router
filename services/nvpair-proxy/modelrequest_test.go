@@ -293,10 +293,13 @@ func TestPrepareModelTransport_SharesPreparationForConcurrentSameModelRequests(t
 	}))
 	defer server.Close()
 	f, writer := modelRequestFacade(t, server.URL, "")
+	writer.deferReply = true
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
 	finished := make(chan error, 8)
 	for range cap(finished) {
 		go func() {
-			request := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil)
+			request := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil).WithContext(ctx)
 			response, err := (prepareModelTransport{next: http.DefaultTransport, facade: f, model: "org/a"}).RoundTrip(request)
 			if err == nil {
 				err = response.Body.Close()
@@ -304,10 +307,25 @@ func TestPrepareModelTransport_SharesPreparationForConcurrentSameModelRequests(t
 			finished <- err
 		}()
 	}
+	// Keep preparation pending until every caller has joined, so sequential
+	// reuse of a cached result cannot satisfy this concurrency test.
+	waitForCond(t, time.Second, "all requests to share pending preparation", func() bool {
+		f.modelRequests.mu.Lock()
+		defer f.modelRequests.mu.Unlock()
+		return f.modelRequests.preparing != nil && f.modelRequests.preparing.waiters == cap(finished) && len(writer.requests) == 1
+	})
+	prepared := <-writer.requests
+	sendPreparationReply(t, f, modelrequest.Reply{ID: prepared.ID, Engine: "vllm", Port: writer.port})
+
 	for range cap(finished) {
-		require.NoError(t, <-finished)
+		select {
+		case err := <-finished:
+			require.NoError(t, err)
+		case <-ctx.Done():
+			t.Fatal("shared preparation did not release every request")
+		}
 	}
-	assert.Len(t, writer.requests, 1)
+	assert.Empty(t, writer.requests, "concurrent callers must not send another preparation")
 }
 
 func TestPrepareModelTransport_RechecksPreparationAfterLifecycleChanges(t *testing.T) {
