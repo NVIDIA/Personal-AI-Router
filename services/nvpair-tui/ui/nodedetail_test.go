@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1808,6 +1809,22 @@ func TestFeedDownload_StaysTrackedWhileTheRequestsItNamesChange(t *testing.T) {
 	d.update(frame("success", nil))
 	assert.Empty(t, d.downloads, "an outcome naming no request left the download in flight")
 	assert.Contains(t, d.status.render(), "download llama3.2 (Ollama): done")
+}
+
+// A late frame trails its download's end by moments, so the screens remember
+// only the latest downloads to end, not every one since the terminal UI
+// started.
+func TestMarkDownloadEnded_RemembersOnlyTheLatestDownloads(t *testing.T) {
+	ended := func(i int) detailDownload {
+		return detailDownload{engine: "ollama", model: "llama3.2", opID: "bounded-" + strconv.Itoa(i)}
+	}
+	for i := range endedDownloadsKept + 1 {
+		markDownloadEnded(ended(i))
+	}
+
+	assert.False(t, endedDownloads[ended(0).opID], "the oldest is still remembered")
+	assert.True(t, endedDownloads[ended(endedDownloadsKept).opID], "the newest was forgotten")
+	assert.Len(t, endedDownloads, endedDownloadsKept)
 }
 
 // The desktop app sends its downloads without an opId, so their frames name

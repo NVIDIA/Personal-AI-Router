@@ -259,8 +259,17 @@ var downloadAttempts int
 // since ended, by its outcome frame or by a reply that says so, so that a late
 // frame naming it changes nothing while no download of its model is in flight
 // on the screen; see followDownload. Package-level for the same reason: the
-// replies and frames of a screen's downloads outlive it.
-var endedDownloads = map[string]bool{}
+// replies and frames of a screen's downloads outlive it. A late frame trails
+// its download's end by moments, so only the latest endedDownloadsKept are
+// held, endedOrder listing them oldest first.
+var (
+	endedDownloads = map[string]bool{}
+	endedOrder     []string
+)
+
+// endedDownloadsKept is far more downloads than can end in the moments a late
+// frame trails its download's end by.
+const endedDownloadsKept = 256
 
 func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	ti := textinput.New()
@@ -1067,8 +1076,14 @@ func (d *nodeDetail) retireDownload(dl detailDownload) {
 // download of its model in flight; see followDownload. A download picked up
 // from the feed has no opId to record.
 func markDownloadEnded(dl detailDownload) {
-	if dl.opID != "" {
-		endedDownloads[dl.opID] = true
+	if dl.opID == "" || endedDownloads[dl.opID] {
+		return
+	}
+	endedDownloads[dl.opID] = true
+	endedOrder = append(endedOrder, dl.opID)
+	if len(endedOrder) > endedDownloadsKept {
+		delete(endedDownloads, endedOrder[0])
+		endedOrder = endedOrder[1:]
 	}
 }
 
