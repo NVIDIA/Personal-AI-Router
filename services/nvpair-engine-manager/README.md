@@ -78,6 +78,11 @@ before the switch. Explicit Load remains available; Eject releases model memory
 and keeps vLLM enabled. An explicitly disabled engine is never started by a request,
 and inference never downloads an uncached model.
 
+Request-triggered startup requires a complete cached snapshot at the launch's
+`--revision`, or `main` when none is set. A complete download of another revision
+does not make that startup eligible. Explicit Load can still fetch an uncached
+selection, and an already served model or alias needs no restart.
+
 The bundled launch has no model argument. Enable installs vLLM and waits for an
 explicit choice without downloading weights or starting a model server. Choose
 **Select a model** in the desktop, then download or load a compatible model.

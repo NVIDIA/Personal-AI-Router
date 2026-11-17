@@ -61,6 +61,11 @@ model preparation. Eject and Stop can still cancel a load. Preparation has a
 10-minute budget including queueing; normal stream/body deadlines still apply
 once inference starts. Clients must allow for cold model startup latency.
 
+Before starting a model for a request, its effective `--revision` (default `main`)
+must resolve to a complete cached snapshot. Another complete revision in the disk
+inventory does not authorize a download of the selected revision. This check does
+not restart an already served model or restrict explicit Load.
+
 `modelsByEngine` for this engine lists complete cached models only while enabled;
 `downloadedByEngine` remains the disk inventory even while disabled, and
 `loadedByEngine` continues to identify only resident models. Enabled-but-empty

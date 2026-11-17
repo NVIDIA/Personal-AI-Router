@@ -134,12 +134,30 @@ func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *A
 				return fmt.Errorf("%q is not a valid cached model id", model)
 			}
 			action, ok := edit.st.manifest.Actions["list_models"]
-			if !ok || action.Result == nil {
+			if !ok || action.Result == nil || action.HFCache == nil {
 				return errors.New("model inventory is unavailable")
 			}
 			downloaded, ok := e.queryModelList(ctx, engine, "list_models", action.Result)
 			if !ok || !slices.Contains(downloaded, model) {
 				return fmt.Errorf("%w: %q", errRequestModelNotCached, model)
+			}
+			// Inventory accepts any complete snapshot, but startup loads the
+			// configured revision. Do not let inference download another one.
+			args, err := parseLaunchText(current.LaunchText)
+			if err != nil {
+				return err
+			}
+			cache, err := resolvePlaceholders(action.HFCache.Dir, hfActionVars(edit.st))
+			if err != nil {
+				return err
+			}
+			revision := hfRevision(args)
+			snapshot, cached := hfSnapshotDir(expandPath(cache), model, revision)
+			if cached {
+				_, _, cached = completeHFSnapshot(snapshot)
+			}
+			if !cached {
+				return fmt.Errorf("%w: %q at revision %q", errRequestModelNotCached, model, revision)
 			}
 		}
 		if !current.Editable {
