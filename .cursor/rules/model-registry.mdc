@@ -44,7 +44,10 @@ SPDX-License-Identifier: Apache-2.0
   private, gated, non-generative, and non-pull-ready repos. Every result is an
   exact `owner/repository:Q4_K_M` pull id; other quantizations are not listed.
   The reply says `searchable: true`; other sources ignore a query and return
-  their whole list. **Never log the user's search text.**
+  their whole list. **Never log the user's search text.** That is the Hugging
+  Face source; `engine:catalog` takes an optional `modelSource` (`huggingface`
+  or `modelscope`), and omitting it uses the answering node's saved selection,
+  so a client browsing for a peer must pass the peer's.
 - The LM Studio list, the llama.cpp list, and each llama.cpp query share one
   cache: 6-hour TTL, a coalescing guard so concurrent callers share one request,
   and a failure backoff so a dead upstream is not re-dialled on every call.
@@ -67,8 +70,12 @@ SPDX-License-Identifier: Apache-2.0
   again**.
 - The desktop relays through
   `desktop/src/electron/service-bridge/model-catalog.ts`, which exposes
-  `getEngineHubModels(engineType, query?)` and `warmEngineHubs()` (warms the
-  LM Studio and llama.cpp catalogs — Ollama needs none). The `engine:search-hub`
+  `getEngineHubModels(engineType, nodeId?, query?)` and `warmEngineHubs()`
+  (warms this device's LM Studio, llama.cpp and vLLM catalogs — Ollama needs
+  none). For a peer's llama.cpp, `getEngineHubModels` reads that peer's saved
+  `modelSource` with `engine:get-settings` and passes it to `engine:catalog`;
+  this device's own node skips the read. A peer that does not report its source
+  is an error, never a fallback to this device's source. The `engine:search-hub`
   handler in `empty-handlers.ts` calls the former; the `overview:ready` handler
   in `window.ipc.ts` calls the latter. Warm on renderer-ready, **not** on
   service connect: a catalog fetch started before the window has painted

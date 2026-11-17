@@ -278,17 +278,24 @@ same method, so both front ends browse one implementation.
   callers coalesced onto one request and a failure backoff. The cache is warmed
   when the Overview renderer reports ready, not when the service connects, so a
   slow or hanging catalog fetch cannot compete with the window's first paint;
-- llama.cpp models come from the 50 most-downloaded GGUF repositories of each
-  approved publisher (`ggml-org`, `bartowski`, and `unsloth`), fetched and cached
-  the same way. It is the one searchable source: a `query` searches up to 50
-  public Hugging Face matches across publishers, each query cached on its own.
-  Both keep only public, generative repositories with a primary `Q4_K_M` file
-  and emit exact `owner/repository:Q4_K_M` pull IDs;
+- llama.cpp models come from the node's selected model download source. From
+  Hugging Face, the browse list is the 50 most-downloaded GGUF repositories of
+  each approved publisher (`ggml-org`, `bartowski`, and `unsloth`), fetched and
+  cached the same way, and a `query` searches up to 50 public matches across
+  publishers, each query cached on its own. From ModelScope, it lists and
+  searches popular public GGUF repositories. Both keep only public, generative
+  repositories with a primary `Q4_K_M` file and emit exact
+  `owner/repository:Q4_K_M` pull IDs;
+- the request takes an optional `modelSource`; omitting it uses the answering
+  machine's own selection. The model hub is opened for a node, and for a peer's
+  llama.cpp the desktop reads that peer's saved source with
+  `engine:get-settings` before each browse or search and passes it, as the
+  terminal interface does, so the list matches what the peer will download;
 - the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
   rows, keeps them only for Apple Silicon, and echoes the target it filtered
   for, so a client driving a peer is not offered models that peer cannot
-  install. The desktop names no target: the hub installs only to this machine,
-  which is also the one answering;
+  install. The desktop does not yet pass them, so a peer's list is still
+  filtered for this machine;
 - the Ollama reply is a single multi-megabyte frame, so every hop on its path
   shares `jsonrpc.WorkerFrameBytes`. See `docs/services-backend.md`;
 - model pulls still run through `nvpair-engine-manager`.

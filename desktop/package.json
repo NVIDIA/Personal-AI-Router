@@ -1,6 +1,6 @@
 {
     "name": "nvpair",
-    "version": "1.0.33",
+    "version": "1.0.34",
     "description": "NVIDIA PAIR",
     "engines": {
         "node": ">=25.5.0"

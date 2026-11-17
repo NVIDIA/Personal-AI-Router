@@ -67,8 +67,12 @@ export interface IEngineApi {
     deleteModel(engineType: EngineType, nodeId: string, model: string): void
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
-    /** Load an engine catalog or explicitly search its upstream registry. */
-    searchHub(engineType: EngineType, query?: string): Promise<EngineHubSearchResponse>
+    /** Load the catalog a node's engine downloads from, or search its upstream registry. */
+    searchHub(
+        engineType: EngineType,
+        nodeId: string,
+        query?: string
+    ): Promise<EngineHubSearchResponse>
 
     /** Durable engine state changed. Prefer this for new renderer state. */
     onStateChanged(callback: (patch: EngineStatePatch) => void): () => void
@@ -121,10 +125,10 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 model,
                 expiry
             }),
-        searchHub: (engineType, query) =>
+        searchHub: (engineType, nodeId, query) =>
             transport.invoke(
                 'engine:search-hub',
-                query === undefined ? { engineType } : { engineType, query }
+                query === undefined ? { engineType, nodeId } : { engineType, nodeId, query }
             ),
 
         onStateChanged: cb => transport.subscribePush('engines:state-changed', cb),
