@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -126,16 +125,34 @@ func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
 	request("org/second")
 	call("engine:action", map[string]any{"engine": "vllm", "action": "unload_model", "params": map[string]string{"model": "org/second"}})
 	request("org/first")
-	// Stop remains authoritative even if discovery still carries a stale positive inventory.
+	// The manual node still advertises both models. Routing can reject a request
+	// before it reaches the engine's disabled check. Either way, OFF must prevent
+	// the request from starting the engine again.
 	call("engine:stop", map[string]string{"engine": "vllm"})
-	call("vllm-proxy:node/set-local-backend", map[string]any{"engine": "vllm", "host": "127.0.0.1", "port": enginePort, "healthy": false, "loadOnRequest": true})
 	body := bytes.NewBufferString(`{"model":"org/second","messages":[]}`)
 	response, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", proxy.Port), "application/json", body)
 	require.NoError(t, err)
 	defer response.Body.Close()
-	_, err = io.Copy(io.Discard, response.Body)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusConflict, response.StatusCode)
+	var rejection struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&rejection))
+	assert.Contains(t, []int{http.StatusConflict, http.StatusBadGateway}, response.StatusCode, "rejection: %s", rejection.Error)
+	assert.NotEmpty(t, rejection.Error)
+	if response.StatusCode == http.StatusConflict {
+		assert.Equal(t, `engine is disabled: "vllm"`, rejection.Error)
+	}
+	var stopped struct {
+		Engine        string `json:"engine"`
+		Enabled       bool   `json:"enabled"`
+		Running       bool   `json:"running"`
+		AwaitingModel bool   `json:"awaiting_model"`
+	}
+	require.NoError(t, json.Unmarshal(call("engine:status", map[string]string{"engine": "vllm"}), &stopped))
+	assert.Equal(t, "vllm", stopped.Engine)
+	assert.False(t, stopped.Enabled)
+	assert.False(t, stopped.Running)
+	assert.False(t, stopped.AwaitingModel)
 }
 
 // Persisted ON intent must be routable when the broker reports ready, without
