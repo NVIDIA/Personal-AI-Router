@@ -7,7 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
+	"regexp"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,6 +101,92 @@ func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
 	assert.True(t, op.detached, "a still-running download must not be reported as complete")
 }
 
+// A pull's reply is the engine manager's result on this machine, and from a peer
+// it arrives wrapped beside the operation's id. A check that read only one
+// shape called the other's cancelled download complete.
+func TestPullWasCancelled_ReadsBothReplyShapes(t *testing.T) {
+	test := func(name, result string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, pullWasCancelled(&rpc.Message{Result: json.RawMessage(result)}))
+		})
+	}
+	test("this machine's cancelled download", `{"status":"cancelled"}`, true)
+	test("a peer's cancelled download", `{"opId":"op-1","result":{"status":"cancelled"}}`, true)
+	test("this machine's completed download", `{"status":"success"}`, false)
+	test("a peer's completed download", `{"opId":"op-1","result":{"status":"success"}}`, false)
+	test("an engine's reply that is not an object", `"downloaded"`, false)
+	test("a peer relaying such a reply", `{"opId":"op-1","result":"downloaded"}`, false)
+	t.Run("no reply", func(t *testing.T) {
+		assert.False(t, pullWasCancelled(nil))
+	})
+}
+
+// A download is sent with the opId the screen names it by, which the engine
+// manager puts on the download's frames. It goes at the top of the request in
+// both shapes: the params of this machine's engine:action are the engine's
+// own request, and an opId there would be passed on to the engine. The reply
+// carries the opId back to the screen.
+func TestPullRequest_CarriesTheOpIDBesideTheEnginesParams(t *testing.T) {
+	test := func(name, node, wantMethod string, wantParams map[string]any) {
+		t.Run(name, func(t *testing.T) {
+			client, calls := removalBroker(t, "")
+
+			reply := pullCmd(client, node, engines.NameOllama, "llama3.2", 7, "tui-0123456789abcdef-7")()
+
+			var sent removalCall
+			select {
+			case sent = <-calls:
+			case <-time.After(2 * time.Second):
+				require.FailNow(t, "the broker received no request")
+			}
+			assert.Equal(t, wantMethod, sent.method)
+			var params map[string]any
+			require.NoError(t, json.Unmarshal(sent.params, &params), "decode %s params", sent.method)
+			assert.Equal(t, wantParams, params)
+			assert.Equal(t, pullDoneMsg{engine: engines.NameOllama, model: "llama3.2", attempt: 7, opID: "tui-0123456789abcdef-7"}, reply)
+		})
+	}
+	test("this machine", "", "engine:action", map[string]any{
+		"engine": "ollama", "action": "pull_model", "opId": "tui-0123456789abcdef-7",
+		"params": map[string]any{"name": "llama3.2", "model": "llama3.2"},
+	})
+	test("a peer", "peer", "engine:remote-pull-model", map[string]any{
+		"node": "peer", "engine": "ollama", "model": "llama3.2", "opId": "tui-0123456789abcdef-7",
+	})
+}
+
+// A cancel stops every request running as the download, not only the one this
+// screen sent, so it names the download by engine and model alone. The opId
+// is the screen's own name for the download, and only its reply carries it.
+func TestCancelPullRequest_NamesTheDownloadByEngineAndModel(t *testing.T) {
+	test := func(name, node, wantMethod string, wantParams map[string]string) {
+		t.Run(name, func(t *testing.T) {
+			client, calls := removalBroker(t, "")
+
+			reply := cancelPullCmd(client, node, engines.NameOllama, "llama3.2", 7, "tui-0123456789abcdef-7")()
+
+			method, params := receivedCall(t, calls)
+			assert.Equal(t, wantMethod, method)
+			assert.Equal(t, wantParams, params)
+			assert.Equal(t, cancelPullMsg{engine: engines.NameOllama, model: "llama3.2", attempt: 7, opID: "tui-0123456789abcdef-7"}, reply)
+		})
+	}
+	test("this machine", "", "engine:cancel-pull", map[string]string{"engine": "ollama", "model": "llama3.2"})
+	test("a peer", "peer", "engine:remote-cancel-pull", map[string]string{"node": "peer", "engine": "ollama", "model": "llama3.2"})
+}
+
+// The engine manager refuses a pull whose opId is not 1 to 128 characters of
+// [A-Za-z0-9._:-], so every opId a screen hands out must be one it accepts,
+// whatever the attempt, and no two attempts may share one.
+func TestDownloadOpID_IsOneTheEngineManagerAccepts(t *testing.T) {
+	accepted := regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+	for _, attempt := range []int{1, 41, math.MaxInt} {
+		assert.Regexp(t, accepted, downloadOpID(attempt), "attempt %d", attempt)
+	}
+	assert.Regexp(t, `^tui-[0-9a-f]{16}-41$`, downloadOpID(41), "the opId is the process's prefix and the attempt")
+	assert.NotEqual(t, downloadOpID(41), downloadOpID(42))
+}
+
 // TestDeadlineLeniencyTracksOperationLength checks which operations are excused
 // for a slow reply.
 //
@@ -112,7 +201,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// Only operations engineOps actually declares: the TUI offers no engine
 	// update, so listing one here would assert against a path nothing reaches.
 	// Start and restart wait on the engine's readiness probe, which the
-	// manifests allow up to ten minutes, so a deadline on either is a slow
+	// manifests allow up to thirty minutes, so a deadline on either is a slow
 	// reply rather than a failed start.
 	longRunning := func(name, op string) {
 		t.Run(name, func(t *testing.T) {

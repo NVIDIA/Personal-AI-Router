@@ -7,6 +7,7 @@ vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
 
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
+import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import type { EngineType } from '@/shared/types/engines'
 import { engineManagerName } from '@/shared/utils/engines'
 
@@ -62,7 +63,7 @@ describe('a local engine start', () => {
 
             expect(processStatus(engineType)).toBe('starting')
         }
-        test('vllm', 480_000)
+        test('vllm', 1_800_000)
         test('ollama', 600_000)
     })
 
@@ -85,7 +86,7 @@ describe('a local engine start', () => {
         reportStopped('vllm')
         getModularBridgeState().beginLocalEngineOp('vllm', 'starting')
 
-        vi.advanceTimersByTime(14 * 60_000 + 1_000)
+        vi.advanceTimersByTime(MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS + 1_000)
 
         expect(processStatus('vllm')).toBe('stopped')
     })

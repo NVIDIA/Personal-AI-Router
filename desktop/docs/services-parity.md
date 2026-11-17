@@ -185,7 +185,7 @@ The facade is in the default broker and TUI set: local OpenAI-compatible clients
 use the broker-reported listener (normally `8080`) while the managed router runs
 on `8081`. Desktop and TUI expose install, lifecycle, download progress,
 inventory, load/unload, endpoint, routed state, and inference-demo workflows.
-Both also expose model deletion.
+Both also expose model deletion and download cancellation.
 Desktop browsing populates a six-hour cache from the 50 most-downloaded GGUF
 repositories for each approved publisher and can explicitly search up to 50
 public Hugging Face matches. Results are limited to pull-ready `Q4_K_M` IDs.
@@ -223,7 +223,7 @@ restart. The pending Load in the renderer's pending-actions store (the one owner
 of optimistic engine and model state) also covers the engine, because vLLM's
 capabilities declare `loadRestartsEngine`: its card shows starting rather than
 stopped, and its toggle stays locked, until the model is reported loaded, the
-load fails, or the 20-minute switch budget runs out. Its model list is read from
+load fails, or the 62-minute switch budget runs out. Its model list is read from
 disk while stopped, so it is kept throughout. Local and remote Loads are covered
 the same way.
 
@@ -233,8 +233,8 @@ engine), its switch stays on and usable: turning it off sends an explicit
 `stop` command (`engine:stop`, or `engine:remote-stop` for a peer), because a
 toggle reads the engine's status and an engine that is still starting reports
 not running. The engine-manager cancels the start in flight. Its safety net is the awaited lifecycle envelope
-(`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 14 minutes), which outlasts every
-engine's readiness window (vLLM 8 minutes, Ollama 10), so a slow start is never
+(`MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS`, 34 minutes), which outlasts every
+engine's readiness window (vLLM 30 minutes, Ollama 10), so a slow start is never
 shown as stopped while it is still loading. Weights live in the shared
 Hugging Face cache (`~/.cache/huggingface`), which uninstall and app-data reset
 never remove.
@@ -262,7 +262,10 @@ before tearing down its workers, so engines are not orphaned during teardown.
 `engine:prepare-shutdown` stops managed engine
 processes without changing the persisted desired state; the broker restores
 enabled engines on the next launch. Personal AI Router leaves that ordering to the broker
-rather than stopping the engines itself first. The broker joins its workers
+rather than stopping the engines itself first. `engine:prepare-shutdown` also
+stops every model download, waiting up to 4 seconds for them to stop; that stop
+is not a user's cancel, so it leaves their partial files for the next download
+to resume. The broker joins its workers
 concurrently within one shared teardown budget and escalates a worker that
 misses its grace, except engine-manager on Windows. Stopping a managed engine itself sends a stop signal,
 waits up to the manifest's stop grace (5 seconds by default) for it to exit,
@@ -343,18 +346,19 @@ Several model-action timeouts have to be ordered correctly. For a
 restart-backed delete, the reply is withheld until the engine is ready again
 (LM Studio's `ready.timeout_s` alone is 60s), so
 `MODULAR_MODEL_ACTION_TIMEOUT_MS` anchors the delete-specific observers. Ollama
-Load uses a separate 10/11-minute response-header budget:
+Load uses a separate 10/31-minute response-header budget:
 
-| Budget                                                        | Value | Why                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MODULAR_MODEL_ACTION_TIMEOUT_MS` (`modular-runtime.ts`)      | 120s  | The RPC must outlast a full stop + readiness-probed start.                                                                                                                                                                                                                          |
-| `RESTART_DELETE_TIMEOUT_MS` (`pending-actions.store.ts`)      | 180s  | The optimistic-spinner safety net must outlast the RPC, or it expires mid-flight and drops the spinner while the delete is still running.                                                                                                                                           |
-| `engineResponseHeaderTimeout` (`executor.go`)                 | 30s   | Downloads and ordinary local HTTP actions retain a prompt response-header bound; probe contexts stay shorter.                                                                                                                                                                       |
-| `pullProgressTimeout` (`executor.go`)                         | 30min | Streaming Ollama and llama.cpp pulls may run indefinitely while layer/file completed bytes advance; 30 minutes without advancing bytes cancels the stalled pull.                                                                                                                    |
-| `ollamaLoadResponseHeaderTimeout` (`executor.go`)             | 10min | Only Ollama's local `run_model` action gets the cold-load allowance.                                                                                                                                                                                                                |
-| `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 12min | Ollama's Load control stays locked beyond the remote path's 11-minute header budget, while backend success or failure still clears it immediately.                                                                                                                                  |
-| `PENDING_TIMEOUT_MS`                                          | 60s   | Unchanged for every other command, including an Ollama delete.                                                                                                                                                                                                                      |
-| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 11min | Remote start/delete responses can wait on engine readiness, and a cold Ollama model load or a vLLM load (which restarts vLLM on the new model) can withhold headers for minutes, so those calls use the readiness-sized client. Other model actions retain the ordinary 30s budget. |
+| Budget                                                        | Value | Why                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MODULAR_MODEL_ACTION_TIMEOUT_MS` (`modular-runtime.ts`)      | 120s  | The RPC must outlast a full stop + readiness-probed start.                                                                                                                                                                                                                           |
+| `RESTART_DELETE_TIMEOUT_MS` (`pending-actions.store.ts`)      | 180s  | The optimistic-spinner safety net must outlast the RPC, or it expires mid-flight and drops the spinner while the delete is still running.                                                                                                                                            |
+| `engineResponseHeaderTimeout` (`executor.go`)                 | 30s   | Downloads and ordinary local HTTP actions retain a prompt response-header bound; probe contexts stay shorter.                                                                                                                                                                        |
+| `pullProgressTimeout` (`executor.go`)                         | 30min | Streaming Ollama and llama.cpp pulls may run indefinitely while layer/file completed bytes advance; 30 minutes without advancing bytes cancels the stalled pull.                                                                                                                     |
+| `ollamaLoadResponseHeaderTimeout` (`executor.go`)             | 10min | Only Ollama's local `run_model` action gets the cold-load allowance.                                                                                                                                                                                                                 |
+| `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 32min | Ollama's Load control stays locked beyond the remote path's 31-minute header budget, while backend success or failure still clears it immediately.                                                                                                                                   |
+| `PENDING_TIMEOUT_MS`                                          | 60s   | Unchanged for every other command, including an Ollama delete.                                                                                                                                                                                                                       |
+| `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 31min | Start, settings apply, delete, Ollama and vLLM loads (a vLLM load restarts vLLM on the new model), and download cancel can answer only after slow work on the peer, so `waitsForEngineReadiness` sends them to the client pool `NewManager` (`manager.go`) creates with this budget. |
+| `remoteResponseHeaderTimeout` (`remoteclient.go`)             | 30s   | Every other remote call, a streamed pull or install included. It bounds only how long the peer takes to begin its answer, not how long the call runs.                                                                                                                                |
 
 The net is a backstop, not the mechanism: a delete now ends the spinner on real
 backend truth either way. On success the refreshed `list_models` drops the model;
@@ -363,7 +367,7 @@ is what lets the store attribute it and clear that row.
 
 Local Ollama Load also observes its eventual JSON-RPC rejection and reports the
 same model context; the resulting attributed `errors:update` clears `Loading…`
-without waiting for the 12-minute net.
+without waiting for the 32-minute net.
 
 A failed restart is reported as `Deleted <model>, but <engine> failed to
 restart: …`, never as a failed delete — the files really are gone, and telling
@@ -374,16 +378,265 @@ the engine simply shows as stopped and then running.
 
 A local `pull_model` streams live download progress: the engine-manager routes
 `engine:action{pull_model}` through its streaming pull path and emits
-`engine:pull-progress` (`{ engine, op, stage, percent?, message }`; `percent` is
-omitted when the engine cannot measure progress) — the local counterpart of
+`engine:pull-progress`
+(`{ engine, model, op, stage, percent?, message, opIds? }`; `percent` is
+omitted when the engine cannot measure progress, and `opIds` names the
+requests a frame speaks for, as described below) — the local counterpart of
 `engine:remote-progress`. Personal AI Router consumes it in
 `applyLocalEngineProgress` (`modular-supervisor.ts` → `modular-state.ts`),
-backfilling the dispatched model (the frame carries none) and advancing the
-optimistic pull entry's percent in place, so a local pull shows "Pulling · N%"
+keying the frame to its optimistic pull entry by model and advancing that
+entry's percent in place, so a local pull shows "Pulling · N%"
 to completion just like a remote pull. The awaited action response owns
-completion (clearing the entry and refreshing the model list); a CLI-driven pull
-(LM Studio) emits a single `pulling` marker and degrades to the indeterminate
-spinner.
+completion (clearing the entry and refreshing the model list). LM Studio's CLI
+progress updates the same percentage display. A pull for another model on an
+engine that is already downloading is reported as `stage:"queued"` until its
+turn. A request for the model that is already downloading is not queued and
+fetches nothing: it joins that download and settles with its outcome, so PAIR
+never downloads a model twice at once. A request made after that download was
+cancelled is a retry instead: it waits for the cancelled download to stop and
+clean up, then downloads anew. Whichever engine
+runs it, a pull's last frame says how it ended — `success`, `cancelled`, or
+`error` with the reason — and reaches a remote initiator too, just before the
+reply; the initiator sends it itself when the peer's stream dropped it. The
+Model Manager treats a row on one of those statuses as finished, with no
+spinner, progress bar, or Cancel, while the awaited pull refreshes the model
+list and clears it. Progress for a download whose row has already cleared is ignored on
+both paths, since a row rebuilt from it would be one nothing clears.
+
+The pull request itself stays pending for the whole download, so it is the
+request's own response that reports the outcome — a completion, a
+cancellation, or a failure — while progress arrives out of band on the
+notification. A cancel's reply and the pull's are independent; neither waits
+for the other:
+
+```mermaid
+sequenceDiagram
+    participant UI as Model Manager
+    participant Bridge as Electron bridge
+    participant Manager as Engine manager
+    participant Engine as Ollama, LM Studio, llama.cpp, or vLLM
+
+    UI->>Bridge: Download model
+    Bridge->>UI: Show optimistic "Pulling…" row
+    Bridge->>Manager: Start pull (request remains pending)
+    Manager->>Manager: Record the partial files already on disk
+    Manager->>Engine: Begin download
+
+    loop While downloading
+        Engine-->>Manager: Download status
+        Manager-->>Bridge: Progress {engine, model, stage, percent}
+        Bridge-->>UI: Update the matching model row
+    end
+
+    alt Download completes
+        Engine-->>Manager: Success
+        Manager-->>Bridge: Progress {stage: success}
+        Manager-->>Bridge: Original pull request completes
+    else User cancels
+        UI->>Bridge: Cancel download
+        Bridge->>UI: Show "Canceling…"
+        Bridge->>Manager: Cancel {engine, model}
+        Manager->>Engine: Stop transfer
+        alt Transfer stopped
+            alt Ollama or LM Studio
+                Manager->>Manager: Remove the partial files this pull created
+            else llama.cpp or vLLM
+                Manager->>Manager: Keep what was fetched, for the next download to resume
+            end
+            Manager-->>Bridge: Progress {stage: cancelled}
+            par Pull request
+                Manager-->>Bridge: Original pull settles as cancelled
+            and Cancel request
+                Manager-->>Bridge: Cancellation completes
+            end
+        else Download finished before the stop
+            Manager-->>Bridge: Progress {stage: success}
+            par Pull request
+                Manager-->>Bridge: Original pull request completes
+            and Cancel request
+                Manager-->>Bridge: Cancellation completes
+            end
+        else Stop not confirmed (LM Studio, llama.cpp, or vLLM)
+            Manager-->>Bridge: Progress {stage: error}
+            par Pull request
+                Manager-->>Bridge: Original pull fails
+            and Cancel request
+                Manager-->>Bridge: Cancellation fails
+            end
+        end
+    end
+
+    Bridge->>Manager: Refresh model list
+    Manager-->>Bridge: Authoritative models
+    Bridge->>UI: Replace temporary download state
+```
+
+`engine:cancel-pull` and `engine:remote-cancel-pull` cancel the selected model
+download. The UI keeps "Canceling…" visible until the pull settles, including
+when the cancel RPC's own budget elapses first — the backend is still working,
+so the row is not dropped back to "Downloading". The download's last frame is
+the exception: it says how the download ended — it may have finished before
+the stop reached it, or its engine could not confirm the stop — so the row
+shows that instead, and a cancel rejected after it leaves it there. A cancel
+names a download by engine and model alone, so each UI numbers the downloads
+it tracks, a retry of the same model included, and keeps every reply to the
+attempt it was sent for. The terminal UI numbers attempts across all its node
+screens, since a screen's replies reach the next screen of its node, and acts
+on a pull's or a cancel's reply only while that attempt is the newest it has
+seen of the model, so a late reply for a stopped download leaves its retry
+alone, running or ended. The desktop app holds a cancel's in-flight guard per
+row attempt: a cancel still awaited after its download ended neither refuses
+the retry's cancel nor, rejected late, restores the retry's row. A pull can
+also name itself with an `opId` beside `params` on `engine:action` and
+`engine:remote-pull-model`. `engine:remote-progress` carries the pull's
+`opId`, its caller's or else one minted for it, and the last frame of a peer's
+download, which only the last of this machine's pulls of it to end sends, also
+lists in `opIds` those that ended first. `engine:pull-progress` lists in
+`opIds` the requests that run as the frame's download, which leaves out a
+retry still waiting for a cancelled download to stop. The terminal UI
+sends each download it starts with an `opId` of its own — `tui-`, a prefix
+minted once per run, and the attempt — and follows that download only by
+frames naming it, so a stopped download's late frame leaves the retry alone,
+even on a screen opened while an earlier one's cancel was still cleaning up,
+which never saw that download. It records the opId of each of its downloads
+that ends, by its last frame or by a reply that says so, and a later frame
+naming one changes nothing unless a download of the model picked up from the
+feed, which may be that one, is in flight: then the frame is shown, and a last
+frame ends that download. Downloads picked up from the feed are still matched
+by engine and model, since the opIds a frame names change as requests join and
+leave the download, so on a peer's screen a stopped download's last frame can
+retire a retry an earlier visit started, which this screen picked up, until the
+retry's next frame. The desktop app names none
+and matches frames by engine and model, which is enough there: it sends no
+retry of a model until the pull before it has replied, and the engine-manager
+sends a download's last frame before that reply. Ollama closes the pull
+request and removes the partial blobs named by its
+progress digests, judging each blob's data file and `-partial-N` resume files
+together: any one of them that predates the pull, whether or not it is still
+there, or that changes, first appears, or vanishes after the grace, keeps them
+all, and otherwise the resume files are removed before the data file. LM Studio receives Ctrl+C and a negative answer to its
+background-download prompt, and after acknowledgement the partial files of the
+model file it was fetching are removed, provided the CLI was downloading from
+the repository's Hugging Face URL. That is the one run that writes into
+`models/<owner>/<repo>`; a model the LM Studio Hub resolved is stored under its
+source's owner and repository, which the CLI never prints, so cancelling it
+removes nothing. The file is identified by the quantization the request pins
+or, when it pins none, the one the CLI announced in its download plan, matched
+as a whole name token so `Q4_K` never claims `Q4_K_M`'s files. The CLI never
+names the file itself, so once the partials carrying the quantization have
+named more than one file, counting those that predate the pull, which the CLI
+may be resuming, none is removed, even if one of those files goes away before
+cleanup ends. The shards of one split file count as one, and an
+unsplit file of that name, or a split into a different number of shards, as
+another. An unpinned pull whose plan announced no quantization removes nothing,
+and neither does an MLX download, pinned or not, since its plan names no GGUF
+quantization and a pin such as `@4bit` is not one. Completed model
+files, other quantizations, and unrelated downloads are retained, and a
+cancellation the CLI never confirmed deletes nothing and fails, since the
+download may still be running. A cancel that finds no CLI running — before the first starts,
+between the sources PAIR tries, or while a timed-out transfer waits to be
+resumed — has nothing left to stop, so it settles as cancelled and removes the
+same files, which are none until a run from the Hugging Face URL has started.
+llama.cpp's router is asked to stop the download and keeps what it
+already fetched, for llama.cpp to resume or replace; if the router does not
+confirm the stop, the cancellation fails, since the download may still be
+running. vLLM's `hf` tool is stopped, and killed if it has not exited 3 seconds
+after being asked; its partial files stay in the Hugging Face cache, shared
+with vLLM's own downloads and every other Hugging Face client, for the next
+download to resume. A tool still running 10 seconds after the kill is
+abandoned and the cancellation fails, since the download may still be running;
+a download the tool finished as it was being stopped stands. A cancellation
+that arrives while the tool is still fetching the repository's weight index,
+before any weights, kills the tool's process group at once and settles as
+cancelled, waiting at most 5 seconds on a process that left the group and
+keeps the tool's output open. Whatever the index fetch leaves in the group is
+killed once the tool exits, and an index the tool fetched stands even if a
+process it started holds its output past those 5 seconds. A stop that
+could not be confirmed, on LM Studio, llama.cpp, or vLLM, keeps failing:
+cancelling that model again reports the same failure, rather than answering as
+a cancel for nothing, until the model is requested again. Only a cancellation
+someone requested removes files: a pull interrupted by app shutdown, a dropped
+remote connection, or the action timeout leaves its partial data resumable.
+
+Cleanup looks for partial files only where the engine-manager knows the engine
+writes them. For LM Studio that is the manifest's `models_dir`
+(`~/.lmstudio/models`). For Ollama it is the `OLLAMA_MODELS` of the environment
+the engine-manager launched the daemon with, including a user's launch
+override, or when that is unset Ollama's own `.ollama/models` under the home
+folder that same environment names (`HOME`, or `USERPROFILE` on Windows). A
+relative value is ignored, and so is a launch environment that names no home
+folder. An adopted Ollama daemon was started by someone else, so the
+engine-manager's own environment stands in for the daemon's. A cancellation on
+an install whose models live elsewhere — a relocated LM Studio models
+directory, or an adopted Ollama daemon started with a different
+`OLLAMA_MODELS` — stops the download but leaves its partial files for the
+engine to resume or remove. The exception is a guess that lands on another
+live Ollama cache, such as a second daemon pulling the same layers there: a
+partial that daemon creates after the download started and before the
+cleanup's grace ends, and then leaves still for its quiet period, cannot be
+told from the download's own and is removed.
+
+Ollama and LM Studio each funnel every client on the machine into one cache, so naming a file
+is not the same as owning it — Ollama blobs are content-addressed, and the LM
+Studio app downloads into the same repository directory. Each pull therefore
+records the partial files already present before it starts, and cancelling it
+considers only the ones that appeared afterwards. The stopped transfer gets a
+short grace for its last writes to land, which cleanup watches through even
+when it has found nothing yet, and a file that still changes after that, or
+first appears after it, is shared with another client even by that measure,
+so it survives as well:
+
+```mermaid
+flowchart TD
+    Request["Model pull requested"] --> Tracked["Track by engine + model"]
+    Tracked --> Same{"This model already<br/>downloading?"}
+    Same -- Yes --> Stopping{"That download<br/>being canceled?"}
+    Stopping -- No --> Join["Join that download and<br/>settle with its outcome"]
+    Stopping -- Yes --> AwaitStop["Wait for it to stop<br/>and clean up"]
+    AwaitStop --> Same
+    Same -- No --> Busy{"Another PAIR pull active<br/>for this engine?"}
+
+    Busy -- No --> Snapshot["Ollama, LM Studio: record the<br/>partial files already on disk"]
+    Busy -- Yes --> Queued["Show as queued"]
+
+    Queued --> QueueCancel{"Canceled while queued?"}
+    QueueCancel -- Yes --> NeverStarted["Remove operation<br/>without starting download"]
+    QueueCancel -- No --> Wait["Wait for active pull to settle"]
+    Wait --> Snapshot
+
+    Snapshot --> Active["Start download"]
+    Active --> Cancel{"Cancellation requested?"}
+    Cancel -- No --> Complete["Download completes normally"]
+    Cancel -- Yes --> Engine{"Which engine?"}
+
+    Engine -- Ollama --> OllamaStop["Close HTTP pull request"]
+    OllamaStop --> OllamaCandidates["Group each blob's data and<br/>resume files, for the blobs<br/>this pull's digests name"]
+
+    Engine -- LM Studio --> LMSStop["Send Ctrl+C"]
+    LMSStop --> LMSPrompt["Answer no to background download"]
+    LMSPrompt --> LMSCandidates[".part files of the one file of the<br/>pinned or announced quantization,<br/>after a run from the Hugging Face URL"]
+
+    Engine -- llama.cpp --> LlamaStop["Ask the router to<br/>stop the download"]
+    LlamaStop --> LlamaKeep["Leave its files for<br/>llama.cpp to resume or replace"]
+
+    Engine -- vLLM --> VLLMStop["Stop the hf tool,<br/>killing it after 3s"]
+    VLLMStop --> VLLMKeep["Leave its files in the<br/>Hugging Face cache to resume"]
+
+    OllamaCandidates --> Owned{"Every file of the group<br/>absent from the snapshot?"}
+    LMSCandidates --> Owned
+    Owned -- No --> Preserve["Preserve completed,<br/>shared, and unrelated files"]
+    Owned -- Yes --> Quiet{"Every file held still across<br/>repeated checks after a short grace?"}
+    Quiet -- No --> Preserve
+    Quiet -- Yes --> Delete["Remove the group,<br/>Ollama's resume files first"]
+
+    Delete --> Settle["Settle pull and refresh models"]
+    Preserve --> Settle
+    LlamaKeep --> Settle
+    VLLMKeep --> Settle
+    Complete --> Settle
+    NeverStarted --> Settle
+    Settle --> Next["Allow next queued pull to start"]
+```
 
 `engine:models` (and the `em` `GET /v1/models` surface) returns the flat model
 union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of

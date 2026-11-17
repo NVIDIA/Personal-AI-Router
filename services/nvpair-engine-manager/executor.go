@@ -121,6 +121,23 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	pullMu sync.Mutex
+	pulls  map[pullKey]*activePull
+	// downloads counts the downloads registered so far, so each has an ID of
+	// its own; see activePull.id.
+	downloads uint64
+	// stopsUnconfirmed holds, per engine+model, the failure of the last
+	// download whose engine could not confirm it stopped, until the next
+	// download of that model registers. See stopUnconfirmed.
+	stopsUnconfirmed map[pullKey]error
+	// shutdown closes when shutdown begins, so that stopping a download's tool
+	// then shortens its waits, and partial cleanup stops sampling. Made on
+	// first use; see shutdownSignal.
+	shutdown chan struct{}
+	// pullClaims holds the accepted pull requests per engine+model that have
+	// not finished, so a cancel can stop one that has not registered its
+	// download yet. Claimed where the request is accepted; see claimPull.
+	pullClaims       map[pullKey][]*pullClaim
 	settingsHub      settings.Hub
 	settingsParent   func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg              *Registry
@@ -350,9 +367,24 @@ func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string
 // ec streaming handler can relay it to a remote initiator). It mirrors
 // emitInstallProgress; pull carries op/message so a local UI renders the same
 // "Pulling · %" feed a remote pull already gets via engine:remote-progress.
+//
+// The notification names, in opIds, the requests the frame speaks for, so a
+// client can tell a retry's frames from those of the download it replaced,
+// which name the same engine and model.
 func (e *Executor) emitPullProgress(ev ProgressEvent) {
 	params := map[string]any{
 		"engine": ev.Engine, "op": ev.Op, "stage": ev.Stage, "message": ev.Message,
+	}
+	if ev.Model != "" {
+		params["model"] = ev.Model
+		// A download publishes frames only while it is registered, and no
+		// other download of its model registers until it has settled, so the
+		// one registered is the one this frame is from.
+		var opIDs []string
+		ev.Download, opIDs = e.registeredDownloadRequests(ev.Engine, ev.Model)
+		if len(opIDs) > 0 {
+			params["opIds"] = opIDs
+		}
 	}
 	if wirePercentIncluded(ev.Percent) {
 		params["percent"] = ev.Percent

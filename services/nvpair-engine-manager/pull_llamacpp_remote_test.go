@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -37,6 +38,58 @@ func TestLlamaCPPPullRemoteDisconnect_StopsDownload(t *testing.T) {
 	waitLlamaCPPPullSignal(t, stopped)
 	require.False(t, f.downloading.Load(), "remote disconnect must stop download")
 	require.Equal(t, int32(1), f.unloads.Load())
+}
+
+// An initiator's cancel reaches the peer as a request of its own. Once the
+// peer's router has stopped the download, the initiator's stream settles as
+// "cancelled", the outcome it asked for, with the progress frame its UI
+// converges on just before it.
+func TestLlamaCPPPullRemoteCancel_SettlesTheStreamAsCancelled(t *testing.T) {
+	f := newLlamaCPPPullFixture(t)
+	s := &controlServer{exec: f.ex}
+	mux := http.NewServeMux()
+	mux.HandleFunc(controlPullPath, s.handlePull)
+	mux.HandleFunc(controlCancelPullPath, s.handleCancelPull)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	stream := make(chan string, 1)
+	go func() {
+		defer close(stream)
+		body, err := json.Marshal(pullRequest{OpID: "cancel-test", Engine: "fake", Model: llamaCPPPullTestModel})
+		if !assert.NoError(t, err) {
+			return
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+controlPullPath, bytes.NewReader(body))
+		if !assert.NoError(t, err) {
+			return
+		}
+		resp, err := server.Client().Do(req)
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err)
+		stream <- string(data)
+	}()
+	waitLlamaCPPPullSignal(t, f.started)
+
+	body, err := json.Marshal(modelActionRequest{Engine: "fake", Model: llamaCPPPullTestModel})
+	require.NoError(t, err)
+	resp, err := server.Client().Post(server.URL+controlCancelPullPath, "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	frames := decodeFrames(t, <-stream)
+
+	require.GreaterOrEqual(t, len(frames), 2, "the stream should end with the outcome and its result")
+	ended, terminal := frames[len(frames)-2], frames[len(frames)-1]
+	assert.Equal(t, "cancelled", ended.Stage)
+	require.Equal(t, "result", terminal.Type, "the pull should settle as cancelled, not fail: %+v", terminal)
+	assertPullStatus(t, terminal.Result, "cancelled")
+	assert.False(t, f.downloading.Load(), "the download must stop")
 }
 
 // Exercise the real ec listener, pinned mTLS, request cancellation, and cleanup

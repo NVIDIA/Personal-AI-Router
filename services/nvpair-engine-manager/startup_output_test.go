@@ -6,9 +6,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -205,4 +207,24 @@ func writeStartupOutputInChunks(t *testing.T, output *startupOutput, text string
 		require.LessOrEqual(t, len(output.tail), maxStartupOutputBytes, "diagnostic tail exceeded its byte bound")
 		require.LessOrEqual(t, len(output.pending), output.lookback, "pending output exceeded its redaction lookback")
 	}
+}
+
+func TestStartupOutput_ReadyTimeoutShowsTheLastReadableLines(t *testing.T) {
+	output := newStartupOutput(nil, nil)
+	var log strings.Builder
+	log.WriteString("tail of a line cut mid-way\n")
+	log.WriteString(strings.Repeat("x", 500) + "\n")
+	for i := range 20 {
+		fmt.Fprintf(&log, "step %d\n", i)
+	}
+	writeStartupOutputInChunks(t, output, log.String(), 64)
+	cause := &readyTimeoutError{timeout: 30 * time.Minute}
+	err := output.failure(t.Context(), cause)
+	require.ErrorIs(t, err, cause)
+	require.ErrorContains(t, err, "not ready after 30m0s\n\nLast engine output:\nstep 8\n")
+	require.ErrorContains(t, err, "step 19")
+	require.NotContains(t, err.Error(), "step 7\n")
+	require.NotContains(t, err.Error(), "mid-way")
+	require.NotContains(t, err.Error(), strings.Repeat("x", 500))
+	require.Equal(t, strings.Repeat("x", readyTimeoutLineWidth)+"…", recentLines(strings.Repeat("x", 500), 1, readyTimeoutLineWidth))
 }

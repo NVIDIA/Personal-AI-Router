@@ -114,6 +114,10 @@ func applyAutoLaunch(ctx context.Context, engine string, rt Runtime, command lau
 		extra = append(extra, seqs...)
 		note = strings.TrimPrefix(note+"; at most "+seqs[1]+" requests at a time", "; ")
 	}
+	if eager := planEagerSafetensors(command.Args, rt.AutoLaunch.EagerSafetensors); len(eager) > 0 {
+		extra = append(extra, eager...)
+		note = strings.TrimPrefix(note+"; weights loaded eagerly", "; ")
+	}
 	if len(extra) == 0 {
 		return command
 	}
@@ -133,6 +137,19 @@ func planMaxNumSeqs(args []string, limit int) []string {
 		return nil
 	}
 	return []string{"--max-num-seqs", strconv.Itoa(limit)}
+}
+
+// planEagerSafetensors returns --safetensors-load-strategy eager when enabled,
+// unless the user already chose a load strategy. Like planMaxNumSeqs it does not
+// depend on the model.
+func planEagerSafetensors(args []string, enabled bool) []string {
+	if !enabled {
+		return nil
+	}
+	if _, set := launchFlagValue(args, "--safetensors-load-strategy"); set {
+		return nil
+	}
+	return []string{"--safetensors-load-strategy", "eager"}
 }
 
 // launchFlagValue returns the value of a flag in either "--flag value" or

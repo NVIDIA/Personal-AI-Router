@@ -903,6 +903,14 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
 //
+// It stops every download too, and starts no more. A download's tool is no
+// engine, so stopping the engines would leave it running past engine-manager's
+// exit, above all one a peer started, whose request nothing else cancels. The
+// sweep waits for the downloads while the engines stop, for at most
+// downloadShutdownBudget. Shutdown is no cancel someone asked for, so a
+// download only it stopped keeps its partial files for the next attempt to
+// resume.
+//
 // Two entry points ask for it on an ordinary quit — the
 // engine:prepare-shutdown handler, which the broker calls from its own
 // teardown, and the stdin-EOF path in Run, which follows when the broker then
@@ -933,13 +941,17 @@ func (e *Executor) StopAll() {
 
 func (e *Executor) stopAllNow() {
 	e.shuttingDown.Store(true)
+	downloads := e.stopDownloads()
 	e.mu.Lock()
 	names := make([]string, 0, len(e.engines))
 	for n := range e.engines {
 		names = append(names, n)
 	}
 	e.mu.Unlock()
+	var stopping sync.WaitGroup
+	stopping.Go(func() { awaitDownloads(downloads) })
 	e.failedStops = e.stopEngines(names)
+	stopping.Wait()
 	e.mu.Lock()
 	if e.modelScope != nil {
 		_ = e.modelScope.Close()
@@ -1063,7 +1075,7 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("not ready after %s", timeout)
+			return &readyTimeoutError{timeout: timeout}
 		}
 		select {
 		case <-ctx.Done():

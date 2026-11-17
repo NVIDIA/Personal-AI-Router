@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -107,6 +108,32 @@ func (e *startupMemoryError) Error() string {
 
 func (e *startupMemoryError) Unwrap() error { return e.cause }
 
+// readyTimeoutError reports that the readiness probe never passed in time.
+type readyTimeoutError struct{ timeout time.Duration }
+
+func (e *readyTimeoutError) Error() string { return fmt.Sprintf("not ready after %s", e.timeout) }
+
+const (
+	readyTimeoutDetailLines = 12
+	readyTimeoutLineWidth   = 240
+)
+
+// recentLines keeps the last few non-empty lines, each cut to a readable width,
+// so a timeout shows what the engine was doing instead of a raw log tail that
+// starts mid-line and may hold one multi-kilobyte configuration line.
+func recentLines(text string, maxLines, width int) string {
+	var lines []string
+	for line := range strings.SplitSeq(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			if runes := []rune(line); len(runes) > width {
+				line = string(runes[:width]) + "…"
+			}
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines[max(0, len(lines)-maxLines):], "\n")
+}
+
 func newStartupOutput(args []string, env map[string]string) *startupOutput {
 	// Redact supplied values generically, while preserving flag names such as
 	// --unknown-option so the engine's explanation remains useful.
@@ -166,6 +193,10 @@ func (o *startupOutput) failure(ctx context.Context, err error) error {
 	}
 	if memoryFailure {
 		return fmt.Errorf("%w\n\nEngine details:\n%s", err, text)
+	}
+	var timedOut *readyTimeoutError
+	if errors.As(err, &timedOut) {
+		return fmt.Errorf("%w\n\nLast engine output:\n%s", err, recentLines(text, readyTimeoutDetailLines, readyTimeoutLineWidth))
 	}
 	return fmt.Errorf("%w: %s", err, text)
 }

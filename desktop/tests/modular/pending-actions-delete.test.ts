@@ -6,6 +6,7 @@ import type { ServiceError } from '@/shared/types/errors'
 import type { EngineStatePatch } from '@/shared/types/engine-api'
 import type { EngineType, ModelItem } from '@/shared/types/engines'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
+import { MODEL_SWITCH_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 
 /**
@@ -197,9 +198,9 @@ describe('pending-actions store: model actions', () => {
             })
         }
 
-        // The remote path can withhold headers for 11 minutes. Both rows must
+        // The remote path can withhold headers for 31 minutes. Both rows must
         // remain locked until backend truth arrives, not expire at the old 60s net.
-        vi.advanceTimersByTime(11 * 60_000 + 1_000)
+        vi.advanceTimersByTime(31 * 60_000 + 1_000)
         expect(store.getModelPending('local-node', 'ollama', 'llama3.2')).toBe('loadModel')
         expect(store.getModelPending('remote-node', 'ollama', 'llama3.2')).toBe('loadModel')
 
@@ -239,7 +240,7 @@ describe('pending-actions store: model actions', () => {
             nodeId: 'remote-node',
             model: 'llama3.2'
         })
-        vi.advanceTimersByTime(12 * 60_000 + 1_000)
+        vi.advanceTimersByTime(32 * 60_000 + 1_000)
         expect(
             usePendingActionsStore.getState().getModelPending('remote-node', 'ollama', 'llama3.2')
         ).toBeUndefined()
@@ -253,13 +254,13 @@ describe('pending-actions store: model actions', () => {
             model: 'Qwen/Qwen3-8B'
         })
 
-        // Well past the default net: readiness alone can take 8 minutes.
-        vi.advanceTimersByTime(12 * 60_000)
+        // Well past the default net: readiness alone can take 30 minutes.
+        vi.advanceTimersByTime(31 * 60_000)
         expect(
             usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
         ).toBe('loadModel')
 
-        vi.advanceTimersByTime(8 * 60_000 + 1_000)
+        vi.advanceTimersByTime(MODEL_SWITCH_TIMEOUT_MS - 31 * 60_000 + 1_000)
         expect(
             usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
         ).toBeUndefined()
@@ -341,7 +342,7 @@ describe('a vLLM Load is one pending action for the row and the engine', () => {
     it('gives up after the switch budget so a lost notification cannot leave it busy', () => {
         load('local-node', 'vllm', 'Qwen/Qwen3-8B')
 
-        vi.advanceTimersByTime(19 * 60_000)
+        vi.advanceTimersByTime(MODEL_SWITCH_TIMEOUT_MS - 60_000)
         expect(lifecyclePending('local-node', 'vllm')).toBe('loadModel')
 
         vi.advanceTimersByTime(2 * 60_000)
