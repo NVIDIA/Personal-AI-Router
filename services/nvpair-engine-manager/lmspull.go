@@ -421,13 +421,9 @@ func lmsErrorDetail(text string) string {
 // attributable without one.
 //
 // Nor is anything attributable unless the CLI ran from a huggingface.co URL,
-// source being the candidate it ran last: only that downloads into the
-// repository directory the request names. A model the LM Studio Hub resolves,
-// from a bare id or an lmstudio.ai URL, is stored under the owner and
-// repository of the source its definition names, which `lms get` never
-// prints, so a partial in the requested directory is someone else's.
+// source being the candidate it ran last; see lmsRanFromHuggingFace.
 func cleanupLMSAfterCancel(ctx context.Context, root, model, source string, before map[string]os.FileInfo, announced []string) error {
-	if before == nil || !strings.HasPrefix(lmsResolverKey(source), "hf:") {
+	if before == nil || !lmsRanFromHuggingFace(source) {
 		return nil
 	}
 	quants := announced
@@ -447,6 +443,17 @@ func cleanupLMSAfterCancel(ctx context.Context, root, model, source string, befo
 		}
 		return eachFile(paths), nil
 	})
+}
+
+// lmsRanFromHuggingFace reports whether `lms get` ran from the repository's
+// huggingface.co URL, source being the candidate it was given: the one run
+// that downloads into the repository directory the request names, and so the
+// only one whose partials cleanup can attribute. A model the LM Studio Hub
+// resolves, from a bare id or an lmstudio.ai URL, is stored under the owner
+// and repository of the source its definition names, which `lms get` never
+// prints, so a partial in the requested directory is someone else's.
+func lmsRanFromHuggingFace(source string) bool {
+	return strings.HasPrefix(lmsResolverKey(source), "hf:")
 }
 
 // lmsCreatedPartials lists the partial files this `lms get` created, leaving
