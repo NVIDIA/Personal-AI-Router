@@ -842,11 +842,12 @@ shutdown stopped the download first. A cancelled download's cleanup stops at
 its next sample once shutdown begins, leaving what it has not removed. Each
 tool's stop waits at most three seconds from then: a second and a quarter for
 the tool to exit once interrupted, as long again after a second interrupt for
-`lms get`, which can miss its first, and half a second after the kill. Other
-stops keep their own bounds, such as the request that asks llama.cpp's server
-to stop a download, but the sweep waits at most four seconds for all the
-downloads, while the engines stop, within the five the broker gives it, and
-logs any still stopping.
+`lms get`, which can miss its first, and half a second after the kill. Only an
+`hf` killed while still fetching vLLM's weight index keeps the five seconds it
+allows a process holding its output. Other stops keep their own bounds, such
+as the request that asks llama.cpp's server to stop a download, but the sweep
+waits at most four seconds for all the downloads, while the engines stop,
+within the five the broker gives it, and logs any still stopping.
 
 `engine:status` and `engine:get-installed` never wait for a lifecycle operation
 (a start, stop, install or model switch can hold an engine for minutes): while
