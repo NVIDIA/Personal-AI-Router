@@ -65,6 +65,7 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                     .getState()
                     .getLifecyclePending(nodeId, b.type)
                 const pending = Boolean(pendingAction)
+                const isEnabled = b.status === 'running' || b.status === 'awaiting-model'
                 // A start can take minutes, so it stays stoppable while it runs:
                 // a Start in progress, or a Load that restarts the engine.
                 const stoppable =
@@ -125,18 +126,18 @@ export default function NodeEnginesInline({ nodeId }: { nodeId: string }) {
                             ) : (
                                 <Switch
                                     size="small"
-                                    checked={b.status === 'running'}
+                                    checked={isEnabled}
                                     onCheckedChange={() => handleToggle(b.type)}
                                     disabled={isRemote && isDisconnected}
                                     title={
                                         isRemote && isDisconnected
                                             ? 'Node is disconnected'
-                                            : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
+                                            : `${isEnabled ? 'Stop' : 'Start'} ${b.name}`
                                     }
                                     aria-label={
                                         isRemote && isDisconnected
                                             ? 'Node is disconnected'
-                                            : `${b.status === 'running' ? 'Stop' : 'Start'} ${b.name}`
+                                            : `${isEnabled ? 'Stop' : 'Start'} ${b.name}`
                                     }
                                 />
                             )}

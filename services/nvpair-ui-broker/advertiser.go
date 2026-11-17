@@ -210,6 +210,10 @@ func (b *Broker) reconcileAdvertiseEngine(profile engineProxyProfile, client *ht
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
 
+	if profile.LoadOnRequest {
+		b.reconcileRequestedModelEngine(profile)
+		return
+	}
 	enginePort := int(b.engineProxy(profile).backendPort.Load())
 	proxyPort := b.engineProxyListenPort(profile)
 	up := enginePort > 0 &&
@@ -229,10 +233,11 @@ func (b *Broker) reconcileAdvertiseEngine(profile engineProxyProfile, client *ht
 // the proxy's cluster mTLS ingress forwards to, and the proxy's own self
 // candidate on the local routing path.
 type proxyLocalBackend struct {
-	Engine  string `json:"engine"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	Healthy bool   `json:"healthy"`
+	Engine        string `json:"engine"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	Healthy       bool   `json:"healthy"`
+	LoadOnRequest bool   `json:"loadOnRequest,omitempty"`
 }
 
 // setProxyLocalBackend hands the proxy its local (loopback) engine endpoint, or
@@ -314,4 +319,47 @@ func checkEngineHealth(profile engineProxyProfile, client *http.Client, port int
 	}
 	httpcon.DrainAndClose(resp.Body)
 	return resp.StatusCode == http.StatusOK
+}
+
+// An enabled model-on-request engine remains a routing target while no model
+// is resident. The engine manager revalidates enabled intent on every request.
+func (b *Broker) reconcileRequestedModelEngine(profile engineProxyProfile) {
+	proxy := b.engineProxyHandle(profile)
+	manager := b.getEngineMgr()
+	if proxy == nil || manager == nil {
+		b.unregisterService(profile.DiscoveryService)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	params, err := json.Marshal(map[string]string{"engine": profile.Name})
+	if err != nil {
+		return
+	}
+	raw, rpcErr, err := manager.Call(ctx, "engine:status", params)
+	var status struct {
+		Installed     bool `json:"installed"`
+		Enabled       bool `json:"enabled"`
+		Running       bool `json:"running"`
+		Starting      bool `json:"starting"`
+		AwaitingModel bool `json:"awaiting_model"`
+		Healthy       bool `json:"healthy"`
+		Port          int  `json:"port"`
+	}
+	available := err == nil && rpcErr == nil && json.Unmarshal(raw, &status) == nil && status.Installed && status.Enabled
+	if status.Port > 0 && status.Port <= 65535 {
+		b.engineProxy(profile).backendPort.Store(int32(status.Port))
+	}
+	b.engineProxy(profile).requestEnabled.Store(available)
+	port := b.engineProxyListenPort(profile)
+	available = available && status.Port > 0 && port > 0 && status.Port != port
+	if available {
+		b.registerService(noderec.RegisterParams{Service: profile.DiscoveryService, Port: port})
+	} else {
+		b.unregisterService(profile.DiscoveryService)
+	}
+	b.callProxyManual(proxy, profile.Name, "node/set-local-backend", proxyLocalBackend{Engine: profile.Name, Host: "127.0.0.1", Port: status.Port, Healthy: status.Healthy, LoadOnRequest: available}, "local-backend")
+	if models, modelErr, err := manager.Call(ctx, "engine:models", nil); err == nil && modelErr == nil {
+		b.publishLocalModelInventory(models)
+	}
 }

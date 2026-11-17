@@ -111,6 +111,8 @@ you want by its full filename instead.
   Hugging Face. Type to filter the list, or press Enter to search the wider
   public catalog. Its exact IDs include the repository and quantization, such
   as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`.
+  When installing or turning on vLLM without a saved model, choose a downloaded
+  model in the picker or select **Add model**. Canceling the picker turns vLLM off.
 
   ![A node card with its engine expanded, one model pulling and the Add model button beside the list.](docs/assets/onboarding/getting-started/07-add-model.png)
 
