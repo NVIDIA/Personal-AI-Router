@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.0.34 — Add model for a peer's llama.cpp lists that peer's download source (#214)
+
+- Opening Add model for llama.cpp on another device now lists models from that device's Model download source, Hugging Face or ModelScope. Before, it listed this device's source, so a device set to ModelScope showed Hugging Face models when opened from a peer.
+- If that device runs a PAIR version older than 1.0.18, Add model for its llama.cpp asks you to update PAIR on that device instead of listing models.
+
 ## 1.0.33 — Explain Metal startup memory failures (#208)
 
 - When an engine reports a recognized Metal memory shortage during captured startup, PAIR includes advice to unload models from other engines or free memory before retrying. Existing engine or command context remains before the advice, followed by bounded, redacted diagnostics.
