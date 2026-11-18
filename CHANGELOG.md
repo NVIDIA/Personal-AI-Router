@@ -11,6 +11,11 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.1.1 — Keep cluster inference available while vLLM starts (#218)
+
+- Re-enabling vLLM now lets requests fail over to another eligible model owner while the local engine loads.
+- Stale routing to a disabled engine also permits failover without starting that engine.
+
 ## 1.0.38 — Cancel model downloads and see their progress (#111)
 
 - Model downloads show live progress and a Cancel button for Ollama, LM Studio, llama.cpp, and vLLM, including downloads running on remote nodes.
