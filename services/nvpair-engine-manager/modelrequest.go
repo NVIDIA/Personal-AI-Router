@@ -143,7 +143,9 @@ func (m *Manager) handleModelPreparation(ctx context.Context, msg *Message) bool
 		if err != nil {
 			reply.Error = err.Error()
 			reply.Status = http.StatusUnprocessableEntity
-			if errors.Is(err, errRequestEngineStarting) || errors.Is(err, errRequestEngineDisabled) {
+			if errors.Is(err, errRequestEngineStarting) ||
+				errors.Is(err, errRequestEngineDisabled) ||
+				errors.Is(err, errStartStopped) {
 				// Availability belongs to this node. Another advertised owner
 				// can serve the request without enabling this engine.
 				reply.Status = http.StatusServiceUnavailable

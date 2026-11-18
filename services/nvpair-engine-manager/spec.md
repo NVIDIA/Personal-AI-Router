@@ -65,10 +65,11 @@ During an explicit turn-on or **Load** from OFF, `EngineStatus.enabled` can be
 true before the engine manager saves ON. It saves ON after startup succeeds.
 During that window, model preparation returns HTTP 503 (`engine is starting`)
 without waiting for startup. If outdated routing sends a request to an engine
-that is OFF, preparation returns HTTP 503 (`engine is disabled`). The proxy can
+that is OFF, preparation returns HTTP 503 (`engine is disabled`). If Stop or
+Eject interrupts a load started by a request, preparation returns HTTP 503
+after the engine manager restores any settings the load changed. The proxy can
 then try another node that advertises the requested model within its retry
-budget. Requests for a model on an already-enabled engine can still share a
-load.
+budget. Requests on an already-enabled engine can still share a model load.
 
 Before starting a model for a request, its effective `--revision` (default `main`)
 must resolve to a complete cached snapshot. Another complete revision in the disk

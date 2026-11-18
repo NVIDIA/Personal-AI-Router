@@ -223,7 +223,8 @@ func TestModelPreparation_ReportsDisabledEngineAsUnavailable(t *testing.T) {
 	require.NoError(t, e.Start(t.Context(), "fake"))
 	require.NoError(t, e.Stop("fake"))
 
-	reply := requestModelPreparation(t, e, "org/first")
+	readReply := startModelPreparation(t, e, "org/first")
+	reply := readReply()
 
 	assert.Equal(t, http.StatusServiceUnavailable, reply.Status)
 	assert.Equal(t, `engine is disabled: "fake"`, reply.Error)
@@ -257,7 +258,8 @@ func TestModelPreparation_ReportsStartupFromOffAsUnavailable(t *testing.T) {
 				return err == nil
 			}, 5*time.Second, 10*time.Millisecond, "the engine never reached the startup gate")
 
-			reply := requestModelPreparation(t, e, requestedModel)
+			readReply := startModelPreparation(t, e, requestedModel)
+			reply := readReply()
 
 			assert.Equal(t, http.StatusServiceUnavailable, reply.Status)
 			assert.Equal(t, `engine is starting: "fake"`, reply.Error)
@@ -274,6 +276,24 @@ func TestModelPreparation_ReportsStartupFromOffAsUnavailable(t *testing.T) {
 	})
 }
 
+// Stop interrupts a load already started by an inference request. The proxy
+// needs a retryable reply to send that request to another machine.
+func TestModelPreparation_ReportsInterruptedLoadAsUnavailable(t *testing.T) {
+	e := requestedModelExecutor(t)
+	slowStarts(t, e)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+
+	readReply := startModelPreparation(t, e, "org/first")
+	waitForStartInFlight(t, e)
+	require.NoError(t, e.Stop("fake"))
+	reply := readReply()
+
+	assert.Equal(t, http.StatusServiceUnavailable, reply.Status, "preparation error: %s", reply.Error)
+	status := mustStatus(t, e)
+	assert.False(t, status.Enabled)
+	assert.False(t, status.Running)
+}
+
 // An engine already saved as ON can use the normal preparation path while it
 // starts. Setting both states directly isolates that decision from the launch.
 func TestServingRequestModel_AllowsPreparationWhenAnEnabledEngineIsStarting(t *testing.T) {
@@ -287,24 +307,28 @@ func TestServingRequestModel_AllowsPreparationWhenAnEnabledEngineIsStarting(t *t
 	assert.False(t, serving)
 }
 
-// requestModelPreparation calls the manager's request handler and reads its
-// reply over an in-memory connection so tests can check what the broker sees.
-func requestModelPreparation(t *testing.T, e *Executor, model string) modelrequest.Reply {
+// startModelPreparation calls the manager's request handler and returns a
+// function that reads its reply. Tests can act on the engine in between and
+// still check the reply that the broker sees.
+func startModelPreparation(t *testing.T, e *Executor, model string) func() modelrequest.Reply {
 	t.Helper()
 	managerConn, clientConn := net.Pipe()
-	defer func() { assert.NoError(t, managerConn.Close()) }()
-	defer func() { assert.NoError(t, clientConn.Close()) }()
-	require.NoError(t, clientConn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	t.Cleanup(func() { assert.NoError(t, managerConn.Close()) })
+	t.Cleanup(func() { assert.NoError(t, clientConn.Close()) })
 	manager := &Manager{codec: NewCodec(managerConn), exec: e}
 	params, err := json.Marshal(modelrequest.Preparation{ID: t.Name(), Engine: "fake", Model: model})
 	require.NoError(t, err)
 	require.True(t, manager.handleModelPreparation(t.Context(), &Message{Method: modelrequest.EngineRequest, Params: params}))
-	message, err := NewCodec(clientConn).Read()
-	require.NoError(t, err)
-	require.Equal(t, modelrequest.EngineReply, message.Method)
-	var reply modelrequest.Reply
-	require.NoError(t, json.Unmarshal(message.Params, &reply))
-	return reply
+	return func() modelrequest.Reply {
+		t.Helper()
+		require.NoError(t, clientConn.SetReadDeadline(time.Now().Add(5*time.Second)))
+		message, err := NewCodec(clientConn).Read()
+		require.NoError(t, err)
+		require.Equal(t, modelrequest.EngineReply, message.Method)
+		var reply modelrequest.Reply
+		require.NoError(t, json.Unmarshal(message.Params, &reply))
+		return reply
+	}
 }
 
 func TestPrepareRequestedModel_RefusesAnUncachedModelWithoutSelectingIt(t *testing.T) {
