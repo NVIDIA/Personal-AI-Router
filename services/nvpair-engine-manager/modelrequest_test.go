@@ -5,6 +5,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	settings "nvpair-shared/enginesettings"
+	"nvpair-shared/modelrequest"
 )
 
 func requestedModelExecutor(t *testing.T) *Executor {
@@ -212,14 +216,95 @@ func TestPrepareRequestedModel_RecoversAnEnabledEngineAfterACrash(t *testing.T) 
 	test("another cached model", "org/second")
 }
 
-func TestPrepareRequestedModel_RefusesAnExplicitlyDisabledEngine(t *testing.T) {
+// Routing information can outlive an explicit Stop. A 503 lets the proxy try
+// another machine while the local engine stays off.
+func TestModelPreparation_ReportsDisabledEngineAsUnavailable(t *testing.T) {
 	e := requestedModelExecutor(t)
 	require.NoError(t, e.Start(t.Context(), "fake"))
 	require.NoError(t, e.Stop("fake"))
-	_, err := e.prepareRequestedModel(t.Context(), "fake", "org/first")
-	require.ErrorContains(t, err, "disabled")
-	assert.False(t, mustStatus(t, e).Running)
-	assert.False(t, mustStatus(t, e).AwaitingModel)
+
+	reply := requestModelPreparation(t, e, "org/first")
+
+	assert.Equal(t, http.StatusServiceUnavailable, reply.Status)
+	assert.Equal(t, `engine is disabled: "fake"`, reply.Error)
+	status := mustStatus(t, e)
+	assert.False(t, status.Enabled)
+	assert.False(t, status.Running)
+}
+
+// Turning the engine on and choosing Load from OFF take different launch paths.
+// The fake engine waits for a file before opening its port so preparation runs
+// while startup is still in progress.
+func TestModelPreparation_ReportsStartupFromOffAsUnavailable(t *testing.T) {
+	test := func(name, requestedModel string, start func(context.Context, *Executor) error) {
+		t.Run(name, func(t *testing.T) {
+			e := requestedModelExecutor(t)
+			require.NoError(t, e.Stop("fake"))
+			gate := filepath.Join(t.TempDir(), "start")
+			before, err := e.LaunchSettings("fake")
+			require.NoError(t, err)
+			_, err = e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{
+				ServerPort: before.ServerPort,
+				LaunchText: fmt.Sprintf("FAKE_START_GATE=%q %s --model org/first", gate, before.LaunchText),
+			}}, func() error { return nil })
+			require.NoError(t, err)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			started := make(chan error, 1)
+			go func() { started <- start(ctx, e) }()
+			require.Eventually(t, func() bool {
+				_, err := os.Stat(gate + ".waiting")
+				return err == nil
+			}, 5*time.Second, 10*time.Millisecond, "the engine never reached the startup gate")
+
+			reply := requestModelPreparation(t, e, requestedModel)
+
+			assert.Equal(t, http.StatusServiceUnavailable, reply.Status)
+			assert.Equal(t, `engine is starting: "fake"`, reply.Error)
+			require.NoError(t, os.WriteFile(gate, nil, 0o600))
+			require.NoError(t, <-started)
+		})
+	}
+	test("turn on with a saved model", "org/first", func(ctx context.Context, e *Executor) error {
+		return e.Start(ctx, "fake")
+	})
+	test("load a different model while off", "org/second", func(ctx context.Context, e *Executor) error {
+		_, err := e.Action(ctx, "fake", "load_model", json.RawMessage(`{"model":"org/second"}`))
+		return err
+	})
+}
+
+// An engine already saved as ON can use the normal preparation path while it
+// starts. Setting both states directly isolates that decision from the launch.
+func TestServingRequestModel_AllowsPreparationWhenAnEnabledEngineIsStarting(t *testing.T) {
+	e := requestedModelExecutor(t)
+	require.NoError(t, e.desired.set("fake", true))
+	state := &engineState{enabling: true}
+
+	_, serving, err := e.servingRequestModel(t.Context(), state, "fake", "org/first")
+
+	assert.NoError(t, err)
+	assert.False(t, serving)
+}
+
+// requestModelPreparation calls the manager's request handler and reads its
+// reply over an in-memory connection so tests can check what the broker sees.
+func requestModelPreparation(t *testing.T, e *Executor, model string) modelrequest.Reply {
+	t.Helper()
+	managerConn, clientConn := net.Pipe()
+	defer func() { assert.NoError(t, managerConn.Close()) }()
+	defer func() { assert.NoError(t, clientConn.Close()) }()
+	require.NoError(t, clientConn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	manager := &Manager{codec: NewCodec(managerConn), exec: e}
+	params, err := json.Marshal(modelrequest.Preparation{ID: t.Name(), Engine: "fake", Model: model})
+	require.NoError(t, err)
+	require.True(t, manager.handleModelPreparation(t.Context(), &Message{Method: modelrequest.EngineRequest, Params: params}))
+	message, err := NewCodec(clientConn).Read()
+	require.NoError(t, err)
+	require.Equal(t, modelrequest.EngineReply, message.Method)
+	var reply modelrequest.Reply
+	require.NoError(t, json.Unmarshal(message.Params, &reply))
+	return reply
 }
 
 func TestPrepareRequestedModel_RefusesAnUncachedModelWithoutSelectingIt(t *testing.T) {

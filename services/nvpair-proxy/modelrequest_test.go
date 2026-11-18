@@ -84,15 +84,16 @@ func TestModelRequestGate_RemovesCancelledWaiters(t *testing.T) {
 	release()
 }
 
+// modelPreparationWriter stands in for the broker. It records model preparation
+// requests and can send a reply or leave the request pending for the test.
 type modelPreparationWriter struct {
-	proxy         *Proxy
-	port          int
-	requests      chan modelrequest.Preparation
-	cancelled     chan modelrequest.Preparation
-	deferReply    bool
-	failure       string
-	failureStatus int
-	beforeReply   func() error
+	proxy       *Proxy
+	port        int
+	requests    chan modelrequest.Preparation
+	cancelled   chan modelrequest.Preparation
+	deferReply  bool
+	failure     string
+	beforeReply func() error
 }
 
 func (w *modelPreparationWriter) Read(data []byte) (int, error) { return 0, io.EOF }
@@ -124,11 +125,11 @@ func (w *modelPreparationWriter) Write(data []byte) (int, error) {
 			return 0, err
 		}
 	}
-	status := w.failureStatus
-	if status == 0 {
-		status = http.StatusConflict
+	reply := modelrequest.Reply{ID: request.ID, Engine: request.Engine, Port: w.port, Error: w.failure}
+	if w.failure != "" {
+		reply.Status = http.StatusUnprocessableEntity
 	}
-	raw, err := json.Marshal(modelrequest.Reply{ID: request.ID, Engine: request.Engine, Port: w.port, Error: w.failure, Status: status})
+	raw, err := json.Marshal(reply)
 	if err != nil {
 		return 0, err
 	}
@@ -564,17 +565,26 @@ func TestPrepareModelTransport_RechecksPreparationAfterAnEngineError(t *testing.
 	test("engine unavailable", http.StatusServiceUnavailable)
 }
 
+// A failed model load should return the engine manager's 422 and its diagnostic
+// to the client so the client knows why inference could not start.
 func TestPrepareModelTransport_DoesNotForwardWhenPreparationFails(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("request reached inference despite failed model preparation")
 	}))
-	defer server.Close()
-	facade, _ := modelRequestFacade(t, server.URL, "engine is disabled")
+	t.Cleanup(server.Close)
+	const failure = "model does not fit in memory"
+	facade, _ := modelRequestFacade(t, server.URL, failure)
 	request := httptest.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", nil)
+
 	response, err := (prepareModelTransport{next: http.DefaultTransport, facade: facade, model: "org/model-a"}).RoundTrip(request)
 	require.NoError(t, err)
 	defer func() { assert.NoError(t, response.Body.Close()) }()
-	assert.Equal(t, http.StatusConflict, response.StatusCode)
+	var reply struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&reply))
+	assert.Equal(t, http.StatusUnprocessableEntity, response.StatusCode)
+	assert.Equal(t, failure, reply.Error)
 }
 
 func TestPrepareModelTransport_HoldsTheModelUntilTheResponseBodyCloses(t *testing.T) {
