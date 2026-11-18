@@ -754,6 +754,9 @@ sends `model:cancel` if that preparation is abandoned. Engine-manager rechecks
 cached inventory and enabled intent under the launch lock. Request content is
 never sent over this control channel. Non-retryable preparation failures retain
 an actionable error response rather than repeatedly restarting a failing model.
+Engine-manager reports a node that is explicitly starting or disabled with
+HTTP 503, so the proxy tries another advertised owner under its existing retry
+policy. An upstream HTTP 409 remains non-retryable.
 Requests for the last successfully prepared model skip this relay until a
 lifecycle change, engine-manager restart, or upstream failure invalidates it.
 Concurrent same-model requests share one preparation and its result. Each request

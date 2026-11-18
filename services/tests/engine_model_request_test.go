@@ -137,9 +137,9 @@ func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
 		Error string `json:"error"`
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&rejection))
-	assert.Contains(t, []int{http.StatusConflict, http.StatusBadGateway}, response.StatusCode, "rejection: %s", rejection.Error)
+	assert.Contains(t, []int{http.StatusServiceUnavailable, http.StatusBadGateway}, response.StatusCode, "rejection: %s", rejection.Error)
 	assert.NotEmpty(t, rejection.Error)
-	if response.StatusCode == http.StatusConflict {
+	if response.StatusCode == http.StatusServiceUnavailable {
 		assert.Equal(t, `engine is disabled: "vllm"`, rejection.Error)
 	}
 	var stopped struct {

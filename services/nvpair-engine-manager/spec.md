@@ -512,3 +512,11 @@ replacement is ready. The broker acknowledges local availability updates before
 forwarding lifecycle events. `requestableByEngine` is retained loader capability
 independent of ON/OFF state; only enabled inventories are advertised for routing.
 It must not be interpreted as loaded models by desktop, TUI or discovery clients.
+
+Request-triggered preparation does not wait behind an explicit enable from OFF
+that is still loading, or an explicit model Load from OFF. It reports `engine is
+starting` with HTTP 503, allowing the originating proxy to try another advertised
+model owner immediately. A request rejected because the engine is disabled also
+reports HTTP 503, covering a stale positive inventory without enabling the
+engine. The proxy's existing dispatch and retry budgets apply. Preparation of a
+model on an already enabled engine retains its normal shared-load behavior.

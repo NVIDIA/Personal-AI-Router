@@ -85,13 +85,14 @@ func TestModelRequestGate_RemovesCancelledWaiters(t *testing.T) {
 }
 
 type modelPreparationWriter struct {
-	proxy       *Proxy
-	port        int
-	requests    chan modelrequest.Preparation
-	cancelled   chan modelrequest.Preparation
-	deferReply  bool
-	failure     string
-	beforeReply func() error
+	proxy         *Proxy
+	port          int
+	requests      chan modelrequest.Preparation
+	cancelled     chan modelrequest.Preparation
+	deferReply    bool
+	failure       string
+	failureStatus int
+	beforeReply   func() error
 }
 
 func (w *modelPreparationWriter) Read(data []byte) (int, error) { return 0, io.EOF }
@@ -123,7 +124,11 @@ func (w *modelPreparationWriter) Write(data []byte) (int, error) {
 			return 0, err
 		}
 	}
-	raw, err := json.Marshal(modelrequest.Reply{ID: request.ID, Engine: request.Engine, Port: w.port, Error: w.failure, Status: http.StatusConflict})
+	status := w.failureStatus
+	if status == 0 {
+		status = http.StatusConflict
+	}
+	raw, err := json.Marshal(modelrequest.Reply{ID: request.ID, Engine: request.Engine, Port: w.port, Error: w.failure, Status: status})
 	if err != nil {
 		return 0, err
 	}
