@@ -134,13 +134,17 @@ When you install an engine, consider the following:
   can start a model. Eject does not open the picker. An orange **No model loaded**
   banner appears above the model list whenever the enabled engine is waiting
   for a model, including after Eject or when you return to the app.
-  Turning the switch off prevents local request-triggered
-  startup and hides model controls. An eligible cluster peer can still serve the
-  request. Both Eject and OFF can cancel a load in progress. **Delete** removes a
-  cached model except the one currently loaded; eject it first. If PAIR cannot
-  identify the loaded model, deletion is refused. Deleting a saved selection
-  leaves the enabled engine waiting for another model. vLLM does not unload
-  automatically after inactivity; use Eject to release its memory.
+
+  Turning vLLM off hides the model controls and prevents requests from starting
+  it. While vLLM is off or still loading after you turn it back on, PAIR can send
+  requests to another available machine in the cluster that offers the requested
+  model. **Eject** and turning vLLM off can both cancel a load in progress.
+
+  **Delete** removes a cached model except the one currently loaded. Eject it
+  first. If PAIR cannot identify the loaded model, deletion is refused. Deleting
+  a saved selection leaves the enabled engine waiting for another model. vLLM
+  does not unload automatically after inactivity. Use **Eject** to release its
+  memory.
 
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model
