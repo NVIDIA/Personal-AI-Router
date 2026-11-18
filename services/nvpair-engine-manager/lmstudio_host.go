@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	lmstudioHostReadyTimeout  = 15 * time.Second
+	lmstudioHostReadyTimeout  = 5 * time.Minute
 	lmstudioHostPollInterval  = 250 * time.Millisecond
 	lmstudioHostStatusTimeout = 10 * time.Second
 )
