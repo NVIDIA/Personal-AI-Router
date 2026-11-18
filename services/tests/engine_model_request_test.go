@@ -7,21 +7,100 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	settings "nvpair-shared/enginesettings"
 )
 
-func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
+// The fake vLLM waits for a file before opening its HTTP port. This lets the
+// test exercise the same broker and proxy before and after local readiness.
+func TestBroker_RoutesToAPeerWhileLocalVLLMStarts(t *testing.T) {
+	const model = "org/first"
+	const localID = "local-vllm"
+	gate := filepath.Join(t.TempDir(), "startup")
+	config, enginePort := cachedModelRequestConfig(t, []string{model}, "--model", model)
+	stdin, messages, _, cleanup := startBrokerWithConfigDirAndEnv(t, config, []string{"FAKE_START_GATE=" + gate},
+		"--engine-manager-path", engineMgrBin, "--proxy-path", proxyBin, "--proxy-engines", "vllm")
+	t.Cleanup(cleanup)
+	waitForMethod(t, messages, "app:ready", 15*time.Second)
+	proxyPort := waitEngineProxyReady(t, "vllm-proxy", stdin, messages, 15*time.Second)
+	call := func(method string, params any) {
+		t.Helper()
+		reply := callRPC(t, stdin, messages, method, params, 5*time.Second)
+		require.Nil(t, reply.Error, "broker call %s", method)
+	}
+	call("engine:stop", map[string]string{"engine": "vllm"})
+	call("vllm-proxy:node/add-manual", map[string]any{
+		"id": localID, "host": "127.0.0.1", "port": proxyPort,
+		"addresses": []string{"127.0.0.1"}, "models": []string{model},
+	})
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]string{"model": model, "node": "peer"}))
+	}))
+	t.Cleanup(peer.Close)
+	peerHost, peerPortText, err := net.SplitHostPort(peer.Listener.Addr().String())
+	require.NoError(t, err)
+	peerPort, err := strconv.Atoi(peerPortText)
+	require.NoError(t, err)
+	call("vllm-proxy:node/add-manual", map[string]any{
+		"id": "peer", "host": peerHost, "port": peerPort,
+		"addresses": []string{peerHost}, "models": []string{model},
+	})
+	// Select the local candidate so the first request must try it before the peer.
+	call("vllm-proxy:node/select", map[string]string{"id": localID})
+
+	startID := int(newRPCID())
+	writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"engine:start","params":{"engine":"vllm"}}`, startID))
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(gate + ".waiting")
+		return err == nil
+	}, 10*time.Second, 10*time.Millisecond, "the model process never reached its startup gate")
+	// Keep the local engine eligible for model preparation while its port is closed.
+	call("vllm-proxy:node/set-local-backend", map[string]any{
+		"engine": "vllm", "host": "127.0.0.1", "port": enginePort, "healthy": false, "loadOnRequest": true,
+	})
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	// The peer adds a node marker to identify its response.
+	request := func() string {
+		t.Helper()
+		body := fmt.Sprintf(`{"model":%q,"messages":[]}`, model)
+		response, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", proxyPort), "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer func() { assert.NoError(t, response.Body.Close()) }()
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		var reply struct {
+			Model string `json:"model"`
+			Node  string `json:"node"`
+		}
+		require.NoError(t, json.NewDecoder(response.Body).Decode(&reply))
+		assert.Equal(t, model, reply.Model)
+		return reply.Node
+	}
+
+	assert.Equal(t, "peer", request(), "the peer should serve while the local engine is starting")
+	require.NoError(t, os.WriteFile(gate, nil, 0o600))
+	require.Nil(t, waitForResponseID(t, messages, startID, 15*time.Second).Error)
+	assert.Empty(t, request(), "the now-ready local model should serve the next request")
+}
+
+// cachedModelRequestConfig builds a fake vLLM and prepares its model cache. It
+// returns the broker's config directory and the engine's HTTP port. Optional
+// launch arguments let a test start with a model already selected.
+func cachedModelRequestConfig(t *testing.T, models []string, launchArgs ...string) (string, int) {
 	t.Helper()
 	config := t.TempDir()
 	executable := filepath.Join(t.TempDir(), "fake-engine")
@@ -49,10 +128,11 @@ func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
 			// the vendor installer nor the real engine's memory-sizing probe.
 			"install": nil,
 			"runtime": map[string]any{
-				"bin": executable, "args": []string{"serve"}, "port": enginePort, "wait_for_model": true,
-				"auto_launch":     nil,
-				"env":             map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}", "HF_HUB_CACHE": cache},
-				"ready":           map[string]any{"http": "http://127.0.0.1:{port}/", "status": http.StatusOK, "timeout_s": 5},
+				"bin": executable, "args": append([]string{"serve"}, launchArgs...), "port": enginePort, "wait_for_model": true,
+				"auto_launch": nil,
+				"env":         map[string]string{"OLLAMA_HOST": "127.0.0.1:{port}", "HF_HUB_CACHE": cache},
+				// The startup test holds the port closed through a broker call and an inference request.
+				"ready":           map[string]any{"http": "http://127.0.0.1:{port}/", "status": http.StatusOK, "timeout_s": 20},
 				"editable_launch": map[string]any{"fixed_args": []string{"serve"}, "controls": []map[string]any{{"env": []string{"OLLAMA_HOST"}, "value": "{server.host}:{server.port}"}}},
 			},
 		}},
@@ -72,6 +152,8 @@ func cachedModelRequestConfig(t *testing.T, models []string) (string, int) {
 	return config, enginePort
 }
 
+// The same request path can load a model after Eject and must respect Stop even
+// when the proxy's model list is out of date.
 func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
 	config, enginePort := cachedModelRequestConfig(t, []string{"org/first", "org/second"})
 	stdin, messages, _, cleanup := startBrokerWithConfigDir(t, config, "--engine-manager-path", engineMgrBin, "--proxy-path", proxyBin, "--proxy-engines", "vllm")
@@ -137,9 +219,9 @@ func TestBroker_ServesRequestedCachedModelsAcrossProcesses(t *testing.T) {
 		Error string `json:"error"`
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&rejection))
-	assert.Contains(t, []int{http.StatusConflict, http.StatusBadGateway}, response.StatusCode, "rejection: %s", rejection.Error)
+	assert.Contains(t, []int{http.StatusServiceUnavailable, http.StatusBadGateway}, response.StatusCode, "rejection: %s", rejection.Error)
 	assert.NotEmpty(t, rejection.Error)
-	if response.StatusCode == http.StatusConflict {
+	if response.StatusCode == http.StatusServiceUnavailable {
 		assert.Equal(t, `engine is disabled: "vllm"`, rejection.Error)
 	}
 	var stopped struct {

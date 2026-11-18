@@ -754,6 +754,11 @@ sends `model:cancel` if that preparation is abandoned. Engine-manager rechecks
 cached inventory and enabled intent under the launch lock. Request content is
 never sent over this control channel. Non-retryable preparation failures retain
 an actionable error response rather than repeatedly restarting a failing model.
+Model preparation returns HTTP 503 if vLLM is OFF or starting from OFF after
+an explicit enable or model **Load**. It also returns 503 if **Stop** or
+**Eject** interrupts a request-triggered load and the manager restores any launch
+settings it changed. Within its retry budget, the proxy can then try another node
+that advertises the requested model.
 Requests for the last successfully prepared model skip this relay until a
 lifecycle change, engine-manager restart, or upstream failure invalidates it.
 Concurrent same-model requests share one preparation and its result. Each request

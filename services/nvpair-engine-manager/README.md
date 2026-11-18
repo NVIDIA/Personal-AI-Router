@@ -79,6 +79,12 @@ before the switch. Explicit Load remains available; Eject releases model memory
 and keeps vLLM enabled. An explicitly disabled engine is never started by a request,
 and inference never downloads an uncached model.
 
+When vLLM starts from OFF after you turn it on or choose **Load**, model
+preparation returns HTTP 503 (`engine is starting`). If outdated routing
+information sends a request to vLLM while it is OFF, preparation returns HTTP 503
+(`engine is disabled`). In both cases, the proxy can try another node that
+advertises the requested model, subject to its retry limits.
+
 Request-triggered startup requires a complete cached snapshot at the launch's
 `--revision`, or `main` when none is set. A complete download of another revision
 does not make that startup eligible. Explicit Load can still fetch an uncached

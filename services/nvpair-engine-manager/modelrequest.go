@@ -15,6 +15,7 @@ import (
 )
 
 var errRequestEngineDisabled = errors.New("engine is disabled")
+var errRequestEngineStarting = errors.New("engine is starting")
 var errRequestModelNotCached = errors.New("model is not downloaded")
 
 type modelPreparations struct {
@@ -65,13 +66,19 @@ func (e *Executor) servingRequestModel(ctx context.Context, st *engineState, eng
 	if err != nil {
 		return 0, false, err
 	}
-	if !known || !enabled {
-		return 0, false, fmt.Errorf("%w: %q", errRequestEngineDisabled, engine)
-	}
 	st.mu.Lock()
+	starting := !enabled && (st.enabling || st.modelSwitching)
 	ready := st.running && st.healthy && !st.stopping && st.opDone == nil
 	revision, port := st.revision, st.port
 	st.mu.Unlock()
+	// Explicit startup keeps its saved intent unchanged until it succeeds.
+	// Let the proxy try another owner while that startup owns the launch lock.
+	if starting {
+		return 0, false, fmt.Errorf("%w: %q", errRequestEngineStarting, engine)
+	}
+	if !known || !enabled {
+		return 0, false, fmt.Errorf("%w: %q", errRequestEngineDisabled, engine)
+	}
 	if !ready {
 		return 0, false, nil
 	}
@@ -136,8 +143,12 @@ func (m *Manager) handleModelPreparation(ctx context.Context, msg *Message) bool
 		if err != nil {
 			reply.Error = err.Error()
 			reply.Status = http.StatusUnprocessableEntity
-			if errors.Is(err, errRequestEngineDisabled) {
-				reply.Status = http.StatusConflict
+			if errors.Is(err, errRequestEngineStarting) ||
+				errors.Is(err, errRequestEngineDisabled) ||
+				errors.Is(err, errStartStopped) {
+				// Availability belongs to this node. Another advertised owner
+				// can serve the request without enabling this engine.
+				reply.Status = http.StatusServiceUnavailable
 			}
 			if errors.Is(err, errRequestModelNotCached) {
 				reply.Status = http.StatusNotFound

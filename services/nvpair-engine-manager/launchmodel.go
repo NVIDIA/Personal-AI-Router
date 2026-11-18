@@ -216,6 +216,9 @@ func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *A
 	if err != nil {
 		return nil, err
 	}
+	if forRequest && stopped {
+		return nil, errStartStopped
+	}
 	return json.Marshal(struct {
 		Model     string `json:"model"`
 		Restarted bool   `json:"restarted"`

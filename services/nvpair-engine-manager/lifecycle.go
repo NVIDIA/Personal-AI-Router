@@ -113,9 +113,9 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	return e.setDesiredEnabled(engine, true)
 }
 
-// errStartStopped marks a start that a Stop or Eject cut short. The user asked
-// for that, so callers answer with the engine's status, stopped, rather than an
-// error carrying the cancelled engine's partial output.
+// errStartStopped marks a start that Stop or Eject cut short. An explicit Start
+// replies with the stopped engine's status. Model preparation replies with HTTP
+// 503 so the proxy can try another node.
 var errStartStopped = errors.New("the start was stopped")
 
 // startStopped wraps a failed start's error in errStartStopped when a Stop or

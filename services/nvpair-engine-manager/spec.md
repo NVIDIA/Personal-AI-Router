@@ -61,6 +61,16 @@ model preparation. Eject and Stop can still cancel a load. Preparation has a
 10-minute budget including queueing; normal stream/body deadlines still apply
 once inference starts. Clients must allow for cold model startup latency.
 
+During an explicit turn-on or **Load** from OFF, `EngineStatus.enabled` can be
+true before the engine manager saves ON. It saves ON after startup succeeds.
+During that window, model preparation returns HTTP 503 (`engine is starting`)
+without waiting for startup. If outdated routing sends a request to an engine
+that is OFF, preparation returns HTTP 503 (`engine is disabled`). If Stop or
+Eject interrupts a load started by a request, preparation returns HTTP 503
+after the engine manager restores any settings the load changed. The proxy can
+then try another node that advertises the requested model within its retry
+budget. Requests on an already-enabled engine can still share a model load.
+
 Before starting a model for a request, its effective `--revision` (default `main`)
 must resolve to a complete cached snapshot. Another complete revision in the disk
 inventory does not authorize a download of the selected revision. This check does
@@ -506,9 +516,9 @@ end over stdio. Current product wiring is:
 The retired desktop wiring is intentionally omitted; its implementation record
 remains available in Git history and is not part of the current architecture.
 
-`EngineStatus.enabled` is authoritative ON intent, independent of process
-residency. Model switching preserves `enabled` and reports `starting` until the
-replacement is ready. The broker acknowledges local availability updates before
-forwarding lifecycle events. `requestableByEngine` is retained loader capability
-independent of ON/OFF state; only enabled inventories are advertised for routing.
-It must not be interpreted as loaded models by desktop, TUI or discovery clients.
+Model switching preserves `EngineStatus.enabled` and reports `starting` until
+the replacement is ready. The broker acknowledges local availability updates
+before forwarding lifecycle events. `requestableByEngine` is retained loader
+capability independent of ON/OFF state; only enabled inventories are advertised
+for routing. It must not be interpreted as loaded models by desktop, TUI or
+discovery clients.

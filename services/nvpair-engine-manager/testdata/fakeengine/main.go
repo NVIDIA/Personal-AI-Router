@@ -402,6 +402,20 @@ func main() {
 		}
 		time.Sleep(delay)
 	}
+	// Tests release startup explicitly rather than racing a fixed delay.
+	if gate := os.Getenv("FAKE_START_GATE"); gate != "" {
+		if err := os.WriteFile(gate+".waiting", nil, 0o600); err != nil {
+			log.Fatal(err)
+		}
+		for {
+			if _, err := os.Stat(gate); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				log.Fatal(err)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
