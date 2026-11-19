@@ -54,6 +54,7 @@ export const ModelHubContent = ({
     const [loading, setLoading] = useState(true)
     const [catalogError, setCatalogError] = useState<string | null>(null)
     const [catalogAttempt, setCatalogAttempt] = useState(0)
+    const [catalogRetrySeconds, setCatalogRetrySeconds] = useState<number | null>(null)
     const [catalog, setCatalog] = useState<EngineHubSearchResponse<ModelEntry>>({
         models: [],
         searchable: null
@@ -87,6 +88,7 @@ export const ModelHubContent = ({
         const cacheKey = `${backend}:${node}`
         const cached = cacheRef.current.get(cacheKey)
         setCatalogError(null)
+        setCatalogRetrySeconds(null)
         if (cached) {
             setCatalog(cached)
             setLoading(false)
@@ -136,12 +138,25 @@ export const ModelHubContent = ({
 
     useEffect(() => {
         const delay = CATALOG_RETRY_DELAYS_MS[catalogAttempt - 1]
-        if (!engine || !catalogError || loading || query.trim() || delay === undefined) return
+        if (!engine || !catalogError || loading || query.trim() || delay === undefined) {
+            setCatalogRetrySeconds(null)
+            return
+        }
         const generation = fetchGenRef.current
+        const retryAt = Date.now() + delay
+        setCatalogRetrySeconds(Math.ceil(delay / 1_000))
+        const countdown = setInterval(() => {
+            if (fetchGenRef.current === generation) {
+                setCatalogRetrySeconds(Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000)))
+            }
+        }, 1_000)
         const timer = setTimeout(() => {
             if (fetchGenRef.current === generation) void loadModels(engine, nodeId)
         }, delay)
-        return () => clearTimeout(timer)
+        return () => {
+            clearTimeout(timer)
+            clearInterval(countdown)
+        }
     }, [engine, nodeId, catalogError, catalogAttempt, loading, query, loadModels])
 
     const retryCatalog = useCallback(() => {
@@ -322,9 +337,23 @@ export const ModelHubContent = ({
                             slotHeading="Couldn't load models"
                             slotSubheading={catalogError}
                             slotFooter={
-                                <Button kind="primary" color="brand" onClick={retryCatalog}>
-                                    Retry
-                                </Button>
+                                <Stack gap="2" align="center">
+                                    <Button kind="primary" color="brand" onClick={retryCatalog}>
+                                        Retry
+                                    </Button>
+                                    {catalogRetrySeconds !== null && (
+                                        <Text
+                                            kind="body/regular/sm"
+                                            className="text-subtle-color"
+                                            role="timer"
+                                            aria-live="off"
+                                        >
+                                            {catalogRetrySeconds > 0
+                                                ? `Retrying in ${catalogRetrySeconds}s…`
+                                                : 'Retrying…'}
+                                        </Text>
+                                    )}
+                                </Stack>
                             }
                         />
                     </Stack>

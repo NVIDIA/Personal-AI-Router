@@ -151,11 +151,13 @@ const testManualRecovery = (name: string, engine: EngineType) => {
         expect(host.textContent).toContain("Couldn't load models")
         expect(host.textContent).not.toContain('No models found')
         expect(host.querySelector('[role="alert"]')).not.toBeNull()
+        expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 5s…')
 
         await click('Retry')
 
         expect(host.textContent).toContain('org/small-model')
         expect(host.textContent).not.toContain("Couldn't load models")
+        expect(host.querySelector('[role="timer"]')).toBeNull()
         expect(searchHub).toHaveBeenCalledTimes(2)
         await act(() => vi.advanceTimersByTimeAsync(60_000))
         expect(searchHub).toHaveBeenCalledTimes(2)
@@ -166,19 +168,31 @@ testManualRecovery('retries an unread LM Studio catalog without reopening', 'lm-
 testManualRecovery('retries an unread llama.cpp catalog without reopening', 'llama-cpp')
 testManualRecovery('retries an unread Ollama broker reply without reopening', 'ollama')
 
-it('recovers automatically while the first dialog stays open', async () => {
+it('counts down to automatic recovery while keeping Retry available', async () => {
     searchHub
         .mockResolvedValueOnce({ models: [], searchable: null })
         .mockResolvedValueOnce(populatedCatalog)
     await openCatalog()
 
-    await act(() => vi.advanceTimersByTimeAsync(4_999))
+    expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 5s…')
+    expect(
+        Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Retry')
+            ?.disabled
+    ).toBe(false)
+
+    await act(() => vi.advanceTimersByTimeAsync(1_000))
+    expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 4s…')
+    expect(searchHub).toHaveBeenCalledTimes(1)
+
+    await act(() => vi.advanceTimersByTimeAsync(3_999))
+    expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 1s…')
     expect(searchHub).toHaveBeenCalledTimes(1)
     await act(() => vi.advanceTimersByTimeAsync(1))
 
     expect(searchHub).toHaveBeenCalledTimes(2)
     expect(host.textContent).toContain('org/small-model')
     expect(host.textContent).not.toContain("Couldn't load models")
+    expect(host.querySelector('[role="timer"]')).toBeNull()
 })
 
 it('stops automatic retries after two recovery attempts', async () => {
@@ -186,13 +200,17 @@ it('stops automatic retries after two recovery attempts', async () => {
     await openCatalog()
     await act(() => vi.advanceTimersByTimeAsync(5_000))
     expect(searchHub).toHaveBeenCalledTimes(2)
-    await act(() => vi.advanceTimersByTimeAsync(10_000))
+    expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 10s…')
+    await act(() => vi.advanceTimersByTimeAsync(1_000))
+    expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 9s…')
+    await act(() => vi.advanceTimersByTimeAsync(9_000))
     expect(searchHub).toHaveBeenCalledTimes(3)
 
     await act(() => vi.advanceTimersByTimeAsync(300_000))
 
     expect(searchHub).toHaveBeenCalledTimes(3)
     expect(host.textContent).toContain("Couldn't load models")
+    expect(host.querySelector('[role="timer"]')).toBeNull()
 })
 
 it('cancels scheduled retries when the dialog closes', async () => {
