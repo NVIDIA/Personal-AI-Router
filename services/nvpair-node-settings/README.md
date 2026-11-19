@@ -145,6 +145,10 @@ as a simple ack so React-init code can rely on a single round-trip.
 // cluster-friendly-name (string)
 {"jsonrpc":"2.0","id":8,"method":"settings/get-cluster-friendly-name"}                                  // -> {"value": ""}
 {"jsonrpc":"2.0","id":9,"method":"settings/set-cluster-friendly-name","params":{"value":"Lab 3 desks"}} // -> {"ok": true}
+
+// engine-allow-lan-bind (bool)
+{"jsonrpc":"2.0","id":10,"method":"settings/get-engine-allow-lan-bind"}                                   // -> {"value": false}
+{"jsonrpc":"2.0","id":11,"method":"settings/set-engine-allow-lan-bind","params":{"value": true}}          // -> {"ok": true}
 ```
 
 `settings/get-cluster-id` returns the raw stored `cluster_id`
@@ -154,6 +158,14 @@ string — the same shape every other `settings/get-*` getter uses
 non-empty is the verbatim id. Live cluster-membership changes
 come from `connection/cluster-identity` push notifications, not
 from polling this getter.
+
+`settings/get-engine-allow-lan-bind` returns whether local engine starts
+may bind to non-loopback addresses (`{"value": <bool>}`, default `false`).
+PAIR keeps engine starts on loopback unless the operator opts in here: the
+setting is read live on every start, so no restart is needed. It is
+deliberately a node-level switch rather than a per-call flag — opening an
+unauthenticated engine API to the LAN should be a conscious, persistent
+decision about the machine, not something a single broker call can slip in.
 
 ### Removed methods
 
