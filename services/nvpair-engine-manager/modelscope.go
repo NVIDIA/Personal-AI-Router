@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const modelScopeURL = "https://modelscope.cn"
@@ -52,7 +53,8 @@ func fetchModelScopeFiles(ctx context.Context, client *http.Client, endpoint, re
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ModelScope metadata request failed: %w", withoutURL(err))
+		cause := withoutURL(err)
+		return nil, &catalogRequestError{message: fmt.Sprintf("ModelScope metadata request failed: %v", cause), cause: cause}
 	}
 	defer resp.Body.Close()
 	var result struct {
@@ -65,7 +67,10 @@ func fetchModelScopeFiles(ctx context.Context, client *http.Client, endpoint, re
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ModelScope metadata returned HTTP %d", resp.StatusCode)
+		return nil, &catalogRequestError{
+			message: fmt.Sprintf("ModelScope metadata returned HTTP %d", resp.StatusCode), status: resp.StatusCode,
+			retryAt: catalogRetryTime(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCatalogBody+1))
 	if err != nil || len(data) > maxCatalogBody || json.Unmarshal(data, &result) != nil || !result.Success || result.Data.Files == nil {

@@ -385,6 +385,29 @@ func TestModelScopeCatalog_RunsEightFileListRequestsAtOnce(t *testing.T) {
 	assert.Equal(t, int32(modelScopeFileListConcurrency), peak.Load())
 }
 
+func TestModelScopeCatalog_HonorsFileListingRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/openapi/v1/models":
+			writeModelScopeChatPage(t, w, "owner/temporary", "owner/limited")
+		case strings.Contains(r.URL.Path, "limited"):
+			w.Header().Set("Retry-After", "300")
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.modelScopeEndpoint = server.URL
+
+	_, err := catalog.Catalog(t.Context(), "llamacpp", "", "", "", "modelscope")
+
+	require.Error(t, err)
+	assert.Greater(t, time.Until(catalog.modelScope.retryAt), 299*time.Second)
+	assert.LessOrEqual(t, time.Until(catalog.modelScope.retryAt), 300*time.Second)
+}
+
 func TestCatalog_FailsAnEmptyModelScopeBrowseList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := w.Write([]byte(`{"success":true,"data":{"models":[]}}`))
