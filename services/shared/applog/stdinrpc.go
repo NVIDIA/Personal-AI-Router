@@ -35,9 +35,6 @@ type StdinMessage struct {
 // responses are dropped (the advertiser historically has no stdout writer
 // and the parent doesn't expect one — it only sends notifications).
 func StdinRPC(writer io.Writer, onMessage func(StdinMessage), onClose func()) {
-	var once sync.Once
-	closeOnce := func() { once.Do(onClose) }
-
 	r := bufio.NewReader(os.Stdin)
 	for {
 		line, err := r.ReadBytes('\n')
@@ -49,7 +46,7 @@ func StdinRPC(writer io.Writer, onMessage func(StdinMessage), onClose func()) {
 		}
 		if err != nil {
 			slog.Debug("stdin closed, shutting down", "err", err)
-			closeOnce()
+			onClose()
 			return
 		}
 	}

@@ -11,11 +11,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestMaybeLeavePreservesIntentionalSolo verifies that an explicitly created
 // cluster of one must survive a declined invite. leaveIfSolo used to erase it.
-func TestMaybeLeavePreservesIntentionalSolo(t *testing.T) {
+func TestMaybeLeave_PreservesIntentionalSolo(t *testing.T) {
 	m := newTestManager(t) // clustered as "cluster-1", inviteCreated=false
 	m.addSelfMember()
 
@@ -27,18 +29,15 @@ func TestMaybeLeavePreservesIntentionalSolo(t *testing.T) {
 	}
 	m.putInvite(inv)
 
-	if m.maybeLeaveInviteCreatedCluster() {
-		t.Fatal("intentional solo cluster must not leave on decline cleanup")
-	}
-	if id, _ := m.clusterIdentity(); id == "" {
-		t.Fatal("intentional solo cluster was erased")
-	}
+	require.False(t, m.maybeLeaveInviteCreatedCluster(), "intentional solo cluster must not leave on decline cleanup")
+	id, _ := m.clusterIdentity()
+	require.NotEqual(t, "", id, "intentional solo cluster was erased")
 }
 
 // TestMaybeLeaveKeepsSiblingPendingInvite verifies that declining one outbound
 // invite while another is still pending must not tear down an invite-created
 // cluster — otherwise the sibling Completion could join a vanished cluster id.
-func TestMaybeLeaveKeepsSiblingPendingInvite(t *testing.T) {
+func TestMaybeLeave_KeepsSiblingPendingInvite(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	m.setInviteCreatedCluster(true)
@@ -57,27 +56,21 @@ func TestMaybeLeaveKeepsSiblingPendingInvite(t *testing.T) {
 		CreatedAt:    now,
 	})
 
-	if m.maybeLeaveInviteCreatedCluster() {
-		t.Fatal("must keep invite-created cluster while a sibling outbound invite is pending")
-	}
-	if id, _ := m.clusterIdentity(); id == "" {
-		t.Fatal("invite-created cluster was erased while sibling invite still pending")
-	}
+	require.False(t, m.maybeLeaveInviteCreatedCluster(), "must keep invite-created cluster while a sibling outbound invite is pending")
+	id, _ := m.clusterIdentity()
+	require.NotEqual(t, "", id, "invite-created cluster was erased while sibling invite still pending")
 
 	// Finish the sibling; now cleanup should leave.
 	m.finishInvite("inv-sibling", inviteStateDeclined)
-	if !m.maybeLeaveInviteCreatedCluster() {
-		t.Fatal("invite-created solo cluster must leave once no pending outbound remains")
-	}
-	if id, _ := m.clusterIdentity(); id != "" {
-		t.Fatalf("expected unclustered after last invite declined, got %q", id)
-	}
+	require.True(t, m.maybeLeaveInviteCreatedCluster(), "invite-created solo cluster must leave once no pending outbound remains")
+	id, _ = m.clusterIdentity()
+	require.Equal(t, "", id, "expected unclustered after last invite declined")
 }
 
 // TestExpirePendingInviteCleansThrowaway is the lost-decline fallback: if the
 // joiner's decline POST never arrives, the inviter expires the pending invite
 // after the TTL and dissolves an invite-created solo cluster.
-func TestExpirePendingInviteCleansThrowaway(t *testing.T) {
+func TestExpirePendingInvite_CleansThrowaway(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	m.setInviteCreatedCluster(true)
@@ -97,15 +90,12 @@ func TestExpirePendingInviteCleansThrowaway(t *testing.T) {
 	m.expirePendingInvites(time.Now())
 
 	inv, ok := m.getInvite("inv-stale")
-	if !ok || inv.State != inviteStateExpired {
-		t.Fatalf("invite state = %+v, want expired", inv)
-	}
-	if _, ok := m.getSession("inv-stale"); ok {
-		t.Fatal("expired invite must drop its EAP session")
-	}
-	if id, _ := m.clusterIdentity(); id != "" {
-		t.Fatalf("invite-created solo cluster must leave after expiry, got %q", id)
-	}
+	require.True(t, ok, "invite state (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "invite state (%v)", inv)
+	_, ok = m.getSession("inv-stale")
+	require.False(t, ok, "expired invite must drop its EAP session")
+	id, _ := m.clusterIdentity()
+	require.Equal(t, "", id, "invite-created solo cluster must leave after expiry")
 }
 
 // TestExpirePendingInviteClearsBothSides verifies the reconciled two-sided expiry
@@ -114,7 +104,7 @@ func TestExpirePendingInviteCleansThrowaway(t *testing.T) {
 // inviter's outbound invite clears too. This replaces the older inviter->joiner
 // cancel-on-expiry path — the receiver now owns its own teardown, and each side's
 // own TTL remains a local fallback.
-func TestExpirePendingInviteClearsBothSides(t *testing.T) {
+func TestExpirePendingInvite_ClearsBothSides(t *testing.T) {
 	inviter := newTestManager(t)
 	receiver := newTestManager(t)
 	const inviteID = "inv-expire-remote"
@@ -172,15 +162,12 @@ func TestExpirePendingInviteClearsBothSides(t *testing.T) {
 
 	// The receiver cleared itself as expired.
 	inv, ok := receiver.getInvite(inviteID)
-	if !ok || inv.State != inviteStateExpired {
-		t.Fatalf("receiver invite = %+v, want expired", inv)
-	}
-	if _, ok := receiver.getSession(inviteID); ok {
-		t.Fatal("receiver retained session after expiry")
-	}
-	if _, ok := receiver.memberByNodeID(inviter.identity.NodeUUID); ok {
-		t.Fatal("receiver retained pending member after expiry")
-	}
+	require.True(t, ok, "receiver invite (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "receiver invite (%v)", inv)
+	_, ok = receiver.getSession(inviteID)
+	require.False(t, ok, "receiver retained session after expiry")
+	_, ok = receiver.memberByNodeID(inviter.identity.NodeUUID)
+	require.False(t, ok, "receiver retained pending member after expiry")
 
 	// The inviter cleared its outbound invite via the receiver's phase:"expire".
 	deadline := time.Now().Add(2 * time.Second)
@@ -189,19 +176,16 @@ func TestExpirePendingInviteClearsBothSides(t *testing.T) {
 		if ok && inv.State == inviteStateExpired {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("inviter invite = %+v, want expired after receiver signal", inv)
-		}
+		require.False(t, time.Now().After(deadline), "inviter invite (%v)", inv)
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, ok := inviter.getSession(inviteID); ok {
-		t.Fatal("inviter retained session after receiver expiry signal")
-	}
+	_, ok = inviter.getSession(inviteID)
+	require.False(t, ok, "inviter retained session after receiver expiry signal")
 }
 
 // TestExpirePendingInvitePreservesIntentionalSolo verifies TTL expiry does not
 // dissolve a user-founded cluster of one.
-func TestExpirePendingInvitePreservesIntentionalSolo(t *testing.T) {
+func TestExpirePendingInvite_PreservesIntentionalSolo(t *testing.T) {
 	m := newTestManager(t)
 	m.addSelfMember()
 	// inviteCreated remains false (intentional).
@@ -220,19 +204,17 @@ func TestExpirePendingInvitePreservesIntentionalSolo(t *testing.T) {
 	m.expirePendingInvites(time.Now())
 
 	inv, ok := m.getInvite("inv-stale")
-	if !ok || inv.State != inviteStateExpired {
-		t.Fatalf("invite state = %+v, want expired", inv)
-	}
-	if id, _ := m.clusterIdentity(); id == "" {
-		t.Fatal("intentional solo cluster must survive invite expiry")
-	}
+	require.True(t, ok, "invite state (%v)", inv)
+	require.Equal(t, inviteStateExpired, inv.State, "invite state (%v)", inv)
+	id, _ := m.clusterIdentity()
+	require.NotEqual(t, "", id, "intentional solo cluster must survive invite expiry")
 }
 
 // TestInviteCreatedProvenanceSurvivesRestart covers the restart half of the
 // lost-decline fallback. Pairing sessions are intentionally in-memory, so after
 // restart a durably marked invite-created solo cluster can no longer complete
 // and must be cleaned up when its identity is restored.
-func TestInviteCreatedProvenanceSurvivesRestart(t *testing.T) {
+func TestInviteCreatedProvenance_SurvivesRestart(t *testing.T) {
 	configDir := t.TempDir()
 	newManager := func() *Manager {
 		t.Helper()
@@ -241,9 +223,7 @@ func TestInviteCreatedProvenanceSurvivesRestart(t *testing.T) {
 			io.Writer
 		}{strings.NewReader(""), io.Discard})
 		mgr, err := NewManager(codec, configDir, 14998)
-		if err != nil {
-			t.Fatalf("new manager: %v", err)
-		}
+		require.NoError(t, err, "new manager")
 		return mgr
 	}
 
@@ -254,13 +234,8 @@ func TestInviteCreatedProvenanceSurvivesRestart(t *testing.T) {
 
 	restarted := newManager()
 	restarted.setClusterIdentity("invite-cluster", "Invite Lab")
-	if !restarted.restoreInviteCreatedCluster("invite-cluster") {
-		t.Fatal("restart lost invite-created cluster provenance")
-	}
-	if !restarted.maybeLeaveInviteCreatedCluster() {
-		t.Fatal("restarted inviter must clean up orphaned invite-created cluster")
-	}
-	if id, _ := restarted.clusterIdentity(); id != "" {
-		t.Fatalf("restarted inviter remained clustered: %q", id)
-	}
+	require.True(t, restarted.restoreInviteCreatedCluster("invite-cluster"), "restart lost invite-created cluster provenance")
+	require.True(t, restarted.maybeLeaveInviteCreatedCluster(), "restarted inviter must clean up orphaned invite-created cluster")
+	id, _ := restarted.clusterIdentity()
+	require.Equal(t, "", id, "restarted inviter remained clustered")
 }

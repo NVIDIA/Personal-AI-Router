@@ -19,8 +19,8 @@ interface EngineListRow {
 /**
  * One row per enabled engine type for this node. Types not yet reported by the
  * service appear as `initializing` placeholders ({@link emptyEngineStatus}) so
- * compact rows can hide them until evidence arrives. When `engineFilter` is
- * provided, only those types are included.
+ * compact rows can hide them until evidence arrives. Types the node cannot run
+ * are left out. When `engineFilter` is provided, only those types are included.
  */
 export function getEnginesForNode(
     nodeId: string,
@@ -29,11 +29,9 @@ export function getEnginesForNode(
 ): EngineStatusData[] {
     const inner = statusByNode.get(nodeId)
     const types = engineFilter ?? EnabledEngineTypes
-    return types.map(type => {
-        const s = inner?.get(type)
-        if (s) return s
-        return emptyEngineStatus(nodeId, type)
-    })
+    return types
+        .map(type => inner?.get(type) ?? emptyEngineStatus(nodeId, type))
+        .filter(s => s.processStatus !== 'unsupported')
 }
 
 function engineDisplayName(engineType: string): string {

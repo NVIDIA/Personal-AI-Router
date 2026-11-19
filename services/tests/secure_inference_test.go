@@ -20,6 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/engines"
 	"nvpair-shared/jsonrpc"
 )
 
@@ -60,36 +64,35 @@ type proxyProc struct {
 func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc {
 	t.Helper()
 	cfg := t.TempDir()
-	cmd := exec.Command(proxyBin,
-		"--cluster-dir", clusterDir,
-		"--port", strconv.Itoa(listenPort),
-		"--ignore-persisted-port",
-	)
+	// The engine and its port arrive over facade/enable below; only the cluster
+	// dir is process-scoped enough to stay on argv.
+	cmd := exec.Command(proxyBin, "--cluster-dir", clusterDir)
 	cmd.Env = append(os.Environ(),
 		"HOME="+cfg, "XDG_CONFIG_HOME="+cfg, "APPDATA="+cfg, "LOCALAPPDATA="+cfg,
 	)
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("proxy stdin pipe: %v", err)
-	}
+	require.NoError(t, err, "proxy stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("proxy stdout pipe: %v", err)
-	}
+	require.NoError(t, err, "proxy stdout pipe")
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start proxy: %v", err)
-	}
-	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1}
+	require.NoError(t, cmd.Start(), "start proxy")
+	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(t, stdout), nextID: 1}
 
-	ready := p.pump(func(m jsonrpc.Message) bool { return m.Method == "ready" }, 15*time.Second)
-	var rp struct {
-		Port int `json:"port"`
+	// The mTLS ingress under test is engine-agnostic; Ollama is an arbitrary
+	// pick. The bound port comes from the enable response rather than the ready
+	// notification, which is where the broker reads it too.
+	resp := p.call("facade/enable", map[string]any{
+		"engine":              "ollama",
+		"port":                listenPort,
+		"ignorePersistedPort": true,
+	})
+	var enabled struct {
+		Engine string `json:"engine"`
+		Port   int    `json:"port"`
 	}
-	if err := json.Unmarshal(ready.Params, &rp); err != nil || rp.Port == 0 {
-		t.Fatalf("proxy ready params = %s (err %v)", ready.Params, err)
-	}
-	p.port = rp.Port
+	require.NoError(t, json.Unmarshal(resp.Result, &enabled), "facade/enable result")
+	require.NotEqual(t, 0, enabled.Port, "facade/enable result")
+	p.port = enabled.Port
 	return p
 }
 
@@ -117,15 +120,13 @@ func (p *proxyProc) pump(want func(jsonrpc.Message) bool, timeout time.Duration)
 	for {
 		select {
 		case m, ok := <-p.msgs:
-			if !ok {
-				p.t.Fatal("proxy stdout closed unexpectedly")
-			}
+			require.True(p.t, ok, "proxy stdout closed unexpectedly")
 			if want(m) {
 				return m
 			}
 			p.buf = append(p.buf, m)
 		case <-timer.C:
-			p.t.Fatal("timed out waiting on proxy message")
+			require.FailNow(p.t, "timed out waiting on proxy message")
 		}
 	}
 }
@@ -138,15 +139,13 @@ func (p *proxyProc) call(method string, params any) jsonrpc.Message {
 	if params != nil {
 		req["params"] = params
 	}
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	require.NoError(p.t, err, "encode %s", method)
 	b = append(b, '\n')
-	if _, err := p.stdin.Write(b); err != nil {
-		p.t.Fatalf("write %s: %v", method, err)
-	}
-	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
-	if resp.Error != nil {
-		p.t.Fatalf("%s returned error %d: %s", method, resp.Error.Code, resp.Error.Message)
-	}
+	_, err = p.stdin.Write(b)
+	require.NoError(p.t, err, "write %s", method)
+	resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(p.t, m.ID, id) }, 15*time.Second)
+	require.Nil(p.t, resp.Error, "%s returned a JSON-RPC error", method)
 	return resp
 }
 
@@ -156,17 +155,17 @@ func (p *proxyProc) notify(method string, params any) {
 	if params != nil {
 		req["params"] = params
 	}
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	require.NoError(p.t, err, "encode %s", method)
 	b = append(b, '\n')
-	if _, err := p.stdin.Write(b); err != nil {
-		p.t.Fatalf("notify %s: %v", method, err)
-	}
+	_, err = p.stdin.Write(b)
+	require.NoError(p.t, err, "notify %s", method)
 }
 
-// setLocalBackend points the proxy's cluster ingress + local self candidate at a
-// loopback engine.
+// setLocalBackend points one facade's cluster ingress + local self candidate at
+// a loopback engine. Addressed to that engine, the way the broker sends it.
 func (p *proxyProc) setLocalBackend(engine, host string, port int, healthy bool) {
-	p.call("node/set-local-backend", map[string]any{
+	p.call(engines.AddressMethod(engine, "node/set-local-backend"), map[string]any{
 		"engine": engine, "host": host, "port": port, "healthy": healthy,
 	})
 }
@@ -175,37 +174,40 @@ func (p *proxyProc) setLocalBackend(engine, host string, port int, healthy bool)
 // remote peer that runs ollama at proxyPort, tagged as a trusted cluster member
 // keyed by clusterUUID (the peer's cluster cert principal).
 func (p *proxyProc) pushOllamaPeer(name, ip, clusterUUID string, proxyPort int, models []string) {
-	p.notify("discovery:nodes", map[string]any{
+	p.notify(engines.AddressMethod("ollama", "discovery:nodes"), map[string]any{
 		"nodes": []map[string]any{{
-			"hostUuid":       name,
-			"name":           name,
-			"ip":             ip,
-			"clusterUuid":    clusterUUID,
-			"trusted":        true,
-			"services":       map[string]any{"ol": map[string]any{"port": proxyPort}},
-			"modelsByEngine": map[string]any{"ollama": models},
-			"lastSeen":       time.Now().Unix(),
+			"hostUuid":             clusterUUID,
+			"discoveryRecordId":    "peer:" + clusterUUID,
+			"identityVerification": "pinned",
+			"name":                 name,
+			"ip":                   ip,
+			"clusterUuid":          clusterUUID,
+			"trusted":              true,
+			"services":             map[string]any{"ol": map[string]any{"port": proxyPort}},
+			"modelsByEngine":       map[string]any{"ollama": models},
+			"lastSeen":             time.Now().Unix(),
 		}},
 	})
 }
 
-// waitForRoutableNode polls the proxy's nodes/list until it reports at least one
-// routable node, so the async discovery:nodes push has been applied before the
-// test issues a request.
-func (p *proxyProc) waitForRoutableNode(t *testing.T) {
+// waitForRoutableNode waits for the intended peer before issuing inference.
+func (p *proxyProc) waitForRoutableNode(t *testing.T, nodeUUID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		resp := p.call("nodes/list", nil)
+		resp := p.call(engines.AddressMethod("ollama", "nodes/list"), nil)
 		var r struct {
-			Nodes []json.RawMessage `json:"nodes"`
+			Nodes []proxyNode `json:"nodes"`
 		}
-		if json.Unmarshal(resp.Result, &r) == nil && len(r.Nodes) > 0 {
-			return
+		require.NoError(t, json.Unmarshal(resp.Result, &r))
+		for _, node := range r.Nodes {
+			if node.ID == nodeUUID {
+				return
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatal("proxy never registered the pushed discovery node")
+	require.FailNow(t, "proxy never registered the pushed discovery node")
 }
 
 // startFakeOllama runs a loopback httptest server that answers the model-list
@@ -218,43 +220,44 @@ func startFakeOllama(t *testing.T) (host string, port int, generates *int32) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/tags":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"models":[{"name":"m:latest","model":"m:latest"}]}`)
+			_, writeErr := io.WriteString(w, `{"models":[{"name":"m:latest","model":"m:latest"}]}`)
+			assert.NoError(t, writeErr)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/generate":
 			atomic.AddInt32(&n, 1)
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"model":"m:latest","response":"hello from the backend","done":true}`)
+			_, writeErr := io.WriteString(w, `{"model":"m:latest","response":"hello from the backend","done":true}`)
+			assert.NoError(t, writeErr)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse fake engine url: %v", err)
-	}
-	p, _ := strconv.Atoi(u.Port())
+	require.NoError(t, err, "parse fake engine url")
+	p, err := strconv.Atoi(u.Port())
+	require.NoError(t, err)
 	return u.Hostname(), p, &n
 }
 
-func TestSecureInferenceClusterMTLS(t *testing.T) {
+func TestClusterInference_RequiresPinnedMutualTLS(t *testing.T) {
 	baseA, baseB, baseC := t.TempDir(), t.TempDir(), t.TempDir()
 	clusterA := filepath.Join(baseA, "cluster")
 	clusterB := filepath.Join(baseB, "cluster")
 	clusterC := filepath.Join(baseC, "cluster")
 
-	cmBPort := freePort(t)
-	cmA := startCM(t, baseA, freePort(t))
+	cmPorts := freePorts(t, 3)
+	cmBPort := cmPorts[1]
+	cmA := startCM(t, baseA, cmPorts[0])
 	defer cmA.stop()
 	cmB := startCM(t, baseB, cmBPort)
 	defer cmB.stop()
-	cmC := startCM(t, baseC, freePort(t))
+	cmC := startCM(t, baseC, cmPorts[2])
 	defer cmC.stop()
 
 	aInfo := decodeResult[cmNodeID](t, cmA.call("cluster:get-node-id", nil))
 	bInfo := decodeResult[cmNodeID](t, cmB.call("cluster:get-node-id", nil))
 
-	// The cluster-manager listeners need a moment to bind before pairing.
-	time.Sleep(time.Second)
+	waitForPort(t, "127.0.0.1", cmBPort, 10*time.Second)
 
 	// A founds a cluster and pairs with B (mutual pins land on disk). C founds
 	// its own cluster and never pairs with A or B — it is a foreign node.
@@ -274,7 +277,7 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 	defer proxyA.stop()
 	// Tell A that B runs ollama at B's promoted proxy port, as a trusted member.
 	proxyA.pushOllamaPeer("node-b", "127.0.0.1", bInfo.NodeUUID, proxyB.port, []string{"m:latest"})
-	proxyA.waitForRoutableNode(t)
+	proxyA.waitForRoutableNode(t, bInfo.NodeUUID)
 
 	genBody := []byte(`{"model":"m:latest","prompt":"hi","stream":false}`)
 
@@ -283,16 +286,11 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		before := atomic.LoadInt32(bGenerates)
 		resp := postInference(t, fmt.Sprintf("http://127.0.0.1:%d/api/generate", proxyA.port), genBody)
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("A->B inference status = %d, body=%s", resp.StatusCode, body)
-		}
-		if !bytes.Contains(body, []byte("hello from the backend")) {
-			t.Fatalf("A->B response did not come from B's engine: %s", body)
-		}
-		if got := atomic.LoadInt32(bGenerates); got != before+1 {
-			t.Fatalf("B engine generate count = %d, want %d (request must reach B's backend)", got, before+1)
-		}
+		body, readErr := io.ReadAll(resp.Body)
+		require.NoError(t, readErr)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "A->B inference status (%v)", body)
+		require.Contains(t, string(body), "hello from the backend", "A->B response did not come from B's engine")
+		require.Equal(t, before+1, atomic.LoadInt32(bGenerates), "request must reach B's engine")
 	})
 
 	// 2. Foreign node C is rejected by B's mTLS ingress: it can handshake (B
@@ -301,13 +299,12 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 		client := mtlsClientWithIdentity(t, clusterC)
 		resp, err := client.Post(fmt.Sprintf("https://127.0.0.1:%d/api/generate", proxyB.port),
 			"application/json", bytes.NewReader(genBody))
-		if err != nil {
-			t.Fatalf("foreign C dial B ingress: %v", err)
-		}
+		require.NoError(t, err, "foreign C dial B ingress")
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusForbidden {
-			b, _ := io.ReadAll(resp.Body)
-			t.Fatalf("foreign C status = %d, want 403; body=%s", resp.StatusCode, b)
+			b, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.FailNow(t, fmt.Sprintf("foreign C status = %d, want 403; body=%s", resp.StatusCode, b))
 		}
 	})
 
@@ -315,21 +312,13 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 	//    pins are reloaded per request, so a removed member loses access at once.
 	t.Run("deleting pin rejects immediately", func(t *testing.T) {
 		pin := filepath.Join(clusterB, "trusted", aInfo.NodeUUID+".json")
-		if _, err := os.Stat(pin); err != nil {
-			t.Fatalf("expected A's pin in B's trust store at %s: %v", pin, err)
-		}
-		if err := os.Remove(pin); err != nil {
-			t.Fatalf("remove A's pin: %v", err)
-		}
+		require.FileExists(t, pin, "expected A's pin in B's trust store")
+		require.NoError(t, os.Remove(pin), "remove A's pin")
 		before := atomic.LoadInt32(bGenerates)
 		resp := postInference(t, fmt.Sprintf("http://127.0.0.1:%d/api/generate", proxyA.port), genBody)
 		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			t.Fatalf("A->B still succeeded (status %d) after B dropped A's pin", resp.StatusCode)
-		}
-		if got := atomic.LoadInt32(bGenerates); got != before {
-			t.Fatalf("B engine was reached (%d != %d) after its pin for A was deleted", got, before)
-		}
+		require.NotEqual(t, http.StatusOK, resp.StatusCode, "A->B still succeeded (status")
+		require.Equal(t, before, atomic.LoadInt32(bGenerates), "B's engine must not be reached after its pin for A is deleted")
 	})
 }
 
@@ -338,9 +327,7 @@ func postInference(t *testing.T, url string, body []byte) *http.Response {
 	t.Helper()
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST %s: %v", url, err)
-	}
+	require.NoError(t, err, "POST (%v)", url)
 	return resp
 }
 
@@ -350,9 +337,7 @@ func postInference(t *testing.T, url string, body []byte) *http.Response {
 func mtlsClientWithIdentity(t *testing.T, clusterDir string) *http.Client {
 	t.Helper()
 	cert, err := tls.LoadX509KeyPair(filepath.Join(clusterDir, "node.crt"), filepath.Join(clusterDir, "node.key"))
-	if err != nil {
-		t.Fatalf("load identity from %s: %v", clusterDir, err)
-	}
+	require.NoError(t, err, "load identity from (%v)", clusterDir)
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{

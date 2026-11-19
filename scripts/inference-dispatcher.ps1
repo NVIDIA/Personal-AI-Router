@@ -17,9 +17,11 @@
 # Requires go on PATH — the same toolchain services\build.bat already needs. No
 # Node required, so this runs on a machine that only builds the backend.
 #
-# The client itself lives in scripts\inference-dispatcher (Go). The app ships a
-# prebuilt copy for the Inference Demo (desktop\scripts\build-inference-dispatcher.ts);
-# this wrapper exists so the same tool can be driven by hand without a build step.
+# The client itself lives in scripts\inference-dispatcher (Go). Both front ends
+# ship a prebuilt copy for the Inference Demo, built into cli-bin by
+# desktop\scripts\build-modular-binaries.ts and into build\bin by
+# services\build.sh; this wrapper exists so the same tool can be driven by hand
+# without a build step.
 #
 # Keep in sync with:
 #   - scripts/inference-dispatcher.sh (Unix twin — update both in the same change)
@@ -43,7 +45,7 @@ if (-not (Test-Path (Join-Path $ModuleDir 'go.mod'))) {
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     Write-Host 'inference-dispatcher: go is required and was not found on PATH.' -ForegroundColor Red
-    Write-Host '                      Install Go 1.24.3 or newer (see AGENTS.md).' -ForegroundColor Red
+    Write-Host '                      Install Go 1.25 or newer (see AGENTS.md).' -ForegroundColor Red
     exit 2
 }
 

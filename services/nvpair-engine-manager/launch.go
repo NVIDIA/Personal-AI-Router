@@ -1,0 +1,182 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"fmt"
+	"maps"
+	"runtime"
+	"slices"
+	"strings"
+)
+
+// launchCommand contains exactly what is handed to exec.Command. Keeping
+// resolution here gives the settings preview and actual launch one builder.
+// Env is the explicitly configured environment, never the inherited one.
+type launchCommand struct {
+	Bin  string
+	Args []string
+	Env  map[string]string
+}
+
+func environmentKey(key string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(key)
+	}
+	return key
+}
+
+// setEnvironmentValue replaces every platform-equivalent spelling of key.
+// Keep the supplied spelling and value, including an explicitly empty value.
+func setEnvironmentValue(env map[string]string, key, value string) {
+	for existing := range env {
+		if environmentKey(existing) == environmentKey(key) {
+			delete(env, existing)
+		}
+	}
+	env[key] = value
+}
+
+// launchArguments applies saved arguments to a manifest command. Settings
+// validation checks the editable policy before a launch; readers can also use
+// this composition without detecting or starting an engine.
+func launchArguments(rt Runtime, defaults []string, vars map[string]string) []string {
+	if rt.LaunchArgs == nil {
+		return defaults
+	}
+	var args []string
+	if p := rt.EditableLaunch; p != nil {
+		args = slices.Clone(p.FixedArgs)
+		for _, control := range p.Controls {
+			if value, managed := control.managedValue(vars["host"], vars["port"]); managed && control.flag() != "" {
+				args = append(args, control.flag(), value)
+			}
+		}
+	}
+	return append(args, rt.LaunchArgs...)
+}
+
+func validEnvironmentKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, c := range key {
+		if c != '_' && !(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z') && !(i > 0 && c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// literalEnvironment parses explicit KEY=value assignments into an environment
+// map. For example, {"MODEL_DIR={install_dir}/models", "TOKEN=a=b"} becomes
+// MODEL_DIR="{install_dir}/models" and TOKEN="a=b". Values are not expanded
+// as manifest templates: preserving user input literally prevents a path or
+// secret containing braces, dollar signs, or spaces from changing at launch.
+func literalEnvironment(assignments []string) (map[string]string, error) {
+	if _, err := formatLaunchText(append([]string{"environment"}, assignments...)); err != nil {
+		return nil, err
+	}
+	env := make(map[string]string, len(assignments))
+	seen := make(map[string]bool, len(assignments))
+	for _, assignment := range assignments {
+		key, value, ok := strings.Cut(assignment, "=")
+		if !ok || !validEnvironmentKey(key) {
+			return nil, fmt.Errorf("environment variable names must start with a letter or underscore and contain only letters, digits, or underscores")
+		}
+		if seen[environmentKey(key)] {
+			return nil, fmt.Errorf("an environment variable is assigned more than once")
+		}
+		seen[environmentKey(key)] = true
+		env[key] = value
+	}
+	return env, nil
+}
+
+// argumentText omits the manifest-owned executable and startup subcommand.
+func (command launchCommand) argumentText(policy *EditableLaunch) (string, error) {
+	if policy == nil || len(command.Args) < len(policy.FixedArgs) {
+		return "", fmt.Errorf("engine has no editable argument definition")
+	}
+	return formatLaunchParts(command.Env, command.Args[len(policy.FixedArgs):])
+}
+
+func formatLaunchParts(environment map[string]string, args []string) (string, error) {
+	keys := make([]string, 0, len(environment))
+	for key := range environment {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	tokens := make([]string, 0, len(keys)+1)
+	for _, key := range keys {
+		// Quote assignment values consistently, including simple values, so
+		// normalization does not appear to remove a user's environment quotes.
+		value := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(environment[key])
+		tokens = append(tokens, key+`="`+value+`"`)
+	}
+	argv, err := formatLaunchText(args)
+	if err != nil {
+		return "", err
+	}
+	if argv != "" {
+		tokens = append(tokens, argv)
+	}
+	text := strings.Join(tokens, " ")
+	if _, err := parseLaunchText(text); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (launchCommand, error) {
+	if binPath == "" {
+		bin, err := resolvePlaceholders(rt.Bin, vars)
+		if err != nil {
+			return launchCommand{}, err
+		}
+		binPath = expandPath(bin)
+	}
+	// Resolution must not change the caller's context (in particular {bin}).
+	resolvedVars := make(map[string]string, len(vars)+1)
+	maps.Copy(resolvedVars, vars)
+	resolvedVars["bin"] = binPath
+	args, err := resolveArgs(rt.Args, resolvedVars)
+	if err != nil {
+		return launchCommand{}, err
+	}
+	env := make(map[string]string, len(rt.Env))
+	for key, value := range rt.Env {
+		resolved, err := resolvePlaceholders(value, resolvedVars)
+		if err != nil {
+			return launchCommand{}, err
+		}
+		// Not path-expanded, here or in applyLiteralLaunch, so a default launch
+		// and a customised one produce the same environment. A manifest env
+		// value that names a directory therefore has to arrive already
+		// absolute: {models_dir} does, because the executor expands it once when
+		// it resolves the engine's state.
+		env[key] = resolved
+	}
+	return applyLiteralLaunch(rt, launchCommand{Bin: binPath, Args: args, Env: env}, resolvedVars)
+}
+
+// resolveCommandLaunch preserves manifest expansion for trusted start steps.
+// Future user arguments must be added after this step so their values remain
+// literal. They must never be placed into the manifest template array.
+func resolveCommandLaunch(template []string, vars map[string]string) (launchCommand, error) {
+	argv, err := resolveArgs(template, vars)
+	if err != nil {
+		return launchCommand{}, err
+	}
+	if len(argv) == 0 {
+		return launchCommand{}, nil
+	}
+	for i := range argv {
+		argv[i] = expandPath(argv[i])
+	}
+	if argv[0] == "" {
+		return launchCommand{}, fmt.Errorf("start command executable is empty")
+	}
+	return launchCommand{Bin: argv[0], Args: argv[1:]}, nil
+}

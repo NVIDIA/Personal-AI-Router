@@ -1,0 +1,971 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// rwNop is a no-op io.ReadWriter so a Codec can be constructed in tests
+// without a real transport: reads hit EOF immediately and writes are
+// discarded. handleHTTP only ever writes (notifications), so this is enough.
+type rwNop struct{}
+
+func (rwNop) Read([]byte) (int, error)    { return 0, io.EOF }
+func (rwNop) Write(p []byte) (int, error) { return len(p), nil }
+
+// newTestProxy builds a proxy with one facade attached but not started, which
+// is what nearly every test wants: routing, dispatch, and handler behavior
+// without binding a port.
+//
+// Production brings a facade up through facade/enable, which also binds,
+// announces ready, and subscribes for routing targets. A test that needs any of
+// that calls facade.start itself — see the alias and port-store tests.
+func newTestProxy(profile engineProfile, codec *Codec, disc *Discovery, port int) *Proxy {
+	p := NewProxy(codec)
+	p.facades = map[string]*facade{
+		profile.Name: newFacade(p, profile, disc, port),
+	}
+	return p
+}
+
+// soleFacade returns the one facade a single-engine test proxy was built with.
+//
+// Production resolves facades by engine, because a process hosts several. A
+// test that builds exactly one has nothing to disambiguate, so naming the
+// engine at every call site would be noise; tests that do host two address them
+// explicitly instead.
+func (p *Proxy) soleFacade() *facade {
+	p.facadeMu.Lock()
+	defer p.facadeMu.Unlock()
+	if len(p.facades) != 1 {
+		panic(fmt.Sprintf("soleFacade: proxy has %d facades, want exactly 1", len(p.facades)))
+	}
+	for _, f := range p.facades {
+		return f
+	}
+	return nil
+}
+
+func testProxy(p engineProfile, disc *Discovery, port int) *Proxy {
+	return newTestProxy(p, NewCodec(rwNop{}), disc, port)
+}
+
+// nodeFor turns an httptest server URL into a discovery Node pointing at it.
+func nodeFor(t *testing.T, id, serverURL string) Node {
+	t.Helper()
+	u, err := url.Parse(serverURL)
+	require.NoError(t, err, "parse (%v, %v)", serverURL, err)
+	host, portStr, err := net.SplitHostPort(u.Host)
+	require.NoError(t, err, "split")
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err, "port (%v, %v)", portStr, err)
+	return Node{ID: id, Addresses: []string{host}, Port: port}
+}
+
+func nodeForModel(t *testing.T, id, serverURL, model string) Node {
+	t.Helper()
+	node := nodeFor(t, id, serverURL)
+	node.Models = []string{model}
+	return node
+}
+
+// Preflight cannot authorize a browser when no engine is reachable.
+func TestHandlePlain_RejectsPreflightWithoutEnabledEngine(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		p := testProxy(tc.profile, NewDiscovery(), tc.profile.FacadePort)
+		req := corsRequest(http.MethodOptions, tc.inferencePath, "http://app.test")
+		rec := httptest.NewRecorder()
+		p.soleFacade().handlePlain(rec, req)
+		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
+		require.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"))
+	})
+}
+
+// TestHandlePlain_EngineCredentialedPreflightPreserved: when an engine opts an
+// exact origin into credentialed CORS, its preflight policy reaches the browser
+// instead of being replaced by the proxy's uncredentialed wildcard fallback.
+func TestHandlePlain_PreservesEngineCredentialedPreflight(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		preflightSeen := make(chan struct{}, 1)
+		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodOptions, r.Method, "engine method")
+			preflightSeen <- struct{}{}
+			w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "POST")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer engine.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeFor(t, "engine", engine.URL))
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+		req := httptest.NewRequest(http.MethodOptions, tc.inferencePath, nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("Origin", "https://app.example")
+		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+		rec := httptest.NewRecorder()
+
+		p.soleFacade().handlePlain(rec, req)
+
+		select {
+		case <-preflightSeen:
+		default:
+			require.FailNow(t, "engine did not receive the credentialed preflight")
+		}
+		assert.Equal(t, http.StatusNoContent, rec.Code, "status")
+		assert.Equal(t, "https://app.example", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+		assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "Access-Control-Allow-Credentials")
+	})
+}
+
+// TestHandleHTTP_EngineCORSPolicyPreserved: an engine that declares its own
+// origin policy keeps it. Replacing it with the proxy's wildcard would widen
+// what the user configured, and would break a credentialed response outright.
+func TestHandleHTTP_PreservesEngineCORSPolicy(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "https://app.example")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.WriteHeader(http.StatusOK)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
+		}))
+		defer engine.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeForModel(t, "engine", engine.URL, tc.advertisedModel))
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		assert.Equal(t, "https://app.example", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+		assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "Access-Control-Allow-Credentials")
+	})
+}
+
+// Preserve incomplete upstream policy without adding permissions.
+func TestHandleHTTP_PreservesEngineCredentialsWithoutOrigin(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.WriteHeader(http.StatusOK)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
+		}))
+		defer engine.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeForModel(t, "engine", engine.URL, tc.advertisedModel))
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+		assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"), "Access-Control-Allow-Credentials")
+	})
+}
+
+// TestHandleHTTP_HappyPathSingleNode: the common case — one healthy node
+// answers directly, preserving the body and absence of CORS permissions.
+func TestHandleHTTP_ForwardsRequestToSingleNode(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		var gotBody string
+		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
+			gotBody = string(b)
+			w.WriteHeader(http.StatusOK)
+			_, err = io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
+		}))
+		defer good.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeForModel(t, "good", good.URL, tc.advertisedModel))
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		assert.Equal(t, tc.inferenceBody(), gotBody, "node got body (%v)", gotBody)
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+	})
+}
+
+// TestHandleHTTP_NoRetryOn400: a client error (400) is returned as-is and not
+// failed over — retrying elsewhere would return the same error and mask it.
+func TestHandleHTTP_DoesNotRetryBadRequestResponse(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		hits := 0
+		bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits++
+			w.WriteHeader(http.StatusBadRequest)
+			_, err := io.WriteString(w, `{"error":"bad request"}`)
+			assert.NoError(t, err)
+		}))
+		defer bad.Close()
+		other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer other.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeForModel(t, "bad", bad.URL, tc.advertisedModel))
+		disc.AddManual(nodeForModel(t, "other", other.URL, tc.advertisedModel))
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+		p.soleFacade().SetSelected("bad")
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		require.Equal(t, http.StatusBadRequest, rec.Code, "status")
+		assert.Equal(t, 1, hits, "bad node hit")
+	})
+}
+
+// Proxy-generated errors grant no cross-origin access.
+func TestHandleHTTP_OmitsCORSHeadersFromLocalRejection(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		p := testProxy(tc.profile, NewDiscovery(), tc.profile.FacadePort)
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+	})
+}
+
+// TestHandleHTTP_FailoverOn503: a busy first node (503) is skipped and the
+// request is filled by the next node, with the original body replayed.
+func TestHandleHTTP_FailsOverOnServiceUnavailable(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, err := io.WriteString(w, `{"error":"loading model"}`)
+			assert.NoError(t, err)
+		}))
+		defer busy.Close()
+
+		var gotBody string
+		good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
+			gotBody = string(b)
+			w.WriteHeader(http.StatusOK)
+			_, err = io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
+		}))
+		defer good.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeForModel(t, "busy", busy.URL, tc.advertisedModel))
+		disc.AddManual(nodeForModel(t, "good", good.URL, tc.advertisedModel))
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+		p.soleFacade().SetSelected("busy") // deterministic: busy is tried first
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		assert.Equal(t, tc.inferenceBody(), gotBody, "failover node got body (%v)", gotBody)
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+	})
+}
+
+// TestHandleHTTP_AllNodesDownReturnsError: when every candidate fails at the
+// transport, the client gets a 502 without added CORS permissions.
+func TestHandleHTTP_AllNodesDownReturnsError(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		// Two servers we immediately close so dials fail.
+		a := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		b := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		na := nodeForModel(t, "a", a.URL, tc.advertisedModel)
+		nb := nodeForModel(t, "b", b.URL, tc.advertisedModel)
+		a.Close()
+		b.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(na)
+		disc.AddManual(nb)
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		require.Equal(t, http.StatusBadGateway, rec.Code, "status")
+		assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+	})
+}
+
+// TestHandleHTTP_404FailoverInferenceOnly: a 404 (model-not-found) on an
+// inference call fails over to the next advertised owner, but a 404 on a
+// non-inference path is returned as-is.
+func TestHandleHTTP_FailsOverOnNotFoundForInferenceRequests(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, err := io.WriteString(w, `{"error":"model not found"}`)
+			assert.NoError(t, err)
+		}))
+		defer missing.Close()
+		has := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, err := io.WriteString(w, `{"done":true}`)
+			assert.NoError(t, err)
+		}))
+		defer has.Close()
+
+		newProxy := func() *Proxy {
+			disc := NewDiscovery()
+			disc.AddManual(nodeForModel(t, "missing", missing.URL, tc.advertisedModel))
+			disc.AddManual(nodeForModel(t, "has", has.URL, tc.advertisedModel))
+			p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+			p.soleFacade().SetSelected("missing")
+			return p
+		}
+
+		// Inference POST: 404 on first → fail over → 200.
+		rec := httptest.NewRecorder()
+		newProxy().soleFacade().handleHTTP(rec, tc.inferenceRequest())
+		require.Equal(t, http.StatusOK, rec.Code, "inference 404: status")
+
+		// An ordinary non-inference GET still returns the first node's 404.
+		rec = httptest.NewRecorder()
+		newProxy().soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.nonInferencePath, nil))
+		require.Equal(t, http.StatusNotFound, rec.Code, "non-inference 404: status")
+	})
+}
+
+// Both nodes own the model, but the older engine lacks the Responses API.
+func TestHandleHTTP_ResponsesFailsOverFromOlderEngine(t *testing.T) {
+	tc := ollamaCase(t)
+	var oldHits, newHits atomic.Int32
+	oldEngine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oldHits.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer oldEngine.Close()
+
+	const response = `{"id":"response-id","object":"response","output":[]}`
+	newRoutes := http.NewServeMux()
+	newRoutes.HandleFunc("POST /v1/responses", func(w http.ResponseWriter, _ *http.Request) {
+		newHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, err := io.WriteString(w, response)
+		assert.NoError(t, err, "write Responses result")
+	})
+	newEngine := httptest.NewServer(newRoutes)
+	defer newEngine.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "old", oldEngine.URL, tc.advertisedModel))
+	disc.AddManual(nodeForModel(t, "new", newEngine.URL, tc.advertisedModel))
+	p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+	t.Cleanup(p.closeIdleTransports)
+	p.SetPriority([]string{"old", "new"})
+
+	body := fmt.Sprintf(`{"model":%q,"input":"Hello"}`, tc.requestedModel)
+	rec := httptest.NewRecorder()
+	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, response, rec.Body.String(), "response from newer engine")
+	require.Equal(t, int32(1), oldHits.Load(), "requests to older engine")
+	require.Equal(t, int32(1), newHits.Load(), "requests to newer engine")
+}
+
+// TestHandleHTTP_AggregatesNativeModelList is Ollama-scoped because the
+// native "models" dialect is Ollama's alone — LM Studio serves no /api/tags.
+// The OpenAI dialect both engines share is covered by the sibling test below.
+func TestHandleHTTP_AggregatesNativeModelList(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	server := func(body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodGet, r.Method, "upstream request")
+			assert.Equal(t, "/api/tags", r.URL.Path, "upstream request")
+			assert.Empty(t, r.Header.Get("Authorization"), "client credentials leaked to fan-out target")
+			assert.Empty(t, r.Header.Get("Cookie"), "client credentials leaked to fan-out target")
+			entered <- struct{}{}
+			<-release
+			_, err := io.WriteString(w, body)
+			assert.NoError(t, err)
+		}))
+	}
+	a := server(`{"models":[{"name":"a","model":"a","digest":"a-only"},{"name":"shared","digest":"first"}]}`)
+	defer a.Close()
+	b := server(`{"models":[{"name":"shared:latest","model":"shared:latest","digest":"second"},{"name":"c","model":"c","digest":"c-only"}]}`)
+	defer b.Close()
+	malformed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, err := io.WriteString(w, `{"models":null}`)
+		assert.NoError(t, err)
+	}))
+	defer malformed.Close()
+	down := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	downNode := nodeFor(t, "down", down.URL)
+	down.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeFor(t, "a", a.URL))
+	disc.AddManual(nodeFor(t, "b", b.URL))
+	disc.AddManual(downNode)
+	disc.AddManual(nodeFor(t, "malformed", malformed.URL))
+	events := &recRW{}
+	p := newTestProxy(ollamaOnlyProfile(t), NewCodec(events), disc, 11434)
+	p.soleFacade().SetSelected("a")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/tags", nil)
+	req.Header.Set("Authorization", "Bearer client-secret")
+	req.Header.Set("Cookie", "session=client-secret")
+	done := make(chan struct{})
+	go func() {
+		p.soleFacade().handleHTTP(rec, req)
+		close(done)
+	}()
+
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			close(release)
+			require.FailNow(t, "model-list requests were not issued concurrently")
+		}
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "aggregate request did not finish")
+	}
+
+	require.Equal(t, http.StatusOK, rec.Code, "status")
+	var got struct {
+		Models []struct {
+			Name   string `json:"name"`
+			Model  string `json:"model"`
+			Digest string `json:"digest"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got.Models, 3)
+	require.Equal(t, "a", got.Models[0].Model)
+	require.Equal(t, "shared", got.Models[1].Name)
+	require.Equal(t, "", got.Models[1].Model)
+	require.Equal(t, "c", got.Models[2].Model)
+	assert.Equal(t, "first", got.Models[1].Digest, "duplicate metadata")
+	assert.Equal(t, "", rec.Header().Get("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin")
+	// Addressed to the engine, like every facade-scoped notification: the
+	// broker's process-scoped router claims only workload and node-activity
+	// methods, so an unaddressed request event is dropped rather than relayed.
+	assert.Contains(t, events.String(), `"method":"ollama:proxy/request-started"`, "aggregate telemetry missing paired addressed cluster events")
+	assert.Contains(t, events.String(), `"method":"ollama:proxy/request"`, "aggregate telemetry missing paired addressed cluster events")
+	assert.Contains(t, events.String(), `"target":"cluster"`, "aggregate telemetry missing paired addressed cluster events")
+}
+
+// TestHandleHTTP_AggregatesOpenAIModelList runs for both engines: /v1/models
+// is the one model-list route they share, and the dedupe must keep the first
+// candidate's metadata on either.
+func TestHandleHTTP_AggregatesOpenAIModelList(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		serve := func(body string) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method, "upstream request")
+				assert.Equal(t, "/v1/models", r.URL.Path, "upstream request")
+				_, err := io.WriteString(w, body)
+				assert.NoError(t, err)
+			}))
+		}
+		a := serve(`{"object":"list","data":[{"id":"a","owned_by":"a"},{"id":"shared","owned_by":"first"}]}`)
+		defer a.Close()
+		b := serve(`{"object":"list","data":[{"id":"shared","owned_by":"second"},{"id":"c","owned_by":"b"}]}`)
+		defer b.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeFor(t, "a", a.URL))
+		disc.AddManual(nodeFor(t, "b", b.URL))
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+		p.soleFacade().SetSelected("a")
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+		var got struct {
+			Object string `json:"object"`
+			Data   []struct {
+				ID      string `json:"id"`
+				OwnedBy string `json:"owned_by"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		require.Equal(t, http.StatusOK, rec.Code, "response (%v)", got)
+		require.Equal(t, "list", got.Object, "response (%v)", got)
+		require.Len(t, got.Data, 3, "response (%v)", got)
+		require.Equal(t, "a", got.Data[0].ID)
+		require.Equal(t, "shared", got.Data[1].ID)
+		require.Equal(t, "first", got.Data[1].OwnedBy)
+		require.Equal(t, "c", got.Data[2].ID)
+	})
+}
+
+func TestHandleHTTP_AggregatesLlamaCPPModelsAcrossNodes(t *testing.T) {
+	for _, path := range []string{"/models", "/v1/models"} {
+		t.Run(path, func(t *testing.T) {
+			profile, ok := profileFor("llamacpp")
+			require.True(t, ok, "llamacpp profile missing")
+			serve := func(body string, hits *atomic.Int32) *httptest.Server {
+				t.Helper()
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hits.Add(1)
+					assert.Equal(t, http.MethodGet, r.Method, "upstream request method")
+					assert.Equal(t, "/models", r.URL.Path, "upstream request path")
+					assert.Equal(t, "scope=all", r.URL.RawQuery, "upstream request query")
+					w.Header().Set("Content-Type", "application/json")
+					_, err := io.WriteString(w, body)
+					assert.NoError(t, err, "write model list")
+				}))
+				t.Cleanup(server.Close)
+				return server
+			}
+			var aHits, bHits atomic.Int32
+			a := serve(`{"object":"list","data":[{"id":"a","owned_by":"a"},{"id":"shared","owned_by":"first"}]}`, &aHits)
+			b := serve(`{"object":"list","data":[{"id":"shared","owned_by":"second"},{"id":"c","owned_by":"b"}]}`, &bHits)
+			disc := NewDiscovery()
+			disc.AddManual(nodeFor(t, "a", a.URL))
+			disc.AddManual(nodeFor(t, "b", b.URL))
+			f := testProxy(profile, disc, profile.FacadePort).soleFacade()
+			f.SetSelected("a")
+			rec := httptest.NewRecorder()
+			f.handleHTTP(rec, httptest.NewRequest(http.MethodGet, path+"?scope=all", nil))
+
+			require.Equal(t, http.StatusOK, rec.Code, "model list status")
+			var got struct {
+				Object string `json:"object"`
+				Data   []struct {
+					ID      string `json:"id"`
+					OwnedBy string `json:"owned_by"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got), "decode model list")
+			require.Equal(t, "list", got.Object)
+			require.Len(t, got.Data, 3, "three deduplicated models")
+			require.Equal(t, "a", got.Data[0].ID)
+			require.Equal(t, "shared", got.Data[1].ID)
+			require.Equal(t, "first", got.Data[1].OwnedBy)
+			require.Equal(t, "c", got.Data[2].ID)
+			require.Equal(t, int32(1), aHits.Load(), "one request per node despite selecting a")
+			require.Equal(t, int32(1), bHits.Load(), "one request per node despite selecting a")
+		})
+	}
+}
+
+func TestHandleHTTP_UsesEngineSpecificUpstreamModelListPath(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method, "upstream request method")
+		assert.Equal(t, "/models", r.URL.Path, "upstream request path")
+		assert.Equal(t, "scope=all", r.URL.RawQuery, "upstream request query")
+		_, err := io.WriteString(w, `{"data":[{"id":"remapped"}]}`)
+		assert.NoError(t, err)
+	}))
+	defer upstream.Close()
+
+	profile := lmstudioCase(t).profile
+	profile.Routes = []route{{
+		Path:         "/v1/models",
+		UpstreamPath: "/models",
+		Role:         roleModelListOpenAIGET,
+	}}
+	disc := NewDiscovery()
+	disc.AddManual(nodeFor(t, "remapped", upstream.URL))
+	rec := httptest.NewRecorder()
+	testProxy(profile, disc, profile.FacadePort).soleFacade().
+		handleHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models?scope=all", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code, "remapped model list")
+	require.Contains(t, rec.Body.String(), `"id":"remapped"`, "remapped model list")
+}
+
+func TestHandleHTTP_DistinguishesEmptyModelListFromUnavailableNodes(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		serveEmpty := func() *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, err := io.WriteString(w, tc.emptyModelList)
+				assert.NoError(t, err)
+			}))
+		}
+
+		// An unreachable sole node is 503, not an empty list: the client must
+		// be able to tell "nothing is answering" from "nothing is loaded".
+		down := serveEmpty()
+		downNode := nodeFor(t, "empty", down.URL)
+		down.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(downNode)
+		rec := httptest.NewRecorder()
+		testProxy(tc.profile, disc, tc.profile.FacadePort).soleFacade().
+			handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.modelListPath, nil))
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code, "unavailable status")
+
+		// A reachable node with no models is 200 and this engine's own empty
+		// envelope, so its client can parse the response.
+		empty := serveEmpty()
+		defer empty.Close()
+		disc = NewDiscovery()
+		disc.AddManual(nodeFor(t, "empty", empty.URL))
+		rec = httptest.NewRecorder()
+		testProxy(tc.profile, disc, tc.profile.FacadePort).soleFacade().
+			handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.modelListPath, nil))
+		require.Equal(t, http.StatusOK, rec.Code, "empty response")
+		require.Equal(t, tc.emptyModelList, rec.Body.String(), "empty response")
+	})
+}
+
+// TestHandleHTTP_StrictModelRouting proves capability is a gate before
+// selection and priority, on both engines. The matching node advertises the
+// model in the engine's own spelling — which for Ollama differs from what the
+// client requests, so this also pins that normalizeModel is applied on the
+// gate rather than only on the model list.
+func TestHandleHTTP_RoutesOnlyToNodesAdvertisingRequestedModel(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		missHits, unknownHits, matchHits := 0, 0, 0
+		miss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			missHits++
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer miss.Close()
+		unknown := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			unknownHits++
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer unknown.Close()
+		match := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			matchHits++
+			body, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.inferenceBody(), string(body), "matching node got body (%v)", body)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer match.Close()
+
+		disc := NewDiscovery()
+		missNode := nodeFor(t, "selected-miss", miss.URL)
+		missNode.Models = []string{"a-model-this-engine-does-not-have"}
+		unknownNode := nodeFor(t, "a-unknown", unknown.URL)
+		matchNode := nodeFor(t, "z-match", match.URL)
+		matchNode.Models = []string{tc.advertisedModel}
+		disc.AddManual(missNode)
+		disc.AddManual(unknownNode)
+		disc.AddManual(matchNode)
+		p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+		p.soleFacade().SetSelected("selected-miss")
+		p.SetPriority([]string{"a-unknown", "selected-miss", "z-match"})
+		candidates := p.soleFacade().resolveCandidates(tc.requestedModel)
+		require.Len(t, candidates, 1, "model candidates")
+		require.Equal(t, "z-match", candidates[0].id, "model candidates (%v)", candidates)
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+		require.Equal(t, 0, missHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 0, unknownHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 1, matchHits, "hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+
+		// Capability filtering applies only to model-bearing inference.
+		rec = httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodGet, tc.nonInferencePath, nil))
+		require.Equal(t, http.StatusOK, rec.Code, "non-inference status")
+		require.Equal(t, 1, missHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 0, unknownHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+		require.Equal(t, 1, matchHits, "non-inference hits miss (%v, %v, %v)", missHits, unknownHits, matchHits)
+	})
+}
+
+// TestHandleHTTP_InferenceRouting proves each engine inference route is
+// model-routed, retries a model-not-found response, and
+// forwards the request path and body unchanged.
+func TestHandleHTTP_SelectsEligibleNodeForInference(t *testing.T) {
+	test := func(name, path string, profiles ...engineProfile) {
+		t.Run(name, func(t *testing.T) {
+			for _, profile := range profiles {
+				t.Run(profile.Name, func(t *testing.T) {
+					requestedModel := "requested-model"
+					advertisedModel := profile.normalizeModel(requestedModel)
+
+					wrongModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						assert.Fail(t, "wrong-model node should not receive request")
+						w.WriteHeader(http.StatusOK)
+					}))
+					defer wrongModel.Close()
+
+					missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusNotFound)
+						_, err := io.WriteString(w, `{"error":"model not found"}`)
+						assert.NoError(t, err, "write missing-model response")
+					}))
+					defer missing.Close()
+
+					var gotBody string
+					var gotPath string
+					good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, err := io.ReadAll(r.Body)
+						if err != nil {
+							assert.Fail(t, fmt.Sprintf("read forwarded request body: %v", err))
+							w.WriteHeader(http.StatusInternalServerError)
+							return
+						}
+						gotBody = string(body)
+						gotPath = r.URL.Path
+						w.WriteHeader(http.StatusOK)
+					}))
+					defer good.Close()
+
+					disc := NewDiscovery()
+					disc.AddManual(nodeForModel(t, "wrong", wrongModel.URL, "different-model"))
+					disc.AddManual(nodeForModel(t, "missing", missing.URL, advertisedModel))
+					disc.AddManual(nodeForModel(t, "good", good.URL, advertisedModel))
+					p := testProxy(profile, disc, profile.FacadePort)
+					p.soleFacade().SetSelected("wrong")
+					// Stable node ordering would send this request to "good" first and
+					// never exercise 404 failover. Prioritize "missing" so the test
+					// independently proves both model filtering and retry behavior.
+					p.SetPriority([]string{"missing", "good"})
+
+					body := `{"model":"requested-model","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+					rec := httptest.NewRecorder()
+					p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+
+					require.Equal(t, http.StatusOK, rec.Code, "status")
+					assert.Equal(t, body, gotBody, "node got body (%v, %v)", gotBody, body)
+					assert.Equal(t, path, gotPath, "path (%v, %v)", gotPath, path)
+				})
+			}
+		})
+	}
+
+	ollama := ollamaCase(t).profile
+	lmstudio := lmstudioCase(t).profile
+	test("native Ollama generate", "/api/generate", ollama)
+	test("native Ollama chat", "/api/chat", ollama)
+	test("native Ollama embeddings", "/api/embeddings", ollama)
+	test("native Ollama embed", "/api/embed", ollama)
+	test("OpenAI chat completions", "/v1/chat/completions", ollama, lmstudio)
+	test("OpenAI completions", "/v1/completions", ollama, lmstudio)
+	test("OpenAI embeddings", "/v1/embeddings", ollama, lmstudio)
+	test("Anthropic messages", "/v1/messages", ollama, lmstudio)
+}
+
+func TestHandleHTTP_RejectsLocallyWhenNoNodeAdvertisesModel(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		hits := 0
+		upstream := func() *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits++
+				w.WriteHeader(http.StatusOK)
+			}))
+		}
+		missing := upstream()
+		defer missing.Close()
+		unknown := upstream()
+		defer unknown.Close()
+
+		disc := NewDiscovery()
+		disc.AddManual(nodeForModel(t, "missing", missing.URL, "a-model-this-engine-does-not-have"))
+		disc.AddManual(nodeFor(t, "unknown", unknown.URL))
+		events := &recRW{}
+		p := newTestProxy(tc.profile, NewCodec(events), disc, tc.profile.FacadePort)
+		p.soleFacade().SetSelected("missing")
+
+		rec := httptest.NewRecorder()
+		p.soleFacade().handleHTTP(rec, tc.inferenceRequest())
+
+		require.Equal(t, http.StatusBadGateway, rec.Code, "response")
+		require.Contains(t, rec.Body.String(), "no available node advertises the requested model")
+		require.Equal(t, 0, hits, "ineligible upstreams received")
+		require.Contains(t, events.String(), "no node advertises requested model", "missing rejected request event")
+	})
+}
+
+// TestHandleHTTP_ShowRoutesToModelOwner: Ollama's /api/show names its model in
+// "name" or "model", and the lookup must reach a node that has that model even
+// when the scheduler ranks a node without it first. A non-owner answers 404,
+// which a client like Hermes reads as "model unknown" (issue #94).
+func TestHandleHTTP_RoutesModelLookupToModelOwner(t *testing.T) {
+	tc := ollamaCase(t)
+	test := func(name, requestBody string) {
+		t.Run(name, func(t *testing.T) {
+			nonOwnerHits := 0
+			nonOwner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nonOwnerHits++
+				w.WriteHeader(http.StatusNotFound)
+				_, err := io.WriteString(w, `{"error":"model not found"}`)
+				assert.NoError(t, err, "write missing-model response")
+			}))
+			defer nonOwner.Close()
+
+			ownerHits := 0
+			var gotBody, gotPath string
+			owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ownerHits++
+				body, err := io.ReadAll(r.Body)
+				if !assert.NoError(t, err, "read forwarded request body") {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				gotBody = string(body)
+				gotPath = r.URL.Path
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer owner.Close()
+
+			disc := NewDiscovery()
+			disc.AddManual(nodeForModel(t, "a-missing", nonOwner.URL, "other:latest"))
+			disc.AddManual(nodeForModel(t, "b-owner", owner.URL, tc.advertisedModel))
+			events := &recRW{}
+			p := newTestProxy(tc.profile, NewCodec(events), disc, tc.profile.FacadePort)
+			p.SetPriority([]string{"a-missing", "b-owner"})
+
+			rec := httptest.NewRecorder()
+			p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(requestBody)))
+
+			require.Equal(t, http.StatusOK, rec.Code, "response from the owner")
+			require.Equal(t, 1, ownerHits, "requests to model owner")
+			require.Zero(t, nonOwnerHits, "requests to node without the model")
+			assert.Equal(t, "/api/show", gotPath)
+			assert.Equal(t, requestBody, gotBody, "forwarded request body")
+			assert.NotContains(t, events.String(), "workload:", "a model lookup must not emit workload events")
+		})
+	}
+	test("name", `{"name":"qwen3"}`)
+	test("model", `{"model":"qwen3"}`)
+	test("model wins", `{"model":"qwen3","name":"other"}`)
+	test("library namespace", `{"model":"library/qwen3:latest"}`)
+	test("registry name, mixed case", `{"name":"registry.ollama.ai/library/Qwen3"}`)
+}
+
+// TestHandleHTTP_ShowWithNoOwnerAnswers404Locally: when no node has the model,
+// the proxy answers the lookup itself instead of asking a node that lacks it.
+func TestHandleHTTP_ReturnsLocalNotFoundForModelLookupWithoutOwner(t *testing.T) {
+	tc := ollamaCase(t)
+	hits := 0
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer other.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "other", other.URL, "other:latest"))
+	events := &recRW{}
+	p := newTestProxy(tc.profile, NewCodec(events), disc, tc.profile.FacadePort)
+
+	rec := httptest.NewRecorder()
+	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)))
+
+	require.Equal(t, http.StatusNotFound, rec.Code, "local response")
+	require.Contains(t, rec.Body.String(), "no available node advertises the requested model")
+	require.Zero(t, hits, "requests to node without the model")
+	require.Contains(t, events.String(), "no node advertises requested model", "missing rejected request event")
+	assert.NotContains(t, events.String(), "workload:", "a model lookup must not emit workload events")
+}
+
+// TestHandleHTTP_LabelsLocalRejectionAsJSON: the proxy's own "no node" answer
+// is a JSON error body, and clients such as ollama-js read the error message
+// from it only when the response says application/json; otherwise they show
+// the raw body text.
+func TestHandleHTTP_LabelsLocalRejectionAsJSON(t *testing.T) {
+	test := func(name string, request *http.Request, profile engineProfile, wantStatus int, wantError string) {
+		t.Run(name, func(t *testing.T) {
+			p := testProxy(profile, NewDiscovery(), profile.FacadePort)
+
+			rec := httptest.NewRecorder()
+			p.soleFacade().handleHTTP(rec, request)
+
+			require.Equal(t, wantStatus, rec.Code, "local rejection status")
+			assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+			assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+			var body struct {
+				Error string `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body), "decode rejection body %q", rec.Body.String())
+			assert.Equal(t, wantError, body.Error)
+		})
+	}
+	ollama := ollamaCase(t)
+	test("inference without an owner", ollama.inferenceRequest(), ollama.profile,
+		http.StatusBadGateway, "no available node advertises the requested model")
+	test("model lookup without an owner",
+		httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)), ollama.profile,
+		http.StatusNotFound, "no available node advertises the requested model")
+	test("request without a model or node",
+		httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{}`)), ollama.profile,
+		http.StatusBadGateway, "no active node selected or available")
+}
+
+// TestHandleHTTP_ShowFailsOverOnOwner404: an advertised owner that answers 404
+// has a stale inventory, so the lookup moves on to the next owner.
+func TestHandleHTTP_FailsOverModelLookupWhenOwnerReturnsNotFound(t *testing.T) {
+	tc := ollamaCase(t)
+	staleHits, goodHits := 0, 0
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		staleHits++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer stale.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		goodHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer good.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "a-stale", stale.URL, tc.advertisedModel))
+	disc.AddManual(nodeForModel(t, "b-good", good.URL, tc.advertisedModel))
+	p := testProxy(tc.profile, disc, tc.profile.FacadePort)
+	p.SetPriority([]string{"a-stale", "b-good"})
+
+	rec := httptest.NewRecorder()
+	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/show", strings.NewReader(`{"name":"qwen3"}`)))
+
+	require.Equal(t, http.StatusOK, rec.Code, "response after 404 failover")
+	require.Equal(t, 1, staleHits, "requests to stale owner")
+	require.Equal(t, 1, goodHits, "requests to next owner")
+}
+
+// TestResolveCandidates_SelfGuard: a node resolving to the proxy's own
+// listen address is dropped so we never self-forward.
+func TestResolveCandidates_ExcludesProxyOwnListener(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		port := tc.profile.FacadePort
+		disc := NewDiscovery()
+		disc.AddManual(Node{ID: "self", Addresses: []string{"127.0.0.1"}, Port: port})
+		disc.AddManual(Node{ID: "real", Addresses: []string{"192.0.2.10"}, Port: port})
+		p := testProxy(tc.profile, disc, port)
+
+		cands := p.soleFacade().resolveCandidates("")
+		ids := candidateIDsFrom(cands)
+		assert.NotContains(t, ids, "self", "self-target node must be excluded")
+		assert.Contains(t, ids, "real", "expected the real node to survive the self-guard, candidates (%v)", cands)
+	})
+}

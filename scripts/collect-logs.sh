@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Collect Personal AI Router logs and rewrite the identifiers in them so the
+# Collect NVIDIA PAIR logs and rewrite the identifiers in them so the
 # result can be shared.
 #
 # Runnable from anywhere (absolute or relative path):
@@ -49,7 +49,7 @@ else
     if ! command -v go >/dev/null 2>&1; then
         echo "collect-logs: this checkout has no compiled collector, so go is" >&2
         echo "              required to build one, and it was not found on PATH." >&2
-        echo "              Install Go 1.24.3 or newer, or use the copy shipped" >&2
+        echo "              Install Go 1.25 or newer, or use the copy shipped" >&2
         echo "              with an installed PAIR." >&2
         exit 2
     fi

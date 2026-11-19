@@ -1,0 +1,63 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
+)
+
+func TestCandidateTransport_ReusesPlainTransport(t *testing.T) {
+	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
+	a := p.candidateTransport(candidate{})
+	b := p.candidateTransport(candidate{id: "manual"})
+	require.Same(t, a, b, "plain candidates returned distinct Transports")
+	require.NotNil(t, a, "plain Transport is nil")
+}
+
+func TestCandidateTransport_ReusesPeerTransport(t *testing.T) {
+	const peerUUID = "principal-peer"
+	clusterDir := filepath.Join(t.TempDir(), "cluster")
+	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
+
+	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
+	p.mesh = clustertrust.Open(clusterDir)
+
+	a := p.candidateTransport(candidate{peerUUID: peerUUID})
+	b := p.candidateTransport(candidate{peerUUID: peerUUID})
+	require.Same(t, a, b, "same peerUUID returned distinct Transports")
+	require.NotNil(t, a.TLSClientConfig, "peer Transport missing TLSClientConfig")
+
+	other := p.candidateTransport(candidate{peerUUID: "principal-other"})
+	require.NotSame(t, a, other, "unpinned peer reused pinned peer Transport")
+}
+
+func TestDropUnpinnedPeerTransports_RemovesEntry(t *testing.T) {
+	const peerUUID = "principal-peer"
+	clusterDir := filepath.Join(t.TempDir(), "cluster")
+	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
+
+	p := testProxy(anyProfile(t), NewDiscovery(), 11435)
+	p.mesh = clustertrust.Open(clusterDir)
+
+	tr := p.candidateTransport(candidate{peerUUID: peerUUID})
+	p.transportMu.Lock()
+	assert.Contains(t, p.peerTransports, peerUUID, "peer Transport was not cached")
+	p.transportMu.Unlock()
+
+	clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
+	p.mesh.Refresh()
+	p.dropUnpinnedPeerTransports()
+
+	p.transportMu.Lock()
+	assert.NotContains(t, p.peerTransports, peerUUID, "peer Transport remained after pin removal")
+	p.transportMu.Unlock()
+	_ = tr
+}

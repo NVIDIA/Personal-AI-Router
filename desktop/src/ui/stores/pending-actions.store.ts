@@ -28,17 +28,20 @@
  * state.
  */
 import { create } from 'zustand'
+import { MODEL_SWITCH_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import type { EngineCommandPayload, EngineCommandType } from '@/shared/types/engine-api'
 import type { EngineProcessStatus, EngineType } from '@/shared/types/engines'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
-import { isEngineType } from '@/shared/utils/engines'
+import { engineTypeFromManagerName, isEngineType } from '@/shared/utils/engines'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 
 /** Re-enable a control after this long if no superseding push ever arrives. */
 const PENDING_TIMEOUT_MS = 60_000
-/** Keep Ollama Load locked one safety-net interval beyond the longest (11m) backend path. */
-const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 12 * 60_000
+/** Keep Ollama Load locked one safety-net interval beyond the longest (31m) backend path. */
+const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 32 * 60_000
+/** vLLM Load restarts the engine on the new model; keep the row locked as long as the app waits for it. */
+const VLLM_LOAD_PENDING_TIMEOUT_MS = MODEL_SWITCH_TIMEOUT_MS
 /**
  * Safety net for a delete on an engine whose backend restarts to pick the
  * deletion up (`EngineCaps.restartsOnModelDelete` / the manifest's
@@ -56,6 +59,7 @@ const SWEEP_INTERVAL_MS = 1_000
 /** Commands that flip an engine's lifecycle -- only one at a time per engine. */
 const LIFECYCLE_COMMANDS: ReadonlySet<EngineCommandType> = new Set<EngineCommandType>([
     'toggle',
+    'stop',
     'install',
     'uninstall',
     'update'
@@ -69,11 +73,29 @@ const MODEL_COMMANDS: ReadonlySet<EngineCommandType> = new Set<EngineCommandType
     'deleteModel'
 ])
 
+/**
+ * Operations this store covers. Applying engine settings travels its own
+ * `engines:apply-settings` channel rather than `engine:command`, but it needs
+ * the same cover between the click and the backend's first push, so it is
+ * tracked here instead of growing a second optimistic mechanism.
+ */
+type PendingOperation = EngineCommandType | 'applySettings'
+
+/**
+ * Read a stored operation back as an engine command. A settings apply keeps its
+ * own key and is read through `isSettingsPending`, so it can never appear under
+ * a lifecycle or model key.
+ */
+function asCommand(action: PendingOperation | undefined): EngineCommandType | undefined {
+    return action === undefined || action === 'applySettings' ? undefined : action
+}
+
 interface PendingAction {
     nodeId: string
     engineType: EngineType
-    action: EngineCommandType
+    action: PendingOperation
     model?: string
+    requestId?: string
     /**
      * Engine process status captured when a lifecycle command fired. The entry
      * clears on the first `engines:state-changed` whose status differs from
@@ -92,6 +114,9 @@ function timeoutFor(command: EngineCommandType, engineType: EngineType): number 
     if (command === 'loadModel' && engineType === 'ollama') {
         return OLLAMA_LOAD_PENDING_TIMEOUT_MS
     }
+    if (command === 'loadModel' && engineType === 'vllm') {
+        return VLLM_LOAD_PENDING_TIMEOUT_MS
+    }
     if (command === 'deleteModel' && EngineCapabilities[engineType]?.restartsOnModelDelete) {
         return RESTART_DELETE_TIMEOUT_MS
     }
@@ -106,11 +131,33 @@ function modelKey(nodeId: string, engineType: EngineType, model: string): string
     return `${nodeId}:${engineType}:model:${model}`
 }
 
+/** The pending entries without the engine's model Loads on that node. */
+function withoutPendingLoads(
+    pending: Map<string, PendingAction>,
+    nodeId: string,
+    engineType: EngineType
+): Map<string, PendingAction> {
+    const prefix = `${nodeId}:${engineType}:model:`
+    const next = new Map(pending)
+    for (const [key, p] of pending) {
+        if (key.startsWith(prefix) && p.action === 'loadModel') next.delete(key)
+    }
+    return next
+}
+
+function settingsKey(nodeId: string, engineType: EngineType): string {
+    return `${nodeId}:${engineType}:settings`
+}
+
 interface PendingActionsState {
     pending: Map<string, PendingAction>
     /** Record an optimistic pending entry for a fired command. No-op for non-lifecycle/non-model commands. */
     begin(payload: EngineCommandPayload): void
-    /** The pending lifecycle action for an engine, or undefined when none is in flight. */
+    /**
+     * The pending lifecycle action for an engine, or undefined when none is in
+     * flight. A Load on an engine whose Load restarts it (`loadRestartsEngine`)
+     * counts, as `loadModel`.
+     */
     getLifecyclePending(nodeId: string, engineType: EngineType): EngineCommandType | undefined
     /** The pending action for a specific model, or undefined when none is in flight. */
     getModelPending(
@@ -118,6 +165,16 @@ interface PendingActionsState {
         engineType: EngineType,
         model: string
     ): EngineCommandType | undefined
+    /**
+     * Cover an engine settings apply from the click until the backend's first
+     * snapshot for it. From there `snapshot.phase === 'applying'` is authoritative,
+     * so this entry only has to outlast one round trip.
+     */
+    beginSettings(nodeId: string, engineType: EngineType, requestId: string): void
+    /** Release the cover when validation refuses the change before it is sent. */
+    endSettings(nodeId: string, engineType: EngineType, requestId: string): void
+    /** Whether a settings apply is in flight and not yet reflected in a snapshot. */
+    isSettingsPending(nodeId: string, engineType: EngineType): boolean
     initialize(): void
     cleanup(): void
 }
@@ -145,11 +202,20 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
         const { command, engineType, nodeId, model } = payload
         const expiresAt = Date.now() + timeoutFor(command, engineType)
 
+        // On an engine whose Load starts it, a Stop or Eject ends a Load still in
+        // flight. The engine-manager replies that it was stopped, which clears
+        // nothing here, so the stop itself ends the pending Load.
+        const current =
+            (command === 'stop' || command === 'unloadModel') &&
+            EngineCapabilities[engineType]?.loadRestartsEngine
+                ? withoutPendingLoads(get().pending, nodeId, engineType)
+                : get().pending
+
         if (LIFECYCLE_COMMANDS.has(command)) {
             const baselineStatus = useEngineStatusStore
                 .getState()
                 .getStatus(nodeId, engineType).processStatus
-            const next = new Map(get().pending)
+            const next = new Map(current)
             next.set(lifecycleKey(nodeId, engineType), {
                 nodeId,
                 engineType,
@@ -162,7 +228,7 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
         }
 
         if (MODEL_COMMANDS.has(command) && model) {
-            const next = new Map(get().pending)
+            const next = new Map(current)
             next.set(modelKey(nodeId, engineType, model), {
                 nodeId,
                 engineType,
@@ -171,14 +237,49 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                 expiresAt
             })
             set({ pending: next })
+            return
         }
+        if (current !== get().pending) set({ pending: current })
     },
 
-    getLifecyclePending: (nodeId, engineType) =>
-        get().pending.get(lifecycleKey(nodeId, engineType))?.action,
+    getLifecyclePending: (nodeId, engineType) => {
+        const lifecycle = asCommand(get().pending.get(lifecycleKey(nodeId, engineType))?.action)
+        if (lifecycle || !EngineCapabilities[engineType]?.loadRestartsEngine) return lifecycle
+        // A Load on an engine that restarts to serve the model is a lifecycle
+        // change too: one entry, the model row's, covers both the row and the
+        // engine, cleared by the same backend truth and timeout.
+        const prefix = `${nodeId}:${engineType}:model:`
+        for (const [key, p] of get().pending) {
+            if (key.startsWith(prefix) && p.action === 'loadModel') return 'loadModel'
+        }
+        return undefined
+    },
 
     getModelPending: (nodeId, engineType, model) =>
-        get().pending.get(modelKey(nodeId, engineType, model))?.action,
+        asCommand(get().pending.get(modelKey(nodeId, engineType, model))?.action),
+
+    beginSettings: (nodeId, engineType, requestId) => {
+        if (connectorStatus === 'disconnected') return
+        const next = new Map(get().pending)
+        next.set(settingsKey(nodeId, engineType), {
+            nodeId,
+            engineType,
+            action: 'applySettings',
+            requestId,
+            expiresAt: Date.now() + PENDING_TIMEOUT_MS
+        })
+        set({ pending: next })
+    },
+
+    endSettings: (nodeId, engineType, requestId) => {
+        const key = settingsKey(nodeId, engineType)
+        if (get().pending.get(key)?.requestId !== requestId) return
+        const next = new Map(get().pending)
+        next.delete(key)
+        set({ pending: next })
+    },
+
+    isSettingsPending: (nodeId, engineType) => get().pending.has(settingsKey(nodeId, engineType)),
 
     initialize: () => {
         // Guard against double-subscribe: initialize() runs on connect and again
@@ -241,6 +342,13 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                     // entry -- the progress store now owns the visual.
                     if (!progress.model) return
                     clearKeys([modelKey(progress.nodeId, progress.engineType, progress.model)])
+                }),
+                window.pairApi.engines.onSettingsChanged(snapshot => {
+                    // The snapshot's own phase takes over from here.
+                    const engineType = engineTypeFromManagerName(snapshot.engine)
+                    if (!engineType) return
+                    const key = settingsKey(snapshot.nodeId, engineType)
+                    if (get().pending.get(key)?.requestId === snapshot.requestId) clearKeys([key])
                 }),
                 window.pairApi.errors.onUpdate(errors => {
                     const toClear: string[] = []

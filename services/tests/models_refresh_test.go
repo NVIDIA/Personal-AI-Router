@@ -15,16 +15,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/grandcat/zeroconf"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/noderec"
 )
 
 // swapModels is a /v1/models stub whose body can be swapped at runtime, standing
@@ -41,7 +40,8 @@ func (s *swapModels) set(body map[string]any) {
 	s.mu.Unlock()
 }
 
-func (s *swapModels) handler() http.HandlerFunc {
+func (s *swapModels) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -50,42 +50,32 @@ func (s *swapModels) handler() http.HandlerFunc {
 		s.mu.Lock()
 		body := s.body
 		s.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(body)
+		assert.NoError(t, json.NewEncoder(w).Encode(body))
 	}
 }
 
-func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
+func TestModelsPeriodicRefresh_ConvergesWithoutMDNSChange(t *testing.T) {
 	// Start with an empty inventory (engine present but serving no models yet).
 	stub := &swapModels{}
-	stub.set(map[string]any{"models": []string{}})
-	srv := httptest.NewServer(stub.handler())
-	t.Cleanup(srv.Close)
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse stub url: %v", err)
-	}
-	emPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("stub port: %v", err)
-	}
+	emptyByEngine := map[string][]string{"ollama": {}, "lmstudio": {}, "llamacpp": {}}
+	stub.set(map[string]any{
+		"models":         []string{},
+		"modelsByEngine": emptyByEngine,
+		"loadedByEngine": emptyByEngine,
+	})
 
 	const instance = "xproc-models-refresh-1"
-	// Advertise em=<port> + ip=127.0.0.1 once and never touch the record again,
-	// so the only thing that changes during the test is the /v1/models body.
-	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
-	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	if err != nil {
-		t.Fatalf("register %s: %v", instance, err)
-	}
-	t.Cleanup(zsrv.Shutdown)
-	t.Logf("advertising %s @ %s (em=%d), models initially empty", instance, nodeRecordService, emPort)
+	cluster := newInterNodeCluster(t)
+	cluster.startModelsPeer(t, instance, stub.handler(t))
 
-	stdin, msgs, cleanup := startBroker(t)
+	stdin, msgs, _, cleanup := startBrokerWithDirs(t, t.TempDir(), cluster.nodeDir)
 	t.Cleanup(cleanup)
 
-	// Phase 1: the node is discovered and enriched, but with no models.
-	pollForNode(t, stdin, msgs, instance, 30*time.Second, func(n availableNode) bool {
-		return len(n.Models) == 0
+	// Require a successful empty inventory read, not just an unverified row
+	// whose model fields have never been populated.
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 30*time.Second, func(n availableNode) bool {
+		return n.ID == instance && len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
+			byEngineEqual(n.LoadedByEngine, emptyByEngine)
 	})
 	t.Log("node discovered with an empty inventory; now serving models without an mDNS change")
 
@@ -93,18 +83,20 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 	// only the periodic refresh loop can converge the directory. The deadline
 	// comfortably exceeds the refresh interval so at least one sweep runs.
 	stub.set(map[string]any{
-		"models": []string{"llama3:8b", "qwen:0.5b"},
+		"models": []string{"llama3:8b", "qwen:0.5b", "org/router-model-GGUF:Q4_K_M"},
 		"modelsByEngine": map[string][]string{
 			"ollama":   {"llama3:8b"},
 			"lmstudio": {"qwen:0.5b"},
+			"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 		},
 		"loadedByEngine": map[string][]string{
 			"ollama":   {"llama3:8b"},
 			"lmstudio": {},
+			"llamacpp": {"org/router-model-GGUF:Q4_K_M"},
 		},
 	})
-	pollForNode(t, stdin, msgs, instance, 45*time.Second, func(n availableNode) bool {
-		return modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 45*time.Second, func(n availableNode) bool {
+		return n.ID == instance && modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
 			loadedByEngineMatch(n.LoadedByEngine)
 	})
 
@@ -116,24 +108,26 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 		"modelsByEngine": map[string][]string{
 			"ollama":   {},
 			"lmstudio": {},
+			"llamacpp": {},
 		},
 		"loadedByEngine": map[string][]string{
 			"ollama":   {},
 			"lmstudio": {},
+			"llamacpp": {},
 		},
 	})
-	emptyByEngine := map[string][]string{"ollama": {}, "lmstudio": {}}
-	pollForNode(t, stdin, msgs, instance, 45*time.Second, func(n availableNode) bool {
-		return len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 45*time.Second, func(n availableNode) bool {
+		return n.ID == instance && len(n.Models) == 0 && byEngineEqual(n.ModelsByEngine, emptyByEngine) &&
 			byEngineEqual(n.LoadedByEngine, emptyByEngine)
 	})
 }
 
-// pollForNode drives discovery:get-nodes on a cadence until the node named
-// instance appears and satisfies pred, or the timeout elapses.
-func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, instance string, timeout time.Duration, pred func(availableNode) bool) {
+// pollForNode waits for an authenticated peer and, when supplied, an additional
+// case-specific condition. Unverified discoveries cannot satisfy readiness.
+func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, hostUUID string, timeout time.Duration, pred func(availableNode) bool) {
 	t.Helper()
-	deadline := time.After(timeout)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
 	ticker := time.NewTicker(1500 * time.Millisecond)
 	defer ticker.Stop()
 	id := 200
@@ -141,22 +135,25 @@ func pollForNode(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, ins
 	for {
 		select {
 		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed unexpectedly")
-			}
+			require.True(t, ok, "broker stream closed unexpectedly")
 			if msg.Method == "" && msg.ID != nil {
+				require.Nil(t, msg.Error, "discovery:get-nodes")
 				var res availableNodesResult
-				if json.Unmarshal(msg.Result, &res) == nil {
-					if n, found := findNode(res.Nodes, instance); found && pred(n) {
+				require.NoError(t, json.Unmarshal(msg.Result, &res), "discovery:get-nodes")
+				for _, node := range res.Nodes {
+					if node.HostUUID == hostUUID &&
+						node.IdentityVerification == noderec.IdentityPinned && node.Trusted &&
+						node.DiscoveryRecordID != "" && (pred == nil || pred(node)) {
 						return
 					}
 				}
+
 			}
 		case <-ticker.C:
 			id++
 			sendReq(t, stdin, id, "discovery:get-nodes")
-		case <-deadline:
-			t.Fatalf("timed out waiting for node %q to match predicate", instance)
+		case <-deadline.C:
+			require.FailNow(t, fmt.Sprintf("timed out waiting for authenticated node %q to match predicate", hostUUID))
 		}
 	}
 }

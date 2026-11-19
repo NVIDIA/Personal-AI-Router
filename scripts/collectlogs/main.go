@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command collectlogs reads Personal AI Router logs and replaces the identifiers
+// Command collectlogs reads NVIDIA PAIR logs and replaces the identifiers
 // in them, so a log can be handed over without carrying host, account or address
 // details.
 //
@@ -70,7 +70,7 @@ func run() int {
 	// os.Args[0].
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
-		fmt.Fprintln(out, "Read Personal AI Router logs and replace the identifiers in them.")
+		fmt.Fprintln(out, "Read NVIDIA PAIR logs and replace the identifiers in them.")
 		fmt.Fprintln(out, "\nUsage:\n  collect-logs [flags]")
 		fmt.Fprintln(out, "\nWith no flags the local log directory for the current user is read.")
 		fmt.Fprintln(out, "Source logs are never modified.")

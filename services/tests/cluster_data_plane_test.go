@@ -24,12 +24,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/netpick"
+	"nvpair-shared/noderec"
 
 	"github.com/grandcat/zeroconf"
 )
@@ -63,9 +68,7 @@ func newInterNodeCluster(t *testing.T) *interNodeCluster {
 	writeActiveAdmission(t, peerDir)
 
 	peer := clustertrust.Open(peerDir)
-	if !peer.Clustered() {
-		t.Fatal("a dir with a keypair, an admission and a pin must read as clustered")
-	}
+	require.True(t, peer.Clustered(), "a dir with a keypair, an admission and a pin must read as clustered")
 	return &interNodeCluster{nodeDir: nodeDir, nodeUUID: nodeUUID, peerUUID: peerUUID, peer: peer}
 }
 
@@ -74,25 +77,50 @@ func newInterNodeCluster(t *testing.T) *interNodeCluster {
 func (c *interNodeCluster) clientAsPeer(t *testing.T) *http.Client {
 	t.Helper()
 	cfg, ok := c.peer.ClientTLSConfig(c.nodeUUID)
-	if !ok {
-		t.Fatal("the stub peer must be able to build a pinned client for the node under test")
-	}
+	require.True(t, ok, "the stub peer must be able to build a pinned client for the node under test")
 	return &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
 }
 
 // startStubClusterPeer runs a stub inter-node peer for this cluster over cluster
-// mTLS and advertises it as a single _nvpair-node record carrying wl=<port> and
-// its cluster principal. The principal is what lets the node under test resolve
-// its pin for the stub: the scanner annotates the browsed record as trusted and
-// the workload-manager keys its pinned client on it. Without mTLS and that TXT
-// key, the stub is simply not a routable cluster target and is never dialed.
+// mTLS and advertises node-info and workload services on one port. Scanner must
+// authenticate its inventory before workload-manager may use it as a peer, so
+// the host UUID, cluster principal, and certificate identity must agree.
 //
-// It returns the channel of frames the stub received. instance/hostUUID keep the
-// record distinct from the node under test's own.
-func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID string) <-chan jsonrpc.Message {
+// It returns received frames and an idempotent stop function for node-loss
+// tests. Cleanup also stops the peer. Its name and pinned UUID keep its record
+// distinct from the node under test's own.
+func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance string) (<-chan jsonrpc.Message, func()) {
 	t.Helper()
+	addresses := netpick.LocalCandidates(netpick.Evidence{})
+	require.NotEmpty(t, addresses, "stub peer needs a non-loopback address for discovery")
+	if len(addresses) > noderec.MaxAdvertisedIPs {
+		addresses = addresses[:noderec.MaxAdvertisedIPs]
+	}
+	// Listen on all interfaces: scanner and workload-manager use the advertised
+	// local interface addresses rather than the test's loopback address.
+	ln, err := net.Listen("tcp", ":0")
+	require.NoError(t, err, "stub peer listen")
+	port := ln.Addr().(*net.TCPAddr).Port
+
 	received := make(chan jsonrpc.Message, 128)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := c.peer.VerifyClientPin(r); !ok {
+			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
+			return
+		}
+		info := noderec.NodeInfo{
+			HostUUID: c.peerUUID, ClusterUUID: &c.peerUUID,
+			Peer: &noderec.PeerMetadata{
+				Name: instance, Addresses: addresses,
+				Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: port, noderec.ServiceWorkload: port},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(info); err != nil {
+			t.Errorf("encode stub peer inventory: %v", err)
+		}
+	})
 	mux.HandleFunc("/v1/workloads/events", func(w http.ResponseWriter, r *http.Request) {
 		// The sender must present the leaf this peer pins — the outbound half of
 		// the gate, so a broadcast is authenticated in both directions.
@@ -100,9 +128,10 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID
 			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
+		body, readErr := io.ReadAll(r.Body)
+		assert.NoError(t, readErr)
 		var msg jsonrpc.Message
-		if json.Unmarshal(body, &msg) == nil {
+		if assert.NoError(t, json.Unmarshal(body, &msg)) {
 			select {
 			case received <- msg:
 			default:
@@ -111,26 +140,24 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Listen on all interfaces: zeroconf advertises the host's real interface
-	// IP(s), so the manager dials the peer there, not at 127.0.0.1.
-	ln, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("stub peer listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(tls.NewListener(ln, c.peer.ServerTLSConfig()))
 	t.Cleanup(func() { _ = srv.Close() })
 
-	txt := []string{"v=1", "uuid=" + hostUUID, fmt.Sprintf("wl=%d", port),
+	txt := []string{"v=1", "uuid=" + c.peerUUID, "ip=" + addresses[0], "ips=" + strings.Join(addresses, ","),
+		fmt.Sprintf("ni=%d", port), fmt.Sprintf("wl=%d", port),
 		clustertrust.ClusterUUIDTXTKey + "=" + c.peerUUID}
 	adv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
-	if err != nil {
-		t.Fatalf("register stub peer: %v", err)
-	}
-	t.Cleanup(adv.Shutdown)
-	t.Logf("stub cluster peer advertising %s (wl=%d, cluster-uuid=%s)", nodeRecordService, port, c.peerUUID)
-	return received
+	require.NoError(t, err, "register stub peer")
+	stop := sync.OnceFunc(func() {
+		adv.Shutdown()
+		if err := srv.Close(); err != nil {
+			t.Errorf("close stub peer: %v", err)
+		}
+	})
+	t.Cleanup(stop)
+	t.Logf("stub cluster peer advertising %s (ni=%d, wl=%d, cluster-uuid=%s)", nodeRecordService, port, port, c.peerUUID)
+	return received, stop
 }
 
 // waitTCP blocks until addr accepts a TCP connection. Every "this request must be
@@ -145,9 +172,7 @@ func waitTCP(t *testing.T, addr string, timeout time.Duration) {
 			_ = conn.Close()
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s to accept connections: %v", addr, err)
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "timed out waiting for (%v, %v)", addr, err)
 		time.Sleep(200 * time.Millisecond)
 	}
 }
@@ -165,11 +190,9 @@ func assertPlaintextRefused(t *testing.T, hostPath, body string) {
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 400 {
-		t.Fatalf("plaintext request to %s was accepted with HTTP %d; the inter-node data plane must be mTLS only",
-			hostPath, resp.StatusCode)
-	}
+	_, copyErr := io.Copy(io.Discard, resp.Body)
+	require.NoError(t, copyErr)
+	require.GreaterOrEqual(t, resp.StatusCode, 400, "plaintext request to (%v)", hostPath)
 	t.Logf("plaintext request rejected with HTTP %d", resp.StatusCode)
 }
 
@@ -187,7 +210,7 @@ const dataPlaneErrorsEnvelope = `{"nodeId":"intruder-node","errors":[{"id":"intr
 // ports — not even in the clear. Before this posture such a node accepted
 // plaintext workload events from any host on the network and relayed them into its
 // catalog as though a peer had sent them.
-func TestDataPlaneRefusesNonMemberWhenUnclustered(t *testing.T) {
+func TestDataPlane_RefusesNonMemberWhenUnclustered(t *testing.T) {
 	if portBusy(14319) || portBusy(14320) {
 		t.Skip("an inter-node port is already in use; skipping")
 	}
@@ -215,7 +238,7 @@ func TestDataPlaneRefusesNonMemberWhenUnclustered(t *testing.T) {
 //
 // The unclustered case is the one that was reported: such a node served its whole
 // inventory to anyone who asked, and read every peer's the same way.
-func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
+func TestModelInventory_RefusesLANPlaintext(t *testing.T) {
 	// No evidence to supply: this only needs an address of this host that a
 	// LAN caller would use, not the one the node would choose to advertise.
 	lanIP := netpick.BestLocalIP(netpick.Evidence{})
@@ -226,9 +249,10 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 		t.Skip("engine-manager em port 14322 already in use; skipping")
 	}
 
-	// startBrokerProc pins an empty cluster dir, so this node is a non-member.
-	_, msgs, cleanup := startBrokerProc(t,
-		"--scanner-path", scannerBin,
+	// Isolate both cluster identity and engine desired state. A developer's
+	// saved enabled engine can otherwise start here and block inventory reads
+	// behind restoration, even though this test only exercises ingress policy.
+	_, msgs, _, cleanup := startBrokerWith(t,
 		"--engine-manager-path", engineMgrBin,
 	)
 	t.Cleanup(cleanup)
@@ -239,14 +263,11 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 
 	// Loopback: this node's own scanner path must keep working while unclustered.
 	resp, err := client.Get("http://127.0.0.1:14322/v1/models")
-	if err != nil {
-		t.Fatalf("loopback model fetch failed: %v", err)
-	}
-	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, err, "loopback model fetch failed")
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, readErr)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("loopback model fetch: HTTP %d, want 200 (a standalone node must read its own models)", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode, "loopback model fetch: HTTP")
 	t.Logf("loopback model fetch OK: %s", strings.TrimSpace(string(body)))
 
 	// The same request from this host's LAN address is a non-loopback caller with
@@ -256,12 +277,10 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 		t.Logf("LAN plaintext model fetch refused at the transport: %v", err)
 		return
 	}
-	lanBody, _ := io.ReadAll(lanResp.Body)
+	lanBody, readErr := io.ReadAll(lanResp.Body)
+	require.NoError(t, readErr)
 	lanResp.Body.Close()
-	if lanResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("LAN plaintext model fetch: HTTP %d body=%q, want 403 — model inventory must not be readable in the clear",
-			lanResp.StatusCode, strings.TrimSpace(string(lanBody)))
-	}
+	require.Equal(t, http.StatusForbidden, lanResp.StatusCode, "LAN plaintext model fetch: %s", lanBody)
 }
 
 // TestDataPlaneRefusesNonMemberWhenClustered: a live cluster member serves the
@@ -269,7 +288,7 @@ func TestModelInventoryRefusesLANPlaintext(t *testing.T) {
 // a host that holds a cluster identity this node does not pin — even though that
 // host can complete the TLS handshake, which is what makes the per-request pin
 // gate load-bearing rather than decorative.
-func TestDataPlaneRefusesNonMemberWhenClustered(t *testing.T) {
+func TestDataPlane_RefusesNonMemberWhenClustered(t *testing.T) {
 	if portBusy(14319) || portBusy(14320) {
 		t.Skip("an inter-node port is already in use; skipping")
 	}
@@ -283,9 +302,7 @@ func TestDataPlaneRefusesNonMemberWhenClustered(t *testing.T) {
 	writeActiveAdmission(t, strangerDir)
 	strangerMesh := clustertrust.Open(strangerDir)
 	strangerCfg, ok := strangerMesh.ClientTLSConfig(fx.nodeUUID)
-	if !ok {
-		t.Fatal("the stranger must be able to build a client for the node it pins")
-	}
+	require.True(t, ok, "the stranger must be able to build a client for the node it pins")
 	stranger := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: strangerCfg}}
 
 	_, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
@@ -325,10 +342,9 @@ func assertForbidden(t *testing.T, client *http.Client, url, body string) {
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("unpinned cluster peer got HTTP %d from %s, want 403", resp.StatusCode, url)
-	}
+	_, copyErr := io.Copy(io.Discard, resp.Body)
+	require.NoError(t, copyErr)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "unpinned cluster peer got HTTP (%v)", url)
 }
 
 // postUntil retries until the endpoint answers want, absorbing the listener's
@@ -341,7 +357,8 @@ func postUntil(t *testing.T, client *http.Client, url, body string, want int, ti
 		resp, err := client.Post(url, "application/json", strings.NewReader(body))
 		if err == nil {
 			code := resp.StatusCode
-			io.Copy(io.Discard, resp.Body)
+			_, copyErr := io.Copy(io.Discard, resp.Body)
+			require.NoError(t, copyErr)
 			resp.Body.Close()
 			if code == want {
 				return
@@ -350,9 +367,7 @@ func postUntil(t *testing.T, client *http.Client, url, body string, want int, ti
 		} else {
 			last = err.Error()
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s to answer %d (last: %s)", url, want, last)
-		}
+		require.LessOrEqual(t, time.Now(), deadline, "timed out waiting for (%v, %v, %v)", url, want, last)
 		time.Sleep(300 * time.Millisecond)
 	}
 }
@@ -362,8 +377,6 @@ func postUntil(t *testing.T, client *http.Client, url, body string, want int, ti
 func readNodeCert(t *testing.T, dir string) string {
 	t.Helper()
 	pem, err := os.ReadFile(filepath.Join(dir, "node.crt"))
-	if err != nil {
-		t.Fatalf("read node.crt: %v", err)
-	}
+	require.NoError(t, err, "read node.crt")
 	return string(pem)
 }

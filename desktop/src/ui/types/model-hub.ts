@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Display row for a model hub result. The Electron-main model-hub module
- * (`src/electron/model-hub/`) returns normalized `EngineHubModel` rows over the
- * `engine:search-hub` channel; `model-hub-search.ts` maps those into this
- * renderer-only display shape. `name`/`id` carry the pull-ready identifier the
- * engine's `pull_model` action expects.
+ * Display row for a model hub result. `nvpair-engine-manager` owns the
+ * catalogues and returns normalized `EngineHubModel` rows, relayed by
+ * `src/electron/service-bridge/model-catalog.ts` over the `engine:search-hub`
+ * channel; `model-hub-search.ts` maps those into this renderer-only display
+ * shape. `name`/`id` carry the pull-ready identifier the engine's `pull_model`
+ * action expects.
  */
 export interface ModelEntry {
     id: string

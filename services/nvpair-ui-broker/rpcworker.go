@@ -106,10 +106,14 @@ func startRPCWorker(name, binaryPath string, args []string, onNotify func(method
 	}
 
 	w := &rpcWorker{
-		name:     name,
-		cmd:      cmd,
-		stdin:    stdin,
-		peer:     NewPeer(NewCodec(readWriter{stdout, stdin})),
+		name:  name,
+		cmd:   cmd,
+		stdin: stdin,
+		// Worker replies can be far larger than a control message —
+		// engine:catalog's model list is megabytes — and an over-long frame is
+		// a terminal read error that silently takes this peer down while the
+		// child keeps running, so the cap has to match what workers send.
+		peer:     NewPeer(NewCodecMaxFrame(readWriter{stdout, stdin}, workerFrameBytes)),
 		done:     make(chan struct{}),
 		onNotify: onNotify,
 	}

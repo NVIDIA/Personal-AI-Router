@@ -4,8 +4,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ServiceError } from '@/shared/types/errors'
 import type { EngineStatePatch } from '@/shared/types/engine-api'
-import type { ModelItem } from '@/shared/types/engines'
+import type { EngineType, ModelItem } from '@/shared/types/engines'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
+import { MODEL_SWITCH_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 
 /**
@@ -52,7 +53,8 @@ function makeFakeWindow() {
                     stateCb = cb
                     return noopUnsub
                 },
-                onProgress: () => noopUnsub
+                onProgress: () => noopUnsub,
+                onSettingsChanged: () => noopUnsub
             },
             errors: {
                 onUpdate: (cb: (errors: ServiceError[]) => void) => {
@@ -74,21 +76,21 @@ function makeFakeWindow() {
     }
 }
 
+beforeEach(() => {
+    vi.useFakeTimers()
+    errorsCb = null
+    stateCb = null
+    vi.stubGlobal('window', makeFakeWindow())
+    usePendingActionsStore.getState().initialize()
+})
+
+afterEach(() => {
+    usePendingActionsStore.getState().cleanup()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+})
+
 describe('pending-actions store: model actions', () => {
-    beforeEach(() => {
-        vi.useFakeTimers()
-        errorsCb = null
-        stateCb = null
-        vi.stubGlobal('window', makeFakeWindow())
-        usePendingActionsStore.getState().initialize()
-    })
-
-    afterEach(() => {
-        usePendingActionsStore.getState().cleanup()
-        vi.unstubAllGlobals()
-        vi.useRealTimers()
-    })
-
     it('clears the spinner as soon as a failed delete is reported', () => {
         const store = usePendingActionsStore.getState()
         store.begin({
@@ -196,9 +198,9 @@ describe('pending-actions store: model actions', () => {
             })
         }
 
-        // The remote path can withhold headers for 11 minutes. Both rows must
+        // The remote path can withhold headers for 31 minutes. Both rows must
         // remain locked until backend truth arrives, not expire at the old 60s net.
-        vi.advanceTimersByTime(11 * 60_000 + 1_000)
+        vi.advanceTimersByTime(31 * 60_000 + 1_000)
         expect(store.getModelPending('local-node', 'ollama', 'llama3.2')).toBe('loadModel')
         expect(store.getModelPending('remote-node', 'ollama', 'llama3.2')).toBe('loadModel')
 
@@ -208,7 +210,8 @@ describe('pending-actions store: model actions', () => {
             models: {
                 nodeId: 'local-node',
                 engineType: 'ollama',
-                models: [loadedModel('llama3.2')]
+                models: [loadedModel('llama3.2')],
+                inventoryKnown: true
             }
         })
         errorsCb?.([
@@ -237,9 +240,29 @@ describe('pending-actions store: model actions', () => {
             nodeId: 'remote-node',
             model: 'llama3.2'
         })
-        vi.advanceTimersByTime(12 * 60_000 + 1_000)
+        vi.advanceTimersByTime(32 * 60_000 + 1_000)
         expect(
             usePendingActionsStore.getState().getModelPending('remote-node', 'ollama', 'llama3.2')
+        ).toBeUndefined()
+    })
+
+    it('keeps a vLLM load locked while the engine restarts on the new model', () => {
+        usePendingActionsStore.getState().begin({
+            command: 'loadModel',
+            engineType: 'vllm',
+            nodeId: 'local-node',
+            model: 'Qwen/Qwen3-8B'
+        })
+
+        // Well past the default net: readiness alone can take 30 minutes.
+        vi.advanceTimersByTime(31 * 60_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        ).toBe('loadModel')
+
+        vi.advanceTimersByTime(MODEL_SWITCH_TIMEOUT_MS - 31 * 60_000 + 1_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')
         ).toBeUndefined()
     })
 
@@ -257,5 +280,127 @@ describe('pending-actions store: model actions', () => {
                 .getState()
                 .getModelPending('local-node', 'lm-studio', 'publisher/demo')
         ).toBeUndefined()
+    })
+})
+
+/**
+ * vLLM serves one model per process, so Load restarts the engine on the model
+ * and it reports stopped on the way. The pending Load, one entry in the
+ * pending-actions store, is what shows the engine as busy for that whole time:
+ * there is no second tracker with its own timer and clearing rules.
+ */
+
+function load(nodeId: string, engineType: EngineType, model: string): void {
+    usePendingActionsStore.getState().begin({ command: 'loadModel', engineType, nodeId, model })
+}
+
+function lifecyclePending(nodeId: string, engineType: EngineType) {
+    return usePendingActionsStore.getState().getLifecyclePending(nodeId, engineType)
+}
+
+describe('a vLLM Load is one pending action for the row and the engine', () => {
+    it('holds the engine busy, local or remote, until the model is reported loaded', () => {
+        for (const nodeId of ['local-node', 'remote-node']) load(nodeId, 'vllm', 'Qwen/Qwen3-8B')
+
+        expect(lifecyclePending('local-node', 'vllm')).toBe('loadModel')
+        expect(lifecyclePending('remote-node', 'vllm')).toBe('loadModel')
+
+        stateCb?.({
+            nodeId: 'local-node',
+            engineType: 'vllm',
+            models: {
+                nodeId: 'local-node',
+                engineType: 'vllm',
+                models: [loadedModel('Qwen/Qwen3-8B')],
+                inventoryKnown: true
+            }
+        })
+
+        expect(lifecyclePending('local-node', 'vllm')).toBeUndefined()
+        expect(lifecyclePending('remote-node', 'vllm')).toBe('loadModel')
+    })
+
+    it('releases the engine when the Load fails', () => {
+        load('local-node', 'vllm', 'org/too-big')
+
+        errorsCb?.([
+            {
+                id: 'pair-ui:engine-load:vllm:org/too-big',
+                message: 'Failed to load org/too-big',
+                timestamp: Date.now(),
+                severity: 'error',
+                nodeId: 'local-node',
+                engineType: 'vllm',
+                operation: 'load',
+                modelName: 'org/too-big'
+            }
+        ])
+
+        expect(lifecyclePending('local-node', 'vllm')).toBeUndefined()
+    })
+
+    it('gives up after the switch budget so a lost notification cannot leave it busy', () => {
+        load('local-node', 'vllm', 'Qwen/Qwen3-8B')
+
+        vi.advanceTimersByTime(MODEL_SWITCH_TIMEOUT_MS - 60_000)
+        expect(lifecyclePending('local-node', 'vllm')).toBe('loadModel')
+
+        vi.advanceTimersByTime(2 * 60_000)
+        expect(lifecyclePending('local-node', 'vllm')).toBeUndefined()
+    })
+
+    it('leaves engines whose Load does not restart them alone', () => {
+        load('local-node', 'llama-cpp', 'org/model:Q4_K_M')
+        load('local-node', 'ollama', 'llama3.2')
+
+        expect(lifecyclePending('local-node', 'llama-cpp')).toBeUndefined()
+        expect(lifecyclePending('local-node', 'ollama')).toBeUndefined()
+    })
+
+    it('shows a Stop sent during the Load as the lifecycle action', () => {
+        load('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        usePendingActionsStore
+            .getState()
+            .begin({ command: 'stop', engineType: 'vllm', nodeId: 'local-node' })
+
+        expect(lifecyclePending('local-node', 'vllm')).toBe('stop')
+    })
+
+    it('ends the Load when the user stops the engine or ejects', () => {
+        const modelPending = (nodeId: string, engineType: EngineType, model: string) =>
+            usePendingActionsStore.getState().getModelPending(nodeId, engineType, model)
+        const begin = usePendingActionsStore.getState().begin
+
+        // The engine-manager replies that a stopped Load was stopped, not that
+        // it failed, so no error clears the entry: the stop has to.
+        load('local-node', 'vllm', 'Qwen/Qwen3-8B')
+        begin({ command: 'stop', engineType: 'vllm', nodeId: 'local-node' })
+        expect(modelPending('local-node', 'vllm', 'Qwen/Qwen3-8B')).toBeUndefined()
+
+        load('remote-node', 'vllm', 'Qwen/Qwen3-8B')
+        begin({
+            command: 'unloadModel',
+            engineType: 'vllm',
+            nodeId: 'remote-node',
+            model: 'Qwen/Qwen2.5-0.5B-Instruct'
+        })
+        expect(modelPending('remote-node', 'vllm', 'Qwen/Qwen3-8B')).toBeUndefined()
+        expect(modelPending('remote-node', 'vllm', 'Qwen/Qwen2.5-0.5B-Instruct')).toBe(
+            'unloadModel'
+        )
+
+        // An engine whose Load does not start it keeps its Load.
+        load('local-node', 'ollama', 'llama3.2')
+        begin({ command: 'stop', engineType: 'ollama', nodeId: 'local-node' })
+        expect(modelPending('local-node', 'ollama', 'llama3.2')).toBe('loadModel')
+    })
+
+    it('lets a lifecycle command already in flight win', () => {
+        usePendingActionsStore
+            .getState()
+            .begin({ command: 'toggle', engineType: 'vllm', nodeId: 'local-node' })
+        load('local-node', 'vllm', 'Qwen/Qwen3-8B')
+
+        expect(lifecyclePending('local-node', 'vllm')).toBe('toggle')
     })
 })

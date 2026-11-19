@@ -7,7 +7,7 @@
  *   - every runtime (production) npm dependency + all their transitives
  *   - the Electron runtime itself (declared as a devDependency, but shipped
  *     with the packaged app, so legally it has to appear in the report)
- *   - the Go modules linked into the thirteen service binaries, which the
+ *   - the Go modules linked into the twelve service binaries, which the
  *     installer ships from `../services` as extraResources
  *
  * Dev-only tooling (vite, tsx, typescript, prettier, knip, etc.) is deliberately
@@ -145,7 +145,7 @@ function renderMarkdown(entries: Entry[]): string {
         'reproduced in this file.',
         '',
         'Scope: npm dependencies and the Electron runtime shipped in the desktop',
-        'application, plus the Go modules linked into the thirteen shipped service',
+        'application, plus the Go modules linked into the twelve shipped service',
         'binaries across the Windows, Linux, and macOS targets. First-party modules',
         '(`nvpair-shared`, `eapnoob`) are excluded.',
         '',

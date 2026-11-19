@@ -8,46 +8,42 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestManagerErrorResponses drives handleMessage / runOp / runAction over
 // an in-memory codec and asserts the JSON-RPC error responses for the
 // failure paths the e2e harness can't easily reach.
-func TestManagerErrorResponses(t *testing.T) {
-	newM := func() (*Manager, *bytes.Buffer) {
-		var out bytes.Buffer
-		ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
-		return NewManager(NewCodec(&out), ex, nil), &out
+func TestManager_ReturnsProtocolErrorsForInvalidRequests(t *testing.T) {
+	test := func(name, method, params, want string, dispatch func(*Manager, context.Context, *Message)) {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+			m := NewManager(NewCodec(&out), ex, nil)
+			id := json.RawMessage("1")
+			dispatch(m, context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: method, Params: json.RawMessage(params)})
+			require.Contains(t, out.String(), want)
+		})
 	}
-	id := json.RawMessage("1")
-	ctx := context.Background()
-
-	m, out := newM()
-	m.handleMessage(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "bogus"})
-	mustContain(t, out.String(), "-32601")
-
-	m, out = newM()
-	m.handleMessage(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:describe", Params: json.RawMessage(`{"engine":"nope"}`)})
-	mustContain(t, out.String(), "unknown engine")
-
-	m, out = newM()
-	m.runOp(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start", Params: json.RawMessage(`{}`)})
-	mustContain(t, out.String(), "engine is required")
-
-	m, out = newM()
-	m.runOp(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start", Params: json.RawMessage(`{bad}`)})
-	mustContain(t, out.String(), "invalid params")
-
-	m, out = newM()
-	m.runAction(ctx, &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action", Params: json.RawMessage(`{"engine":"x"}`)})
-	mustContain(t, out.String(), "engine and action are required")
+	test("unknown method", "bogus", "", "-32601", (*Manager).handleMessage)
+	test("unknown engine", "engine:describe", `{"engine":"nope"}`, "unknown engine", (*Manager).handleMessage)
+	test("missing engine", "engine:start", `{}`, "engine is required", (*Manager).runOp)
+	test("invalid params", "engine:start", `{bad}`, "invalid params", (*Manager).runOp)
+	test("missing action", "engine:action", `{"engine":"x"}`, "engine and action are required", (*Manager).runAction)
+	test("pull naming no model", "engine:action", `{"engine":"x","action":"pull_model","params":{}}`, "model is required", (*Manager).runAction)
 }
 
-func TestRunOpRejectsBadPort(t *testing.T) {
+func TestRunOp_RejectsBadPort(t *testing.T) {
 	var out bytes.Buffer
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
 	m := NewManager(NewCodec(&out), ex, nil)
@@ -57,7 +53,7 @@ func TestRunOpRejectsBadPort(t *testing.T) {
 	mustContain(t, out.String(), "port must be between")
 }
 
-func TestRunOpRejectsBadBind(t *testing.T) {
+func TestRunOp_RejectsBadBind(t *testing.T) {
 	var out bytes.Buffer
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
 	m := NewManager(NewCodec(&out), ex, nil)
@@ -67,7 +63,7 @@ func TestRunOpRejectsBadBind(t *testing.T) {
 	mustContain(t, out.String(), "bind must be a valid IP")
 }
 
-func TestRunOpInstallAutostart(t *testing.T) {
+func TestRunOp_StartsEngineAfterInstallation(t *testing.T) {
 	var out bytes.Buffer
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -75,37 +71,27 @@ func TestRunOpInstallAutostart(t *testing.T) {
 	id := json.RawMessage("1")
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:install",
 		Params: json.RawMessage(`{"engine":"fake","start":true}`)})
-	st, _ := ex.Status("fake")
-	if !st.Running {
-		t.Fatalf("expected running after install+autostart, got %+v", st)
-	}
+	st, err := ex.Status("fake")
+	require.NoError(t, err)
+	require.True(t, st.Running, "expected running after install+autostart (%v)", st)
 }
 
-func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
-	tests := []struct {
-		name   string
-		method string
-		params json.RawMessage
-	}{
-		{name: "status", method: "engine:status", params: json.RawMessage(`{"engine":"fake"}`)},
-		{name: "get installed", method: "engine:get-installed"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+func TestStatusQueries_DoNotBlockMessageDispatchDuringEngineOperation(t *testing.T) {
+	test := func(name, method string, params json.RawMessage) {
+		t.Run(name, func(t *testing.T) {
 			ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 			st, err := ex.state("fake")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			managerConn, clientConn := net.Pipe()
 			defer managerConn.Close()
 			defer clientConn.Close()
 			m := NewManager(NewCodec(managerConn), ex, nil)
 			id := json.RawMessage("1")
 			response := make(chan string, 1)
+			readErr := make(chan error, 1)
 			go func() {
-				line, _ := bufio.NewReader(clientConn).ReadString('\n')
+				line, err := bufio.NewReader(clientConn).ReadString('\n')
+				readErr <- err
 				response <- line
 			}()
 
@@ -118,8 +104,8 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 				m.handleMessage(context.Background(), &Message{
 					JSONRPC: "2.0",
 					ID:      &id,
-					Method:  tc.method,
-					Params:  tc.params,
+					Method:  method,
+					Params:  params,
 				})
 				close(returned)
 			}()
@@ -129,25 +115,246 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 				// Expected: the potentially blocking status work was dispatched.
 			case <-time.After(time.Second):
 				st.opMu.Unlock()
-				t.Fatalf("%s blocked message dispatch while an engine operation held opMu", tc.method)
+				require.FailNow(t, "message dispatch blocked while an engine operation held opMu")
 			}
 
 			st.opMu.Unlock()
 			select {
 			case line := <-response:
-				if !strings.Contains(line, `"id":1`) {
-					t.Fatalf("%s returned an unexpected response: %s", tc.method, line)
-				}
+				require.NoError(t, <-readErr)
+				require.Contains(t, line, `"id":1`)
 			case <-time.After(2 * time.Second):
-				t.Fatalf("%s did not respond after the engine operation completed", tc.method)
+				require.FailNow(t, "no response after the engine operation completed")
 			}
 		})
 	}
+	test("status", "engine:status", json.RawMessage(`{"engine":"fake"}`))
+	test("get installed", "engine:get-installed", nil)
+}
+
+// The read loop claims a pull before it dispatches the pull's goroutine, and
+// engine:cancel-pull dispatches a goroutine of its own, so a cancel sent right
+// behind a pull can reach the executor before the download registers. It then
+// finds only the claim, which has to travel with the request to stop it.
+func TestManager_StopsAPullCancelledBeforeItsDownloadRegisters(t *testing.T) {
+	ex := newHTTPPullTestExecutor(t, stalledTransfer(t), Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+	managerConn, clientConn := net.Pipe()
+	defer managerConn.Close()
+	defer clientConn.Close()
+	m := NewManager(NewCodec(managerConn), ex, nil)
+	response := make(chan []byte, 1)
+	readErr := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(clientConn).ReadBytes('\n')
+		readErr <- err
+		response <- line
+	}()
+	// With a single P, the goroutine handleMessage starts for the pull cannot
+	// run until this one blocks, so the cancel reaches the executor first.
+	previous := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+
+	id := json.RawMessage("1")
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
+		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"}}`)})
+	require.NoError(t, ex.CancelModelPull(t.Context(), "fake", "demo"))
+
+	select {
+	case line := <-response:
+		require.NoError(t, <-readErr)
+		var msg Message
+		require.NoError(t, json.Unmarshal(line, &msg), "decode response %s", line)
+		require.Empty(t, msg.Error, "the pull should settle as cancelled, not fail")
+		assertPullStatus(t, msg.Result, "cancelled")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the pull kept running after its cancel was acknowledged")
+	}
+}
+
+// A cancel stops the requests the client sent before it, so a retry sent right
+// behind it downloads. engine:action claims its pull on the read loop, and a
+// cancel left to act from a goroutine of its own would find the retry already
+// claimed and stop it too: the retry would answer "cancelled" without
+// downloading.
+func TestManager_DownloadsARetrySentRightAfterACancel(t *testing.T) {
+	transfer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, err := w.Write([]byte(`{"status":"success"}` + "\n"))
+		assert.NoError(t, err, "send the pull's success record")
+	}))
+	t.Cleanup(transfer.Close)
+	ex := newHTTPPullTestExecutor(t, transfer, Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+	managerConn, clientConn := net.Pipe()
+	defer managerConn.Close()
+	defer clientConn.Close()
+	m := NewManager(NewCodec(managerConn), ex, nil)
+	replies := make(chan *Message, 2)
+	go func() {
+		client := NewCodec(clientConn)
+		for {
+			msg, err := client.Read()
+			if err != nil {
+				return
+			}
+			if msg.ID != nil {
+				replies <- msg
+			}
+		}
+	}()
+	// With a single P, neither goroutine handleMessage dispatches can run until
+	// this one blocks, so the retry is claimed before a cancel acting from its
+	// own goroutine could reach the executor.
+	previous := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+
+	cancelID, retryID := json.RawMessage("1"), json.RawMessage("2")
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &cancelID, Method: "engine:cancel-pull",
+		Params: json.RawMessage(`{"engine":"fake","model":"demo"}`)})
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &retryID, Method: "engine:action",
+		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"}}`)})
+
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case reply := <-replies:
+			if string(*reply.ID) != string(retryID) {
+				continue
+			}
+			require.Empty(t, reply.Error, "the retry should download, not fail")
+			assertPullStatus(t, reply.Result, "success")
+			return
+		case <-timeout:
+			require.FailNow(t, "the retry never answered")
+		}
+	}
+}
+
+// firstReply reads the first message a manager writes to clientConn: the
+// reply, when nothing else is written there.
+func firstReply(clientConn net.Conn) <-chan *Message {
+	reply := make(chan *Message, 1)
+	go func() {
+		msg, err := NewCodec(clientConn).Read()
+		if err == nil {
+			reply <- msg
+		}
+	}()
+	return reply
+}
+
+// A client names its pull request with an opId beside params, and the frames
+// of the download the request runs as carry it, so the client can tell them
+// from those of another download of the same model, such as the one a retry
+// replaced.
+func TestManager_NamesAPullOnItsFramesByTheOpIDItWasSentWith(t *testing.T) {
+	transfer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, err := w.Write([]byte(`{"status":"success"}` + "\n"))
+		assert.NoError(t, err, "send the pull's success record")
+	}))
+	t.Cleanup(transfer.Close)
+	ex := newHTTPPullTestExecutor(t, transfer, Action{HTTP: &ActionHTTP{Method: http.MethodPost, Path: "/api/pull"}})
+	client := &namedFrames{}
+	ex.emit = client.emit
+	managerConn, clientConn := net.Pipe()
+	defer managerConn.Close()
+	defer clientConn.Close()
+	m := NewManager(NewCodec(managerConn), ex, nil)
+	reply := firstReply(clientConn)
+
+	id := json.RawMessage("1")
+	m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action",
+		Params: json.RawMessage(`{"engine":"fake","action":"pull_model","params":{"name":"demo"},"opId":"t41"}`)})
+
+	select {
+	case msg := <-reply:
+		require.Empty(t, msg.Error, "the pull should download, not fail")
+		assertPullStatus(t, msg.Result, "success")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the pull never answered")
+	}
+	assert.Equal(t, []namedFrame{{Stage: "success", OpIDs: []string{"t41"}}}, client.sent())
+}
+
+// An opId the client could never find on its download's frames is refused as
+// invalid params rather than dropped. The read loop claims a pull before
+// runAction sees it, so a request about to be refused claims nothing there:
+// a cancel latched in between has no claim of it to count among the requests
+// it stopped.
+func TestManager_RefusesAPullWithAnInvalidOpIDAndClaimsNothingForIt(t *testing.T) {
+	test := func(name, opID string) {
+		t.Run(name, func(t *testing.T) {
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+			managerConn, clientConn := net.Pipe()
+			defer managerConn.Close()
+			defer clientConn.Close()
+			m := NewManager(NewCodec(managerConn), ex, nil)
+			reply := firstReply(clientConn)
+			// With a single P, the goroutine handleMessage starts for the pull
+			// cannot run until this one blocks, so whatever the read loop
+			// claimed for it is still claimed below.
+			previous := runtime.GOMAXPROCS(1)
+			t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+			params, err := json.Marshal(map[string]any{
+				"engine": "fake", "action": pullModelAction, "params": map[string]string{"name": "demo"}, "opId": opID,
+			})
+			require.NoError(t, err, "encode params")
+
+			id := json.RawMessage("1")
+			m.handleMessage(t.Context(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:action", Params: params})
+			ex.pullMu.Lock()
+			claims := len(ex.pullClaims[pullKey{engine: "fake", model: "demo"}])
+			ex.pullMu.Unlock()
+
+			assert.Zero(t, claims, "the read loop claimed a request runAction refuses")
+			select {
+			case msg := <-reply:
+				require.NotNil(t, msg.Error, "the pull was not refused: %s", msg.Result)
+				assert.Equal(t, -32602, msg.Error.Code)
+				assert.Equal(t, invalidOpIDMessage, msg.Error.Message)
+			case <-time.After(10 * time.Second):
+				require.FailNow(t, "the pull never answered")
+			}
+		})
+	}
+	test("a space", "t 41")
+	test("a slash", "t/41")
+	test("a letter outside ASCII", "tö41")
+	test("longer than 128 characters", strings.Repeat("t", 129))
 }
 
 func mustContain(t *testing.T, s, sub string) {
 	t.Helper()
-	if !strings.Contains(s, sub) {
-		t.Fatalf("expected %q to contain %q", s, sub)
+	require.Contains(t, s, sub)
+}
+
+// A SIGTERM cancels the manager's context while the read loop is blocked on
+// stdin, which stays open and silent. Shutdown must not wait for the next
+// message: it has to stop the engines and return, or the process hangs with its
+// engines running until the parent closes the pipe.
+func TestRunShutsDownWhenCancelledWhileStdinIsIdle(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	if err := ex.Start(t.Context(), "fake"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	stdinRead, stdinWrite := io.Pipe() // never written to, never closed
+	t.Cleanup(func() { _ = stdinWrite.Close() })
+	m := NewManager(NewCodec(struct {
+		io.Reader
+		io.Writer
+	}{stdinRead, io.Discard}), ex, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond) // let it reach the blocking read
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+	if status, _ := ex.Status("fake"); status.Running {
+		t.Fatal("the engine was left running by the shutdown")
 	}
 }

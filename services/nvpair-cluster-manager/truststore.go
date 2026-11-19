@@ -103,8 +103,24 @@ func newTrustStore(clusterDir string) (*TrustStore, error) {
 	return ts, nil
 }
 
-func (ts *TrustStore) pinPath(uuid string) string {
-	return filepath.Join(ts.dir, uuid+".json")
+// pinFilename treats a peer principal as an opaque identifier, never a path.
+// Reject both platforms' separators and Windows drive/stream syntax even when
+// running on Unix. Check the bare identifier as well as the suffixed filename
+// so an extension cannot mask a Windows reserved principal such as CON.
+func pinFilename(uuid string) (string, error) {
+	name := uuid + ".json"
+	if uuid == "." || uuid == ".." || strings.ContainsAny(uuid, "/\\:\x00") || !filepath.IsLocal(uuid) || !filepath.IsLocal(name) {
+		return "", fmt.Errorf("invalid node UUID %q: expected a local filename component", uuid)
+	}
+	return name, nil
+}
+
+func (ts *TrustStore) pinPath(uuid string) (string, error) {
+	name, err := pinFilename(uuid)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(ts.dir, name), nil
 }
 
 // load reads trusted/*.json into memory, skipping *.tmp, unparseable files, and
@@ -124,7 +140,12 @@ func (ts *TrustStore) load() {
 			continue
 		}
 		fileUUID := strings.TrimSuffix(name, ".json")
-		data, err := os.ReadFile(filepath.Join(ts.dir, name))
+		path, err := ts.pinPath(fileUUID)
+		if err != nil {
+			log.Printf("trusted store: skip unsafe filename %q: %v", name, err)
+			continue
+		}
+		data, err := os.ReadFile(path)
 		if err != nil {
 			log.Printf("trusted store: read %s: %v", name, err)
 			continue
@@ -154,6 +175,9 @@ func (ts *TrustStore) load() {
 // validatePin checks that the pin's inner nodeUuid and embedded certificate
 // subject/URI all agree with the expected UUID, returning the parsed cert DER.
 func validatePin(pin *TrustedPin, expectUUID string) ([]byte, error) {
+	if _, err := pinFilename(expectUUID); err != nil {
+		return nil, err
+	}
 	if pin.NodeUUID != expectUUID {
 		return nil, fmt.Errorf("inner nodeUuid %q != filename %q", pin.NodeUUID, expectUUID)
 	}
@@ -207,8 +231,8 @@ func (ts *TrustStore) Pin(pin *TrustedPin) error {
 			}
 			// Identical re-pin: fold in any newly-seen endorsements so the
 			// gossiped trust web thickens (idempotent on the cert itself).
-			err := ts.mergeEndorsementsLocked(pin.NodeUUID, pin.Endorsements)
-			changed = err == nil
+			merged, err := ts.mergeEndorsementsLocked(pin.NodeUUID, pin.Endorsements)
+			changed = merged
 			return err
 		}
 		return fmt.Errorf("uuid %s already pinned to a different certificate; remove it first to re-pin", pin.NodeUUID)
@@ -225,11 +249,15 @@ func (ts *TrustStore) Pin(pin *TrustedPin) error {
 // writePinLocked persists a pin atomically and updates the in-memory pin map.
 // Caller holds ts.mu.
 func (ts *TrustStore) writePinLocked(pin *TrustedPin) error {
+	path, err := ts.pinPath(pin.NodeUUID)
+	if err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(pin, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := atomicWrite(ts.pinPath(pin.NodeUUID), data, 0o600); err != nil {
+	if err := atomicWrite(path, data, 0o600); err != nil {
 		return err
 	}
 	ts.pins[pin.NodeUUID] = cloneTrustedPin(pin)
@@ -239,10 +267,10 @@ func (ts *TrustStore) writePinLocked(pin *TrustedPin) error {
 // mergeEndorsementsLocked unions incoming endorsements into an existing pin
 // (dedup by signer+signature) and persists if anything new was added. Caller
 // holds ts.mu. A missing pin is a silent no-op.
-func (ts *TrustStore) mergeEndorsementsLocked(uuid string, incoming []Endorsement) error {
+func (ts *TrustStore) mergeEndorsementsLocked(uuid string, incoming []Endorsement) (bool, error) {
 	pin, ok := ts.pins[uuid]
 	if !ok || len(incoming) == 0 {
-		return nil
+		return false, nil
 	}
 	seen := make(map[string]struct{}, len(pin.Endorsements))
 	for _, e := range pin.Endorsements {
@@ -260,9 +288,12 @@ func (ts *TrustStore) mergeEndorsementsLocked(uuid string, incoming []Endorsemen
 		added = true
 	}
 	if !added {
-		return nil
+		return false, nil
 	}
-	return ts.writePinLocked(updated)
+	if err := ts.writePinLocked(updated); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func endorsementKey(e Endorsement) string {
@@ -279,8 +310,8 @@ func (ts *TrustStore) AddEndorsements(uuid string, endorsements []Endorsement) e
 	defer ts.announce(&changed)
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	err := ts.mergeEndorsementsLocked(uuid, endorsements)
-	changed = err == nil
+	merged, err := ts.mergeEndorsementsLocked(uuid, endorsements)
+	changed = merged
 	return err
 }
 
@@ -367,11 +398,15 @@ func (ts *TrustStore) PubKey(uuid string) (ed25519.PublicKey, bool) {
 // Remove deletes a peer's pin. A missing file is treated as already-removed
 // (idempotent success).
 func (ts *TrustStore) Remove(uuid string) error {
+	path, err := ts.pinPath(uuid)
+	if err != nil {
+		return err
+	}
 	changed := false
 	defer ts.announce(&changed)
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	if err := os.Remove(ts.pinPath(uuid)); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove pin %s: %w", uuid, err)
 	}
 	_, held := ts.pins[uuid]

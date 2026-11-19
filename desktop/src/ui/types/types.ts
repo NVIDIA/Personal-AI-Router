@@ -6,6 +6,6 @@ export interface PerformanceMetric {
     value: number
 }
 
-export type JobsFilterType = 'active' | 'completed' | 'failed'
+export type JobsFilterType = 'active' | 'completed' | 'failed' | 'cancelled'
 
 export type BadgeColor = 'yellow' | 'blue' | 'green' | 'gray' | 'red' | 'teal' | 'purple'

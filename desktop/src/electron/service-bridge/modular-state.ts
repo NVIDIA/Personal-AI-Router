@@ -15,39 +15,39 @@ import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
-import type { ClusterNode, Invite } from '@/shared/types/cluster'
+import type { ClusterNode, Invite, NodeIdentityVerification } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
-import {
-    MODULAR_NODE_INFO_SELF_HOST,
-    MODULAR_SUPERSEDE_MIN_AGE_MS
-} from '@/shared/constants/modular-runtime'
+import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
-import { isEngineType, emptyEngineStatus } from '@/shared/utils/engines'
-import { engineProgressKey } from '@/shared/utils/engine-progress'
+import { EngineTypes, EnginesListingModelsWhenStopped } from '@/shared/constants/engines'
+import {
+    emptyEngineModels,
+    emptyEngineStatus,
+    engineManagerName,
+    engineTypeFromManagerName,
+    isEngineType,
+    unsupportedEngineStatus
+} from '@/shared/utils/engines'
+import { engineProgressKey, isEnginePullOutcome } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
 import { mergePullProgressPercent } from './pull-error-handling'
 import type { JsonObject, JsonRpcNotification, JsonValue } from './json-rpc-subprocess'
 import { serviceLogLevel } from './service-log-level'
-// Live node sources are the two reverse proxies, relayed through the broker,
-// and the broker's consolidated discovery snapshot. Electron does not consume
+import {
+    isProxyEngine,
+    PROXY_ENGINES,
+    proxyEngineFromSource,
+    proxySourceForEngine,
+    type ProxyEngine,
+    type ProxyNodeSource
+} from './proxy-engines'
+
+// Live node sources are the reverse proxies, relayed through the broker, and
+// the broker's consolidated discovery snapshot. Electron does not consume
 // worker discovery protocols directly.
-type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy'
 type BrokerNodeSource = ProxyNodeSource | 'broker'
-
-/**
- * Engines surfaced by the broker's proxy plane. Other engine-manager engines
- * are not currently routed across nodes.
- */
-export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio'>
-export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio']
-
-/** Map a proxy node source onto the engine it describes. */
-const PROXY_SOURCE_ENGINE: Record<ProxyNodeSource, ProxyEngine> = {
-    'ollama-proxy': 'ollama',
-    'lmstudio-proxy': 'lm-studio'
-}
 
 /** Per-engine presence on a node — each proxy reports its own engine. */
 interface EnginePresence {
@@ -77,17 +77,49 @@ interface EnginePresence {
 interface RemoteEngineFacts {
     installed: boolean
     running: boolean
+    starting: boolean
+    awaitingModel: boolean
     healthy: boolean
     port: number
 }
 
-interface ModularNode {
-    // Canonical cross-domain node key = the backend's stable per-host UUID
-    // (`shared/nodeid`). The broker carries it on `AvailableNode.hostUuid`, the
-    // proxies key `Node.ID` by it, and `/v1/node-info` reports it, so every
-    // domain now agrees on this id: workload `originatedFrom`/`scheduledOn`,
-    // error `nodeId`, and proxy routing all resolve against it. Never key,
-    // dedupe, or attribute by hostname — that is display only (`name`).
+/**
+ * The process status an engine-manager `EngineStatus` reports. `starting` covers
+ * a start in flight whoever began it (install-then-start, a settings restart, a
+ * restore at launch, the terminal interface), which for vLLM can take minutes.
+ */
+function factsProcessStatus(facts: {
+    installed: boolean
+    running: boolean
+    starting: boolean
+    awaitingModel: boolean
+}): EngineProcessStatus {
+    if (facts.running) return 'running'
+    if (facts.starting) return 'starting'
+    if (facts.awaitingModel) return 'awaiting-model'
+    return facts.installed ? 'stopped' : 'not-installed'
+}
+
+interface NodeHardware {
+    gpus: ModularGpu[]
+    cpu: ModularCpu | null
+    memory: ModularMemory | null
+    telemetryTimestamp?: number
+    // Node-level list of inference-ready hardware ids from broker hardware, mapped
+    // straight to SystemTopology.inferenceHardwareIds. undefined = the backend
+    // does not report readiness yet (UI shows all GPUs). See the routing
+    // limitations in docs/services-parity.md.
+    inferenceHardwareIds?: string[]
+}
+
+interface ModularNode extends NodeHardware {
+    discoveryRecordId?: string
+    identityVerification?: NodeIdentityVerification
+    // Row key: host UUID for local/pinned hosts, discovery record ID for
+    // unverified discoveries. Proxy-only rows keep the proxy's operational key,
+    // which may identify a configured manual engine target. An unverified
+    // record cannot join a host's row just by claiming its UUID. The hostname
+    // is display only (`name`), never a correlation key.
     id: string
     sources: BrokerNodeSource[]
     // Display hostname (broker `AvailableNode.name` / proxy `Node.Host`). Shown
@@ -104,33 +136,17 @@ interface ModularNode {
     clustered: boolean
     nodeInfoPort: number
     nodeInfoUp: boolean
-    // The node's own ranked candidate list from broker discovery
-    // (`AvailableNode.ipAddresses`, or its single `ipAddress`). Authoritative and
-    // ordered: a broker snapshot replaces this wholesale, so an address the node
-    // has re-ranked away stops being polled and stops being projected. It is a
-    // separate field from {@link proxyAddresses} for exactly that reason — while
-    // the two feeds shared one list, a union was the only merge that did not
-    // discard the proxy's addresses, and a union can never drop anything.
+    // The node's ranked addresses from broker discovery. Each snapshot replaces
+    // this list so withdrawn addresses disappear. Proxy-only addresses stay in
+    // their own list and are projected after the broker's ranking.
     brokerAddresses: string[]
     // Addresses known only to the proxy `node/*` feed (`Node.Addresses`), which
     // discovers independently of the broker. Projected behind the broker's order
     // by {@link nodeAddresses}, and the only address list a proxy-only node has.
     proxyAddresses: string[]
-    // The node's canonical LAN address. Both discovery sources now stamp it with
-    // the backend's shared `netpick.Primary` result: the broker's
-    // `AvailableNode.ipAddress` and the proxy `node/*` `ip` field. Used directly
-    // for the display IP and the node-info poll target — PAIR UI no longer ranks
-    // addresses itself. The broker value is preferred on merge; a proxy-only node
-    // carries the proxy's value. Empty only until a node's first event arrives.
+    // The service-ranked display address: prefer broker `ipAddress`, otherwise
+    // use proxy `ip`. The UI displays this value without ranking addresses.
     reachableAddress: string
-    gpus: ModularGpu[]
-    cpu: ModularCpu | null
-    memory: ModularMemory | null
-    // Node-level list of inference-ready hardware ids from /v1/node-info, mapped
-    // straight to SystemTopology.inferenceHardwareIds. undefined = the backend
-    // does not report readiness yet (UI shows all GPUs). See the routing
-    // limitations in docs/services-parity.md.
-    inferenceHardwareIds?: string[]
     // The node's unified model list, enriched by the broker daemon from the
     // peer's engine-manager `/v1/models` (models-http) and carried on
     // `AvailableNode.models`. It replaces the retired per-engine proxy
@@ -139,7 +155,8 @@ interface ModularNode {
     // fallback path (a peer that sends no per-engine attribution).
     models: string[]
     // Per-engine attribution of the enriched model list, keyed by engine-manager
-    // engine name ("ollama", "lmstudio"), carried on `AvailableNode.modelsByEngine`.
+    // engine name ("ollama", "lmstudio", "llamacpp"), carried on
+    // `AvailableNode.modelsByEngine`.
     // When present it is authoritative — {@link toEngineModels} attributes each
     // model to the engine that actually serves it, so a dual-engine node no
     // longer blanks its cards. A present engine key with [] is known empty; an
@@ -148,13 +165,22 @@ interface ModularNode {
     // noderec.DirectoryNode.EngineModels.
     modelsByEngine: Record<string, string[]>
     // Per-engine set of models currently loaded in memory, keyed by
-    // engine-manager engine name ("ollama", "lmstudio"), carried on
+    // engine-manager engine name ("ollama", "lmstudio", "llamacpp"), carried on
     // `AvailableNode.loadedByEngine`. Normally a subset of
     // {@link modelsByEngine}. An engine key with an empty list means
     // "running, nothing loaded"; a missing key means loaded state wasn't
     // reported. Drives {@link ModelItem.status} `'loaded'`. Empty object when no
     // engine reports loaded state. Mirrors noderec.DirectoryNode.LoadedByEngine.
     loadedByEngine: Record<string, string[]>
+    // Per-engine downloaded inventory of an engine that advertises only the model
+    // it can load (vLLM), carried on `AvailableNode.downloadedByEngine`. Its
+    // {@link modelsByEngine} entry holds just the served name, for routing; this
+    // lists every model it can load, read even while it is stopped, so the model
+    // manager keeps its rows. Its {@link loadedByEngine} entry names models the
+    // same way. A present key with [] means the inventory was read and is empty;
+    // a missing key means it was not read. Mirrors
+    // noderec.DirectoryNode.DownloadedByEngine.
+    downloadedByEngine: Record<string, string[]>
     engines: Record<ProxyEngine, EnginePresence>
     lastSeen: number
 }
@@ -164,7 +190,12 @@ function emptyPresence(): EnginePresence {
 }
 
 function emptyEngines(): Record<ProxyEngine, EnginePresence> {
-    return { ollama: emptyPresence(), 'lm-studio': emptyPresence() }
+    return {
+        ollama: emptyPresence(),
+        'lm-studio': emptyPresence(),
+        'llama-cpp': emptyPresence(),
+        vllm: emptyPresence()
+    }
 }
 
 /** Immutably set one engine's presence, preserving the other. */
@@ -173,16 +204,13 @@ function setEngine(
     engine: ProxyEngine,
     presence: EnginePresence
 ): Record<ProxyEngine, EnginePresence> {
-    return {
-        ollama: engine === 'ollama' ? presence : engines.ollama,
-        'lm-studio': engine === 'lm-studio' ? presence : engines['lm-studio']
-    }
+    return { ...engines, [engine]: presence }
 }
 
 /**
  * A node's primary reachable service port: a live engine's promoted proxy port
  * when one is up (the endpoint peers route inference to), else the node-info
- * HTTP port. Display-only — never dialed directly for inference.
+ * port. Display-only — never dialed directly for inference.
  */
 function primaryServicePort(node: ModularNode): number {
     for (const engine of PROXY_ENGINES) {
@@ -228,6 +256,16 @@ function stringValue(value: JsonValue | undefined): string {
 
 function numberValue(value: JsonValue | undefined): number {
     return typeof value === 'number' ? value : 0
+}
+
+/**
+ * An install frame's percent, or undefined when the step is indeterminate. The
+ * engine-manager omits percent (or sends 0) for steps it cannot measure; each
+ * frame replaces the last, so a missing percent must not carry forward.
+ */
+function measuredPercent(value: JsonValue | undefined): number | undefined {
+    const pct = numberValue(value)
+    return pct > 0 ? pct : undefined
 }
 
 function booleanValue(value: JsonValue | undefined): boolean {
@@ -305,7 +343,7 @@ function parseServiceError(value: JsonValue | undefined): ServiceError | null {
     // `EngineType` union so the renderer's retry/display logic recognizes it.
     // Unknown ids fall through unchanged (no retry affordance will match).
     const engineType = stringValue(obj.engineType)
-    if (engineType) error.engineType = engineManagerEngineType(engineType) ?? engineType
+    if (engineType) error.engineType = engineTypeFromManagerName(engineType) ?? engineType
     const operation = stringValue(obj.operation)
     if (operation) error.operation = operation
     const modelName = stringValue(obj.modelName)
@@ -328,7 +366,7 @@ export function parseServiceErrors(value: JsonValue | undefined): ServiceError[]
  * Per-node proxy "upstream unreachable" warnings duplicate the node list's
  * offline group, so they are never surfaced in the error UI. Backend id shape:
  * `<engine>-proxy:upstream-unreachable:<nodeId>`
- * (services/ollama-proxy/proxy.go `upstreamUnreachableID`).
+ * (services/nvpair-proxy/proxy.go `upstreamUnreachableID`).
  */
 export function isUpstreamUnreachableError(error: ServiceError): boolean {
     return error.id.includes(':upstream-unreachable:')
@@ -349,7 +387,7 @@ function parseWorkload(value: JsonValue | undefined): Workload | null {
     // The workload-manager stamps the engine-manager id (`lmstudio`); map it onto
     // our closed `EngineType` union (`lm-studio`) before narrowing so LM Studio
     // jobs are not silently dropped.
-    const engine = engineManagerEngineType(stringValue(obj.engine))
+    const engine = engineTypeFromManagerName(stringValue(obj.engine))
     if (!engine) return null
     const stateValue = stringValue(obj.state)
     if (!isWorkloadState(stateValue)) return null
@@ -388,46 +426,36 @@ export function parseWorkloadsInitial(value: JsonValue | undefined): Workload[] 
     return workloads
 }
 
-/** True for an engine fronted by a broker-supervised reverse proxy. */
-export function isProxyEngine(engine: EngineType): engine is ProxyEngine {
-    return engine === 'ollama' || engine === 'lm-studio'
-}
-
 const PENDING_OP_IDLE_TIMEOUT_MS = 90_000
 // Vendor installers can be quiet for minutes; allow a bounded 30-minute window.
 const INSTALL_PENDING_OP_IDLE_TIMEOUT_MS = 30 * 60_000
 
+/**
+ * How long an optimistic status may stand without the backend resolving it.
+ * A start is resolved by `engine:state-changed` once the engine passes its
+ * readiness probe, and engines allow that probe minutes (vLLM 30, Ollama 10),
+ * so a start keeps its marker for the awaited lifecycle envelope that already
+ * outlasts every engine's readiness window. A shorter net shows a still-loading
+ * engine as stopped, and its toggle then sends another Start instead of Stop.
+ */
 function pendingEngineOpIdleTimeoutMs(status: EngineProcessStatus): number {
-    return status === 'installing' ? INSTALL_PENDING_OP_IDLE_TIMEOUT_MS : PENDING_OP_IDLE_TIMEOUT_MS
-}
-
-/**
- * Map a `nvpair-engine-manager` engine identifier onto our closed `EngineType`
- * union. The engine-manager uses `lmstudio`; we use `lm-studio`.
- */
-function engineManagerEngineType(name: string): EngineType | null {
-    const normalized = name === 'lmstudio' ? 'lm-studio' : name
-    return isEngineType(normalized) ? normalized : null
-}
-
-/**
- * Inverse of {@link engineManagerEngineType} for the proxy engines: our closed
- * union uses `lm-studio`; engine-manager (and the `modelsByEngine` map keys) use
- * `lmstudio`. Ollama is spelled the same on both sides.
- */
-function proxyEngineToManagerName(engine: ProxyEngine): string {
-    return engine === 'lm-studio' ? 'lmstudio' : engine
+    switch (status) {
+        case 'installing':
+            return INSTALL_PENDING_OP_IDLE_TIMEOUT_MS
+        case 'starting':
+            return MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+        default:
+            return PENDING_OP_IDLE_TIMEOUT_MS
+    }
 }
 
 /**
  * The set of models a node reports loaded in memory for an engine, read from
  * `ModularNode.loadedByEngine` (enriched from the backend's per-engine
- * `loadedByEngine`). Keyed by engine-manager name, so `lm-studio` maps
- * to `lmstudio`; any other type is spelled the same on both sides.
+ * `loadedByEngine`), whose keys use the engine-manager's spelling.
  */
 function loadedNamesForEngine(node: ModularNode | undefined, engineType: EngineType): Set<string> {
-    const managerName = engineType === 'lm-studio' ? 'lmstudio' : engineType
-    return new Set(node?.loadedByEngine[managerName] ?? [])
+    return new Set(node?.loadedByEngine[engineManagerName(engineType)] ?? [])
 }
 
 function sameStringList(left: string[], right: string[]): boolean {
@@ -467,19 +495,16 @@ function mergeAddresses(existing: string[], next: string[]): string[] {
 /**
  * Every address a node is currently known to answer at: the broker's ranked
  * order first, then whatever only the proxy feed reported. The single effective
- * list — poll order, `NodeItem.allIpAddresses`, and `AvailableNode.ipAddresses`
- * all derive from it, so none of them can outlive a broker re-rank.
+ * list supplies `NodeItem.allIpAddresses` and `AvailableNode.ipAddresses`, so
+ * neither can outlive a broker re-rank.
  */
 function nodeAddresses(node: ModularNode): string[] {
     return mergeAddresses(node.brokerAddresses, node.proxyAddresses)
 }
 
 /**
- * The node's primary IP for display and node-info polling. Both discovery
- * sources now stamp `ModularNode.reachableAddress` with the backend's canonical
- * `netpick.Primary` LAN address (the broker's `AvailableNode.ipAddress` and the
- * proxy `node/*` `ip` field), so there is no local heuristic to fall
- * back to; `host` only covers a node that somehow carries no canonical address.
+ * Prefer the service-ranked display address. `host` supplies an address when
+ * the node's current feeds have not reported a canonical one.
  */
 function primaryNodeAddress(node: ModularNode): string {
     return node.reachableAddress || node.host
@@ -538,12 +563,7 @@ function normalizeLastSeen(value: number): number {
 }
 
 function sameGpu(left: ModularGpu, right: ModularGpu): boolean {
-    return (
-        left.name === right.name &&
-        left.vramBytes === right.vramBytes &&
-        left.vramUsedBytes === right.vramUsedBytes &&
-        left.utilizationPercent === right.utilizationPercent
-    )
+    return left.name === right.name && left.vramBytes === right.vramBytes
 }
 
 function sameGpuList(left: ModularGpu[], right: ModularGpu[]): boolean {
@@ -556,16 +576,12 @@ function sameGpuList(left: ModularGpu[], right: ModularGpu[]): boolean {
 
 function sameCpu(left: ModularCpu | null, right: ModularCpu | null): boolean {
     if (!left || !right) return left === right
-    return (
-        left.name === right.name &&
-        left.cores === right.cores &&
-        left.utilizationPercent === right.utilizationPercent
-    )
+    return left.name === right.name && left.cores === right.cores
 }
 
 function sameMemory(left: ModularMemory | null, right: ModularMemory | null): boolean {
     if (!left || !right) return left === right
-    return left.totalBytes === right.totalBytes && left.usedBytes === right.usedBytes
+    return left.totalBytes === right.totalBytes
 }
 
 function sameInferenceHardwareIds(left?: string[], right?: string[]): boolean {
@@ -574,18 +590,13 @@ function sameInferenceHardwareIds(left?: string[], right?: string[]): boolean {
     return sameStringList(left, right)
 }
 
-function sameTelemetry(
-    node: ModularNode,
-    gpus: ModularGpu[],
-    cpu: ModularCpu | null,
-    memory: ModularMemory | null,
-    inferenceHardwareIds: string[] | undefined
-): boolean {
+// Measurements and sample times do not change the node's hardware inventory.
+function sameHardwareInventory(left: NodeHardware, right: NodeHardware): boolean {
     return (
-        sameGpuList(node.gpus, gpus) &&
-        sameCpu(node.cpu, cpu) &&
-        sameMemory(node.memory, memory) &&
-        sameInferenceHardwareIds(node.inferenceHardwareIds, inferenceHardwareIds)
+        sameGpuList(left.gpus, right.gpus) &&
+        sameCpu(left.cpu, right.cpu) &&
+        sameMemory(left.memory, right.memory) &&
+        sameInferenceHardwareIds(left.inferenceHardwareIds, right.inferenceHardwareIds)
     )
 }
 
@@ -610,7 +621,7 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
     const ipAddress = primaryNodeAddress(node)
     const addresses = nodeAddresses(node)
     // `NodeItem.port` is the node's primary reachable service port: a live
-    // engine's promoted proxy port when one is up, otherwise the node-info HTTP
+    // engine's promoted proxy port when one is up, otherwise the node-info
     // port. This keeps the value meaningful regardless of which discovery source
     // produced the node (a proxy reports the promoted proxy port, the broker
     // reports the node-info port).
@@ -652,13 +663,13 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
     }
 }
 
-function toMetrics(node: ModularNode): NodeItemMetrics {
+function toMetrics(node: ModularNode, timestamp: number): NodeItemMetrics {
     const memoryUsage =
         node.memory && node.memory.totalBytes > 0
             ? (node.memory.usedBytes / node.memory.totalBytes) * 100
             : 0
     const current = {
-        timestamp: Date.now(),
+        timestamp,
         cpuUtilization: node.cpu?.utilizationPercent ?? 0,
         memoryUsage,
         gpuUtilization: node.gpus.map((gpu, index) => ({
@@ -712,8 +723,8 @@ function toEngineStatus(
 function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
-    // The proxy keys `Node.ID` by the stable per-host UUID (and rejects empty),
-    // so this is already the canonical node key — no TXT parsing needed.
+    // The proxy supplies the operational node key: a host UUID or a separate
+    // configured manual target key. Use it directly, without parsing TXT claims.
     const id = stringValue(obj.id)
     if (!id) return null
     const engines = emptyEngines()
@@ -728,7 +739,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
     }
     return {
         id,
-        sources: [engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'],
+        sources: [proxySourceForEngine(engine)],
         // `Node.Host` is the hostname; empty for the self-bridge manual node,
         // in which case the broker discovery entry supplies the display name on
         // merge (see mergeNode). Never fall back to the UUID id here.
@@ -746,6 +757,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         // A proxy `node/*` event carries no loaded-model state either; the
         // broker-enriched value is preserved across the proxy merge (see mergeNode).
         loadedByEngine: {},
+        downloadedByEngine: {},
         nodeInfoPort: 0,
         nodeInfoUp: false,
         // A proxy `node/*` event carries no broker ranking; its `Addresses` are
@@ -765,12 +777,37 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
     }
 }
 
+function identityVerificationValue(
+    value: JsonValue | undefined
+): NodeIdentityVerification | undefined {
+    return value === 'local' || value === 'pinned' || value === 'unverified' ? value : undefined
+}
+
+function nodeHardwareValue(
+    value: JsonValue | undefined,
+    hostUuid: string,
+    verification: NodeIdentityVerification | undefined
+): NodeHardware | null {
+    const info = objectValue(value)
+    if (!info) return null
+    // Unverified previews belong to the discovery record, regardless of the
+    // responder's claimed UUID. Hardware never changes identity or trust.
+    if (verification !== 'unverified' && stringValue(info.hostUuid) !== hostUuid) return null
+    const observedAt = numberValue(info.observedAt)
+    return {
+        gpus: gpuArrayValue(info.GPUs),
+        cpu: cpuValue(info.cpu),
+        memory: memoryValue(info.memory),
+        inferenceHardwareIds: optionalStringArrayValue(info.inference_hardware_ids),
+        telemetryTimestamp: observedAt > 0 ? observedAt : undefined
+    }
+}
+
 function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
-    // `AvailableNode.hostUuid` is the canonical node key. The broker's discovery
-    // store rejects an empty UUID, so every node it reports carries one; a
-    // payload without it is malformed and dropped rather than keyed by hostname.
+    // Verified hosts use their operational UUID. An unverified claim keeps its
+    // independent discovery record key, even when it claims that same UUID.
     const hostUuid = stringValue(obj.hostUuid)
     if (!hostUuid) return null
     // `AvailableNode.id`/`.name` are the mDNS instance hostname (display only).
@@ -781,13 +818,18 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     // when it published a single address (where it would only repeat ipAddress).
     const ipAddresses = stringArrayValue(obj.ipAddresses)
     const brokerAddresses = ipAddresses.length > 0 ? ipAddresses : ipAddress ? [ipAddress] : []
+    const discoveryRecordId = stringValue(obj.discoveryRecordId)
+    const identityVerification = identityVerificationValue(obj.identityVerification)
+    const hardware = nodeHardwareValue(obj.info, hostUuid, identityVerification)
     return {
-        id: hostUuid,
+        id: identityVerification === 'unverified' ? discoveryRecordId : hostUuid,
+        ...(discoveryRecordId ? { discoveryRecordId } : {}),
+        ...(identityVerification ? { identityVerification } : {}),
         sources: ['broker'],
         name: hostname,
         host: ipAddress,
         // Broker discovery is authoritative for trust/cluster membership state.
-        trusted: booleanValue(obj.trusted),
+        trusted: identityVerification !== 'unverified' && booleanValue(obj.trusted),
         clustered: booleanValue(obj.clustered),
         nodeInfoPort: port,
         nodeInfoUp: Boolean(ipAddress) && port > 0,
@@ -795,13 +837,14 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         proxyAddresses: [],
         // Broker `AvailableNode.ipAddress` is the head of the node's own ranked
         // candidate list — one canonical address shared across broker /
-        // cluster-manager / errors / workload-manager, so the display IP and the
-        // node-info poll target agree. The backend owns the ranking and the
+        // cluster-manager / errors / workload-manager. The backend owns ranking and
         // failover across the rest of the list; PAIR never re-ranks.
         reachableAddress: ipAddress,
-        gpus: [],
-        cpu: null,
-        memory: null,
+        gpus: hardware?.gpus ?? [],
+        cpu: hardware?.cpu ?? null,
+        memory: hardware?.memory ?? null,
+        inferenceHardwareIds: hardware?.inferenceHardwareIds,
+        telemetryTimestamp: hardware?.telemetryTimestamp,
         // Broker `AvailableNode.models`: the node's model list, enriched by its
         // daemon from the peer's engine-manager `/v1/models` (models-http). This
         // is the remote-node model source now that the proxy `models=` TXT is
@@ -817,6 +860,9 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         // `/v1/models`. `omitempty` on the wire — absent for a peer that reports
         // no loaded state, which stamps every model `idle`.
         loadedByEngine: parseModelsByEngine(obj.loadedByEngine),
+        // Broker `AvailableNode.downloadedByEngine`: what a vLLM peer has
+        // downloaded, reported even while it is stopped. `omitempty` on the wire.
+        downloadedByEngine: parseModelsByEngine(obj.downloadedByEngine),
         engines: emptyEngines(),
         lastSeen: normalizeLastSeen(numberValue(obj.lastSeen) || numberValue(obj.last_seen))
     }
@@ -850,6 +896,8 @@ function sameEngines(
 function sameNode(left: ModularNode, right: ModularNode): boolean {
     return (
         left.id === right.id &&
+        left.discoveryRecordId === right.discoveryRecordId &&
+        left.identityVerification === right.identityVerification &&
         sameStringList(left.sources, right.sources) &&
         left.name === right.name &&
         left.host === right.host &&
@@ -859,23 +907,23 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         left.nodeInfoPort === right.nodeInfoPort &&
         left.nodeInfoUp === right.nodeInfoUp &&
         // Order matters for the broker's list and only for it: that order is the
-        // node's own ranking of where to reach it, and it drives the poll order.
+        // node's own ranking of where to reach it.
         sameStringList(left.brokerAddresses, right.brokerAddresses) &&
         sameStringSet(left.proxyAddresses, right.proxyAddresses) &&
-        sameTelemetry(left, right.gpus, right.cpu, right.memory, right.inferenceHardwareIds) &&
+        sameHardwareInventory(left, right) &&
         sameStringList(left.models, right.models) &&
         sameModelsByEngine(left.modelsByEngine, right.modelsByEngine) &&
         // A residency-only change (a model loaded/evicted with the installed set
         // unchanged) must still count as a node change so the loaded dot updates.
         sameModelsByEngine(left.loadedByEngine, right.loadedByEngine) &&
-        sameEngines(left.engines, right.engines) &&
-        left.lastSeen === right.lastSeen
+        sameModelsByEngine(left.downloadedByEngine, right.downloadedByEngine) &&
+        sameEngines(left.engines, right.engines)
     )
 }
 
 /**
  * Compare two per-engine model maps. The attribution can change while the flat
- * union stays identical (e.g. a model that both engines now serve moved between
+ * union stays identical (e.g. a model that multiple engines now serve moved between
  * the per-engine buckets), so this must be checked independently of
  * {@link sameStringList} on `models` or a card would miss the re-attribution.
  */
@@ -893,14 +941,21 @@ function sameModelsByEngine(
 
 class ModularBridgeState {
     private nodes = new Map<string, ModularNode>()
+    private metricTimestamps = new Map<string, number>()
     private brokerNodeIds = new Set<string>()
+    private withdrawnPeerIds = new Set<string>()
     private errors: ServiceError[] = []
     private workloads = new Map<string, Workload>()
     private logs: LogEntry[] = []
     // Per-engine bound proxy port reported by the broker. 0 = not reported yet;
     // we never fabricate a default — an unknown port surfaces as null, not a
-    // guess. `ollama` is the `ollama-proxy`, `lm-studio` is the `lmstudio-proxy`.
-    private proxyPorts: Record<ProxyEngine, number> = { ollama: 0, 'lm-studio': 0 }
+    // guess. Keys map to relay sources through proxy-engines.ts.
+    private proxyPorts: Record<ProxyEngine, number> = {
+        ollama: 0,
+        'lm-studio': 0,
+        'llama-cpp': 0,
+        vllm: 0
+    }
     private selfId: string | null = null
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
@@ -910,8 +965,20 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; port: number }
+        {
+            installed: boolean
+            running: boolean
+            starting: boolean
+            awaitingModel: boolean
+            port: number
+        }
     >()
+    /**
+     * The engines `nvpair-engine-manager` lists for this host. It leaves out an
+     * engine the host cannot run, such as vLLM on Windows, which is then
+     * reported as `unsupported`. Null until the first full listing.
+     */
+    private localEngineList: ReadonlySet<EngineType> | null = null
     /**
      * Local model lists pulled from `nvpair-engine-manager`'s `list_models` action by
      * the supervisor. Cached so `engines:get-initial` can include them and survive
@@ -956,6 +1023,21 @@ class ModularBridgeState {
      */
     private activePulls = new Map<string, EngineProgress>()
     /**
+     * Pulls shown as "Canceling", keyed like {@link activePulls}, each with the
+     * status it had before, which a rejected cancel restores. The frame a
+     * download ends on clears its entry: it says how the download ended,
+     * however the cancel goes, so it is shown as is and left in place.
+     */
+    private cancelingPulls = new Map<string, string>()
+    /**
+     * The attempt number of each pull in {@link activePulls}, under the same
+     * key, given when its row is created. The wire names a download by engine
+     * and model alone, so this is what tells a retry from the attempt before
+     * it; see {@link modelPullAttempt}.
+     */
+    private pullAttempts = new Map<string, number>()
+    private lastPullAttempt = 0
+    /**
      * Authoritative remote-engine facts keyed by {@link remoteOpKey}
      * (`${nodeId}:${engineType}`). Populated by the supervisor from each
      * clustered peer's `engine:remote-get-installed` (mTLS `ec` surface) — the
@@ -967,27 +1049,8 @@ class ModularBridgeState {
      * evicted.
      */
     private remoteEngineFacts = new Map<string, RemoteEngineFacts>()
-    /**
-     * The model of an in-flight remote pull keyed by {@link remoteOpKey}. The
-     * backend's `engine:remote-progress` frames carry **no** `model` field
-     * (`nvpair-engine-manager/remote.go` `remoteProgress`), so we stamp the model
-     * we dispatched with here and backfill it onto every incoming frame — that
-     * keeps the optimistic entry, the streamed percent updates, and the terminal
-     * clear all on one {@link engineProgressKey}. Cleared by
-     * {@link finishRemoteModelPull}.
-     */
-    private remotePullModels = new Map<string, string>()
-    /**
-     * The model of an in-flight local pull keyed by `engineType`. The backend's
-     * `engine:pull-progress` frames (the local counterpart of
-     * `engine:remote-progress`) carry **no** `model` field
-     * (`nvpair-engine-manager/executor.go` `emitPullProgress`), so we stamp the
-     * model we dispatched here and backfill it onto every incoming frame — one
-     * active local pull per engine, matching the backend's engine-scoped
-     * progress hub. Set by {@link beginModelPull}, cleared by
-     * {@link finishModelPull}.
-     */
-    private localPullModels = new Map<EngineType, string>()
+    /** The engines each peer's engine manager lists, as {@link localEngineList} is for this host. */
+    private remoteEngineLists = new Map<string, ReadonlySet<EngineType>>()
     /**
      * The authoritative set of live inbound invites awaiting the local user's PIN
      * entry, keyed by `inviteId`. The cluster-manager pushes `cluster:invite-received`
@@ -1014,31 +1077,6 @@ class ModularBridgeState {
 
     getSelfId(): string | null {
         return this.selfId
-    }
-
-    /**
-     * The display hostname for a node key (UUID), or '' when unknown. Used as a
-     * last-resort manual-removal key when address matching finds no persisted
-     * entry (see {@link resolveManualNodeKey}).
-     */
-    getNodeHostname(nodeId: string): string {
-        return this.nodes.get(nodeId)?.name ?? ''
-    }
-
-    /**
-     * Every address a node key (UUID) is known to be reachable at — its
-     * canonical `reachableAddress`, its discovered addresses, and its `host`.
-     * Used to map a UUID back to the manual-nodes store entry (keyed by the
-     * user-entered address) when removing a manual node. Empty for an unknown id.
-     */
-    getNodeAddresses(nodeId: string): string[] {
-        const node = this.nodes.get(nodeId)
-        if (!node) return []
-        const out = new Set<string>()
-        if (node.reachableAddress) out.add(node.reachableAddress)
-        for (const address of nodeAddresses(node)) out.add(address)
-        if (node.host) out.add(node.host)
-        return Array.from(out)
     }
 
     /** The authoritative live inbound invites awaiting a PIN, oldest first. */
@@ -1089,9 +1127,10 @@ class ModularBridgeState {
     /**
      * Fix the local node id to the cluster-manager's stable node UUID
      * (`cluster:get-node-id` → `nodeUuid`). This is the sole self-identity
-     * source: discovery and proxy ids are the same UUID key, so there is no
-     * hostname guessing to guard against. A no-op when unchanged; a change
-     * triggers a renderer refresh so per-node views re-resolve self.
+     * source: the local discovery and proxy rows use this UUID. Unverified
+     * discoveries keep separate record IDs and cannot establish self identity.
+     * A no-op when unchanged; a change triggers a renderer refresh so per-node
+     * views re-resolve self.
      */
     setSelfId(nodeUuid: string): void {
         const trimmed = nodeUuid.trim()
@@ -1134,8 +1173,17 @@ class ModularBridgeState {
                         models: cached.map(item => ({
                             ...item,
                             status: loaded.has(item.name) ? 'loaded' : 'idle'
-                        }))
+                        })),
+                        inventoryKnown: true
                     })
+                }
+            }
+        }
+
+        if (selfId && this.localEngineList) {
+            for (const engineType of EngineTypes) {
+                if (!this.localEngineList.has(engineType)) {
+                    statuses.push(unsupportedEngineStatus(selfId, engineType))
                 }
             }
         }
@@ -1166,6 +1214,10 @@ class ModularBridgeState {
             const addresses = nodeAddresses(node)
             return {
                 id: node.id,
+                ...(node.discoveryRecordId ? { discoveryRecordId: node.discoveryRecordId } : {}),
+                ...(node.identityVerification
+                    ? { identityVerification: node.identityVerification }
+                    : {}),
                 // Display label: hostname, else reachable address; never the raw UUID.
                 name: node.name || primaryNodeAddress(node) || node.id,
                 ipAddress: primaryNodeAddress(node),
@@ -1182,65 +1234,13 @@ class ModularBridgeState {
         })
     }
 
-    getNodeInfoPollTargets(): { id: string; hosts: string[]; port: number }[] {
-        const targets: { id: string; hosts: string[]; port: number }[] = []
-        for (const node of Array.from(this.nodes.values())) {
-            if (!node.nodeInfoUp || node.nodeInfoPort <= 0) continue
-            // This machine appears in its own discovery snapshot, but its own
-            // node-info is on this machine: loopback reaches it without depending
-            // on the host's inbound path. Loopback alone, with no failover — the
-            // addresses it advertises are longer routes to the listener loopback
-            // just reached, so asking them after loopback fails only spends
-            // connections.
-            if (node.id === this.selfId) {
-                targets.push({
-                    id: node.id,
-                    hosts: [MODULAR_NODE_INFO_SELF_HOST],
-                    port: node.nodeInfoPort
-                })
-                continue
-            }
-            // Lead with the canonical display address, then retain the node's
-            // published alternatives. The poller walks them in order and verifies
-            // hostUuid, so a direct-connect address that resolves to another host
-            // cannot hide telemetry available at a later address.
-            const hosts = mergeAddresses([primaryNodeAddress(node)], nodeAddresses(node))
-            if (hosts.length === 0) continue
-            targets.push({ id: node.id, hosts, port: node.nodeInfoPort })
-        }
-        return targets
-    }
-
-    mergeNodeInfoResponse(nodeId: string, response: JsonValue): void {
+    private applyNodeHardware(nodeId: string, response: JsonValue): void {
         const node = this.nodes.get(nodeId)
         if (!node) return
 
-        const obj = objectValue(response)
-        if (!obj) return
-
-        // `/v1/node-info` now reports the node's own hostUuid. If it disagrees
-        // with the node we polled (the address resolved to a different host),
-        // skip the merge rather than attribute another host's telemetry here.
-        const reportedUuid = stringValue(obj.hostUuid)
-        if (reportedUuid && reportedUuid !== nodeId) return
-
-        const gpus = gpuArrayValue(obj.GPUs)
-        const cpu = cpuValue(obj.cpu)
-        const memory = memoryValue(obj.memory)
-        const inferenceHardwareIds = optionalStringArrayValue(obj.inference_hardware_ids)
-        if (node.nodeInfoUp && sameTelemetry(node, gpus, cpu, memory, inferenceHardwareIds)) {
-            emitBridgePush('metrics:update', toMetrics(node))
-            return
-        }
-
-        this.upsertNode({
-            ...node,
-            gpus,
-            cpu,
-            memory,
-            inferenceHardwareIds,
-            nodeInfoUp: true
-        })
+        const hardware = nodeHardwareValue(response, nodeId, node.identityVerification)
+        if (!hardware) return
+        this.upsertNode({ ...node, ...hardware })
     }
 
     getErrors(): ServiceError[] {
@@ -1362,6 +1362,27 @@ class ModularBridgeState {
     }
 
     /**
+     * Record a full `engine:get-installed` listing: each engine's status, and
+     * which engines the host can run at all. One left out is `unsupported`.
+     */
+    applyEngineManagerList(result: JsonValue | undefined): void {
+        const list = objectValue(result)?.engines
+        if (!Array.isArray(list)) return
+        const listed = new Set<EngineType>()
+        for (const entry of list) {
+            this.applyEngineManagerStatus(entry)
+            const engineType = engineTypeFromManagerName(stringValue(objectValue(entry)?.engine))
+            if (engineType) listed.add(engineType)
+        }
+        // An empty listing says nothing about what the host can run.
+        if (listed.size === 0) return
+        this.localEngineList = listed
+        for (const engineType of EngineTypes) {
+            if (!listed.has(engineType)) this.emitLocalEngineStatus(engineType)
+        }
+    }
+
+    /**
      * Record a `nvpair-engine-manager` `engine:state-changed` (or hydrated
      * `engine:get-installed` entry). Facts are kept regardless of whether the
      * self node is known yet; `setSelfId` triggers a refresh once it resolves.
@@ -1369,12 +1390,14 @@ class ModularBridgeState {
     applyEngineManagerStatus(params: JsonValue | undefined): void {
         const obj = objectValue(params)
         if (!obj) return
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
+            starting: booleanValue(obj.starting),
+            awaitingModel: booleanValue(obj.awaiting_model),
             port: numberValue(obj.port)
         })
         // A fresh authoritative state is the resolution of whatever op was in
@@ -1408,7 +1431,9 @@ class ModularBridgeState {
      */
     failLocalEngineOp(engineManagerEngine: string, operation: string): void {
         if (operation !== 'start' && operation !== 'install' && operation !== 'uninstall') return
-        const engineType = engineManagerEngineType(engineManagerEngine)
+        const engineType =
+            engineTypeFromManagerName(engineManagerEngine) ??
+            (isEngineType(engineManagerEngine) ? engineManagerEngine : null)
         if (!engineType) return
         this.clearLocalEngineOp(engineType)
     }
@@ -1461,16 +1486,16 @@ class ModularBridgeState {
     }
 
     /**
-     * Whether a remote peer's proxy-engine is currently reported as running.
+     * Whether a remote engine is enabled, including waiting for model selection.
      * Mirrors {@link resolveRemoteEngineStatus}: authoritative facts are used
      * alone when present, and the coarser per-engine mDNS proxy presence
      * (`up`/`down`) is the fallback only for a peer with no facts, so the toggle
      * decision matches the displayed status.
      */
-    isRemoteEngineRunning(nodeId: string, engineType: EngineType): boolean {
+    isRemoteEngineEnabled(nodeId: string, engineType: EngineType): boolean {
         if (!isProxyEngine(engineType)) return false
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engineType))
-        if (facts) return facts.running
+        if (facts) return facts.running || facts.awaitingModel
         const node = this.nodes.get(nodeId)
         if (!node || node.clustered || node.trusted) return false
         return node.engines[engineType].up
@@ -1497,11 +1522,7 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        // Remember the model so the model-less `engine:remote-progress` frames can
-        // be re-associated with this exact entry (see remotePullModels).
-        this.remotePullModels.set(this.remoteOpKey(nodeId, engineType), model)
-        this.activePulls.set(engineProgressKey(progress), progress)
-        emitBridgePush('engines:progress-changed', progress)
+        this.trackPull(progress)
     }
 
     /** Whether an optimistic remote pull entry for this model is still in flight. */
@@ -1513,15 +1534,16 @@ class ModularBridgeState {
 
     /**
      * Clear the optimistic remote pull entry once the awaited
-     * `engine:remote-pull-model` RPC settles. The backend emits **no** terminal
-     * `engine:remote-progress` for a pull (the peer's terminal stream frame
-     * becomes the JSON-RPC reply, never a notification —
-     * `nvpair-engine-manager/controlstream.go`), so this awaited-completion clear
-     * is the only signal that removes the spinner.
+     * `engine:remote-pull-model` RPC settles. The peer's last
+     * `engine:remote-progress` for a pull names how it ended (`success`,
+     * `cancelled`, or `error`), but only the reply carries the result and the
+     * error to report, so this awaited-completion clear is what removes the
+     * spinner.
      */
     finishRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
-        this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        this.cancelingPulls.delete(key)
+        this.pullAttempts.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
     }
@@ -1530,20 +1552,17 @@ class ModularBridgeState {
         const obj = objectValue(params)
         if (!obj) return
         const nodeId = stringValue(obj.node)
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!nodeId || !engineType) return
 
         const op = stringValue(obj.op)
         const operation = op === 'pull' || op === 'pull_model' ? 'pull' : 'install'
         const stage = stringValue(obj.stage) || 'working'
-        // `engine:remote-progress` carries no `model`, so for a pull we backfill
-        // the model captured at dispatch — otherwise the frame would emit under a
-        // different key than the optimistic entry and never update/clear it.
-        const model =
-            stringValue(obj.model) ||
-            (operation === 'pull'
-                ? (this.remotePullModels.get(this.remoteOpKey(nodeId, engineType)) ?? '')
-                : '')
+        // The peer stamps the model on every pull frame it relays
+        // (`nvpair-engine-manager/remote.go` `remoteProgressFn`), which is what
+        // keys a frame to its optimistic entry. An install carries none, and
+        // needs none: its progress is tracked per engine.
+        const model = stringValue(obj.model)
 
         if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
             const progressKey =
@@ -1551,13 +1570,9 @@ class ModularBridgeState {
                     ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
                     : `${nodeId}:${engineType}:${operation}`
             emitBridgePush('engines:progress-cleared', { key: progressKey })
-            if (operation === 'pull') {
-                this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
-                if (model) {
-                    this.activePulls.delete(
-                        engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-                    )
-                }
+            if (operation === 'pull' && model) {
+                this.activePulls.delete(progressKey)
+                this.pullAttempts.delete(progressKey)
             }
             if (stage === 'already-installed' || stage === 'failed') {
                 this.clearRemoteEngineOp(nodeId, engineType)
@@ -1585,17 +1600,24 @@ class ModularBridgeState {
                 ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
                 : ''
         const existingPull = pullKey ? this.activePulls.get(pullKey) : undefined
-        const framePercent = numberValue(obj.percent)
+        // Only a download this app is awaiting has a row, and the awaited pull
+        // clears it ({@link finishRemoteModelPull}), as on the local path. A
+        // frame after that, from a download that outlived the request's
+        // timeout or the download's own late last frame, has nothing to
+        // update. A row rebuilt from it is one nothing clears, and a retry of
+        // that model on that node is ignored while it stands.
+        if (operation === 'pull' && !existingPull) return
         const percent =
             operation === 'pull'
-                ? mergePullProgressPercent(framePercent, existingPull?.percent)
-                : framePercent
+                ? mergePullProgressPercent(numberValue(obj.percent), existingPull?.percent)
+                : measuredPercent(obj.percent)
+        if (isEnginePullOutcome({ operation, status: stage })) this.cancelingPulls.delete(pullKey)
         const progress: EngineProgress = {
             engineType,
             nodeId,
             nodeName: node?.name ?? nodeId,
             operation,
-            status: stage,
+            status: this.cancelingPulls.has(pullKey) ? 'canceling' : stage,
             percent,
             model: model || undefined
         }
@@ -1720,6 +1742,8 @@ class ModularBridgeState {
         nodeId: string,
         engine: ProxyEngine
     ): EngineStatusData | null {
+        const listed = this.remoteEngineLists.get(nodeId)
+        if (listed && !listed.has(engine)) return unsupportedEngineStatus(nodeId, engine)
         const node = this.nodes.get(nodeId)
         const presence = node?.engines[engine]
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engine))
@@ -1730,11 +1754,7 @@ class ModularBridgeState {
             base = {
                 engineType: engine,
                 nodeId,
-                processStatus: facts.running
-                    ? 'running'
-                    : facts.installed
-                      ? 'stopped'
-                      : 'not-installed',
+                processStatus: factsProcessStatus(facts),
                 // Only the peer engine-manager's own port is a real engine port;
                 // the discovery presence port is the proxy, so never fall back to
                 // it for the engine port.
@@ -1781,16 +1801,20 @@ class ModularBridgeState {
         for (const entry of list) {
             const engineObj = objectValue(entry)
             if (!engineObj) continue
-            const engineType = engineManagerEngineType(stringValue(engineObj.engine))
+            const engineType = engineTypeFromManagerName(stringValue(engineObj.engine))
             if (!engineType || !isProxyEngine(engineType)) continue
             this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
                 installed: booleanValue(engineObj.installed),
                 running: booleanValue(engineObj.running),
+                starting: booleanValue(engineObj.starting),
+                awaitingModel: booleanValue(engineObj.awaiting_model),
                 healthy: booleanValue(engineObj.healthy),
                 port: numberValue(engineObj.port)
             })
             seen.add(engineType)
         }
+        // A peer leaves out an engine it cannot run. An empty listing says nothing.
+        if (seen.size > 0) this.remoteEngineLists.set(nodeId, seen)
         for (const engine of PROXY_ENGINES) {
             if (!seen.has(engine)) {
                 this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
@@ -1815,6 +1839,8 @@ class ModularBridgeState {
         this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
+            starting: booleanValue(obj.starting),
+            awaitingModel: booleanValue(obj.awaiting_model),
             healthy: booleanValue(obj.healthy),
             port: numberValue(obj.port)
         })
@@ -1823,9 +1849,9 @@ class ModularBridgeState {
 
     /** Forget a node's authoritative remote-engine facts (on eviction/leave). */
     private dropRemoteEngineFacts(nodeId: string): void {
+        this.remoteEngineLists.delete(nodeId)
         for (const engine of PROXY_ENGINES) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
-            this.remotePullModels.delete(this.remoteOpKey(nodeId, engine))
         }
     }
 
@@ -1840,7 +1866,7 @@ class ModularBridgeState {
      * — no double-sourcing.
      */
     modelPullTarget(engineManagerEngine: string): EngineType | null {
-        return engineManagerEngineType(engineManagerEngine)
+        return engineTypeFromManagerName(engineManagerEngine)
     }
 
     /**
@@ -1864,7 +1890,7 @@ class ModularBridgeState {
         // Stamp `'loaded'` from the self node's loaded set so a `list_models`
         // refresh (pull/lifecycle) preserves residency instead of resetting every
         // row to idle. The loaded set is seeded by discovery self-enrichment and
-        // kept fresh by {@link applyLocalLoadedModels}.
+        // kept fresh by {@link applyLocalModelSnapshot}.
         const loaded = loadedNamesForEngine(nodeId ? this.nodes.get(nodeId) : undefined, engineType)
         const items = modelNames.map(name => modelItem(name, loaded.has(name)))
         this.localManagerModels.set(engineType, items)
@@ -1872,35 +1898,40 @@ class ModularBridgeState {
         emitBridgePush('engines:state-changed', {
             nodeId,
             engineType,
-            models: { engineType, nodeId, models: items }
+            models: { engineType, nodeId, models: items, inventoryKnown: true }
         })
     }
 
     /**
-     * Update the local node's per-engine loaded-in-memory model set from an
-     * `engine:models-changed` push and re-publish the affected local
-     * engines, so an explicit load/unload, LM Studio JIT auto-load, or TTL/idle
-     * eviction reflects immediately instead of waiting for the next discovery
-     * model-refresh sweep. The push carries the full `engine:models` snapshot, so
-     * the whole loaded map is replaced: an engine absent from `loadedByEngine` is
-     * not running / not queryable and therefore has nothing loaded. Discovery
-     * self-enrichment (`AvailableNode.loadedByEngine` over the loopback
-     * `/v1/models`) remains the seed and backstop until the self node is
-     * discovered.
+     * Apply the engine-manager's complete model push. Downloaded inventories
+     * update the local list even while no server is running. Missing inventory
+     * keys mean the read was unavailable; explicit empty lists clear the cache.
      */
-    applyLocalLoadedModels(loadedByEngine: Record<string, string[]>): void {
+    applyLocalModelSnapshot(params: JsonValue | undefined): void {
+        const models = objectValue(objectValue(params)?.models)
+        if (!models) return
+        const loadedByEngine = parseModelsByEngine(models.loadedByEngine)
+        const downloadedByEngine = parseModelsByEngine(models.downloadedByEngine)
+        for (const engine of PROXY_ENGINES) {
+            const names = downloadedByEngine[engineManagerName(engine)]
+            if (names === undefined) continue
+            const loaded = loadedByEngine[engineManagerName(engine)] ?? []
+            const inventory = [...new Set([...names, ...loaded])]
+            this.localManagerModels.set(
+                engine,
+                inventory.map(name => modelItem(name, false))
+            )
+        }
         const nodeId = this.selfId
         if (!nodeId) return
         const node = this.nodes.get(nodeId)
-        // Before the self node is discovered there is nothing to stamp against;
-        // discovery seeds the loaded set when the node arrives.
         if (!node) return
-        if (sameModelsByEngine(node.loadedByEngine, loadedByEngine)) return
-        const next: ModularNode = { ...node, loadedByEngine }
+        const next: ModularNode = {
+            ...node,
+            loadedByEngine,
+            downloadedByEngine: { ...node.downloadedByEngine, ...downloadedByEngine }
+        }
         this.nodes.set(nodeId, next)
-        // Loaded state feeds only the engine model rows (node identity, metrics,
-        // and the invite-only discovery snapshot are unaffected), so re-emit just
-        // the per-engine model patches.
         for (const engine of PROXY_ENGINES) {
             const status =
                 this.resolveLocalEngineStatus(engine, next) ??
@@ -1944,8 +1975,8 @@ class ModularBridgeState {
      * Remote peers prefer facts over proxy presence for attribution. Presence is
      * per-engine but coarse — it only says the peer is reachable for that engine,
      * not which engine actually serves a given model. For a pre-attribution peer
-     * that sends no `modelsByEngine`, whenever both engines are momentarily `up`,
-     * leaning on presence makes two engines look "active" at once, which defeats
+     * that sends no `modelsByEngine`, whenever multiple engines are momentarily `up`,
+     * leaning on presence makes multiple engines look "active" at once, which defeats
      * the single-active-engine attribution in {@link modelsForEngine} and blanks
      * the model list. So once a peer's authoritative facts exist they are the sole
      * truth; presence is used only when facts are absent (an unclustered peer, or
@@ -1971,21 +2002,30 @@ class ModularBridgeState {
      * so a dual-engine node attributes each model to the engine that serves it.
      * A pre-attribution peer sends no map, so the flat `AvailableNode.models`
      * union is attributed only when exactly one proxy engine is active (never
-     * cross-attributed when both run). Mirrors
+     * cross-attributed when multiple run). Mirrors
      * noderec.DirectoryNode.EngineModels.
      */
     private modelsForEngine(node: ModularNode, engine: ProxyEngine): string[] {
+        // An engine with a separate disk inventory (vLLM) reports
+        // its downloaded inventory apart: that is the list to manage, plus
+        // anything loaded that is not in it, such as a model served from a local
+        // path. Its advertised entry includes models loadable on request.
+        const downloaded = node.downloadedByEngine[engineManagerName(engine)]
+        if (downloaded !== undefined) {
+            const loaded = node.loadedByEngine[engineManagerName(engine)] ?? []
+            return [...downloaded, ...loaded.filter(name => !downloaded.includes(name))]
+        }
         // Per-engine attribution is authoritative when the node carries any:
         // return exactly this engine's models so a dual-engine node attributes
         // each model to the engine that serves it, and a missing key means this
         // engine serves none (NOT the cross-engine union). Mirrors
         // noderec.DirectoryNode.EngineModels.
         if (Object.keys(node.modelsByEngine).length > 0) {
-            return node.modelsByEngine[proxyEngineToManagerName(engine)] ?? []
+            return node.modelsByEngine[engineManagerName(engine)] ?? []
         }
         // Fallback for a pre-attribution peer: the flat union is unattributed, so
         // attribute it only when exactly one proxy engine is active on the node,
-        // and never cross-attribute when both run.
+        // and never cross-attribute when multiple run.
         const active = PROXY_ENGINES.filter(candidate =>
             this.engineActiveForModels(node, candidate)
         )
@@ -1999,7 +2039,14 @@ class ModularBridgeState {
             nodeId: node.id,
             models: this.modelsForEngine(node, engine).map(name =>
                 modelItem(name, loaded.has(name))
-            )
+            ),
+            // An engine whose list is read from disk is listed while stopped, so
+            // an empty list reads as "nothing downloaded". That is true only when
+            // its inventory was actually read; a peer that could not be read, or
+            // whose list never arrived, is unknown.
+            inventoryKnown:
+                !EnginesListingModelsWhenStopped.includes(engine) ||
+                engineManagerName(engine) in node.downloadedByEngine
         }
     }
 
@@ -2036,11 +2083,12 @@ class ModularBridgeState {
                     models: cached.map(item => ({
                         ...item,
                         status: loaded.has(item.name) ? 'loaded' : 'idle'
-                    }))
+                    })),
+                    inventoryKnown: true
                 }
             }
         }
-        if (!node) return { engineType: engine, nodeId, models: [] }
+        if (!node) return emptyEngineModels(nodeId, engine)
         return this.toEngineModels(node, engine)
     }
 
@@ -2061,6 +2109,9 @@ class ModularBridgeState {
     ): EngineStatusData | undefined {
         const nodeId = this.selfId
         if (!nodeId) return undefined
+        if (this.localEngineList && !this.localEngineList.has(engineType)) {
+            return unsupportedEngineStatus(nodeId, engineType)
+        }
         const facts = this.engineManagerFacts.get(engineType)
 
         // An in-flight lifecycle op outranks the fact-derived status so the UI
@@ -2081,20 +2132,16 @@ class ModularBridgeState {
             return {
                 engineType,
                 nodeId,
-                processStatus: facts.running
-                    ? 'running'
-                    : facts.installed
-                      ? 'stopped'
-                      : 'not-installed',
+                processStatus: factsProcessStatus(facts),
                 // The engine-manager reports the manifest's configured port for a
-                // pinned-port engine (Ollama 11434, managed LM Studio 1235 behind
-                // its 1234 proxy facade) whether it is running or merely installed,
+                // pinned-port engine (for example managed llama.cpp on 8081 behind
+                // its 8080 proxy facade) whether it is running or merely installed,
                 // so surface it in both states —
                 // matching the `EngineStatusData.enginePort` contract. Auto-assign
                 // engines report 0 until started, which stays null.
                 enginePort: facts.installed && facts.port > 0 ? facts.port : null,
                 // Each proxy-fronted engine has its own broker proxy
-                // (`ollama-proxy` / `lmstudio-proxy`); report that engine's bound
+                // (mapped in proxy-engines.ts); report that engine's bound
                 // proxy port. Loopback-only engines get null.
                 proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
             }
@@ -2120,7 +2167,7 @@ class ModularBridgeState {
         if (!nodeId) return
         const obj = objectValue(params)
         if (!obj) return
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
         const stage = stringValue(obj.stage) || 'installing'
@@ -2159,7 +2206,7 @@ class ModularBridgeState {
             nodeName: node?.name ?? nodeId,
             operation: 'install',
             status: stage,
-            percent: numberValue(obj.percent)
+            percent: measuredPercent(obj.percent)
         }
         emitBridgePush('engines:progress-changed', progress)
     }
@@ -2185,10 +2232,14 @@ class ModularBridgeState {
             model,
             status: 'pulling'
         }
-        // Remember the model so the model-less `engine:pull-progress` frames can
-        // be re-associated with this exact entry (see localPullModels).
-        this.localPullModels.set(engineType, model)
-        this.activePulls.set(engineProgressKey(progress), progress)
+        this.trackPull(progress)
+    }
+
+    /** Add a pull's row, numbering it as a new attempt of its model. */
+    private trackPull(progress: EngineProgress): void {
+        const key = engineProgressKey(progress)
+        this.activePulls.set(key, progress)
+        this.pullAttempts.set(key, ++this.lastPullAttempt)
         emitBridgePush('engines:progress-changed', progress)
     }
 
@@ -2196,31 +2247,35 @@ class ModularBridgeState {
      * Project a `nvpair-engine-manager` `engine:pull-progress` for the local node
      * — the local counterpart of `engine:remote-progress`: live
      * download progress for a model pull driven via `engine:action`
-     * `pull_model`. The frame carries `{ engine, op, stage, percent, message }`
-     * and **no** `model`, so we backfill the model captured at dispatch and
-     * refresh the optimistic entry in place. Clearing stays with the awaited pull
-     * ({@link finishModelPull}), so this only advances percent/stage: it ignores
-     * the terminal error sentinel (`percent: -1`) and the non-download frames'
-     * `percent: 0` so the rendered bar never jumps backwards.
+     * `pull_model`. The frame carries `{ engine, model, op, stage, percent,
+     * message }` and its `model` identifies which optimistic entry to refresh —
+     * the backend queues concurrent pulls per engine, so the engine alone does
+     * not. Clearing stays with the awaited pull ({@link finishModelPull}), so
+     * this only advances percent/stage: it ignores the terminal error sentinel
+     * (`percent: -1`) and the non-download frames' `percent: 0` so the rendered
+     * bar never jumps backwards.
      */
     applyLocalEngineProgress(params: JsonValue | undefined): void {
         const nodeId = this.selfId
         if (!nodeId) return
         const obj = objectValue(params)
         if (!obj) return
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
-        const model = this.localPullModels.get(engineType)
+        const model = stringValue(obj.model)
         if (!model) return
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const existing = this.activePulls.get(key)
         if (!existing) return
 
         const percent = numberValue(obj.percent)
+        const stage = stringValue(obj.stage) || existing.status
+        if (isEnginePullOutcome({ operation: 'pull', status: stage }))
+            this.cancelingPulls.delete(key)
         const progress: EngineProgress = {
             ...existing,
-            status: stringValue(obj.stage) || existing.status,
+            status: this.cancelingPulls.has(key) ? 'canceling' : stage,
             percent: mergePullProgressPercent(percent, existing.percent)
         }
         this.activePulls.set(key, progress)
@@ -2240,10 +2295,68 @@ class ModularBridgeState {
     finishModelPull(engineType: EngineType, model: string): void {
         const nodeId = this.selfId
         if (!nodeId) return
-        this.localPullModels.delete(engineType)
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        this.cancelingPulls.delete(key)
+        this.pullAttempts.delete(key)
         if (!this.activePulls.delete(key)) return
         emitBridgePush('engines:progress-cleared', { key })
+    }
+
+    /**
+     * The attempt number of the download of this model tracked on the node, or
+     * undefined when none is. A retry is a new row with a new number, so a
+     * cancel that outlives the attempt it was sent for can tell that the row
+     * it would act on is no longer that attempt's.
+     */
+    modelPullAttempt(
+        engineType: EngineType,
+        model: string,
+        nodeId = this.selfId
+    ): number | undefined {
+        if (!nodeId) return undefined
+        return this.pullAttempts.get(
+            engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        )
+    }
+
+    /**
+     * Move a tracked download into or out of "Canceling", remembering the
+     * status it had so a rejected cancel can restore it.
+     *
+     * Returns false only when there is no download left to mark: none is
+     * tracked, or its row already shows how it ended, which "Canceling" would
+     * hide until the awaited pull clears it. It is not the guard against
+     * concurrent cancels — the supervisor holds that for as long as it awaits
+     * a reply, because a cancel that outlives its budget is still running and
+     * the row must stay in "Canceling" while the user remains able to ask
+     * again.
+     */
+    setModelPullCanceling(
+        engineType: EngineType,
+        model: string,
+        canceling: boolean,
+        nodeId = this.selfId
+    ): boolean {
+        if (!nodeId) return false
+        const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        const existing = this.activePulls.get(key)
+        if (!existing) return false
+        if (canceling && isEnginePullOutcome(existing)) return false
+        const remembered = this.cancelingPulls.get(key)
+        if (canceling) {
+            // Record the pre-cancel status on the first cancel only. A retry
+            // would otherwise record "canceling" as the status to restore, and
+            // a later rejection would put the row back into the very state it
+            // is trying to leave.
+            if (remembered === undefined) this.cancelingPulls.set(key, existing.status)
+        } else {
+            this.cancelingPulls.delete(key)
+        }
+        const status = canceling ? 'canceling' : (remembered ?? existing.status)
+        const progress = { ...existing, status }
+        this.activePulls.set(key, progress)
+        emitBridgePush('engines:progress-changed', progress)
+        return true
     }
 
     getLogs(): LogEntry[] {
@@ -2279,12 +2392,9 @@ class ModularBridgeState {
     }
 
     handleNotification(notification: JsonRpcNotification): void {
-        if (notification.source === 'proxy') {
-            this.handleProxyNotification(notification, 'ollama')
-            return
-        }
-        if (notification.source === 'lmstudio-proxy') {
-            this.handleProxyNotification(notification, 'lm-studio')
+        const proxyEngine = proxyEngineFromSource(notification.source)
+        if (proxyEngine) {
+            this.handleProxyNotification(notification, proxyEngine)
             return
         }
         if (notification.source === 'broker') {
@@ -2332,7 +2442,7 @@ class ModularBridgeState {
         if (notification.method === 'node/discovered' || notification.method === 'node/updated') {
             const node = parseProxyNode(notification.params, engine)
             if (!node) return
-            this.upsertNode(node, engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy')
+            this.upsertNode(node, proxySourceForEngine(engine))
         }
     }
 
@@ -2344,7 +2454,7 @@ class ModularBridgeState {
     private clearNodeEngine(nodeId: string, engine: ProxyEngine): void {
         const existing = this.nodes.get(nodeId)
         if (!existing) return
-        const source: BrokerNodeSource = engine === 'ollama' ? 'ollama-proxy' : 'lmstudio-proxy'
+        const source = proxySourceForEngine(engine)
         const sources = removeSource(existing.sources, source)
         if (sources.length === 0 && !existing.nodeInfoUp) {
             this.removeNodeEntry(nodeId)
@@ -2366,6 +2476,31 @@ class ModularBridgeState {
     }
 
     private handleBrokerNotification(notification: JsonRpcNotification): void {
+        if (notification.method === 'discovery:node-info') {
+            const snapshot = objectValue(notification.params)
+            if (!snapshot) return
+            const verification = identityVerificationValue(snapshot.identityVerification)
+            const id = stringValue(
+                verification === 'unverified' ? snapshot.discoveryRecordId : snapshot.hostUuid
+            )
+            const node = this.nodes.get(id)
+            const info = objectValue(snapshot.info)
+            if (!node || !info) {
+                // There must be an existing row and hardware payload to update.
+                return
+            }
+            if (node.discoveryRecordId !== stringValue(snapshot.discoveryRecordId)) {
+                // A shared host UUID cannot attach another record's snapshot.
+                return
+            }
+            if (node.identityVerification !== verification) {
+                // Match the row's current verification state so a preview cannot
+                // overwrite a verified host's hardware.
+                return
+            }
+            this.applyNodeHardware(id, info)
+            return
+        }
         if (notification.method !== 'discovery:nodes-changed') return
 
         const nodes = brokerNodesValue(notification.params)
@@ -2386,14 +2521,19 @@ class ModularBridgeState {
         const existing = this.nodes.get(nodeId)
         if (!existing) return
 
+        if (existing.identityVerification === 'pinned') {
+            this.withdrawnPeerIds.add(nodeId)
+            this.removeNodeEntry(nodeId)
+            return
+        }
+
         const remainingSources = removeSource(existing.sources, 'broker')
         if (remainingSources.length === 0) {
             this.removeNodeEntry(nodeId)
             return
         }
 
-        // A proxy source still reports the node; drop only the node-info snapshot
-        // (the broker is the sole node-info / telemetry source now).
+        // Proxy presence keeps the row, while broker-owned hardware is withdrawn.
         const next: ModularNode = {
             ...existing,
             sources: remainingSources,
@@ -2408,36 +2548,46 @@ class ModularBridgeState {
             gpus: [],
             cpu: null,
             memory: null,
+            inferenceHardwareIds: undefined,
+            telemetryTimestamp: undefined,
             lastSeen: Date.now()
         }
+        // The spread copied broker-owned provenance. Remove it when the broker
+        // withdraws the record; surviving proxy presence cannot preserve verification.
+        delete next.discoveryRecordId
+        delete next.identityVerification
         this.nodes.set(next.id, next)
         this.emitNodeChanged(next)
     }
 
     private upsertNode(node: ModularNode, source?: BrokerNodeSource): void {
+        if (source === 'broker') {
+            this.withdrawnPeerIds.delete(node.id)
+        } else if (this.withdrawnPeerIds.has(node.id)) {
+            // Only a new broker record may restore a withdrawn peer. Proxy
+            // presence can arrive late from a different subprocess stream.
+            return
+        }
         // Self is identified authoritatively by the cluster-manager's node UUID
         // (`cluster:get-node-id`), which equals the discovery/proxy hostUuid key,
         // so there is no hostname guessing here — `setSelfId` is the sole source.
         const existing = this.nodes.get(node.id)
         const merged = this.mergeNode(existing, node, source)
-        // Collapse a wiped-and-rejoined host onto its new UUID before storing,
-        // so the pre-wipe record never reaches the map (see resolveAddressCollision).
-        if (this.resolveAddressCollision(merged)) {
-            this.removeNodeEntry(merged.id)
-            return
-        }
-        if (existing && sameNode(existing, merged)) return
+        const changed = !existing || !sameNode(existing, merged)
         this.nodes.set(merged.id, merged)
-        this.emitNodeChanged(merged)
+        if (changed) this.emitNodeChanged(merged)
+        this.emitNodeMetrics(merged)
+        if (!changed) return
 
         // A model pulled/deleted while an engine is already running produces no
         // `engine:state-changed`, so the engine-manager model cache would go stale.
-        // Refresh on a flat-union change and on this engine's attribution change:
-        // deleting a model shared with another engine changes only the latter.
+        // Refresh on advertised and downloaded inventory changes. vLLM can gain
+        // or lose a cached model without changing the model it serves, including
+        // while stopped, so its separate downloaded list must trigger a refresh.
         if (merged.id === this.selfId && existing) {
             const unionChanged = !sameStringList(existing.models, merged.models)
             for (const engine of PROXY_ENGINES) {
-                const managerEngine = proxyEngineToManagerName(engine)
+                const managerEngine = engineManagerName(engine)
                 const hadEngine = managerEngine in existing.modelsByEngine
                 const hasEngine = managerEngine in merged.modelsByEngine
                 const attributionChanged =
@@ -2446,13 +2596,23 @@ class ModularBridgeState {
                         existing.modelsByEngine[managerEngine] ?? [],
                         merged.modelsByEngine[managerEngine] ?? []
                     )
+                const hadDownloaded = managerEngine in existing.downloadedByEngine
+                const hasDownloaded = managerEngine in merged.downloadedByEngine
+                const downloadedChanged =
+                    hadDownloaded !== hasDownloaded ||
+                    !sameStringList(
+                        existing.downloadedByEngine[managerEngine] ?? [],
+                        merged.downloadedByEngine[managerEngine] ?? []
+                    )
+                const canListWhileStopped =
+                    EnginesListingModelsWhenStopped.includes(engine) && hasDownloaded
                 // Proxy presence is not a lifecycle fact: the broker can keep
                 // serving engine-manager while this optional routing proxy is
                 // unavailable. Use the local manager fact first, with proxy
                 // presence only as the existing external-engine fallback.
                 if (
-                    this.engineActiveForModels(merged, engine) &&
-                    (unionChanged || attributionChanged)
+                    (this.engineActiveForModels(merged, engine) || canListWhileStopped) &&
+                    (unionChanged || attributionChanged || downloadedChanged)
                 ) {
                     this.onLocalDiscoveryModelsChanged?.(engine)
                 }
@@ -2460,69 +2620,10 @@ class ModularBridgeState {
         }
     }
 
-    /**
-     * Collapse two UUIDs that are really one machine.
-     *
-     * A node whose appdata is wiped mints a fresh hostUuid, so peers advertise
-     * the same machine under a new key while the pre-wipe key survives — the
-     * fleet sees a duplicate "ghost" row. Nothing on the wire marks the two as
-     * the same host, so this infers it from the three signals the node-scanner
-     * uses to nominate a superseded record (`directory.supersedeCandidates`):
-     * same address, same hostname, and a `lastSeen` gap of at least
-     * MODULAR_SUPERSEDE_MIN_AGE_MS.
-     *
-     * It stops there, and the scanner does not. Those signals come from an
-     * unauthenticated mDNS advertisement, and `lastSeen` is not a liveness
-     * clock — the backend re-stamps a node only when its record CHANGES, so a
-     * healthy peer's `lastSeen` freezes exactly like a ghost's. The scanner
-     * therefore treats them as a suspicion and deletes only once node-info
-     * names a different host. This has no such proof available, so it must stay
-     * a display-side collapse: it hides a row until the next snapshot, and must
-     * never be read as the directory having evicted anything.
-     *
-     * Two caveats on how faithfully this can mirror the backend, both stemming
-     * from a proxy-sourced node carrying less than a discovery record does:
-     * `parseProxyNode` stamps `lastSeen` locally rather than echoing the
-     * backend's, and `primaryNodeAddress` falls back to `host` (a hostname for a
-     * proxy node), which can collapse the address and name conditions into one.
-     * Both only ever make this rule fire LESS often than the scanner's, so the
-     * node list stays a subset of the directory rather than contradicting it.
-     *
-     * Returns true when `node` is the STALE side and must not be stored — a
-     * backend that has not yet evicted the ghost keeps re-publishing it in every
-     * `discovery:nodes-changed` snapshot, so refusing it on arrival is what
-     * makes the eviction stick. Otherwise the losing entries are evicted here.
-     */
-    private resolveAddressCollision(node: ModularNode): boolean {
-        const address = primaryNodeAddress(node)
-        if (!address || !node.name) return false
-        const rivals: ModularNode[] = []
-        for (const other of this.nodes.values()) {
-            if (other.id === node.id || other.id === this.selfId) continue
-            if (primaryNodeAddress(other) !== address || other.name !== node.name) continue
-            rivals.push(other)
-        }
-        // Self is pinned by the cluster-manager's node UUID, so it is always the
-        // live identity for this machine's address: skipped above so it can
-        // never be evicted, and skipped as a claimant below so it never evicts.
-        // The backend applies the same asymmetry (directory.supersedeCandidates).
-        if (node.id === this.selfId) return false
-        // Decide before mutating. Returning mid-loop would strand entries
-        // already marked stale, leaving a partially applied collapse.
-        if (rivals.some(other => other.lastSeen - node.lastSeen >= MODULAR_SUPERSEDE_MIN_AGE_MS)) {
-            return true
-        }
-        for (const other of rivals) {
-            if (node.lastSeen - other.lastSeen >= MODULAR_SUPERSEDE_MIN_AGE_MS) {
-                this.removeNodeEntry(other.id)
-            }
-        }
-        return false
-    }
-
     /** Delete a node and clean every index that referenced it. */
     private removeNodeEntry(nodeId: string): void {
         if (!this.nodes.delete(nodeId)) return
+        this.metricTimestamps.delete(nodeId)
         this.brokerNodeIds.delete(nodeId)
         this.dropRemoteEngineFacts(nodeId)
         emitBridgePush('nodes:remove', nodeId)
@@ -2531,13 +2632,12 @@ class ModularBridgeState {
 
     private emitNodeChanged(merged: ModularNode): void {
         emitBridgePush('nodes:upsert', toNodeItem(merged, this.selfId))
-        emitBridgePush('metrics:update', toMetrics(merged))
         emitBridgePush('discovery:nodes-changed', this.getAvailableNodes())
         // For the local node, engine-manager is the source of truth for
         // install/running state; discovery only fills in models. A remote node
         // has no local engine-manager, so its status comes from authoritative
         // peer facts or its advertisement, and is omitted when neither is known.
-        // Push per proxy-engine (Ollama + LM Studio) so both light up per node.
+        // Push per proxy engine so each one lights up independently per node.
         const isSelf = merged.id === this.selfId
         for (const engine of PROXY_ENGINES) {
             if (!isSelf) {
@@ -2556,6 +2656,15 @@ class ModularBridgeState {
         }
     }
 
+    private emitNodeMetrics(node: ModularNode): void {
+        const timestamp = node.telemetryTimestamp
+        if (timestamp === undefined) return
+        const previous = this.metricTimestamps.get(node.id)
+        if (previous !== undefined && timestamp <= previous) return
+        this.metricTimestamps.set(node.id, timestamp)
+        emitBridgePush('metrics:update', toMetrics(node, timestamp))
+    }
+
     private mergeNode(
         existing: ModularNode | undefined,
         next: ModularNode,
@@ -2564,9 +2673,8 @@ class ModularBridgeState {
         if (!existing || !source) return next
 
         if (source === 'broker') {
-            // node-info discovery snapshot (now also carries manual nodes). Keep
-            // the live per-engine proxy data we already merged; refresh identity,
-            // addresses, and node-info from the snapshot.
+            // Broker snapshots own identity, ranked addresses, and hardware.
+            // Preserve the live engine presence reported separately by proxies.
             return {
                 ...next,
                 sources: mergeSources(existing.sources, 'broker'),
@@ -2576,7 +2684,7 @@ class ModularBridgeState {
                 name: next.name || existing.name,
                 // The snapshot is the broker's whole list, so it replaces the
                 // previous one (carried by the spread): an address the node has
-                // re-ranked away must stop being polled and projected, which a
+                // re-ranked away must stop being projected, which a
                 // union could never express. The proxy feed's own contribution
                 // survives untouched and is projected behind this list.
                 proxyAddresses: existing.proxyAddresses,
@@ -2584,17 +2692,13 @@ class ModularBridgeState {
                 // a prior value only if a snapshot ever lacks ipAddress. The proxy
                 // supplies one too now, but the broker's wins on merge.
                 reachableAddress: next.reachableAddress || existing.reachableAddress,
-                gpus: existing.gpus,
-                cpu: existing.cpu,
-                memory: existing.memory,
-                inferenceHardwareIds: existing.inferenceHardwareIds,
                 engines: existing.engines
             }
         }
 
-        // A proxy source (ollama-proxy / lmstudio-proxy): refresh only that
-        // engine's presence; keep the other engine, telemetry, and node-info.
-        const engine = PROXY_SOURCE_ENGINE[source]
+        // A proxy source refreshes only that engine's presence; keep the other
+        // engines, telemetry, and node-info.
+        const engine = proxyEngineFromSource(source)
         return {
             ...next,
             sources: mergeSources(existing.sources, source),
@@ -2602,6 +2706,12 @@ class ModularBridgeState {
             // broker-reported values rather than overwriting them with the proxy
             // node's empty name and default-false flags.
             name: existing.name || next.name,
+            ...(existing.discoveryRecordId
+                ? { discoveryRecordId: existing.discoveryRecordId }
+                : {}),
+            ...(existing.identityVerification
+                ? { identityVerification: existing.identityVerification }
+                : {}),
             trusted: existing.trusted,
             clustered: existing.clustered,
             // Symmetrically: this event is the proxy feed's whole list (carried by
@@ -2617,12 +2727,14 @@ class ModularBridgeState {
             cpu: existing.cpu,
             memory: existing.memory,
             inferenceHardwareIds: existing.inferenceHardwareIds,
+            telemetryTimestamp: existing.telemetryTimestamp,
             // A proxy event carries no model list (models-http); keep the
             // broker-enriched `AvailableNode.models` (+ per-engine attribution and
             // loaded set) we already merged.
             models: existing.models,
             modelsByEngine: existing.modelsByEngine,
             loadedByEngine: existing.loadedByEngine,
+            downloadedByEngine: existing.downloadedByEngine,
             engines: setEngine(existing.engines, engine, next.engines[engine]),
             lastSeen: Math.max(existing.lastSeen, next.lastSeen)
         }

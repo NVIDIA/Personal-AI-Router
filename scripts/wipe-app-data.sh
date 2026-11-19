@@ -24,9 +24,11 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.ps1 (Windows twin — update both in the same change)
 #
-# Explicit exclusions (never add): ~/.ollama, ~/.lmstudio, external engine
-# installs, and the application install tree (Program Files / /opt/PAIR /
-# PAIR.app).
+# Explicit exclusions (never add): ~/.ollama, ~/.llamacpp, ~/.lmstudio,
+# ~/.cache/huggingface, engine installs PAIR did not create, and the application
+# install tree (Program Files / /opt/PAIR / the macOS app bundle). Those home
+# directories are model stores; each engine declares its own as models_dir, and
+# nothing PAIR removes may delete one. PAIR's managed vLLM payload is included.
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -42,10 +44,11 @@ usage() {
   cat <<EOF
 Usage: scripts/wipe-app-data.sh [options]
 
-Delete all Personal AI Router-owned application data (settings, logs, cluster
-identity, chat history, PAIR-managed engines under the app data root).
+Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
+identity, chat history, and PAIR-managed engines).
 
-Does NOT delete third-party model libraries (e.g. ~/.ollama, ~/.lmstudio).
+Does NOT delete model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models,
+~/.cache/huggingface).
 Does NOT uninstall the application binary.
 
 Options:
@@ -58,7 +61,7 @@ Options:
   --help             Show this help
 
 Interactive mode requires typing "${CONFIRM_PHRASE}" to proceed.
-Quit Personal AI Router before running unless --force-kill is set.
+Quit NVIDIA PAIR before running unless --force-kill is set.
 EOF
 }
 
@@ -112,6 +115,7 @@ fi
 
 CURRENT_ROOT="$CONFIG_BASE/$APP_ORG/$APP_DATA_DIR_NAME"
 LEGACY_ROOT="$CONFIG_BASE/$APP_PREVIOUS_ORG/$APP_PREVIOUS_DATA_DIR_NAME"
+VLLM_INSTALL_ROOT="$HOME_DIR/.nvpair/engine-bin/vllm"
 
 USERNAME="${USER:-user}"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -129,6 +133,7 @@ CONTROL_DIR="$RUNTIME_BASE/nvpair-$SCOPE"
 TARGETS=()
 TARGETS+=("$CURRENT_ROOT|Current shared Electron + backend app data root")
 TARGETS+=("$LEGACY_ROOT|Legacy pre-rename app data root (NVIDIA Corporation/PAIR)")
+TARGETS+=("$VLLM_INSTALL_ROOT|PAIR-managed vLLM payload")
 TARGETS+=("$CACHE_HOME/nvpair-updater|electron-updater download cache")
 TARGETS+=("$CONTROL_DIR|Removed CLI control socket directory and auth token")
 TARGETS+=("$HOME_DIR/.local/bin/nvpair|Generated Linux nvpair launcher")
@@ -146,6 +151,8 @@ fi
 PAIR_PROCS=(
   PAIR
   nvpair-ui-broker
+  nvpair-proxy
+  # Pre-unification names, so this still cleans up after an older install.
   ollama-proxy
   lmstudio-proxy
   nvpair-node-info
@@ -193,7 +200,7 @@ for proc in "${PAIR_PROCS[@]}"; do
 done
 
 if [[ ${#running_procs[@]} -gt 0 && "$FORCE_KILL" -eq 0 ]]; then
-  echo "Personal AI Router appears to be running (${running_procs[*]})." >&2
+  echo "NVIDIA PAIR appears to be running (${running_procs[*]})." >&2
   echo "Quit the app first, or pass --force-kill to stop processes before wiping." >&2
   exit 1
 fi
@@ -212,8 +219,8 @@ if [[ "$CONFIRM" -eq 0 ]]; then
     exit 2
   fi
   echo ""
-  echo "WARNING: This permanently deletes all Personal AI Router app data."
-  echo "Third-party model libraries (e.g. ~/.ollama, ~/.lmstudio) are NOT removed."
+  echo "WARNING: This permanently deletes all NVIDIA PAIR app data."
+  echo "Model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models, ~/.cache/huggingface) are NOT removed."
   echo ""
   echo "Paths to remove:"
   for entry in "${TARGETS[@]}"; do
@@ -248,6 +255,8 @@ done
 # Remove org parents only when empty (other NVIDIA apps may share them).
 rmdir "$CONFIG_BASE/$APP_ORG" 2>/dev/null || true
 rmdir "$CONFIG_BASE/$APP_PREVIOUS_ORG" 2>/dev/null || true
+rmdir "$HOME_DIR/.nvpair/engine-bin" 2>/dev/null || true
+rmdir "$HOME_DIR/.nvpair" 2>/dev/null || true
 
 echo "Removed $removed path(s)."
 if [[ "$failures" -gt 0 ]]; then
@@ -268,5 +277,5 @@ if [[ -n "$RELAUNCH_EXEC" ]]; then
   exit 1
 fi
 
-echo "Done. Restart Personal AI Router to begin with a clean state."
+echo "Done. Restart NVIDIA PAIR to begin with a clean state."
 exit 0

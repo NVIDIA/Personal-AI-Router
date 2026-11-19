@@ -100,7 +100,8 @@ function buildUniversal(
     sdkPath: string,
     outputName: string,
     sources: string[],
-    frameworks: string[]
+    frameworks: string[],
+    linkerArgs: string[]
 ): void {
     const archBinaries: string[] = []
     for (const arch of ARCHS) {
@@ -117,6 +118,7 @@ function buildUniversal(
                 '-target',
                 `${arch}-apple-macos${DEPLOYMENT_TARGET}`,
                 ...frameworkArgs,
+                ...linkerArgs,
                 '-o',
                 archOut,
                 ...sources
@@ -149,14 +151,25 @@ function main(): void {
         sdkPath,
         DAEMON_OUTPUT,
         [...shared, versionSource, ...swiftSources(DAEMON_DIR)],
-        ['Foundation', 'Security']
+        ['Foundation', 'Security'],
+        [
+            '-Xlinker',
+            '-sectcreate',
+            '-Xlinker',
+            '__TEXT',
+            '-Xlinker',
+            '__info_plist',
+            '-Xlinker',
+            path.join(DAEMON_DIR, 'Info.plist')
+        ]
     )
     buildUniversal(
         swiftc,
         sdkPath,
         CTL_OUTPUT,
         [...shared, versionSource, ...swiftSources(CTL_DIR)],
-        ['Foundation', 'ServiceManagement']
+        ['Foundation', 'ServiceManagement'],
+        []
     )
 
     console.log(`[build-helper] helper binaries ready in ${BUILD_DIR} (v${version})`)

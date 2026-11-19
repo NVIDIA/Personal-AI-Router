@@ -4,17 +4,19 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -24,6 +26,11 @@ import (
 // optional fields within a supported version are ignored so additive
 // schema growth stays backward compatible.
 const ManifestSchemaVersion = 1
+
+const (
+	actionHTTPParamsBody  = "body"
+	actionHTTPParamsQuery = "query"
+)
 
 // allowedPlaceholders is the set of `{token}`s the runner can resolve
 // at execution time. Validation rejects any other token so a typo in
@@ -39,7 +46,20 @@ var allowedPlaceholders = map[string]bool{
 	"models_dir":  true,
 }
 
+// hfHubCachePlaceholder is the Hugging Face hub cache the engine itself uses,
+// resolved from its launch environment the way huggingface_hub resolves it
+// (see hfEnv.hubCache). It is available only in the dir of an hf_cache or
+// hf_pull action, whose files must be the ones the engine reads.
+const hfHubCachePlaceholder = "hf_hub_cache"
+
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+// resultFieldNameRe matches one element field name, such as "root".
+var resultFieldNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
+var resultMatchFieldPathRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*(?:\.[a-zA-Z_][a-zA-Z0-9_-]*)*$`)
+var artifactNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+var sha256Re = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 // engineNameRe restricts engine names to a safe charset — the name is
 // used as a filesystem path component (the per-engine install dir), so
@@ -55,24 +75,44 @@ type Manifest struct {
 	ManifestVersion int                 `json:"manifest_version"`
 	Platforms       map[string]Platform `json:"platforms"`
 	Actions         map[string]Action   `json:"actions,omitempty"`
+	// AdvertisedModels says which models this node tells its peers and its own
+	// proxy it can serve: "list" (the default) advertises list_models, "loaded"
+	// advertises loaded_models; "available" advertises cached models while enabled
+	// and prepares them on request. An engine that serves one model per process
+	// can list many models it has on disk but only answer for the one it is
+	// running, and the proxy sends a request to any node advertising its model.
+	AdvertisedModels string `json:"advertised_models,omitempty"`
 }
 
 // Platform is the per-`<goos>/<goarch>` block. Variance lives here
 // first; OS-specific Go code is the fallback only for primitives a
 // manifest cannot express (process termination, console hiding).
 type Platform struct {
-	Detect    []string   `json:"detect,omitempty"`
-	Install   *Install   `json:"install,omitempty"`
-	Uninstall *Uninstall `json:"uninstall,omitempty"`
-	Runtime   Runtime    `json:"runtime"`
+	// InstallDir overrides the default app-data-root engine directory. It is a
+	// literal user path with the same ~ and OS environment expansion as detect
+	// paths; its resolved value is exposed to the manifest as {install_dir}.
+	InstallDir string     `json:"install_dir,omitempty"`
+	Detect     []string   `json:"detect,omitempty"`
+	Install    *Install   `json:"install,omitempty"`
+	Uninstall  *Uninstall `json:"uninstall,omitempty"`
+	Runtime    Runtime    `json:"runtime"`
+	// ModelsDir is the engine's on-disk model store, referenced elsewhere as
+	// {models_dir}. Nothing this service removes may delete it: Uninstall skips
+	// it, validation keeps it outside an explicit managed install directory, and
+	// the bundled-manifest tests keep it outside the app data root. App reset
+	// removes both kinds of managed application path.
+	// Declare the engine's real default — the path it would use on its own —
+	// so PAIR and a user's own copy of the engine share one library.
+	ModelsDir string `json:"models_dir,omitempty"`
 }
 
-// Install describes how to obtain the engine in user mode. A pinned
-// download (fetch.sha256 set) is checksum-verified before its `run`
-// command executes; an unpinned fetch is HTTPS-only (see download).
+// Install describes how to obtain the engine in user mode. Fetch may be
+// unpinned, but every member of Artifacts is checksum-verified before `run`
+// executes. All downloads are HTTPS-only outside loopback.
 type Install struct {
-	Fetch *Fetch   `json:"fetch,omitempty"`
-	Run   []string `json:"run,omitempty"`
+	Fetch     *Fetch            `json:"fetch,omitempty"`
+	Artifacts []InstallArtifact `json:"artifacts,omitempty"`
+	Run       []string          `json:"run,omitempty"`
 	// Script is an escape hatch for vendors that only ship a script
 	// installer. It runs without checksum verification — strictly opt-in
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
@@ -84,16 +124,28 @@ type Install struct {
 	Mode string `json:"mode,omitempty"`
 }
 
-// Uninstall removes a user-mode install by running the engine's own
-// uninstaller (or removing its install dir). No download/checksum —
-// it only runs a local command.
+// Uninstall removes a user-mode install. Run is for work only a command can do
+// — stopping the engine's own daemon, or invoking a vendor uninstaller. Remove
+// lists the trees this service deletes itself, which is how model weights
+// survive: the runner always skips the platform's ModelsDir, so a Remove entry
+// that contains the model store takes everything except the models. Prefer
+// Remove over an `rm -rf` in Run; a shell string cannot be checked.
 type Uninstall struct {
-	Run []string `json:"run"`
+	Run    []string `json:"run,omitempty"`
+	Remove []string `json:"remove,omitempty"`
 }
 
 // Fetch is an engine download. SHA256, when set, pins it (verified
 // before run); when empty the download is HTTPS-only with a warning.
 type Fetch struct {
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256"`
+}
+
+// InstallArtifact is one checksum-pinned member of a multi-file install.
+// Its download is available to install.run as {download_<name>}.
+type InstallArtifact struct {
+	Name   string `json:"name"`
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
 }
@@ -113,20 +165,117 @@ type Fetch struct {
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
 type Runtime struct {
-	Mode  string            `json:"mode,omitempty"`
-	Bin   string            `json:"bin,omitempty"`
-	Args  []string          `json:"args,omitempty"`
-	Env   map[string]string `json:"env,omitempty"`
-	Port  int               `json:"port"`            // 0 => auto-assign a free loopback port
-	Bind  string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
-	Start [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
+	// WaitForModel keeps an installed engine enabled without starting a serving
+	// process until the user selects a model through its launch_model action.
+	WaitForModel bool `json:"wait_for_model,omitempty"`
+	// ModelSource selects llama.cpp's model catalogue and download provider.
+	ModelSource string `json:"model_source,omitempty"`
+	// EditableLaunch declares which startup arguments and environment controls
+	// PAIR can safely expose through engine settings.
+	EditableLaunch *EditableLaunch `json:"editable_launch,omitempty"`
+	// LaunchArgs holds literal user arguments appended after PAIR-managed
+	// arguments. Nil inherits the manifest's Args or editable Start command;
+	// a non-nil empty slice keeps only fixed and managed arguments. Use
+	// omitzero to omit nil while preserving explicit empty arrays in JSON.
+	LaunchArgs []string `json:"launch_args,omitzero"`
+	// AutoLaunch lets the manager add startup arguments that depend on the model
+	// being served and the machine, at every start. Arguments the user saved
+	// always win, and nothing added here is written back to saved settings.
+	AutoLaunch *AutoLaunch `json:"auto_launch,omitempty"`
+	// UnsupportedWeights names weight formats this platform's engine cannot
+	// load. A start or download of such a model is refused with its reason,
+	// before the engine spends minutes downloading or loading it only to fail.
+	UnsupportedWeights *UnsupportedWeights `json:"unsupported_weights,omitempty"`
+	// Mode selects the lifecycle model: "process" means PAIR owns the launched
+	// foreground process; "command" means PAIR invokes commands that manage a
+	// separate daemon. Empty defaults to "process".
+	Mode string `json:"mode,omitempty"`
+	// Bin is the executable template for process mode.
+	Bin string `json:"bin,omitempty"`
+	// Args are the manifest's default argument templates, resolved at launch.
+	Args []string `json:"args,omitempty"`
+	// Env and LaunchEnv form the child process environment in two layers. Env
+	// contains manifest defaults whose placeholders are resolved at launch.
+	// LaunchEnv contains literal user assignments that override matching
+	// defaults; nil means no saved environment override, while a non-nil empty
+	// slice means saved environment settings with no user assignments.
+	// These are applied to the manager's environment.
+	// Env looks like "env": {"ADDRESS": "{host}:{port}"}
+	// LaunchEnv looks like "launch_env": ["MODEL_DIR=D:/models"]
+	Env       map[string]string `json:"env,omitempty"`
+	LaunchEnv []string          `json:"launch_env,omitzero"`
+	// Port is the configured service port; zero requests an available loopback
+	// port.
+	Port int `json:"port"`
+	// Bind is the default listener address, used as the value of {host}.
+	// Empty defaults to loopback; a per-call bind can override it.
+	Bind string `json:"bind,omitempty"`
+	// Start is the ordered list of daemon bring-up commands in command mode.
+	Start [][]string `json:"start,omitempty"`
 	// CLI is the engine's control-CLI path for this platform, referenced
 	// elsewhere as {cli}. It lets the manifest's global actions resolve
 	// to the correct per-OS binary (e.g. lms.exe vs lms).
-	CLI    string    `json:"cli,omitempty"`
-	Ready  *Probe    `json:"ready,omitempty"`
-	Stop   *StopSpec `json:"stop,omitempty"`
-	Health *Probe    `json:"health,omitempty"`
+	CLI string `json:"cli,omitempty"`
+	// Ready is the probe used to decide whether startup has completed.
+	Ready *Probe `json:"ready,omitempty"`
+	// Stop describes the process signal/grace period or daemon stop command.
+	Stop *StopSpec `json:"stop,omitempty"`
+	// Health is the periodic availability probe for a running engine.
+	Health *Probe `json:"health,omitempty"`
+}
+
+// AutoLaunch configures start-time launch arguments. The only kind is
+// "hf_context": read the model's config.json from the Hugging Face cache and
+// set the context length, any rope scaling it needs, and the GPU memory share.
+type AutoLaunch struct {
+	Kind string `json:"kind"`
+	// ContextTokens is the context window to aim for. Models that natively
+	// support less are extended where that is safe; models that support more are
+	// capped here so the KV cache stays affordable.
+	ContextTokens int `json:"context_tokens"`
+	// MaxNumSeqs caps how many requests the engine runs at once
+	// (--max-num-seqs). vLLM's default of 256 suits a server; on a desktop GPU a
+	// hybrid model such as Qwen3.5 cannot fit one state block per sequence for
+	// 256 of them and refuses to start. 0 leaves the engine's default.
+	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
+	// EagerSafetensors adds --safetensors-load-strategy eager unless the user set
+	// it. The default memory-mapped load is very slow on integrated-GPU machines
+	// such as DGX Spark. It is a launch-time argument rather than a manifest
+	// default so installs with saved launch arguments get it too.
+	EagerSafetensors bool `json:"eager_safetensors,omitempty"`
+}
+
+const autoLaunchHFContext = "hf_context"
+
+// UnsupportedWeights is a weight format a platform's engine cannot load, read
+// from a Hugging Face checkpoint the way vLLM reads it (see weightFormat).
+type UnsupportedWeights struct {
+	// Formats are the refused formats. The only one is "fp8": FP8 weights or an
+	// FP8 KV cache.
+	Formats []string `json:"formats"`
+	// ExceptModelTypes are config.json model_type values the engine loads in
+	// these formats anyway.
+	ExceptModelTypes []string `json:"except_model_types,omitempty"`
+	// Reason is what the refusal tells the user, including what to choose instead.
+	Reason string `json:"reason"`
+}
+
+const weightFormatFP8 = "fp8"
+
+type EditableLaunch struct {
+	FixedArgs  []string        `json:"fixed_args"`
+	Controls   []LaunchControl `json:"controls"`
+	StartIndex int             `json:"start_index,omitempty"`
+}
+
+// LaunchControl binds CLI/environment syntax to PAIR policy fields. Value is a
+// format such as "{server.port}" or "{server.host}:{server.port}". Implicit is
+// the value supplied by flag presence; environment sources always take a value.
+type LaunchControl struct {
+	Flags    []string `json:"flags,omitempty"`
+	Env      []string `json:"env,omitempty"`
+	Value    string   `json:"value"`
+	Implicit *string  `json:"implicit,omitempty"`
 }
 
 func (r *Runtime) modeOrDefault() string {
@@ -136,14 +285,31 @@ func (r *Runtime) modeOrDefault() string {
 	return r.Mode
 }
 
-// Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
-// should be set; HTTP wins if both are.
+// hasCustomLaunch reports whether the user supplied any literal argument or
+// environment assignment. A saved override writes both keys, so the untouched
+// one persists as an empty — not absent — slice. This reports whether the user
+// supplied any values; nil versus empty still matters when resolving the launch.
+func (r *Runtime) hasCustomLaunch() bool {
+	return len(r.LaunchArgs) > 0 || len(r.LaunchEnv) > 0
+}
+
+// ProbeJSONMatch optionally identifies an HTTP service by a string field in
+// its JSON response body. Field supports the same validated dotted object path
+// syntax as action result filters.
+type ProbeJSONMatch struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+// Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP should be
+// set; HTTP wins if both are. JSONMatch is valid only for HTTP probes.
 type Probe struct {
-	HTTP      string `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
-	TCP       string `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
-	Status    int    `json:"status,omitempty"` // expected HTTP status (default 200)
-	TimeoutS  int    `json:"timeout_s,omitempty"`
-	IntervalS int    `json:"interval_s,omitempty"`
+	HTTP      string          `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
+	TCP       string          `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
+	Status    int             `json:"status,omitempty"` // expected HTTP status (default 200)
+	TimeoutS  int             `json:"timeout_s,omitempty"`
+	IntervalS int             `json:"interval_s,omitempty"`
+	JSONMatch *ProbeJSONMatch `json:"json_match,omitempty"`
 }
 
 // StopSpec is how to terminate the engine. Default is a graceful
@@ -158,13 +324,33 @@ type StopSpec struct {
 // Exactly one of HTTP (call the engine's loopback control API), Cmd
 // (run a CLI command, e.g. `lms get`), or RemovePath (guarded filesystem
 // delete) is set. Only a Cmd action templates the action's params as
-// placeholders (e.g. {model}); an HTTP action sends params as the JSON
-// request body.
+// placeholders (e.g. {model}); an HTTP action sends params in its declared
+// body or query location.
 type Action struct {
 	Description string            `json:"description,omitempty"`
 	HTTP        *ActionHTTP       `json:"http,omitempty"`
 	Cmd         []string          `json:"cmd,omitempty"`
 	RemovePath  *ActionRemovePath `json:"remove_path,omitempty"`
+	// HFCache lists the models in a Hugging Face hub cache directory. It reads
+	// the disk and needs no running engine, so an engine that serves one model
+	// per process can still show everything it could be switched to.
+	HFCache *ActionHFCache `json:"hf_cache,omitempty"`
+	// LaunchModel makes the action switch the model an engine is serving, for an
+	// engine that has no load call because the model is a launch argument.
+	LaunchModel *ActionLaunchModel `json:"launch_model,omitempty"`
+	// HFPull downloads a Hugging Face repository into the hub cache with the
+	// engine's own `hf` tool, reporting byte progress. Only pull_model uses it.
+	HFPull *ActionHFPull `json:"hf_pull,omitempty"`
+	// StopEngine makes the action stop the engine. It is how an engine that serves
+	// one model per process ejects that model: the process cannot drop its model
+	// and keep running, but stopping it frees all of its GPU memory. Only
+	// unload_model may set it.
+	StopEngine bool `json:"stop_engine,omitempty"`
+	// ProgressProtocol selects a narrowly defined streaming adapter for an
+	// asynchronous pull HTTP action. Empty keeps the ordinary response-stream
+	// behavior; named protocols are validated so a typo cannot silently fall
+	// back to the wrong completion semantics.
+	ProgressProtocol string `json:"progress_protocol,omitempty"`
 	// ModelResolution, when set, expands or resolves the model param:
 	//   - "lms-get" on Cmd actions: try as-given → Hub id → Hugging Face URL.
 	//   - "lms-disk-path" on RemovePath actions: map logical ids to on-disk
@@ -196,13 +382,21 @@ type ActionResult struct {
 	// field) rather than returning a presence-only list (Ollama's /api/ps,
 	// every row of which is resident and so needs no Match).
 	Match *ResultMatch `json:"match,omitempty"`
+	// InventoryField, valid only on the loaded_models action of an engine with
+	// advertised_models "loaded", names the element field that identifies each
+	// loaded model the way list_models does. vLLM's /v1/models gives the name a
+	// request uses as "id" (a --served-model-name alias when one is set) and the
+	// model it loaded as "root" (its --model): peers and the proxy are told the
+	// id, and the loaded marker on the model list uses the root.
+	InventoryField string `json:"inventory_field,omitempty"`
 }
 
 // ResultMatch is the optional row filter on an ActionResult. Exactly one of
 // In or Nonempty must be set:
-//   - In: keep the element when Field (decoded as a JSON string) equals one of In.
-//   - Nonempty: keep the element when Field is a JSON array with length > 0
-//     (LM Studio's /api/v1/models models[].loaded_instances).
+//   - In: keep the element when the dot-separated object path Field (decoded as
+//     a JSON string) equals one of In.
+//   - Nonempty: keep the element when Field resolves to a JSON array with length
+//     > 0 (LM Studio's /api/v1/models models[].loaded_instances).
 type ResultMatch struct {
 	Field    string   `json:"field"`              // element field to test, e.g. "state" / "loaded_instances"
 	In       []string `json:"in,omitempty"`       // accepted string values, e.g. ["loaded"]
@@ -216,12 +410,44 @@ type ActionRemovePath struct {
 	Root string `json:"root"`
 }
 
-// ActionHTTP is a templated call against the engine's loopback base
-// URL. The caller's params (engine:action params) are sent as the
-// JSON request body; BodySchema is informational only.
+// ActionHFCache names the Hugging Face hub cache directory to list. Dir is
+// templated, normally "{hf_hub_cache}", the cache the engine itself uses. The result is {"data":[{"id","size"}]},
+// which the ordinary result extractor reads with array "data" and field "id".
+type ActionHFCache struct {
+	Dir string `json:"dir"`
+	// Delete turns the action into the removal of one model, named by the
+	// caller's {"model": "<org/name>"} param, from that cache. Only a
+	// delete_model action may set it, and it needs Tool.
+	Delete bool `json:"delete,omitempty"`
+	// Tool is the file name of the Hugging Face CLI that performs a delete
+	// (`hf cache rm`), looked up beside the engine binary as for hf_pull.
+	Tool string `json:"tool,omitempty"`
+}
+
+// ActionHFPull downloads a model repository. Tool is the file name of the
+// Hugging Face CLI, looked up in the directory that holds the engine binary
+// (a vLLM virtualenv ships `hf` beside `vllm`). Dir is the hub cache directory,
+// normally "{hf_hub_cache}", the cache the engine itself uses.
+type ActionHFPull struct {
+	Tool string `json:"tool"`
+	Dir  string `json:"dir"`
+}
+
+// ActionLaunchModel names the launch flag that selects the engine's model, such
+// as "--model". The action takes {"model": "<id>"}, writes it into the saved
+// launch settings and restarts a running engine on it.
+type ActionLaunchModel struct {
+	Flag string `json:"flag"`
+}
+
+// ActionHTTP is a templated call against the engine's loopback base URL.
+// ParamsIn selects whether the caller's params are sent as the JSON request
+// body (the default) or as URL-encoded query parameters. BodySchema is
+// informational only.
 type ActionHTTP struct {
 	Method     string          `json:"method"`
 	Path       string          `json:"path"`
+	ParamsIn   string          `json:"params_in,omitempty"`
 	BodySchema json.RawMessage `json:"body_schema,omitempty"`
 }
 
@@ -252,10 +478,8 @@ func (r *Registry) Get(name string) (*Manifest, bool) {
 // Names returns all known engine names, sorted for stable output.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.engines))
-	for n := range r.engines {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names = slices.AppendSeq(names, maps.Keys(r.engines))
+	slices.Sort(names)
 	return names
 }
 
@@ -292,7 +516,9 @@ func (r *Registry) LoadDir(dir string) error {
 		}
 		return fmt.Errorf("read manifest dir %s: %w", dir, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
 			continue
@@ -316,7 +542,9 @@ func (r *Registry) LoadFS(fsys fs.FS, root string) error {
 	if err != nil {
 		return fmt.Errorf("read embedded manifests %s: %w", root, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(path.Ext(e.Name()), ".json") {
 			continue
@@ -370,7 +598,9 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 		}
 		return fmt.Errorf("read override dir %s: %w", dir, err)
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
 	for _, e := range entries {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
 			continue
@@ -392,6 +622,66 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 		}
 	}
 	return nil
+}
+
+// applyLocationOverrides takes from each user override only where the engine's
+// things are: its port and its model store. The uninstaller runs with
+// privileges the override's author may not have, so the commands it runs and
+// the paths it deletes stay bundled. A port decides where it looks for the
+// engine still running, and a model store decides what removal keeps — the
+// same store the running engine manager, which reads the whole override,
+// already keeps. An override that would leave the platform invalid is ignored,
+// as it is at startup.
+func (r *Registry) applyLocationOverrides(dir string) {
+	if dir == "" {
+		return
+	}
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	for name, m := range r.engines {
+		data, err := os.ReadFile(filepath.Join(dir, name+".json"))
+		if err != nil {
+			continue
+		}
+		type portOnly struct {
+			Port int `json:"port"`
+		}
+		var override struct {
+			Engine    string   `json:"engine"`
+			ModelsDir string   `json:"models_dir"`
+			Runtime   portOnly `json:"runtime"`
+			Platforms map[string]struct {
+				ModelsDir string   `json:"models_dir"`
+				Runtime   portOnly `json:"runtime"`
+			} `json:"platforms"`
+		}
+		if err := json.Unmarshal(data, &override); err != nil || override.Engine != name {
+			continue
+		}
+		platform, ok := m.Platforms[host]
+		if !ok {
+			continue
+		}
+		hostOverride := override.Platforms[host]
+		port := override.Runtime.Port
+		if hostOverride.Runtime.Port != 0 {
+			port = hostOverride.Runtime.Port
+		}
+		if port > 0 && port <= 65535 {
+			platform.Runtime.Port = port
+		}
+		store := override.ModelsDir
+		if hostOverride.ModelsDir != "" {
+			store = hostOverride.ModelsDir
+		}
+		if store != "" {
+			platform.ModelsDir = store
+		}
+		if err := platform.validate(host); err != nil {
+			slog.Warn("ignoring an override's port and model store", "engine", name, "err", err)
+			continue
+		}
+		m.Platforms[host] = platform
+	}
 }
 
 // bundledDefaultPort returns the host-platform runtime.port from the bundled
@@ -439,9 +729,9 @@ func (r *Registry) mergeOntoBundled(override []byte) ([]byte, error) {
 }
 
 // applyPlatformDefaults implements manifest-level shared defaults: a
-// top-level "detect" / "install" / "uninstall" / "runtime" block is
-// merged into every entry under "platforms", with the per-platform block
-// winning key-by-key. Nested objects (runtime, runtime.env, …) merge
+// top-level "install_dir" / "detect" / "install" / "uninstall" / "runtime" /
+// "models_dir" block is merged into every entry under "platforms", with the
+// per-platform block winning key-by-key. Nested objects (runtime, runtime.env, …) merge
 // recursively; arrays and scalars are replaced wholesale. The merge runs
 // at the JSON level before unmarshalling, so an omitted key truly
 // inherits the default while an explicit zero value (e.g. "port": 0)
@@ -454,7 +744,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	base := map[string]any{}
-	for _, k := range []string{"detect", "install", "uninstall", "runtime"} {
+	for _, k := range []string{"install_dir", "detect", "install", "uninstall", "runtime", "models_dir"} {
 		raw, ok := top[k]
 		if !ok {
 			continue
@@ -498,9 +788,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 // win); arrays and scalars are replaced by override.
 func deepMerge(base, override map[string]any) map[string]any {
 	out := make(map[string]any, len(base))
-	for k, v := range base {
-		out[k] = v
-	}
+	maps.Copy(out, base)
 	for k, ov := range override {
 		if bv, ok := out[k]; ok {
 			if bm, ok1 := bv.(map[string]any); ok1 {
@@ -545,6 +833,11 @@ func (m *Manifest) Validate() error {
 			return err
 		}
 	}
+	for key, p := range m.Platforms {
+		if p.Runtime.WaitForModel && (p.Runtime.modeOrDefault() != "process" || modelLaunchFlag(m) == "") {
+			return fmt.Errorf("platform %q: wait_for_model requires process mode and a launch_model action", key)
+		}
+	}
 	for name, a := range m.Actions {
 		if err := a.validate(name); err != nil {
 			return err
@@ -556,6 +849,19 @@ func (m *Manifest) Validate() error {
 		// process is spawned, the reply races the engine's own startup, and the
 		// caller can still be handed the pre-restart state. Fail at load rather
 		// than ship a guarantee the manifest cannot keep.
+		// launch_model rewrites the saved launch settings and restarts the engine,
+		// so every platform needs editable launch settings and a readiness probe
+		// for the same reason as restart_after.
+		if a.LaunchModel != nil {
+			for key, p := range m.Platforms {
+				if p.Runtime.EditableLaunch == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.editable_launch", name, key)
+				}
+				if p.Runtime.Ready == nil {
+					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.ready", name, key)
+				}
+			}
+		}
 		if a.RestartAfter {
 			for key, p := range m.Platforms {
 				if p.Runtime.Ready == nil {
@@ -564,10 +870,127 @@ func (m *Manifest) Validate() error {
 			}
 		}
 	}
+	if m.AdvertisedModels == advertisedModelsAvailable {
+		action, ok := m.Actions["list_models"]
+		if !ok || action.HFCache == nil {
+			return fmt.Errorf("advertised_models available requires a cached model inventory")
+		}
+		for _, platform := range m.Platforms {
+			if !platform.Runtime.WaitForModel {
+				return fmt.Errorf("advertised_models available requires wait_for_model")
+			}
+		}
+	}
+	switch m.AdvertisedModels {
+	case "", advertisedModelsList:
+	case advertisedModelsLoaded, advertisedModelsAvailable:
+		if _, ok := m.Actions["loaded_models"]; !ok {
+			return fmt.Errorf("advertised_models %q requires a loaded_models action", m.AdvertisedModels)
+		}
+	default:
+		return fmt.Errorf("advertised_models %q invalid (want %q, %q or %q)", m.AdvertisedModels, advertisedModelsList, advertisedModelsLoaded, advertisedModelsAvailable)
+	}
+	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded && m.AdvertisedModels != advertisedModelsAvailable {
+		return fmt.Errorf("action %q: result.inventory_field requires advertised_models %q", "loaded_models", advertisedModelsLoaded)
+	}
 	return m.validatePlaceholders()
 }
 
+// advertisedModels values for Manifest.AdvertisedModels.
+const (
+	advertisedModelsList      = "list"
+	advertisedModelsLoaded    = "loaded"
+	advertisedModelsAvailable = "available"
+)
+
 func (p *Platform) validate(key string) error {
+	if source := p.Runtime.ModelSource; source != "" && source != "huggingface" && source != "modelscope" {
+		return fmt.Errorf("platform %q: invalid model_source", key)
+	}
+	if p.InstallDir != "" {
+		if strings.TrimSpace(p.InstallDir) == "" {
+			return fmt.Errorf("platform %q: install_dir cannot be blank", key)
+		}
+		literalPath := p.InstallDir
+		if !strings.HasPrefix(key, "windows/") {
+			literalPath = unixEnvRe.ReplaceAllString(literalPath, "")
+		}
+		if strings.ContainsAny(literalPath, "{}") {
+			return fmt.Errorf("platform %q: install_dir %q must be a literal path, not a template", key, p.InstallDir)
+		}
+		if p.ModelsDir != "" {
+			installDir := expandPath(p.InstallDir)
+			modelsDir := expandPath(p.ModelsDir)
+			// Only the host platform's relative paths have a meaningful local base.
+			if key == runtime.GOOS+"/"+runtime.GOARCH {
+				var err error
+				installDir, err = filepath.Abs(installDir)
+				if err != nil {
+					return fmt.Errorf("platform %q: resolve install_dir: %w", key, err)
+				}
+				modelsDir, err = filepath.Abs(modelsDir)
+				if err != nil {
+					return fmt.Errorf("platform %q: resolve models_dir: %w", key, err)
+				}
+			}
+			installDir = strings.ToLower(filepath.Clean(installDir))
+			modelsDir = strings.ToLower(filepath.Clean(modelsDir))
+			if pathWithinRoot(installDir, modelsDir) {
+				return fmt.Errorf("platform %q: models_dir %q cannot be inside install_dir %q — app reset removes managed engine payloads", key, p.ModelsDir, p.InstallDir)
+			}
+			if pathWithinRoot(modelsDir, installDir) {
+				return fmt.Errorf("platform %q: install_dir %q cannot be inside models_dir %q — uninstall preserves the model store", key, p.InstallDir, p.ModelsDir)
+			}
+		}
+	}
+	if auto := p.Runtime.AutoLaunch; auto != nil {
+		if auto.Kind != autoLaunchHFContext || auto.ContextTokens < 1024 {
+			return fmt.Errorf("platform %q: auto_launch needs kind %q and context_tokens of at least 1024", key, autoLaunchHFContext)
+		}
+		if auto.MaxNumSeqs < 0 {
+			return fmt.Errorf("platform %q: auto_launch max_num_seqs must not be negative", key)
+		}
+		if p.Runtime.EditableLaunch == nil || p.Runtime.modeOrDefault() != "process" {
+			return fmt.Errorf("platform %q: auto_launch requires a process-mode runtime with editable_launch", key)
+		}
+	}
+	if rule := p.Runtime.UnsupportedWeights; rule != nil {
+		if len(rule.Formats) == 0 || strings.TrimSpace(rule.Reason) == "" {
+			return fmt.Errorf("platform %q: unsupported_weights needs formats and a reason", key)
+		}
+		for _, format := range rule.Formats {
+			if format != weightFormatFP8 {
+				return fmt.Errorf("platform %q: unsupported_weights format %q is not one of [%s]", key, format, weightFormatFP8)
+			}
+		}
+	}
+	if policy := p.Runtime.EditableLaunch; policy != nil {
+		if policy.StartIndex < 0 || (p.Runtime.modeOrDefault() == "command" && policy.StartIndex >= len(p.Runtime.Start)) {
+			return fmt.Errorf("platform %q: invalid editable launch definition", key)
+		}
+		if _, err := formatLaunchText(policy.FixedArgs); err != nil {
+			return fmt.Errorf("platform %q: invalid fixed launch arguments", key)
+		}
+		if err := policy.validateControls(); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
+		}
+	}
+	if args := p.Runtime.LaunchArgs; args != nil {
+		if p.Runtime.EditableLaunch == nil {
+			return fmt.Errorf("platform %q: launch_args requires editable_launch", key)
+		}
+		if _, err := formatLaunchText(append([]string{"arguments"}, args...)); err != nil {
+			return fmt.Errorf("platform %q: invalid literal launch arguments", key)
+		}
+	}
+	if env := p.Runtime.LaunchEnv; env != nil {
+		if p.Runtime.EditableLaunch == nil {
+			return fmt.Errorf("platform %q: launch_env requires editable_launch", key)
+		}
+		if _, err := literalEnvironment(env); err != nil {
+			return fmt.Errorf("platform %q: invalid literal launch environment", key)
+		}
+	}
 	switch p.Runtime.modeOrDefault() {
 	case "process":
 		if strings.TrimSpace(p.Runtime.Bin) == "" {
@@ -581,14 +1004,37 @@ func (p *Platform) validate(key string) error {
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
-		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || len(p.Install.Run) > 0) {
-			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/run (a script install cannot also be checksum-pinned)", key)
+		hasArtifacts := len(p.Install.Artifacts) > 0
+		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || hasArtifacts || len(p.Install.Run) > 0) {
+			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/artifacts/run (a script install cannot also be checksum-pinned)", key)
 		}
-		if len(p.Install.Run) > 0 && p.Install.Fetch == nil {
-			return fmt.Errorf("platform %q: install.run requires a fetch (the artifact the run command unpacks)", key)
+		if p.Install.Fetch != nil && hasArtifacts {
+			return fmt.Errorf("platform %q: install.fetch and install.artifacts are mutually exclusive", key)
+		}
+		if (p.Install.Fetch != nil || hasArtifacts) && len(p.Install.Run) == 0 {
+			return fmt.Errorf("platform %q: install.run is required when install.fetch or install.artifacts is present", key)
+		}
+		if len(p.Install.Run) > 0 && p.Install.Fetch == nil && !hasArtifacts {
+			return fmt.Errorf("platform %q: install.run requires a fetch or artifacts (the downloads the run command uses)", key)
 		}
 		if p.Install.Fetch != nil && strings.TrimSpace(p.Install.Fetch.URL) == "" {
 			return fmt.Errorf("platform %q: install.fetch.url is required when fetch is present", key)
+		}
+		names := make(map[string]bool, len(p.Install.Artifacts))
+		for index, artifact := range p.Install.Artifacts {
+			if !artifactNameRe.MatchString(artifact.Name) {
+				return fmt.Errorf("platform %q: install.artifacts[%d].name %q must match [a-z][a-z0-9_]{0,31}", key, index, artifact.Name)
+			}
+			if names[artifact.Name] {
+				return fmt.Errorf("platform %q: duplicate install artifact name %q", key, artifact.Name)
+			}
+			names[artifact.Name] = true
+			if err := validateDownloadURL(artifact.URL); err != nil {
+				return fmt.Errorf("platform %q: install artifact %q: %w", key, artifact.Name, err)
+			}
+			if !sha256Re.MatchString(strings.TrimSpace(artifact.SHA256)) {
+				return fmt.Errorf("platform %q: install artifact %q requires a 64-character hexadecimal sha256", key, artifact.Name)
+			}
 		}
 		switch p.Install.Mode {
 		case "", "user", "admin":
@@ -596,8 +1042,43 @@ func (p *Platform) validate(key string) error {
 			return fmt.Errorf("platform %q: install.mode %q invalid (want \"user\" or \"admin\")", key, p.Install.Mode)
 		}
 	}
-	if p.Uninstall != nil && len(p.Uninstall.Run) == 0 {
-		return fmt.Errorf("platform %q: uninstall.run is required when uninstall is present", key)
+	// A models_dir derived from {install_dir} is the mistake this field exists to
+	// prevent: app reset removes every managed install directory, so it would take
+	// the weights too even though no engine uninstall ever touched them. Keeping it literal means the
+	// only way to point the model store at the data root is to type that path
+	// out, which review will catch.
+	if strings.Contains(p.ModelsDir, "{") {
+		return fmt.Errorf("platform %q: models_dir %q must be a literal path, not a template — the model store must not be derived from the install directory", key, p.ModelsDir)
+	}
+	if p.Uninstall != nil {
+		if len(p.Uninstall.Run) == 0 && len(p.Uninstall.Remove) == 0 {
+			return fmt.Errorf("platform %q: uninstall needs run, remove, or both when present", key)
+		}
+		// Without a model store there is nothing for the runner to preserve, so
+		// a removal would be the unconditional delete this field exists to
+		// prevent. Requiring it here is what makes the guarantee hold for a
+		// hand-written manifest and not only for the bundled ones.
+		if len(p.Uninstall.Remove) > 0 && strings.TrimSpace(p.ModelsDir) == "" {
+			return fmt.Errorf("platform %q: uninstall.remove requires models_dir, so the removal knows what to keep", key)
+		}
+		for _, target := range p.Uninstall.Remove {
+			// {models_dir} resolves only at uninstall time, so a templated
+			// target would pass this check and fail every retry instead. Reject
+			// the token outright: every spelling of it names the store or a part
+			// of it, and neither may be removed.
+			if strings.Contains(target, "{models_dir}") {
+				return fmt.Errorf("platform %q: uninstall.remove %q names the model store — uninstall removes the engine, not the user's models", key, target)
+			}
+			resolved := filepath.Clean(expandPath(target))
+			store := filepath.Clean(expandPath(p.ModelsDir))
+			// At the store, or inside it. Removing part of a model library is
+			// as destructive as removing all of it. Compared without case: one
+			// manifest runs on filesystems of both kinds, and wherever case is
+			// ignored a second spelling is the store.
+			if pathWithinRoot(strings.ToLower(store), strings.ToLower(resolved)) {
+				return fmt.Errorf("platform %q: uninstall.remove %q is at or inside the model store %q — uninstall removes the engine, not the user's models", key, target, p.ModelsDir)
+			}
+		}
 	}
 	if err := validateProbe(key, "ready", p.Runtime.Ready); err != nil {
 		return err
@@ -619,6 +1100,17 @@ func validateProbe(key, which string, p *Probe) error {
 	if strings.TrimSpace(p.HTTP) == "" && strings.TrimSpace(p.TCP) == "" {
 		return fmt.Errorf("platform %q: runtime.%s must set either http or tcp", key, which)
 	}
+	if p.JSONMatch != nil {
+		if strings.TrimSpace(p.HTTP) == "" {
+			return fmt.Errorf("platform %q: runtime.%s json_match requires http", key, which)
+		}
+		if !resultMatchFieldPathRe.MatchString(p.JSONMatch.Field) {
+			return fmt.Errorf("platform %q: runtime.%s json_match.field %q is not a valid object path", key, which, p.JSONMatch.Field)
+		}
+		if strings.TrimSpace(p.JSONMatch.Value) == "" {
+			return fmt.Errorf("platform %q: runtime.%s json_match.value is required", key, which)
+		}
+	}
 	return nil
 }
 
@@ -626,6 +1118,9 @@ func (a *Action) validate(name string) error {
 	hasHTTP := a.HTTP != nil
 	hasCmd := len(a.Cmd) > 0
 	hasRemovePath := a.RemovePath != nil
+	hasHFCache := a.HFCache != nil
+	hasLaunchModel := a.LaunchModel != nil
+	hasHFPull := a.HFPull != nil
 	kinds := 0
 	if hasHTTP {
 		kinds++
@@ -636,8 +1131,44 @@ func (a *Action) validate(name string) error {
 	if hasRemovePath {
 		kinds++
 	}
+	if hasHFCache {
+		kinds++
+	}
+	if hasLaunchModel {
+		kinds++
+	}
+	if hasHFPull {
+		kinds++
+	}
+	if a.StopEngine {
+		kinds++
+	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, or remove_path is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine is required", name)
+	}
+	if a.StopEngine && name != "unload_model" {
+		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)
+	}
+	if hasHFPull {
+		tool := a.HFPull.Tool
+		if name != pullModelAction || tool == "" || tool != filepath.Base(tool) || strings.TrimSpace(a.HFPull.Dir) == "" {
+			return fmt.Errorf("action %q: hf_pull belongs to pull_model and needs a tool file name and a dir", name)
+		}
+	}
+	if hasLaunchModel {
+		flag := a.LaunchModel.Flag
+		if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+			return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+		}
+	}
+	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
+		return fmt.Errorf("action %q: hf_cache.dir is required", name)
+	}
+	if hasHFCache && a.HFCache.Delete && name != "delete_model" {
+		return fmt.Errorf("action %q: hf_cache.delete belongs to delete_model", name)
+	}
+	if hasHFCache && a.HFCache.Delete != (strings.TrimSpace(a.HFCache.Tool) != "") {
+		return fmt.Errorf("action %q: hf_cache.delete and hf_cache.tool go together", name)
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {
@@ -647,13 +1178,39 @@ func (a *Action) validate(name string) error {
 	if hasHTTP && (strings.TrimSpace(a.HTTP.Method) == "" || strings.TrimSpace(a.HTTP.Path) == "") {
 		return fmt.Errorf("action %q: http.method and http.path are required", name)
 	}
+	if hasHTTP {
+		switch a.HTTP.ParamsIn {
+		case "", actionHTTPParamsBody, actionHTTPParamsQuery:
+		default:
+			return fmt.Errorf("action %q: http.params_in %q invalid (want %q or %q)", name, a.HTTP.ParamsIn, actionHTTPParamsBody, actionHTTPParamsQuery)
+		}
+	}
+	if a.ProgressProtocol != "" {
+		if name != pullModelAction || !hasHTTP {
+			return fmt.Errorf("action %q: progress_protocol requires the HTTP pull_model action", name)
+		}
+		if a.ProgressProtocol != pullProgressProtocolLlamaCPPModelsSSE {
+			return fmt.Errorf("action %q: unsupported progress_protocol %q", name, a.ProgressProtocol)
+		}
+	}
 	if a.Result != nil && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
 		return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)
+	}
+	if a.Result != nil && a.Result.InventoryField != "" {
+		if name != "loaded_models" {
+			return fmt.Errorf("action %q: result.inventory_field is only valid on loaded_models", name)
+		}
+		if !resultFieldNameRe.MatchString(a.Result.InventoryField) {
+			return fmt.Errorf("action %q: result.inventory_field %q is not a valid field name", name, a.Result.InventoryField)
+		}
 	}
 	if a.Result != nil && a.Result.Match != nil {
 		m := a.Result.Match
 		if strings.TrimSpace(m.Field) == "" {
 			return fmt.Errorf("action %q: result.match.field is required when result.match is set", name)
+		}
+		if !resultMatchFieldPathRe.MatchString(m.Field) {
+			return fmt.Errorf("action %q: result.match.field %q is not a valid object path", name, m.Field)
 		}
 		hasIn := len(m.In) > 0
 		if hasIn == m.Nonempty {
@@ -680,64 +1237,104 @@ func (a *Action) validate(name string) error {
 	return nil
 }
 
-// validatePlaceholders rejects any `{token}` outside allowedPlaceholders
-// across every templated string in the manifest.
+// validatePlaceholders rejects any `{token}` outside the placeholders
+// available to the platform or manifest-global action that contains it.
 func (m *Manifest) validatePlaceholders() error {
-	for _, s := range m.templatedStrings() {
-		for _, match := range placeholderRe.FindAllStringSubmatch(s, -1) {
-			if !allowedPlaceholders[match[1]] {
-				return fmt.Errorf("unknown placeholder {%s} (allowed: %s)", match[1], strings.Join(allowedPlaceholderList(), ", "))
+	for key, platform := range m.Platforms {
+		allowed := make(map[string]bool, len(allowedPlaceholders))
+		for name := range allowedPlaceholders {
+			allowed[name] = true
+		}
+		if platform.Install != nil {
+			for _, artifact := range platform.Install.Artifacts {
+				allowed["download_"+artifact.Name] = true
+			}
+		}
+		if err := validatePlaceholderStrings(platform.templatedStrings(), allowed); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
+		}
+	}
+	if err := validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders); err != nil {
+		return err
+	}
+	hfAllowed := map[string]bool{hfHubCachePlaceholder: true}
+	for name := range allowedPlaceholders {
+		hfAllowed[name] = true
+	}
+	return validatePlaceholderStrings(m.hfActionDirs(), hfAllowed)
+}
+
+// hfActionDirs are the dirs of the hf_cache and hf_pull actions, which may also
+// name {hf_hub_cache}.
+func (m *Manifest) hfActionDirs() []string {
+	var out []string
+	for _, act := range m.Actions {
+		if act.HFPull != nil {
+			out = append(out, act.HFPull.Dir)
+		}
+		if act.HFCache != nil {
+			out = append(out, act.HFCache.Dir)
+		}
+	}
+	return out
+}
+
+func validatePlaceholderStrings(templates []string, allowed map[string]bool) error {
+	for _, template := range templates {
+		for _, match := range placeholderRe.FindAllStringSubmatch(template, -1) {
+			if !allowed[match[1]] {
+				return fmt.Errorf("unknown placeholder {%s} (allowed: %s)", match[1], strings.Join(placeholderList(allowed), ", "))
 			}
 		}
 	}
 	return nil
 }
 
-// allowedPlaceholderList returns the allowed placeholder names, sorted,
-// so error messages can't drift from the actual allow-set.
-func allowedPlaceholderList() []string {
-	out := make([]string, 0, len(allowedPlaceholders))
-	for k := range allowedPlaceholders {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+func placeholderList(placeholders map[string]bool) []string {
+	out := make([]string, 0, len(placeholders))
+	out = slices.AppendSeq(out, maps.Keys(placeholders))
+	slices.Sort(out)
 	return out
 }
 
-// templatedStrings collects every string the runner resolves
-// placeholders in, so validatePlaceholders can scan them all.
-func (m *Manifest) templatedStrings() []string {
+// templatedStrings collects every platform-local string the runner resolves
+// placeholders in, so artifact placeholders stay scoped to their platform.
+func (p Platform) templatedStrings() []string {
 	var out []string
-	for _, p := range m.Platforms {
-		out = append(out, p.Detect...)
-		if p.Install != nil {
-			out = append(out, p.Install.Run...)
-			out = append(out, p.Install.Script...)
-		}
-		if p.Uninstall != nil {
-			out = append(out, p.Uninstall.Run...)
-		}
-		out = append(out, p.Runtime.Bin)
-		out = append(out, p.Runtime.Args...)
-		for _, cmd := range p.Runtime.Start {
-			out = append(out, cmd...)
-		}
-		for _, v := range p.Runtime.Env {
-			out = append(out, v)
-		}
-		out = append(out, probeStrings(p.Runtime.Ready)...)
-		out = append(out, probeStrings(p.Runtime.Health)...)
-		if p.Runtime.Stop != nil {
-			out = append(out, p.Runtime.Stop.Cmd...)
-		}
+	out = append(out, p.Detect...)
+	if p.Install != nil {
+		out = append(out, p.Install.Run...)
+		out = append(out, p.Install.Script...)
 	}
+	if p.Uninstall != nil {
+		out = append(out, p.Uninstall.Run...)
+		out = append(out, p.Uninstall.Remove...)
+	}
+	out = append(out, p.Runtime.Bin)
+	out = append(out, p.Runtime.Args...)
+	for _, cmd := range p.Runtime.Start {
+		out = append(out, cmd...)
+	}
+	for _, v := range p.Runtime.Env {
+		out = append(out, v)
+	}
+	out = append(out, probeStrings(p.Runtime.Ready)...)
+	out = append(out, probeStrings(p.Runtime.Health)...)
+	if p.Runtime.Stop != nil {
+		out = append(out, p.Runtime.Stop.Cmd...)
+	}
+	return out
+}
+
+func (m *Manifest) actionTemplatedStrings() []string {
+	var out []string
 	for _, act := range m.Actions {
 		if act.RemovePath != nil {
 			out = append(out, act.RemovePath.Root)
 			// Path may template caller params (e.g. {model}); validated at call time.
 		}
 	}
-	// Action http.path / cmd are resolved from runtime params (e.g.
+	// hf_cache and hf_pull dirs are checked by hfActionDirs. Action http.path / cmd are resolved from runtime params (e.g.
 	// {model}), so they're validated at call time, not statically here.
 	return out
 }

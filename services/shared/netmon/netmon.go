@@ -6,7 +6,7 @@
 // addresses) changes.
 //
 // It exists because several nvpair subprocesses snapshot the interface list once
-// at startup and never refresh it: ollama-proxy's "is this address local?"
+// at startup and never refresh it: nvpair-proxy's "is this address local?"
 // table and every mDNS responder's per-interface address map. On a multi-homed
 // host, or after a sleep/wake that reassigns an IP, those snapshots go stale
 // and the process keeps using (or advertising) an address that no longer
@@ -23,8 +23,9 @@ package netmon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -136,20 +137,18 @@ func fingerprint(s Snapshot) string {
 		parts = append(parts, "ip:"+ip)
 	}
 	idxs := make([]int, 0, len(s.IfaceV4))
-	for idx := range s.IfaceV4 {
-		idxs = append(idxs, idx)
-	}
-	sort.Ints(idxs)
+	idxs = slices.AppendSeq(idxs, maps.Keys(s.IfaceV4))
+	slices.Sort(idxs)
 	for _, idx := range idxs {
 		ips := s.IfaceV4[idx]
 		strs := make([]string, len(ips))
 		for j, ip := range ips {
 			strs[j] = ip.String()
 		}
-		sort.Strings(strs)
+		slices.Sort(strs)
 		parts = append(parts, fmt.Sprintf("if%d:%s", idx, strings.Join(strs, ",")))
 	}
-	sort.Strings(parts)
+	slices.Sort(parts)
 	return strings.Join(parts, "|")
 }
 
@@ -197,17 +196,10 @@ func (m *Monitor) loop(ctx context.Context, events <-chan struct{}) {
 			m.closeSubs()
 			return
 		case <-events:
-			// (Re)arm the debounce window. Stop-and-drain before Reset is
-			// the safe pattern for a timer that may have already fired.
+			// Restart the debounce window after each event.
 			if timer == nil {
 				timer = time.NewTimer(m.debounce)
 			} else {
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
 				timer.Reset(m.debounce)
 			}
 			timerC = timer.C

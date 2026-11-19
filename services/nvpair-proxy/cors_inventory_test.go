@@ -1,0 +1,76 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestCORSInvalidInventory_PreservesApprovedPolicy(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		test := func(name string, denied, malformedFirst bool) {
+			t.Run(name, func(t *testing.T) {
+				broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Access-Control-Allow-Origin", "http://app.test")
+					w.Header().Set("Vary", "Origin")
+					_, err := io.WriteString(w, "{malformed")
+					assert.NoError(t, err)
+				}))
+				defer broken.Close()
+				status, origin := http.StatusOK, "http://app.test"
+				if denied {
+					status, origin = http.StatusForbidden, ""
+				}
+				other := corsEngine(t, tc, origin, status)
+				defer other.Close()
+				targets := []*httptest.Server{other, broken}
+				if malformedFirst {
+					targets = []*httptest.Server{broken, other}
+				}
+				p := proxyForCORSTargets(t, tc, targets...)
+				rec := httptest.NewRecorder()
+				p.handlePlain(rec, corsRequest(http.MethodGet, tc.modelListPath, "http://app.test"))
+				wantStatus, wantOrigin := http.StatusBadGateway, "http://app.test"
+				if denied {
+					wantStatus, wantOrigin = http.StatusForbidden, ""
+				}
+				require.Equal(t, wantStatus, rec.Code, "status (%v, %v)", wantStatus, wantOrigin)
+				require.Equal(t, wantOrigin, rec.Header().Get("Access-Control-Allow-Origin"), "status (%v, %v)", wantStatus, wantOrigin)
+				require.NotContains(t, rec.Body.String(), "private-model", "returned partial model inventory")
+				if !denied {
+					require.Contains(t, rec.Body.String(), "model inventory unavailable", "missing readable error")
+				}
+			})
+		}
+		test("approved invalid inventory first", false, true)
+		test("approved invalid inventory last", false, false)
+		test("denial after invalid inventory", true, true)
+		test("denial before invalid inventory", true, false)
+	})
+}
+
+func TestModelList_StripsCredentialsWithoutOrigin(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, tc engineCase) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Empty(t, r.Header.Get("Authorization"), "caller credentials forwarded to model-list candidate")
+			assert.Empty(t, r.Header.Get("Cookie"), "caller credentials forwarded to model-list candidate")
+			_, err := io.WriteString(w, corsModels(tc))
+			assert.NoError(t, err)
+		}))
+		defer upstream.Close()
+		p := proxyForCORSTargets(t, tc, upstream, upstream)
+		request := corsRequest(http.MethodGet, tc.modelListPath, "")
+		request.Header.Set("Authorization", "Bearer private")
+		request.Header.Set("Cookie", "session=private")
+		rec := httptest.NewRecorder()
+		p.handlePlain(rec, request)
+		require.Equal(t, http.StatusOK, rec.Code, "status")
+	})
+}

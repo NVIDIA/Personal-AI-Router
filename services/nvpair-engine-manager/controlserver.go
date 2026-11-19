@@ -49,13 +49,21 @@ func (s *controlServer) requirePin(h http.HandlerFunc) http.HandlerFunc {
 	return requirePinnedPeer(s.mesh, h)
 }
 
+// requirePinCaller is requirePin for a handler that also needs to know which
+// peer is calling.
+func (s *controlServer) requirePinCaller(h pinnedPeerHandler) http.HandlerFunc {
+	return requirePinnedCaller(s.mesh, h)
+}
+
 // mux builds the ec routes. Split from the listener so tests can exercise the
 // handlers over httptest without binding a real port.
 func (s *controlServer) mux() *http.ServeMux {
 	mux := http.NewServeMux()
+	s.settingsRoutes(mux)
 	mux.HandleFunc(controlEnginesPath, s.requirePin(s.handleEngines))
 	mux.HandleFunc(controlInstallPath, s.requirePin(s.handleInstall))
 	mux.HandleFunc(controlPullPath, s.requirePin(s.handlePull))
+	mux.HandleFunc(controlCancelPullPath, s.requirePin(s.handleCancelPull))
 	mux.HandleFunc(controlLoadPath, s.requirePin(s.handleLoad))
 	mux.HandleFunc(controlUnloadPath, s.requirePin(s.handleUnload))
 	mux.HandleFunc(controlDeletePath, s.requirePin(s.handleDelete))
@@ -92,12 +100,11 @@ func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertr
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       clustertrust.PeerListenerIdleTimeout,
 	}
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
-	}()
+	})
 	slog.Info("serving engine control surface (mTLS)",
 		"addr", addr, "path", controlEnginesPath, "clustered", mesh.Clustered())
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

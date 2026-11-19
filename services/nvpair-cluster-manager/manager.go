@@ -338,15 +338,9 @@ func (m *Manager) Run(ctx context.Context) error {
 	return err
 }
 
-// startResolver sets up the peer-address resolver. Post-cutover there is no
-// per-service mDNS responder/browse; it degrades gracefully to Broker-supplied
-// addresses (§7.5) and the relay-fed overlay.
+// startResolver creates the broker-fed peer-address resolver (§7.5). Scanner
+// advertises this node's cl service and supplies the discovery snapshots.
 func (m *Manager) startResolver() {
-	// Post-cutover: no per-service _nvpair-cluster-manager advertise/browse.
-	// This node's cl=<port> is carried in the node-scanner daemon's single
-	// _nvpair-node record, and the peer resolver is fed by the broker's discovery
-	// relay via setRelay. A Broker-supplied address still always wins; Resolve
-	// is the fallback.
 	m.browser = newBrowser()
 }
 

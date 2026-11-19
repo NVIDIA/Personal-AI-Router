@@ -5,24 +5,96 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-node-scanner
 
-**The consolidated discovery daemon.** Promoted from a plain node-info browser: it is now the single place this host advertises itself on and discovers the LAN through. Every other service registers its port with this daemon instead of advertising its own mDNS service, and consumers query/subscribe to it instead of browsing themselves.
+**The node discovery daemon.** It advertises this host on the LAN, discovers
+connection candidates, and maintains the node directory. The broker registers
+local service ports with its registry, and consumers query or subscribe to its
+directory through the broker.
 
 Concretely, the daemon:
 
 - **Advertises** this node's one `_nvpair-node._tcp` record, built from a registry of the local services its parent (the broker) registers — `ni`/`ol`/`lm`/`er`/`wl`/`cl`/`em`/`ec` ports plus the node identity (`uuid=`, `cluster-uuid=` when clustered, `ip=`). One record per node covers every service.
-- **Browses** `_nvpair-node._tcp` for every node on the LAN (including itself) and maintains a queryable directory keyed by host UUID.
-- **Enriches** each discovered node: GPU/CPU/memory inventory from its `ni` (node-info) port over plain HTTP, and the model list from its `em` (engine-manager) port (`GET /v1/models`) over cluster mTLS — a peer's model inventory is cluster data, so it is fetched only when this node holds a pin for the principal that peer advertises, while this node's own list is read over loopback in plaintext — the flat union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of models loaded in memory (`loadedByEngine`), all carried onto the node's directory entry so remote cards can show loaded state. Each enrichment has a last-good cache so a transient fetch miss doesn't blank the node's card. Node-info enrichment can optionally be moved onto HTTPS (see the TLS flags below) — off by default and gated only on operator flags, never inferred per-node.
+- **Browses** `_nvpair-node._tcp` and tracks connection candidates by
+  `discoveryRecordId`. Announcements require a nonempty `uuid`. An optional
+  `cluster-uuid` remains an unverified claim even when it differs from `uuid`;
+  those discoveries can receive display-only hardware previews. Missing host
+  UUIDs and claims to the local host remove only the cached discovery observation
+  and its previous peer association. Claimed UUIDs, names, and addresses cannot
+  select a local or verified peer record.
+- **Authenticates peers** using exact certificate pins from
+  `nvpair-shared/clustertrust`. A successful pinned mTLS node-info read must
+  report `hostUuid` and `clusterUuid` matching the serving certificate's node UUID,
+  along with complete peer metadata.
+  The authenticated name, addresses, ports, and hardware form a distinct
+  `pinned` peer record, replacing only that successful discovery. Failed
+  candidates stay separate and `unverified`. Public HTTP previews never supply
+  verified inventory or scheduling measurements, and operator CAs cannot
+  substitute for cluster pins.
+  Node-info responses are limited to 64 KiB.
+  Verified record IDs are opaque and change with the local certificate or
+  admission and the peer's exact pin or admission. Host UUIDs remain stable.
+  Further announcements from that observation stay hidden while its
+  authenticated association is current and its host UUID and advertised cluster
+  identity are unchanged. Changing either UUID claim, including adding or clearing
+  the cluster identity, clears the observation's previous association.
+  Changed claims require authentication before updating the verified record.
+- **Refreshes models** every 15 seconds from verified endpoints, preserving
+  the last successful inventory during outages while its authenticated proof,
+  addresses, and engine-manager port remain unchanged. A changed source clears
+  all model inventories and schedules an immediate refresh when engine-manager
+  is present. A newly authenticated peer also schedules a refresh. Remote model
+  lists use pinned mTLS at the authenticated engine-manager port. Local models use the owned
+  engine-manager over loopback; local hardware comes from private worker IPC.
+  Local registry publications use retained models and wake the model sweep,
+  so an HTTP read cannot hold the lock needed by owned hardware notifications.
+  Model inventory decoding reads at most 16 MiB. A JSON value that extends past
+  that limit fails enrichment and leaves the last successful inventory intact.
+  `downloadedByEngine` retains downloaded models for engines such as vLLM even
+  while they are stopped; `modelsByEngine` records the models they serve.
+  Queued and in-flight model results are discarded if the peer's authenticated
+  address list changes, including a secondary address used for failover.
 - **Samples scheduling telemetry** from healthy nodes every two seconds with
   stable per-node jitter. Consecutive remote failures back off to 4, 8, 16, then
-  30 seconds and reset on success; local loopback sampling stays at the healthy
-  cadence. It emits only host UUID, maximum GPU utilization, validity, and
-  source-reported sample age; it does not mutate the public directory for each
-  telemetry sample.
-- **Annotates trust:** with `--cluster-dir`, a browsed peer whose `cluster-uuid=` this node holds a pin for is marked `trusted` (via `nvpair-shared/clustertrust`). The annotation is re-derived on `discovery:reload-trust`, which the broker sends when `nvpair-cluster-manager` reports a pin-set change, as well as when a peer's mDNS record changes. Both triggers are needed: a peer that was already advertising when this node joined never moves its record again, so the browse path alone would leave it annotated from before this node's own pins existed. A change emits one `discovery:node-updated`; a reload that finds nothing to change is silent.
+  30 seconds and reset on success. Local inventory and samples arrive every two
+  seconds from the owned node-info worker over private broker/worker IPC.
+  Each accepted peer read updates directory metadata and hardware and emits
+  compact scheduling telemetry and a full authenticated hardware snapshot.
+  Both outputs use the same sample with its elapsed age. Local IPC also updates
+  changed hardware inventory.
+- **Collects unpaired hardware previews** on a separate two-second loop with
+  at most four public HTTP requests in flight across all nodes and addresses,
+  and failure backoff capped at 30 seconds. Public HTTP reads have
+  a 1.5-second total deadline, a 64 KiB body limit, no redirects, and address
+  failover. Sanitized hardware is emitted as `discovery:node-info` under the
+  current unverified discovery record ID. It never updates directory identity,
+  verified hardware, liveness, models, or scheduling. The broker delivers
+  previews to desktop and TUI through node snapshots and hardware updates.
+- **Follows live trust:** a pin addition schedules authentication. Pin removal,
+  replacement, or local departure removes the verified row and its scanner
+  caches, restores its known observations as unverified pairing candidates,
+  and drops affected idle connections. Requests recheck the current pin
+  and serving identities before accepting results, including reused connections
+  and reads already in progress.
 - **Advertises live membership:** the same reload re-derives this node's own `cluster-uuid=` from the cluster dir and re-advertises when it differs from what is being published, so joining or leaving a cluster takes effect without a restart.
-- **Anti-flap:** a node has to be absent from every scan for the browser's full miss threshold (twelve scans at 5s, a full minute) before it is evicted, and from ~15s in it is TCP-probed on its advertised service ports on *every* scan — any answer resets the counter and recovers it outright. So neither a momentary multicast gap nor a sustained one drops a healthy node, and eviction rests on a run of ~10 consecutive failures rather than one dial on the deadline. The window is sized deliberately: a node saturated by its own inference load starves its control plane, so it stops answering mDNS *and* stops accepting probe connections for as long as the load runs, while still serving requests. Two signals can also vouch for a node without any probe — a node-info enrichment in the last 10s, and inference response bytes from it in the last 60s (`discovery:node-activity`, relayed by the broker from whichever proxy saw the bytes). The second is the only liveness evidence that gets stronger the busier a node is.
-- **A scan that loses everything is treated as our own fault:** when more than one node is known and a scan returns *none* of them, no node is penalized for it — for up to six consecutive scans (~30s), after which they count normally. Independent machines do not leave the network in the same five-second window, but a process too starved to drain its multicast socket within `scanTimeout` hears silence from all of them at once; without this, one saturated machine dropped its entire cluster, idle peers included, in a single reconcile. The suppression needs two or more known nodes to engage: losing a lone peer looks the same whether it left or we stopped listening, so that case falls through to the ordinary threshold.
-- **Converges without mDNS:** a 15s sweep re-reads each peer over HTTP and folds any change into the directory, independent of browse events. It covers facts that change without moving the mDNS record (a model pull/delete, a late engine start) and facts that did move it but whose announcement was never received. The second case is why a peer's cluster membership is re-read from its `ni` port (`clusterUuid` on `/v1/node-info`, which under the broker is served plain — so it answers whether or not the two nodes share a cluster; a node-info run standalone with `--cluster-dir` gates the endpoint while clustered and will not answer a non-pinned peer, which the sweep treats as no answer): membership otherwise arrives solely as the `cluster-uuid=` TXT key, read once per record change, and the anti-flap probe above deliberately keeps a still-reachable peer's entry alive — so a missed re-advertisement would leave a departed peer's principal in place for the life of the process, suppressing the invite that would bring it back. Membership is refreshed before models on each tick, since the model fetch is pinned mTLS keyed on that principal. Only a peer's explicit report is acted on: a failed fetch, or a peer too old to report the field, leaves the annotation untouched rather than inferring "unclustered" from silence.
+- **Expires observations independently of peer availability:** twelve missed
+  five-second scans remove an observation and its candidate caches. Announcement
+  changes and removals cannot directly remove a verified peer, change its saved
+  pins, or close its connections. The canonical sampling loop continues reading
+  the peer independently of multicast. Once no discovery remains associated with
+  the peer, a failed pinned mTLS read removes its record and caches only after a
+  minute without authenticated inventory or approved inference activity.
+  Membership and pins remain. An open TCP port or another discovery claiming
+  that UUID cannot keep the peer alive.
+- **Allows grace for empty scans:** with multiple known nodes, up to six
+  consecutive empty scans receive a shared grace period of about 30 seconds.
+  Later empty scans count toward each record's miss threshold. This allows for
+  local multicast receive delays under load. A single known peer follows the
+  ordinary miss threshold.
+- **Separates pending authentication from telemetry:** candidates have their own
+  bounded workers and retry state. Slow candidates cannot occupy verified-peer
+  telemetry workers or replace their polling targets. Authentication and
+  telemetry failures use capped backoff. Requests have deadlines,
+  response-size limits, address failover, and one connection per node-info
+  origin. Requests never follow redirects to another endpoint or transport.
 
 ## Communication
 
@@ -33,10 +105,7 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 | Flag | Default | Description |
 |---|---|---|
 | `--ipc <path>` | _(stdio)_ | IPC endpoint: Unix socket or Windows named pipe |
-| `--cluster-dir <path>` | _(none)_ | Cluster config dir (`node.crt`/`node.key` + `trusted/`). Gates four things: a browsed peer holding a pin we trust is annotated `trusted`; this node advertises `cluster-uuid=` while it is actually a member; a peer's `em` model list is fetched over cluster mTLS; and the directory above it is the base this node's identity is resolved from |
-| `--ca-bundle <path>` | _(none)_ | PEM CA bundle to trust for verifying node-info server certs (additive to the system trust store). Setting any TLS flag moves node-info enrichment onto HTTPS |
-| `--client-cert <path>` | _(none)_ | PEM client certificate to present when fetching `/v1/node-info` from TLS-enabled nodes (mTLS; requires `--client-key`) |
-| `--client-key <path>` | _(none)_ | PEM client private key matching `--client-cert` |
+| `--cluster-dir <path>` | _(none)_ | Cluster config dir (`node.crt`/`node.key` + `trusted/`) for pinned peer authentication and local identity |
 | `--log-level <level>` | `info` | `error` / `warn` / `info` / `debug` |
 | `--version` | | Print version and exit |
 
@@ -51,13 +120,13 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 | `discovery:update-txt` | `{service, port, txt?}` | `{ok:true}` — same as register with a new TXT |
 | `discovery:get-nodes` | `{service?}` | `{nodes:[DirectoryNode]}` — the directory, optionally filtered to nodes advertising one service |
 | `discovery:reload-identity` | — | `{ok:true}` — re-resolve and re-advertise this node's identity |
-| `discovery:reload-trust` | — | `{ok:true}` — re-derive `trusted` on every directory entry from the current pin set |
+| `discovery:reload-trust` | — | `{ok:true}` — invalidate stale peer proofs and schedule authentication against current pins |
 | `discovery:set-observed-addresses` | `{addresses}` | `{ok:true}` — the local addresses peers have actually reached this node on, so address selection can rank a peer-proven address above an inferred one |
 | `shutdown` | — | `null` |
 
 `log/set-level` is also accepted.
 
-Two notifications are accepted rather than requests, because the daemon has
+These notifications are accepted rather than requests, because the daemon has
 nothing to answer and the caller must not wait:
 
 - `discovery:node-activity` `{hostUuid, msSince}` — a peer's engine returned
@@ -66,18 +135,40 @@ nothing to answer and the caller must not wait:
   id-bearing call would cost it a pending entry and a blocked goroutine per
   report in exchange for an ack nobody reads.
 - `log/set-level` (above).
+- `discovery:local-node-info` `{info, capturedAt}` — hardware received by the broker from its
+  own node-info worker. Scanner attaches it only to the matching local registry
+  record, updates inventory, and emits compact scheduling telemetry. Owned
+  subprocess IPC establishes the measurement source. A browsed UUID or loopback
+  address cannot enter this private path. Registration changes retain the owned
+  inventory; samples retain their elapsed age during worker silence. The private
+  capture time uses Unix milliseconds on the local host clock, so blocked pipe
+  delivery counts toward GPU age. Missing or future capture times cannot supply
+  fresh GPU telemetry.
 
 ### Notifications (daemon → caller)
 
 Emitted as the directory changes. Each carries the affected `DirectoryNode` (identity, advertised service ports, enrichment, `trusted`).
 
+Records also carry `discoveryRecordId` and `identityVerification`. The local registry
+record is `local`; browsed records are `unverified`, including when their claimed
+principal has a pin. A successful read creates a distinct opaque peer record
+with `pinned` verification and `trusted: true`. Failed discoveries cannot alter
+that record. Discovery record IDs identify candidates independently of UUID and
+principal claims; address order does not affect the ID.
+
 - `discovery:node-discovered` — a new node entered the directory
 - `discovery:node-updated` — a known node's record or enrichment changed. A re-observation that changes nothing emits no event, so `lastSeen` is a last-*change* stamp rather than a liveness heartbeat
-- `discovery:node-removed` — a node aged out (identity + last-known fields)
+- `discovery:node-removed` — a directory record was removed (identity + last-known fields)
 - `discovery:node-telemetry` — compact maximum-GPU utilization, validity, and
   sample age for broker-internal scheduling
+- `discovery:node-info` — a full local or pinned hardware snapshot, or an
+  unverified display-only preview, with its discovery record ID and verification.
+  The broker retains the latest source observation for `AvailableNode.info`
+  snapshots and forwards live updates. Preview identity and registry claims are
+  stripped and cannot change verified service state.
 
-A one-shot `ready` notification is sent on startup carrying the daemon version. The broker replays its service registrations on every scanner spawn, so a restarted daemon is repopulated without needing to compare an epoch.
+A one-shot `ready` notification carries the daemon version at startup. The
+broker repopulates the service registry on every scanner spawn.
 
 ## Shutdown
 

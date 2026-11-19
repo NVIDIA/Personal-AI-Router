@@ -1,0 +1,317 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+// This is the only file in the proxy that carries table-driven engine values.
+// Everything else reads them from the profile it is handed.
+//
+// Cross-process identity — Name, DisplayName, DiscoveryService, Namespace,
+// FacadePort, EnginePortBase — lives in nvpair-shared/engines, because the
+// broker, the scheduler and the TUI need the same values and a second
+// declaration here could drift from theirs without failing to compile. What
+// remains below is what only the proxy needs to know.
+//
+// Adding an engine is one entry here plus one in the broker's table. The
+// values that are derivable are derived: the applog component and the error-ID
+// prefix both come from Name via ComponentName, so they cannot disagree with
+// each other. The persisted-port filename is declared instead, because
+// Ollama's predates the multi-engine world — see PortFile in
+// nvpair-shared/engines.
+
+import (
+	"slices"
+	"strings"
+
+	"nvpair-shared/engines"
+)
+
+// routeRole classifies an inbound request path. It carries the HTTP method
+// because the method is part of the classification, not a separate axis: a
+// POST to /v1/models is not a model list, and a GET to /api/chat is not
+// inference. Folding them into one constant keeps the two from disagreeing.
+//
+// The dialect distinction is meaningful only for model-list roles. All of
+// Ollama's inference paths are handled identically — no envelope, identity
+// field or response shape is selected — so there is deliberately no
+// per-dialect inference role.
+type routeRole int
+
+const (
+	// roleInferencePOST is a POST that counts as a cluster workload: it is
+	// routed to an owner of the requested model, emits workload lifecycle
+	// notifications, and retries a 404 on another owner.
+	roleInferencePOST routeRole = iota
+
+	// roleModelListNativeGET is Ollama's /api/tags dialect: the upstream
+	// envelope carries a "models" array, each record's identity is its
+	// "model" field falling back to "name", and the federated response is
+	// re-emitted as {"models": [...]}.
+	roleModelListNativeGET
+
+	// roleModelListOpenAIGET is the OpenAI /v1/models dialect: the upstream
+	// envelope carries a "data" array, each record's identity is its "id",
+	// and the federated response is re-emitted as
+	// {"object": "list", "data": [...]}.
+	roleModelListOpenAIGET
+
+	// roleModelLookupPOST is a POST that names a model but is not a workload:
+	// Ollama's /api/show. Like inference it is routed to an owner of the
+	// requested model and retries a 404 on another owner, but it emits no
+	// workload notifications.
+	roleModelLookupPOST
+)
+
+// modelNaming is how an engine spells a model identifier. It governs the
+// native model list's dedupe key and nodeAdvertisesModel's match against a
+// node's advertised inventory; those two must agree there, or the proxy can
+// list a model it then refuses to route.
+//
+// The OpenAI list path (roleModelListOpenAIGET) is deliberately outside that
+// pairing: it dedupes on the upstream identity verbatim, as the pre-unification
+// proxies both did, while nodeAdvertisesModel still normalizes. Widening the
+// claim to "both list paths" would describe code that does not exist.
+type modelNaming int
+
+const (
+	// impliedLatestTag is Ollama's convention: an untagged name means the
+	// ":latest" tag, so "llama3" and "llama3:latest" are one model.
+	impliedLatestTag modelNaming = iota
+
+	// exactID compares identifiers byte for byte.
+	exactID
+)
+
+// route is one classified request path.
+type route struct {
+	// Path is the client-facing path matched on the facade.
+	Path string
+
+	// UpstreamPath optionally rewrites Path for the engine; empty preserves it.
+	UpstreamPath string
+	Role         routeRole
+}
+
+// engineProfile is everything the proxy needs to front one engine.
+type engineProfile struct {
+	engines.Engine
+
+	// StandalonePort is the port the proxy binds when nothing passes --port
+	// and no port has been persisted. It must be neither FacadePort (which
+	// the engine itself owns) nor a port an engine is relocated onto.
+	//
+	// Ollama's 11435 currently equals its EnginePortBase, which violates that
+	// second half. It is left as-is because it is the value on disk in every
+	// existing install; see the plan's port-field note.
+	StandalonePort int
+
+	// Routes classifies the paths this engine's clients call. It is NOT an
+	// allowlist: an unlisted path is forwarded verbatim, which is how
+	// /api/pull, /api/ps, /api/version and OPTIONS preflights keep working.
+	Routes []route
+
+	// ModelNaming is how this engine spells model identifiers.
+	ModelNaming modelNaming
+
+	// ReservedPersistedPort is a port that must never be restored from the
+	// persisted-port file even if it is stored there, because it belongs to
+	// the engine rather than the proxy. Zero means no port is reserved.
+	ReservedPersistedPort int
+
+	// SupportsHostAlias reports whether facade/enable's aliasAddresses apply to
+	// this engine. Only Ollama has an inherited host variable (OLLAMA_HOST) for the
+	// alias to stand in for, and the warning the proxy raises when it cannot
+	// claim one names that variable. Gating on this makes the scoping
+	// enforced rather than left to the broker's restraint in passing the flag.
+	SupportsHostAlias bool
+}
+
+// ollamaBaseRoutes is the engine-specific surface that Ollama exposes before
+// the shared compatibility routes are added.
+var ollamaBaseRoutes = []route{
+	{Path: "/api/generate", Role: roleInferencePOST},
+	{Path: "/api/chat", Role: roleInferencePOST},
+	{Path: "/api/embeddings", Role: roleInferencePOST},
+	{Path: "/api/embed", Role: roleInferencePOST},
+	{Path: "/api/show", Role: roleModelLookupPOST},
+	{Path: "/api/tags", Role: roleModelListNativeGET},
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
+// lmStudioBaseRoutes is the engine-specific surface that LM Studio exposes
+// before the shared compatibility routes are added.
+var lmStudioBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
+// llamaCPPBaseRoutes serves both model-list paths through the fleet inventory,
+// querying llama.cpp's router endpoint. Its response uses the OpenAI envelope.
+var llamaCPPBaseRoutes = []route{
+	{Path: "/models", Role: roleModelListOpenAIGET},
+	{Path: "/v1/models", UpstreamPath: "/models", Role: roleModelListOpenAIGET},
+}
+
+// vllmBaseRoutes is the engine-specific surface that vLLM exposes before the
+// shared OpenAI routes are added. vLLM serves one model per process, so the
+// fleet inventory is what makes /v1/models useful across nodes.
+var vllmBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
+// openAIInferenceRoutes is the OpenAI-compatible inference surface.
+var openAIInferenceRoutes = []route{
+	{Path: "/v1/chat/completions", Role: roleInferencePOST},
+	{Path: "/v1/completions", Role: roleInferencePOST},
+	{Path: "/v1/embeddings", Role: roleInferencePOST},
+	{Path: "/v1/responses", Role: roleInferencePOST},
+}
+
+// anthropicInferenceRoutes is the Anthropic-compatible inference surface.
+var anthropicInferenceRoutes = []route{
+	{Path: "/v1/messages", Role: roleInferencePOST},
+}
+
+var profiles = buildProfiles()
+
+func buildProfiles() []engineProfile {
+	ollama, _ := engines.ByName("ollama")
+	lmstudio, _ := engines.ByName("lmstudio")
+	llamacpp, _ := engines.ByName("llamacpp")
+	vllm, _ := engines.ByName("vllm")
+	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
+	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
+	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
+	vllmRoutes := slices.Concat(vllmBaseRoutes, openAIInferenceRoutes)
+
+	return []engineProfile{
+		{
+			Engine:                ollama,
+			StandalonePort:        11435,
+			Routes:                ollamaRoutes,
+			ModelNaming:           impliedLatestTag,
+			ReservedPersistedPort: 0,
+			SupportsHostAlias:     true,
+		},
+		{
+			Engine:         lmstudio,
+			StandalonePort: 1234,
+			Routes:         lmStudioRoutes,
+			ModelNaming:    exactID,
+			// 1235 is where engine-manager runs a managed LM Studio, so a
+			// proxy that restored it would sit on the engine's own port. The
+			// stored value predates the current default of 1234.
+			ReservedPersistedPort: 1235,
+		},
+		{
+			Engine:                llamacpp,
+			StandalonePort:        8080,
+			Routes:                llamaCPPRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: 8081,
+		},
+		{
+			Engine:                vllm,
+			StandalonePort:        8000,
+			Routes:                vllmRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: 8001,
+		},
+	}
+}
+
+// profileFor resolves the engine named in a facade/enable request.
+func profileFor(name string) (engineProfile, bool) {
+	for _, p := range profiles {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return engineProfile{}, false
+}
+
+// engineNames lists the accepted engine ids for a facade/enable rejection.
+func engineNames() string {
+	names := make([]string, 0, len(profiles))
+	for _, p := range profiles {
+		names = append(names, p.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// routeFor classifies a request. The bool reports whether the path is one this
+// engine handles specially; false means forward it verbatim.
+func (p engineProfile) routeFor(method, path string) (route, bool) {
+	for _, r := range p.Routes {
+		// Keep scanning on a method mismatch rather than bailing: a path may
+		// legitimately appear twice under different methods, and returning
+		// here would make the second entry permanently unreachable — silently
+		// forwarded verbatim instead of classified.
+		if r.Path != path || r.Role.method() != method {
+			continue
+		}
+		return r, true
+	}
+	return route{}, false
+}
+
+func (p engineProfile) roleFor(method, path string) (routeRole, bool) {
+	r, ok := p.routeFor(method, path)
+	return r.Role, ok
+}
+
+func (r route) upstreamPath() string {
+	if r.UpstreamPath != "" {
+		return r.UpstreamPath
+	}
+	return r.Path
+}
+
+// method is the HTTP method a role applies to.
+func (r routeRole) method() string {
+	if r == roleInferencePOST || r == roleModelLookupPOST {
+		return "POST"
+	}
+	return "GET"
+}
+
+// isModelList reports whether a role serves the federated model list.
+func (r routeRole) isModelList() bool {
+	return r == roleModelListNativeGET || r == roleModelListOpenAIGET
+}
+
+// normalizeModel applies the engine's naming convention to a model
+// identifier, so the federated list's dedupe key and the routing gate agree.
+// Ollama names reduce to the shortest form Ollama itself matches on: the
+// default registry.ollama.ai host and library namespace are dropped, an
+// untagged name gets ":latest", and case is folded.
+func (p engineProfile) normalizeModel(model string) string {
+	model = strings.TrimSpace(model)
+	if p.ModelNaming != impliedLatestTag || model == "" || strings.Contains(model, "@") {
+		return model
+	}
+	rest, tag := model, "latest"
+	if i := strings.LastIndex(model, ":"); i > strings.LastIndex(model, "/") {
+		rest, tag = model[:i], model[i+1:]
+	}
+	host, namespace, name := "registry.ollama.ai", "library", rest
+	if i := strings.LastIndex(rest, "/"); i >= 0 {
+		namespace, name = rest[:i], rest[i+1:]
+		if j := strings.LastIndex(namespace, "/"); j >= 0 {
+			host, namespace = namespace[:j], namespace[j+1:]
+			if _, h, ok := strings.Cut(host, "://"); ok {
+				host = h
+			}
+		}
+	}
+	if name == "" {
+		return model
+	}
+	prefix := ""
+	switch {
+	case !strings.EqualFold(host, "registry.ollama.ai"):
+		prefix = host + "/" + namespace + "/"
+	case !strings.EqualFold(namespace, "library"):
+		prefix = namespace + "/"
+	}
+	return strings.ToLower(prefix + name + ":" + tag)
+}

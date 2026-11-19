@@ -1,0 +1,53 @@
+---
+description: Build, typecheck, and the local gate to run before pushing; rules around .d.ts / tsbuildinfo files
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Build & Typecheck
+
+## Run the full gate before pushing
+
+CI fails the branch on any of these, so run all of them locally first. A red
+pipeline costs a full round trip; these take about a minute. From `desktop/`:
+
+```bash
+npm run typecheck
+npm run lint
+npm run dead-code:check
+npm run test:unit
+npm run service-contracts:check
+```
+
+The first four are exactly what `test:monorepo-gate` runs, in that order;
+`service-contracts:check` is the separate `verify:service-contracts` job. Do not
+report work as pushed or ready for review with any of them unrun.
+
+`dead-code:check` is the one most often missed, because nothing else in the
+local loop catches it — typecheck and lint both pass on an export that has no
+importer. knip flags any exported value or type nothing imports, so a helper
+exported out of habit fails the build. Fix it by:
+
+- deleting it, if it is genuinely unused; or
+- dropping the `export` when it is only referenced inside its own file — a type
+  can annotate an exported function's signature without being exported itself
+  (see `type-discipline.mdc`); or
+- adding a justified entry to `desktop/dead-code-omissions.json`, only for a
+  real false positive such as an export consumed by an external tool.
+
+`npm run dead-code` (no `--check`) writes the same report without failing.
+
+## Typecheck
+
+- **Use `npm run typecheck`** to check types — not `npx tsc --noEmit` directly.
+  The project has split tsconfig targets (`typecheck:node`, `typecheck:web`).
+- **NEVER delete `.d.ts` files.** Some `.d.ts` files are authored sources
+  (e.g. ambient type declarations in `src/`). Bulk-deleting them is destructive
+  and irreversible. If `tsc` reports TS6305 ("Output file has not been built
+  from source"), ignore those errors — they come from stale incremental output
+  and do not affect the build.
+- **Delete `*.tsbuildinfo` only** if incremental caches cause issues. These are
+  safe to remove.

@@ -7,23 +7,28 @@ import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cl
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import {
+    MODEL_SWITCH_TIMEOUT_MS,
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
-import { getEngineHubModels } from '@/electron/model-hub'
+import { engineManagerName } from '@/shared/utils/engines'
+import { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import { getModularSupervisor } from './modular-supervisor'
 import {
+    parseEngineSettings,
+    parseEngineSettingsPreview,
+    parseEngineSettingsReceipt
+} from './engine-settings'
+import {
     getModularBridgeState,
-    isProxyEngine,
     isUpstreamUnreachableError,
     parseServiceErrors,
     parseWorkloadsInitial
 } from './modular-state'
-import type { ProxyEngine } from './modular-state'
+
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
 import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
-import { removeManualNodeEntry, resolveManualNodeKey } from './manual-nodes-store'
 
 type BridgeHandler<C extends WsInvokeChannel> = (
     payload?: WsInvokeRequest<C>
@@ -53,8 +58,45 @@ function booleanValue(value: JsonValue | undefined): boolean {
     return typeof value === 'boolean' ? value : false
 }
 
-function numberValue(value: JsonValue | undefined): number {
-    return typeof value === 'number' ? value : 0
+/**
+ * When this app last asked each engine to stop, keyed by node and engine. A Stop
+ * or an Eject ends a vLLM Load that is still starting the engine, and the Load
+ * then replies `stopped`. A user who stopped it here needs no message about it;
+ * a stop from elsewhere (the terminal interface, or another node's app) is
+ * reported, or this app would go on showing the Load as in progress.
+ */
+const stopRequestedAt = new Map<string, number>()
+
+function stopKey(nodeId: string, engineType: EngineType): string {
+    return `${nodeId}:${engineType}`
+}
+
+function noteStopRequest(payload: WsInvokeRequest<'engine:command'>): void {
+    if (payload.command === 'stop' || payload.command === 'unloadModel') {
+        stopRequestedAt.set(stopKey(payload.nodeId, payload.engineType), Date.now())
+    }
+}
+
+/** Report a Load that a stop from outside this app ended. */
+function reportLoadStoppedElsewhere(
+    payload: WsInvokeRequest<'engine:command'>,
+    startedAt: number,
+    result: JsonValue | undefined
+): void {
+    if (!payload.model || !booleanValue(objectValue(result)?.stopped)) return
+    const stoppedHere = stopRequestedAt.get(stopKey(payload.nodeId, payload.engineType)) ?? -1
+    if (stoppedHere >= startedAt) return
+    getModularSupervisor().reportError(
+        `Loading ${payload.model} on ${engineManagerName(payload.engineType)} was stopped before it finished.`,
+        'info',
+        `engine-cmd:load model:${engineManagerName(payload.engineType)}`,
+        {
+            nodeId: payload.nodeId,
+            engineType: payload.engineType,
+            operation: 'load',
+            modelName: payload.model
+        }
+    )
 }
 
 /** Relay a `cluster:*` / `nodes:*` request to nvpair-cluster-manager via the broker. */
@@ -80,16 +122,6 @@ async function getClusterMembers(): Promise<ClusterNode[]> {
     } catch {
         return []
     }
-}
-
-/** Map our `EngineType` onto the `nvpair-engine-manager` engine identifier. */
-export function engineManagerEngineName(engineType: EngineType): string {
-    return engineType === 'lm-studio' ? 'lmstudio' : engineType
-}
-
-/** The proxy engine for a wire `EngineType`, or null for loopback-only engines. */
-function proxyEngineFor(engineType: EngineType): ProxyEngine | null {
-    return isProxyEngine(engineType) ? engineType : null
 }
 
 async function handleGetSelfId(): Promise<string | null> {
@@ -129,12 +161,15 @@ async function nodeSettingString(method: string): Promise<string> {
 async function toggleLocalEngine(engine: string, engineType: EngineType): Promise<void> {
     const supervisor = getModularSupervisor()
     try {
-        // `engine:status` is a fast detect (no lifecycle lock), so awaiting the
-        // read is fine. Lifecycle ops stay fire-and-forget to the renderer. A stop
-        // observes its eventual response because an ownership rejection has no
-        // resolving `engine:state-changed`; start keeps its existing push path.
+        // `engine:status` probes independently of lifecycle operations, so it
+        // cannot wait on their lock. Lifecycle ops stay fire-and-forget to the
+        // renderer. A stop observes its eventual response because an ownership
+        // rejection has no resolving `engine:state-changed`; start keeps its
+        // existing push path.
         const status = await supervisor.callProcess('broker', 'engine:status', { engine })
-        const running = booleanValue(objectValue(status)?.running)
+        const running =
+            booleanValue(objectValue(status)?.running) ||
+            booleanValue(objectValue(status)?.awaiting_model)
         // Synthesize the transitional status the engine-manager never emits, so
         // the UI shows a spinner immediately instead of sitting idle until the
         // terminal engine:state-changed lands.
@@ -165,259 +200,28 @@ async function toggleLocalEngine(engine: string, engineType: EngineType): Promis
 }
 
 /**
- * Set a local engine's HTTP server port. `nvpair-engine-manager`'s `engine:set-port`
- * **persists** the chosen port as a per-user manifest override (the single source
- * of truth, restored on restart) and applies it live: a running engine is bounced
- * onto the new port, a stopped one just records it, and setting the port back to
- * the bundled default drops the override. Awaited because the RPC returns only
- * after the rebind completes; its terminal `engine:state-changed` clears the
- * optimistic op below.
- *
- * A **running adopted** engine (one PAIR attached to instead of launching) is
- * refused by the backend — PAIR can't move a process it didn't start — so we clear
- * the optimistic op and surface a clear "stop it in its own app first" error.
- * Remaining start-options limitation (env/args) is documented in
- * docs/services-parity.md#engine-lifecycle.
+ * Stop a local engine, whatever it reports. A toggle reads the engine's status
+ * to decide, and an engine that is still starting reports not running, so the
+ * toggle would send another start; Stop is sent when the UI shows it starting.
+ * The engine-manager cancels the start in flight.
  */
-async function applyEnginePort(
-    engine: string,
-    engineType: EngineType,
-    port: number
-): Promise<void> {
+function stopLocalEngine(engine: string, engineType: EngineType): void {
     const supervisor = getModularSupervisor()
-    const state = getModularBridgeState()
-    // Optimistic spinner during the rebind round-trip; the engine-manager's
-    // terminal engine:state-changed (running or stopped) clears it.
-    state.beginLocalEngineOp(engineType, 'starting')
-    try {
-        await supervisor.callProcess(
-            'broker',
-            'engine:set-port',
-            { engine, port },
-            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
-        )
-    } catch (err) {
-        // Refused on a running adopted engine (and any other set-port failure):
-        // no engine:state-changed follows, so clear the optimistic op now instead
-        // of leaving a spinner up until the idle-timeout.
-        state.failLocalEngineOp(engine, 'start')
-        supervisor.reportError(
-            `Failed to set ${engine} port: ${getErrorString(err)}`,
-            'error',
-            `engine-cmd:setPort:${engine}`
-        )
-    }
-}
-
-/**
- * Set the local Ollama proxy's listen port. Routed through the broker's
- * `proxy:set-port` relay, which persists the port (`proxy-port.json`, restored on
- * restart), live-rebinds the proxy, and **steers it clear of any running engine
- * port** (engines win — a bumped proxy surfaces a sticky `warning` on the errors
- * pipeline). The proxy re-emits `proxy:ready` with the actually-bound port, which
- * the bridge already folds into `status.proxyPort`, so success needs no further
- * action here beyond surfacing a failure.
- */
-async function applyProxyPort(proxyEngine: ProxyEngine, port: number): Promise<void> {
-    const supervisor = getModularSupervisor()
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        supervisor.reportError(
-            `Invalid proxy port ${port}: must be between 1 and 65535.`,
-            'warning',
-            `engine-cmd:setPort:proxy:${proxyEngine}`
-        )
-        return
-    }
-    try {
-        await supervisor.callProxy(proxyEngine, 'set-port', { port })
-    } catch (err) {
-        supervisor.reportError(
-            `Failed to set the ${proxyEngine} proxy port: ${getErrorString(err)}`,
-            'error',
-            `engine-cmd:setPort:proxy:${proxyEngine}`
-        )
-    }
-}
-
-/**
- * Apply the engine server port and/or proxy port for the local node in one safe
- * transaction. The UI sends only the ports that changed; this picks an ordering
- * so the engine and proxy never fight over a port mid-flight — including a full
- * swap (server↔proxy).
- *
- * The backend has no atomic multi-port API, so we serialize the steps here:
- *  - **single port** → the focused `applyEnginePort` / `applyProxyPort` helper;
- *  - **both, engine stopped** → persist the engine port (no start, respecting
- *    the user's stopped state), then rebind the proxy;
- *  - **both, running, no collision** → bounce the engine onto its new port
- *    first (the failure-prone step — a running *adopted* engine is refused —
- *    so the proxy is left untouched if it throws), then rebind the proxy;
- *  - **both, running, collision/swap** → stop the engine to free its port, move
- *    the proxy (the engine's old port is now free for the proxy's target),
- *    persist the engine's new port, then start it back up.
- *
- * Every success path ends in an `engine:set-port` / `doStart` / `proxy:ready`
- * that re-emits authoritative state, which clears the optimistic op and snaps
- * the UI inputs to backend truth. On failure we clear the optimistic op and
- * report, so the UI reverts to the real ports.
- */
-async function applyEnginePorts(
-    engine: string,
-    engineType: EngineType,
-    enginePort: number | undefined,
-    proxyPort: number | undefined
-): Promise<void> {
-    const supervisor = getModularSupervisor()
-    const state = getModularBridgeState()
-
-    const wantEngine = typeof enginePort === 'number'
-    const wantProxy = typeof proxyPort === 'number'
-    if (!wantEngine && !wantProxy) return
-
-    const proxyEngine = proxyEngineFor(engineType)
-    if (wantProxy && !proxyEngine) {
-        supervisor.reportError(
-            `The ${engineType} engine has no cluster proxy port to set.`,
-            'warning',
-            `engine-cmd:setPorts:proxy:${engineType}`
-        )
-        return
-    }
-
-    const validPort = (port: number): boolean =>
-        Number.isInteger(port) && port >= 1 && port <= 65535
-
-    if (wantEngine && !validPort(enginePort)) {
-        supervisor.reportError(
-            `Invalid server port ${enginePort}: must be between 1 and 65535.`,
-            'warning',
-            `engine-cmd:setPorts:${engine}`
-        )
-        return
-    }
-    if (wantProxy && !validPort(proxyPort)) {
-        supervisor.reportError(
-            `Invalid proxy port ${proxyPort}: must be between 1 and 65535.`,
-            'warning',
-            `engine-cmd:setPorts:proxy:${engineType}`
-        )
-        return
-    }
-    if (wantEngine && wantProxy && enginePort === proxyPort) {
-        supervisor.reportError(
-            'The server and proxy ports must be different.',
-            'warning',
-            `engine-cmd:setPorts:${engine}`
-        )
-        return
-    }
-
-    // Single-port changes delegate to the focused helpers (they own their own
-    // optimistic op + error reporting).
-    if (wantEngine && !wantProxy) {
-        await applyEnginePort(engine, engineType, enginePort)
-        return
-    }
-    if (wantProxy && !wantEngine && proxyEngine) {
-        await applyProxyPort(proxyEngine, proxyPort)
-        return
-    }
-
-    // Both changed past this point (the single-port cases returned above);
-    // narrow the optional inputs to numbers for the rest of the transaction.
-    if (typeof enginePort !== 'number' || typeof proxyPort !== 'number') return
-    // wantProxy is true here, so proxyEngine was verified non-null above.
-    if (!proxyEngine) return
-
-    // Both changed. Read the live engine state to detect a transient collision
-    // (the engine wants the proxy's current port, or the proxy wants the
-    // engine's current port) that requires serializing through a stop.
-    const currentProxy = state.getProxyPort(proxyEngine)
-    let engineRunning = false
-    let currentEnginePort = 0
-    try {
-        const status = objectValue(
-            await supervisor.callProcess('broker', 'engine:status', { engine })
-        )
-        engineRunning = booleanValue(status?.running)
-        currentEnginePort = numberValue(status?.port)
-    } catch {
-        // Status read failed — treat as stopped and take the safe persist path.
-        engineRunning = false
-    }
-
-    state.beginLocalEngineOp(engineType, 'starting')
-    try {
-        if (!engineRunning) {
-            // Nothing is bound: persist the engine port (no start), then rebind
-            // the proxy. set-port on a stopped engine emits engine:state-changed
-            // (running:false, new port), which clears the optimistic op.
-            await supervisor.callProcess(
-                'broker',
-                'engine:set-port',
-                {
-                    engine,
-                    port: enginePort
-                },
-                MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+    getModularBridgeState().beginLocalEngineOp(engineType, 'stopping')
+    supervisor.sendProcess(
+        'broker',
+        'engine:stop',
+        { engine },
+        error => {
+            getModularBridgeState().clearPendingEngineOp(engineType)
+            supervisor.reportError(
+                `Failed to stop ${engine}: ${error}`,
+                'error',
+                `engine-cmd:stop:${engine}`
             )
-            await supervisor.callProxy(proxyEngine, 'set-port', { port: proxyPort })
-            return
-        }
-
-        const collision = enginePort === currentProxy || proxyPort === currentEnginePort
-        if (!collision) {
-            // Engine first (a running adopted engine is refused here, leaving the
-            // proxy untouched), then rebind the proxy.
-            await supervisor.callProcess(
-                'broker',
-                'engine:set-port',
-                {
-                    engine,
-                    port: enginePort
-                },
-                MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
-            )
-            await supervisor.callProxy(proxyEngine, 'set-port', { port: proxyPort })
-            return
-        }
-
-        // Collision / swap: stop first so neither bind races the other.
-        await supervisor.callProcess(
-            'broker',
-            'engine:stop',
-            { engine },
-            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
-        )
-        // The stop's engine:state-changed cleared the optimistic op — re-assert
-        // it so the UI keeps a spinner through the rest of the transaction.
-        state.beginLocalEngineOp(engineType, 'starting')
-        await supervisor.callProxy(proxyEngine, 'set-port', { port: proxyPort })
-        await supervisor.callProcess(
-            'broker',
-            'engine:set-port',
-            {
-                engine,
-                port: enginePort
-            },
-            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
-        )
-        await supervisor.callProcess(
-            'broker',
-            'engine:start',
-            { engine },
-            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
-        )
-    } catch (err) {
-        // No engine:state-changed follows a refused/failed step, so clear the
-        // optimistic op now and report — the UI reverts to the real ports.
-        state.failLocalEngineOp(engine, 'start')
-        supervisor.reportError(
-            `Failed to apply ${engine} ports: ${getErrorString(err)}`,
-            'error',
-            `engine-cmd:setPorts:${engine}`
-        )
-    }
+        },
+        true
+    )
 }
 
 /**
@@ -432,7 +236,7 @@ async function applyEnginePorts(
 function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): void {
     const supervisor = getModularSupervisor()
     const state = getModularBridgeState()
-    const engine = engineManagerEngineName(payload.engineType)
+    const engine = engineManagerName(payload.engineType)
     // Use the engine-manager's stable error key. If the manager already reported
     // the operation failure, nvpair-errors upserts this fallback instead of showing
     // a duplicate; admission/transport failures still get a visible error.
@@ -507,13 +311,8 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
         case 'toggle':
             void toggleLocalEngine(engine, payload.engineType)
             break
-        case 'setPorts':
-            // Both ports persist on this node: the engine HTTP server port via
-            // engine:set-port (manifest override), the proxy port via the broker's
-            // proxy:set-port (which steers it clear of running engine ports). The
-            // bridge diffs + orders them safely (incl. swaps). Local only — the
-            // backend exposes no remote port control.
-            void applyEnginePorts(engine, payload.engineType, payload.enginePort, payload.proxyPort)
+        case 'stop':
+            stopLocalEngine(engine, payload.engineType)
             break
         case 'pullModel':
             // Pulls need UI feedback the backend doesn't emit (progress + failure),
@@ -521,6 +320,11 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // orchestration. Void it: the command stays fire-and-forget for the UI.
             if (payload.model) {
                 void supervisor.pullModel(engine, payload.engineType, payload.model)
+            }
+            break
+        case 'cancelModelPull':
+            if (payload.model) {
+                void supervisor.cancelModelPull(engine, payload.engineType, payload.model)
             }
             break
         case 'deleteModel':
@@ -533,12 +337,38 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // first-class load action, so we POST its `run_model` HTTP action
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
-            // LM Studio declares a real `load_model` CLI action (`lms load`).
-            // Both require the engine running (HTTP/CLI action), matching the
-            // disabled rule in ModelRow.tsx.
+            // LM Studio and llama.cpp declare real `load_model` manifest actions.
+            // vLLM's `load_model` serves the model by restarting a running engine
+            // on it, or starting a stopped one, which takes minutes and can fail
+            // (the model may not fit), so like Ollama's its rejection is observed
+            // and attributed to the pending model row.
+            // Ollama, LM Studio and llama.cpp require the engine running (HTTP/CLI
+            // action); enabled vLLM can load its first model before a server exists.
             // See docs/services-parity.md#models.
             if (payload.model) {
-                if (payload.engineType === 'ollama') {
+                if (payload.engineType === 'vllm') {
+                    // The reply arrives once the new model is serving, or the
+                    // previous one is restored. The renderer's pending Load shows
+                    // the engine as starting while it restarts. A Stop or Eject
+                    // ends the Load with `stopped` in the reply, not an error.
+                    const startedAt = Date.now()
+                    void supervisor
+                        .callProcess(
+                            'broker',
+                            'engine:action',
+                            { engine, action: 'load_model', params: { model: payload.model } },
+                            MODEL_SWITCH_TIMEOUT_MS
+                        )
+                        .then(result => reportLoadStoppedElsewhere(payload, startedAt, result))
+                        .catch(err =>
+                            failAction('load model', {
+                                nodeId: payload.nodeId,
+                                engineType: payload.engineType,
+                                operation: 'load',
+                                modelName: payload.model
+                            })(getErrorString(err))
+                        )
+                } else if (payload.engineType === 'ollama') {
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',
@@ -602,7 +432,7 @@ async function toggleRemoteEngine(
     engineType: EngineType
 ): Promise<void> {
     const supervisor = getModularSupervisor()
-    const running = getModularBridgeState().isRemoteEngineRunning(nodeId, engineType)
+    const running = getModularBridgeState().isRemoteEngineEnabled(nodeId, engineType)
     await supervisor.toggleEngineRemote(nodeId, engine, engineType, running)
 }
 
@@ -610,14 +440,15 @@ async function toggleRemoteEngine(
  * Dispatch a UI engine command to a remote peer via `nvpair-engine-manager`'s
  * `engine:remote-*` client methods (cluster-scoped mTLS `ec` surface). Install,
  * start/stop, pull, and model load/unload/delete are supported remotely;
- * uninstall, update, and port changes remain local-only.
+ * uninstall and update remain local-only. Ports are not commands at all — they
+ * travel the settings channels, which do reach a peer.
  * (optimistic status, awaited completion, authoritative refresh) lives on the
  * supervisor because the backend settles these ops only via the RPC reply, never
  * a terminal notification.
  */
 function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): void {
     const supervisor = getModularSupervisor()
-    const engine = engineManagerEngineName(payload.engineType)
+    const engine = engineManagerName(payload.engineType)
     const nodeId = payload.nodeId
 
     const refuseRemote = (detail: string): void => {
@@ -632,9 +463,17 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
             break
+        case 'stop':
+            void supervisor.toggleEngineRemote(nodeId, engine, payload.engineType, true)
+            break
         case 'pullModel':
             if (payload.model) {
                 void supervisor.pullModelRemote(nodeId, engine, payload.engineType, payload.model)
+            }
+            break
+        case 'cancelModelPull':
+            if (payload.model) {
+                void supervisor.cancelModelPull(engine, payload.engineType, payload.model, nodeId)
             }
             break
         case 'uninstall':
@@ -643,22 +482,24 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
                 `${payload.command} is only available on the local node — remote uninstall/update is not supported yet.`
             )
             break
-        case 'setPorts':
-            refuseRemote(
-                'Port changes only apply to this machine — remote engine port control is not supported.'
-            )
-            break
         case 'deleteModel':
         case 'loadModel':
         case 'unloadModel':
             if (payload.model) {
-                void supervisor.modelActionRemote(
-                    nodeId,
-                    engine,
-                    payload.engineType,
-                    payload.model,
-                    payload.command
-                )
+                const startedAt = Date.now()
+                void supervisor
+                    .modelActionRemote(
+                        nodeId,
+                        engine,
+                        payload.engineType,
+                        payload.model,
+                        payload.command
+                    )
+                    .then(result => {
+                        if (payload.command === 'loadModel') {
+                            reportLoadStoppedElsewhere(payload, startedAt, result)
+                        }
+                    })
             }
             break
         default:
@@ -678,12 +519,12 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     // Proxy node selection is owned by the backend nvpair-job-scheduler (it drives
     // node/set-priority via the broker); PAIR UI never pins node/select, and a user
     // clicking "Load" must not pin a route. Ollama loads via its `run_model` HTTP
-    // action, LM Studio via its `load_model` CLI action — both handled locally in
-    // routeEngineManagerCommand.
+    // action; LM Studio and llama.cpp use their manifest `load_model` actions.
 
     // Remote peers: `nvpair-engine-manager` exposes `engine:remote-*` client methods
     // (cluster mTLS `ec` surface) for install/start/stop/pull and model ops.
     // Local-only ops are refused in {@link routeRemoteEngineCommand}.
+    noteStopRequest(payload)
     const selfId = getModularBridgeState().getSelfId()
     if (selfId && payload.nodeId && payload.nodeId !== selfId) {
         if (supervisor.hasProcess('broker')) {
@@ -908,20 +749,10 @@ async function handleNodeRemoveMember(
     const selfId = state.getSelfId()
     const isSelfLeave = selfId !== null && payload.nodeId === selfId
 
-    // `payload.nodeId` is the node's UUID, but the manual-nodes store and the
-    // broker's `node/remove` relay key a manual entry by the name it was added
-    // with — never the UUID. Map the UUID back through the node's reachable
-    // addresses to the persisted entry so it is actually pruned (and does not
-    // reappear on the next replay). If it is not a manual node (no address match)
-    // fall back to the display hostname, then the raw id; both are harmless
-    // no-ops for a purely-discovered peer. The broker supervises
-    // nvpair-manual-nodes and relays `node/*` verbatim.
-    const manualKey =
-        resolveManualNodeKey(state.getNodeAddresses(payload.nodeId)) ||
-        state.getNodeHostname(payload.nodeId) ||
-        payload.nodeId
-    removeManualNodeEntry(manualKey)
-    supervisor.callProcess('broker', 'node/remove', { id: manualKey }).catch(() => {})
+    // The broker resolves this node key to its manual entry, if any. Keeping it
+    // separate from the worker's entry ID prevents a matching user-supplied name
+    // from selecting a different configuration for removal.
+    supervisor.callProcess('broker', 'node/remove', { nodeId: payload.nodeId }).catch(() => {})
 
     if (isSelfLeave) {
         // Self-departure is `cluster:leave`, not `nodes:remove` (the cluster-manager
@@ -963,9 +794,36 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'cluster:abandon-if-solo': () => handleClusterAbandonIfSolo(),
 
     'engines:get-initial': () => getModularBridgeState().getEngineInitialState(),
+    'engines:get-settings': async payload =>
+        parseEngineSettings(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:get-settings',
+                payload ? { ...payload } : undefined
+            )
+        ),
+    'engines:preview-settings': async payload =>
+        parseEngineSettingsPreview(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:preview-settings',
+                payload ? { ...payload, settings: { ...payload.settings } } : undefined
+            )
+        ),
+    'engines:apply-settings': async payload =>
+        parseEngineSettingsReceipt(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:apply-settings',
+                payload ? { ...payload, settings: { ...payload.settings } } : undefined,
+                MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+            )
+        ),
     'engine:command': payload => handleEngineCommand(payload),
     'engine:search-hub': payload =>
-        payload ? getEngineHubModels(payload.engineType) : { models: [] },
+        payload
+            ? getEngineHubModels(payload.engineType, payload.nodeId, payload.query)
+            : { models: [], searchable: false },
 
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),

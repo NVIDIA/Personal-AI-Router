@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The single place the Node and Go versions are declared.
+#
+# GitHub Actions has no shared constants file: `env:` is per-workflow and one
+# workflow cannot read another. Four workflows exist because each needs a
+# distinct `on:` block, so without this they would each carry their own copy of
+# the versions, and bumping one while forgetting another would have pull request
+# checks and release builds running different toolchains.
+#
+# The caller must check out the repository first — a local action cannot exist
+# until its own repo is on disk, so checkout stays in the workflow.
+#
+# On a fork pull request this file comes from the fork, like every other script
+# those jobs run. That adds no exposure: those jobs already execute the pull
+# request's `npm ci` and `go test`, hold no secret, and run on hosted runners.
+name: Set up toolchains
+description: Installs the pinned Node and Go toolchains used across all workflows.
+
+inputs:
+    node:
+        description: Install Node.
+        default: 'true'
+    go:
+        description: Install Go.
+        default: 'false'
+    npm-cache:
+        description: Cache the npm download cache. Pointless without an npm install.
+        default: 'true'
+
+runs:
+    using: composite
+    steps:
+        # desktop/package.json engines requires >=25.5.0. Pinned to a major
+        # rather than read from that range, which would drift to whatever Node
+        # is newest.
+        - if: inputs.node == 'true'
+          uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+          with:
+              node-version: '25'
+              cache: ${{ inputs.npm-cache == 'true' && 'npm' || '' }}
+              cache-dependency-path: desktop/package-lock.json
+
+        # Forbids the surprise toolchain download, so the version below is the
+        # one that actually builds. Set before setup-go because setup-go reads
+        # GOTOOLCHAIN when resolving a version file.
+        - if: inputs.go == 'true'
+          shell: bash
+          run: echo 'GOTOOLCHAIN=local' >> "$GITHUB_ENV"
+
+        # Must be >= the highest `go` directive across services/*/go.mod, which
+        # GOTOOLCHAIN=local would otherwise refuse to satisfy.
+        #
+        # cache-dependency-path is required, not an optimization. setup-go
+        # caches by default and looks for the dependency file at the repository
+        # root, where there is none — every Go module lives under services/.
+        # Left unset it reports "Dependencies file is not found" on every run.
+        # Naming the path also pins the cache key: older versions hash go.sum,
+        # newer ones hash go.mod.
+        #
+        # scripts/ matches nothing today; it is listed so a Go dependency added
+        # to the support tooling joins the key instead of silently missing it.
+        - if: inputs.go == 'true'
+          uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+          with:
+              go-version: '1.26.7'
+              cache-dependency-path: |
+                  services/**/go.sum
+                  scripts/**/go.sum

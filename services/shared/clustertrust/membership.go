@@ -25,25 +25,24 @@ type admissionRecord struct {
 	Epoch     uint64 `json:"epoch"`
 }
 
-// hasActiveAdmission reports whether clusterDir/admission.json records a live
-// admission. A missing, unreadable, malformed, or cleared file reads as false
-// (not a member). This is the durable, restart-surviving membership fact, in
-// contrast to keypair presence which outlives a membership by design.
-//
-// It is re-read on every Mesh.Refresh rather than cached: membership is exactly
-// the fact that changes underneath a running service when the user creates,
-// joins, or leaves a cluster.
-func hasActiveAdmission(clusterDir string) bool {
+// readAdmission returns the durable membership and epoch, or an empty record
+// without an error when the file is absent or malformed. Other filesystem errors
+// are returned so callers can retain the last known admission during read
+// failures. The epoch distinguishes a rejoin using the previous certificate.
+func readAdmission(clusterDir string) (admissionRecord, error) {
 	if clusterDir == "" {
-		return false
+		return admissionRecord{}, nil
 	}
 	data, err := os.ReadFile(filepath.Join(clusterDir, admissionFileName))
 	if err != nil {
-		return false
+		if os.IsNotExist(err) {
+			return admissionRecord{}, nil
+		}
+		return admissionRecord{}, err
 	}
 	var rec admissionRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return false
+		return admissionRecord{}, nil
 	}
-	return rec.ClusterID != "" && rec.Epoch != 0
+	return rec, nil
 }

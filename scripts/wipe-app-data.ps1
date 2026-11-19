@@ -23,8 +23,11 @@
 #   - desktop/scripts/build/{installer.nsh,linux/after-remove.sh,macos/uninstall.sh}
 #   - scripts/wipe-app-data.sh (Unix twin — update both in the same change)
 #
-# Explicit exclusions (never add): %USERPROFILE%\.ollama, .lmstudio, external
-# engine installs, and the application install tree (Program Files\PAIR).
+# Explicit exclusions (never add): %USERPROFILE%\.ollama, %USERPROFILE%\.llamacpp,
+# %USERPROFILE%\.lmstudio, %USERPROFILE%\.cache\huggingface, engine installs PAIR
+# did not create, and the application install tree (Program Files\PAIR). Those
+# home directories are model stores; each engine declares its own as models_dir,
+# and nothing PAIR removes may delete one. PAIR's managed vLLM payload is included.
 # ---------------------------------------------------------------------------
 
 [CmdletBinding()]
@@ -48,10 +51,11 @@ function Show-Usage {
 Usage: scripts\wipe-app-data.cmd [options]
        scripts\wipe-app-data.ps1 [options]
 
-Delete all Personal AI Router-owned application data (settings, logs, cluster
-identity, chat history, PAIR-managed engines under the app data root).
+Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
+identity, chat history, and PAIR-managed engines).
 
-Does NOT delete third-party model libraries (e.g. %USERPROFILE%\.ollama).
+Does NOT delete model libraries (%USERPROFILE%\.ollama, .llamacpp,
+.lmstudio\models, .cache\huggingface).
 Does NOT uninstall the application binary.
 
 Options:
@@ -64,7 +68,7 @@ Options:
   --help             Show this help
 
 Interactive mode requires typing "$ConfirmPhrase" to proceed.
-Quit Personal AI Router before running unless --force-kill is set.
+Quit NVIDIA PAIR before running unless --force-kill is set.
 "@
 }
 
@@ -104,9 +108,14 @@ if (-not $LocalAppData) {
 
 $HomeDir = $env:USERPROFILE
 if (-not $HomeDir) { $HomeDir = $HOME }
+if (-not $HomeDir) {
+    Write-Error 'USERPROFILE is unset'
+    exit 1
+}
 
 $CurrentRoot = Join-Path $LocalAppData (Join-Path $AppOrg $AppDataDirName)
 $LegacyRoot = Join-Path $LocalAppData (Join-Path $PreviousOrg $PreviousDataDirName)
+$VLLMInstallRoot = Join-Path $HomeDir (Join-Path '.nvpair' (Join-Path 'engine-bin' 'vllm'))
 
 $Username = $env:USERNAME
 if (-not $Username) { $Username = 'user' }
@@ -126,6 +135,7 @@ $ControlDir = Join-Path $Tmp "nvpair-$Scope"
 $Targets = @(
     @{ Path = $CurrentRoot; Reason = 'Current shared Electron + backend app data root' },
     @{ Path = $LegacyRoot; Reason = 'Legacy pre-rename app data root (NVIDIA Corporation/PAIR)' },
+    @{ Path = $VLLMInstallRoot; Reason = 'PAIR-managed vLLM payload' },
     @{ Path = (Join-Path $LocalAppData 'nvpair-updater'); Reason = 'electron-updater download cache (Windows)' },
     @{ Path = (Join-Path $CurrentRoot (Join-Path 'bin' 'nvpair.cmd')); Reason = 'Generated Windows nvpair launcher under userData' },
     @{ Path = $ControlDir; Reason = 'Removed CLI control token directory' }
@@ -134,6 +144,8 @@ $Targets = @(
 $PairProcs = @(
     'PAIR',
     'nvpair-ui-broker',
+    'nvpair-proxy',
+    # Pre-unification names, so this still cleans up after an older install.
     'ollama-proxy',
     'lmstudio-proxy',
     'nvpair-node-info',
@@ -192,7 +204,7 @@ foreach ($proc in $PairProcs) {
 }
 
 if ($running.Count -gt 0 -and -not $ForceKill) {
-    Write-Error ("Personal AI Router appears to be running ({0}). Quit the app first, or pass --force-kill." -f ($running -join ', '))
+    Write-Error ("NVIDIA PAIR appears to be running ({0}). Quit the app first, or pass --force-kill." -f ($running -join ', '))
     exit 1
 }
 
@@ -200,9 +212,10 @@ if ($running.Count -gt 0 -and $ForceKill) {
     Write-Host 'Stopping PAIR processes (--force-kill)...'
     $killScript = @'
 Get-CimInstance Win32_Process | Where-Object {
-  $_.ExecutablePath -and (
-    $_.ExecutablePath -like "$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*" -or
-    $_.ExecutablePath -like "$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*"
+    $_.ExecutablePath -and (
+      $_.ExecutablePath -like "$env:LOCALAPPDATA\NVIDIA Corporation\PAIR\*" -or
+      $_.ExecutablePath -like "$env:LOCALAPPDATA\Nvidia Corporation\Personal AI Router\*" -or
+      $_.ExecutablePath -like "$env:USERPROFILE\.nvpair\engine-bin\vllm\*"
   )
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 '@
@@ -222,8 +235,8 @@ if (-not $Confirmed) {
         exit 2
     }
     Write-Host ''
-    Write-Host 'WARNING: This permanently deletes all Personal AI Router app data.'
-    Write-Host 'Third-party model libraries (e.g. %USERPROFILE%\.ollama) are NOT removed.'
+    Write-Host 'WARNING: This permanently deletes all NVIDIA PAIR app data.'
+    Write-Host 'Model libraries (%USERPROFILE%\.ollama, .llamacpp, .lmstudio\models, .cache\huggingface) are NOT removed.'
     Write-Host ''
     Write-Host 'Paths to remove:'
     foreach ($t in $Targets) { Write-Host ("  - {0}" -f $t.Path) }
@@ -262,6 +275,18 @@ foreach ($org in @($AppOrg, $PreviousOrg)) {
     }
 }
 
+foreach ($parent in @(
+    (Join-Path $HomeDir (Join-Path '.nvpair' 'engine-bin'))
+    (Join-Path $HomeDir '.nvpair')
+)) {
+    if (Test-Path -LiteralPath $parent) {
+        $kids = @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue)
+        if ($kids.Count -eq 0) {
+            try { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+}
+
 Write-Host ("Removed {0} path(s)." -f $removed)
 if ($failures -gt 0) {
     Write-Error ("{0} path(s) could not be removed." -f $failures)
@@ -280,5 +305,5 @@ if ($RelaunchExec) {
     exit 1
 }
 
-Write-Host 'Done. Restart Personal AI Router to begin with a clean state.'
+Write-Host 'Done. Restart NVIDIA PAIR to begin with a clean state.'
 exit 0

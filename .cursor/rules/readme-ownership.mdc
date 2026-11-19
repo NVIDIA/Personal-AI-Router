@@ -1,0 +1,22 @@
+---
+description: Keep the root README focused on public app usage
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Public README Scope
+
+- Treat the root `README.md` as the public introduction and user-facing guide
+  for installing, configuring, and using the PAIR app.
+- Update `README.md` when public app behavior, supported user workflows, or
+  user-facing terminology changes.
+- Do not add implementation notes, internal plans, backend update procedures,
+  test commands, build details, release operations, or troubleshooting dumps.
+  Put those in the appropriate focused file under `docs/`.
+- Update an existing canonical document instead of duplicating information.
+- If no suitable document exists, create a focused document under `docs/`.
+- Keep README additions concise, verified against the current UI, and useful to
+  someone evaluating or operating PAIR.

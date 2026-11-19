@@ -1,0 +1,51 @@
+---
+description: Never push directly to a shared branch; always use a feature branch and a pull request
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Never push to a shared branch
+
+Agents must **never** push directly to `develop` or `main` on `origin`.
+`develop` is the integration branch; `main` carries released source.
+
+## Required workflow
+
+1. Create or switch to a **feature branch** (never commit intended work only on
+   a shared branch if it will be pushed).
+2. Commit on that branch with `git commit -s` — every commit needs a DCO
+   sign-off trailer (see `commit-sign-off.mdc`).
+3. Push the **feature branch** only: `git push -u origin HEAD` or
+   `git push -u origin <branch-name>`.
+4. Open a **pull request** into `develop`. Do not merge unless the user
+   explicitly asks.
+
+## Explicit bans
+
+- `git push … develop`, `git push … main`, `git push … HEAD:develop`, or any
+  refspec that updates `refs/heads/develop` or `refs/heads/main` on a remote.
+- Force-pushing a shared branch unless the user **explicitly** requests that
+  exact force update in the current message (and even then, prefer
+  `--force-with-lease` and confirm the target SHA).
+- Treating “commit and push” as permission to push a shared branch. That phrase
+  means push the **current feature branch**.
+
+## If already on a shared branch locally
+
+When the user asks to commit/push and `git branch --show-current` is `develop`
+or `main`:
+
+1. Create a feature branch from the commits (or before committing).
+2. Push that branch.
+3. Point the user at a pull request URL.
+
+Do **not** push a shared branch “just this once.”
+
+## Related
+
+- Signing off each commit: `commit-sign-off.mdc`.
+- Filling the pull request description and the `pair-release-intent` block:
+  `.cursor/skills/pair-github-pr/SKILL.md`.

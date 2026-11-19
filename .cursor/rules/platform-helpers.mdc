@@ -1,0 +1,21 @@
+---
+description: Platform detection and display helpers — never use process.platform or NodeJS.Platform directly
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Platform Helpers
+
+- Use `SupportedPlatform` (`'win32' | 'darwin' | 'linux'`) from
+  `src/shared/types/platform.ts` for all platform types.
+  Never use `NodeJS.Platform`.
+- Use `currentPlatform()` from `src/shared/utils/platform.ts` for runtime
+  platform checks. Never `process.platform` directly.
+- Use `PlatformDisplayName` (`'Windows' | 'MacOS' | 'Linux'`) for user-facing
+  display and wire format. Convert via `platformDisplayName()` /
+  `displayNameToPlatform()`.
+- `currentPlatform()` normalizes (never throws) — anything that isn't
+  `'win32'` or `'darwin'` maps to `'linux'`.

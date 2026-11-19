@@ -52,7 +52,7 @@ npm test                         # unit tests
 npm run service-contracts:check  # this app still agrees with ../services
 ```
 
-Run all four before opening a merge request. `npm run format` applies formatting
+Run all four before opening a pull request. `npm run format` applies formatting
 rather than just reporting it.
 
 ### While you are editing
@@ -93,6 +93,11 @@ Changing the services themselves also means running their own tests — see
 [services testing](../services/readme.md#testing).
 
 ## Build
+
+`npm run generate:icons` stages the application icons from `resources/app-icon/`.
+The macOS menu bar uses `pair-tray-template.png`, a transparent monochrome version
+of PAIR's symbol, rendered at standard and Retina resolutions. Keep its background
+transparent so macOS can adapt the template to light and dark menu bars.
 
 ```bash
 npm run build              # renderer, main, preload, and CLI bundles

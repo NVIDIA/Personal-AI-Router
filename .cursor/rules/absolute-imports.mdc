@@ -1,0 +1,50 @@
+---
+description: Use the `@/*` path alias instead of relative (`../`) imports across the codebase
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Absolute imports (`@/*` alias)
+
+The `@/*` alias maps to `./src/*` and is configured in the root `tsconfig.json`,
+`tsconfig.node.json`, `tsconfig.web.json`, the Vite configs, and tsx (via the
+root `tsconfig.json` `paths`). It resolves the same way for the Electron main
+process, the preload, the renderer, and for `tsx` scripts in `scripts/`.
+
+## Rules
+
+- **Cross-directory imports MUST use `@/...`.** Anything that would otherwise
+  need `../` to reach a sibling or ancestor directory uses the alias instead.
+  - Bad: `import { foo } from '../../shared/utils/log'`
+  - Bad: `import { Bar } from '../types/cascade-menu'`
+  - Good: `import { foo } from '@/shared/utils/log'`
+  - Good: `import { Bar } from '@/ui/types/cascade-menu'`
+
+- **Same-directory imports use `./`.** Do not rewrite `./sibling` as
+  `@/full/path/sibling` — it adds noise without helping readers. The alias is
+  for when you are crossing directories.
+  - Good: `import { helper } from './helper'`
+  - Bad (unnecessary): `import { helper } from '@/electron/service-bridge/helper'`
+    (from another file in that same folder)
+
+- **Scripts and configs follow the same rule.** `scripts/*.ts` and the
+  `electron.vite.config.*` / `vite.*.config.*` files all import shared code
+  via `@/...`. Never reach into `src/` with `../src/...`.
+  - Bad: `import { cliBinaryFileName } from '../src/shared/constants/app'`
+  - Good: `import { cliBinaryFileName } from '@/shared/constants/app'`
+
+- **Non-`src` assets (e.g. `package.json`) are the
+  only exceptions.** Those live outside `src/` so the alias cannot reach them,
+  and a relative import is correct:
+  - OK: `import { version } from '../package.json'` in `scripts/build-sea.ts`
+
+## Why
+
+Relative imports hide where a dependency actually lives, break as soon as a
+file is moved up/down the tree, and make it easy to accidentally couple the
+renderer to Electron main code (or vice versa). The `@/...` alias is the
+**single canonical form** for referring to any module in `src/` from anywhere
+else in the workspace.

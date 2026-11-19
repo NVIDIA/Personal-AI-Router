@@ -1,0 +1,95 @@
+---
+description: Verify desktop ↔ services JSON-RPC contracts and binary inventory parity
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Service contracts
+
+`services/` is the authoritative backend source tree in this monorepo. Edit it
+directly under `services/`; there is no git submodule or external alignment pin.
+
+`npm run build:modular-binaries` compiles shipped binaries from that tree into
+`desktop/cli-bin/`.
+
+## Contract artifacts
+
+- `desktop/docs/service-contract-exceptions.json` — intentionally unintegrated
+  JSON-RPC methods (`ignoredMethods` only; edit by hand with a reason per entry).
+- `desktop/docs/services-api.md` — generated JSON-RPC method surface (do not edit
+  by hand).
+- `desktop/docs/services-parity.md` — concise current capability status.
+- `desktop/docs/services-backend.md` — current integration and update
+  procedure.
+- `desktop/scripts/verify-service-contracts.ts` — drift and generation tool.
+
+Never edit `desktop/docs/services-api.md` by hand.
+
+## Commands
+
+From `desktop/`:
+
+```bash
+npm run service-contracts
+npm run service-contracts:write
+npm run service-contracts:check
+```
+
+- `service-contracts` reports method drift, missing notification consumers, unused
+  backend requests, binary inventory gaps, firewall helper parity, and any
+  hardcoded product/component versions in hand-maintained docs.
+- `service-contracts:write` regenerates `docs/services-api.md` from the current
+  `services/` tree. It reads the component list from `services/versions.json` but
+  renders no version numbers: the release bot rewrites that file after merge
+  without regenerating anything, so embedding them turned the freshness gate red
+  on `main` after every release.
+- `service-contracts:check` fails on unhandled drift, stale generated output, or
+  hardcoded versions in `services-backend.md` / `services-parity.md` (CI gate).
+
+## Backend change workflow
+
+1. Change `services/`.
+2. Run `npm run service-contracts` and review component version changes, emitted
+   notifications, handled requests, and new binary components.
+3. Read the changed module's `README.md` / `spec.md` and the Go implementation.
+4. Update desktop runtime inventory, broker flags, handlers, state projection,
+   frontend contracts, and current documentation as required.
+5. Resolve every missing notification with a consumer or an `ignoredMethods`
+   entry in `service-contract-exceptions.json`.
+6. Verify every meaningful payload field, not only the method name.
+7. Run `npm run service-contracts:write` when Go RPC surfaces changed.
+8. Run `npm run service-contracts:check`, `npm run build:modular-binaries -- --force`,
+   and `npm run typecheck`.
+9. Commit `services/` and desktop integration edits together.
+
+## Version bumps are declared in the pull request
+
+Declare bumps in the pull request `pair-release-intent:v1` block and leave
+`services/versions.json` alone — `release-intent-check.yml` fails a hand edit
+without `<!-- pair-release-intent-allow-owned-files -->`, and
+`release-intent-apply.yml` writes the file after merge. See
+`.cursor/skills/pair-github-pr/SKILL.md` and
+`scripts/release-intent/README.md`.
+
+A contributor working from a fork cannot run the apply workflow, so
+`services/VERSIONING.md`, `services/readme.md` and `CONTRIBUTING.md` describe
+editing `services/versions.json` by hand. Keep that path documented; reconcile
+the two during review rather than asking contributors to leave the file alone.
+
+## Rules
+
+- Every runtime component in `services/versions.json` must be represented in
+  `desktop/src/shared/constants/modular-binaries.ts`.
+- Do not restate product or component versions in any doc — including the
+  generated `docs/services-api.md`. They live in `services/versions.json` alone,
+  so a release bump cannot leave a doc stale.
+- Electron and the broker must never both launch the same worker.
+- Every ignored method needs a current technical reason.
+- A handled method is not sufficient evidence of payload coverage; inspect the
+  backend struct's JSON fields and the complete PAIR consumer path.
+- Unused backend methods are opportunities, not automatically required features.
+- Keep parity documentation focused on what exists now. Git history records how
+  the integration changed.

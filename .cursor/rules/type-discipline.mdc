@@ -1,0 +1,34 @@
+---
+description: Rules for creating, consolidating, and exporting TypeScript types
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Type Discipline
+
+## Reuse canonical types
+
+Before adding an interface or type:
+
+- search for the proposed name and close synonyms;
+- search for its distinctive fields;
+- prefer the shared process, IPC, service-channel, or engine type that already
+  represents the contract;
+- keep renderer/service contracts under `src/shared/types/`.
+
+Do not create a layer-specific copy of an existing payload shape.
+
+## Export only when imported
+
+- Keep file-local types unexported.
+- Inline one-off channel request or response shapes.
+- Remove `export` when the final external import is removed.
+- Import from the defining module; do not add convenience re-exports.
+
+## Consolidate completely
+
+When replacing or moving a type, remove the superseded definition and all of
+its imports in the same change. Do not leave aliases or compatibility shims.

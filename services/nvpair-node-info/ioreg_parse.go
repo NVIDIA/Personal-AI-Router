@@ -79,7 +79,7 @@ func normalizeIORegistryGPU(entry ioRegistryEntry, name string, systemMemory uin
 	}
 	if isApple {
 		record.vramTotal = systemMemory
-		record.vramUsed = entry.Performance.AllocSystemMemory
+		record.vramUsed = entry.Performance.InUseSystemMemory
 	} else {
 		record.vramTotal = entry.VRAMTotalMB * 1024 * 1024
 		dedicatedUsed := entry.Performance.VRAMUsedBytes

@@ -144,8 +144,7 @@ export function useActiveWorkloads(): Workload[] {
         useShallow(state => {
             const result: Workload[] = []
             for (const w of state.workloads.values()) {
-                if (w.state === 'running' || w.state === 'queued' || w.state === 'initializing')
-                    result.push(w)
+                if (w.state === 'running' || w.state === 'queued') result.push(w)
             }
             return result.sort((a, b) => {
                 const stateDiff = stateOrder[a.state] - stateOrder[b.state]
@@ -178,16 +177,16 @@ export function useAssignedWorkloads(): Workload[] {
     )
 }
 
-// Number of active (running/queued/initializing) workloads scheduled on a node.
-// Returns a primitive so a subscribing node card only re-renders when its own
-// count changes, instead of on every workload event across the cluster.
+// Number of active (running/queued) workloads scheduled on a node. Returns a
+// primitive so a subscribing node card only re-renders when its own count
+// changes, instead of on every workload event across the cluster.
 export function useNodeActiveJobCount(nodeId: string): number {
     return useWorkloadsStore(state => {
         let count = 0
         for (const w of state.workloads.values()) {
             if (
                 workloadExecutionNodeId(w) === nodeId &&
-                (w.state === 'running' || w.state === 'queued' || w.state === 'initializing')
+                (w.state === 'running' || w.state === 'queued')
             )
                 count++
         }
@@ -215,6 +214,23 @@ export function useFailedWorkloads(): Workload[] {
             const result: Workload[] = []
             for (const w of state.workloads.values()) {
                 if (w.state === 'failed') result.push(w)
+            }
+            return result
+                .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
+                .slice(0, MAX_HISTORY_ITEMS)
+        })
+    )
+}
+
+// Jobs the requester stopped waiting for. Kept out of useFailedWorkloads so
+// the failed bucket only holds outcomes a user might act on, rather than also
+// collecting every time somebody pressed stop.
+export function useCancelledWorkloads(): Workload[] {
+    return useWorkloadsStore(
+        useShallow(state => {
+            const result: Workload[] = []
+            for (const w of state.workloads.values()) {
+                if (w.state === 'cancelled') result.push(w)
             }
             return result
                 .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))

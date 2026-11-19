@@ -1,0 +1,490 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/engines"
+	settings "nvpair-shared/enginesettings"
+	"nvpair-shared/noderec"
+	"nvpair-ui-broker/relay"
+)
+
+type settingsHarness struct {
+	idle                atomic.Bool
+	enabled             atomic.Bool
+	localLoadOnRequest  atomic.Bool
+	b                   *Broker
+	applies             atomic.Int32
+	proxyRebinds        atomic.Int32
+	fail                atomic.Bool
+	failBeforeStop      atomic.Bool
+	loseProxyOnStop     atomic.Bool
+	failResultSave      atomic.Bool
+	otherEnginePort     atomic.Int32
+	previewPreserveCORS atomic.Bool
+	entered, release    chan struct{}
+	// launchMu guards the fixture's launch state, which a suspended
+	// engine:configure-launch mutates while the reader loop keeps serving.
+	launchMu sync.Mutex
+}
+
+// reserveSettingsPort holds a wildcard listener until release is called.
+// Registering the same release for cleanup also covers failed fixture setup.
+func reserveSettingsPort(t *testing.T) (int, func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", ":0")
+	require.NoError(t, err, "allocate fixture port")
+	release := sync.OnceFunc(func() {
+		require.NoError(t, ln.Close(), "release fixture port")
+	})
+	t.Cleanup(release)
+	return ln.Addr().(*net.TCPAddr).Port, release
+}
+
+func newSettingsHarness(t *testing.T) *settingsHarness {
+	t.Helper()
+	return newSettingsHarnessForEngine(t, "ollama")
+}
+
+func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
+	t.Helper()
+	ports := make([]int, 5)
+	releases := make([]func(), len(ports))
+	for i := range ports {
+		ports[i], releases[i] = reserveSettingsPort(t)
+	}
+	for _, release := range releases {
+		release()
+	}
+	h := &settingsHarness{b: &Broker{codec: NewCodec(&bytes.Buffer{}), nodeID: "target", clusterDir: filepath.Join(t.TempDir(), "cluster")}}
+	worker, codec := newTestRPCWorkerPipe(t)
+	h.b.setEngineMgr(worker)
+	proxyWorker, proxyCodec := newTestRPCWorkerPipe(t)
+	proxy := &proxyProcess{peer: proxyWorker.peer, facadeState: map[string]proxyFacadeState{
+		"ollama":   {ready: true, port: ports[1]},
+		"lmstudio": {ready: true, port: ports[2]},
+		"llamacpp": {ready: true, port: ports[3]},
+		"vllm":     {ready: true, port: ports[4]},
+	}}
+	for _, profile := range engineProxyProfiles {
+		h.b.setEngineProxyHandle(profile, proxy)
+	}
+	go func() {
+		for {
+			msg, err := proxyCodec.Read()
+			if !assertRPCRead(t, err) {
+				return
+			}
+			if !msg.IsRequest() {
+				continue
+			}
+			engine, method := engines.SplitAddressedMethod(msg.Method)
+			if method == "node/set-local-backend" {
+				var local proxyLocalBackend
+				if !assert.NoError(t, json.Unmarshal(msg.Params, &local)) {
+					return
+				}
+				h.localLoadOnRequest.Store(local.LoadOnRequest)
+			}
+			if engine == "" || method != "set-port" {
+				assert.NoError(t, proxyCodec.Respond(msg.ID, map[string]bool{"ok": true}))
+				continue
+			}
+			var p struct {
+				Port int `json:"port"`
+			}
+			if !assert.NoError(t, json.Unmarshal(msg.Params, &p), "decode proxy port request") {
+				return
+			}
+			h.proxyRebinds.Add(1)
+			proxy.readyMu.Lock()
+			proxy.facadeState[engine] = proxyFacadeState{ready: true, port: p.Port}
+			proxy.readyMu.Unlock()
+			assert.NoError(t, proxyCodec.Respond(msg.ID, map[string]int{"port": p.Port}))
+		}
+	}()
+	launch := settings.LaunchState{Engine: engine, ServerPort: ports[0], EffectivePort: ports[0], LaunchText: "--fixture-option", Running: true, Editable: true, Format: "pair-arguments-v1"}
+	if engine == "llamacpp" {
+		launch.ModelSource = "huggingface"
+	}
+	go func() {
+		for {
+			msg, err := codec.Read()
+			if !assertRPCRead(t, err) {
+				return
+			}
+			if !msg.IsRequest() {
+				continue
+			}
+			switch msg.Method {
+			case "engine:get-launch":
+				h.launchMu.Lock()
+				current := launch
+				current.Running = current.Running && !h.idle.Load()
+				h.launchMu.Unlock()
+				assert.NoError(t, codec.Respond(msg.ID, current))
+			case "engine:status":
+				h.launchMu.Lock()
+				port := launch.EffectivePort
+				h.launchMu.Unlock()
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{"installed": true, "enabled": h.enabled.Load(), "port": port}))
+			case "engine:models":
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{"requestableByEngine": map[string][]string{"vllm": {"org/cached"}}}))
+			case "engine:configured-ports":
+				assert.NoError(t, codec.Respond(msg.ID, map[string]any{"engines": []any{map[string]any{"engine": "lmstudio", "port": h.otherEnginePort.Load()}}}))
+			case "engine:preview-launch":
+				var p settings.Request
+				assert.NoError(t, json.Unmarshal(msg.Params, &p))
+				h.previewPreserveCORS.Store(p.PreserveCORS)
+				if p.Format == "pair-launch-v1" {
+					p.Settings.LaunchText = strings.TrimPrefix(p.Settings.LaunchText, "managed serve ")
+				}
+				h.launchMu.Lock()
+				restart := launch.Running && (p.Settings.ServerPort != launch.ServerPort || p.Settings.LaunchText != launch.LaunchText || p.Settings.ModelSource != launch.ModelSource)
+				h.launchMu.Unlock()
+				assert.NoError(t, codec.Respond(msg.ID, settings.Preview{Settings: p.Settings, Restart: restart}))
+			case "engine:configure-launch":
+				// Serve this off the reader loop: a suspended apply must not
+				// stop the fixture from answering an unrelated read, which is
+				// exactly what the broker's lock split makes possible.
+				go func(msg *Message) {
+					h.applies.Add(1)
+					if h.entered != nil {
+						h.entered <- struct{}{}
+						<-h.release
+					}
+					if h.failBeforeStop.Load() {
+						if h.loseProxyOnStop.Load() {
+							proxy.readyMu.Lock()
+							state := proxy.facadeState[engine]
+							state.ready = false
+							proxy.facadeState[engine] = state
+							proxy.readyMu.Unlock()
+						}
+						assert.NoError(t, codec.RespondError(msg.ID, -32000, "stop failure"))
+						return
+					}
+					var p settings.Configure
+					assert.NoError(t, json.Unmarshal(msg.Params, &p))
+					h.launchMu.Lock()
+					launch.ServerPort = p.Settings.ServerPort
+					launch.LaunchText = p.Settings.LaunchText
+					launch.ModelSource = p.Settings.ModelSource
+					launch.Running = false
+					h.launchMu.Unlock()
+					if err := h.b.rebindSettingsProxy(p.Engine, p.Settings.ProxyPort); err != nil {
+						assert.NoError(t, codec.RespondError(msg.ID, -32000, err.Error()))
+						return
+					}
+					if h.fail.Load() {
+						assert.NoError(t, codec.RespondError(msg.ID, -32000, "startup failure"))
+						return
+					}
+					h.launchMu.Lock()
+					launch.EffectivePort = p.Settings.ServerPort
+					launch.Running = p.Resume && !h.idle.Load()
+					current := launch
+					h.launchMu.Unlock()
+					if h.failResultSave.Load() {
+						journal, pathErr := h.b.engineSettingsPath()
+						assert.NoError(t, pathErr)
+						assert.NoError(t, os.Remove(journal))
+						assert.NoError(t, os.Mkdir(journal, 0700))
+					}
+					assert.NoError(t, codec.Respond(msg.ID, current))
+				}(msg)
+			default:
+				assert.NoError(t, codec.RespondError(msg.ID, -32601, "unsupported fixture method"))
+			}
+		}
+	}()
+	return h
+}
+
+func (h *settingsHarness) request(t *testing.T) settings.Request {
+	t.Helper()
+	s, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "ollama"}, "")
+	require.NoError(t, err)
+	return settings.Request{Engine: "ollama", ExpectedRevision: s.Revision, RequestID: settingsID(), Settings: s.Settings}
+}
+
+func TestSettingsCoordinator_PreservesModelSourceAcrossWorkerAndJournal(t *testing.T) {
+	h := newSettingsHarnessForEngine(t, "llamacpp")
+	target := settings.Request{Engine: "llamacpp"}
+	before, err := h.b.getEngineSettings(context.Background(), target, "")
+	require.NoError(t, err)
+	require.Equal(t, "huggingface", before.Settings.ModelSource)
+	request := settings.Request{Engine: target.Engine, ExpectedRevision: before.Revision, RequestID: settingsID(), Settings: before.Settings}
+	request.Settings.ModelSource = "modelscope"
+	preview, err := h.b.previewEngineSettings(context.Background(), request, "")
+	require.NoError(t, err)
+	assert.True(t, preview.Restart)
+	receipt, err := h.b.applyEngineSettings(context.Background(), request, "")
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", receipt.Phase)
+	after, err := h.b.getEngineSettings(context.Background(), target, "")
+	require.NoError(t, err)
+	assert.Equal(t, "modelscope", after.Settings.ModelSource)
+	journal, err := h.b.engineSettingsPath()
+	require.NoError(t, err)
+	data, err := os.ReadFile(journal)
+	require.NoError(t, err)
+	var saved map[string]engineSettingsRecord
+	require.NoError(t, json.Unmarshal(data, &saved))
+	assert.Equal(t, "modelscope", saved["llamacpp"].Snapshot.Settings.ModelSource)
+}
+
+func TestSettingsCoordinator_TracksRevisionsDeduplicatesAndReportsFailures(t *testing.T) {
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, int32(0), h.applies.Load(), "no-op mutated runtime")
+	require.Equal(t, "succeeded", receipt.Phase, "no-op mutated runtime")
+	p = h.request(t)
+	p.Settings.LaunchText += " --parallel 2"
+	receipt, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, p.ExpectedRevision+1, receipt.Revision, "receipt (%v)", receipt)
+	require.Equal(t, "succeeded", receipt.Phase, "receipt (%v)", receipt)
+	require.Equal(t, int32(1), h.applies.Load(), "receipt (%v)", receipt)
+	_, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err, "duplicate restarted")
+	require.Equal(t, int32(1), h.applies.Load(), "duplicate restarted")
+	reused := p
+	reused.Settings.LaunchText += " --different"
+	_, err = h.b.applyEngineSettings(context.Background(), reused, "")
+	require.Error(t, err, "reused identifier accepted")
+	p.RequestID = settingsID()
+	_, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.Error(t, err, "stale revision accepted")
+	p = h.request(t)
+	p.Settings.LaunchText += " --invalid"
+	h.fail.Store(true)
+	receipt, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err, "failure receipt (%v)", receipt)
+	require.Equal(t, "failed", receipt.Phase, "failure receipt (%v)", receipt)
+	s := h.b.engineSettings["ollama"].Snapshot
+	require.Equal(t, p.Settings, s.Settings, "untruthful failed snapshot (%v)", s)
+	require.False(t, s.Running, "untruthful failed snapshot (%v)", s)
+	require.Less(t, s.AppliedRevision, s.Revision, "untruthful failed snapshot (%v)", s)
+	require.NotEqual(t, "", s.Error, "untruthful failed snapshot (%v)", s)
+	h.fail.Store(false)
+	p = h.request(t)
+	_, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	s = h.b.engineSettings["ollama"].Snapshot
+	require.True(t, s.Running, "retry lost resume intent (%v)", s)
+	require.Equal(t, "succeeded", s.Phase, "retry lost resume intent (%v)", s)
+}
+
+func TestSettingsFailedApply_RestoresOnlyRunningReadyService(t *testing.T) {
+	test := func(name string, stopFails, proxyReady, advertised bool) {
+		t.Run(name, func(t *testing.T) {
+			h := newSettingsHarness(t)
+			p := h.request(t)
+			oldPort := p.Settings.ProxyPort
+			h.b.regCache = relay.NewRegistrationCache()
+			h.b.registerService(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: oldPort})
+			h.failBeforeStop.Store(stopFails)
+			h.fail.Store(true)
+			h.loseProxyOnStop.Store(!proxyReady)
+			p.Settings.LaunchText += " --new-option"
+			receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
+			require.NoError(t, err, "expected failed receipt (%v)", receipt)
+			require.Equal(t, "failed", receipt.Phase, "expected failed receipt (%v)", receipt)
+			registered := h.b.regCache.Snapshot()
+			if advertised {
+				require.Len(t, registered, 1, "running engine lost registration")
+				require.Equal(t, noderec.ServiceOllama, registered[0].Service, "running engine lost registration (%v)", registered)
+				require.Equal(t, oldPort, registered[0].Port, "running engine lost registration (%v)", registered)
+			} else {
+				require.Empty(t, registered, "unavailable service advertised")
+			}
+		})
+	}
+	test("stop failed with engine still running", true, true, true)
+	test("engine stopped before startup failed", false, true, false)
+	test("proxy unavailable", true, false, false)
+}
+
+func TestSettingsCoordinator_SerializesAndCancelsQueuedRequests(t *testing.T) {
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	p.Settings.LaunchText += " --first"
+	h.entered = make(chan struct{}, 1)
+	h.release = make(chan struct{})
+	done := make(chan error, 1)
+	go func() { _, err := h.b.applyEngineSettings(context.Background(), p, ""); done <- err }()
+	<-h.entered
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	other := p
+	other.RequestID = settingsID()
+	canceled := make(chan error, 1)
+	go func() { _, err := h.b.applyEngineSettings(ctx, other, ""); canceled <- err }()
+	close(h.release)
+	require.NoError(t, <-done)
+	require.Error(t, <-canceled, "canceled queued mutation accepted")
+	require.Equal(t, int32(1), h.applies.Load(), "concurrent request mutated runtime")
+}
+
+// An apply stops and restarts an engine, which can run for minutes. Holding the
+// journal lock across that froze the other engine's editor and the refresh
+// poller for the whole restart.
+func TestSettingsApply_DoesNotBlockUnrelatedReads(t *testing.T) {
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	p.Settings.LaunchText += " --busy"
+	h.entered = make(chan struct{}, 1)
+	h.release = make(chan struct{})
+	done := make(chan error, 1)
+	go func() { _, err := h.b.applyEngineSettings(context.Background(), p, ""); done <- err }()
+	<-h.entered
+
+	read := make(chan error, 1)
+	go func() {
+		_, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "lmstudio"}, "")
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		require.NoError(t, err, "read during an in-flight apply failed")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "engine settings read blocked behind an in-flight apply")
+	}
+
+	close(h.release)
+	require.NoError(t, <-done)
+}
+
+func TestSettingsResultPersistenceFailure_ReturnsFailedReceipt(t *testing.T) {
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	p.Settings.LaunchText += " --new"
+	h.failResultSave.Store(true)
+	receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err, "result persistence failure claimed success (%v)", receipt)
+	require.Equal(t, "failed", receipt.Phase, "result persistence failure claimed success (%v)", receipt)
+	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "result persistence failure claimed success (%v)", receipt)
+}
+
+func TestSettingsJournal_ReportsPersistenceFailureAndRecoversInterruptedApply(t *testing.T) {
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	p.Settings.LaunchText += " --new"
+	path, pathErr := h.b.engineSettingsPath()
+	require.NoError(t, pathErr)
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Mkdir(path, 0700))
+	_, err := h.b.applyEngineSettings(context.Background(), p, "")
+	require.Error(t, err, "runtime changed despite failed journal write")
+	require.Equal(t, int32(0), h.applies.Load(), "runtime changed despite failed journal write")
+	require.NoError(t, os.Remove(path))
+	r := h.b.engineSettings["ollama"]
+	r.Snapshot.Settings = p.Settings
+	r.Snapshot.Revision++
+	r.Snapshot.Phase = "applying"
+	r.Resume = true
+	r.Explicit = true
+	require.NoError(t, h.b.saveEngineSettingsLocked())
+	// Simulate a fresh coordinator after its journal was written but component
+	// writes/rebind/start had not completed. The same replay handles later cuts.
+	h.b.engineSettingsLoaded = false
+	require.True(t, h.b.recoverEngineSettings(), "recovery refused")
+	require.Equal(t, int32(1), h.applies.Load(), "accepted operation not recovered")
+	require.Equal(t, "succeeded", h.b.engineSettings["ollama"].Snapshot.Phase, "accepted operation not recovered")
+	require.True(t, h.b.recoverEngineSettings(), "completed operation replayed")
+	require.Equal(t, int32(1), h.applies.Load(), "completed operation replayed")
+	_, ok := h.b.explicitEngineSettings("ollama")
+	require.True(t, ok, "explicit startup preference lost")
+}
+
+func TestSettingsPortValidation_IncludesStoppedEnginesAndAliases(t *testing.T) {
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	p.Settings.ProxyPort = p.Settings.ServerPort
+	preview, err := h.b.previewEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, preview.Errors, "equal ports accepted")
+	p = h.request(t)
+	p.Settings.ServerPort = engineControlPort
+	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
+	require.NoError(t, err, "reserved control port accepted (%v)", preview)
+	require.NotEmpty(t, preview.Errors, "reserved control port accepted (%v)", preview)
+	p = h.request(t)
+	h.otherEnginePort.Store(int32(p.Settings.ServerPort))
+	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
+	require.NoError(t, err, "stopped engine reservation ignored (%v)", preview)
+	require.NotEmpty(t, preview.Errors, "stopped engine reservation ignored (%v)", preview)
+	h.otherEnginePort.Store(0)
+	h.b.ollamaHostAliasMu.Lock()
+	h.b.ollamaHostAlias.Port = p.Settings.ProxyPort
+	h.b.ollamaHostAliasMu.Unlock()
+	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
+	require.NoError(t, err, "proxy alias reservation ignored (%v)", preview)
+	require.NotEmpty(t, preview.Errors, "proxy alias reservation ignored (%v)", preview)
+}
+
+func TestSettings_MigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {
+	h := newSettingsHarness(t)
+	path, pathErr := h.b.engineSettingsPath()
+	require.NoError(t, pathErr)
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(path), "proxy-port.json"), []byte(`{"port":26080}`), 0600))
+	h.b.migrateLegacyEngineSettings()
+	config, ok := h.b.explicitEngineSettings("ollama")
+	require.True(t, ok, "legacy choice lost (%v)", config)
+	require.Equal(t, 26080, config.ProxyPort, "legacy choice lost (%v)", config)
+	require.True(t, h.b.prepareExplicitEngineSettings("ollama"), "automatic startup overrode saved proxy choice")
+	require.Equal(t, int32(26080), h.b.ollamaState().startupPort.Load(), "automatic startup overrode saved proxy choice")
+	require.False(t, h.b.ollamaState().managedFacade.Load(), "automatic startup overrode saved proxy choice")
+}
+
+func TestSettingsCoordinator_RestoresIdleRequestEligibilityBeforeApplyReturns(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		fail    bool
+	}{
+		{name: "enabled engine accepts cached model requests", enabled: true},
+		{name: "disabled engine remains unavailable"},
+		{name: "failed apply restores enabled request eligibility", enabled: true, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSettingsHarnessForEngine(t, "vllm")
+			h.b.regCache = relay.NewRegistrationCache()
+			h.idle.Store(true)
+			h.enabled.Store(tc.enabled)
+			h.fail.Store(tc.fail)
+			before, err := h.b.getEngineSettings(t.Context(), settings.Request{Engine: "vllm"}, "")
+			require.NoError(t, err)
+			require.False(t, before.Running)
+			changed := before.Settings
+			changed.LaunchText = "--updated-fixture-option"
+			receipt, err := h.b.applyEngineSettings(t.Context(), settings.Request{Engine: "vllm", ExpectedRevision: before.Revision, RequestID: settingsID(), Settings: changed}, "")
+			require.NoError(t, err)
+			expectedPhase := "succeeded"
+			if tc.fail {
+				expectedPhase = "failed"
+			}
+			require.Equal(t, expectedPhase, receipt.Phase)
+			assert.Equal(t, tc.enabled, h.localLoadOnRequest.Load(), "the proxy must reflect enabled intent when settings finish, without waiting for the periodic reconcile")
+		})
+	}
+}

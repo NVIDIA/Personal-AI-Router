@@ -5,24 +5,31 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"nvpair-shared/httpcon"
 )
 
 const (
 	unavailableConfirmations  = 3
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
+	maxProbeJSONBytes         = 1 << 20
 )
 
 type listenerProbeResult uint8
@@ -55,8 +62,9 @@ func (e *Executor) waitDetect(engine string, want bool, timeout time.Duration) b
 // auto-assign a free loopback port); Bind "" => the manifest's
 // runtime.bind (which itself defaults to loopback).
 type startOpts struct {
-	Port int
-	Bind string
+	RequireOwned bool
+	Port         int
+	Bind         string
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -88,12 +96,36 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
+	st.mu.Lock()
+	st.enabling = true
+	st.mu.Unlock()
+	defer func() {
+		st.mu.Lock()
+		st.enabling = false
+		st.mu.Unlock()
+		e.emitState(engine)
+	}()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
-		return err
+		return e.startStopped(st, err)
 	}
 	return e.setDesiredEnabled(engine, true)
+}
+
+// errStartStopped marks a start that Stop or Eject cut short. An explicit Start
+// replies with the stopped engine's status. Model preparation replies with HTTP
+// 503 so the proxy can try another node.
+var errStartStopped = errors.New("the start was stopped")
+
+// startStopped wraps a failed start's error in errStartStopped when a Stop or
+// Eject cut it short. Callers must still hold st.opMu: the Stop that cancelled
+// the start waits for it, so it is still counted as waiting.
+func (e *Executor) startStopped(st *engineState, err error) error {
+	if e.stopWaiting(st) && !e.shuttingDown.Load() {
+		return fmt.Errorf("%w: %w", errStartStopped, err)
+	}
+	return err
 }
 
 // doStart performs the start. Callers must hold st.opMu.
@@ -108,7 +140,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		st.startCancel = nil
 		st.mu.Unlock()
 	}()
-	if e.shuttingDown.Load() {
+	if e.shuttingDown.Load() || e.stopWaiting(st) {
 		return context.Canceled
 	}
 
@@ -121,6 +153,15 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	st.mu.Unlock()
 
+	// A start refused before bring-up is reported like one that fails during
+	// it. A desktop Start is sent without waiting for the reply and learns the
+	// outcome from engine:state-changed or a start-failed error, and a refusal
+	// changes no state, so without the report the engine stays shown as
+	// starting.
+	refuse := func(err error) error {
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
+		return err
+	}
 	pathInstalled, _ := e.Detect(engine)
 	rt := st.plat.Runtime
 	port := st.port
@@ -130,15 +171,18 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	if port == 0 {
 		p, err := freePort()
 		if err != nil {
-			return fmt.Errorf("allocate port: %w", err)
+			return refuse(fmt.Errorf("allocate port: %w", err))
 		}
 		port = p
 	}
 	if err := e.reservedPortError(port); err != nil {
-		return err
+		return refuse(err)
 	}
 	presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, true)
 	if presence.Identified {
+		if opts.RequireOwned {
+			return refuse(fmt.Errorf("cannot apply launch settings: another process already owns the server port"))
+		}
 		slog.Info("adopting already-running external engine", "engine", engine, "port", port)
 		st.mu.Lock()
 		st.gen++
@@ -160,26 +204,55 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		return nil
 	}
 	if presence.Occupied && rt.modeOrDefault() == "process" {
-		return fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName)
+		return refuse(fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName))
 	}
+	// Not reported: a client offers Install, not Start, for an engine that is
+	// not installed, and an engine removed outside PAIR would otherwise raise an
+	// error on every launch that restores it.
 	if !pathInstalled {
 		return fmt.Errorf("engine %q is not installed", engine)
 	}
-	vars := map[string]string{
-		"host":        effectiveBind(rt.Bind, opts.Bind),
-		"port":        strconv.Itoa(port),
-		"install_dir": st.installDir,
+	// An engine whose model is a launch argument cannot start without one. vLLM
+	// would serve, and first download, a default model of its own instead.
+	if flag := modelLaunchFlag(st.manifest); flag != "" {
+		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
+		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
+			if rt.WaitForModel {
+				st.mu.Lock()
+				st.awaitingModel = true
+				st.stopping = false
+				st.port = port
+				st.mu.Unlock()
+				e.emitState(engine)
+				return nil
+			}
+			return refuse(fmt.Errorf("%s has no model selected; load a model to start it", st.manifest.DisplayName))
+		}
 	}
+	vars := st.pathVars()
+	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
 
+	// Report the start while it runs, which for vLLM can be minutes of
+	// downloading and loading, so every client shows the engine as starting
+	// rather than off, whoever started it.
 	st.mu.Lock()
 	st.port = port
 	st.stopping = false
+	st.awaitingModel = false
+	st.starting = true
 	st.mu.Unlock()
+	e.emitState(engine)
 
-	if err := e.bringUp(ctx, st, engine, rt, port, vars); err != nil {
+	err := e.bringUp(ctx, st, engine, rt, port, vars)
+	st.mu.Lock()
+	st.starting = false
+	st.mu.Unlock()
+	if err != nil {
+		e.emitState(engine)
 		return err
 	}
 
@@ -194,6 +267,13 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	e.reporter.clear(exitedID(engine))
 	e.reporter.clear(unhealthyID(engine))
 	e.emitState(engine)
+
+	st.mu.Lock()
+	proc := st.proc
+	st.mu.Unlock()
+	if proc != nil {
+		e.watch(st, engine, proc)
+	}
 
 	if rt.Health != nil {
 		hctx, cancel := context.WithCancel(context.Background())
@@ -215,33 +295,64 @@ func (e *Executor) bringUp(ctx context.Context, st *engineState, engine string, 
 // bringUpProcess spawns the engine as a foreground process this service
 // owns, then waits for readiness.
 func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+	// The readiness allowance counts from here, so the work before launch
+	// (vLLM's metadata fetch and tool-parser probe) is inside it, and a start
+	// stays within what a remote peer waits for.
+	began := time.Now()
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()
-	if binPath == "" {
-		b, err := resolvePlaceholders(rt.Bin, vars)
-		if err != nil {
-			return err
-		}
-		binPath = expandPath(b)
+	launch, err := resolveProcessLaunch(rt, binPath, vars)
+	if err == nil {
+		err = validateEffectiveLaunch(rt, launch, vars["host"], vars["port"])
 	}
-	vars["bin"] = binPath
-
-	args, err := resolveArgs(rt.Args, vars)
 	if err != nil {
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 		return err
 	}
-	env := make(map[string]string, len(rt.Env))
-	for k, v := range rt.Env {
-		rv, err := resolvePlaceholders(v, vars)
+	// The hub cache vLLM itself will use, from the environment it is started
+	// with, and the model it serves. Auto-launch adds sizing and parser flags
+	// but never changes --model or --revision, so they are read once here.
+	env := hfEnv(launch.Env)
+	hub := hfLaunchHub(launch.Args, env)
+	model, _ := launchFlagValue(launch.Args, "--model")
+	revision := hfRevision(launch.Args)
+	fetch := sync.OnceValues(func() (hfPendingModel, bool) {
+		return e.fetchHFMetadata(ctx, st, hub, model, revision, env)
+	})
+	launch = applyAutoLaunch(ctx, engine, rt, launch, hub, fetch)
+	if err := checkLaunchWeights(rt.UnsupportedWeights, launch.Args, hub, fetch); err != nil {
+		werr := fmt.Errorf("start %s: %w", engine, err)
+		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
+		return werr
+	}
+	modelScopeEndpoint := ""
+	if engine == "llamacpp" && modelSource(rt) == "modelscope" {
+		modelScopeEndpoint, err = e.modelScopeEndpoint()
 		if err != nil {
 			return err
 		}
-		env[k] = rv
+		if launch.Env == nil {
+			launch.Env = map[string]string{}
+		}
+		for key := range launch.Env {
+			if environmentKey(key) == environmentKey("MODEL_ENDPOINT") {
+				delete(launch.Env, key)
+			}
+		}
+		launch.Env["MODEL_ENDPOINT"] = modelScopeEndpoint
 	}
 
-	proc, err := startManagedProc(binPath, args, env, func(stream, line string) {
-		st.logs.append(stream, line)
+	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
+	defer diagnostics.close()
+	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+		line = redactModelScopeEndpoint(line, modelScopeEndpoint)
+		_, _ = diagnostics.Write([]byte(line + "\n"))
+		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
+		// out of exported engine logs; report exit/readiness failures separately.
+		if !rt.hasCustomLaunch() {
+			st.logs.append(stream, line)
+		}
 	})
 	if err != nil {
 		werr := fmt.Errorf("start %s: %w", engine, err)
@@ -251,19 +362,32 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.mu.Lock()
 	st.proc = proc
 	st.mu.Unlock()
-	e.watch(st, engine, proc)
 
-	if err := e.waitReady(ctx, rt.Ready, port); err != nil {
-		// Mark stopping so the watcher doesn't report the deliberate kill
-		// as an unexpected "exited" event.
+	readyCtx, readyCancel := context.WithCancel(ctx)
+	defer readyCancel()
+	go func() {
+		select {
+		case <-proc.done:
+			readyCancel()
+		case <-readyCtx.Done():
+		}
+	}()
+	readyErr := e.waitReady(readyCtx, rt.Ready, port, began)
+	select {
+	case <-proc.done:
+		readyErr = fmt.Errorf("process exited before readiness; check the launch options")
+	default:
+	}
+	if err := readyErr; err != nil {
+		// Clean up the failed start before returning its single readiness error.
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
-		proc.stop()
+		proc.stop(e.stopGraceFor(rt))
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
-		werr := fmt.Errorf("engine %q did not become ready: %w", engine, err)
+		werr := fmt.Errorf("engine %q did not become ready: %w", engine, diagnostics.failure(ctx, err))
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return werr
@@ -293,16 +417,35 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		}
 		return startErr
 	}
-	for _, cmd := range rt.Start {
-		argv, err := resolveArgs(cmd, vars)
+	if engine == "lmstudio" && rt.CLI != "" {
+		e.startLMStudioHost(ctx, expandPath(rt.CLI))
+	}
+	for index := range rt.Start {
+		launch, err := resolveRuntimeCommand(rt, index, vars)
 		if err != nil {
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 			return cleanup(err)
 		}
-		for i := range argv {
-			argv[i] = expandPath(argv[i])
+		if launch.Bin == "" {
+			continue
 		}
-		if err := e.runCommand(ctx, argv); err != nil {
+		if rt.EditableLaunch != nil && index == rt.EditableLaunch.StartIndex {
+			if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+				e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
+				return cleanup(err)
+			}
+		}
+		argv := append([]string{launch.Bin}, launch.Args...)
+		run := e.runCommand
+		if rt.LaunchArgs != nil || rt.LaunchEnv != nil || len(launch.Env) > 0 {
+			run = func(ctx context.Context, argv []string) error {
+				return runPrivateLaunchCommand(ctx, argv, launch.Env, launchDiagnosticArgs(rt))
+			}
+			// A vendor command may spawn its daemon and then exit unsuccessfully.
+			// Attempt its official cleanup even if the first command failed.
+			started = true
+		}
+		if err := run(ctx, argv); err != nil {
 			werr := fmt.Errorf("start command failed: %w", err)
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 			return cleanup(werr)
@@ -312,11 +455,33 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		// official stop command before Start releases the lifecycle lock.
 		started = true
 	}
-	if err := e.waitReady(ctx, rt.Ready, port); err != nil {
+	if err := e.waitReady(ctx, rt.Ready, port, time.Now()); err != nil {
 		werr := fmt.Errorf("engine %q did not become ready: %w", engine, err)
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return cleanup(werr)
+	}
+	return nil
+}
+
+// Capture vendor startup diagnostics without interpreting engine options.
+func runPrivateLaunchCommand(ctx context.Context, argv []string, environment map[string]string, privateArgs []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("launch executable is missing")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	diagnostics := newStartupOutput(privateArgs, environment)
+	defer diagnostics.close()
+	cmd.Stdout, cmd.Stderr = diagnostics, diagnostics
+	if len(environment) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range environment {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
+	configureSysProcAttr(cmd)
+	if err := cmd.Run(); err != nil {
+		return diagnostics.failure(ctx, fmt.Errorf("launch command failed: %w", err))
 	}
 	return nil
 }
@@ -332,6 +497,7 @@ func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
 			st.proc = nil
 			st.running = false
 			st.healthy = false
+			st.revision++
 			if st.healthStop != nil {
 				st.healthStop()
 				st.healthStop = nil
@@ -356,8 +522,10 @@ func (e *Executor) Stop(engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	done, _ := e.requestStop(st)
+	defer done()
+	st.lockOperation()
+	defer st.unlockOperation()
 	stopErr := e.doStop(st, engine)
 	// A user-initiated Stop is explicit OFF intent. Persist it even when
 	// doStop declines a genuinely-foreign listener we can't terminate, so the
@@ -365,6 +533,11 @@ func (e *Executor) Stop(engine string) error {
 	// engine back on. Restart and StopAll call doStop directly and never
 	// rewrite intent — shutdown must not erase the user's saved choice.
 	setErr := e.setDesiredEnabled(engine, false)
+	// Explicit commands must finish the client's transitional state even when
+	// the engine was already stopped and doStop had no change to announce.
+	if stopErr == nil {
+		e.emitState(engine)
+	}
 	return errors.Join(stopErr, setErr)
 }
 
@@ -374,7 +547,16 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 	mode := rt.modeOrDefault()
 	st.mu.Lock()
 	if !st.running {
+		// A Stop during an in-flight passive adoption still records OFF. The
+		// old probe is invalidated by the operation revision, and later status
+		// checks must not adopt the listener behind the user's explicit Stop.
+		st.stopping = true
+		wasAwaiting := st.awaitingModel
+		st.awaitingModel = false
 		st.mu.Unlock()
+		if wasAwaiting {
+			e.emitState(engine)
+		}
 		return nil
 	}
 	proc := st.proc
@@ -397,7 +579,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			// we manage :11435) is never touched; we decline only a process
 			// whose image we can't confirm is ours.
 			pid, image, ok := pidOnPort(port)
-			if ok && isManagedInstallPath(binPath, st.installDir) && isOurEngineImage(image, binPath) {
+			if ok && isManagedInstallPath(binPath, st.installDir) && (isOurEngineImage(image, binPath) || procRunsScript(pid, binPath)) {
 				st.mu.Lock()
 				st.stopping = true
 				if st.healthStop != nil {
@@ -405,7 +587,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 					st.healthStop = nil
 				}
 				st.mu.Unlock()
-				grace := stopGrace(rt)
+				grace := e.stopGraceFor(rt)
 				terminatePID(pid, grace)
 				if !pidAlive(pid) {
 					e.markStopped(st, engine)
@@ -441,7 +623,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
-		proc.stop()
+		proc.stop(e.stopGraceFor(rt))
 	}
 
 	e.markStopped(st, engine)
@@ -456,7 +638,8 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	if sp == nil || len(sp.Cmd) == 0 {
 		return fmt.Errorf("cannot stop engine %q: no stop command is configured", engine)
 	}
-	vars := map[string]string{"port": strconv.Itoa(port), "install_dir": st.installDir}
+	vars := st.pathVars()
+	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
@@ -471,7 +654,12 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	// force-kills engine-manager on a timeout, so an unbounded stop command
 	// would wedge StopAll and, in turn, the whole app shutdown.
 	stopCtx, cancelStop := context.WithTimeout(context.Background(), commandStopTimeout(rt))
-	runErr := e.runCommand(stopCtx, argv)
+	var runErr error
+	if engine == "lmstudio" && slices.Equal(sp.Cmd, []string{"{cli}", "daemon", "down"}) {
+		runErr = e.stopLMStudio(stopCtx, argv[0])
+	} else {
+		runErr = e.runCommand(stopCtx, argv)
+	}
 	cancelStop()
 	if runErr != nil {
 		return fmt.Errorf("stop %s: %w", engine, runErr)
@@ -491,6 +679,26 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 // stopGrace is how long to wait after a graceful stop before escalating to a
 // forced kill, taken from the manifest's stop spec: default 5s, the spec's
 // grace_s when set, or 0 when the spec asks for an immediate kill.
+// shutdownStopGraceCap is the longest an engine is given to exit on a polite
+// signal once the whole service is shutting down. The parent bounds the engine
+// stop to a few seconds (the broker allows engine-manager 5s for it) and then
+// kills engine-manager, which cannot escalate to a forced kill after that: the
+// engine, running in its own process group, would be left behind. So at
+// shutdown the force kill has to come inside that window, however generous the
+// manifest's grace is for an ordinary stop. An engine that is still loading
+// (vLLM with its weights half read) does not answer a polite signal at all.
+const shutdownStopGraceCap = 3 * time.Second
+
+// stopGraceFor is the grace for stopping an engine now: the manifest's, capped
+// during shutdown.
+func (e *Executor) stopGraceFor(rt Runtime) time.Duration {
+	grace := stopGrace(rt)
+	if e.shuttingDown.Load() && grace > shutdownStopGraceCap {
+		return shutdownStopGraceCap
+	}
+	return grace
+}
+
 func stopGrace(rt Runtime) time.Duration {
 	grace := 5 * time.Second
 	if sp := rt.Stop; sp != nil {
@@ -509,10 +717,7 @@ func stopGrace(rt Runtime) time.Duration {
 // hung stop command can never wedge StopAll now that the broker no longer
 // force-kills engine-manager on a timeout.
 func commandStopTimeout(rt Runtime) time.Duration {
-	t := stopGrace(rt)
-	if t < 5*time.Second {
-		t = 5 * time.Second
-	}
+	t := max(stopGrace(rt), 5*time.Second)
 	return t
 }
 
@@ -523,6 +728,7 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 		st.healthStop = nil
 	}
 	st.running = false
+	st.awaitingModel = false
 	st.healthy = false
 	st.stopping = true
 	st.adopted = false
@@ -539,7 +745,11 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 // live listener returning 503 is unhealthy, not stopped. A successful control
 // command is likewise not proof that its daemon actually exited.
 func (e *Executor) waitUnavailable(p *Probe, port int, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return e.waitUnavailableContext(context.Background(), p, port, timeout)
+}
+
+func (e *Executor) waitUnavailableContext(parent context.Context, p *Probe, port int, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	misses := 0
 	for {
@@ -679,57 +889,132 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if err := e.doStop(st, engine); err != nil {
 		return err
 	}
 	if err := e.doStart(ctx, st, engine, startOpts{}); err != nil {
-		return err
+		return e.startStopped(st, err)
 	}
 	return e.setDesiredEnabled(engine, true)
 }
 
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
+//
+// It stops every download too, and starts no more. A download's tool is no
+// engine, so stopping the engines would leave it running past engine-manager's
+// exit, above all one a peer started, whose request nothing else cancels. The
+// sweep waits for the downloads while the engines stop, for at most
+// downloadShutdownBudget. Shutdown is no cancel someone asked for, so a
+// download only it stopped keeps its partial files for the next attempt to
+// resume.
+//
+// Two entry points ask for it on an ordinary quit — the
+// engine:prepare-shutdown handler, which the broker calls from its own
+// teardown, and the stdin-EOF path in Run, which follows when the broker then
+// closes stdin — because each is the right trigger for a different way of
+// being shut down: a broker ordering its teardown, and a parent that simply
+// severed the pipe.
+//
+// One sweep runs per process, and every caller returns only once it has
+// finished. A caller that returned while the sweep was still running would
+// report engines stopped before they were: the broker would close stdin,
+// engine-manager would exit, and the engines it launched would be orphaned.
+// Repeating the sweep would re-pay doStop's readiness probe for every adopted
+// engine whose stop it declines, each time.
+//
+// A later caller does retry the engines whose stop failed through a process
+// handle or a stop command, such as an `lms server stop` that errored, because
+// another attempt can succeed where a declined stop cannot.
 func (e *Executor) StopAll() {
+	swept := false
+	e.stopAllOnce.Do(func() {
+		swept = true
+		e.stopAllNow()
+	})
+	if !swept {
+		e.retryFailedStops()
+	}
+}
+
+func (e *Executor) stopAllNow() {
 	e.shuttingDown.Store(true)
+	downloads := e.stopDownloads()
 	e.mu.Lock()
 	names := make([]string, 0, len(e.engines))
 	for n := range e.engines {
 		names = append(names, n)
 	}
 	e.mu.Unlock()
-	// Stop engines concurrently. Each doStop can wait up to the manifest grace
-	// (default 5s) for its engine to exit, so a sequential sweep would take
-	// sum(grace) across engines and let a slow first engine delay — or, if the
-	// parent severs us mid-sweep, entirely prevent — every later engine from
-	// even being signaled. Running them in parallel bounds the whole sweep to
-	// ~one grace and guarantees every engine gets its stop signal immediately.
-	// Each engine still serializes on its own opMu, so this is safe.
+	var stopping sync.WaitGroup
+	stopping.Go(func() { awaitDownloads(downloads) })
+	e.failedStops = e.stopEngines(names)
+	stopping.Wait()
+	e.mu.Lock()
+	if e.modelScope != nil {
+		_ = e.modelScope.Close()
+	}
+	e.mu.Unlock()
+}
+
+// retryFailedStops tries again to stop the engines whose stop failed in the
+// sweep. Callers take turns, so two retries never stop one engine at once.
+func (e *Executor) retryFailedStops() {
+	e.retryMu.Lock()
+	defer e.retryMu.Unlock()
+	if len(e.failedStops) == 0 {
+		return
+	}
+	e.failedStops = e.stopEngines(e.failedStops)
+}
+
+// stopEngines stops the named engines and returns those whose stop failed
+// through a process handle or a stop command, the failures a later attempt can
+// fix. Without either, doStop declines a foreign listener or has already
+// escalated against PAIR's own orphan, and a retry would only repeat that.
+//
+// Engines stop concurrently. Each doStop can wait up to the manifest grace
+// (default 5s) for its engine to exit, so a sequential sweep would take
+// sum(grace) across engines and let a slow first engine delay — or, if the
+// parent severs us mid-sweep, entirely prevent — every later engine from even
+// being signaled. Running them in parallel bounds the whole sweep to ~one grace
+// and guarantees every engine gets its stop signal immediately. Each engine
+// still serializes on its own opMu, so this is safe.
+func (e *Executor) stopEngines(names []string) []string {
 	var wg sync.WaitGroup
-	for _, n := range names {
+	// Each goroutine writes only its own index, so no lock is needed.
+	retry := make([]bool, len(names))
+	for i, n := range names {
 		st, err := e.state(n)
 		if err != nil {
 			continue
 		}
-		wg.Add(1)
-		go func(st *engineState, n string) {
-			defer wg.Done()
+		wg.Go(func() {
 			st.mu.Lock()
 			cancel := st.startCancel
+			retryable := st.plat.Runtime.modeOrDefault() == "command" || st.proc != nil
 			st.mu.Unlock()
 			if cancel != nil {
 				cancel()
 			}
-			st.opMu.Lock()
-			defer st.opMu.Unlock()
+			st.lockOperation()
+			defer st.unlockOperation()
 			if err := e.doStop(st, n); err != nil {
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
+				retry[i] = retryable
 			}
-		}(st, n)
+		})
 	}
 	wg.Wait()
+	var failed []string
+	for i, n := range names {
+		if retry[i] {
+			failed = append(failed, n)
+		}
+	}
+	return failed
 }
 
 func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string, port int, gen int64) {
@@ -755,6 +1040,9 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 			}
 			was := st.healthy
 			st.healthy = ok
+			if was != ok {
+				st.revision++
+			}
 			st.mu.Unlock()
 			switch {
 			case was && !ok:
@@ -771,7 +1059,9 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 	}
 }
 
-func (e *Executor) waitReady(ctx context.Context, p *Probe, port int) error {
+// waitReady polls the readiness probe until it passes or the manifest's
+// allowance, counted from began, runs out.
+func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time.Time) error {
 	if p == nil {
 		return nil
 	}
@@ -779,13 +1069,13 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int) error {
 	if p.TimeoutS > 0 {
 		timeout = time.Duration(p.TimeoutS) * time.Second
 	}
-	deadline := time.Now().Add(timeout)
+	deadline := began.Add(timeout)
 	for {
 		if e.probe(ctx, p, port) {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("not ready after %s", timeout)
+			return &readyTimeoutError{timeout: timeout}
 		}
 		select {
 		case <-ctx.Done():
@@ -816,12 +1106,31 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		if err != nil {
 			return false
 		}
-		resp.Body.Close()
+
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		statusMatches := resp.StatusCode == want
+		if p.JSONMatch == nil {
+			httpcon.DrainAndClose(resp.Body)
+			return statusMatches
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeJSONBytes+1))
+		httpcon.DrainAndClose(resp.Body)
+		if !statusMatches || err != nil || len(body) > maxProbeJSONBytes {
+			return false
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(body, &obj); err != nil {
+			return false
+		}
+		value, ok := resolveObjectPath(obj, p.JSONMatch.Field)
+		if !ok {
+			return false
+		}
+		var actual string
+		return json.Unmarshal(value, &actual) == nil && actual == p.JSONMatch.Value
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)
@@ -848,12 +1157,48 @@ func (e *Executor) reportStartFailed(engine string, err error) {
 }
 
 func (e *Executor) reportStartFailedUnlessShuttingDown(ctx context.Context, engine string, err error) {
+	if ctx.Value(settingsApplyContextKey{}) != nil {
+		return
+	}
 	// CommandContext can surface an exit status instead of context.Canceled on
 	// Windows, so the canceled operation context is the authoritative signal.
-	if e.shuttingDown.Load() && ctx.Err() != nil {
+	// A start the user stopped did not fail either.
+	if ctx.Err() != nil && (e.shuttingDown.Load() || e.stopWaitingFor(engine)) {
 		return
 	}
 	e.reportStartFailed(engine, err)
+}
+
+// requestStop cancels a start in flight, as StopAll does, so a Stop or Eject
+// does not wait out a readiness window of minutes for an engine it is about to
+// stop, and keeps any other start from beginning until the caller is done. The
+// returned function ends the request; call it after the stop, once opMu is
+// released or about to be. cancelled reports whether a start was in flight.
+func (e *Executor) requestStop(st *engineState) (done func(), cancelled bool) {
+	st.mu.Lock()
+	st.stopsWaiting++
+	cancel := st.startCancel
+	st.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return func() {
+		st.mu.Lock()
+		st.stopsWaiting--
+		st.mu.Unlock()
+	}, cancel != nil
+}
+
+// stopWaiting reports whether a Stop or Eject is waiting for the engine.
+func (e *Executor) stopWaiting(st *engineState) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.stopsWaiting > 0
+}
+
+func (e *Executor) stopWaitingFor(engine string) bool {
+	st, err := e.state(engine)
+	return err == nil && e.stopWaiting(st)
 }
 
 func freePort() (int, error) {

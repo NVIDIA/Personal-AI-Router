@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Unsigned installer builds on GitHub-hosted runners.
+#
+# These are verification and pull-request artifacts, never releases: every
+# target ends in `electron-builder --publish never`, and this workflow holds no
+# signing or publishing credentials. Signed releases are produced separately
+# from a tag, and are rebuilt from source rather than signing anything this
+# workflow produced.
+name: Build
+
+on:
+    workflow_dispatch:
+    push:
+        branches: [main, develop]
+    pull_request:
+        branches: [main, develop]
+        paths:
+            - '.github/workflows/**'
+            # The composite action pins the Node and Go versions. Without this
+            # a toolchain bump would run ci.yml and skip the installer matrix,
+            # which is the cross-workflow drift the action exists to prevent.
+            - '.github/actions/**'
+            - 'scripts/**'
+            - 'services/**'
+            - 'desktop/package.json'
+            - 'desktop/package-lock.json'
+            - 'desktop/src/**'
+            - 'desktop/scripts/**'
+            - 'desktop/native/**'
+            - 'desktop/resources/**'
+            - 'desktop/tsconfig*.json'
+            - 'desktop/vite.*.config.ts'
+            - 'desktop/electron.vite.config.ts'
+            - 'desktop/electron-builder.config.ts'
+
+permissions:
+    contents: read
+
+concurrency:
+    group: build-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Toolchain versions are declared once, in .github/actions/setup.
+
+jobs:
+    build:
+        name: ${{ matrix.name }}
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 60
+        strategy:
+            # One platform failing should not hide the state of the other five.
+            fail-fast: false
+            matrix:
+                include:
+                    - name: linux-x64
+                      os: ubuntu-latest
+                      script: build:linux:x64
+                    - name: linux-arm64
+                      os: ubuntu-latest
+                      script: build:linux:arm64
+                    - name: win-x64
+                      os: windows-latest
+                      script: build:win:x64
+                    - name: win-arm64
+                      os: windows-latest
+                      script: build:win:arm64
+                    - name: mac-arm64
+                      os: macos-latest
+                      script: build:mac:arm64
+                    - name: mac-x64
+                      os: macos-15-intel
+                      script: build:mac:x64
+        steps:
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+            # Recorded so a failure can be read against the machine it ran on.
+            - name: Report runner capacity
+              shell: bash
+              run: |
+                  echo "label:  ${{ matrix.os }}"
+                  echo "kernel: $(uname -s) $(uname -m)"
+                  echo "cpus:   $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
+                  free -h 2>/dev/null || sysctl -n hw.memsize 2>/dev/null || echo "mem: unknown"
+                  df -h . | tail -1
+
+            - uses: ./.github/actions/setup
+              with:
+                  go: 'true'
+
+            # electron-builder needs fakeroot and rpm to stage Linux packages;
+            # ubuntu-latest ships neither.
+            - name: Install Linux packaging tools
+              if: runner.os == 'Linux'
+              run: sudo apt-get update -qq && sudo apt-get install -y -qq fakeroot rpm
+
+            - run: npm --prefix desktop ci --prefer-offline
+
+            - name: Build ${{ matrix.name }}
+              run: npm --prefix desktop run ${{ matrix.script }}
+
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              if: always()
+              with:
+                  name: unsigned-${{ matrix.name }}
+                  path: desktop/release/**
+                  retention-days: 7
+                  if-no-files-found: warn

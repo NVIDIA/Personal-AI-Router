@@ -13,6 +13,11 @@ import (
 // and pointer-based: Update mutates the receiver in place and returns any
 // follow-up command, so background tabs keep their state current from the
 // broker's notification stream even while another tab is on screen.
+//
+// Title, View, and Help run on every frame, and Help more than once per frame:
+// the shell measures the footer to size the content area. They have to be
+// cheap — no I/O, no blocking, nothing that grows with the session — so the
+// work belongs in Update, leaving these to render state already in hand.
 type View interface {
 	// Title is the short label shown in the tab bar.
 	Title() string
@@ -38,4 +43,18 @@ type View interface {
 // field receives characters like 'q' or tab verbatim.
 type inputCapturer interface {
 	CapturingInput() bool
+}
+
+// resetter is an optional interface a View implements when it has a screen
+// beneath the one it may currently be showing, and that top-level screen is
+// what the operator should find on returning to the tab.
+//
+// Only the tab being left is reset, and only on a deliberate tab change. A
+// view that merely holds a selection or a filter should not implement this:
+// those are where the operator left off, which is worth keeping. It is for a
+// view that replaces itself with something else entirely, where coming back to
+// the tab and finding that other thing is a surprise rather than a
+// convenience.
+type resetter interface {
+	reset()
 }

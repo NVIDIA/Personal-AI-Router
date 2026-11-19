@@ -1,0 +1,57 @@
+---
+description: Read-before-write rule — always Read a file before Write/StrReplace. No shell scripts to mutate code. No exceptions.
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# File Editing
+
+## NEVER use shell commands or scripts to modify code
+
+This is the **hard top-tier rule** of this repo. **Never** use `sed`,
+`awk`, `perl -i`, `tr`, `find -exec`, PowerShell `(Get-Content … | Set-Content)`,
+heredoc-into-file, `echo > file`, or any other shell construct that mutates
+source files. **Always** use the dedicated edit tools: `StrReplace`,
+`Write`, or `EditNotebook`.
+
+Why: shell-based rewrites bypass Cursor's diff UI. The user cannot review,
+accept, or reject the change — it just happens silently. Even a "tiny
+rename" across many files must be done as a series of `StrReplace` calls
+(one per file, or `replace_all: true` within a file) so each edit shows up
+in the diff panel.
+
+- ❌ `sed -i 's/foo/bar/g' src/**/*.ts`
+- ❌ `find src -name '*.ts' -exec sed -i …`
+- ❌ `node -e "require('fs').writeFileSync(…)"`
+- ❌ `cat > file.ts <<'EOF' … EOF`
+- ✅ `StrReplace` with `replace_all: true` for in-file mass-rename
+- ✅ One `StrReplace` per file for cross-file rename (read each first)
+- ✅ `Write` only when creating a new file or wholesale rewriting
+  (after `Read`)
+
+The `Shell` tool is for actual terminal operations (`git`, `npm`,
+`tsc`, `lint`, etc.) only. If you catch yourself reaching for `sed`
+to "save tool calls", **stop** — the user must see every code change.
+
+## ALWAYS read a file before editing it
+
+The user may have edited the file since you last read it. Your memory of
+the file is stale. Before **any** `Write` or `StrReplace` call, call
+`Read` on the target path **in the same turn**.
+
+- `Write` is **destructive** — no old_string check, no safety net. A
+  stale mental model silently erases the user's edits.
+- `StrReplace` self-validates via `old_string`, but when the fuzzy match
+  shows the file has drifted from what you expect, **re-read first**
+  rather than forcing a match.
+- A `preToolUse` hook (see `.cursor/hooks.json`) blocks `Write` on
+  existing files that have not been read this session. Do not work
+  around it — call `Read` and retry.
+
+## No legacy fallbacks
+
+This is a greenfield codebase. Do not add compatibility shims, alternate
+resolution paths, or "just in case" code. See **`no-legacy-fallbacks.mdc`**.

@@ -1,18 +1,24 @@
+---
+title: Managing Engines in NVIDIA PAIR
+description: Install, start, stop, update, and remove the Ollama, LM Studio, and llama.cpp engines that NVIDIA PAIR uses to run models.
+---
+
 {/*
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 */}
 
-# Managing Engines in NVIDIA Personal AI Router
+An **engine** is the local inference runtime NVIDIA PAIR uses to
+run models. Today that means Ollama, LM Studio, llama.cpp, or vLLM on a given machine.
+PAIR can install and run those engines for you, or work with a supported
+existing Ollama or LM Studio installation. This page explains what you can
+expect when you install, start, stop, or remove an engine, and how to move one
+to a newer release.
 
-An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
-install and run those engines for you, or work with a copy you already have.
-This page explains what you can expect when you install, start, stop, update, or
-remove an engine.
-
-For first-time setup, refer to [Getting started](getting-started.mdx). If
-something does not start, refer to [Troubleshooting](troubleshooting.mdx).
+For first-time setup, refer to [Getting started](getting-started.mdx). To change
+an engine's ports or launch command, refer to
+[Engine settings](engine-settings.mdx). If something does not start, refer to
+[Troubleshooting](troubleshooting.mdx).
 
 ## Engine Requirements
 
@@ -40,12 +46,6 @@ From there you can install or remove an engine, turn it on or off, change its
 port when PAIR manages it, download models, and review progress while long
 operations run.
 
-These actions need the UI:
-
-- Listing, loading, ejecting, and deleting models
-- Updating an engine
-- Managing another node's engines
-
 In the terminal:
 
 On a machine with no desktop, the [terminal interface](terminal-interface.mdx)
@@ -56,7 +56,11 @@ handles these engine lifecycle actions:
 - Stop an engine.
 - Restart an engine.
 - Uninstall an engine.
+- Change an engine's ports and startup arguments.
 - Pull a model.
+- List, load, unload, and delete models.
+- Do most of the above on another node in the cluster. Restart and uninstall
+  stay on the machine that owns the engine.
 
 It does not do everything that the application does.
 
@@ -77,11 +81,80 @@ When you install an engine, consider the following:
 - If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
   that install instead of downloading another copy. Adoption helps when the
   usual engine port is already in use.
+- llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
+  checksum-pinned CUDA server/runtime archives. Apple silicon Macs download the
+  standard Metal-enabled archive, and Intel Macs download the CPU-only build,
+  because upstream builds it without Metal. The engine download, roughly
+  0.3–0.7 GiB for the CUDA archives and about 11 MiB on macOS, happens on
+  demand and is not part of the PAIR installer. Package choice is not
+  driver-aware. llama.cpp retains CPU fallback when GPU acceleration is
+  unavailable.
+- vLLM is available on Linux with an NVIDIA GPU and on Apple Silicon Macs
+  running macOS 15 or newer (through vLLM-Metal). If a `vllm` is already
+  installed at a known location (`~/.local/bin/vllm` on Linux,
+  `~/.venv-vllm-metal/bin/vllm` on macOS), PAIR uses it and downloads nothing.
+  Otherwise PAIR downloads a checksum-pinned `uv`, creates a private Python
+  environment and installs a pinned vLLM release into it. On Linux this is
+  several GiB because it includes PyTorch and the CUDA libraries, and PAIR first
+  checks for an NVIDIA driver that supports CUDA 13 or newer and about 25 GB of
+  free disk. On macOS it installs checksum-pinned vLLM and vLLM-Metal wheels and
+  needs about 20 GB of free disk. Either way PAIR stops with a clear message if
+  a requirement is missing. vLLM-Metal cannot run FP8 models (FP8 weights or an
+  FP8 KV cache, such as `nvidia/Llama-3.1-8B-Instruct-FP8`), apart from Qwen3.5
+  and Qwen3.6, so on a Mac they are left out of **Add model**, and loading or
+  downloading one is refused with a message to choose the BF16 version. Linux,
+  DGX Spark included, runs them.
+  PAIR installs its private environment at `~/.nvpair/engine-bin/vllm` so spaces
+  in the app-data path do not break load-time GPU builds. Reset and uninstall
+  remove that managed environment while preserving downloaded models.
+  Installation uses prebuilt wheels; loading a model may compile FlashInfer or
+  DeepGEMM kernels. vLLM serves a single model per process. On first enable, PAIR
+  opens **Choose a model for vLLM** when you install or turn on the engine without
+  a saved model. Click a downloaded model to load it, or choose **Add model**.
+  Canceling or closing the picker turns the engine off. PAIR does not download a
+  default model or start a serving process until you choose one. A previously
+  saved selection can resume normally without the picker.
+  While enabled, its model list shows complete text models in
+  your Hugging Face cache (`~/.cache/huggingface`). **Add model** browses Hugging
+  Face and downloads the model you choose into that cache, with a progress bar.
+  Invalid model repositories, such as unnumbered weights without an index, are
+  refused before download. **Load** starts the selected model, or switches from
+  the current one; a failed switch restores the previous model. Startup can take
+  minutes and is shown as starting, however it began.
+
+  A request through the PAIR vLLM endpoint also loads its requested complete
+  cached model while the engine is enabled. If A is loaded and B is requested,
+  PAIR waits for active responses, including streams, to finish before switching
+  to B. A request never downloads a missing model. Custom `--served-model-name`
+  aliases advertise only currently served names; after Eject, an alias alone
+  cannot choose which cached repository to load.
+
+  **Eject** stops the serving process and releases its model memory while keeping
+  the switch on. It clears the saved model selection; another **Load** or request
+  can start a model. Eject does not open the picker. An orange **No model loaded**
+  banner appears above the model list whenever the enabled engine is waiting
+  for a model, including after Eject or when you return to the app.
+
+  Turning vLLM off hides the model controls and prevents requests from starting
+  it. While vLLM is off or still loading after you turn it back on, PAIR can send
+  requests to another available machine in the cluster that offers the requested
+  model. **Eject** and turning vLLM off can both cancel a load in progress.
+
+  **Delete** removes a cached model except the one currently loaded. Eject it
+  first. If PAIR cannot identify the loaded model, deletion is refused. Deleting
+  a saved selection leaves the enabled engine waiting for another model. vLLM
+  does not unload automatically after inactivity. Use **Eject** to release its
+  memory.
+
+PAIR-managed llama.cpp models sleep after five minutes without inference work.
+This releases model and KV-cache memory, and the next request wakes the model
+automatically. The llama.cpp worker remains running and can retain some GPU
+memory.
 
 To download models:
 
-1. Use **Add model**.
-2. Use **Load** when the engine requires an explicit load.
+1. Select **Add model**.
+2. Select **Load** when the engine requires an explicit load.
 
 ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
@@ -103,19 +176,35 @@ first.
 
 ## Updating and Uninstalling an Engine
 
-Both actions apply only to an engine PAIR installed:
+PAIR does not currently offer to update an engine, because it does not yet detect
+newer engine versions. To move an NVPAIR-installed Ollama or LM Studio to the
+vendor's current release, uninstall it and install it again, which keeps your
+models as described below. llama.cpp installs the build pinned by your version of
+PAIR. Update an engine you installed yourself with its own installer.
 
-- **Update** (when offered) updates an NVPAIR-installed engine, and like install
-  it usually leaves the engine running. PAIR only updates engines it installed.
-  It leaves one you installed yourself alone, though it may offer an NVPAIR
-  install alongside it.
-- **Uninstall** removes the NVPAIR-installed copy of that engine. Use it when you
-  no longer want PAIR to own that engine on the machine.
+**Uninstall** removes the NVPAIR-installed copy of an engine, and applies only to
+an engine PAIR installed. Use it when you no longer want PAIR to own that engine
+on the machine.
 
 Uninstalling an engine does **not** remove its models. Downloaded model files stay
-on disk, in the engine's own storage such as `~/.ollama`, so uninstalling and
-reinstalling does not cost you re-downloading them. To reclaim that space, delete
-the models through the engine, or remove its data directory yourself.
+on disk in the engine's own storage (`~/.ollama`, `~/.llamacpp`,
+`~/.cache/huggingface`, or `~/.lmstudio/models`), so uninstalling and
+reinstalling does not cost you
+re-downloading them. The same is true of removing PAIR itself, or of resetting
+its data. Both remove the engines PAIR installed as far as they can, and never
+your models. A reset stops and tells you if an engine cannot be removed, while
+uninstalling PAIR leaves that engine in place and finishes. To reclaim that
+space, use **Delete** on individual models, or remove the engine's storage
+directory yourself.
+
+PAIR keeps the model folder at the engine's default location. If you moved LM
+Studio's models folder somewhere else inside `~/.lmstudio`, removing an LM
+Studio that PAIR installed (by uninstalling it, or by removing PAIR's data)
+deletes that folder with the rest of `~/.lmstudio`. A models folder outside
+`~/.lmstudio`, or one linked back to `~/.lmstudio/models`, is kept.
+
+PAIR also leaves alone any engine you installed yourself. **Uninstall** acts only
+on a copy PAIR installed. Remove the others with the engine's own uninstaller.
 
 Port changes for an NVPAIR-installed engine also live in **Engine settings**.
 Prefer the controls in PAIR over editing the engine's own config when PAIR is
@@ -123,7 +212,7 @@ managing it. If PAIR **adopted** an engine that was already running, meaning it
 did not start the process, what it can do depends on how that engine is
 controlled:
 
-- **Ollama** is managed as a process, so PAIR will not move an adopted one. It
+- **Ollama** is managed as a process, so PAIR does not move an adopted one. It
   refuses the port change rather than killing something it did not start. Stop
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
@@ -138,14 +227,16 @@ After systems are paired, you can view another machine's engines from
 **Overview** and, where supported, start or stop engines and pull models on that
 peer.
 
-Some actions stay **local only** on each machine, for example uninstall, update,
-and changing ports. Perform those on the machine that owns the engine, or connect
-to that machine's PAIR application or terminal interface.
+Some actions stay **local only** on each machine: uninstalling an engine and
+changing its CORS settings. Perform those on the machine that owns the
+engine, or connect to that machine's PAIR application or terminal interface.
+Ports and startup arguments can be edited from a paired machine, as described in
+[Engine Settings](engine-settings.mdx).
 
 Everything you change is scoped to one machine. A port you set on this node moves
 that node's engine and nothing else. The other nodes keep the ports they already
-had, and PAIR does not push the value across the cluster. Installing, updating,
-and uninstalling work the same way, because each is a decision about one machine.
+had, and PAIR does not push the value across the cluster. Installing and
+uninstalling work the same way, because each is a decision about one machine.
 This is why the endpoint to use is the one shown on the machine you are working
 at, rather than a port you remember from somewhere else.
 
@@ -176,6 +267,7 @@ working with **models** (download, load, unload, and delete):
 | Get the runtime on the machine | **Install** on the engine's card |
 | Make the runtime available for requests | The engine switch |
 | Get a model's weights onto the machine | **Add model** |
+| Stop a download before it finishes | **Cancel download** on the download's row |
 | Hold a model in memory, when the engine needs it | **Load** |
 | Free that memory without deleting anything | **Eject** |
 | Remove a downloaded model | **Delete**, where the engine supports it |
@@ -183,12 +275,29 @@ working with **models** (download, load, unload, and delete):
 **Eject** removes a model from memory only. The download stays, and **Load**
 brings it back without fetching it again.
 
+**Cancel download** stops a download that is running, or still queued behind
+another download on the same engine. The button reads **Canceling…** until the
+download has stopped and PAIR has finished cleaning up after it. If the
+download finished or failed before the cancel reached it, PAIR shows that
+outcome instead: the model appears in the list, or the download's error is
+reported. What happens to the files it already fetched depends on the engine:
+
+- **Ollama** and **LM Studio** delete the partial files the download created.
+  Files that were there before it started, or that another download or app is
+  still writing, are kept, and LM Studio deletes only when it can tell which
+  files the download wrote.
+- **llama.cpp** and **vLLM** keep the partial files, so the next download of the
+  model resumes where this one stopped.
+
+If the same model is requested again while the cancel is still stopping it,
+for example from another machine in the cluster, the new download waits for
+the cancel to finish and then starts.
+
 ![An engine's model list showing the Load, Eject, and Delete actions against a downloaded model.](assets/onboarding/engine-lifecycle/04-model-actions.png)
 
 On a headless machine the terminal interface covers installing, starting,
-stopping, restarting, and uninstalling an engine, and pulling a model. Operations
-it does not have, such as deleting a model or updating an engine, need the
-desktop application on that machine.
+stopping, restarting, and uninstalling an engine; pulling a model or cancelling
+its download; and listing, loading, unloading, or deleting models.
 
 PAIR does **not** warm models. Starting an engine does not pre-load models into
 memory, and it holds nothing ready in advance. Depending on the engine, a model
@@ -203,7 +312,7 @@ uninstalls every model at once.
 
 Applications need a **running** engine plus an available model. Copy API URLs
 from **Endpoints** after an engine is running. Do not assume a fixed port such as
-`11434` or `1234`.
+`11434`, `1234`, or `8080`.
 
 ## Tips
 
@@ -227,3 +336,12 @@ These pages cover the surrounding workflows:
 - [Troubleshooting](troubleshooting.mdx)
 - [Overview](overview.mdx)
 - [Architecture](architecture.mdx) (how engines fit into PAIR's process model)
+
+### vLLM requests after Eject
+
+While vLLM is enabled, a request to the PAIR endpoint loads its requested model
+from downloaded files. If another model is loaded, PAIR lets active responses
+finish before switching. Eject keeps the switch on, so the next request can load
+a model again. Turning the switch off prevents request-triggered loading. Requests
+never download an unknown model; add/download it first. The native vLLM server
+port does not provide this PAIR behavior.

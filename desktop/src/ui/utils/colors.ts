@@ -7,8 +7,6 @@ import { GPU_COLOR_PALETTE, VRAM_COLOR_PALETTE, WORKLOAD_COLOR_MAP } from '@/ui/
 
 export function getWorkloadStateColor(state: WorkloadState): BadgeColor {
     switch (state) {
-        case 'initializing':
-            return 'gray'
         case 'queued':
             return 'yellow'
         case 'running':
@@ -17,6 +15,11 @@ export function getWorkloadStateColor(state: WorkloadState): BadgeColor {
             return 'gray'
         case 'failed':
             return 'red'
+        // A job the requester stopped waiting for is not an error: it reads as
+        // neutral history, so it does not compete with real failures for
+        // attention.
+        case 'cancelled':
+            return 'gray'
         default:
             return 'gray'
     }
@@ -24,8 +27,6 @@ export function getWorkloadStateColor(state: WorkloadState): BadgeColor {
 
 export function getWorkloadColorBar(state: WorkloadState): string {
     switch (state) {
-        case 'initializing':
-            return WORKLOAD_COLOR_MAP.gray
         case 'queued':
             return WORKLOAD_COLOR_MAP.yellow
         case 'running':
@@ -34,6 +35,8 @@ export function getWorkloadColorBar(state: WorkloadState): string {
             return WORKLOAD_COLOR_MAP.green
         case 'failed':
             return WORKLOAD_COLOR_MAP.red
+        case 'cancelled':
+            return WORKLOAD_COLOR_MAP.gray
         default:
             return WORKLOAD_COLOR_MAP.gray
     }

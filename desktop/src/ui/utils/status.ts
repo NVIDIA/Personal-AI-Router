@@ -5,11 +5,13 @@ import type { EngineProcessStatus } from '@/shared/types/engines'
 
 export const statusLabel: Record<EngineProcessStatus, string> = {
     running: 'Running',
+    'awaiting-model': 'Select a model',
     stopped: 'Stopped',
     'not-installed': 'Not Installed',
     installing: 'Installing...',
     uninstalling: 'Uninstalling...',
     starting: 'Starting...',
     stopping: 'Stopping...',
-    initializing: 'Initializing...'
+    initializing: 'Initializing...',
+    unsupported: 'Not Supported'
 }

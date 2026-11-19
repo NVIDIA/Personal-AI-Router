@@ -3,8 +3,19 @@
 
 import type { ServiceError } from '@/shared/types/errors'
 import type { EngineProcessStatus, EngineStatusData, EngineType } from '@/shared/types/engines'
+import { engineTypeFromManagerName, isEngineType } from '@/shared/utils/engines'
 
 type WelcomeInstallOutcome = 'pending' | 'complete' | 'failed'
+
+/**
+ * A `ServiceError.engineType` reaches us in either spelling: the backend stamps
+ * the engine-manager id, while errors PAIR raises itself already use
+ * `EngineType`. Null for an absent or unrecognized engine.
+ */
+function errorEngineType(value: string | undefined): EngineType | null {
+    if (!value) return null
+    return engineTypeFromManagerName(value) ?? (isEngineType(value) ? value : null)
+}
 
 export function isWelcomeEngineInstalled(status: EngineProcessStatus | undefined): boolean {
     return status === 'running' || status === 'stopped'
@@ -60,8 +71,8 @@ export function targetForInstallError(
     error: ServiceError,
     targets: readonly EngineType[]
 ): EngineType | null {
-    const explicit = error.engineType === 'lmstudio' ? 'lm-studio' : error.engineType
-    if (explicit && targets.includes(explicit as EngineType)) return explicit as EngineType
+    const explicit = errorEngineType(error.engineType)
+    if (explicit && targets.includes(explicit)) return explicit
 
     const text = `${error.id} ${error.message}`.toLowerCase()
     return (
@@ -82,8 +93,9 @@ export function isTargetInstallError(
     targets: readonly EngineType[]
 ): boolean {
     if (error.nodeId && error.nodeId !== nodeId) return false
-    const errorEngine = error.engineType === 'lmstudio' ? 'lm-studio' : error.engineType
-    if (errorEngine && !targets.includes(errorEngine as EngineType)) return false
+    // An engine we cannot resolve is not one of the targets either.
+    const errorEngine = errorEngineType(error.engineType)
+    if (error.engineType && (!errorEngine || !targets.includes(errorEngine))) return false
     return (
         error.operation === 'install' ||
         error.id.toLowerCase().includes('install') ||

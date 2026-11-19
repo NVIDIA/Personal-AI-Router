@@ -5,6 +5,7 @@ package main
 
 import (
 	"container/list"
+	"strconv"
 	"sync"
 )
 
@@ -12,24 +13,27 @@ import (
 // session-scoped volume at ~dozen-node scale (spec §5).
 const defaultDedupCapacity = 10000
 
-// dedupIndex is a bounded LRU set of keys. It answers a single question:
-// "have I seen this key before?" and records it if not, evicting the
-// least-recently-seen key once capacity is exceeded. It is safe for
-// concurrent use — the inter-node HTTP handler runs one goroutine per
+// dedupIndex is a bounded LRU set of successfully emitted keys. It records a
+// key only after the broker emit succeeds, and serializes concurrent emits for
+// the same key. Completed keys are evicted least-recently-used first. It is
+// safe for concurrent use — the inter-node HTTP handler runs one goroutine per
 // request.
 //
 // Keys are opaque strings built by the caller: lifecycle events key on
-// nodeId + Workload.id + state, removals key on workloadId (see keyLifecycle
-// / keyRemove). nodeId is part of the lifecycle key because Workload.id is
-// only unique per-node (spec §11) — without it, the same id from two nodes
-// would collide. Keying on (nodeId, id, state) means a re-broadcast carrying
-// the same triple but updated metadata is treated as a duplicate and dropped,
-// not merged — a known and accepted granularity trade-off (spec §4).
+// nodeId + Workload.id + state + scheduledOn, removals key on workloadId (see
+// keyLifecycle / keyRemove). nodeId is part of the lifecycle key because
+// Workload.id is only unique per-node (spec §11) — without it, the same id
+// from two nodes would collide. The key still omits the workload's other
+// mutable metadata, so a re-broadcast carrying an updated field it does not
+// cover — a corrected error string, say — is treated as a duplicate and
+// dropped rather than merged. That remains a known granularity trade-off
+// (spec §4).
 type dedupIndex struct {
 	mu       sync.Mutex
 	capacity int
 	ll       *list.List               // front = most recently seen
 	items    map[string]*list.Element // key -> element in ll
+	inFlight map[string]chan struct{} // one broker emit at a time per key
 }
 
 func newDedupIndex(capacity int) *dedupIndex {
@@ -40,21 +44,54 @@ func newDedupIndex(capacity int) *dedupIndex {
 		capacity: capacity,
 		ll:       list.New(),
 		items:    make(map[string]*list.Element, capacity),
+		inFlight: make(map[string]chan struct{}),
 	}
 }
 
-// seenOrAdd returns true if the key was already present (a duplicate). On a
-// first sighting it records the key and returns false. Either way the key is
-// promoted to most-recently-seen.
-func (d *dedupIndex) seenOrAdd(key string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+// emitOnce serializes the check, broker emit, and record for one key. Other
+// keys can emit concurrently. If emit fails, the key stays absent and a waiting
+// request can retry it. A completed key is reported as a duplicate.
+func (d *dedupIndex) emitOnce(key string, emit func() error) (bool, error) {
+	for {
+		d.mu.Lock()
+		if el, ok := d.items[key]; ok {
+			d.ll.MoveToFront(el)
+			d.mu.Unlock()
+			return true, nil
+		}
+		if done, ok := d.inFlight[key]; ok {
+			d.mu.Unlock()
+			<-done
+			continue
+		}
+		done := make(chan struct{})
+		d.inFlight[key] = done
+		d.mu.Unlock()
 
-	if el, ok := d.items[key]; ok {
-		d.ll.MoveToFront(el)
-		return true
+		// Release waiters even if an emitter panics and net/http recovers the
+		// request. A panicking emit has not completed successfully.
+		err := func() (err error) {
+			completed := false
+			defer func() {
+				d.mu.Lock()
+				if completed && err == nil {
+					d.addLocked(key)
+				}
+				delete(d.inFlight, key)
+				close(done)
+				d.mu.Unlock()
+			}()
+			err = emit()
+			completed = true
+			return err
+		}()
+		return false, err
 	}
+}
 
+// addLocked records a new key and evicts the least-recently-seen key past
+// capacity. The caller holds d.mu and has checked that key is absent.
+func (d *dedupIndex) addLocked(key string) {
 	el := d.ll.PushFront(key)
 	d.items[key] = el
 	if d.ll.Len() > d.capacity {
@@ -64,19 +101,38 @@ func (d *dedupIndex) seenOrAdd(key string) bool {
 			delete(d.items, oldest.Value.(string))
 		}
 	}
-	return false
 }
 
 // keyLifecycle builds the dedup key for a lifecycle event. Workload.id is only
 // a per-process counter, and both engine proxies count from 1 and reset on
-// restart, so the full identity is (originatedFrom, engine, runId, id): nodeId
-// disambiguates nodes, engine + the per-process runId nonce disambiguate the
-// two local engines and successive proxy runs, and state completes the
-// lifecycle-step key. Dropping any component would collapse distinct workloads
-// (e.g. a concurrent Ollama + LM Studio job both id "1") and silently discard a
-// legitimate peer event.
+// restart, so the workload's identity is (originatedFrom, engine, runId, id):
+// nodeId disambiguates nodes, and engine plus the per-process runId nonce
+// disambiguate the two local engines and successive proxy runs. Dropping any
+// component would collapse distinct workloads (e.g. a concurrent Ollama + LM
+// Studio job both id "1") and silently discard a legitimate peer event.
+//
+// seq then completes the key, and it has to be the producer's event sequence
+// rather than any property of the workload's current shape. This index is a
+// permanent set, so anything derived from shape collides as soon as a workload
+// revisits a shape it already had — and a retry does that routinely: queued on
+// A, placement cleared between attempts, then queued on A again. Keyed on
+// (state, scheduledOn) the third event matched the first and every peer
+// dropped it, leaving their brokers holding the interim unplaced record while
+// the job actually ran on A, so their schedulers stopped counting it against
+// the node doing the work.
+//
+// state and scheduledOn stay in the key as well. They cost nothing, and they
+// keep the key meaningful for a producer that has not stamped a sequence.
+//
+// This does not weaken what the index is for: a broadcast retry resends an
+// identical frame, sequence included, so a true redelivery still dedups — and
+// that is what protects a consumer from an out-of-order retry reverting a
+// placement. A re-sync heartbeat bypasses this index altogether (see
+// isResyncFrame).
 func keyLifecycle(w *Workload) string {
-	return "wl\x00" + w.OriginatedFrom + "\x00" + w.Engine + "\x00" + w.RunID + "\x00" + w.ID + "\x00" + string(w.State)
+	return "wl\x00" + w.OriginatedFrom + "\x00" + w.Engine + "\x00" + w.RunID + "\x00" + w.ID +
+		"\x00" + string(w.State) + "\x00" + w.ScheduledOn +
+		"\x00" + strconv.FormatInt(w.Seq, 10)
 }
 
 // keyRemove builds the dedup key for a removal: nodeId + workloadId. As with

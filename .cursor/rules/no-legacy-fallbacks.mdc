@@ -1,0 +1,24 @@
+---
+description: No legacy compatibility paths or dead fallback branches — greenfield codebase
+alwaysApply: true
+---
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# No legacy fallbacks
+
+PAIR is a **new app**. Do **not** add:
+
+- Multiple resolution paths “for compatibility” (e.g. `__dirname` variants, alternate folder layouts, `existsSync` chains that try path A then B then C).
+- Deprecated APIs or shims “in case old clients exist.”
+- Comment blocks that say “legacy” or “backward compatibility” unless removing that code is tracked as explicit work.
+- Re-export barrels whose only purpose is to keep old import paths alive.
+
+**Do instead:**
+
+- One **canonical** path, URL, or behavior — the one the build and runtime actually use.
+- If something might break in another environment, **document the requirement** (e.g. “cwd must be repo root for dev”) or fix the script — do not silently branch.
+
+When refactoring, **delete** obsolete paths and imports; do not keep them “just in case.”

@@ -1,0 +1,690 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Engine Manifest Reference
+
+An engine manifest is a single JSON file that tells `nvpair-engine-manager`
+how to detect, install, run, probe, and act on one inference engine. The
+runner is engine-agnostic: **adding an engine is a manifest, not code.**
+
+## Where manifests live
+
+- **Bundled** defaults are compiled into the binary from
+  `nvpair-engine-manager/manifests/*.json` (e.g. `ollama.json`).
+- **User / third-party** manifests are read at runtime from
+  the per-user data dir's `engines/*.json`
+  (`%LocalAppData%\Nvidia Corporation\Personal AI Router\engines\` on Windows,
+  `~/.config/Nvidia Corporation/Personal AI Router/engines/` on Linux,
+  `~/Library/Application Support/Nvidia Corporation/Personal AI Router/engines/` on macOS).
+
+A user manifest **overrides** a bundled one with the same `engine` name,
+so a vendor or operator can ship or tweak an engine without rebuilding. The
+override is a **deep-merge onto the bundled manifest** (override keys win, the
+same key-by-key rules as the shared-defaults merge below), not a wholesale
+replace — so a partial file pins only the fields it sets and keeps inheriting
+everything else (install URLs, actions, fixes) as the bundled manifest is
+upgraded. A user file for an engine with **no** bundled base of the same name
+is loaded standalone (it must then be a complete manifest). This is how
+`engine:set-port` persists a chosen port: it writes the minimal delta
+`{ "engine": "<name>", "runtime": { "port": <n> } }`, which merges onto the
+bundled manifest so only `runtime.port` is pinned. (A standalone
+`LoadRegistry(dirs…)` load still replaces wholesale; the deep-merge applies to
+the per-user `engines/` override layer that the service overlays at startup.)
+
+Port changes merge only the port into an existing override. Returning to the
+bundled default removes shared and host-platform port overrides while keeping
+arguments, environment and unrelated settings. The file is removed only when
+the engine identifier is all that remains. A host-platform port override is
+updated too if needed, so it cannot shadow the saved shared port at startup.
+An invalid existing override is left intact and the save fails.
+
+## Top-level fields
+
+For editable launch settings, `runtime.editable_launch` declares optional
+`fixed_args`, command-mode `start_index` (default zero), and `controls` that
+bind an engine's syntax to PAIR's policy fields. The bundled manifests reference
+[manifest.schema.json](manifest.schema.json) for editor validation. Engine-manager
+also validates bindings at load, including cross-control constraints that JSON
+Schema does not express. Unknown properties inside `editable_launch` are errors.
+
+```json
+"editable_launch": {
+  "fixed_args": ["server", "start"],
+  "controls": [
+    { "flags": ["--port", "-p"], "value": "{server.port}" },
+    { "flags": ["--bind"], "env": ["LMS_SERVER_HOST"], "value": "{server.host}" },
+    { "flags": ["--cors"], "value": "{cors.enabled}", "implicit": "true" }
+  ]
+}
+```
+
+| Control property | Meaning |
+| --- | --- |
+| `flags` | Supported flag spellings. The first is the canonical output name; the rest are aliases. |
+| `env` | Supported environment names. All share the same binding and validation. |
+| `value` | Format binding policy fields, with literal text between them. For example, `{server.host}:{server.port}` or `tcp://{server.host}:{server.port}`. |
+| `implicit` | Value supplied by flag presence, such as `true` for `--cors` or `false` for `--no-cors`. Omit for flags that consume a value. Environment sources always consume an explicit value. |
+
+PAIR has a small, fixed policy surface:
+
+| Field | Policy |
+| --- | --- |
+| `server.port` | Integer 1–65535, synchronized with the server-port field. |
+| `server.host` | Managed loopback host, keeping direct engine access behind the proxy. |
+| `cors.origins` | Comma-separated origin list, normalized and validated; changes are local-only. |
+| `cors.enabled` | Explicit boolean, normalized to `true` or `false`; changes are local-only. |
+
+The **proxy port belongs to the broker**, which creates that listener and validates
+port collisions. It is not an engine launch argument or an engine-manifest binding.
+The presence of a CORS field identifies a browser-policy control. Engines without
+one still work; proxies follow the engine's actual HTTP CORS response.
+
+The tokenizer reads flag/environment syntax, the binding parser extracts fields,
+and the field validators enforce policy. All input sources use the same conflict
+checks. Launch construction renders those same bindings, with no engine names,
+option-kind switches, or separate host:port parser. For example, Ollama uses
+`{"env":["OLLAMA_HOST"],"value":"{server.host}:{server.port}"}`.
+Bindings can reorder fields or add literal prefixes/brackets without Go changes.
+Templates are trusted manifest syntax; user values are never expanded as templates.
+
+Controls must collectively bind every managed server field. Fields within a value
+must be unique, separated by literal text, and share ownership: managed server
+fields cannot be combined with editable CORS fields. Unknown fields, malformed
+formats, duplicate source names and invalid implicit values fail loading.
+Implicit values cannot replace managed server fields. Every captured value still
+passes the field validator; a format cannot weaken port ranges or loopback policy.
+
+Managed values set every declared environment alias and, when assembling edited
+arguments, emit the canonical flag. This prevents inherited network aliases from
+overriding the managed values. Short value options accept separate, attached and
+equals forms. Ambiguous bundles containing a declared short control are rejected.
+A new engine using this grammar needs bindings and tests; a new CLI grammar needs
+a shared grammar extension, not an engine-specific branch.
+
+There is no catalog of unrelated vendor options or editable environment names.
+Those values pass through literally. Explicit environment assignments override
+manifest defaults; omitted defaults remain in effect. The final effective launch
+is validated again before execution, including settings saved by earlier versions.
+
+The editor saves literal extra arguments in
+host-platform `runtime.launch_args` and explicit environment assignments in
+`runtime.launch_env`, after trusted template expansion. llama.cpp's selected
+download provider is saved in host-platform `runtime.model_source` (`huggingface`
+or `modelscope`). Empty arrays clear the
+saved arguments or environment assignments. See [LAUNCH_TEXT.md](LAUNCH_TEXT.md) for validation
+and [the broker protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md) for application
+and recovery. Editing `args`/`start` directly remains trusted manifest authoring.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `engine` | string | yes | Unique id (the key used in `engine:*` calls). |
+| `display_name` | string | yes | Human-friendly name. |
+| `manifest_version` | int | yes | Must be `1`. A higher value is rejected (asks for behavior this binary lacks). Unknown optional fields within a supported version are ignored, so the schema can grow additively. |
+| `platforms` | object | yes | Map of `"<goos>/<goarch>"` → platform block (e.g. `"windows/amd64"`, `"darwin/arm64"`, `"linux/amd64"`). At least one entry. The runner selects the block matching the host. |
+| `actions` | object | no | Map of action name → action (see below). |
+| `install_dir` / `detect` / `install` / `uninstall` / `models_dir` / `runtime` | — | no | Optional **shared defaults** inherited by every platform (see below). |
+
+**Shared defaults & per-platform overrides.** The platform-level fields `install_dir`, `detect`, `install`, `uninstall`, `models_dir`, and `runtime` may also be given once at the top level as shared defaults; each `platforms` entry is then merged onto them. Nested objects (e.g. `runtime`, `runtime.env`) merge key-by-key with the platform value winning, while arrays and scalars are replaced wholesale. So a runtime that's identical across platforms except `cli` is declared once at the top level, and each platform sets only `"runtime": { "cli": "…" }`. Omitting a key inherits the default; setting it (even to a zero value like `"port": 0`) overrides it. A manifest that fully specifies each platform with no top-level defaults behaves exactly as before.
+
+## Platform block
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `install_dir` | string | no | Literal managed payload directory, with OS env refs and a leading `~` expanded. Its expanded value must not be blank on the host. Defaults to the app-data root's `engine-bin/<engine>`. Use an external location only when the engine requires it, and add that path to every app-data wipe/uninstall inventory. Available to the rest of the platform block as `{install_dir}`. |
+| `detect` | string[] | no | Paths that, if any exists, mean the engine is already installed. Supports OS env refs (`%VAR%`, `$VAR`), a leading `~`, and the `{install_dir}` placeholder. |
+| `install` | object | no | How to obtain the engine (see Install). Omit for engines that are only ever detected/launched. |
+| `uninstall` | object | no | How to remove a user-mode install (see Uninstall). Backs `engine:uninstall`. |
+| `models_dir` | string | required with `uninstall.remove` | The engine's on-disk model store, available as `{models_dir}`. **Must be a literal path** — a template is rejected, so the store can never be derived from `{install_dir}`. See Model stores. |
+| `runtime` | object | yes | How to launch + probe the engine (see Runtime). |
+
+### Uninstall
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `run` | string[] | at least one of the two | argv for work only a command can do: stopping the engine's own daemon, or invoking a vendor uninstaller. Placeholders resolved, OS env refs expanded. |
+| `remove` | string[] | at least one of the two | Trees engine-manager deletes itself, skipping `models_dir`. Prefer this over an `rm -rf` in `run`. |
+
+Both may be set, and `lmstudio.json` sets both: `run` executes first, then the
+`remove` targets in order, and the pair is retried as a unit.
+
+Use `remove` for deleting files. The runner knows what `remove` targets, so it
+can keep the model store out of it; it cannot inspect a shell string, so a
+deletion in `run` would bypass that guarantee. The tests scan each `run`
+argument for deleting constructs (`rm -r`, `rmdir`, `rd /s`, `Remove-Item`,
+`del /`) rather than just its executable name, because the uninstall this rule
+exists for was an entire shell script in one `sh -c` argument.
+
+A `remove` entry may **contain** the model store — LM Studio's engine and its
+downloads both live under `~/.lmstudio` — in which case everything except the
+store is removed. Rejected at load: a target that is the store, a target inside
+it, a target spelled `{models_dir}`, and `remove` without a `models_dir` to
+preserve.
+
+Removal is best-effort within a tree. An engine still holding one file open
+leaves that remnant behind rather than stopping the walk, and the uninstall's
+verdict comes from whether the engine is still detected — half-removing an
+engine and then reporting failure would leave the user retrying something that
+already worked. A symlinked target is unlinked, never descended into.
+
+### Model stores
+
+Model weights are the most expensive thing on a user's disk and the only thing
+PAIR cannot replace for them. Two separate removals have to leave them alone:
+
+1. **`engine:uninstall`**, which removes the engine. The runner skips
+   `models_dir` in every `uninstall.remove` target, so this is handled as long
+   as file deletion goes through `remove` rather than a command. The same
+   applies to the app uninstaller's `--uninstall-managed` pass, which removes
+   the engines PAIR installed and preserves every store.
+2. **The app-level "remove all data" uninstall**, which deletes the entire app
+   data directory. Nothing can exempt a subdirectory of it, so the only defense
+   is for `models_dir` to resolve somewhere else entirely.
+
+That second one is why `models_dir` must be a literal path. By default,
+`{install_dir}` is inside the app data root, so any store derived from it is
+destroyed when a user uninstalls the app. A platform may declare an external
+`install_dir`, but that PAIR-owned path must also be in the app wipe inventory,
+so it is no safer for models. Keep the store separate from both locations.
+An explicit `install_dir` must also stay outside `models_dir`: uninstall refuses
+to remove anything inside the protected store, including an engine payload.
+For the host platform, relative paths are resolved against the service's working
+directory before checking this separation.
+
+Declare the engine's own default where it has one, so PAIR and a user's own copy
+of that engine share a library rather than downloading the same weights twice.
+Ollama (`~/.ollama`) and LM Studio (`~/.lmstudio/models`) both work that way:
+PAIR leaves their location alone and simply names it. `~/.llamacpp` is **PAIR's
+own choice** — llama.cpp defaults to a platform cache directory instead — which
+is why the manifest has to set `LLAMA_CACHE` explicitly. What matters for either
+kind is a stable path in the user's home, outside the app data root.
+
+Note that a store may be broader than the weights alone. `~/.ollama` also holds
+Ollama's keys and history; naming the parent protects those too, which is the
+safer side to err on.
+
+`TestBundledModelStoresOutliveTheAppDataRoot` checks every bundled manifest's
+platform blocks. Its app-data-root comparison is textual, so it holds for every
+target platform; the additional check against the resolved data directory
+applies to the host the test runs on.
+
+### Install
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `fetch.url` | string | when `fetch` present | Download URL — **HTTPS** (plain `http` only from loopback). |
+| `fetch.sha256` | string | no | Hex SHA-256. When set, the download is verified against it **before** `run` executes; when omitted, the fetch is HTTPS-only and runs with a loud "unpinned" warning (the same weaker guarantee as `script`). Pin it for any real release. |
+| `run` | string[] | when `fetch` or nonempty `artifacts` present | Nonempty argv to execute after download (e.g. run the installer, extract the archive). Placeholders resolved; OS env refs expanded. The child also receives exact paths in `NVPAIR_INSTALL_DIR`, `NVPAIR_INSTALL_DOWNLOAD`, and `NVPAIR_INSTALL_DOWNLOAD_<ARTIFACT_NAME>` so commands that reparse argv can avoid shell quoting. Requires a `fetch` or `artifacts`. |
+| `script` | string[] | no | **Escape hatch** for vendors that only ship a script installer. Runs **without** checksum verification (logged as unpinned) and replaces `fetch`+`run`. Prefer `fetch`+`run` whenever the vendor publishes a script or artifact: download it first, then execute the local file. **Make failures loud:** a piped bootstrap such as `curl … \| bash` can mask a failed fetch, while a separate fetch prevents the run and reports the error. |
+| `mode` | string | no | `"user"` (default) or `"admin"`. The runner **refuses** `"admin"` (engine-manager is user-mode only); it is a deliberate, flagged exception, not a default. |
+
+### Runtime
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `mode` | string | no | `"process"` (default) — the engine is a foreground process this service spawns and **owns** (liveness = process alive) — or `"command"` — a daemon driven by start/stop commands (liveness = the probe). |
+| `bin` | string | process mode | Path to the engine binary (required in `process` mode). Placeholders + OS env refs resolved. |
+| `args` | string[] | no | Arguments (process mode). |
+| `env` | object | no | Extra environment (merged over the inherited env). Use `{host}`/`{port}` for the listen address, e.g. `"OLLAMA_HOST": "{host}:{port}"`. |
+| `port` | int | no | Fixed port, or `0` to auto-assign a free loopback port. |
+| `bind` | string | no | Listen address, substituted as `{host}`. Empty ⇒ `127.0.0.1` (the safe default); an inference engine that serves the cluster sets `"0.0.0.0"` (Ollama does), overridable per call via `engine:start {bind}`. Probes always target loopback. |
+| `start` | string[][] | command mode | Ordered bring-up commands (each an argv) for `command` mode, e.g. `[["{cli}","server","start","--port","{port}"]]`. |
+| `cli` | string | no | The engine's control-CLI path for this platform, referenced as `{cli}` by start/stop/actions so the manifest's **global** actions resolve to the correct per-OS binary. |
+| `ready` | probe | no | Readiness probe; `start` waits for it before reporting Running. |
+| `stop` | object | no | Process mode: `signal` (`"term"` default, or `"kill"`) + `grace_s` (seconds before force-kill). Command mode: `cmd` (argv) to bring the engine down. |
+| `health` | probe | no | Periodic liveness probe while Running; `interval_s` between checks. |
+
+A **probe** is `{ "http": "<url>", "status": <int>, "timeout_s": <int>, "interval_s": <int> }`
+or `{ "tcp": "<host:port>", ... }`. `status` defaults to `200`. Prefer
+loopback URLs/addresses. An HTTP probe may also set
+`"json_match":{"field":"service.role","value":"router"}` to require a JSON
+string at that dotted object path. Missing, malformed, oversized, or
+wrong-typed response data fails the probe. `json_match` is invalid on TCP
+probes.
+
+### Actions
+
+Each action is a config-declared operation exposed over `engine:action`.
+Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
+
+- **`http`** — call the engine's loopback control API. The caller's
+  `params` are sent as the JSON request body by default. Set
+  `params_in: "query"` to require a JSON object of string values and URL-encode
+  them into the query string instead. `body_schema` is informational. Requires
+  the engine to be running.
+- **`cmd`** — run a CLI command (e.g. `lms get`). The caller's `params`
+  become placeholders (e.g. `{model}`); stdout is returned (parsed as
+  JSON when it is valid JSON). Does **not** require the engine to be
+  running.
+- **`remove_path`** — delete a filesystem path declared in the manifest.
+  `remove_path.root` and `remove_path.path` are templated (including
+  action `params` as placeholders); the resolved target must stay under
+  the declared root. Symlink escapes and missing targets are rejected.
+  Does **not** require the engine to be running.
+- **`hf_cache`** — list the models in a Hugging Face hub cache directory.
+  `hf_cache.dir` is templated, normally `"{hf_hub_cache}"`. The reply is
+  `{"data":[{"id","size"}]}`, so `result: {"array": "data", "field": "id"}`
+  turns it into a model list. A repository is listed when any of its snapshots
+  is a complete download holding a config, a tokenizer and the weights vLLM
+  loads, judged on that snapshot's own files (huggingface_hub links a file into
+  a snapshot only once it is whole, so a download still running for another
+  revision or an unused file does not hide a complete one): vision-only and
+  GGUF-only repositories, unfinished downloads (weights not yet linked, shards
+  missing from the index or from a `-0000N-of-0000M` set, a lone shard of a
+  larger set, several unnumbered weight files with no index) and links whose
+  blob is gone are left out. `size` is what the snapshot takes on disk. This is
+  a check on file layout, not on whether the engine supports the architecture.
+  A missing directory is an empty cache. Does **not** require the engine to be
+  running. With `"delete": true` and `"tool": "hf"` (only as `delete_model`),
+  the action instead removes the model named by `{"model": "<org/name>"}` by
+  running `<tool> cache rm model/<org/name> --cache-dir <dir> --yes`, the tool
+  being looked up beside the engine binary as for `hf_pull`. The Hugging Face
+  tool keeps shared-store files another repository still links to and takes the
+  store's locks; the manager adds the served-model checks around it, asking a
+  running engine which model it serves through its `loaded_models` action and
+  refusing when it cannot tell, and holds the engine's operation lock until the
+  removal and any rollback of the launch settings are done.
+- **`launch_model`** — switch the model an engine serves, for an engine with no
+  load call because the model is a launch argument (vLLM). `launch_model.flag`
+  names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
+  Hugging Face id such as `org/name`; anything that could be read as a flag, a
+  path or a shell fragment is refused), writes it into the saved launch
+  settings exactly as the settings editor would, and restarts a running engine
+  on it. If the new model does not come up, the previous one is restored and the
+  error says so; a stopped engine is started on it, and asking a running engine
+  for the model already in the launch arguments restarts nothing. The engine's
+  operation lock is held from reading the launch to the last restore. An engine
+  with a `launch_model` action will not start while its launch arguments lack
+  the flag: it has no model selected, and refusing beats letting the engine
+  pick and download a default of its own. The refusal is reported as a failed
+  start, like the other refusals before launch, so a client that does not wait
+  for the reply still learns of it. Requires `runtime.editable_launch`
+  and `runtime.ready` on every platform.
+
+An optional **`result`** declares how `engine:models` extracts a normalized
+name list from the action's JSON response: `array` is the top-level array
+field to iterate and `field` is the string field to pull from each element.
+It lets one engine-agnostic path turn each engine's `list_models` shape into a
+flat `[]string` with no per-engine code — Ollama's `/api/tags`
+(`{"models":[{"name":...}]}`) uses `{"array":"models","field":"name"}`, while
+LM Studio's native `/api/v1/models` (`{"models":[{"key":...}]}`) uses
+`{"array":"models","field":"key"}`. A required array that is present but empty
+is an authoritative empty inventory; a missing, null, or wrong-typed array is
+unknown, as is a non-empty unfiltered inventory with no usable names.
+`engine:models` runs every running engine's `list_models` and unions the
+extracted names; it also backs the node's `em` HTTP endpoint
+(`GET /v1/models`) that peers fetch during discovery enrichment.
+
+`result` also takes an optional **`match`** row filter that keeps only array
+elements that pass the filter. Exactly one of `in` or `nonempty` is required:
+
+- `{"field":...,"in":[...]}` — keep elements whose `field` (a JSON string)
+  equals one of `in`.
+- `{"field":...,"nonempty":true}` — keep elements whose `field` is a JSON
+  array with length > 0.
+
+This lets a `loaded_models` action reuse the same extractor as `list_models`
+even when an engine's list endpoint returns *all* models tagged with residency
+rather than a presence-only list. The bundled `loaded_models` actions report
+the models resident in memory (surfaced as `engine:models`'s `loadedByEngine`
+and pushed via `engine:models-changed`): Ollama's `GET /api/ps` is presence-only
+so it needs no `match` (`{"array":"models","field":"name"}`), while LM Studio's
+native `GET /api/v1/models` uses
+`{"array":"models","field":"key","match":{"field":"loaded_instances","nonempty":true}}`.
+A row whose `match.field` is missing or the wrong JSON type fails the match (it's
+excluded). The filter shape lives in the manifest so it can be updated without a
+code change if an engine's API drifts. An engine that declares no `loaded_models`
+action simply contributes no `loadedByEngine` key. The bundled LM Studio list
+and loaded actions require LM Studio 0.4.0 or newer, where the native
+`/api/v1/models` endpoint is available. All of this stays additive:
+`manifest_version` is still `1`.
+
+An optional **`model_resolution`** expands or resolves the `{model}`
+placeholder before the action runs:
+
+- **`"lms-get"`** (cmd actions only) — try the value as given (so an
+  explicit `huggingface.co`/`lmstudio.ai` URL is honored first), then the
+  LM Studio Hub artifact id (`owner/name`), then the Hugging Face repo
+  URL. This works around `lms get` routing a bare `owner/name` to the Hub
+  registry, which 404s the Hugging-Face-hosted community models LM
+  Studio's own Discover tab downloads. A **transient** download failure
+  (a stalled or timed-out transfer) is *not* a resolution failure:
+  rather than advancing to the next source, `lms-get` retries the same
+  command in place (a bounded number of times) — `lms get` resumes a
+  partial download on re-run — so a momentary network hiccup recovers
+  instead of failing the pull. A hard error still surfaces immediately.
+- **`"lms-disk-path"`** (remove_path actions only) — map a logical LM
+  Studio model id (the OpenAI-compatible `/v1/models` id, an
+  `owner/repo` pull key, or an on-disk path) to concrete files under the
+  declared `remove_path.root` via `lms ls --json`. When no indexed file
+  matches, the runner falls back to `{root}/{model}` if that path exists.
+
+A manifest-level **`advertised_models`** (`"list"`, the default, `"loaded"`, or `"available"`)
+chooses what the node tells its peers and its own proxy it can serve. The proxy
+sends a request to any node advertising the model, so an engine that serves one
+model per process without request-triggered loading sets `"loaded"` and advertises only `loaded_models`, even when
+its `list_models` offers many models it could be switched to. With `"loaded"`,
+a `loaded_models` action is required, and `engine:models` reports the engine in
+two parts:
+
+- `modelsByEngine` (and the flat `models`) holds the `loaded_models` names: what
+  a request may be routed to. It is absent while the engine is stopped.
+- `downloadedByEngine` holds the `list_models` names: every model the engine can
+  load, so a model manager on this node or a peer keeps its rows for models that
+  are on disk but not being served. It is read whenever the engine is installed,
+  running or not, so its `list_models` must not need a running server (vLLM's
+  `hf_cache` list reads the cache). An empty list means the inventory was read
+  and is empty; a missing key means it was not read.
+
+Its `loaded_models` `result` may also set **`inventory_field`**, the element field
+that names each loaded model the way `list_models` does. vLLM's `/v1/models`
+gives the name a request uses as `id` (a `--served-model-name` alias when one is
+set) and the model it loaded as `root` (its `--model`), so its
+`{"array":"data","field":"id","inventory_field":"root"}` advertises the `id` and
+reports `loadedByEngine` as the `root`, which marks the cached model's row as
+loaded. `inventory_field` is valid only there.
+
+An **`hf_pull`** action (`{"tool": "hf", "dir": "{models_dir}/hub"}`, only as
+`pull_model`) downloads a Hugging Face repository with the named tool, looked up
+in the directory that holds the engine binary, and reports byte progress taken
+from the cache directory. It needs no running engine.
+
+A **`stop_engine`** action (only as `unload_model`) stops the engine, for one that
+serves a single model per process and so cannot unload it while running. With
+`wait_for_model`, Eject also clears its selected model and leaves it enabled
+awaiting a new choice, including when cancelling a Load in progress. An already
+disabled engine stays disabled. A
+`launch_model` action on a stopped engine saves the choice and starts it.
+
+A runtime **`auto_launch`** (`{"kind": "hf_context", "context_tokens": 65536, "max_num_seqs": 32}`)
+lets the manager add start-time arguments that depend on the model and the
+machine. For `hf_context` it reads the served model's `config.json` from the
+Hugging Face cache, at the revision the engine loads (`--revision` or `main`,
+resolved through `refs/` as `huggingface_hub` does), and the free GPU memory,
+then appends `--max-model-len`
+(the target, the model's own limit when it cannot be extended, or what fits),
+`--hf-overrides` with YaRN rope scaling when the target exceeds the model's
+native window, and `--gpu-memory-utilization` sized to the weights the engine
+loads plus KV cache, never below 15% of the GPU and never above what is free
+less a 1 GiB margin (the free-memory cap wins).
+For FP8 checkpoints on vLLM-Metal's MLX worker, disk size understates resident
+weights because the loader expands them to BF16. These launches use the measured
+free-memory cap instead of estimating a smaller share or context from the weight
+size. The context target and rules for the model's native limit and rope scaling
+still apply; the worker profiles resident weights and determines whether that
+context fits.
+A model that is not in the cache yet, which vLLM downloads during the start,
+first has its files other than weights fetched into the cache with the engine's
+Hugging Face tool (the one an `hf_pull` action names) at that revision, and is
+then sized and given a tool-call parser the same way; when Hugging Face cannot
+answer, the share is the free GPU memory less the margin. That fetch, and the
+`hf_pull` and `hf_cache` work, run with the engine's launch environment, read
+the way `huggingface_hub` reads it: `HF_HUB_OFFLINE` (else
+`TRANSFORMERS_OFFLINE`), the token (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or
+the stored login under `HF_TOKEN_PATH` or `HF_HOME`, none of them sent when
+`HF_HUB_DISABLE_IMPLICIT_TOKEN` is set), and a mirror in `HF_ENDPOINT` all
+apply. The readiness `timeout_s` counts from when the start begins, so this
+work before launch is inside it.
+The optional `max_num_seqs` adds `--max-num-seqs`, the most requests the engine
+runs at once (0 or absent leaves the engine's default).
+Arguments the user saved always win and nothing added is written back to saved
+settings, so a model switch is re-sized for the new model. It also adds
+`--enable-auto-tool-choice` and a `--tool-call-parser` found from the model's own
+chat template with the installed vLLM (see the README's vLLM section), or nothing
+when no parser reads the model's tool calls. Memory and context sizing are left
+to the engine for tensor- or pipeline-parallel launches and explicit
+`--worker-cls` selections. It requires a process-mode runtime
+with `editable_launch`.
+
+A runtime **`unsupported_weights`** (`{"formats": ["fp8"], "except_model_types":
+[...], "reason": "..."}`) names checkpoint formats the platform's engine cannot
+load. `fp8` is the only format: FP8 weights or an FP8 KV cache, read the way
+vLLM reads them (`quant_method` `fp8` or `fbgemm_fp8`, a compressed-tensors
+float 8-bit scheme, or ModelOpt's FP8 `quant_algo` / `kv_cache_quant_algo` in
+`config.json` or `hf_quant_config.json`). A model whose `config.json`
+`model_type` is listed in `except_model_types` is allowed. A start of such a
+model is refused before the engine loads it, a `pull_model` before it
+downloads, and `engine:catalog` leaves FP8 repositories out for a target
+platform that declares the rule. `reason` is shown to the user. Validation
+requires a known format and a reason. The bundled vLLM manifest declares it for
+`darwin/arm64` only.
+
+An optional **`restart_after`** restarts the engine once the action succeeds.
+Declare it on an action that changes state the engine only reads at startup:
+LM Studio's `delete_model` removes the files, but its server answers
+`/v1/models` from an index built at startup and exposes no rescan operation
+(no CLI command, REST route, or SDK call), so clients keep being offered a
+deleted model until it restarts. It is opt-in per action and deliberately rare —
+Ollama reflects a deletion immediately, so its `delete_model` omits the flag and
+its engine is never bounced.
+
+The rules the runner enforces:
+
+- **A stopped engine stays stopped.** There is no serving state to reconcile,
+  and starting one behind the user's back would be a surprise.
+- **The user's ON/OFF intent is never rewritten.** The bounce goes through
+  `doStop`/`doStart`, not `Restart`, precisely because `Restart` also persists
+  desired-enabled — an action must not turn "delete this model" into "and leave
+  this engine switched on".
+- **The running check and the bounce share `opMu`.** A concurrent `Stop` either
+  wins the lock first (the action then sees a stopped engine and leaves it down)
+  or waits and stops the engine we just brought back. It can never be silently
+  undone.
+- **A failed restart fails the action**, because the action's effect is only
+  observable once the engine is back. The error names the restart
+  (`… failed to restart: …`) so a caller can distinguish "nothing happened" from
+  "the destructive half ran and the engine did not return" — the destructive
+  half is *not* rolled back, so re-issuing the action is the wrong response.
+- **The platform must declare `runtime.ready`.** `Validate` rejects
+  `restart_after` without one: readiness is what makes "the effect is visible by
+  the time this replies" true rather than a race with the engine's own startup.
+- **A remote caller waits on the readiness budget.** Driving such an action on a
+  peer means the peer withholds its response headers until the restart is ready,
+  so `remoteclient.go` routes that path through the readiness-sized client
+  (`waitsForEngineReadiness`) rather than the ordinary 30s one. Cutting the call
+  off would cancel the peer's in-flight handler and let `bringUpCommand` tear the
+  engine back down — for a delete, files gone and engine left stopped.
+
+```json
+"list_models": { "http": { "method": "GET", "path": "/api/v1/models" }, "result": { "array": "models", "field": "key" } },
+"pull_model":  { "cmd": ["{cli}", "get", "{model}", "--yes"], "model_resolution": "lms-get" },
+"delete_model": {
+  "model_resolution": "lms-disk-path",
+  "remove_path": { "root": "{models_dir}", "path": "{models_dir}/{model}" },
+  "restart_after": true
+}
+```
+
+Actions target the engine's control plane — **not** inference endpoints
+(those stay with the proxy).
+
+## Placeholders
+
+Resolved by the runner at execution time; any other `{token}` fails
+validation at load:
+
+| Placeholder | Meaning | Available in |
+|---|---|---|
+| `{host}` | Listen address from `runtime.bind` (or a per-call `bind`); `127.0.0.1` when unset | runtime args/env |
+| `{port}` | The chosen runtime port | runtime args/env, start, probes, action paths |
+| `{bin}` | Resolved binary path (process mode) | runtime args/env |
+| `{cli}` | The platform's `runtime.cli` path | runtime start/stop, action `cmd` |
+| `{download}` | Path of the verified download | `install.run` |
+| `{download_<name>}` | Path of a verified member of `install.artifacts` | `install.run` |
+| `{install_dir}` | Per-engine managed payload directory: the platform's expanded `install_dir`, or the app-data root's `engine-bin/<engine>` by default | `detect`, `install`, uninstall, runtime |
+| `{hf_hub_cache}` | The Hugging Face hub cache the engine itself uses, from its launch environment as `huggingface_hub` resolves it: `HF_HUB_CACHE`, else `HUGGINGFACE_HUB_CACHE`, else `HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub` | the `dir` of an `hf_cache` or `hf_pull` action only |
+| `{models_dir}` | The platform's `models_dir`, expanded | `detect`, runtime args/env, `uninstall.run`, actions. **Not** `install`, which resolves only `{install_dir}` and the download paths — and not `uninstall.remove`, where naming the store is rejected at load. Unset when the platform declares no store, so a template referencing it then fails to resolve rather than silently becoming a path under `/` |
+
+A `cmd` action additionally templates the action's own `params` as
+placeholders (e.g. `{model}`), resolved at call time. HTTP actions send
+`params` as the JSON request **body** by default; `params_in: "query"` sends
+their string fields as URL-encoded query parameters with no body. They are not
+substituted into `http.path`, which templates only `{port}`.
+
+## Validation
+
+A manifest is rejected at load (with a specific message) when: a required
+field is missing, `manifest_version` is unsupported, a platform key isn't
+`"<goos>/<goarch>"`, `runtime.bin` is empty in process mode (or
+`runtime.start` is empty in command mode), `install.run` has neither `fetch`
+nor nonempty `artifacts`, `fetch` or nonempty `artifacts` is present without
+nonempty `install.run`, `install.script` is combined with
+`fetch`/`artifacts`/`run`, `install.mode` or
+`runtime.mode` is invalid, `runtime.unsupported_weights` lacks a reason or
+names a format other than `fp8`, `models_dir` is a template rather than a literal
+path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
+is present without a `models_dir` to preserve, an `uninstall.remove` target is
+the model store or inside it (whether spelled literally or as `{models_dir}`),
+an action sets none or more than one of
+`http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`, an `hf_cache` action omits
+`dir` or sets only one of `delete` and `tool`, a `launch_model` flag is not a flag or a platform lacks
+`editable_launch` or `ready`, `advertised_models` is unknown or `"loaded"`
+without a `loaded_models` action, `result.inventory_field` is set anywhere but
+the `loaded_models` action of an engine with `advertised_models` `"loaded"` or is
+not a single field name, a `remove_path` action omits `root` or
+`path`, `http.params_in` is not `body` or `query`, a `result` is set without
+both `array` and `field` (or a
+`result.match` without both `match.field` and a non-empty `match.in`), or
+a non-action templated string uses an unknown placeholder.
+
+---
+
+## Worked example 1 — Ollama (Linux, user-scoped, no sudo)
+
+A conservative Ollama manifest — user-scoped install (never the official
+`curl | sh`, which would `sudo`-install to `/usr` + systemd), checksum
+**pinned**, server kept on loopback. (The bundled `ollama.json` is shaped
+the same way but ships **unpinned** and defaults `runtime.bind` to
+`0.0.0.0`; see the note after the example.)
+
+```json
+{
+  "engine": "ollama",
+  "display_name": "Ollama",
+  "manifest_version": 1,
+  "platforms": {
+    "linux/amd64": {
+      "detect": ["{install_dir}/bin/ollama"],
+      "install": {
+        "fetch": { "url": "https://ollama.com/download/ollama-linux-amd64.tgz", "sha256": "‹release sha256›" },
+        "run": ["tar", "-xzf", "{download}", "-C", "{install_dir}"],
+        "mode": "user"
+      },
+      "runtime": {
+        "bin": "{install_dir}/bin/ollama",
+        "args": ["serve"],
+        "env": { "OLLAMA_HOST": "{host}:{port}", "LD_LIBRARY_PATH": "{install_dir}/lib/ollama" },
+        "port": 11434,
+        "ready":  { "http": "http://127.0.0.1:{port}/", "status": 200, "timeout_s": 30 },
+        "stop":   { "signal": "term", "grace_s": 5 },
+        "health": { "http": "http://127.0.0.1:{port}/", "status": 200, "interval_s": 5 }
+      }
+    }
+  },
+  "actions": {
+    "list_models": { "http": { "method": "GET",  "path": "/api/tags" } },
+    "pull_model":  { "http": { "method": "POST", "path": "/api/pull", "body_schema": { "name": "string" } } }
+  }
+}
+```
+
+> This example **pins** `sha256` (best practice). The bundled `ollama.json`
+> ships **unpinned** — `fetch` has no `sha256`, so install is HTTPS-only and
+> logs a loud "unpinned" warning. Pin it to the SHA-256 of a *versioned*
+> release URL for reproducible, integrity-verified installs ("latest" URLs
+> change checksum per release).
+
+## Worked example 2 — LM Studio (a daemon + control-CLI engine)
+
+LM Studio is shaped very differently from Ollama: its server runs in a
+background daemon driven by the `lms` CLI, model downloads are a CLI
+command (no HTTP endpoint), and its headless installer is a vendor
+script. It is still added with **no code** — using `mode: "command"`, a
+`cmd` action, `{cli}`, and a downloaded installer script:
+
+```json
+{
+  "engine": "lmstudio",
+  "display_name": "LM Studio",
+  "manifest_version": 1,
+  "platforms": {
+    "linux/amd64": {
+      "detect": ["~/.lmstudio/bin/lms"],
+      "install": {
+        "fetch": { "url": "https://lmstudio.ai/install.sh" },
+        "run": ["bash", "{download}"],
+        "mode": "user"
+      },
+      "models_dir": "~/.lmstudio/models",
+      "uninstall": {
+        "run": ["sh", "-c", "pkill -x lms 2>/dev/null; sleep 2; exit 0"],
+        "remove": ["~/.lmstudio"]
+      },
+      "runtime": {
+        "mode": "command",
+        "cli": "~/.lmstudio/bin/lms",
+        "port": 1235,
+        "start": [["{cli}", "server", "start", "--port", "{port}"]],
+        "stop":  { "cmd": ["{cli}", "daemon", "down"], "grace_s": 10 },
+        "ready":  { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 60 },
+        "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
+      }
+    }
+  },
+  "actions": {
+    "list_models": { "http": { "method": "GET", "path": "/api/v1/models" }, "result": { "array": "models", "field": "key" } },
+    "pull_model":  { "cmd": ["{cli}", "get", "{model}", "--yes"], "model_resolution": "lms-get" },
+    "load_model":  { "cmd": ["{cli}", "load", "{model}"] }
+  }
+}
+```
+
+What each piece does here:
+- **`mode: "command"`** — no owned process; liveness is the `/v1/models` probe. For LM Studio's bundled `stop.cmd` (`["{cli}", "daemon", "down"]`), engine-manager first reads `lms daemon status --json`. A confirmed running headless host uses `daemon down` to terminate `llmster` and release loaded models; a GUI host uses `server stop` to close HTTP without quitting the GUI or unloading its models. Failed or unrecognized host status also uses `server stop`, which may leave the host and models in memory. An explicit `not-running` status requires no stop command. Explicit custom stop commands bypass this selection and execute unchanged.
+- **`cmd` action** — `pull_model` shells out to `lms get {model}` (no HTTP equivalent exists), with `{model}` filled from the call's params.
+- **`model_resolution: "lms-get"`** — `pull_model` tries the model as given, then the Hub artifact id, then the Hugging Face repo URL, so a bare `owner/name` for a Hugging-Face-hosted model (most of LM Studio's catalog) downloads instead of 404ing against the Hub registry.
+- **`{cli}`** — the manifest-global `pull_model` action resolves to the right per-OS binary (`lms.exe` on Windows, `lms` elsewhere).
+- **Installer script** — LM Studio's headless installer is vendor-provided and unpinned. Engine-manager downloads it over HTTPS and executes the saved file as a separate argument, so fetch failures stay visible and paths containing spaces cannot be split by a shell. Windows executes the saved `.ps1` with PowerShell `-File`; it never pipes remote content through `Invoke-Expression`. The vendor script checks the downloaded archive against its published SHA-512 when one is available.
+
+---
+
+## Engine config reference
+
+A condensed map of each engine's manifest-relevant surface, to guide
+authoring. The recurring, high-value controls (and the right targets for a
+future "declared tunables" layer) are: bind host/port, model dir,
+concurrency/parallelism, max-loaded models, context length, keep-alive/TTL,
+GPU selection, and auth.
+
+| Engine | Fit | Headless launch | Config surface | Control |
+|---|---|---|---|---|
+| **Ollama** | strong (env-first) | `ollama serve` (foreground) | env: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MAX_QUEUE`, `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_FLASH_ATTENTION` | HTTP `/api/tags`, `/api/pull`; CLI `ollama pull/ls/ps/stop` |
+| **llama.cpp** | strong (env+flags) — **reference design** | `llama-server --host 127.0.0.1 --port {port}` (foreground) | flags + `LLAMA_ARG_*` (host/port, ctx-size, n-parallel, cont-batching, flash-attn, device, n-gpu-layers, tensor-split, main-gpu, api-key, models-dir/max) | HTTP `/v1/models`, `/models` download/delete, `/models/load`, `/models/unload`, `/health`, `/slots` |
+| **LM Studio** | command / daemon | `lms daemon up` → `lms server start --port {port}` | small env (`LMS_SERVER_HOST`, `LM_API_TOKEN`); most config is flags/API/settings (`lms load --context-length/--gpu/--ttl`) | HTTP `/api/v1/models[/download\|load\|unload]`; CLI `lms ls/get/load/unload/ps` |
+| **vLLM** | flags-first — **Linux/WSL and Apple Silicon macOS** | `vllm serve <model> --host 127.0.0.1 --port {port}` | flags (host/port/api-key); `HF_HOME` for cache. `VLLM_PORT`/`VLLM_HOST_IP` are **not** the API bind | OpenAI `/v1/models`; one model per process (unload = restart) |
+| **Jan** | hybrid (on llama.cpp router) | `jan serve <model> --port {port}` (CLI) | forwards `LLAMA_ARG_*`; perf settings are router-preset-driven | `jan serve` auto-downloads HF repos |
+| **GPT4All** | weak (GUI app) | none (Local API Server toggled in the GUI, `:4891`) | desktop settings / Python SDK — not env | OpenAI `/v1` once enabled in-app |
+
+Caveats worth encoding when authoring these:
+- **Model store location**: leave each engine's model cache at the engine's own default — `~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models` — and declare that path as `models_dir`. Never point one inside `{install_dir}` or anywhere else under the app data root: `uninstall` skips `models_dir`, but app reset removes both the data root and PAIR-owned external payload directories. See Model stores.
+- **llama.cpp** ships prebuilt archives with **published SHA-256s**, so it's an ideal checksum-pinned `fetch`+`run` target (no placeholder SHA needed).
+- **LM Studio** model dir is settings-controlled (no documented relocation env); surface its config as flags/API, not env.
+- **vLLM**: native Windows is unsupported (WSL only), and macOS is Apple Silicon only through the vLLM-Metal plugin (`darwin/arm64`); the bind is a flag, not env. The bundled `vllm.json` is the reference: it passes the model as `--model`, since manifest `runtime.args` have no `{model}` token, and installs through a sha256-pinned `uv` bootstrap with a detect-first path.
+- **GPT4All**: no first-class headless CLI today — out of scope for a config-only manager unless targeting its Python SDK.
+
+### Waiting for explicit model selection
+
+`runtime.wait_for_model: true` is supported for process engines with a
+`launch_model` action. When no model launch argument is configured, Start succeeds
+with `awaiting_model:true` and saves enabled intent without spawning a serving
+process. The bundled vLLM manifest uses this policy and supplies no default model.
+Once a model argument is saved, the usual startup and readiness checks apply.
+
+### Cached model availability for request-triggered loading
+
+`advertised_models: "available"` is for a `wait_for_model` runtime with an
+`hf_cache` model inventory and `loaded_models` action. While enabled it advertises
+complete cached models that engine-manager can prepare on request. While disabled
+its advertised set is empty. Downloaded and resident sets remain separately
+reported. Its loaded result may use `inventory_field`, as with `"loaded"`.

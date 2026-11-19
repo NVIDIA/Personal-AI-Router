@@ -25,6 +25,7 @@ export function BackendHeader({
     isUnavailable,
     disabled,
     onToggle,
+    onStop,
     onExpand,
     expanded,
     isLocalNode,
@@ -37,6 +38,8 @@ export function BackendHeader({
     isUnavailable: boolean
     disabled: boolean
     onToggle: () => void
+    /** Stop an engine that is still starting; its switch stays on and usable. */
+    onStop: () => void
     onExpand: () => void
     expanded: boolean
     isLocalNode: boolean
@@ -114,7 +117,7 @@ export function BackendHeader({
                                     e.stopPropagation()
                                     handleCopy()
                                 }}
-                                title={`Copy ${backend.displayName} API http://127.0.0.1:${backend.proxyPort}`}
+                                title={`Copy ${backend.displayName} API ${proxyUrl}`}
                                 style={{ padding: '2px 6px', minWidth: 'auto' }}
                                 aria-label={`Copy ${backend.displayName} API URL`}
                             >
@@ -147,7 +150,7 @@ export function BackendHeader({
 
             {isUnavailable && (
                 <DismissibleTooltip slotContent="This node hasn't reported this engine's status.">
-                    <Flex align="center" className="ml-2" style={{ minHeight: 32 }}>
+                    <Flex align="center" className="ml-2 h-7">
                         <Text kind="body/regular/sm" className="text-subtle-color">
                             Unavailable
                         </Text>
@@ -181,18 +184,41 @@ export function BackendHeader({
                             <Flex
                                 align="center"
                                 gap="1"
-                                className="ml-2 min-w-0 max-w-[min(100%,28rem)]"
-                                style={{ minHeight: 32 }}
+                                className="ml-2 h-7 min-w-0 max-w-[min(100%,28rem)]"
                             >
                                 <span className="min-w-0">
                                     <Text
                                         kind="body/regular/sm"
-                                        className="truncate block mt-1 capitalize"
+                                        className="truncate block capitalize"
                                     >
                                         {fullStatus}
                                     </Text>
                                 </span>
-                                <span className="spinner-element" role="status" aria-label="" />
+                                <Flex align="center" justify="center" className="h-7 w-7 shrink-0">
+                                    <span
+                                        className="spinner-element-medium"
+                                        role="status"
+                                        aria-label={fullStatus}
+                                    />
+                                </Flex>
+                                {/* A start can take minutes (vLLM loads for up to
+                                    thirty minutes), so it can be stopped while it runs. */}
+                                {backend.processStatus === 'starting' && (
+                                    <Flex
+                                        align="center"
+                                        justify="center"
+                                        className="h-7 w-7 shrink-0"
+                                    >
+                                        <Switch
+                                            size="small"
+                                            checked
+                                            onCheckedChange={onStop}
+                                            onClick={e => e.stopPropagation()}
+                                            aria-label={`Stop ${backend.displayName}`}
+                                            title={`Stop ${backend.displayName}`}
+                                        />
+                                    </Flex>
+                                )}
                             </Flex>
                         </DismissibleTooltip>
                     )
@@ -204,17 +230,25 @@ export function BackendHeader({
                 (() => {
                     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
                     const prereqsMet = missingPrereqs.length === 0
-                    const isStartDisabled = !prereqsMet && backend.processStatus !== 'running'
+                    const isStartDisabled =
+                        !prereqsMet &&
+                        backend.processStatus !== 'running' &&
+                        backend.processStatus !== 'awaiting-model'
 
                     const toggle = (
-                        <Switch
-                            size="small"
-                            checked={backend.processStatus === 'running'}
-                            onCheckedChange={onToggle}
-                            onClick={e => e.stopPropagation()}
-                            disabled={disabled || isStartDisabled}
-                            aria-label={`${backend.processStatus === 'running' ? 'Stop' : 'Start'} ${backend.displayName}`}
-                        />
+                        <Flex align="center" justify="center" className="h-7 w-7 shrink-0">
+                            <Switch
+                                size="small"
+                                checked={
+                                    backend.processStatus === 'running' ||
+                                    backend.processStatus === 'awaiting-model'
+                                }
+                                onCheckedChange={onToggle}
+                                onClick={e => e.stopPropagation()}
+                                disabled={disabled || isStartDisabled}
+                                aria-label={`${backend.processStatus === 'running' || backend.processStatus === 'awaiting-model' ? 'Stop' : 'Start'} ${backend.displayName}`}
+                            />
+                        </Flex>
                     )
 
                     if (isStartDisabled) {

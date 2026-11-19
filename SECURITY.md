@@ -6,16 +6,114 @@ SPDX-License-Identifier: Apache-2.0
 # Security
 
 NVIDIA is dedicated to the security and trust of its software products and
-services, including source code repositories managed through its organization.
+services, including NVIDIA PAIR.
+
+**Do not report security vulnerabilities through public GitHub issues or pull requests.**
+See below for the appropriate disclosure procedure.
+
+## Threat model
+
+PAIR connects mutually trusted nodes on a local network so applications can
+use inference engines across a cluster. Pairing grants broad cluster authority,
+including administration, engine operations, and introducing other members.
+Discovery or access to the same network does not grant that authority.
+Protected traffic between paired nodes is authenticated and encrypted.
+
+The assets PAIR should protect include cluster membership and credentials,
+inference requests and results, and the authority to use compute,
+change settings, manage engines and models, or run commands on a node.
+
+![PAIR threat model: three connected trusted nodes inside a LAN, with crossed attack arrows from unapproved devices, attacker-spoofed models etc, and malicious websites.](docs/assets/security-threat-model.svg)
+
+### Threats in scope
+
+The following scenarios describe categories of attacks PAIR strives to defend against:
+
+- **An unapproved device on the same network.** An attacker who gains access to the
+  LAN, for example through Wi-Fi, *must not* be able to force a node into the cluster,
+  use protected cluster operations, or read or tamper with protected traffic between nodes.
+  PAIR's plaintext inference endpoints *must* accept requests only from the local machine.
+- **A malicious website visited on a node.** User Ash opens an attacker-controlled
+  website in a browser on a machine running PAIR. The website *must not* be able to use
+  PAIR to run inference, read private results, or issue commands on the machine
+  or cluster. Visiting the website must not itself authorize these operations.
+- **Permissive parsing of untrusted data.** An attacker modifies metadata, a
+  model name, or other content that PAIR processes during normal use. A parsing
+  or rendering flaw *must not* let that content read private data, change settings,
+  trick a user, or execute commands with PAIR's authority.
+- **Substituted downloads.** Ash requests a genuine model download, engine
+  installation, or PAIR update. An attacker impersonates the intended source,
+  tampers with delivery, or redirects PAIR to a substituted artifact. PAIR's
+  download and installation paths *must* preserve source authenticity and
+  artifact integrity, including before executing downloaded software.
+- **A former member using old credentials.** Ash removes a previously trusted
+  node. After a remaining node processes that removal, the former member *must
+  not* use the removed identity's credentials to authorize new protected
+  operations on that node.
+- **Sensitive content in logs.** PAIR’s own logs **must not** contain
+  prompts, responses, pairing PINs, or private keys, only operational metadata.
+  This is a general security best-practice and acts as defense-in-depth.
+
+### Out of scope
+
+- **Local users.** Users with OS accounts on cluster nodes are outside this threat model.
+   For example, if Ash owns a PAIR cluster and Birch has an OS account on one of Ash’s nodes,
+   protecting the cluster from Birch is outside PAIR’s scope. PAIR relies on OS permissions
+   to protect each account’s files and credentials.
+- **Compromised nodes.** An attacker who already controls a node through an
+  attack outside PAIR is outside this model, as is a user deliberately pairing
+  an attacker's node. Gaining control through a flaw in PAIR remains in scope.
+- **Third-party behavior.** PAIR does not isolate engines from the rest of the
+  machine or guarantee that model answers are safe or truthful. Applications
+  using PAIR must defend against prompt injection and decide which actions their
+  agents are allowed to perform.
+- **Services exposed outside PAIR.** If Ash forwards a router port to an engine
+  so anyone on the internet can reach it, Ash is responsible for securing that
+  access. The same applies to a separate public proxy. PAIR remains responsible
+  for the services it exposes and for blocking website attacks through its
+  normal local interfaces.
+- **Agent permissions and resource limits.** PAIR does not give each agent its
+  own permissions or compute budget, or separate cluster users into different
+  trust levels. An agent with engine API access may also manage models. The
+  scheduler distributes work but does not guarantee availability when authorized
+  clients submit too much work. Requests must still stay separate and go to the
+  correct nodes.
+- **Data destinations.** The node running inference and its trusted users can
+  see the request and result. Engines, catalogs, updates, and applications may
+  contact services outside the LAN. PAIR does not protect data after an
+  application intentionally sends it elsewhere.
+- **Removal limits.** Removing a node cannot erase data already copied or undo
+  completed actions. Each node must learn about the removal before it can reject
+  new requests from the removed node. Other approved identities must be removed
+  separately.
+
+### Known/Acceptable Limitations
+
+- **Pairing bootstrap.** The six-digit PIN has low entropy and limited protection
+  against active interception or manipulation during pairing. Pair trusted
+  devices on a trusted network and check the displayed context. Later mutual TLS
+  cannot repair trust granted to the wrong identity. Bypassing the pairing flow
+  remains in scope.
+- **Public LAN metadata.** Anyone on the same subnet can read a node's hostname,
+  hardware inventory, and utilization without pairing. This information is sent
+  over unencrypted HTTP. Reading it does not grant access to protected cluster
+  operations.
+- **Unpaired manual nodes.** The terminal UI has an option to find a node by address
+  without pairing (`f`), and the proxy's service API can explicitly add an engine without
+  pairing. Connections to an unpaired engine may use unencrypted HTTP, exposing
+  inference traffic to interception or tampering.
+- **Engine installs.** Some engine downloads have no expected checksum. PAIR uses
+  HTTPS for those downloads, but does not independently check the downloaded
+  file against a trusted hash.
+
+## Report a vulnerability
 
 **Do not report security vulnerabilities through public GitHub issues or pull
 requests.** If someone discloses a potential vulnerability publicly, maintainers
 may limit public discussion and redirect the reporter to a private channel.
 
-## Report a Vulnerability
-
-Report a potential vulnerability in NVIDIA Personal AI Router (PAIR) or another
-NVIDIA product through one of these channels:
+Report a potential vulnerability in NVIDIA PAIR or another NVIDIA product through
+one of these channels:
 
 - Submit the [NVIDIA Vulnerability Disclosure Program form](https://www.nvidia.com/en-us/security/report-vulnerability/).
 - Email [psirt@nvidia.com](mailto:psirt@nvidia.com). For encrypted email, use
@@ -26,10 +124,13 @@ NVIDIA product through one of these channels:
 Include the following details in the report:
 
 - The affected version or commit
-- The vulnerability class
+- The vulnerability class and, if applicable, the relevant in-scope scenario
 - Reproduction steps
 - A proof of concept, when available
 - The expected impact
+
+If the scope is unclear, describe the suspected boundary crossing in a private
+report.
 
 Remove unrelated personal information, credentials, private keys, tokens,
 prompts, and model data from the report.
@@ -38,107 +139,3 @@ The NVIDIA Product Security Incident Response Team (PSIRT) triages submitted
 reports. Refer to
 [NVIDIA Product Security](https://www.nvidia.com/en-us/security/) for current
 policies, bulletins, and disclosure information.
-
-## Security Architecture Context
-
-PAIR is a LAN-first, multi-process application:
-
-- Electron renderer code uses a typed preload bridge to reach Electron main.
-- Electron main starts `nvpair-ui-broker` and exchanges newline-delimited
-  JSON-RPC 2.0 over the broker's standard input and output.
-- The broker supervises Go workers and relays their control-plane methods and
-  notifications.
-- Discovery and selected metadata endpoints operate on the local network.
-- Ollama-compatible and OpenAI-compatible local HTTP proxies carry inference
-  traffic and may route a request to another paired node.
-- The cluster manager uses a six-digit PIN to bootstrap trust. Cluster-scoped
-  peer traffic and promoted proxy ingress are designed to use certificates and
-  mutual TLS after pairing.
-
-The desktop application relays pairing and membership operations. The Go
-services own cryptographic identity, trusted certificates, and inter-node
-transport.
-
-## Documented Risks and Assumptions
-
-These statements describe security boundaries visible in the current source.
-They are not claims that every deployment is secure.
-
-### Inference Endpoints Are Loopback-Only
-
-A proxy's plaintext personality accepts requests from loopback only. It refuses
-a plaintext request from any other address. The same port also serves a
-mutual-TLS ingress for paired cluster members, and PAIR forwards that traffic to
-the node's own engine rather than routing it onward.
-
-This is deliberate. A network-reachable plaintext endpoint would make any node an
-open relay for inference to anything that can route to it. Run an application on
-a node and use that node's local endpoint. Exposing an engine to the network
-directly is outside PAIR and is the operator's decision and risk.
-
-### Local Network Is a Trust-Relevant Boundary
-
-PAIR discovers nodes and exposes service metadata on the LAN. Some discovery
-enrichment and node-information traffic can use plain HTTP. Treat an untrusted
-Wi-Fi, shared office network, compromised router, and hostile local process as
-potentially adversarial. Network segmentation and host firewall rules remain
-the operator's responsibility.
-
-“Local-first” describes the intended topology. It does not prove that no data
-leaves the machine or LAN. Inference engines, model catalogs, update systems,
-applications, and user configuration may contact external services.
-
-### Pairing PIN Is a Bootstrap Convenience
-
-The six-digit PIN is low entropy. Do not treat it as a durable credential or as
-strong proof of physical presence. Pair only while both devices and the network
-are trusted, compare the displayed context, reject unexpected requests, and
-remove members that are no longer authorized.
-
-The cluster manager is expected to establish certificate trust after the PIN
-exchange. The PIN does not protect a node before pairing and does not compensate
-for a compromised paired member.
-
-### Mutual TLS Has a Limited Scope
-
-Cluster mTLS protects participating cluster channels only when identity and
-certificate material are present and the relevant workers use that transport.
-It does not automatically protect loopback HTTP, plain discovery metadata,
-node-information HTTP, Electron IPC, third-party engine APIs, or traffic outside
-PAIR. Certificate storage and operating-system account protection are part of
-the boundary.
-
-### Local APIs and Proxies Can Expose Sensitive Operations
-
-The broker's stdio, Unix-socket, or named-pipe transport relies on the parent
-process and operating-system endpoint permissions. It has no per-message bearer
-token. PAIR's local HTTP proxies carry prompts, generated content, model names,
-and request metadata. A process that can reach a local endpoint may be able to
-submit inference or observe behavior allowed by that endpoint.
-
-Do not bind local APIs or inference engines to untrusted interfaces, forward
-PAIR ports through a router, or place an unauthenticated public reverse proxy in
-front of them. Review browser access and CORS behavior before allowing web
-content to reach a proxy. Prompts, messages, chunks, and response bodies should
-not be written to logs.
-
-### Supervised Workers Share the User's Authority
-
-The broker starts workers under the current operating-system account. Engine
-installation, model management, local settings, logs, and cluster keys may be
-sensitive. Protect the account and PAIR data directory, and review changes to
-worker paths or packaged binaries before running them.
-
-## Security-Sensitive Changes
-
-Changes to these areas require focused review and tests:
-
-- Preload and Electron IPC exposure
-- JSON-RPC framing, method routing, and subprocess paths
-- Discovery, node identity, and manual-node handling
-- Pairing, certificates, membership, and member removal
-- Proxy listeners, CORS, routing, and engine port ownership
-- Logging, diagnostics, updates, installers, and privileged helpers
-
-Do not commit credentials, signing material, real cluster keys, private prompts,
-personal data, or proprietary datasets. Use synthetic fixtures.

@@ -20,7 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
+	"nvpair-shared/noderec"
 )
 
 // genLeaf mints an Ed25519 self-signed leaf carrying uuid in CN + urn:nvpair:node
@@ -28,11 +33,11 @@ import (
 func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("genkey: %v", err)
-	}
-	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	uri, _ := url.Parse("urn:nvpair:node:" + uuid)
+	require.NoError(t, err)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	require.NoError(t, err)
+	uri, err := url.Parse("urn:nvpair:node:" + uuid)
+	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: uuid},
@@ -44,10 +49,9 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 		URIs:                  []*url.URL{uri},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
-	if err != nil {
-		t.Fatalf("create cert: %v", err)
-	}
-	keyDER, _ := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err, "create cert")
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM
@@ -58,32 +62,17 @@ func genLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 func setupNode(t *testing.T, certPEM, keyPEM []byte, pins map[string][]byte) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	td := filepath.Join(dir, "trusted")
-	if err := os.MkdirAll(td, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.key"), keyPEM, 0o600))
 	for uuid, pcert := range pins {
-		body, _ := json.Marshal(map[string]string{"nodeUuid": uuid, "certPem": string(pcert)})
-		if err := os.WriteFile(filepath.Join(td, uuid+".json"), body, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		clustertrusttest.WritePeerPinFromCertificate(t, dir, uuid, pcert)
 	}
 	return dir
 }
 
-// TestNodeInfoHandler_MTLSGate is the evidence for node-info: the GPU
-// inventory is served only to pinned cluster members. A pinned peer is accepted
-// (200), a node that completes the handshake but isn't pinned by the server is
-// rejected at the gate (403), and — the behavior node-info specifically needs —
-// the node can read its OWN inventory over the same mTLS path via self-trust
-// (so the local scanner's self-read still works with no plaintext loopback).
-func TestNodeInfoHandler_MTLSGate(t *testing.T) {
+// Peer node inventory requires a pinned client, including on a new connection.
+// Shared mesh self-trust is also accepted; local services use private IPC.
+func TestNodeInfoHandler_RequiresPinnedClients(t *testing.T) {
 	aCert, aKey := genLeaf(t, "uuid-a")
 	bCert, bKey := genLeaf(t, "uuid-b")
 	cCert, cKey := genLeaf(t, "uuid-c")
@@ -95,45 +84,91 @@ func TestNodeInfoHandler_MTLSGate(t *testing.T) {
 	dirC := setupNode(t, cCert, cKey, map[string][]byte{"uuid-a": aCert})
 
 	meshA, meshB, meshC := clustertrust.Open(dirA), clustertrust.Open(dirB), clustertrust.Open(dirC)
-	if !meshA.Clustered() || !meshB.Clustered() || !meshC.Clustered() {
-		t.Fatal("a populated cluster dir must read as clustered")
-	}
+	require.True(t, meshA.Clustered(), "a populated cluster dir must read as clustered")
+	require.True(t, meshB.Clustered(), "a populated cluster dir must read as clustered")
+	require.True(t, meshC.Clustered(), "a populated cluster dir must read as clustered")
 
-	const wantBody = `{"GPUs":[]}`
+	principal := "uuid-a"
+	wantInfo := buildResponse(nil, nil, 0, statsSnapshot{}, principal, &principal)
+	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318)}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/node-info", nodeInfoHandler(meshA, func() []byte { return []byte(wantBody) }))
+	mux.HandleFunc("/v1/node-info", nodeInfoHandler(meshA, metadata, func() NodeInfoResponse { return wantInfo }))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.TLS = meshA.ServerTLSConfig()
 	srv.StartTLS()
 	defer srv.Close()
 
-	get := func(m *clustertrust.Mesh, peerUUID string) (int, string) {
+	get := func(m *clustertrust.Mesh, peerUUID string) (int, noderec.NodeInfo) {
+		t.Helper()
 		cfg, ok := m.ClientTLSConfig(peerUUID)
-		if !ok {
-			t.Fatalf("no client config for %s", peerUUID)
-		}
+		require.True(t, ok, "no client config for (%v)", peerUUID)
 		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
 		resp, err := client.Get(srv.URL + "/v1/node-info")
-		if err != nil {
-			t.Fatalf("get: %v", err)
+		require.NoError(t, err, "get")
+		defer func() { require.NoError(t, resp.Body.Close()) }()
+		b, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		var info noderec.NodeInfo
+		if resp.StatusCode == http.StatusOK {
+			require.NoError(t, json.Unmarshal(b, &info))
 		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, string(b)
+		return resp.StatusCode, info
 	}
 
 	// Pinned member B -> A: accepted, real body.
-	if code, body := get(meshB, "uuid-a"); code != http.StatusOK || body != wantBody {
-		t.Fatalf("pinned member read: code=%d body=%q, want 200 %q", code, body, wantBody)
-	}
+	code, info := get(meshB, "uuid-a")
+	require.Equal(t, http.StatusOK, code)
+	assert.Equal(t, "uuid-a", info.HostUUID)
+	assert.NotNil(t, info.Peer)
 
 	// Self-read A -> A: accepted via self-trust (A isn't in its own trusted/).
-	if code, body := get(meshA, "uuid-a"); code != http.StatusOK || body != wantBody {
-		t.Fatalf("self read: code=%d body=%q, want 200 %q (self-trust)", code, body, wantBody)
-	}
+	code, info = get(meshA, "uuid-a")
+	require.Equal(t, http.StatusOK, code)
+	assert.Equal(t, "uuid-a", info.HostUUID)
+	assert.NotNil(t, info.Peer)
 
 	// C completes the handshake (it pins A) but A doesn't pin C -> 403 at the gate.
-	if code, _ := get(meshC, "uuid-a"); code != http.StatusForbidden {
-		t.Fatalf("non-member read: code=%d, want 403", code)
+	code, _ = get(meshC, "uuid-a")
+	require.Equal(t, http.StatusForbidden, code, "non-member read")
+}
+
+func TestNodeInfoHandler_PreservesHardwareForPinnedPeers(t *testing.T) {
+	// A pinned peer must receive the populated hardware snapshot alongside
+	// registry metadata, including sample validity and its original age.
+	serverCert, serverKey := genLeaf(t, "uuid-a")
+	clientCert, clientKey := genLeaf(t, "uuid-b")
+	serverDir := setupNode(t, serverCert, serverKey, map[string][]byte{"uuid-b": clientCert})
+	clientDir := setupNode(t, clientCert, clientKey, map[string][]byte{"uuid-a": serverCert})
+	serverMesh, clientMesh := clustertrust.Open(serverDir), clustertrust.Open(clientDir)
+	principal := "uuid-a"
+	snapshot := NodeInfoResponse{
+		GPUs:           []GPUInfo{{Name: "GPU 0", VramBytes: 48 << 30, VramUsedBytes: 12 << 30, UtilizationPercent: 42}},
+		CPU:            &CPUInfo{Name: "CPU 0", Cores: 64, UtilizationPercent: 7},
+		Memory:         &MemoryInfo{TotalBytes: 128 << 30, UsedBytes: 32 << 30},
+		TelemetryValid: true, MSSince: 137,
+		HostUUID: principal, ClusterUUID: &principal,
 	}
+	metadata := &peerMetadata{value: nodeInfoMetadataForTest(14318)}
+	server := httptest.NewUnstartedServer(nodeInfoHandler(serverMesh, metadata, func() NodeInfoResponse { return snapshot }))
+	server.TLS = serverMesh.ServerTLSConfig()
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	clientTLS, ok := clientMesh.ClientTLSConfig("uuid-a")
+	require.True(t, ok)
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: clientTLS}}
+	t.Cleanup(client.CloseIdleConnections)
+
+	response, err := client.Get(server.URL + "/v1/node-info")
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, response.Body.Close()) }()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var received noderec.NodeInfo
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&received))
+
+	assert.Equal(t, []noderec.GPUInfo{{Name: "GPU 0", VramBytes: 48 << 30, VramUsedBytes: 12 << 30, UtilizationPercent: 42}}, received.GPUs)
+	assert.Equal(t, &noderec.CPUInfo{Name: "CPU 0", Cores: 64, UtilizationPercent: 7}, received.CPU)
+	assert.Equal(t, &noderec.MemoryInfo{TotalBytes: 128 << 30, UsedBytes: 32 << 30}, received.Memory)
+	assert.True(t, received.TelemetryValid)
+	assert.Equal(t, int64(137), received.MSSince)
+	assert.Equal(t, &metadata.value.Peer, received.Peer)
 }

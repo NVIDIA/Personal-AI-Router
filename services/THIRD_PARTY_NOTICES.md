@@ -2,7 +2,7 @@
 
 The NVIDIA Personal AI Router is distributed under the Apache License 2.0 (see `LICENSE`). It incorporates the third-party open-source software listed below. Each component is the property of its respective copyright holders and is distributed under its own license; the full license text for each component is reproduced in this file.
 
-Scope: dependencies linked into the thirteen shipped binaries (`ollama-proxy`, `lmstudio-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-cluster-manager`, `nvpair-job-scheduler`, `nvpair-tui`) across Windows, Linux, and macOS builds. First-party modules (`nvpair-shared`, `eapnoob`) are excluded.
+Scope: dependencies linked into the twelve shipped binaries (`nvpair-proxy`, `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, `nvpair-workload-manager`, `nvpair-errors`, `nvpair-node-settings`, `nvpair-ui-broker`, `nvpair-engine-manager`, `nvpair-cluster-manager`, `nvpair-job-scheduler`, `nvpair-tui`) across Windows, Linux, and macOS builds. First-party modules (`nvpair-shared`, `eapnoob`) are excluded.
 
 ## Components
 
