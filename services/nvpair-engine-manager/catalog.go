@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -145,6 +146,9 @@ const (
 	// list — warm-up, a desktop modal, and the terminal browser stalling in
 	// turn — because only a success stamped the cache.
 	catalogRetryAfterFailure = 2 * time.Minute
+	// Transient transport and server failures should recover promptly on a
+	// first browse. Rate limits and other failures retain the longer backoff.
+	catalogTransientRetryAfter = 5 * time.Second
 	// maxCatalogBody bounds the listing response. The real payload is a few
 	// hundred KiB; this refuses to buffer an arbitrarily large or compressed
 	// reply into a supervised worker, and matches the ceiling this package
@@ -280,10 +284,58 @@ type listingCache struct {
 	// the failure backoff ends rather than for catalogCacheTTL, and never
 	// replace a complete list.
 	partial bool
-	// failed is when the last fetch failed, so a dead upstream is retried on a
-	// backoff rather than on every call.
-	failed   time.Time
+	// retryAt bounds the next attempt, including upstream Retry-After headers.
+	retryAt  time.Time
 	inflight chan struct{}
+}
+
+// catalogRequestError retains retry policy without exposing a request URL or
+// search text. A zero status represents a transport failure.
+type catalogRequestError struct {
+	message string
+	status  int
+	retryAt time.Time
+	cause   error
+}
+
+func (e *catalogRequestError) Error() string { return e.message }
+func (e *catalogRequestError) Unwrap() error { return e.cause }
+
+func catalogRetryTime(header string, now time.Time) time.Time {
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(header), 10, 32); err == nil && seconds >= 0 {
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	at, err := http.ParseTime(header)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
+}
+
+func catalogRetryDelay(err error, now time.Time) time.Duration {
+	switch failure := err.(type) {
+	case *catalogRequestError:
+		if !failure.retryAt.IsZero() {
+			return max(catalogTransientRetryAfter, failure.retryAt.Sub(now))
+		}
+		if failure.status == 0 || (failure.status >= http.StatusInternalServerError && failure.status < 600) {
+			return catalogTransientRetryAfter
+		}
+	case interface{ Unwrap() []error }:
+		var delay time.Duration
+		for _, cause := range failure.Unwrap() {
+			delay = max(delay, catalogRetryDelay(cause, now))
+		}
+		return delay
+	case interface{ Unwrap() error }:
+		if cause := failure.Unwrap(); cause != nil {
+			return catalogRetryDelay(cause, now)
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return catalogTransientRetryAfter
+	}
+	return catalogRetryAfterFailure
 }
 
 // endpoint is the listing URL to fetch.
@@ -555,7 +607,7 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	// wait out the full timeout for the same stale answer.
 	haveList := !l.fetched.IsZero()
 	fresh := haveList && !l.partial && time.Since(l.fetched) < catalogCacheTTL
-	backingOff := !l.failed.IsZero() && time.Since(l.failed) < catalogRetryAfterFailure
+	backingOff := time.Now().Before(l.retryAt)
 	if fresh || (haveList && backingOff) {
 		models, at := l.models, l.fetched
 		l.mu.Unlock()
@@ -565,9 +617,9 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	// it — a machine that has never reached Hugging Face — and without it every
 	// caller in turn waited out the full timeout to learn the same thing.
 	if backingOff {
-		retry := catalogRetryAfterFailure - time.Since(l.failed)
+		retry := time.Until(l.retryAt)
 		l.mu.Unlock()
-		return nil, time.Time{}, fmt.Errorf("%s unavailable; retrying in %s",
+		return nil, time.Time{}, fmt.Errorf("%s unavailable; retry in %s",
 			l.label, retry.Round(time.Second))
 	}
 	// Coalesce concurrent callers onto one request.
@@ -598,15 +650,16 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 
 	l.mu.Lock()
 	keptPartial := false
+	now := time.Now()
 	switch {
 	case err == nil:
-		l.models, l.fetched, l.failed, l.partial = models, time.Now(), time.Time{}, false
+		l.models, l.fetched, l.retryAt, l.partial = models, now, time.Time{}, false
 	case errors.Is(err, errCatalogPartial) && len(models) > 0 &&
 		(l.fetched.IsZero() || (l.partial && len(models) > len(l.models))):
-		l.models, l.fetched, l.failed, l.partial = models, time.Now(), time.Now(), true
+		l.models, l.fetched, l.retryAt, l.partial = models, now, now.Add(catalogRetryDelay(err, now)), true
 		keptPartial = true
 	default:
-		l.failed = time.Now()
+		l.retryAt = now.Add(catalogRetryDelay(err, now))
 	}
 	served, at := l.models, l.fetched
 	l.inflight = nil
@@ -767,11 +820,15 @@ func (c *catalogService) fetchHF(ctx context.Context, q url.Values) ([]hfModelRo
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("model catalog request failed: %w", withoutURL(err))
+		cause := withoutURL(err)
+		return nil, &catalogRequestError{message: fmt.Sprintf("model catalog request failed: %v", cause), cause: cause}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("model catalog returned %s", resp.Status)
+		return nil, &catalogRequestError{
+			message: fmt.Sprintf("model catalog returned %s", resp.Status), status: resp.StatusCode,
+			retryAt: catalogRetryTime(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 
 	var rows []hfModelRow

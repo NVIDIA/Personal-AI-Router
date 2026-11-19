@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Stack, Text } from '@nvidia/foundations-react-core'
+import { Button, Stack, StatusMessage, Text } from '@nvidia/foundations-react-core'
 import { ModelHubSearchBar } from './ModelHubSearchBar'
 import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
@@ -41,6 +41,8 @@ const SORT_DEFAULT_STATE: SortState = {
     }
 }
 
+const CATALOG_RETRY_DELAYS_MS = [5_000, 10_000]
+
 export const ModelHubContent = ({
     engine,
     nodeId,
@@ -50,6 +52,9 @@ export const ModelHubContent = ({
 }: ModelHubContentProps) => {
     const [disabledListClick, setDisabledListClick] = useState(false)
     const [loading, setLoading] = useState(true)
+    const [catalogError, setCatalogError] = useState<string | null>(null)
+    const [catalogAttempt, setCatalogAttempt] = useState(0)
+    const [catalogRetrySeconds, setCatalogRetrySeconds] = useState<number | null>(null)
     const [catalog, setCatalog] = useState<EngineHubSearchResponse<ModelEntry>>({
         models: [],
         searchable: null
@@ -68,9 +73,9 @@ export const ModelHubContent = ({
         setErrors(prev => addModelHubError(prev, message, performance.now().toString()))
     }, [])
 
-    // Per-engine browse cache keeps local filtering immediate while upstream
+    // Per-destination browse cache keeps local filtering immediate while upstream
     // searches wait for a pause in typing.
-    const cacheRef = useRef<Map<EngineType, EngineHubSearchResponse<ModelEntry>>>(new Map())
+    const cacheRef = useRef<Map<string, EngineHubSearchResponse<ModelEntry>>>(new Map())
     // Monotonic generation guard so a stale in-flight fetch never overwrites
     // results for the engine the user has since switched to.
     const fetchGenRef = useRef(0)
@@ -78,38 +83,41 @@ export const ModelHubContent = ({
     const submittedQueryRef = useRef('')
     const searchInFlightRef = useRef<ReturnType<typeof searchEngineHub> | null>(null)
 
-    const loadModels = useCallback(
-        async (backend: EngineType, node: string) => {
-            const cached = cacheRef.current.get(backend)
-            if (cached) {
-                setCatalog(cached)
-                setLoading(false)
-                return
-            }
-            const gen = ++fetchGenRef.current
-            setLoading(true)
+    const loadModels = useCallback(async (backend: EngineType, node: string) => {
+        const gen = ++fetchGenRef.current
+        const cacheKey = `${backend}:${node}`
+        const cached = cacheRef.current.get(cacheKey)
+        setCatalogError(null)
+        setCatalogRetrySeconds(null)
+        if (cached) {
+            setCatalog(cached)
+            setLoading(false)
+            return
+        }
+        setCatalogAttempt(attempt => attempt + 1)
+        setLoading(true)
+        setCatalog({ models: [], searchable: null })
+        try {
+            const result = await searchEngineHub(backend, node)
+            if (fetchGenRef.current !== gen) return
+            cacheRef.current.set(cacheKey, result)
+            setCatalog(result)
+            setLoading(false)
+        } catch (error) {
+            if (fetchGenRef.current !== gen) return
+            setCatalogError(getErrorString(error))
             setCatalog({ models: [], searchable: null })
-            try {
-                const result = await searchEngineHub(backend, node)
-                if (fetchGenRef.current !== gen) return
-                if (result.searchable !== null) cacheRef.current.set(backend, result)
-                setCatalog(result)
-                setLoading(false)
-            } catch (error) {
-                if (fetchGenRef.current !== gen) return
-                console.warn('Model hub load error', error)
-                reportError(getErrorString(error))
-                setCatalog({ models: [], searchable: null })
-                setLoading(false)
-            }
-        },
-        [reportError]
-    )
+            setLoading(false)
+        }
+    }, [])
 
     useEffect(() => {
         setRemoteModels([])
         setSearching(false)
         setComposingQuery(false)
+        setCatalogError(null)
+        setCatalogAttempt(0)
+        setErrors([])
         submittedQueryRef.current = ''
         if (!engine) {
             setCatalog({ models: [], searchable: null })
@@ -126,6 +134,35 @@ export const ModelHubContent = ({
             fetchGenRef.current += 1
             searchGenRef.current += 1
         }
+    }, [engine, nodeId, loadModels])
+
+    useEffect(() => {
+        const delay = CATALOG_RETRY_DELAYS_MS[catalogAttempt - 1]
+        if (!engine || !catalogError || loading || query.trim() || delay === undefined) {
+            setCatalogRetrySeconds(null)
+            return
+        }
+        const generation = fetchGenRef.current
+        const retryAt = Date.now() + delay
+        setCatalogRetrySeconds(Math.ceil(delay / 1_000))
+        const countdown = setInterval(() => {
+            if (fetchGenRef.current === generation) {
+                setCatalogRetrySeconds(Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000)))
+            }
+        }, 1_000)
+        const timer = setTimeout(() => {
+            if (fetchGenRef.current === generation) void loadModels(engine, nodeId)
+        }, delay)
+        return () => {
+            clearTimeout(timer)
+            clearInterval(countdown)
+        }
+    }, [engine, nodeId, catalogError, catalogAttempt, loading, query, loadModels])
+
+    const retryCatalog = useCallback(() => {
+        if (!engine) return
+        setCatalogAttempt(0)
+        void loadModels(engine, nodeId)
     }, [engine, nodeId, loadModels])
 
     const queryFiltered = useMemo(() => {
@@ -237,6 +274,7 @@ export const ModelHubContent = ({
             try {
                 const result = await request
                 if (searchGenRef.current !== generation) return
+                setCatalogError(null)
                 setRemoteModels(result.searchable ? result.models : [])
             } catch (error) {
                 if (searchGenRef.current !== generation) return
@@ -292,21 +330,50 @@ export const ModelHubContent = ({
                         </Text>
                     )}
                 </Stack>
-                <ModelHubList
-                    className="grow min-h-0"
-                    disabled={disabledListClick}
-                    multiple={multiple}
-                    loading={loading}
-                    models={visibleModels}
-                    emptyMessage={
-                        browsingSample
-                            ? 'Popular models are already installed. Search to find more.'
-                            : undefined
-                    }
-                    selectedModels={selectedModels}
-                    onToggleSelectModel={handleListToggle}
-                    sort={sort}
-                />
+                {catalogError && !loading && !searching && visibleModels.length === 0 ? (
+                    <Stack align="center" justify="center" className="grow" role="alert">
+                        <StatusMessage
+                            size="small"
+                            slotHeading="Couldn't load models"
+                            slotSubheading={catalogError}
+                            slotFooter={
+                                <Stack gap="2" align="center">
+                                    <Button kind="primary" color="brand" onClick={retryCatalog}>
+                                        Retry
+                                    </Button>
+                                    {catalogRetrySeconds !== null && (
+                                        <Text
+                                            kind="body/regular/sm"
+                                            className="text-subtle-color"
+                                            role="timer"
+                                            aria-live="off"
+                                        >
+                                            {catalogRetrySeconds > 0
+                                                ? `Retrying in ${catalogRetrySeconds}s…`
+                                                : 'Retrying…'}
+                                        </Text>
+                                    )}
+                                </Stack>
+                            }
+                        />
+                    </Stack>
+                ) : (
+                    <ModelHubList
+                        className="grow min-h-0"
+                        disabled={disabledListClick}
+                        multiple={multiple}
+                        loading={loading || (searching && visibleModels.length === 0)}
+                        models={visibleModels}
+                        emptyMessage={
+                            browsingSample
+                                ? 'Popular models are already installed. Search to find more.'
+                                : undefined
+                        }
+                        selectedModels={selectedModels}
+                        onToggleSelectModel={handleListToggle}
+                        sort={sort}
+                    />
+                )}
 
                 {!!multiple && (
                     <ModelHubActions

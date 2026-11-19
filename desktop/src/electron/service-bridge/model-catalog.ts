@@ -105,9 +105,9 @@ async function peerModelSource(
  * `nvpair-engine-manager` so the desktop app and the terminal interface serve
  * the same models from one implementation rather than each maintaining its own.
  *
- * An engine with no curated source is an error at the backend, reported here as
- * an empty hub so the modal shows its empty state rather than a failure the user
- * can do nothing about.
+ * A failed catalogue read retains unknown search support. The renderer treats
+ * it as unavailable, with recovery controls, rather than a successful empty
+ * catalogue. Background warming can use the same result without a rejection.
  *
  * A query is passed through for the backend to search with. Only a searchable
  * source uses it; the others return their whole list, which the modal filters.

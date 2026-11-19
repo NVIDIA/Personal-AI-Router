@@ -192,11 +192,147 @@ func TestLmStudioCatalog_BacksOffWithNothingCached(t *testing.T) {
 
 	// Once the backoff has run out, the next call tries again.
 	c.lmStudio.mu.Lock()
-	c.lmStudio.failed = time.Now().Add(-2 * catalogRetryAfterFailure)
+	c.lmStudio.retryAt = time.Now().Add(-time.Second)
 	c.lmStudio.mu.Unlock()
 	_, _, err := c.lmStudio.get(t.Context())
 	assert.Error(t, err, "retry against a failing upstream must still report failure")
 	assert.Equal(t, int32(2), requests.Load(), "backoff expiry must permit a second attempt")
+}
+
+func TestCatalogRetryTime_AcceptsSecondsAndHTTPDates(t *testing.T) {
+	now := time.Date(2026, time.November, 19, 8, 0, 0, 0, time.UTC)
+	test := func(name, header string, want time.Time) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, catalogRetryTime(header, now))
+		})
+	}
+	test("delta seconds", "30", now.Add(30*time.Second))
+	test("HTTP date", "Thu, 19 Nov 2026 08:00:30 GMT", now.Add(30*time.Second))
+	test("zero seconds", "0", now)
+	test("missing header", "", time.Time{})
+	test("negative delay", "-1", time.Time{})
+	test("invalid date", "later", time.Time{})
+	test("oversized delay", "999999999999999999999", time.Time{})
+}
+
+func TestLmStudioCatalog_UsesFailureSpecificRetryDelays(t *testing.T) {
+	test := func(name string, status int, retryAfter string, minimum, maximum time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Retry-After", retryAfter)
+				w.WriteHeader(status)
+			}))
+			t.Cleanup(server.Close)
+			catalog := newCatalogService()
+			catalog.baseURL = server.URL
+
+			_, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+			require.Error(t, err)
+			remaining := time.Until(catalog.lmStudio.retryAt)
+			assert.GreaterOrEqual(t, remaining, minimum)
+			assert.LessOrEqual(t, remaining, maximum)
+			_, err = catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+			assert.Error(t, err)
+			assert.Equal(t, int32(1), calls.Load(), "a new caller must respect the cooldown")
+		})
+	}
+	test("temporary server failure", http.StatusServiceUnavailable, "", 4*time.Second, 5*time.Second)
+	test("bad gateway", http.StatusBadGateway, "", 4*time.Second, 5*time.Second)
+	test("rate limit with server delay", http.StatusTooManyRequests, "90", 89*time.Second, 90*time.Second)
+	test("server failure with server delay", http.StatusServiceUnavailable, "30", 29*time.Second, 30*time.Second)
+	test("rate limit without server delay", http.StatusTooManyRequests, "", 119*time.Second, 120*time.Second)
+	test("permanent rejection", http.StatusForbidden, "", 119*time.Second, 120*time.Second)
+}
+
+func TestLmStudioCatalog_RecoversAfterATransientFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writeTestResponse(t, w, []byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.baseURL = server.URL
+	_, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+	require.Error(t, err)
+	// Expire the measured cooldown without making the test sleep for it.
+	catalog.lmStudio.retryAt = time.Now().Add(-time.Second)
+
+	result, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+
+	require.NoError(t, err)
+	require.Len(t, result.Models, 1)
+	assert.Equal(t, "lmstudio-community/Model-GGUF", result.Models[0].ID)
+	assert.True(t, catalog.lmStudio.retryAt.IsZero())
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestLmStudioCatalog_UsesShortCooldownForTransportFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Close()
+	catalog := newCatalogService()
+	catalog.baseURL = server.URL
+
+	_, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+
+	require.Error(t, err)
+	remaining := time.Until(catalog.lmStudio.retryAt)
+	assert.Greater(t, remaining, 4*time.Second)
+	assert.LessOrEqual(t, remaining, 5*time.Second)
+}
+
+func TestVLLMCatalog_HonorsTheLongestPublisherRetryAfter(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Query().Get("author") == "nvidia" {
+			w.Header().Set("Retry-After", "90")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.baseURL = server.URL
+
+	_, err := catalog.Catalog(t.Context(), "vllm", "", "", "", "")
+
+	require.Error(t, err)
+	assert.Greater(t, time.Until(catalog.vllm.retryAt), 89*time.Second)
+	assert.LessOrEqual(t, time.Until(catalog.vllm.retryAt), 90*time.Second)
+	assert.Equal(t, int32(10), calls.Load())
+}
+
+func TestCatalog_RespectsFailureCooldownAcrossSources(t *testing.T) {
+	test := func(name, engine, source string, wantCalls int32) {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			t.Cleanup(server.Close)
+			catalog := newCatalogService()
+			catalog.baseURL, catalog.modelScopeEndpoint = server.URL, server.URL
+
+			for range 3 {
+				_, err := catalog.Catalog(t.Context(), engine, "", "", "", source)
+				require.Error(t, err)
+			}
+
+			assert.Equal(t, wantCalls, calls.Load(), "later callers must not repeat the failed fetch")
+		})
+	}
+	test("LM Studio", "lmstudio", "", 1)
+	test("llama.cpp Hugging Face", "llamacpp", "huggingface", 3)
+	test("llama.cpp ModelScope", "llamacpp", "modelscope", 1)
+	test("vLLM", "vllm", "", 10)
 }
 
 func TestListingCache_RefetchesAnIncompleteListOnceTheBackoffEnds(t *testing.T) {
@@ -219,7 +355,7 @@ func TestListingCache_RefetchesAnIncompleteListOnceTheBackoffEnds(t *testing.T) 
 	// An incomplete list is not kept for catalogCacheTTL, and a longer
 	// incomplete list replaces it.
 	cache.mu.Lock()
-	cache.failed = time.Now().Add(-2 * catalogRetryAfterFailure)
+	cache.retryAt = time.Now().Add(-time.Second)
 	cache.mu.Unlock()
 	models, _, err := cache.get(t.Context())
 	require.NoError(t, err)
