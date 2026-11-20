@@ -7,30 +7,21 @@ package main
 
 import (
 	"encoding/binary"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
 	"unsafe"
 )
 
-// Direct DRM query for Intel GPU memory regions. The i915 driver in stock
-// Debian/Ubuntu kernels does not expose the sysfs mem_info_vram_total /
-// mem_info_vram_used attributes that our first-tier sysfs walk relies on —
-// those files only appear on very new i915 builds and on the xe driver. On
-// every other host with an Arc adapter, /sys/class/drm/card*/device/ has no
-// VRAM readout at all, so `intel-gpu-tools` (intel_gpu_top) uses the
-// DRM_IOCTL_I915_QUERY ioctl against the render node to get both the
-// probed_size (total VRAM) and the unallocated_size (free VRAM) per memory
-// region. This file re-implements that query in pure Go so PAIR can report
-// real Arc VRAM totals and dynamic VRAM-used without depending on xpu-smi or
-// on newer i915 sysfs.
-//
-// Reference: https://github.com/mkuoppal/intel-gpu-tools/blob/master/tools/intel_gpu_top.c
-// (I915_MEMORY_CLASS_DEVICE is the discrete-VRAM class the ioctl reports.)
+// DRM_IOCTL_I915_QUERY reports discrete memory regions when i915 does not
+// expose capacity in sysfs. The kernel only provides reliable unallocated
+// memory accounting with CAP_PERFMON or CAP_SYS_ADMIN. Without those
+// capabilities, it can return the full capacity as unallocated.
+// See Linux include/uapi/drm/i915_drm.h, drm_i915_memory_region_info.
 
 const (
 	// drmIoctlI915Query = _IOWR('d', 0x40+0x39, struct drm_i915_query).
@@ -73,10 +64,8 @@ const (
 	drmMemoryRegionsHeaderSize = 16
 )
 
-// drmI915Query mirrors `struct drm_i915_query` for the ioctl's first
-// argument. Kept as a package-private literal so callers pass a
-// heap-allocated backing store into the ioctl (ioctl requires stable
-// addresses; a Go stack pointer might migrate mid-call).
+// drmI915Query mirrors `struct drm_i915_query`. ItemsPtr holds a native
+// address as a 64-bit integer, so the caller must pin the pointed-to item.
 type drmI915Query struct {
 	NumItems uint32
 	Flags    uint32
@@ -93,16 +82,16 @@ type drmI915QueryItem struct {
 	DataPtr uint64
 }
 
-// intelVRAMFromDRM queries a single render node for its discrete VRAM
-// totals. Returns (total, used, true) when the ioctl succeeds and a
-// class=DEVICE region is present. On any failure it returns ok=false
-// and the caller falls back to whatever other source is available.
-//
-// This is safe to call every stats-collector tick: the DRM query is a
-// short kernel-side lookup with no driver serialization, and the
-// probed_size stays constant while unallocated_size tracks the live
-// residency of driver-owned buffers.
+// intelVRAMFromDRM samples i915 only. Xe capacity uses a different ioctl,
+// and Xe usage is collected through the CLI or sysfs when available.
 func intelVRAMFromDRM(renderNode string) (total uint64, used uint64, ok bool) {
+	if intelDRMDriver(renderNode) != "i915" {
+		return 0, 0, false
+	}
+	return readI915VRAM(renderNode)
+}
+
+func readI915VRAM(renderNode string) (total uint64, used uint64, ok bool) {
 	fd, err := syscall.Open(renderNode, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		slog.Debug("open render node failed", "path", renderNode, "err", err)
@@ -116,33 +105,33 @@ func intelVRAMFromDRM(renderNode string) (total uint64, used uint64, ok bool) {
 	// the query isn't supported on this driver (an older i915 build, an
 	// xe-driven card, etc.).
 	item := drmI915QueryItem{QueryID: drmI915QueryMemoryRegions}
+	var pinned runtime.Pinner
+	pinned.Pin(&item)
+	defer pinned.Unpin()
 	if err := ioctlI915Query(fd, &item); err != nil {
 		slog.Debug("i915 query length probe failed", "path", renderNode, "err", err)
 		return 0, 0, false
 	}
-	if item.Length <= 0 || item.Length > 1<<20 {
+	if item.Length < drmMemoryRegionsHeaderSize || item.Length > 1<<20 {
 		// A payload above 1 MiB would be well past any conceivable
 		// region count and almost certainly a driver bug; refuse to
 		// allocate for it rather than trusting the number.
 		return 0, 0, false
 	}
 
-	// Pass 2: fetch the actual bytes into a Go slice. The backing array
-	// is pinned for the duration of the syscall because Syscall retains
-	// the pointer until the kernel returns.
+	// Pass 2: pin the backing array because the kernel receives its
+	// address through the integer DataPtr field, not as a syscall argument.
 	buf := make([]byte, item.Length)
+	pinned.Pin(&buf[0])
 	item.DataPtr = uint64(uintptr(unsafe.Pointer(&buf[0])))
 	if err := ioctlI915Query(fd, &item); err != nil {
 		slog.Debug("i915 query fetch failed", "path", renderNode, "err", err)
 		return 0, 0, false
 	}
-	return parseI915MemoryRegions(buf)
+	return parseI915MemoryRegions(buf, item.Length)
 }
 
-// ioctlI915Query issues one DRM_IOCTL_I915_QUERY carrying a single
-// query item. Split out so the two-pass sequence stays readable and so
-// unit tests can inject failures in a future refactor without going
-// through the syscall path.
+// ioctlI915Query issues DRM_IOCTL_I915_QUERY with a caller-pinned item.
 func ioctlI915Query(fd int, item *drmI915QueryItem) error {
 	q := drmI915Query{
 		NumItems: 1,
@@ -155,7 +144,7 @@ func ioctlI915Query(fd int, item *drmI915QueryItem) error {
 		uintptr(unsafe.Pointer(&q)),
 	)
 	if errno != 0 {
-		return errors.New(errno.Error())
+		return errno
 	}
 	return nil
 }
@@ -165,10 +154,12 @@ func ioctlI915Query(fd int, item *drmI915QueryItem) error {
 // are dropped rather than treated as an error; a truncated payload is
 // still valid so long as the class=DEVICE row landed in the readable
 // prefix.
-func parseI915MemoryRegions(buf []byte) (uint64, uint64, bool) {
-	if len(buf) < drmMemoryRegionsHeaderSize {
+func parseI915MemoryRegions(buf []byte, length int32) (uint64, uint64, bool) {
+	// The ioctl can succeed while Length contains a per-item error.
+	if length < drmMemoryRegionsHeaderSize || int(length) > len(buf) {
 		return 0, 0, false
 	}
+	buf = buf[:length]
 	numRegions := binary.LittleEndian.Uint32(buf[0:4])
 	offset := drmMemoryRegionsHeaderSize
 	for i := uint32(0); i < numRegions; i++ {

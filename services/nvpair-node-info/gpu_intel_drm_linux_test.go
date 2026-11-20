@@ -50,7 +50,7 @@ func TestParseI915MemoryRegionsPicksDeviceClass(t *testing.T) {
 		{class: 1, instance: 0, probed: 6 << 30, unallocated: 5<<30 + 512<<20},
 	})
 
-	total, used, ok := parseI915MemoryRegions(payload)
+	total, used, ok := parseI915MemoryRegions(payload, int32(len(payload)))
 	if !ok {
 		t.Fatal("parseI915MemoryRegions returned ok=false on a well-formed payload")
 	}
@@ -76,7 +76,7 @@ func TestParseI915MemoryRegionsNoDeviceClass(t *testing.T) {
 	}{
 		{class: 0, instance: 0, probed: 32 << 30, unallocated: 30 << 30},
 	})
-	if total, used, ok := parseI915MemoryRegions(payload); ok || total != 0 || used != 0 {
+	if total, used, ok := parseI915MemoryRegions(payload, int32(len(payload))); ok || total != 0 || used != 0 {
 		t.Fatalf("expected (0,0,false) for system-only payload; got (%d,%d,%v)", total, used, ok)
 	}
 }
@@ -94,7 +94,7 @@ func TestParseI915MemoryRegionsUnallocatedOverProbed(t *testing.T) {
 	}{
 		{class: 1, instance: 0, probed: 1 << 30, unallocated: 2 << 30},
 	})
-	total, used, ok := parseI915MemoryRegions(payload)
+	total, used, ok := parseI915MemoryRegions(payload, int32(len(payload)))
 	if !ok || total != 1<<30 || used != 0 {
 		t.Fatalf("expected clamped used=0; got total=%d used=%d ok=%v", total, used, ok)
 	}
@@ -113,7 +113,7 @@ func TestParseI915MemoryRegionsTruncatedBufferStops(t *testing.T) {
 	binary.LittleEndian.PutUint64(buf[off+8:off+16], 2<<30)
 	binary.LittleEndian.PutUint64(buf[off+16:off+24], 1<<30)
 
-	total, used, ok := parseI915MemoryRegions(buf)
+	total, used, ok := parseI915MemoryRegions(buf, int32(len(buf)))
 	if !ok || total != 2<<30 || used != 1<<30 {
 		t.Fatalf("truncated buffer parse = total=%d used=%d ok=%v; want total=2GiB used=1GiB", total, used, ok)
 	}
@@ -123,10 +123,35 @@ func TestParseI915MemoryRegionsTruncatedBufferStops(t *testing.T) {
 // even the header — the ioctl should not produce this, but a defensive
 // parser must not panic on it.
 func TestParseI915MemoryRegionsShortBuffer(t *testing.T) {
-	if _, _, ok := parseI915MemoryRegions(nil); ok {
+	if _, _, ok := parseI915MemoryRegions(nil, 0); ok {
 		t.Fatal("expected failure on nil buffer")
 	}
-	if _, _, ok := parseI915MemoryRegions(make([]byte, 4)); ok {
+	if _, _, ok := parseI915MemoryRegions(make([]byte, 4), 4); ok {
 		t.Fatal("expected failure on 4-byte buffer")
+	}
+}
+
+func TestParseI915MemoryRegions_RespectsReturnedLength(t *testing.T) {
+	buf := make([]byte, drmMemoryRegionsHeaderSize+drmMemoryRegionInfoSize)
+	binary.LittleEndian.PutUint32(buf[:4], 1)
+	region := buf[drmMemoryRegionsHeaderSize:]
+	binary.LittleEndian.PutUint16(region[:2], i915MemoryClassDevice)
+	binary.LittleEndian.PutUint64(region[8:16], 2<<30)
+	binary.LittleEndian.PutUint64(region[16:24], 1<<30)
+
+	cases := []struct {
+		name   string
+		length int32
+	}{
+		{"per-item error", -22},
+		{"device region outside returned length", drmMemoryRegionsHeaderSize},
+		{"length exceeds allocation", int32(len(buf)) + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, ok := parseI915MemoryRegions(buf, tc.length); ok {
+				t.Fatalf("accepted a memory result with ioctl length %d", tc.length)
+			}
+		})
 	}
 }
