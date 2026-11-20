@@ -196,9 +196,17 @@ func (m *Manager) handlePairingInitial(w http.ResponseWriter, env *pairingEnvelo
 		sess.mu.Lock()
 		defer sess.mu.Unlock()
 		out, err := sess.peer.Receive(msg)
-		if err != nil || out.Err != nil {
+		if err != nil {
 			m.deleteSession(env.InviteID)
 			return out, err
+		}
+		// Once the invite is published, deleting the session would strand the
+		// pending invite and member with no way to accept, decline or cancel.
+		if out.Err != nil {
+			if !sess.invitedEmitted {
+				m.deleteSession(env.InviteID)
+			}
+			return out, nil
 		}
 		if out.State == eapnoob.StateWaiting && !sess.invitedEmitted {
 			completed = m.prepareJoinerInitialComplete(env.InviteID, sess)
