@@ -20,39 +20,42 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
-// Intel per-tick GPU stats collection on Linux. Runs alongside the
-// nvidia-smi pass in stats_linux.go: both write into the same
-// map[statsKey]gpuStat, keyed disjointly (Intel entries use the
-// intel-pci- prefix so they can't collide with nvidia-smi UUIDs).
-//
-// Two-tier preference:
-//
-//  1. xpu-smi dump — one batched invocation per tick that returns a
-//     compact utilization + memory-used snapshot for every Intel adapter
-//     the Level Zero stack sees. Parsed defensively because the exact
-//     JSON schema has drifted across xpu-smi releases.
-//
-//  2. sysfs (mem_info_vram_used) — best-effort memory-used fallback
-//     when xpu-smi is missing or produced no row for a given adapter.
-//     Present on Arc dGPUs; iGPUs share system RAM and do not expose it.
-//     Utilization is not read from sysfs — Intel doesn't publish a
-//     stable busy-percent counter under DRM, so the field remains
-//     "unknown" (zero, dropped by omitempty) on hosts without xpu-smi.
-//
-// The collector caches the set of Intel adapters at startup so per-tick
-// work is bounded. A latch on xpu-smi keeps a missing binary from
-// re-warning every second, matching the nvidia-smi treatment.
+// The Intel worker publishes completed samples independently of the shared tick.
+func (c *statsCollector) runIntel(ctx context.Context) {
+	c.intelSources = discoverIntelStatsSources(ctx)
+	// An empty successful discovery or an absent tool needs no idle polling.
+	if len(c.intelSources) == 0 && (c.intelSources != nil || intelXpuSmiUnavailable.Load()) {
+		return
+	}
+	c.nextIntelDiscovery = time.Now().Add(intelDiscoveryRetryInterval)
+	if n := len(c.intelSources); n > 0 {
+		slog.Info("Intel GPU stats sources discovered", "count", n)
+	}
+	ticker := time.NewTicker(statsTickInterval)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		c.refreshIntelSources(ctx, time.Now())
+		reading := &statsSnapshot{GPU: make(map[string]gpuStat)}
+		if sampleIntelStats(ctx, c.intelSources, reading.GPU) > 0 {
+			reading.GPUSampledAt = time.Now()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		c.latestIntel.Store(reading)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
 
-// intelStatsSource pairs the join key with the sysfs directory the
-// sysfs fallback reads from. deviceID is the xpu-smi enumeration index,
-// used to correlate a dump row back to this adapter — some xpu-smi
-// builds report device_id as the only stable identifier in the dump
-// output, others include the BDF; we accept either. renderNode is the
-// /dev/dri/renderD* path the DRM_IOCTL_I915_QUERY memory-regions fallback
-// opens; empty on adapters where no render node was found (very unusual
-// but possible under some virtualization).
+// deviceID joins a dump row to its adapter. Sysfs and render paths are
+// optional sources for VRAM usage.
 type intelStatsSource struct {
 	statsKey   string
 	bdf        string
@@ -62,11 +65,10 @@ type intelStatsSource struct {
 	hasDevID   bool
 }
 
-// intelXpuSmiUnavailable latches on the first xpu-smi failure so we
-// don't re-spawn (and re-warn about) a missing binary every tick.
+// intelXpuSmiUnavailable latches a missing binary or explicit access refusal.
 var intelXpuSmiUnavailable atomic.Bool
 
-// Remember the working sample-count flag after one successful retry.
+// v1 uses -n; v2 uses --number. Remember the working form after a sample.
 var intelXpuSmiLegacyCount atomic.Bool
 
 // discoverIntelStatsSources enumerates the Intel adapters the stats
@@ -74,12 +76,17 @@ var intelXpuSmiLegacyCount atomic.Bool
 // the card path used by the memory-used fallback) with xpu-smi's
 // device_id (when available) so the batched dump can be joined back to
 // each adapter without another discovery call per tick.
-func discoverIntelStatsSources() []intelStatsSource {
-	bySysfs := collectIntelSysfsCards()
-	byXpuSmi := collectIntelXpuSmiDevices()
+func discoverIntelStatsSources(ctx context.Context) []intelStatsSource {
+	return mergeIntelStatsSources(collectIntelSysfsCards(), collectIntelXpuSmiDevices(ctx))
+}
 
+func mergeIntelStatsSources(bySysfs []intelStatsSource, byXpuSmi map[string]intelStatsSource) []intelStatsSource {
 	seen := make(map[string]struct{})
 	var out []intelStatsSource
+	if byXpuSmi != nil {
+		// An empty successful discovery needs no retry on a host without Intel.
+		out = make([]intelStatsSource, 0, len(bySysfs)+len(byXpuSmi))
+	}
 
 	// Prefer the sysfs walk as the source of truth: every card we can
 	// read memory-used from ends up in the sample set. Enrich with the
@@ -98,11 +105,7 @@ func discoverIntelStatsSources() []intelStatsSource {
 		seen[s.statsKey] = struct{}{}
 		out = append(out, s)
 	}
-	// xpu-smi may know about adapters sysfs doesn't (e.g. an SR-IOV
-	// setup where /sys/class/drm ordering doesn't line up). Emit those
-	// too; they'll have no sysfs card path so the memory-used fallback
-	// silently skips them, which matches every other "one source only"
-	// path in this collector.
+	// Keep CLI-only physical adapters as telemetry sources.
 	for _, x := range byXpuSmi {
 		if _, dup := seen[x.statsKey]; dup {
 			continue
@@ -111,6 +114,23 @@ func discoverIntelStatsSources() []intelStatsSource {
 		out = append(out, x)
 	}
 	return out
+}
+
+const intelDiscoveryRetryInterval = time.Minute
+
+// Device IDs may be unavailable while the driver initializes. A failed retry
+// keeps existing IDs and sysfs memory sources usable until discovery recovers.
+func (c *statsCollector) refreshIntelSources(ctx context.Context, now time.Time) {
+	if intelXpuSmiUnavailable.Load() || now.Before(c.nextIntelDiscovery) {
+		return
+	}
+	if c.intelSources != nil && !slices.ContainsFunc(c.intelSources, func(s intelStatsSource) bool { return !s.hasDevID }) {
+		return
+	}
+	c.nextIntelDiscovery = now.Add(intelDiscoveryRetryInterval)
+	if devices := collectIntelXpuSmiDevices(ctx); devices != nil {
+		c.intelSources = mergeIntelStatsSources(collectIntelSysfsCards(), devices)
+	}
 }
 
 // collectIntelSysfsCards walks /sys/class/drm/card* and returns one
@@ -151,16 +171,18 @@ func collectIntelSysfsCards() []intelStatsSource {
 
 // collectIntelXpuSmiDevices calls xpu-smi discovery once to pull the
 // device_id → BDF map. Returns a map keyed by BDF so callers can enrich
-// sysfs-discovered adapters in place. On any failure the latch is set
-// and the map is empty; the stats collector then falls back to sysfs
-// alone.
-func collectIntelXpuSmiDevices() map[string]intelStatsSource {
+// sysfs-discovered adapters in place. A missing executable or explicit access
+// refusal is latched; other failures fall back to sysfs for this discovery.
+func collectIntelXpuSmiDevices(ctx context.Context) map[string]intelStatsSource {
 	if intelXpuSmiUnavailable.Load() {
 		return nil
 	}
-	out, err := xpuSmiJSON(context.Background(), "discovery", "--json")
+	out, err := xpuSmiJSON(ctx, "discovery", "--json")
 	if err != nil {
-		if intelXpuSmiUnavailable.CompareAndSwap(false, true) {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if xpuSmiUnavailable(err) && intelXpuSmiUnavailable.CompareAndSwap(false, true) {
 			slog.Info("xpu-smi unavailable; Intel GPU utilization will not be reported",
 				"err", err)
 		}
@@ -183,7 +205,11 @@ func collectIntelXpuSmiDevices() map[string]intelStatsSource {
 		if isIntelVirtualFunction(bdf) {
 			continue
 		}
-		source := intelStatsSource{statsKey: key, bdf: bdf, renderNode: intelRenderNodeForBDF(bdf)}
+		source := intelStatsSource{
+			statsKey:   key,
+			bdf:        bdf,
+			renderNode: intelRenderNodeForBDF(bdf),
+		}
 		if d.DeviceID != nil && *d.DeviceID >= 0 {
 			source.deviceID, source.hasDevID = *d.DeviceID, true
 		}
@@ -206,12 +232,15 @@ func collectIntelXpuSmiDevices() map[string]intelStatsSource {
 // mandatory: on a host with iGPUs only and no xpu-smi, the map is
 // left untouched and the Intel adapters still appear in the inventory
 // without dynamic stats.
-func sampleIntelStats(sources []intelStatsSource, out map[string]gpuStat) int {
+func sampleIntelStats(ctx context.Context, sources []intelStatsSource, out map[string]gpuStat) int {
 	if len(sources) == 0 {
 		return 0
 	}
 	utilizationSamples := 0
-	xpuStats := sampleIntelXpuSmi(sources)
+	xpuStats := sampleIntelXpuSmi(ctx, sources)
+	if ctx.Err() != nil {
+		return 0
+	}
 
 	for _, src := range sources {
 		stat := out[src.statsKey]
@@ -262,7 +291,7 @@ type intelDynamicStat struct {
 //
 // Metric 0 is GPU utilization (%); metric 18 is memory used (MiB).
 // Both supported CLI families return CSV on a non-terminal stdout.
-func sampleIntelXpuSmi(sources []intelStatsSource) map[string]intelDynamicStat {
+func sampleIntelXpuSmi(ctx context.Context, sources []intelStatsSource) map[string]intelDynamicStat {
 	if intelXpuSmiUnavailable.Load() || !slices.ContainsFunc(sources, func(s intelStatsSource) bool { return s.hasDevID }) {
 		return nil
 	}
@@ -270,16 +299,19 @@ func sampleIntelXpuSmi(sources []intelStatsSource) map[string]intelDynamicStat {
 	if intelXpuSmiLegacyCount.Load() {
 		countFlag = "-n"
 	}
-	out, err := xpuSmiJSON(context.Background(), "dump", "--device", "-1", "--metrics", "0,18", countFlag, "1")
+	out, err := xpuSmiJSON(ctx, "dump", "--device", "-1", "--metrics", "0,18", countFlag, "1")
 	// Only an explicit CLI rejection of --number establishes the legacy
 	// spelling. Driver, authorization and timeout errors are not retries.
-	if err != nil && !xpuSmiUnavailable(err) && countFlag == "--number" && xpuSmiRejectsNumber(err) {
-		out, err = xpuSmiJSON(context.Background(), "dump", "--device", "-1", "--metrics", "0,18", "-n", "1")
+	if err != nil && ctx.Err() == nil && !xpuSmiUnavailable(err) && countFlag == "--number" && xpuSmiRejectsNumber(err) {
+		out, err = xpuSmiJSON(ctx, "dump", "--device", "-1", "--metrics", "0,18", "-n", "1")
 		if err == nil {
 			intelXpuSmiLegacyCount.Store(true)
 		}
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		if xpuSmiUnavailable(err) && intelXpuSmiUnavailable.CompareAndSwap(false, true) {
 			slog.Info("xpu-smi dump unavailable; Intel GPU utilization / memory-used will not be reported",
 				"err", err)

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"maps"
@@ -31,20 +32,16 @@ import (
 //     two ticks (it reports cumulative jiffies, so a single read is
 //     meaningless — we need a delta).
 //   - memory-used  : /proc/meminfo, MemTotal - MemAvailable.
-//   - NVIDIA GPU   : `nvidia-smi --query-gpu=uuid,utilization.gpu,memory.used`,
+//   - GPU          : `nvidia-smi --query-gpu=uuid,utilization.gpu,memory.used`,
 //     joined back to the static GPUInfo records by UUID (the statsKey that
 //     gpu_linux.go stamps on each adapter). On unified-memory architectures
 //     (UMA, e.g. Grace-Blackwell / DGX Spark) nvidia-smi returns [N/A] for
 //     memory.used; buildResponse maps the independently sampled system-memory
 //     usage onto those statically identified adapters.
-//   - AMD GPU busy : the amdgpu gpu_busy_percent counter, joined by PCI address.
 //
-// Like the Windows collector we keep one background goroutine ticking once a
-// second and publish the combined statsSnapshot via an atomic pointer swap.
-// HTTP handlers read it lock-free. AMD sampling continues when nvidia-smi is
-// unavailable. CPU and memory sampling continue without GPU telemetry.
-// Failed /proc reads leave the corresponding fields at zero, which the
-// response omits.
+// AMD activity comes from sysfs. Intel discovery and sampling run on a
+// separate worker because xpu-smi waits for its sampling interval.
+// The collector publishes complete snapshots without blocking HTTP readers.
 const statsTickInterval = time.Second
 
 const (
@@ -79,26 +76,29 @@ type statsCollector struct {
 	// re-spawn (and re-warn about) a missing binary every tick.
 	nvidiaUnavailable atomic.Bool
 
-	stop     chan struct{}
-	done     chan struct{}
+	// The Intel worker owns discovery and publishes immutable readings.
+	// Only the main ticker updates consumedIntel.
+	latestIntel        atomic.Pointer[statsSnapshot]
+	consumedIntel      *statsSnapshot
+	intelSources       []intelStatsSource
+	nextIntelDiscovery time.Time
+
+	cancel   context.CancelFunc
+	done     sync.WaitGroup
 	stopOnce sync.Once
 }
 
-// startStatsCollector synchronously publishes the first system-memory sample,
-// primes the CPU baseline, and spins up the tick goroutine. Memory is sampled
-// before returning so an immediate UMA response can include vram_used_bytes;
-// GPU collection remains asynchronous because nvidia-smi may take up to its
-// three-second timeout. Never returns nil.
+// Publish memory immediately for unified-memory GPUs. Intel discovery and
+// sampling run separately so the shared tick can publish while Intel is busy.
 func startStatsCollector() *statsCollector {
-	c := &statsCollector{
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &statsCollector{cancel: cancel}
 	c.latest.Store(initialMemorySnapshot(readMemoryUsed))
 	// Prime the CPU baseline so the first tick produces a real delta rather
 	// than a spurious reading (with no previous sample, util reports 0).
 	c.prevCPU = readCPUTimes()
-	go c.run()
+	c.done.Go(func() { c.run(ctx) })
+	c.done.Go(func() { c.runIntel(ctx) })
 	return c
 }
 
@@ -114,23 +114,24 @@ func initialMemorySnapshot(readUsed func() (uint64, bool)) *statsSnapshot {
 	return snap
 }
 
-func (c *statsCollector) run() {
-	defer close(c.done)
+func (c *statsCollector) run(ctx context.Context) {
 	ticker := time.NewTicker(statsTickInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-c.stop:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
 			c.latest.Store(c.decodeSnapshot())
 		}
 	}
 }
 
-// decodeSnapshot runs one sampling pass across every source. Called only from
-// the single-writer ticker goroutine, so the prevCPU update is race-free and
-// the atomic pointer swap on c.latest is the only publishing step.
+// decodeSnapshot collects the main tick and uses any new Intel reading.
+// The ticker owns prevCPU and publishes the result in a single atomic swap.
 func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 	previous := c.Snapshot()
 	snap := &statsSnapshot{}
@@ -147,20 +148,31 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 
 	gpu := make(map[string]gpuStat)
 	sampledAt := time.Time{}
-	nvidiaValid := c.decodeGPU(gpu)
-	amdValid := decodeAMDUtilization(amdPCIRoot, gpu)
-	if nvidiaValid || amdValid {
+	if c.decodeGPU(gpu) {
 		sampledAt = time.Now()
+	}
+	// Consume a completed Intel reading once. Reusing it during a fresh AMD
+	// or NVIDIA tick would give stale Intel values the other source's time.
+	if intel := c.latestIntel.Load(); intel != c.consumedIntel {
+		c.consumedIntel = intel
+		maps.Copy(gpu, intel.GPU)
+		if intel.GPUSampledAt.After(sampledAt) {
+			sampledAt = intel.GPUSampledAt
+		}
 	}
 	applyGPUStats(previous, snap, gpu, sampledAt)
 	return snap
 }
 
-// decodeGPU queries nvidia-smi and folds the per-GPU results into out, keyed
-// by UUID. On the first failure it latches nvidiaUnavailable so subsequent
-// ticks short-circuit silently. Unified-memory usage remains available through
-// the independent /proc/meminfo sample assembled by buildResponse.
+// decodeGPU reads the NVIDIA and AMD sources owned by the shared tick.
 func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
+	nvidiaValid := c.decodeNvidiaGPU(out)
+	amdValid := decodeAMDUtilization(amdPCIRoot, out)
+	return nvidiaValid || amdValid
+}
+
+// decodeNvidiaGPU leaves other vendors enabled when nvidia-smi is absent.
+func (c *statsCollector) decodeNvidiaGPU(out map[string]gpuStat) bool {
 	if c.nvidiaUnavailable.Load() {
 		return false
 	}
@@ -195,8 +207,8 @@ func (c *statsCollector) Snapshot() statsSnapshot {
 // number of times from any number of goroutines via sync.Once.
 func (c *statsCollector) Stop() {
 	c.stopOnce.Do(func() {
-		close(c.stop)
-		<-c.done
+		c.cancel()
+		c.done.Wait()
 	})
 }
 

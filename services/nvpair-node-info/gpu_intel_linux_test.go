@@ -6,9 +6,11 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,7 +215,7 @@ func TestDetectGPUs_ExcludesIntelVirtualFunctionsWithoutXpuSmi(t *testing.T) {
 	inventory := detectGPUs()
 	require.Len(t, inventory, 1)
 	assert.Equal(t, "0000:03:00.0", inventory[0].pciAddress)
-	sources := discoverIntelStatsSources()
+	sources := discoverIntelStatsSources(t.Context())
 	require.Len(t, sources, 1)
 	assert.Equal(t, "0000:03:00.0", sources[0].bdf)
 }
@@ -234,7 +236,7 @@ fi
 	assert.Equal(t, "Arc from xpu-smi", inventory[0].Name)
 	assert.Equal(t, uint64(8192), inventory[0].VramBytes)
 	out := map[string]gpuStat{}
-	sampleIntelStats(discoverIntelStatsSources(), out)
+	sampleIntelStats(t.Context(), discoverIntelStatsSources(t.Context()), out)
 	response := buildResponse(inventory, nil, 0, statsSnapshot{GPU: out}, "", nil)
 	require.Len(t, response.GPUs, 2)
 	second := response.GPUs[1]
@@ -243,9 +245,64 @@ fi
 	assert.Equal(t, uint64(2048), second.VramUsedBytes)
 }
 
-func TestSampleIntelStats_LeavesOutputUnchangedWithoutSources(t *testing.T) {
-	out := map[string]gpuStat{"existing": {VRAMUsed: 1}}
-	if samples := sampleIntelStats(nil, out); samples != 0 || len(out) != 1 || out["existing"].VRAMUsed != 1 {
-		t.Fatalf("samples = %d, output = %v", samples, out)
+func TestStatsCollector_RecoversIntelDeviceIDsAfterTransientDiscoveryFailure(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	addIntelDRMCard(t, root, "card0", "0000:03:00.0")
+	t.Setenv("FIXTURE", root)
+	const script = `#!/bin/sh
+if [ "$1" = discovery ]; then
+  echo discovery >> "$FIXTURE/calls"
+  [ -f "$FIXTURE/ready" ] || exit 1
+  echo '{"device_list":[{"device_id":0,"pci_bdf_address":"03:00.0"}]}'
+else
+  echo 'DeviceId,GPU utilization (%)'
+  echo '0,73'
+fi
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "xpu-smi"), []byte(script), 0700))
+	now := time.Now()
+	c := statsCollector{intelSources: discoverIntelStatsSources(context.Background()), nextIntelDiscovery: now.Add(intelDiscoveryRetryInterval)}
+	out := map[string]gpuStat{}
+	assert.Zero(t, sampleIntelStats(context.Background(), c.intelSources, out))
+	assert.Equal(t, uint64(2048), out["intel-pci-0000:03:00.0"].VRAMUsed)
+	c.refreshIntelSources(context.Background(), now.Add(intelDiscoveryRetryInterval)) // still unavailable
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "ready"), nil, 0600))
+	c.refreshIntelSources(context.Background(), now.Add(intelDiscoveryRetryInterval+time.Second))
+	assert.Zero(t, sampleIntelStats(context.Background(), c.intelSources, out))
+	c.refreshIntelSources(context.Background(), now.Add(2*intelDiscoveryRetryInterval))
+	assert.Equal(t, 1, sampleIntelStats(context.Background(), c.intelSources, out))
+	assert.Equal(t, uint32(73), out["intel-pci-0000:03:00.0"].UtilizationPct)
+	c.refreshIntelSources(context.Background(), now.Add(3*intelDiscoveryRetryInterval))
+	calls, err := os.ReadFile(filepath.Join(root, "calls"))
+	require.NoError(t, err)
+	assert.Equal(t, "discovery\ndiscovery\ndiscovery\n", string(calls))
+}
+
+func TestCollectIntelXpuSmiDevices_MissingIDDoesNotAliasDeviceZero(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	const script = `#!/bin/sh
+echo '{"device_list":[{"pci_bdf_address":"07:00.0"},{"device_id":0,"pci_bdf_address":"03:00.0"}]}'
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "xpu-smi"), []byte(script), 0700))
+
+	sources := discoverIntelStatsSources(context.Background())
+	require.Len(t, sources, 2)
+	samples := parseIntelXpuSmiCSV([]byte("DeviceId,GPU utilization (%)\n0,73\n"), sources)
+	require.Len(t, samples, 1)
+	assert.Equal(t, uint32(73), samples["intel-pci-0000:03:00.0"].util)
+	for _, src := range sources {
+		assert.Equal(t, src.bdf == "0000:03:00.0", src.hasDevID)
+	}
+}
+
+// TestSampleIntelStatsHandlesEmptySources leaves output unchanged.
+func TestSampleIntelStatsHandlesEmptySources(t *testing.T) {
+	out := map[string]gpuStat{}
+	if got := sampleIntelStats(context.Background(), nil, out); got != 0 {
+		t.Errorf("sampleIntelStats with no sources returned %d samples, want 0", got)
+	}
+	if len(out) != 0 {
+		t.Errorf("sampleIntelStats with no sources mutated out: %v", out)
 	}
 }

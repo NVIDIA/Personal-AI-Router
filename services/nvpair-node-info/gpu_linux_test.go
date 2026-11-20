@@ -34,7 +34,10 @@ func TestAMDUtilizationAvailability(t *testing.T) {
 	readings := map[string]uint32{"0": 0, "83": 83, "100": 100}
 	for _, value := range []string{"0", "83", "100", "101", "-1", "N/A"} {
 		write("gpu_busy_percent", value)
-		out := map[string]gpuStat{"NVIDIA-existing": {UtilizationPct: 7}}
+		out := map[string]gpuStat{
+			"NVIDIA-existing":        {UtilizationPct: 7},
+			"intel-pci-0000:c5:00.0": {UtilizationPct: 29},
+		}
 		valid := decodeAMDUtilization(root, out)
 		wantPercent, want := readings[value]
 		if valid != want {
@@ -49,6 +52,9 @@ func TestAMDUtilizationAvailability(t *testing.T) {
 		}
 		if out["NVIDIA-existing"].UtilizationPct != 7 {
 			t.Fatal("NVIDIA overwritten")
+		}
+		if out["intel-pci-0000:c5:00.0"].UtilizationPct != 29 {
+			t.Fatal("Intel overwritten")
 		}
 	}
 	if err := os.Remove(filepath.Join(dir, "gpu_busy_percent")); err != nil {
@@ -86,7 +92,7 @@ func TestDecodeGPU_ReportsNvidiaQueryFailures(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
 			collector := statsCollector{}
-			if collector.decodeGPU(make(map[string]gpuStat)) {
+			if collector.decodeNvidiaGPU(make(map[string]gpuStat)) {
 				t.Fatal("failed query reported a valid sample")
 			}
 			if !strings.Contains(logs.String(), "level="+wantLevel) {
