@@ -217,8 +217,8 @@ func isNvidiaSmiNA(s string) bool {
 
 // parseNvidiaStatic decodes the static query (uuid,name,memory.total,pci.bus_id) into
 // GPUInfo records. memory.total is reported in MiB (because of -nounits); we
-// convert to bytes. Rows missing a uuid or name, or with an unparseable VRAM
-// figure, are skipped rather than emitted with placeholder values. Each
+// convert to bytes. Rows missing a UUID or name are skipped. An unparseable
+// VRAM value leaves capacity unavailable while keeping the adapter. Each
 // unified-memory row is marked so response assembly can source its used bytes
 // from system memory without depending on dynamic nvidia-smi collection. The
 // second return value reports whether any row was unified, allowing the caller

@@ -34,13 +34,7 @@ type GPUInfo struct {
 	VramUsedBytes      uint64 `json:"vram_used_bytes,omitempty"`
 	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
 
-	// statsKey is the opaque per-adapter identifier used to join this
-	// static GPUInfo against statsCollector.Snapshot() results. Its
-	// form is platform-specific: on Windows it's the PDH instance-name
-	// form of the adapter's LUID (e.g. "luid_0x00000000_0x000054f0_phys_0");
-	// on Linux it's the NVIDIA GPU UUID reported by nvidia-smi; on macOS it's
-	// the IORegistry entry ID. Empty on hosts with no dynamic GPU source.
-	// Unexported + json:"-" so it never travels over the wire.
+	// statsKey joins an inventory entry to its per-adapter reading.
 	statsKey string `json:"-"`
 	// pciAddress joins Linux vendor-specific inventory with generic discovery.
 	pciAddress string `json:"-"`
@@ -202,8 +196,7 @@ func publishInfoUpdates(ctx context.Context, out *applog.Notifier, snapshot func
 	}
 }
 
-// detectGPUs lives in gpu_windows.go (DXGI), gpu_linux.go (nvidia-smi with a
-// ghw fallback), gpu_darwin.go (IORegistry), and gpu_other.go (ghw fallback).
+// Each platform provides its own detectGPUs and stats collector.
 // detectCPU lives in cpu_detect.go; memory detection is split so macOS can use
 // gopsutil where ghw has no implementation. The persistent stats collector that
 // supplies dynamic CPU / VRAM / utilization / memory-used numbers lives
