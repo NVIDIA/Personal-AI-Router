@@ -74,6 +74,7 @@ if [ "$1" = discovery ]; then
   exit
 fi
 if [ ! -f "$FIXTURE/sampled" ]; then
+  /bin/sleep 0.2
   echo sampled > "$FIXTURE/sampled"
   printf 'DeviceId,GPU utilization (%%)\n0,73\n'
   exit
@@ -102,10 +103,68 @@ exec /bin/sleep 20
 	require.Eventually(t, func() bool {
 		snap := collector.Snapshot()
 		_, hasIntel := snap.GPU[intelKey]
-		return !hasIntel && snap.GPU["GPU-fixture"].UtilizationPct == 53 && snap.GPUSampledAt.After(first)
+		return !hasIntel && len(snap.GPUInventory) == 1 && snap.GPU["GPU-fixture"].UtilizationPct == 53 && snap.GPUSampledAt.After(first)
 	}, 1700*time.Millisecond, 10*time.Millisecond, "stale Intel reading accompanied a fresh NVIDIA tick")
 
 	start := time.Now()
 	collector.Stop()
 	require.Less(t, time.Since(start), time.Second, "stop did not cancel the active Intel dump")
+}
+
+func TestStatsCollector_DropsOldIntelFieldsOnFreshNvidiaTick(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\necho 'GPU-fixture, 5, 256'\n"), 0700))
+	for _, tc := range []struct {
+		name      string
+		age       time.Duration
+		busy      uint32
+		wantIntel bool
+	}{
+		{"old utilization", time.Minute, 95, false},
+		{"old memory only", time.Minute, 0, false},
+		{"new memory only", 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := statsCollector{}
+			c.latestIntel.Store(&intelGPUReading{
+				stats:       map[string]gpuStat{"intel": {UtilizationPct: tc.busy, VRAMUsed: 4096}},
+				collectedAt: time.Now().Add(-tc.age), hasUtilization: tc.busy > 0,
+			})
+			snap := c.decodeSnapshot()
+			require.EqualValues(t, 5, snap.GPU["GPU-fixture"].UtilizationPct)
+			_, present := snap.GPU["intel"]
+			require.Equal(t, tc.wantIntel, present)
+		})
+	}
+}
+
+func TestStatsCollector_PublishesRecoveredIntelAdapter(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	t.Setenv("FIXTURE", root)
+	const cli = `#!/bin/sh
+if [ "$1" = discovery ]; then
+  [ -f "$FIXTURE/ready" ] || exit 1
+  echo '{"device_list":[{"device_id":0,"device_name":"Arc fixture","pci_bdf_address":"03:00.0","memory_physical_size_byte":8192}]}'
+else
+  printf 'DeviceId,GPU utilization (%%)\n0,73\n'
+fi
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "xpu-smi"), []byte(cli), 0700))
+	inventory := detectGPUs()
+	require.Empty(t, inventory)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "ready"), nil, 0600))
+	c := startStatsCollector()
+	t.Cleanup(c.Stop)
+	var snap statsSnapshot
+	require.Eventually(t, func() bool {
+		snap = c.Snapshot()
+		return !snap.GPUSampledAt.IsZero() && snap.GPU["intel-pci-0000:03:00.0"].UtilizationPct == 73
+	}, 3*time.Second, 10*time.Millisecond)
+	for _, initial := range [][]GPUInfo{inventory, {{Name: "Unknown", pciAddress: "0000:03:00.0"}}} {
+		response := buildResponse(initial, nil, 0, snap, "", nil)
+		require.Len(t, response.GPUs, 1)
+		require.Equal(t, "Arc fixture", response.GPUs[0].Name)
+		require.EqualValues(t, 8192, response.GPUs[0].VramBytes)
+		require.EqualValues(t, 73, response.GPUs[0].UtilizationPercent)
+	}
 }

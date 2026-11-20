@@ -269,18 +269,30 @@ func telemetryStatus(sampledAt, now time.Time) (bool, int64) {
 func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 	merged := make([]GPUInfo, len(static))
 	copy(merged, static)
-	byStatsKey := make(map[string]int, len(merged))
+	byKey := make(map[string]int, len(merged))
 	for i := range merged {
-		if merged[i].statsKey != "" {
-			byStatsKey[merged[i].statsKey] = i
+		key := merged[i].statsKey
+		if key == "" {
+			key = merged[i].pciAddress
+		}
+		if key != "" {
+			byKey[key] = i
 		}
 	}
 	for _, gpu := range recovered {
 		if gpu.statsKey == "" {
 			continue
 		}
-		if index, ok := byStatsKey[gpu.statsKey]; ok {
-			if merged[index].Name == "" {
+		index, found := byKey[gpu.statsKey]
+		if !found && gpu.pciAddress != "" {
+			index, found = byKey[gpu.pciAddress]
+			if found {
+				merged[index].statsKey = gpu.statsKey
+				byKey[gpu.statsKey] = index
+			}
+		}
+		if found {
+			if merged[index].Name == "" || (gpu.pciAddress != "" && (merged[index].Name == "Unknown" || merged[index].Name == "Intel GPU")) {
 				merged[index].Name = gpu.Name
 			}
 			if merged[index].VramBytes == 0 {
@@ -288,7 +300,7 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 			}
 			continue
 		}
-		byStatsKey[gpu.statsKey] = len(merged)
+		byKey[gpu.statsKey] = len(merged)
 		merged = append(merged, gpu)
 	}
 	return merged

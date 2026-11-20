@@ -56,11 +56,11 @@ func detectIntelGPUs(generic []GPUInfo) []GPUInfo {
 		byAddress[gpu.pciAddress] = i
 	}
 	for _, card := range collectIntelSysfsCards() {
-		index, ok := byAddress[card.bdf]
+		index, ok := byAddress[card.pciAddress]
 		if !ok {
 			index = len(gpus)
-			byAddress[card.bdf] = index
-			gpus = append(gpus, GPUInfo{Name: "Intel GPU", statsKey: card.statsKey, pciAddress: card.bdf})
+			byAddress[card.pciAddress] = index
+			gpus = append(gpus, card.GPUInfo)
 		}
 		gpu := &gpus[index]
 		if gpu.VramBytes == 0 {
@@ -95,26 +95,26 @@ func detectIntelViaXpuSmi() []GPUInfo {
 		slog.Debug("xpu-smi discovery unavailable", "err", err)
 		return nil
 	}
-	gpus, err := parseXpuSmiDiscovery(out)
+	sources, err := parseXpuSmiDiscovery(out)
 	if err != nil {
 		slog.Debug("xpu-smi discovery JSON parse failed", "err", err)
 		return nil
 	}
-	physical := gpus[:0]
-	for _, gpu := range gpus {
-		if !isIntelVirtualFunction(gpu.pciAddress) {
-			physical = append(physical, gpu)
+	physical := make([]GPUInfo, 0, len(sources))
+	for _, src := range sources {
+		if !isIntelVirtualFunction(src.pciAddress) {
+			physical = append(physical, src.GPUInfo)
 		}
 	}
 	return physical
 }
 
-func parseXpuSmiDiscovery(out []byte) ([]GPUInfo, error) {
+func parseXpuSmiDiscovery(out []byte) ([]intelStatsSource, error) {
 	var env xpuSmiDiscoveryEnvelope
 	if err := json.Unmarshal(out, &env); err != nil {
 		return nil, err
 	}
-	gpus := make([]GPUInfo, 0, len(env.DeviceList))
+	sources := make([]intelStatsSource, 0, len(env.DeviceList))
 	for _, d := range env.DeviceList {
 		if !isPhysicalIntelGPU(d) {
 			continue
@@ -127,14 +127,18 @@ func parseXpuSmiDiscovery(out []byte) ([]GPUInfo, error) {
 		if name == "" {
 			name = "Intel GPU"
 		}
-		gpus = append(gpus, GPUInfo{
+		src := intelStatsSource{GPUInfo: GPUInfo{
 			Name:       name,
 			VramBytes:  intelMemoryBytes(d.MemoryPhysicalSizeByte),
 			statsKey:   intelStatsKeyPrefix + address,
 			pciAddress: address,
-		})
+		}}
+		if d.DeviceID != nil && *d.DeviceID >= 0 {
+			src.deviceID, src.hasDevID = *d.DeviceID, true
+		}
+		sources = append(sources, src)
 	}
-	return gpus, nil
+	return sources, nil
 }
 
 // isPhysicalIntelGPU filters the xpu-smi device list to physical GPU
@@ -172,18 +176,6 @@ func intelMemoryBytes(raw json.RawMessage) uint64 {
 		return 0
 	}
 	return v
-}
-
-// intelStatsKeyFromBDF normalizes a PCI BDF address to the statsKey the
-// stats collector joins on. xpu-smi and sysfs both spell the address
-// lowercase already, but we normalize defensively so a version that
-// reports uppercase (or omits the domain prefix) still joins.
-func intelStatsKeyFromBDF(bdf string) string {
-	address := canonicalPCIAddress(bdf)
-	if address == "" {
-		return ""
-	}
-	return intelStatsKeyPrefix + address
 }
 
 func runXpuSmi(parent context.Context, args ...string) ([]byte, error) {

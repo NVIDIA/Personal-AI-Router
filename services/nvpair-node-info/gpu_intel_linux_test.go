@@ -103,28 +103,12 @@ func TestParseXpuSmiDiscoveryRejectsGarbage(t *testing.T) {
 	}
 }
 
-// TestIntelStatsKeyFromBDF covers the sysfs and xpu-smi BDF forms plus
-// the domain-less short form some xpu-smi builds emit. A missing colon
-// is rejected: without a bus:device separator we can't uniquely
-// identify a PCI adapter.
-func TestIntelStatsKeyFromBDF(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"0000:03:00.0", "intel-pci-0000:03:00.0"},
-		{"03:00.0", "intel-pci-0000:03:00.0"},
-		{"0000:03:00.1", "intel-pci-0000:03:00.1"},
-		{"0000:AB:CD.0", "intel-pci-0000:ab:cd.0"},
-		{"", ""},
-		{"3-00-0", ""},
-		{"garbage", ""},
-	}
-	for _, c := range cases {
-		got := intelStatsKeyFromBDF(c.in)
-		if got != c.want {
-			t.Errorf("intelStatsKeyFromBDF(%q) = %q, want %q", c.in, got, c.want)
-		}
+func TestCanonicalPCIAddress_NormalizesDiscoveryAddresses(t *testing.T) {
+	for input, address := range map[string]string{
+		"0000:03:00.1": "0000:03:00.1", "03:00.0": "0000:03:00.0",
+		"00000000:AB:0D.0": "0000:ab:0d.0", "garbage": "", "3-00-0": "",
+	} {
+		assert.Equal(t, address, canonicalPCIAddress(input), input)
 	}
 }
 
@@ -205,7 +189,7 @@ func TestDetectGPUs_ExcludesIntelVirtualFunctionsWithoutXpuSmi(t *testing.T) {
 	assert.Equal(t, "0000:03:00.0", inventory[0].pciAddress)
 	sources := discoverIntelStatsSources(t.Context())
 	require.Len(t, sources, 1)
-	assert.Equal(t, "0000:03:00.0", sources[0].bdf)
+	assert.Equal(t, "0000:03:00.0", sources[0].pciAddress)
 }
 
 func TestDetectGPUs_JoinsIntelMemoryWhenXpuSmiListsOnlyOneCard(t *testing.T) {
@@ -280,7 +264,7 @@ echo '{"device_list":[{"pci_bdf_address":"07:00.0"},{"device_id":0,"pci_bdf_addr
 	require.Len(t, samples, 1)
 	assert.Equal(t, uint32(73), samples["intel-pci-0000:03:00.0"].util)
 	for _, src := range sources {
-		assert.Equal(t, src.bdf == "0000:03:00.0", src.hasDevID)
+		assert.Equal(t, src.pciAddress == "0000:03:00.0", src.hasDevID)
 	}
 }
 

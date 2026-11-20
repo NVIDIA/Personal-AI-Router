@@ -17,8 +17,8 @@ import (
 
 func TestIntelCSVDocumentedContracts(t *testing.T) {
 	sources := []intelStatsSource{
-		{statsKey: "intel-a", deviceID: 0, hasDevID: true},
-		{statsKey: "intel-b", deviceID: 1, hasDevID: true},
+		{GPUInfo: GPUInfo{statsKey: "intel-a"}, deviceID: 0, hasDevID: true},
+		{GPUInfo: GPUInfo{statsKey: "intel-b"}, deviceID: 1, hasDevID: true},
 	}
 	cases := []struct {
 		name, input string
@@ -68,7 +68,7 @@ printf 'Timestamp,DeviceId,Average %% utilization of all GPU Engines,GPU Memory 
 			intelXpuSmiUnavailable.Store(false)
 			intelXpuSmiLegacyCount.Store(false)
 			t.Cleanup(func() { intelXpuSmiUnavailable.Store(false); intelXpuSmiLegacyCount.Store(false) })
-			sources := []intelStatsSource{{statsKey: "intel-a", deviceID: 0, hasDevID: true}}
+			sources := []intelStatsSource{{GPUInfo: GPUInfo{statsKey: "intel-a"}, deviceID: 0, hasDevID: true}}
 			got := sampleIntelXpuSmi(context.Background(), sources)
 			if got["intel-a"] != (intelDynamicStat{util: 42, mem: 1048576, hasUtil: true, hasMem: true}) {
 				t.Fatalf("unexpected stats %+v", got)
@@ -108,14 +108,14 @@ printf 'Timestamp,DeviceId,utilization.gpu (%%),memory.used (MiB)\n12:00,0,42,1\
 	intelXpuSmiUnavailable.Store(false)
 	intelXpuSmiLegacyCount.Store(false)
 	t.Cleanup(func() { intelXpuSmiUnavailable.Store(false); intelXpuSmiLegacyCount.Store(false) })
-	if got := sampleIntelXpuSmi(context.Background(), []intelStatsSource{{statsKey: "intel-a", deviceID: 0, hasDevID: true}}); len(got) != 0 {
+	if got := sampleIntelXpuSmi(context.Background(), []intelStatsSource{{GPUInfo: GPUInfo{statsKey: "intel-a"}, deviceID: 0, hasDevID: true}}); len(got) != 0 {
 		t.Fatalf("temporary failure returned data: %+v", got)
 	}
 	raw, err := os.ReadFile(calls)
 	if err != nil || string(raw) != "called\n" {
 		t.Fatalf("calls %q, error %v; want one", raw, err)
 	}
-	got := sampleIntelXpuSmi(context.Background(), []intelStatsSource{{statsKey: "intel-a", deviceID: 0, hasDevID: true}})
+	got := sampleIntelXpuSmi(context.Background(), []intelStatsSource{{GPUInfo: GPUInfo{statsKey: "intel-a"}, deviceID: 0, hasDevID: true}})
 	if got["intel-a"] != (intelDynamicStat{util: 42, mem: 1048576, hasUtil: true, hasMem: true}) {
 		t.Fatalf("later sample did not recover: %+v", got)
 	}
@@ -133,7 +133,7 @@ func TestIntelAccessRefusalIsLatchedWithoutRetry(t *testing.T) {
 	intelXpuSmiUnavailable.Store(false)
 	intelXpuSmiLegacyCount.Store(false)
 	t.Cleanup(func() { intelXpuSmiUnavailable.Store(false); intelXpuSmiLegacyCount.Store(false) })
-	sources := []intelStatsSource{{statsKey: "intel-a", deviceID: 0, hasDevID: true}}
+	sources := []intelStatsSource{{GPUInfo: GPUInfo{statsKey: "intel-a"}, deviceID: 0, hasDevID: true}}
 	_ = sampleIntelXpuSmi(context.Background(), sources)
 	_ = sampleIntelXpuSmi(context.Background(), sources)
 	raw, err := os.ReadFile(calls)
@@ -147,7 +147,7 @@ func TestMissingIntelUtilityIsLatched(t *testing.T) {
 	intelXpuSmiUnavailable.Store(false)
 	intelXpuSmiLegacyCount.Store(false)
 	t.Cleanup(func() { intelXpuSmiUnavailable.Store(false); intelXpuSmiLegacyCount.Store(false) })
-	_ = sampleIntelXpuSmi(context.Background(), []intelStatsSource{{statsKey: "intel-a", deviceID: 0, hasDevID: true}})
+	_ = sampleIntelXpuSmi(context.Background(), []intelStatsSource{{GPUInfo: GPUInfo{statsKey: "intel-a"}, deviceID: 0, hasDevID: true}})
 	if !intelXpuSmiUnavailable.Load() {
 		t.Fatal("missing xpu-smi was not latched")
 	}

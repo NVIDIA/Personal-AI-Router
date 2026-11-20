@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -38,10 +37,12 @@ func (c *statsCollector) runIntel(ctx context.Context) {
 	defer ticker.Stop()
 	for ctx.Err() == nil {
 		c.refreshIntelSources(ctx, time.Now())
-		reading := &statsSnapshot{GPU: make(map[string]gpuStat)}
-		if sampleIntelStats(ctx, c.intelSources, reading.GPU) > 0 {
-			reading.GPUSampledAt = time.Now()
+		reading := &intelGPUReading{stats: make(map[string]gpuStat)}
+		for _, src := range c.intelSources {
+			reading.inventory = append(reading.inventory, src.GPUInfo)
 		}
+		reading.hasUtilization = sampleIntelStats(ctx, c.intelSources, reading.stats) > 0
+		reading.collectedAt = time.Now()
 		if ctx.Err() != nil {
 			return
 		}
@@ -54,11 +55,17 @@ func (c *statsCollector) runIntel(ctx context.Context) {
 	}
 }
 
+type intelGPUReading struct {
+	stats          map[string]gpuStat
+	inventory      []GPUInfo
+	collectedAt    time.Time
+	hasUtilization bool
+}
+
 // deviceID joins a dump row to its adapter. Sysfs and render paths are
 // optional sources for VRAM usage.
 type intelStatsSource struct {
-	statsKey   string
-	bdf        string
+	GPUInfo
 	deviceID   int
 	sysfsCard  string
 	renderNode string
@@ -95,7 +102,8 @@ func mergeIntelStatsSources(bySysfs []intelStatsSource, byXpuSmi map[string]inte
 		if _, dup := seen[s.statsKey]; dup {
 			continue
 		}
-		if x, ok := byXpuSmi[s.bdf]; ok {
+		if x, ok := byXpuSmi[s.pciAddress]; ok {
+			s.GPUInfo = x.GPUInfo
 			s.deviceID = x.deviceID
 			s.hasDevID = x.hasDevID
 			if s.renderNode == "" {
@@ -113,6 +121,7 @@ func mergeIntelStatsSources(bySysfs []intelStatsSource, byXpuSmi map[string]inte
 		seen[x.statsKey] = struct{}{}
 		out = append(out, x)
 	}
+	slices.SortFunc(out, func(a, b intelStatsSource) int { return strings.Compare(a.pciAddress, b.pciAddress) })
 	return out
 }
 
@@ -160,8 +169,7 @@ func collectIntelSysfsCards() []intelStatsSource {
 			continue
 		}
 		out = append(out, intelStatsSource{
-			statsKey:   intelStatsKeyPrefix + bdf,
-			bdf:        bdf,
+			GPUInfo:    GPUInfo{Name: "Intel GPU", statsKey: intelStatsKeyPrefix + bdf, pciAddress: bdf},
 			sysfsCard:  card,
 			renderNode: intelRenderNodeForBDF(bdf),
 		})
@@ -188,32 +196,16 @@ func collectIntelXpuSmiDevices(ctx context.Context) map[string]intelStatsSource 
 		}
 		return nil
 	}
-	var env xpuSmiDiscoveryEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
+	sources, err := parseXpuSmiDiscovery(out)
+	if err != nil {
 		return nil
 	}
-	res := make(map[string]intelStatsSource, len(env.DeviceList))
-	for _, d := range env.DeviceList {
-		if !isPhysicalIntelGPU(d) {
-			continue
+	res := make(map[string]intelStatsSource, len(sources))
+	for _, src := range sources {
+		if !isIntelVirtualFunction(src.pciAddress) {
+			src.renderNode = intelRenderNodeForBDF(src.pciAddress)
+			res[src.pciAddress] = src
 		}
-		key := intelStatsKeyFromBDF(d.PCIBDFAddress)
-		if key == "" {
-			continue
-		}
-		bdf := strings.TrimPrefix(key, intelStatsKeyPrefix)
-		if isIntelVirtualFunction(bdf) {
-			continue
-		}
-		source := intelStatsSource{
-			statsKey:   key,
-			bdf:        bdf,
-			renderNode: intelRenderNodeForBDF(bdf),
-		}
-		if d.DeviceID != nil && *d.DeviceID >= 0 {
-			source.deviceID, source.hasDevID = *d.DeviceID, true
-		}
-		res[bdf] = source
 	}
 	return res
 }

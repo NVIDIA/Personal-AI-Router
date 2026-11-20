@@ -77,9 +77,7 @@ type statsCollector struct {
 	nvidiaUnavailable atomic.Bool
 
 	// The Intel worker owns discovery and publishes immutable readings.
-	// Only the main ticker updates consumedIntel.
-	latestIntel        atomic.Pointer[statsSnapshot]
-	consumedIntel      *statsSnapshot
+	latestIntel        atomic.Pointer[intelGPUReading]
 	intelSources       []intelStatsSource
 	nextIntelDiscovery time.Time
 
@@ -151,13 +149,15 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 	if c.decodeGPU(gpu) {
 		sampledAt = time.Now()
 	}
-	// Consume a completed Intel reading once. Reusing it during a fresh AMD
-	// or NVIDIA tick would give stale Intel values the other source's time.
-	if intel := c.latestIntel.Load(); intel != c.consumedIntel {
-		c.consumedIntel = intel
-		maps.Copy(gpu, intel.GPU)
-		if intel.GPUSampledAt.After(sampledAt) {
-			sampledAt = intel.GPUSampledAt
+	snap.GPUInventory = previous.GPUInventory
+	if intel := c.latestIntel.Swap(nil); intel != nil {
+		snap.GPUInventory = intel.inventory
+		// A delayed Intel reading must not inherit a fresh AMD or NVIDIA timestamp.
+		if sampledAt.IsZero() || sampledAt.Sub(intel.collectedAt) <= statsTickInterval {
+			maps.Copy(gpu, intel.stats)
+			if intel.hasUtilization && intel.collectedAt.After(sampledAt) {
+				sampledAt = intel.collectedAt
+			}
 		}
 	}
 	applyGPUStats(previous, snap, gpu, sampledAt)

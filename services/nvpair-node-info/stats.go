@@ -21,9 +21,7 @@ type gpuStat struct {
 // statsSnapshot is the dynamic bundle the HTTP handler reads without locking.
 // Darwin combines independently published system and GPU samples so a slow
 // ioreg call cannot delay CPU or memory telemetry.
-// GPUInventory is normally nil. The Darwin collector populates it from its
-// retrying ioreg sample so a transient startup enumeration failure can recover
-// without restarting the service.
+// GPUInventory carries adapters found by a later macOS or Linux sample.
 //
 // Unsupported collectors publish a zero-valued snapshot — GPU is a nil map
 // (omitempty semantics for downstream lookups come from the per-GPU omitempty
