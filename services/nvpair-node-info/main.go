@@ -42,6 +42,9 @@ type GPUInfo struct {
 	// the IORegistry entry ID. Empty on hosts with no dynamic GPU source.
 	// Unexported + json:"-" so it never travels over the wire.
 	statsKey string `json:"-"`
+	// pciAddress joins Linux vendor-specific inventory with generic discovery.
+	pciAddress string `json:"-"`
+	pciVendor  string `json:"-"`
 
 	// usesSystemMemoryUsage is set by Linux static detection when nvidia-smi
 	// cannot report GPU memory usage. Response assembly then maps the

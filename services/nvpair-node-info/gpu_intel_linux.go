@@ -76,15 +76,15 @@ const (
 // It arrives as either a numeric or string on different xpu-smi builds,
 // so we parse it defensively in intelMemoryBytes.
 type xpuSmiDiscoveryDevice struct {
-	DeviceID                int             `json:"device_id"`
-	DeviceName              string          `json:"device_name"`
-	DeviceType              string          `json:"device_type"`
-	DeviceFunctionType      string          `json:"device_function_type"`
-	UUID                    string          `json:"uuid"`
-	PCIBDFAddress           string          `json:"pci_bdf_address"`
-	PCIDeviceID             string          `json:"pci_device_id"`
-	VendorName              string          `json:"vendor_name"`
-	MemoryPhysicalSizeByte  json.RawMessage `json:"memory_physical_size_byte"`
+	DeviceID               int             `json:"device_id"`
+	DeviceName             string          `json:"device_name"`
+	DeviceType             string          `json:"device_type"`
+	DeviceFunctionType     string          `json:"device_function_type"`
+	UUID                   string          `json:"uuid"`
+	PCIBDFAddress          string          `json:"pci_bdf_address"`
+	PCIDeviceID            string          `json:"pci_device_id"`
+	VendorName             string          `json:"vendor_name"`
+	MemoryPhysicalSizeByte json.RawMessage `json:"memory_physical_size_byte"`
 }
 
 type xpuSmiDiscoveryEnvelope struct {
@@ -159,9 +159,10 @@ func parseXpuSmiDiscovery(out []byte) ([]GPUInfo, bool) {
 			}
 		}
 		gpus = append(gpus, GPUInfo{
-			Name:      name,
-			VramBytes: vram,
-			statsKey:  key,
+			Name:       name,
+			VramBytes:  vram,
+			statsKey:   key,
+			pciAddress: strings.TrimPrefix(key, intelStatsKeyPrefix),
 		})
 	}
 	return gpus, true
@@ -298,9 +299,10 @@ func detectIntelViaSysfs() []GPUInfo {
 			}
 		}
 		gpus = append(gpus, GPUInfo{
-			Name:      name,
-			VramBytes: vram,
-			statsKey:  key,
+			Name:       name,
+			VramBytes:  vram,
+			statsKey:   key,
+			pciAddress: strings.TrimPrefix(key, intelStatsKeyPrefix),
 		})
 	}
 	return gpus
