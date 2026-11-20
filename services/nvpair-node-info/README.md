@@ -9,6 +9,20 @@ A Go service that reports this machine's GPUs, CPU, and physical memory through
 `/v1/node-info` and private broker/worker IPC. The broker registers its `ni` port
 with the scanner's local service registry.
 
+## Linux AMD telemetry
+
+AMD adapters use PCI identity and the amdgpu `gpu_busy_percent` sysfs counter.
+This requires neither ROCm nor CUDA. Missing, unreadable, malformed, or out of
+range reads contribute no sample. A valid reading, including an idle zero,
+refreshes the node-wide `telemetryValid` and `msSince` values. The wire format
+omits both zero and unavailable per-adapter utilization. A fresh node sample
+can therefore omit a counter for an individual adapter.
+
+AMD memory fields remain omitted. On Strix Halo, reserved framebuffer VRAM,
+GTT capacity, the HSA GPU-visible pool, and system MemAvailable are distinct
+and overlapping measurements. This change does not label system RAM or GTT
+as dedicated VRAM. NVIDIA collection remains enabled on mixed-vendor hosts.
+
 ## Communication
 
 Two surfaces:
@@ -128,7 +142,7 @@ Field notes:
 - With `--cluster-dir`, including under the broker, `clusterUuid` comes from live trust-store membership. Without a cluster directory, a parent may push it over stdin using `nodeinfo:set-cluster-identity`; the field stays absent until that first push. These are separate deployment modes.
 - `clusterUuid` is an identity claim. Public HTTP cannot establish membership or change a verified node's identity; service consumers require the protected response and a matching exact certificate pin.
 - Dynamic scalar fields and the `cpu` / `memory` objects use `omitempty`. An absent object means its measurements are unavailable. Scalar zero values are also omitted, so a consumer cannot distinguish zero usage from an unavailable scalar measurement. GPU utilization has separate validity and sample-age fields; these do not describe CPU or system-memory freshness.
-- `vram_bytes` is reported through DXGI on Windows, `nvidia-smi` on Linux, and IORegistry on macOS. On a unified-memory NVIDIA GPU such as DGX Spark, Linux uses total physical system memory for `vram_bytes` and the independently sampled system-memory usage for `vram_used_bytes`. On Apple Silicon, `vram_bytes` is total physical unified memory and `vram_used_bytes` comes from the GPU driver's `In use system memory` counter. A missing or zero counter omits usage; allocated memory is not substituted. This undocumented counter does not guarantee a measurement of physically resident GPU memory.
+- `vram_bytes` is reported through DXGI on Windows and IORegistry on macOS. On Linux, capacity comes from `nvidia-smi` for NVIDIA and `xpu-smi` or the driver for Intel. On a unified-memory NVIDIA GPU such as DGX Spark, Linux uses total physical system memory for `vram_bytes` and the independently sampled system-memory usage for `vram_used_bytes`. On Apple Silicon, `vram_bytes` is total physical unified memory and `vram_used_bytes` comes from the GPU driver's `In use system memory` counter. A missing or zero counter omits usage; allocated memory is not substituted. This undocumented counter does not guarantee a measurement of physically resident GPU memory.
 
 ### Peer node inventory on the same port
 
@@ -157,7 +171,12 @@ snapshots.
 ## Platform Notes
 
 - **Windows** (first-class): GPU inventory comes from DXGI (vendor-agnostic, includes VRAM). Dynamic CPU / VRAM-used / utilization / memory-used numbers come from a persistent PDH query plus `GlobalMemoryStatusEx`.
-- **Linux** (first-class): NVIDIA GPU inventory, dedicated VRAM usage, and utilization come from `nvidia-smi`; CPU and system-memory usage come from `/proc`. Unified-memory GPUs use the `/proc/meminfo` system-memory snapshot even when dynamic `nvidia-smi` collection is unavailable. Non-NVIDIA adapters fall back to names from `ghw` without dynamic GPU stats.
+- **Linux** (first-class). NVIDIA inventory and activity come from `nvidia-smi`.
+  Unified-memory NVIDIA GPUs use the `/proc/meminfo` snapshot. AMD activity comes
+  from amdgpu. Intel uses PCI addresses to join adapters from `xpu-smi` and the
+  driver. Intel activity requires `xpu-smi`. Intel VRAM capacity or usage can
+  be missing when the driver cannot report it. CPU and system-memory usage
+  come from `/proc`.
 - **macOS**: CPU and system-memory usage come from Mach through gopsutil's purego bindings. GPU identity, memory usage, and utilization come from the built-in, unprivileged `/usr/sbin/ioreg` command's `IOAccelerator` `PerformanceStatistics`; no sudo or private framework binding is required. Apple Silicon is supported directly. Intel/AMD fields are best-effort when their drivers expose the same dedicated-memory counters. The performance keys are undocumented and may change across macOS releases; a missing or changed key leaves only that metric out and does not stop CPU or memory collection.
 - **Other platforms**: GPU names come from `ghw`; VRAM and dynamic stats are not reported.
 
