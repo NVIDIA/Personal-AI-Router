@@ -121,6 +121,16 @@ func mergeIntelStatsSources(bySysfs []intelStatsSource, byXpuSmi map[string]inte
 		seen[x.statsKey] = struct{}{}
 		out = append(out, x)
 	}
+	// Static inventory and recovery use the same capacity sources.
+	for i := range out {
+		src := &out[i]
+		if src.VramBytes == 0 && src.sysfsCard != "" {
+			src.VramBytes = readSysfsVRAMTotal(src.sysfsCard)
+		}
+		if src.VramBytes == 0 && src.renderNode != "" {
+			src.VramBytes, _ = intelVRAMTotalFromDRM(src.renderNode)
+		}
+	}
 	slices.SortFunc(out, func(a, b intelStatsSource) int { return strings.Compare(a.pciAddress, b.pciAddress) })
 	return out
 }
@@ -198,6 +208,7 @@ func collectIntelXpuSmiDevices(ctx context.Context) map[string]intelStatsSource 
 	}
 	sources, err := parseXpuSmiDiscovery(out)
 	if err != nil {
+		slog.Debug("invalid xpu-smi discovery response", "err", err)
 		return nil
 	}
 	res := make(map[string]intelStatsSource, len(sources))

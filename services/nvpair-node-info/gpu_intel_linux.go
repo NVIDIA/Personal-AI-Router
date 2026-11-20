@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,28 +46,11 @@ type xpuSmiDiscoveryEnvelope struct {
 	DeviceList []xpuSmiDiscoveryDevice `json:"device_list"`
 }
 
-// detectIntelGPUs prefers xpu-smi's name and capacity for each PCI address.
-// A card missing from Level Zero still contributes its DRM identity and counters.
 func detectIntelGPUs(generic []GPUInfo) []GPUInfo {
-	gpus := detectIntelViaXpuSmi()
-	byAddress := make(map[string]int, len(gpus))
-	for i, gpu := range gpus {
-		byAddress[gpu.pciAddress] = i
-	}
-	for _, card := range collectIntelSysfsCards() {
-		index, ok := byAddress[card.pciAddress]
-		if !ok {
-			index = len(gpus)
-			byAddress[card.pciAddress] = index
-			gpus = append(gpus, card.GPUInfo)
-		}
-		gpu := &gpus[index]
-		if gpu.VramBytes == 0 {
-			gpu.VramBytes = readSysfsVRAMTotal(card.sysfsCard)
-		}
-	}
-	for i := range gpus {
-		gpu := &gpus[i]
+	sources := discoverIntelStatsSources(context.Background())
+	gpus := make([]GPUInfo, 0, len(sources))
+	for _, src := range sources {
+		gpu := src.GPUInfo
 		if gpu.Name == "Intel GPU" {
 			for _, adapter := range generic {
 				if adapter.pciAddress == gpu.pciAddress && adapter.Name != "" && adapter.Name != "Unknown" {
@@ -77,36 +59,9 @@ func detectIntelGPUs(generic []GPUInfo) []GPUInfo {
 				}
 			}
 		}
-		if gpu.VramBytes == 0 {
-			if node := intelRenderNodeForBDF(gpu.pciAddress); node != "" {
-				gpu.VramBytes, _ = intelVRAMTotalFromDRM(node)
-			}
-		}
+		gpus = append(gpus, gpu)
 	}
 	return gpus
-}
-
-// detectIntelViaXpuSmi runs `xpu-smi discovery --json` and folds the
-// device list into GPUInfo. An unavailable or empty result leaves sysfs
-// as the inventory source.
-func detectIntelViaXpuSmi() []GPUInfo {
-	out, err := runXpuSmi(context.Background(), "discovery", "--json")
-	if err != nil {
-		slog.Debug("xpu-smi discovery unavailable", "err", err)
-		return nil
-	}
-	sources, err := parseXpuSmiDiscovery(out)
-	if err != nil {
-		slog.Debug("xpu-smi discovery JSON parse failed", "err", err)
-		return nil
-	}
-	physical := make([]GPUInfo, 0, len(sources))
-	for _, src := range sources {
-		if !isIntelVirtualFunction(src.pciAddress) {
-			physical = append(physical, src.GPUInfo)
-		}
-	}
-	return physical
 }
 
 func parseXpuSmiDiscovery(out []byte) ([]intelStatsSource, error) {

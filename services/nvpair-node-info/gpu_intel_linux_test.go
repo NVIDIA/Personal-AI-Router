@@ -217,6 +217,19 @@ fi
 	assert.Equal(t, uint64(2048), second.VramUsedBytes)
 }
 
+func TestDiscoverIntelStatsSources_UsesDriverCapacityWhenCLIHasNone(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	addIntelDRMCard(t, root, "card0", "0000:03:00.0")
+	const script = `#!/bin/sh
+echo '{"device_list":[{"device_id":0,"device_name":"Arc fixture","pci_bdf_address":"03:00.0"}]}'
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "xpu-smi"), []byte(script), 0700))
+	sources := discoverIntelStatsSources(t.Context())
+	require.Len(t, sources, 1)
+	assert.Equal(t, "Arc fixture", sources[0].Name)
+	assert.EqualValues(t, 16384, sources[0].VramBytes)
+}
+
 func TestStatsCollector_RecoversIntelDeviceIDsAfterTransientDiscoveryFailure(t *testing.T) {
 	root := newIntelDRMFixture(t)
 	addIntelDRMCard(t, root, "card0", "0000:03:00.0")
