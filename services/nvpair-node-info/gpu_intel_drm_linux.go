@@ -25,8 +25,7 @@ const (
 	// drmIoctlI915Query = _IOWR('d', 0x40+0x39, struct drm_i915_query).
 	// struct drm_i915_query is 16 bytes (u32 num_items, u32 flags, u64
 	// items_ptr). _IOWR direction is 3, so the encoded value is
-	// (3<<30) | (16<<16) | ('d'<<8) | 0x79 = 0xC0106479. Stable across
-	// every Linux release since i915 gained the query interface in 4.14.
+	// (3<<30) | (16<<16) | ('d'<<8) | 0x79 = 0xC0106479.
 	drmIoctlI915Query = 0xC0106479
 
 	// drmI915QueryMemoryRegions selects the memory-regions payload.
@@ -147,11 +146,7 @@ func ioctlI915Query(fd int, item *drmI915QueryItem) error {
 	return nil
 }
 
-// parseI915MemoryRegions walks the payload the kernel wrote and returns
-// the class=DEVICE region's total + used bytes. Rows past the buffer
-// are dropped rather than treated as an error; a truncated payload is
-// still valid so long as the class=DEVICE row landed in the readable
-// prefix.
+// Sum all DEVICE regions. A truncated reply cannot establish a card total.
 func parseI915MemoryRegions(buf []byte, length int32) (uint64, uint64, bool) {
 	// The ioctl can succeed while Length contains a per-item error.
 	if length < drmMemoryRegionsHeaderSize || int(length) > len(buf) {
@@ -159,11 +154,13 @@ func parseI915MemoryRegions(buf []byte, length int32) (uint64, uint64, bool) {
 	}
 	buf = buf[:length]
 	numRegions := binary.LittleEndian.Uint32(buf[0:4])
+	if uint64(numRegions) > uint64((len(buf)-drmMemoryRegionsHeaderSize)/drmMemoryRegionInfoSize) {
+		return 0, 0, false
+	}
+	var total, used uint64
+	usageValid := true
 	offset := drmMemoryRegionsHeaderSize
 	for i := uint32(0); i < numRegions; i++ {
-		if offset+drmMemoryRegionInfoSize > len(buf) {
-			break
-		}
 		memClass := binary.LittleEndian.Uint16(buf[offset : offset+2])
 		probed := binary.LittleEndian.Uint64(buf[offset+8 : offset+16])
 		unallocated := binary.LittleEndian.Uint64(buf[offset+16 : offset+24])
@@ -171,13 +168,20 @@ func parseI915MemoryRegions(buf []byte, length int32) (uint64, uint64, bool) {
 		if memClass != i915MemoryClassDevice {
 			continue
 		}
-		var used uint64
-		if probed >= unallocated {
-			used = probed - unallocated
+		if probed == 0 || probed > ^uint64(0)-total {
+			return 0, 0, false
 		}
-		return probed, used, true
+		total += probed
+		if unallocated > probed {
+			usageValid = false
+		} else {
+			used += probed - unallocated
+		}
 	}
-	return 0, 0, false
+	if !usageValid {
+		used = 0
+	}
+	return total, used, total > 0
 }
 
 // Resolve the render node by PCI address for both CLI and sysfs discovery.

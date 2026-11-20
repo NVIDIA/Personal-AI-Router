@@ -10,15 +10,14 @@ import (
 	"testing"
 )
 
-// buildRegionsPayload constructs a synthetic drm_i915_query_memory_regions
-// buffer with the same on-wire layout the kernel emits. Keeps the parser
-// test independent from an actual DRM device.
-func buildRegionsPayload(regions []struct {
+type i915MemoryRegionFixture struct {
 	class       uint16
 	instance    uint16
 	probed      uint64
 	unallocated uint64
-}) []byte {
+}
+
+func buildRegionsPayload(regions []i915MemoryRegionFixture) []byte {
 	buf := make([]byte, drmMemoryRegionsHeaderSize+len(regions)*drmMemoryRegionInfoSize)
 	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(regions)))
 	// Bytes 4..16 are the header padding the kernel writes as zero.
@@ -35,31 +34,16 @@ func buildRegionsPayload(regions []struct {
 	return buf
 }
 
-// TestParseI915MemoryRegionsPicksDeviceClass pins that we surface the
-// class=DEVICE region's totals, not the SYSTEM region — the same
-// distinction intel_gpu_top makes. A regression here would blast
-// system RAM in as VRAM on every Arc host.
-func TestParseI915MemoryRegionsPicksDeviceClass(t *testing.T) {
-	payload := buildRegionsPayload([]struct {
-		class       uint16
-		instance    uint16
-		probed      uint64
-		unallocated uint64
-	}{
+func TestParseI915MemoryRegions_SumsDeviceRegions(t *testing.T) {
+	payload := buildRegionsPayload([]i915MemoryRegionFixture{
 		{class: 0, instance: 0, probed: 64 << 30, unallocated: 60 << 30}, // SYSTEM
-		{class: 1, instance: 0, probed: 6 << 30, unallocated: 5<<30 + 512<<20},
+		{class: 1, instance: 0, probed: 8 << 30, unallocated: 6 << 30},
+		{class: 1, instance: 1, probed: 8 << 30, unallocated: 5 << 30},
 	})
 
 	total, used, ok := parseI915MemoryRegions(payload, int32(len(payload)))
-	if !ok {
-		t.Fatal("parseI915MemoryRegions returned ok=false on a well-formed payload")
-	}
-	if total != 6<<30 {
-		t.Errorf("total = %d, want %d (class=DEVICE probed)", total, 6<<30)
-	}
-	// used = probed - unallocated = 6 GiB - (5 GiB + 512 MiB) = 512 MiB.
-	if want := uint64(512 << 20); used != want {
-		t.Errorf("used = %d, want %d", used, want)
+	if !ok || total != 16<<30 || used != 5<<30 {
+		t.Fatalf("total = %d, used = %d, ok = %v, want 16 GiB total and 5 GiB used", total, used, ok)
 	}
 }
 
@@ -68,12 +52,7 @@ func TestParseI915MemoryRegionsPicksDeviceClass(t *testing.T) {
 // answers on a machine with no discrete Intel GPU under i915 — we must
 // not fabricate a VRAM figure from the SYSTEM row.
 func TestParseI915MemoryRegionsNoDeviceClass(t *testing.T) {
-	payload := buildRegionsPayload([]struct {
-		class       uint16
-		instance    uint16
-		probed      uint64
-		unallocated uint64
-	}{
+	payload := buildRegionsPayload([]i915MemoryRegionFixture{
 		{class: 0, instance: 0, probed: 32 << 30, unallocated: 30 << 30},
 	})
 	if total, used, ok := parseI915MemoryRegions(payload, int32(len(payload))); ok || total != 0 || used != 0 {
@@ -86,36 +65,21 @@ func TestParseI915MemoryRegionsNoDeviceClass(t *testing.T) {
 // unallocated than probed. Used should clamp to 0 rather than
 // underflowing to a huge number.
 func TestParseI915MemoryRegionsUnallocatedOverProbed(t *testing.T) {
-	payload := buildRegionsPayload([]struct {
-		class       uint16
-		instance    uint16
-		probed      uint64
-		unallocated uint64
-	}{
-		{class: 1, instance: 0, probed: 1 << 30, unallocated: 2 << 30},
+	payload := buildRegionsPayload([]i915MemoryRegionFixture{
+		{class: 1, instance: 0, probed: 2 << 30, unallocated: 1 << 30},
+		{class: 1, instance: 1, probed: 1 << 30, unallocated: 2 << 30},
 	})
 	total, used, ok := parseI915MemoryRegions(payload, int32(len(payload)))
-	if !ok || total != 1<<30 || used != 0 {
-		t.Fatalf("expected clamped used=0; got total=%d used=%d ok=%v", total, used, ok)
+	if !ok || total != 3<<30 || used != 0 {
+		t.Fatalf("total = %d, used = %d, ok = %v, want capacity only", total, used, ok)
 	}
 }
 
-// TestParseI915MemoryRegionsTruncatedBufferStops confirms we don't
-// scan past the end of the buffer when the reported num_regions exceeds
-// what fits. Prevents an out-of-bounds slice on a malformed kernel reply.
-func TestParseI915MemoryRegionsTruncatedBufferStops(t *testing.T) {
-	// Header claims 5 regions but only one fits.
-	buf := make([]byte, drmMemoryRegionsHeaderSize+drmMemoryRegionInfoSize)
-	binary.LittleEndian.PutUint32(buf[0:4], 5)
-	// Single region: class=DEVICE, probed=2 GiB, unallocated=1 GiB.
-	off := drmMemoryRegionsHeaderSize
-	binary.LittleEndian.PutUint16(buf[off:off+2], i915MemoryClassDevice)
-	binary.LittleEndian.PutUint64(buf[off+8:off+16], 2<<30)
-	binary.LittleEndian.PutUint64(buf[off+16:off+24], 1<<30)
-
-	total, used, ok := parseI915MemoryRegions(buf, int32(len(buf)))
-	if !ok || total != 2<<30 || used != 1<<30 {
-		t.Fatalf("truncated buffer parse = total=%d used=%d ok=%v; want total=2GiB used=1GiB", total, used, ok)
+func TestParseI915MemoryRegions_RejectsTruncatedRegions(t *testing.T) {
+	buf := buildRegionsPayload([]i915MemoryRegionFixture{{class: 1, probed: 2 << 30, unallocated: 1 << 30}})
+	binary.LittleEndian.PutUint32(buf[:4], 2)
+	if _, _, ok := parseI915MemoryRegions(buf, int32(len(buf))); ok {
+		t.Fatal("accepted a partial capacity report")
 	}
 }
 
