@@ -154,6 +154,10 @@ type pairingSession struct {
 	peerSrcIP string
 	// invitedEmitted guards the one-shot cluster:invite-received notification.
 	invitedEmitted bool
+	// initialDone is set on the inviter once its Initial Exchange has finished
+	// and the PIN noob is injected. The session is registered, and the invite
+	// published, before that, so Completion messages are refused until it is set.
+	initialDone bool
 	// The inviter keeps a successful Completion session until the joiner
 	// acknowledges its own durable commit. This makes a lost EAP-Success response
 	// retryable and lets a post-success joiner failure roll the inviter back.

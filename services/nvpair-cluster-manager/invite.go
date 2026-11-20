@@ -272,8 +272,22 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 		return sess, "", errPairingClusterGone
 	}
 
+	// The session is registered, so Completion messages can reach the server
+	// while this exchange runs. Hold sess.mu for each server call but never across
+	// the HTTP round trip, which cancel and decline must not wait on.
+	start := func() ([]byte, error) {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return server.Start()
+	}
+	receive := func(in []byte) (eapnoob.Outcome, error) {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return server.Receive(in)
+	}
+
 	client := &http.Client{Timeout: pairingHTTPTimeout}
-	blob, err := server.Start()
+	blob, err := start()
 	if err != nil {
 		return sess, "", fmt.Errorf("server start: %w", err)
 	}
@@ -285,7 +299,7 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 		if len(respBlob) == 0 {
 			break // joiner reached a terminal state with nothing to send
 		}
-		out, rerr := server.Receive(respBlob)
+		out, rerr := receive(respBlob)
 		if rerr != nil {
 			return sess, "", fmt.Errorf("server receive: %w", rerr)
 		}
@@ -302,16 +316,19 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 		}
 	}
 
-	if server.State() != eapnoob.StateWaiting {
-		return sess, "", fmt.Errorf("initial exchange ended in state %s, want Waiting", server.State())
-	}
 	pin, noob, err := generatePIN()
 	if err != nil {
 		return sess, "", fmt.Errorf("generate pin: %w", err)
 	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if server.State() != eapnoob.StateWaiting {
+		return sess, "", fmt.Errorf("initial exchange ended in state %s, want Waiting", server.State())
+	}
 	if err := server.OOBOutputWith(noob); err != nil {
 		return sess, "", fmt.Errorf("inject pin noob: %w", err)
 	}
+	sess.initialDone = true
 	return sess, pin, nil
 }
 

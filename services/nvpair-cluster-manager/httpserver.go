@@ -256,6 +256,12 @@ func (m *Manager) handlePairingCompletion(w http.ResponseWriter, env *pairingEnv
 		http.Error(w, "invite no longer pending", http.StatusConflict)
 		return
 	}
+	// The session exists while the inviter is still running its Initial Exchange,
+	// which drives the same server. Completion cannot start before it finishes.
+	if !sess.initialDone {
+		http.Error(w, "initial exchange not finished", http.StatusConflict)
+		return
+	}
 	if sess.peerSrcIP == "" {
 		sess.peerSrcIP = srcIP
 	}
