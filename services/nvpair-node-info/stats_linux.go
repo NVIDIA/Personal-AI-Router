@@ -6,10 +6,12 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
 	"maps"
 	"math"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,19 +31,20 @@ import (
 //     two ticks (it reports cumulative jiffies, so a single read is
 //     meaningless — we need a delta).
 //   - memory-used  : /proc/meminfo, MemTotal - MemAvailable.
-//   - GPU          : `nvidia-smi --query-gpu=uuid,utilization.gpu,memory.used`,
+//   - NVIDIA GPU   : `nvidia-smi --query-gpu=uuid,utilization.gpu,memory.used`,
 //     joined back to the static GPUInfo records by UUID (the statsKey that
 //     gpu_linux.go stamps on each adapter). On unified-memory architectures
 //     (UMA, e.g. Grace-Blackwell / DGX Spark) nvidia-smi returns [N/A] for
 //     memory.used; buildResponse maps the independently sampled system-memory
 //     usage onto those statically identified adapters.
+//   - AMD GPU busy : the amdgpu gpu_busy_percent counter, joined by PCI address.
 //
 // Like the Windows collector we keep one background goroutine ticking once a
-// second and publish the combined statsSnapshot via an atomic pointer swap;
-// HTTP handlers read it lock-free. If nvidia-smi is missing (no NVIDIA driver,
-// or an AMD/Intel-only host) GPU stats are simply absent while CPU and memory
-// keep working. If /proc reads fail the corresponding field drops out via the
-// snapshot's zero value and the downstream omitempty tags.
+// second and publish the combined statsSnapshot via an atomic pointer swap.
+// HTTP handlers read it lock-free. AMD sampling continues when nvidia-smi is
+// unavailable. CPU and memory sampling continue without GPU telemetry.
+// Failed /proc reads leave the corresponding fields at zero, which the
+// response omits.
 const statsTickInterval = time.Second
 
 const (
@@ -164,8 +167,11 @@ func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
 	csv, err := nvidiaSmiCSV("uuid,utilization.gpu,memory.used")
 	if err != nil {
 		if c.nvidiaUnavailable.CompareAndSwap(false, true) {
-			slog.Debug("nvidia-smi unavailable; NVIDIA metrics unavailable; other GPU sources remain enabled",
-				"err", err)
+			logFailure := slog.Warn
+			if errors.Is(err, exec.ErrNotFound) {
+				logFailure = slog.Debug
+			}
+			logFailure("nvidia-smi could not collect NVIDIA GPU metrics", "err", err)
 		}
 		return false
 	}

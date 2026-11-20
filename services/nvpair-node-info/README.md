@@ -13,9 +13,10 @@ with the scanner's local service registry.
 
 AMD adapters use PCI identity and the amdgpu `gpu_busy_percent` sysfs counter.
 This requires neither ROCm nor CUDA. Missing, unreadable, malformed, or out of
-range samples are unavailable. Valid samples, including idle samples, refresh
-the existing `telemetryValid` and `msSince` freshness contract. The existing
-wire format omits a zero utilization value, so inspect freshness as well.
+range reads contribute no sample. A valid reading, including an idle zero,
+refreshes the node-wide `telemetryValid` and `msSince` values. The wire format
+omits both zero and unavailable per-adapter utilization. A fresh node sample
+can therefore omit a counter for an individual adapter.
 
 AMD memory fields remain omitted. On Strix Halo, reserved framebuffer VRAM,
 GTT capacity, the HSA GPU-visible pool, and system MemAvailable are distinct
@@ -170,7 +171,7 @@ snapshots.
 ## Platform Notes
 
 - **Windows** (first-class): GPU inventory comes from DXGI (vendor-agnostic, includes VRAM). Dynamic CPU / VRAM-used / utilization / memory-used numbers come from a persistent PDH query plus `GlobalMemoryStatusEx`.
-- **Linux** (first-class): NVIDIA GPU inventory, dedicated VRAM usage, and utilization come from `nvidia-smi`; CPU and system-memory usage come from `/proc`. Unified-memory GPUs use the `/proc/meminfo` system-memory snapshot even when dynamic `nvidia-smi` collection is unavailable. Non-NVIDIA adapters fall back to names from `ghw` without dynamic GPU stats.
+- **Linux** (first-class): NVIDIA GPU inventory, dedicated VRAM usage, and utilization come from `nvidia-smi`. Unified-memory NVIDIA GPUs use the `/proc/meminfo` snapshot. AMD adapters get utilization from amdgpu when the driver provides it. Generic discovery supplies adapter names. CPU and system-memory usage come from `/proc`.
 - **macOS**: CPU and system-memory usage come from Mach through gopsutil's purego bindings. GPU identity, memory usage, and utilization come from the built-in, unprivileged `/usr/sbin/ioreg` command's `IOAccelerator` `PerformanceStatistics`; no sudo or private framework binding is required. Apple Silicon is supported directly. Intel/AMD fields are best-effort when their drivers expose the same dedicated-memory counters. The performance keys are undocumented and may change across macOS releases; a missing or changed key leaves only that metric out and does not stop CPU or memory collection.
 - **Other platforms**: GPU names come from `ghw`; VRAM and dynamic stats are not reported.
 
