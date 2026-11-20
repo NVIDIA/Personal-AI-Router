@@ -90,7 +90,7 @@ func detectIntelGPUs(generic []GPUInfo) []GPUInfo {
 // device list into GPUInfo. An unavailable or empty result leaves sysfs
 // as the inventory source.
 func detectIntelViaXpuSmi() []GPUInfo {
-	out, err := xpuSmiJSON(context.Background(), "discovery", "--json")
+	out, err := runXpuSmi(context.Background(), "discovery", "--json")
 	if err != nil {
 		slog.Debug("xpu-smi discovery unavailable", "err", err)
 		return nil
@@ -186,14 +186,13 @@ func intelStatsKeyFromBDF(bdf string) string {
 	return intelStatsKeyPrefix + address
 }
 
-// xpuSmiJSON runs the xpu-smi CLI with the supplied argv and returns
-// stdout. A missing binary (not on PATH) surfaces as an exec error,
-// which callers treat as "no xpu-smi telemetry available" and degrade
-// silently to sysfs.
-func xpuSmiJSON(parent context.Context, args ...string) ([]byte, error) {
+func runXpuSmi(parent context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, xpuSmiTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "xpu-smi", args...).Output()
+	cmd := exec.CommandContext(ctx, "xpu-smi", args...)
+	// A helper may still hold an output pipe after cancellation.
+	cmd.WaitDelay = statsTickInterval
+	return cmd.Output()
 }
 
 // readSysfsBDF resolves the PCI BDF address a DRM card is attached to.

@@ -177,7 +177,7 @@ func collectIntelXpuSmiDevices(ctx context.Context) map[string]intelStatsSource 
 	if intelXpuSmiUnavailable.Load() {
 		return nil
 	}
-	out, err := xpuSmiJSON(ctx, "discovery", "--json")
+	out, err := runXpuSmi(ctx, "discovery", "--json")
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -291,11 +291,11 @@ func sampleIntelXpuSmi(ctx context.Context, sources []intelStatsSource) map[stri
 	if intelXpuSmiLegacyCount.Load() {
 		countFlag = "-n"
 	}
-	out, err := xpuSmiJSON(ctx, "dump", "--device", "-1", "--metrics", "0,18", countFlag, "1")
+	out, err := runXpuSmi(ctx, "dump", "--device", "-1", "--metrics", "0,18", countFlag, "1")
 	// Only an explicit CLI rejection of --number establishes the legacy
 	// spelling. Driver, authorization and timeout errors are not retries.
 	if err != nil && ctx.Err() == nil && !xpuSmiUnavailable(err) && countFlag == "--number" && xpuSmiRejectsNumber(err) {
-		out, err = xpuSmiJSON(ctx, "dump", "--device", "-1", "--metrics", "0,18", "-n", "1")
+		out, err = runXpuSmi(ctx, "dump", "--device", "-1", "--metrics", "0,18", "-n", "1")
 		if err == nil {
 			intelXpuSmiLegacyCount.Store(true)
 		}
@@ -305,7 +305,7 @@ func sampleIntelXpuSmi(ctx context.Context, sources []intelStatsSource) map[stri
 			return nil
 		}
 		if xpuSmiUnavailable(err) && intelXpuSmiUnavailable.CompareAndSwap(false, true) {
-			slog.Info("xpu-smi dump unavailable; Intel GPU utilization / memory-used will not be reported",
+			slog.Info("xpu-smi dump unavailable; using Intel driver memory fallback",
 				"err", err)
 		} else {
 			slog.Debug("xpu-smi dump failed; retaining Intel memory fallbacks", "err", err)

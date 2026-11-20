@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,34 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestRunXpuSmi_StopsWaitingOnInheritedOutput(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	t.Setenv("FIXTURE", root)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "xpu-smi"), []byte(`#!/bin/sh
+/bin/sleep 5 &
+echo started > "$FIXTURE/active"
+wait
+`), 0700))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runXpuSmi(ctx, "discovery")
+		done <- err
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(root, "active"))
+		return err == nil
+	}, 2*time.Second, 10*time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(2 * statsTickInterval):
+		t.Fatal("Intel command waited for a child that inherited its output")
+	}
+}
 
 func TestStatsCollector_StopsDuringIntelDiscovery(t *testing.T) {
 	root := newIntelDRMFixture(t)

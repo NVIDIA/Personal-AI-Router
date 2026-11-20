@@ -7,9 +7,10 @@ package main
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -36,10 +37,7 @@ func TestIntelCSVDocumentedContracts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := parseIntelXpuSmiCSV([]byte(tc.input), sources)
-			if len(got) == 0 && len(tc.want) == 0 {
-				return
-			}
-			if !reflect.DeepEqual(got, tc.want) {
+			if !maps.Equal(got, tc.want) {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
 		})
@@ -47,15 +45,17 @@ func TestIntelCSVDocumentedContracts(t *testing.T) {
 }
 
 func TestIntelDumpUsesVersionCompatibleFlags(t *testing.T) {
+	const modern = "dump --device -1 --metrics 0,18 --number 1"
+	const legacy = "dump --device -1 --metrics 0,18 -n 1"
 	for _, tc := range []struct {
 		name, script string
-		calls        int
+		want         []string
 	}{
 		{"v2", `printf '%s\n' "$*" >> "$CALL_LOG"
-printf 'Timestamp,DeviceId,utilization.gpu (%%),memory.used (MiB)\n12:00,0,42,1\n'`, 1},
+printf 'Timestamp,DeviceId,utilization.gpu (%%),memory.used (MiB)\n12:00,0,42,1\n'`, []string{modern}},
 		{"v1", `printf '%s\n' "$*" >> "$CALL_LOG"
 case " $* " in *" --number "*) printf '%s\n' 'The following argument was not expected: --number' >&2; exit 2;; esac
-printf 'Timestamp,DeviceId,Average %% utilization of all GPU Engines,GPU Memory Used (MiB)\n12:00,0,42,1\n'`, 2},
+printf 'Timestamp,DeviceId,Average %% utilization of all GPU Engines,GPU Memory Used (MiB)\n12:00,0,42,1\n'`, []string{modern, legacy, legacy}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -75,18 +75,14 @@ printf 'Timestamp,DeviceId,Average %% utilization of all GPU Engines,GPU Memory 
 			}
 			if tc.name == "v1" {
 				_ = sampleIntelXpuSmi(context.Background(), sources)
-				tc.calls++ // the remembered legacy form takes one call next time
 			}
 			raw, err := os.ReadFile(calls)
 			if err != nil {
 				t.Fatal(err)
 			}
 			lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-			if len(lines) != tc.calls || !strings.Contains(lines[len(lines)-1], "--metrics 0,18") {
-				t.Fatalf("calls %q, want %d correct invocations", lines, tc.calls)
-			}
-			if tc.name == "v1" && !strings.Contains(lines[len(lines)-1], " -n 1") {
-				t.Fatalf("legacy flag not remembered: %q", lines)
+			if !slices.Equal(lines, tc.want) {
+				t.Fatalf("calls %q, want %q", lines, tc.want)
 			}
 		})
 	}
