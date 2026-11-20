@@ -156,3 +156,37 @@ func TestMissingIntelUtilityIsLatched(t *testing.T) {
 		t.Fatal("missing xpu-smi was not latched")
 	}
 }
+
+// A measured zero suppresses fallback. Missing memory still uses the driver.
+func TestIntelMemoryFallbackPreservesReportedZero(t *testing.T) {
+	for _, test := range []struct {
+		reading string
+		want    uint64
+	}{
+		{reading: "0", want: 0},
+		{reading: "N/A", want: 2048},
+	} {
+		t.Run(test.reading, func(t *testing.T) {
+			root := newIntelDRMFixture(t)
+			addIntelDRMCard(t, root, "card0", "0000:03:00.0")
+			t.Setenv("FIXTURE_READING", test.reading)
+			script := "#!/bin/sh\nprintf 'DeviceId,GPU utilization (%%),GPU Memory Used (MiB)\\n0,42,%s\\n' \"$FIXTURE_READING\"\n"
+			if err := os.WriteFile(filepath.Join(root, "xpu-smi"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			sources := collectIntelSysfsCards()
+			if len(sources) != 1 {
+				t.Fatalf("unexpected sources: %+v", sources)
+			}
+			sources[0].deviceID, sources[0].hasDevID = 0, true
+			stats := make(map[string]gpuStat)
+			if got := sampleIntelStats(context.Background(), sources, stats); got != 1 {
+				t.Fatalf("got %d utilization samples, want one", got)
+			}
+			got := stats[sources[0].statsKey]
+			if got.UtilizationPct != 42 || got.VRAMUsed != test.want {
+				t.Fatalf("got %+v, want utilization 42 and VRAM used %d", got, test.want)
+			}
+		})
+	}
+}

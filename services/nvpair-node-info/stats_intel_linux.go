@@ -223,15 +223,8 @@ func collectIntelXpuSmiDevices(ctx context.Context) map[string]intelStatsSource 
 // for which a fresh utilization sample was collected — the stats
 // collector uses that to decide whether to advance GPUSampledAt.
 //
-// The xpu-smi path runs first (one batched invocation for every
-// adapter), then two fallbacks fill any adapter whose VRAM-used slot
-// is still zero: the DRM_IOCTL_I915_QUERY memory-regions ioctl (works
-// on every stock i915 kernel — same source intel_gpu_top uses), and
-// finally the DRM mem_info_vram_used sysfs attribute (only present on
-// newer i915 / xe builds). Neither utilization nor memory-used is
-// mandatory: on a host with iGPUs only and no xpu-smi, the map is
-// left untouched and the Intel adapters still appear in the inventory
-// without dynamic stats.
+// If xpu-smi omits memory usage, try the i915 memory query and then the
+// driver's sysfs counter. A measured zero from xpu-smi is a valid result.
 func sampleIntelStats(ctx context.Context, sources []intelStatsSource, out map[string]gpuStat) int {
 	if len(sources) == 0 {
 		return 0
@@ -244,21 +237,20 @@ func sampleIntelStats(ctx context.Context, sources []intelStatsSource, out map[s
 
 	for _, src := range sources {
 		stat := out[src.statsKey]
-		if x, ok := xpuStats[src.statsKey]; ok {
-			if x.hasUtil {
-				stat.UtilizationPct = x.util
-				utilizationSamples++
-			}
-			if x.hasMem {
-				stat.VRAMUsed = x.mem
-			}
+		x := xpuStats[src.statsKey]
+		if x.hasUtil {
+			stat.UtilizationPct = x.util
+			utilizationSamples++
 		}
-		if stat.VRAMUsed == 0 && src.renderNode != "" {
+		if x.hasMem {
+			stat.VRAMUsed = x.mem
+		}
+		if !x.hasMem && stat.VRAMUsed == 0 && src.renderNode != "" {
 			if _, used, ok := intelVRAMFromDRM(src.renderNode); ok {
 				stat.VRAMUsed = used
 			}
 		}
-		if stat.VRAMUsed == 0 && src.sysfsCard != "" {
+		if !x.hasMem && stat.VRAMUsed == 0 && src.sysfsCard != "" {
 			if used, ok := readSysfsVRAMUsed(src.sysfsCard); ok {
 				stat.VRAMUsed = used
 			}
