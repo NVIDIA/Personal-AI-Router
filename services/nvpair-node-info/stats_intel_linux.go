@@ -163,7 +163,7 @@ func collectIntelSysfsCards() []intelStatsSource {
 			statsKey:   intelStatsKeyPrefix + bdf,
 			bdf:        bdf,
 			sysfsCard:  card,
-			renderNode: intelRenderNode(card),
+			renderNode: intelRenderNodeForBDF(bdf),
 		})
 	}
 	return out

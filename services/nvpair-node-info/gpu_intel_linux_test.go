@@ -154,30 +154,6 @@ func TestIsPhysicalIntelGPU(t *testing.T) {
 	}
 }
 
-// TestLooksLikePCIBDF pins the shape check the sysfs walker uses to
-// filter out platform-device final path segments. Real BDFs have
-// exactly two colons and at least one dot; anything else must be
-// rejected so a non-PCI DRM entry can't be mistaken for an Intel
-// adapter.
-func TestLooksLikePCIBDF(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"0000:03:00.0", true},
-		{"0000:ab:cd.1", true},
-		{"03:00.0", false},
-		{"0000-03-00-0", false},
-		{"platform:soc0", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := looksLikePCIBDF(c.in); got != c.want {
-			t.Errorf("looksLikePCIBDF(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
-}
-
 func newIntelDRMFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -204,6 +180,18 @@ func addIntelDRMCard(t *testing.T, root, name, address string) string {
 	require.NoError(t, os.WriteFile(filepath.Join(device, "mem_info_vram_total"), []byte("16384"), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(device, "mem_info_vram_used"), []byte("2048"), 0600))
 	return device
+}
+
+func TestIntelRenderNodeForBDF_UsesFixtureDevice(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GHW_CHROOT", root)
+	const address = "0000:03:00.0"
+	drm := filepath.Join(root, "sys", "bus", "pci", "devices", address, "drm", "renderD128")
+	node := filepath.Join(root, "dev", "dri", "renderD128")
+	require.NoError(t, os.MkdirAll(drm, 0700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(node), 0700))
+	require.NoError(t, os.WriteFile(node, nil, 0600))
+	assert.Equal(t, node, intelRenderNodeForBDF(address))
 }
 
 func TestDetectGPUs_ExcludesIntelVirtualFunctionsWithoutXpuSmi(t *testing.T) {

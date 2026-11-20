@@ -11,8 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
-	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -182,47 +180,17 @@ func parseI915MemoryRegions(buf []byte, length int32) (uint64, uint64, bool) {
 	return 0, 0, false
 }
 
-// intelRenderNode resolves the /dev/dri/renderD* path a DRM card is
-// backed by. Every physical GPU exposes both a primary node (cardN,
-// requires GRAPHICS caps) and a render node (renderDNNN, opens with
-// only the render group); we prefer the render node because it needs
-// no privileged group membership beyond `render` and is the one
-// intel_gpu_top uses too.
-//
-// The mapping lives under /sys/class/drm/cardN/device/drm/renderD*; a
-// card that publishes no render node (some virtualized GPUs) returns
-// an empty string, which callers treat as "no DRM query available".
-func intelRenderNode(cardPath string) string {
-	matches, err := filepath.Glob(filepath.Join(cardPath, "device", "drm", "renderD*"))
-	if err != nil || len(matches) == 0 {
-		return ""
-	}
-	sort.Strings(matches)
-	// The sysfs entry is just the name; the character device lives
-	// under /dev/dri.
-	dev := filepath.Join("/dev/dri", filepath.Base(matches[0]))
-	if _, err := os.Stat(dev); err != nil {
-		return ""
-	}
-	return dev
-}
-
-// intelRenderNodeForBDF is the xpu-smi-path counterpart of
-// intelRenderNode: given a PCI BDF (which xpu-smi discovery reports),
-// walk /sys/bus/pci/devices/<bdf>/drm/renderD* and return the /dev
-// path. Falls back to an empty string when nothing matches, so callers
-// treat it as "sysfs is our only vram source for this adapter".
+// Resolve the render node by PCI address for both CLI and sysfs discovery.
 func intelRenderNodeForBDF(bdf string) string {
 	if bdf == "" {
 		return ""
 	}
-	base := filepath.Join("/sys/bus/pci/devices", strings.ToLower(bdf), "drm")
-	matches, err := filepath.Glob(filepath.Join(base, "renderD*"))
+	root := os.Getenv("GHW_CHROOT")
+	matches, err := filepath.Glob(filepath.Join(root, "/sys/bus/pci/devices", bdf, "drm", "renderD*"))
 	if err != nil || len(matches) == 0 {
 		return ""
 	}
-	sort.Strings(matches)
-	dev := filepath.Join("/dev/dri", filepath.Base(matches[0]))
+	dev := filepath.Join(root, "/dev/dri", filepath.Base(matches[0]))
 	if _, err := os.Stat(dev); err != nil {
 		return ""
 	}

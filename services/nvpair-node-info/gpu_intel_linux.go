@@ -204,23 +204,7 @@ func readSysfsBDF(cardPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	bdf := strings.ToLower(filepath.Base(target))
-	if !looksLikePCIBDF(bdf) {
-		return "", nil
-	}
-	return canonicalPCIAddress(bdf), nil
-}
-
-// looksLikePCIBDF applies a cheap shape check so we don't accept a
-// non-PCI final path segment (e.g. a platform device) as an adapter
-// key. Real BDFs look like "0000:03:00.0" — four colons-and-dots
-// separated hex fields. Full lexical validation would add no signal
-// beyond the sysfs vendor filter that already gated us here.
-func looksLikePCIBDF(s string) bool {
-	if !strings.Contains(s, ":") || !strings.Contains(s, ".") {
-		return false
-	}
-	return strings.Count(s, ":") == 2
+	return canonicalPCIAddress(filepath.Base(target)), nil
 }
 
 // readSysfsVRAMTotal returns the DRM-reported total VRAM in bytes, or

@@ -15,7 +15,7 @@ import (
 )
 
 func intelDRMDriver(node string) string {
-	driver, err := filepath.EvalSymlinks(filepath.Join("/sys/class/drm", filepath.Base(node), "device/driver"))
+	driver, err := filepath.EvalSymlinks(filepath.Join(os.Getenv("GHW_CHROOT"), "/sys/class/drm", filepath.Base(node), "device/driver"))
 	if err != nil {
 		return ""
 	}
