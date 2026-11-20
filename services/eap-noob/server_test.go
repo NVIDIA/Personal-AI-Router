@@ -4,6 +4,7 @@
 package eapnoob
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -136,4 +137,76 @@ func TestServer_RejectsKeyExchangeBeforeNegotiation(t *testing.T) {
 	assert.True(t, out.Done)
 	assert.False(t, out.Success)
 	assert.Equal(t, StateUnregistered, server.State())
+}
+
+// Once the Initial Exchange has finished, a key-exchange response that arrives
+// before the Completion Exchange must not replace the shared secret. Otherwise
+// an attacker who later learns the PIN could pair with the stored secret.
+func TestServer_RejectsKeyExchangeAfterInitialExchange(t *testing.T) {
+	server := NewServer(ServerConfig{Dirs: OOBServerToPeer}, nil)
+	peer := NewPeer(PeerConfig{}, nil)
+	require.Nil(t, driveConversation(t, server, peer).Err)
+	require.Equal(t, StateWaiting, server.State())
+	require.NoError(t, server.OOBOutputWith(bytes.Repeat([]byte{7}, 16)))
+	secretBefore := append([]byte(nil), server.z...)
+
+	_, attackerKey, err := server.suite.generateKeypair()
+	require.NoError(t, err)
+	publicKey, err := jwkRaw(attackerKey)
+	require.NoError(t, err)
+	injected, err := json.Marshal(&wireMessage{
+		Type:   intp(typeKeyExchange),
+		PeerId: rawString(server.peerId),
+		PKp:    publicKey,
+		Np:     rawString(b64Encode(bytes.Repeat([]byte{9}, 32))),
+	})
+	require.NoError(t, err)
+
+	out, err := server.Receive(injected)
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.True(t, out.Done)
+	assert.False(t, out.Success)
+	assert.Equal(t, secretBefore, server.z)
+}
+
+// A registered server must not run the Completion handler again for a
+// message captured from the exchange that registered it.
+func TestServer_RejectsReplayedCompletionAfterRegistration(t *testing.T) {
+	server := NewServer(ServerConfig{Dirs: OOBServerToPeer}, nil)
+	peer := NewPeer(PeerConfig{}, nil)
+	require.Nil(t, driveConversation(t, server, peer).Err)
+	noob := bytes.Repeat([]byte{7}, 16)
+	require.NoError(t, server.OOBOutputWith(noob))
+	require.NoError(t, peer.OOBInputNoob(noob))
+
+	var completion []byte
+	message, err := server.Start()
+	require.NoError(t, err)
+	for peerTurn := true; len(message) != 0; peerTurn = !peerTurn {
+		var out Outcome
+		if peerTurn {
+			out, err = peer.Receive(message)
+			if wire, decodeErr := decode(out.Send); decodeErr == nil && wire.Type != nil && *wire.Type == typeCompletion {
+				completion = out.Send
+			}
+		} else {
+			out, err = server.Receive(message)
+		}
+		require.NoError(t, err)
+		require.Nil(t, out.Err)
+		message = out.Send
+	}
+	require.Equal(t, StateRegistered, server.State())
+	require.NotEmpty(t, completion)
+
+	out, err := server.Receive(completion)
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.False(t, out.Success)
+	assert.Equal(t, StateRegistered, server.State())
 }

@@ -208,3 +208,30 @@ func TestPeer_RejectsKeyExchangeBeforeNegotiation(t *testing.T) {
 	assert.False(t, out.Success)
 	assert.Equal(t, StateUnregistered, peer.State())
 }
+
+// A key-exchange request that arrives after the Initial Exchange finished must
+// not replace the keys the peer already derived.
+func TestPeer_RejectsKeyExchangeAfterInitialExchange(t *testing.T) {
+	server := NewServer(ServerConfig{}, nil)
+	peer := NewPeer(PeerConfig{}, nil)
+	require.Nil(t, driveConversation(t, server, peer).Err)
+	require.Equal(t, StateWaiting, peer.State())
+
+	otherServer := NewServer(ServerConfig{}, nil)
+	otherPeer := NewPeer(PeerConfig{}, nil)
+	selection, err := otherPeer.Receive(negotiationRequest(t, otherServer, otherPeer))
+	require.NoError(t, err)
+	require.Nil(t, selection.Err)
+	keyExchange, err := otherServer.Receive(selection.Send)
+	require.NoError(t, err)
+	require.Nil(t, keyExchange.Err)
+
+	out, err := peer.Receive(keyExchange.Send)
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.True(t, out.Done)
+	assert.False(t, out.Success)
+	assert.Equal(t, StateWaiting, peer.State())
+}
