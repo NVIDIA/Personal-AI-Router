@@ -6,8 +6,13 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestParseXpuSmiDiscovery pins the JSON schema the Intel discovery
@@ -18,6 +23,16 @@ import (
 // on some builds, a virtual function that must be skipped, and a
 // non-GPU device that must be ignored.
 func TestParseXpuSmiDiscovery(t *testing.T) {
+	// The parser must not mistake a fixture's PCI address for a device on this host.
+	root := t.TempDir()
+	t.Setenv("GHW_CHROOT", root)
+	device := filepath.Join(root, "sys", "bus", "pci", "devices", "0000:03:00.0")
+	if err := os.MkdirAll(device, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../0000:02:00.0", filepath.Join(device, "physfn")); err != nil {
+		t.Fatal(err)
+	}
 	const payload = `{
 		"device_list": [
 			{
@@ -55,9 +70,9 @@ func TestParseXpuSmiDiscovery(t *testing.T) {
 		]
 	}`
 
-	got, ok := parseXpuSmiDiscovery([]byte(payload))
-	if !ok {
-		t.Fatal("parseXpuSmiDiscovery returned ok=false on a valid payload")
+	got, err := parseXpuSmiDiscovery([]byte(payload))
+	if err != nil {
+		t.Fatalf("decode discovery: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("got %d GPUs, want 2 (VF and non-GPU must be skipped): %+v", len(got), got)
@@ -81,11 +96,8 @@ func TestParseXpuSmiDiscovery(t *testing.T) {
 	}
 }
 
-// TestParseXpuSmiDiscoveryRejectsGarbage confirms that a non-conforming
-// payload degrades cleanly to the sysfs fallback (ok=false) instead of
-// producing a phantom adapter.
 func TestParseXpuSmiDiscoveryRejectsGarbage(t *testing.T) {
-	if _, ok := parseXpuSmiDiscovery([]byte("not json")); ok {
+	if _, err := parseXpuSmiDiscovery([]byte("not json")); err == nil {
 		t.Fatal("parseXpuSmiDiscovery accepted non-JSON input")
 	}
 }
@@ -163,6 +175,73 @@ func TestLooksLikePCIBDF(t *testing.T) {
 			t.Errorf("looksLikePCIBDF(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
+}
+
+func newIntelDRMFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("GHW_CHROOT", root)
+	t.Setenv("PATH", root)
+	t.Setenv("PCIDB_PATH", filepath.Join(root, "pci.ids"))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "pci.ids"), []byte("8086  Intel\n\t56a0  Arc\n"), 0600))
+	intelXpuSmiUnavailable.Store(false)
+	t.Cleanup(func() { intelXpuSmiUnavailable.Store(false) })
+	return root
+}
+
+func addIntelDRMCard(t *testing.T, root, name, address string) string {
+	t.Helper()
+	device := filepath.Join(root, "sys/bus/pci/devices", address)
+	card := filepath.Join(device, "drm", name)
+	drm := filepath.Join(root, "sys/class/drm")
+	require.NoError(t, os.MkdirAll(card, 0700))
+	require.NoError(t, os.MkdirAll(drm, 0700))
+	require.NoError(t, os.Symlink(device, filepath.Join(card, "device")))
+	require.NoError(t, os.Symlink(card, filepath.Join(drm, name)))
+	require.NoError(t, os.WriteFile(filepath.Join(device, "vendor"), []byte("0x8086"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(device, "modalias"), []byte("pci:v00008086d000056A0sv00008086sd000056A0bc03sc00i00\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(device, "mem_info_vram_total"), []byte("16384"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(device, "mem_info_vram_used"), []byte("2048"), 0600))
+	return device
+}
+
+func TestDetectGPUs_ExcludesIntelVirtualFunctionsWithoutXpuSmi(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	physical := addIntelDRMCard(t, root, "card0", "0000:03:00.0")
+	virtual := addIntelDRMCard(t, root, "card1", "0000:03:00.1")
+	require.NoError(t, os.Symlink(physical, filepath.Join(virtual, "physfn")))
+
+	inventory := detectGPUs()
+	require.Len(t, inventory, 1)
+	assert.Equal(t, "0000:03:00.0", inventory[0].pciAddress)
+	sources := discoverIntelStatsSources()
+	require.Len(t, sources, 1)
+	assert.Equal(t, "0000:03:00.0", sources[0].bdf)
+}
+
+func TestDetectGPUs_JoinsIntelMemoryWhenXpuSmiListsOnlyOneCard(t *testing.T) {
+	root := newIntelDRMFixture(t)
+	addIntelDRMCard(t, root, "card0", "0000:03:00.0")
+	addIntelDRMCard(t, root, "card1", "0000:07:00.0")
+	const script = `#!/bin/sh
+if [ "$1" = discovery ]; then
+  echo '{"device_list":[{"device_id":0,"device_name":"Arc from xpu-smi","pci_bdf_address":"00000000:03:00.0","memory_physical_size_byte":8192}]}'
+fi
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "xpu-smi"), []byte(script), 0700))
+
+	inventory := detectGPUs()
+	require.Len(t, inventory, 2)
+	assert.Equal(t, "Arc from xpu-smi", inventory[0].Name)
+	assert.Equal(t, uint64(8192), inventory[0].VramBytes)
+	out := map[string]gpuStat{}
+	sampleIntelStats(discoverIntelStatsSources(), out)
+	response := buildResponse(inventory, nil, 0, statsSnapshot{GPU: out}, "", nil)
+	require.Len(t, response.GPUs, 2)
+	second := response.GPUs[1]
+	assert.Equal(t, "0000:07:00.0", second.pciAddress)
+	assert.Equal(t, uint64(16384), second.VramBytes)
+	assert.Equal(t, uint64(2048), second.VramUsedBytes)
 }
 
 // TestParseIntelXpuSmiDump covers the dump-JSON shapes xpu-smi has
@@ -262,8 +341,8 @@ func TestSampleIntelStatsHandlesEmptySources(t *testing.T) {
 // percentages as strings, floats, or integers.
 func TestParseFloatishPercent(t *testing.T) {
 	cases := []struct {
-		in    any
-		want  uint32
+		in     any
+		want   uint32
 		wantOK bool
 	}{
 		{42.5, 43, true},

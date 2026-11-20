@@ -12,57 +12,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jaypipes/ghw"
 )
 
-// Intel discrete and integrated GPU detection on Linux.
-//
-// Data sources, in preference order:
-//
-//  1. xpu-smi (Intel's official CLI, part of the oneAPI Level Zero
-//     userspace stack). When installed it returns a stable JSON view of
-//     every Intel GPU on the host — dGPU (Arc, Data Center Max/Flex) or
-//     iGPU — with a PCI BDF address we key on and, where the driver
-//     reports it, a total-VRAM figure.
-//
-//  2. sysfs (/sys/class/drm/card*). Present on every host with an Intel
-//     GPU regardless of extra software. We enumerate cards whose vendor
-//     is Intel (0x8086) and pull the marketing name via ghw, plus any
-//     mem_info_vram_total the DRM driver exposes (Arc dGPUs report it;
-//     iGPUs share system RAM and do not).
-//
-// The dynamic counterparts — VRAM used and busy percent — live in
-// stats_linux.go under the same two-tier preference: xpu-smi for full
-// telemetry, sysfs mem_info_vram_used as a memory-only fallback. When
-// neither source can be read the Intel GPU still appears in the
-// inventory, just without live stats — mirroring the same "unknown
-// means omitted" convention nvidia-smi degradation follows.
-//
-// Every Intel adapter is stamped with a PCI BDF-derived statsKey
-// ("intel-pci-0000:03:00.0") so the stats collector can join dynamic
-// samples back to the static GPUInfo the same way nvidia-smi joins by
-// UUID. The prefix keeps the key space disjoint from nvidia-smi UUIDs.
-
 const (
-	// xpuSmiTimeout caps how long we wait for one xpu-smi invocation.
-	// The tool is usually well under 200 ms, but a wedged Level Zero
-	// driver can hang; a hard ceiling keeps the per-tick stats collector
-	// from blocking indefinitely.
+	// Cap each xpu-smi call in case the driver stalls.
 	xpuSmiTimeout = 3 * time.Second
 
-	// intelPCIVendorID is the PCI vendor ID assigned to Intel. Every
-	// entry under /sys/class/drm/card*/device/vendor reports this exact
-	// literal (lowercase, "0x" prefix) for an Intel GPU.
-	intelPCIVendorID = "0x8086"
-
-	// intelStatsKeyPrefix disambiguates Intel adapter keys from nvidia-smi
-	// UUIDs in the shared stats map. Keep any prefix change in lock-step
-	// with the stats collector.
+	intelPCIVendorID    = "0x8086"
 	intelStatsKeyPrefix = "intel-pci-"
 )
 
@@ -76,14 +35,11 @@ const (
 // It arrives as either a numeric or string on different xpu-smi builds,
 // so we parse it defensively in intelMemoryBytes.
 type xpuSmiDiscoveryDevice struct {
-	DeviceID               int             `json:"device_id"`
+	DeviceID               *int            `json:"device_id"`
 	DeviceName             string          `json:"device_name"`
 	DeviceType             string          `json:"device_type"`
 	DeviceFunctionType     string          `json:"device_function_type"`
-	UUID                   string          `json:"uuid"`
 	PCIBDFAddress          string          `json:"pci_bdf_address"`
-	PCIDeviceID            string          `json:"pci_device_id"`
-	VendorName             string          `json:"vendor_name"`
 	MemoryPhysicalSizeByte json.RawMessage `json:"memory_physical_size_byte"`
 }
 
@@ -91,81 +47,94 @@ type xpuSmiDiscoveryEnvelope struct {
 	DeviceList []xpuSmiDiscoveryDevice `json:"device_list"`
 }
 
-// detectIntelGPUs returns every Intel GPU the host exposes, or nil when
-// no Intel adapter can be identified. Prefers xpu-smi, falls back to a
-// sysfs walk. A nil return means "no Intel GPU found by any source"; an
-// empty slice is never returned.
-func detectIntelGPUs() []GPUInfo {
-	if gpus, ok := detectIntelViaXpuSmi(); ok {
-		return gpus
+// detectIntelGPUs prefers xpu-smi's name and capacity for each PCI address.
+// A card missing from Level Zero still contributes its DRM identity and counters.
+func detectIntelGPUs(generic []GPUInfo) []GPUInfo {
+	gpus := detectIntelViaXpuSmi()
+	byAddress := make(map[string]int, len(gpus))
+	for i, gpu := range gpus {
+		byAddress[gpu.pciAddress] = i
 	}
-	return detectIntelViaSysfs()
+	for _, card := range collectIntelSysfsCards() {
+		index, ok := byAddress[card.bdf]
+		if !ok {
+			index = len(gpus)
+			byAddress[card.bdf] = index
+			gpus = append(gpus, GPUInfo{Name: "Intel GPU", statsKey: card.statsKey, pciAddress: card.bdf})
+		}
+		gpu := &gpus[index]
+		if gpu.VramBytes == 0 {
+			gpu.VramBytes = readSysfsVRAMTotal(card.sysfsCard)
+		}
+	}
+	for i := range gpus {
+		gpu := &gpus[i]
+		if gpu.Name == "Intel GPU" {
+			for _, adapter := range generic {
+				if adapter.pciAddress == gpu.pciAddress && adapter.Name != "" && adapter.Name != "Unknown" {
+					gpu.Name = adapter.Name
+					break
+				}
+			}
+		}
+		if gpu.VramBytes == 0 {
+			if node := intelRenderNodeForBDF(gpu.pciAddress); node != "" {
+				gpu.VramBytes, _ = intelVRAMTotalFromDRM(node)
+			}
+		}
+	}
+	return gpus
 }
 
 // detectIntelViaXpuSmi runs `xpu-smi discovery --json` and folds the
-// device list into GPUInfo. Returns ok=false when the binary is not on
-// PATH, the invocation fails or times out, or the payload is empty —
-// callers then fall through to the sysfs walk.
-//
-// Physical adapters only: xpu-smi enumerates SR-IOV virtual functions
-// alongside their parent under the same PCI device, and we skip those
-// via device_function_type so a single physical Arc doesn't appear
-// multiple times in the inventory.
-func detectIntelViaXpuSmi() ([]GPUInfo, bool) {
+// device list into GPUInfo. An unavailable or empty result leaves sysfs
+// as the inventory source.
+func detectIntelViaXpuSmi() []GPUInfo {
 	out, err := xpuSmiJSON(context.Background(), "discovery", "--json")
 	if err != nil {
 		slog.Debug("xpu-smi discovery unavailable", "err", err)
-		return nil, false
+		return nil
 	}
-	gpus, ok := parseXpuSmiDiscovery(out)
-	if !ok || len(gpus) == 0 {
-		return nil, false
+	gpus, err := parseXpuSmiDiscovery(out)
+	if err != nil {
+		slog.Debug("xpu-smi discovery JSON parse failed", "err", err)
+		return nil
 	}
-	return gpus, true
+	physical := gpus[:0]
+	for _, gpu := range gpus {
+		if !isIntelVirtualFunction(gpu.pciAddress) {
+			physical = append(physical, gpu)
+		}
+	}
+	return physical
 }
 
-// parseXpuSmiDiscovery decodes the JSON envelope. Returns ok=false when
-// the payload does not conform to the discovery shape — a version of
-// xpu-smi that emits an unrelated JSON document should degrade to the
-// sysfs fallback rather than surface as "no Intel GPUs".
-func parseXpuSmiDiscovery(out []byte) ([]GPUInfo, bool) {
+func parseXpuSmiDiscovery(out []byte) ([]GPUInfo, error) {
 	var env xpuSmiDiscoveryEnvelope
 	if err := json.Unmarshal(out, &env); err != nil {
-		slog.Debug("xpu-smi discovery JSON parse failed", "err", err)
-		return nil, false
+		return nil, err
 	}
 	gpus := make([]GPUInfo, 0, len(env.DeviceList))
 	for _, d := range env.DeviceList {
 		if !isPhysicalIntelGPU(d) {
 			continue
 		}
-		key := intelStatsKeyFromBDF(d.PCIBDFAddress)
-		if key == "" {
+		address := canonicalPCIAddress(d.PCIBDFAddress)
+		if address == "" {
 			continue
 		}
 		name := strings.TrimSpace(d.DeviceName)
 		if name == "" {
 			name = "Intel GPU"
 		}
-		vram := intelMemoryBytes(d.MemoryPhysicalSizeByte)
-		if vram == 0 {
-			// Some xpu-smi builds omit memory_physical_size_byte for
-			// discrete Arc adapters. Ask the DRM ioctl directly the same
-			// way the sysfs path does — cheap, reliable, no extra deps.
-			if node := intelRenderNodeForBDF(strings.TrimPrefix(key, intelStatsKeyPrefix)); node != "" {
-				if total, _, ok := intelVRAMFromDRM(node); ok {
-					vram = total
-				}
-			}
-		}
 		gpus = append(gpus, GPUInfo{
 			Name:       name,
-			VramBytes:  vram,
-			statsKey:   key,
-			pciAddress: strings.TrimPrefix(key, intelStatsKeyPrefix),
+			VramBytes:  intelMemoryBytes(d.MemoryPhysicalSizeByte),
+			statsKey:   intelStatsKeyPrefix + address,
+			pciAddress: address,
 		})
 	}
-	return gpus, true
+	return gpus, nil
 }
 
 // isPhysicalIntelGPU filters the xpu-smi device list to physical GPU
@@ -210,18 +179,11 @@ func intelMemoryBytes(raw json.RawMessage) uint64 {
 // lowercase already, but we normalize defensively so a version that
 // reports uppercase (or omits the domain prefix) still joins.
 func intelStatsKeyFromBDF(bdf string) string {
-	bdf = strings.ToLower(strings.TrimSpace(bdf))
-	if bdf == "" {
+	address := canonicalPCIAddress(bdf)
+	if address == "" {
 		return ""
 	}
-	// Some xpu-smi builds omit the "0000:" domain segment.
-	if !strings.Contains(bdf, ":") {
-		return ""
-	}
-	if strings.Count(bdf, ":") == 1 {
-		bdf = "0000:" + bdf
-	}
-	return intelStatsKeyPrefix + bdf
+	return intelStatsKeyPrefix + address
 }
 
 // xpuSmiJSON runs the xpu-smi CLI with the supplied argv and returns
@@ -232,80 +194,6 @@ func xpuSmiJSON(parent context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, xpuSmiTimeout)
 	defer cancel()
 	return exec.CommandContext(ctx, "xpu-smi", args...).Output()
-}
-
-// detectIntelViaSysfs enumerates /sys/class/drm/card* and returns one
-// GPUInfo per Intel PCI device. Marketing names come from ghw (which
-// uses the shared pcidb), so a card whose device ID is not in the
-// bundled DB still appears — just with a generic name.
-//
-// mem_info_vram_total is present on Arc dGPUs (i915 and xe drivers).
-// iGPUs share system RAM and don't report it, so VramBytes stays 0
-// there and the omitempty tag drops the field from JSON, matching the
-// existing behavior for unknown VRAM.
-func detectIntelViaSysfs() []GPUInfo {
-	cards, err := filepath.Glob("/sys/class/drm/card*")
-	if err != nil {
-		slog.Debug("sysfs drm scan failed", "err", err)
-		return nil
-	}
-	// filepath.Glob returns entries in lexical order already, but be
-	// explicit so cardN ordering is stable even if the pattern semantics
-	// ever change.
-	sort.Strings(cards)
-
-	seen := make(map[string]struct{})
-	var gpus []GPUInfo
-	names := intelDeviceNamesFromGHW()
-
-	for _, card := range cards {
-		// Skip connector entries like /sys/class/drm/card0-DP-1: only
-		// the bare cardN symlink has a device/ directory.
-		base := filepath.Base(card)
-		if strings.Contains(base, "-") {
-			continue
-		}
-		vendor, err := os.ReadFile(filepath.Join(card, "device", "vendor"))
-		if err != nil {
-			continue
-		}
-		if strings.TrimSpace(string(vendor)) != intelPCIVendorID {
-			continue
-		}
-		bdf, err := readSysfsBDF(card)
-		if err != nil || bdf == "" {
-			continue
-		}
-		key := intelStatsKeyPrefix + bdf
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-
-		name := names[bdf]
-		if name == "" {
-			name = "Intel GPU"
-		}
-		vram := readSysfsVRAMTotal(card)
-		if vram == 0 {
-			// Stock i915 builds don't expose mem_info_vram_total; fall back
-			// to the DRM_IOCTL_I915_QUERY memory-regions query the way
-			// intel_gpu_top does. Reports real Arc VRAM (6/8/16 GiB) even
-			// when Resizable BAR is off and sysfs shows nothing.
-			if node := intelRenderNode(card); node != "" {
-				if total, _, ok := intelVRAMFromDRM(node); ok {
-					vram = total
-				}
-			}
-		}
-		gpus = append(gpus, GPUInfo{
-			Name:       name,
-			VramBytes:  vram,
-			statsKey:   key,
-			pciAddress: strings.TrimPrefix(key, intelStatsKeyPrefix),
-		})
-	}
-	return gpus
 }
 
 // readSysfsBDF resolves the PCI BDF address a DRM card is attached to.
@@ -320,7 +208,7 @@ func readSysfsBDF(cardPath string) (string, error) {
 	if !looksLikePCIBDF(bdf) {
 		return "", nil
 	}
-	return bdf, nil
+	return canonicalPCIAddress(bdf), nil
 }
 
 // looksLikePCIBDF applies a cheap shape check so we don't accept a
@@ -363,45 +251,4 @@ func readSysfsVRAMUsed(cardPath string) (uint64, bool) {
 		return 0, false
 	}
 	return v, true
-}
-
-// intelDeviceNamesFromGHW returns a map from PCI BDF ("0000:03:00.0")
-// to marketing name for every Intel graphics adapter ghw can see. ghw
-// already parses the shared pcidb; we reuse that here rather than
-// re-shipping the mapping ourselves. A ghw failure returns an empty
-// map — callers substitute "Intel GPU" for any adapter whose name
-// isn't found.
-func intelDeviceNamesFromGHW() map[string]string {
-	out := map[string]string{}
-	gpu, err := ghw.GPU()
-	if err != nil {
-		slog.Debug("ghw graphics enumeration failed for Intel name lookup", "err", err)
-		return out
-	}
-	for _, card := range gpu.GraphicsCards {
-		if card.DeviceInfo == nil || card.DeviceInfo.Vendor == nil {
-			continue
-		}
-		// pcidb reports vendor IDs as unprefixed lowercase hex ("8086");
-		// sysfs and xpu-smi use "0x8086". Compare against the sysfs
-		// form so both sides key on the same literal.
-		vendorID := "0x" + strings.ToLower(strings.TrimSpace(card.DeviceInfo.Vendor.ID))
-		if vendorID != intelPCIVendorID {
-			continue
-		}
-		bdf := strings.ToLower(strings.TrimSpace(card.Address))
-		if bdf == "" {
-			continue
-		}
-		// ghw sometimes reports the BDF without the "0000:" PCI domain;
-		// normalize to the same shape sysfs uses so the lookup joins.
-		if strings.Count(bdf, ":") == 1 {
-			bdf = "0000:" + bdf
-		}
-		if card.DeviceInfo.Product == nil || card.DeviceInfo.Product.Name == "" {
-			continue
-		}
-		out[bdf] = card.DeviceInfo.Product.Name
-	}
-	return out
 }

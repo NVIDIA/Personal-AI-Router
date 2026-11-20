@@ -109,7 +109,7 @@ func discoverIntelStatsSources() []intelStatsSource {
 // stamps in GPUInfo. Errors during scan return an empty slice — the
 // stats collector treats "no Intel sources" as "nothing to sample".
 func collectIntelSysfsCards() []intelStatsSource {
-	cards, err := filepath.Glob("/sys/class/drm/card*")
+	cards, err := filepath.Glob(filepath.Join(os.Getenv("GHW_CHROOT"), "/sys/class/drm/card*"))
 	if err != nil {
 		return nil
 	}
@@ -127,7 +127,7 @@ func collectIntelSysfsCards() []intelStatsSource {
 			continue
 		}
 		bdf, err := readSysfsBDF(card)
-		if err != nil || bdf == "" {
+		if err != nil || bdf == "" || isIntelVirtualFunction(bdf) {
 			continue
 		}
 		out = append(out, intelStatsSource{
@@ -171,13 +171,14 @@ func collectIntelXpuSmiDevices() map[string]intelStatsSource {
 			continue
 		}
 		bdf := strings.TrimPrefix(key, intelStatsKeyPrefix)
-		res[bdf] = intelStatsSource{
-			statsKey:   key,
-			bdf:        bdf,
-			deviceID:   d.DeviceID,
-			renderNode: intelRenderNodeForBDF(bdf),
-			hasDevID:   true,
+		if isIntelVirtualFunction(bdf) {
+			continue
 		}
+		source := intelStatsSource{statsKey: key, bdf: bdf, renderNode: intelRenderNodeForBDF(bdf)}
+		if d.DeviceID != nil && *d.DeviceID >= 0 {
+			source.deviceID, source.hasDevID = *d.DeviceID, true
+		}
+		res[bdf] = source
 	}
 	return res
 }

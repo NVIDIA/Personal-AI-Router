@@ -34,7 +34,7 @@ const amdPCIRoot = "/sys/bus/pci/devices"
 func detectGPUs() []GPUInfo {
 	nvidia := detectNvidiaLinux()
 	generic := detectGPUsGHW()
-	return mergeLinuxGPUInventory(nvidia, detectIntelGPUs(), generic)
+	return mergeLinuxGPUInventory(nvidia, detectIntelGPUs(generic), generic)
 }
 
 func mergeLinuxGPUInventory(nvidia, intel, generic []GPUInfo) []GPUInfo {
