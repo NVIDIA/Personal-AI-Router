@@ -10,12 +10,9 @@ import (
 )
 
 // gpuStat is the per-adapter dynamic state the service layers on top of the
-// static detectGPUs() output. Both fields are zero when the underlying OS
-// counter is unavailable; upstream code maps zeros back to "omit from JSON"
-// via the omitempty tags on GPUInfo, so clients see a missing field rather
-// than a misleading literal zero. The residual ambiguity for UtilizationPct
-// (0 could mean "GPU is actually idle" or "we couldn't read") is benign
-// because the two cases are visually identical to a user.
+// static detectGPUs() output. A zero field can mean a measured zero or an
+// unavailable counter. The omitempty tags on GPUInfo omit both cases.
+// GPUSampledAt describes the freshness of the node's GPU sample.
 type gpuStat struct {
 	VRAMUsed       uint64
 	UtilizationPct uint32
@@ -31,8 +28,7 @@ type gpuStat struct {
 // Unsupported collectors publish a zero-valued snapshot — GPU is a nil map
 // (omitempty semantics for downstream lookups come from the per-GPU omitempty
 // tags, not from an empty-map check here), CPUUtilPct is 0, MemUsedBytes is 0.
-// buildResponse treats each subsystem's zero-value as "unknown" and drops the
-// corresponding field per the normal omitempty rules.
+// buildResponse omits zero-valued numeric fields according to their JSON tags.
 type statsSnapshot struct {
 	GPU          map[string]gpuStat
 	GPUInventory []GPUInfo

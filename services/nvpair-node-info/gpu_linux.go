@@ -8,7 +8,9 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,13 +24,15 @@ import (
 // collector from blocking indefinitely.
 const nvidiaSmiTimeout = 3 * time.Second
 
+const amdPCIRoot = "/sys/bus/pci/devices"
+
 // detectGPUs enumerates GPUs on Linux. It prefers nvidia-smi, which yields the
 // marketing name, total VRAM, and a stable per-GPU UUID we reuse as the join
 // key (statsKey) against the dynamic stats collector's snapshot. When
 // nvidia-smi is absent — no NVIDIA driver, or an AMD/Intel-only host — it falls
-// back to ghw, which reports adapter names but no VRAM and no join key, so
-// those hosts list their GPUs without dynamic VRAM/utilization (matching the
-// pre-existing non-Windows behavior).
+// back to ghw. AMD adapters receive a PCI-derived join key for dynamic
+// utilization, while other adapters list their names without dynamic VRAM or
+// utilization (matching the pre-existing non-Windows behavior).
 //
 // On unified-memory architectures (UMA, e.g. Grace-Blackwell / DGX Spark)
 // nvidia-smi reports [N/A] for memory.total because the GPU shares system
@@ -45,6 +49,12 @@ func detectGPUs() []GPUInfo {
 					}
 				}
 			}
+			// Preserve NVIDIA records and include AMD adapters on mixed hosts.
+			for _, gpu := range detectGPUsGHW() {
+				if strings.HasPrefix(gpu.statsKey, "amd:") {
+					gpus = append(gpus, gpu)
+				}
+			}
 			return gpus
 		}
 	}
@@ -53,7 +63,8 @@ func detectGPUs() []GPUInfo {
 
 // detectGPUsGHW is the ghw-based fallback, identical in spirit to the
 // non-Windows/non-Linux path in gpu_other.go: enumerate display adapters and
-// return names only (VramBytes stays 0, statsKey stays empty).
+// return adapter names. AMD adapters also receive PCI-derived stats keys for
+// dynamic utilization; VramBytes stays 0 for every ghw-derived adapter.
 func detectGPUsGHW() []GPUInfo {
 	gpu, err := ghw.GPU()
 	if err != nil {
@@ -66,9 +77,54 @@ func detectGPUsGHW() []GPUInfo {
 		if card.DeviceInfo != nil && card.DeviceInfo.Product != nil {
 			name = card.DeviceInfo.Product.Name
 		}
-		gpus = append(gpus, GPUInfo{Name: name})
+		gpus = append(gpus, GPUInfo{Name: name, statsKey: amdStatsKey(amdPCIRoot, card.Address)})
 	}
 	return gpus
+}
+
+// amdStatsKey identifies AMD adapters by PCI address, independently of DRM
+// card numbering. The root argument permits tests without real hardware.
+func amdStatsKey(root, address string) string {
+	if !strings.Contains(address, ":") || filepath.Base(address) != address {
+		return ""
+	}
+	if strings.Count(address, ":") == 1 {
+		address = "0000:" + address
+	}
+	data, err := os.ReadFile(filepath.Join(root, address, "vendor"))
+	if err != nil || strings.TrimSpace(string(data)) != "0x1002" {
+		return ""
+	}
+	return "amd:" + address
+}
+
+// decodeAMDUtilization reads the amdgpu driver counter without a ROCm library,
+// subprocess or elevated privilege. Missing or invalid counters stay absent.
+// Memory is deliberately not mapped to VRAM: Strix Halo's GTT, reserved VRAM,
+// HSA pool and MemAvailable have different semantics and overlap.
+func decodeAMDUtilization(root string, out map[string]gpuStat) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	valid := false
+	for _, entry := range entries {
+		key := amdStatsKey(root, entry.Name())
+		if key == "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, entry.Name(), "gpu_busy_percent"))
+		if err != nil {
+			continue
+		}
+		pct, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 32)
+		if err != nil || pct > 100 {
+			continue
+		}
+		out[key] = gpuStat{UtilizationPct: uint32(pct)}
+		valid = true
+	}
+	return valid
 }
 
 // nvidiaSmiCSV runs `nvidia-smi --query-gpu=<fields> --format=csv,noheader,nounits`
