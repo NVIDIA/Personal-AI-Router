@@ -235,3 +235,70 @@ func TestPeer_RejectsKeyExchangeAfterInitialExchange(t *testing.T) {
 	assert.False(t, out.Success)
 	assert.Equal(t, StateWaiting, peer.State())
 }
+
+// peerAwaitingSuccess returns a peer that verified the server's Completion and
+// has not yet received EAP-Success.
+func peerAwaitingSuccess(t *testing.T) *Peer {
+	t.Helper()
+	server := NewServer(ServerConfig{Dirs: OOBServerToPeer}, nil)
+	peer := NewPeer(PeerConfig{}, nil)
+	require.Nil(t, driveConversation(t, server, peer).Err)
+	noob := bytes.Repeat([]byte{7}, 16)
+	require.NoError(t, server.OOBOutputWith(noob))
+	require.NoError(t, peer.OOBInputNoob(noob))
+
+	message, err := server.Start()
+	require.NoError(t, err)
+	for rounds := 0; !peer.completionVerified; rounds++ {
+		require.Less(t, rounds, 16, "completion was not verified")
+		out, err := peer.Receive(message)
+		require.NoError(t, err)
+		require.Nil(t, out.Err)
+		if peer.completionVerified {
+			break
+		}
+		out, err = server.Receive(out.Send)
+		require.NoError(t, err)
+		require.Nil(t, out.Err)
+		message = out.Send
+	}
+	return peer
+}
+
+// Verification applies to the next EAP-Success only. Any other message first
+// invalidates it.
+func TestPeer_RejectsSuccessAfterAnotherMessage(t *testing.T) {
+	test := func(name string, message []byte) {
+		t.Run(name, func(t *testing.T) {
+			peer := peerAwaitingSuccess(t)
+			_, err := peer.Receive(message)
+			require.NoError(t, err)
+
+			out, err := peer.Receive(resultBytes(eapSuccess))
+
+			require.NoError(t, err)
+			require.NotNil(t, out.Err)
+			assert.Equal(t, ErrStateMismatch, out.Err.Code)
+			assert.False(t, out.Success)
+			assert.Nil(t, peer.Association())
+		})
+	}
+	test("error message", []byte(`{"Type":0,"ErrorCode":1001,"ErrorInfo":"x"}`))
+	test("new negotiation request", negotiationRequest(t, NewServer(ServerConfig{}, nil), NewPeer(PeerConfig{}, nil)))
+	test("EAP-Failure", resultBytes(eapFailure))
+}
+
+func TestPeer_RejectsSecondSuccessAfterRegistration(t *testing.T) {
+	peer := peerAwaitingSuccess(t)
+	first, err := peer.Receive(resultBytes(eapSuccess))
+	require.NoError(t, err)
+	require.True(t, first.Success)
+	require.Equal(t, StateRegistered, peer.State())
+
+	out, err := peer.Receive(resultBytes(eapSuccess))
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.False(t, out.Success)
+}
