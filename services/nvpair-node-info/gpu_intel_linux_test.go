@@ -8,7 +8,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -244,119 +243,9 @@ fi
 	assert.Equal(t, uint64(2048), second.VramUsedBytes)
 }
 
-// TestParseIntelXpuSmiDump covers the dump-JSON shapes xpu-smi has
-// emitted across releases (bare array vs. object-with-data), the
-// header-name variance for utilization and memory-used, and the
-// device_id/BDF join paths. A failure in any of these would make
-// Intel utilization silently drop from the wire while the Intel
-// adapters still appear in the inventory.
-func TestParseIntelXpuSmiDump(t *testing.T) {
-	sources := []intelStatsSource{
-		{statsKey: "intel-pci-0000:03:00.0", bdf: "0000:03:00.0", deviceID: 0, hasDevID: true},
-		{statsKey: "intel-pci-0000:04:00.0", bdf: "0000:04:00.0", deviceID: 1, hasDevID: true},
-	}
-
-	cases := []struct {
-		name string
-		in   string
-		want map[string]intelDynamicStat
-	}{
-		{
-			name: "bare array, MiB memory header",
-			in: `[
-				{"deviceId":"0","GPU Utilization (%)":"42.5","GPU Memory Used (MiB)":"1024"},
-				{"deviceId":"1","GPU Utilization (%)":"7","GPU Memory Used (MiB)":"128"}
-			]`,
-			want: map[string]intelDynamicStat{
-				"intel-pci-0000:03:00.0": {util: 43, mem: 1024 * 1024 * 1024, hasUtil: true, hasMem: true},
-				"intel-pci-0000:04:00.0": {util: 7, mem: 128 * 1024 * 1024, hasUtil: true, hasMem: true},
-			},
-		},
-		{
-			name: "object with data field, byte memory header",
-			in: `{"data":[
-				{"device_id":0,"XPUM_STATS_GPU_UTILIZATION":15,"XPUM_STATS_MEMORY_USED":536870912}
-			]}`,
-			want: map[string]intelDynamicStat{
-				"intel-pci-0000:03:00.0": {util: 15, mem: 536870912, hasUtil: true, hasMem: true},
-			},
-		},
-		{
-			name: "join by BDF when device_id is absent",
-			in: `[
-				{"pci_bdf_address":"0000:04:00.0","GPU Utilization (%)":"50","GPU Memory Used (MiB)":"64"}
-			]`,
-			want: map[string]intelDynamicStat{
-				"intel-pci-0000:04:00.0": {util: 50, mem: 64 * 1024 * 1024, hasUtil: true, hasMem: true},
-			},
-		},
-		{
-			name: "N/A utilization drops the utilization field, keeps memory",
-			in: `[
-				{"deviceId":"0","GPU Utilization (%)":"N/A","GPU Memory Used (MiB)":"32"}
-			]`,
-			want: map[string]intelDynamicStat{
-				"intel-pci-0000:03:00.0": {mem: 32 * 1024 * 1024, hasMem: true},
-			},
-		},
-		{
-			name: "row for unknown adapter is skipped",
-			in: `[
-				{"deviceId":"99","GPU Utilization (%)":"10","GPU Memory Used (MiB)":"1"}
-			]`,
-			want: nil,
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := parseIntelXpuSmiDump([]byte(c.in), sources)
-			if len(got) == 0 && len(c.want) == 0 {
-				return
-			}
-			if !reflect.DeepEqual(got, c.want) {
-				t.Errorf("parseIntelXpuSmiDump = %+v, want %+v", got, c.want)
-			}
-		})
-	}
-}
-
-// TestSampleIntelStatsMergesXpuSmiAndSysfs pins the merge rule: xpu-smi
-// wins for utilization and memory-used, and sysfs only fills memory
-// when xpu-smi didn't provide it. Verified indirectly via the map
-// returned by parseIntelXpuSmiDump because sampleIntelStats depends on
-// filesystem state we don't want to mock in a unit test.
-func TestSampleIntelStatsHandlesEmptySources(t *testing.T) {
-	out := map[string]gpuStat{}
-	if got := sampleIntelStats(nil, out); got != 0 {
-		t.Errorf("sampleIntelStats(nil, ...) returned %d samples, want 0", got)
-	}
-	if len(out) != 0 {
-		t.Errorf("sampleIntelStats(nil, ...) mutated out: %v", out)
-	}
-}
-
-// TestParseFloatishPercent pins the type-tolerant number parsing that
-// keeps the Intel decoder working across xpu-smi builds that emit
-// percentages as strings, floats, or integers.
-func TestParseFloatishPercent(t *testing.T) {
-	cases := []struct {
-		in     any
-		want   uint32
-		wantOK bool
-	}{
-		{42.5, 43, true},
-		{"42.5", 43, true},
-		{100, 100, true},
-		{"105", 100, true},
-		{-1.0, 0, false},
-		{"N/A", 0, false},
-		{"", 0, false},
-	}
-	for _, c := range cases {
-		got, ok := parseFloatishPercent(c.in)
-		if ok != c.wantOK || got != c.want {
-			t.Errorf("parseFloatishPercent(%v) = %d,%v; want %d,%v", c.in, got, ok, c.want, c.wantOK)
-		}
+func TestSampleIntelStats_LeavesOutputUnchangedWithoutSources(t *testing.T) {
+	out := map[string]gpuStat{"existing": {VRAMUsed: 1}}
+	if samples := sampleIntelStats(nil, out); samples != 0 || len(out) != 1 || out["existing"].VRAMUsed != 1 {
+		t.Fatalf("samples = %d, output = %v", samples, out)
 	}
 }

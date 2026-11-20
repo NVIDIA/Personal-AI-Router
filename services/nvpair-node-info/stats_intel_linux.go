@@ -7,10 +7,16 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -59,6 +65,9 @@ type intelStatsSource struct {
 // intelXpuSmiUnavailable latches on the first xpu-smi failure so we
 // don't re-spawn (and re-warn about) a missing binary every tick.
 var intelXpuSmiUnavailable atomic.Bool
+
+// Remember the working sample-count flag after one successful retry.
+var intelXpuSmiLegacyCount atomic.Bool
 
 // discoverIntelStatsSources enumerates the Intel adapters the stats
 // collector will sample every tick. Combines sysfs (authoritative for
@@ -251,227 +260,120 @@ type intelDynamicStat struct {
 // failure (binary missing, timeout, unexpected schema) it returns nil
 // and the caller falls through to sysfs.
 //
-// Metric IDs: 0 = GPU utilization %, 5 = GPU memory used (bytes). These
-// are the two IDs xpu-smi has kept stable across every 1.x release; the
-// dump JSON reports them under human-readable column names that vary
-// per build ("GPU Utilization (%)", "XPUM_STATS_GPU_UTILIZATION", etc.),
-// so we normalize the header lookup.
+// Metric 0 is GPU utilization (%); metric 18 is memory used (MiB).
+// Both supported CLI families return CSV on a non-terminal stdout.
 func sampleIntelXpuSmi(sources []intelStatsSource) map[string]intelDynamicStat {
-	if intelXpuSmiUnavailable.Load() {
+	if intelXpuSmiUnavailable.Load() || !slices.ContainsFunc(sources, func(s intelStatsSource) bool { return s.hasDevID }) {
 		return nil
 	}
-	// -d -1 selects all devices; -n 1 requests exactly one snapshot; -m
-	// 0,5 picks utilization and memory-used. -j asks for JSON. Ancient
-	// xpu-smi releases reject -j — an unknown flag surfaces as a
-	// nonzero exit which the latch below then silences.
-	out, err := xpuSmiJSON(context.Background(),
-		"dump", "-d", "-1", "-m", "0,5", "-n", "1", "-j")
+	countFlag := "--number"
+	if intelXpuSmiLegacyCount.Load() {
+		countFlag = "-n"
+	}
+	out, err := xpuSmiJSON(context.Background(), "dump", "--device", "-1", "--metrics", "0,18", countFlag, "1")
+	// Only an explicit CLI rejection of --number establishes the legacy
+	// spelling. Driver, authorization and timeout errors are not retries.
+	if err != nil && !xpuSmiUnavailable(err) && countFlag == "--number" && xpuSmiRejectsNumber(err) {
+		out, err = xpuSmiJSON(context.Background(), "dump", "--device", "-1", "--metrics", "0,18", "-n", "1")
+		if err == nil {
+			intelXpuSmiLegacyCount.Store(true)
+		}
+	}
 	if err != nil {
-		if intelXpuSmiUnavailable.CompareAndSwap(false, true) {
+		if xpuSmiUnavailable(err) && intelXpuSmiUnavailable.CompareAndSwap(false, true) {
 			slog.Info("xpu-smi dump unavailable; Intel GPU utilization / memory-used will not be reported",
 				"err", err)
+		} else {
+			slog.Debug("xpu-smi dump failed; retaining Intel memory fallbacks", "err", err)
 		}
 		return nil
 	}
-	return parseIntelXpuSmiDump(out, sources)
+	return parseIntelXpuSmiCSV(out, sources)
 }
 
-// parseIntelXpuSmiDump decodes an `xpu-smi dump -j` payload. The tool
-// emits either a top-level JSON array of row objects or an object with
-// a "data" / "device_list" array; we accept both. Each row has a
-// device-id field and free-form column keys — we match utilization and
-// memory-used by keyword rather than by exact name so a header rename
-// in a future xpu-smi build still parses.
-func parseIntelXpuSmiDump(out []byte, sources []intelStatsSource) map[string]intelDynamicStat {
-	rows := extractIntelDumpRows(out)
-	if len(rows) == 0 {
+func xpuSmiRejectsNumber(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	message := strings.ToLower(string(exit.Stderr))
+	return strings.Contains(message, "--number") &&
+		(strings.Contains(message, "not expected") || strings.Contains(message, "unknown option") || strings.Contains(message, "unrecognized option"))
+}
+
+func xpuSmiUnavailable(err error) bool {
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		message := strings.ToLower(string(exit.Stderr))
+		return strings.Contains(message, "permission denied") || strings.Contains(message, "access denied")
+	}
+	return false
+}
+
+// parseIntelXpuSmiCSV recognizes only the documented columns, so memory
+// utilization cannot be mistaken for GPU utilization or bytes used.
+func parseIntelXpuSmiCSV(out []byte, sources []intelStatsSource) map[string]intelDynamicStat {
+	r := csv.NewReader(strings.NewReader(string(out)))
+	r.TrimLeadingSpace = true
+	r.FieldsPerRecord = -1
+	headers, err := r.Read()
+	if err != nil {
 		return nil
 	}
-	byDeviceID := make(map[int]string, len(sources))
-	byBDF := make(map[string]string, len(sources))
-	for _, s := range sources {
-		if s.hasDevID {
-			byDeviceID[s.deviceID] = s.statsKey
-		}
-		if s.bdf != "" {
-			byBDF[s.bdf] = s.statsKey
+	device, util, memory := -1, -1, -1
+	for i, header := range headers {
+		switch strings.ToLower(strings.TrimSpace(header)) {
+		case "deviceid", "device_id":
+			device = i
+		case "average % utilization of all gpu engines", "gpu utilization (%)", "utilization.gpu (%)":
+			util = i
+		case "gpu memory used (mib)", "memory.used (mib)":
+			memory = i
 		}
 	}
-	res := make(map[string]intelDynamicStat, len(rows))
-	for _, row := range rows {
-		key := matchIntelDumpRow(row, byDeviceID, byBDF)
-		if key == "" {
+	if device < 0 || (util < 0 && memory < 0) {
+		return nil
+	}
+	ids := make(map[int]string, len(sources))
+	for _, src := range sources {
+		if src.hasDevID {
+			ids[src.deviceID] = src.statsKey
+		}
+	}
+	result := make(map[string]intelDynamicStat)
+	for {
+		row, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil
+		}
+		if device >= len(row) {
 			continue
 		}
-		stat := intelDynamicStat{}
-		for k, v := range row {
-			lk := strings.ToLower(k)
-			switch {
-			case strings.Contains(lk, "util"):
-				if pct, ok := parseFloatishPercent(v); ok {
-					stat.util = pct
-					stat.hasUtil = true
-				}
-			case strings.Contains(lk, "mem"):
-				if bytesUsed, ok := parseIntelMemoryValue(k, v); ok {
-					stat.mem = bytesUsed
-					stat.hasMem = true
-				}
+		id, err := strconv.Atoi(strings.TrimSpace(row[device]))
+		key, ok := ids[id]
+		if err != nil || !ok {
+			continue
+		}
+		var stat intelDynamicStat
+		if util >= 0 && util < len(row) {
+			if n, err := strconv.ParseFloat(strings.TrimSpace(row[util]), 64); err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) && n >= 0 && n <= 100 {
+				stat.util, stat.hasUtil = uint32(n+0.5), true
+			}
+		}
+		if memory >= 0 && memory < len(row) {
+			if n, err := strconv.ParseFloat(strings.TrimSpace(row[memory]), 64); err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) && n >= 0 && n < math.Exp2(44) {
+				stat.mem, stat.hasMem = uint64(n*1024*1024), true
 			}
 		}
 		if stat.hasUtil || stat.hasMem {
-			res[key] = stat
+			result[key] = stat
 		}
 	}
-	return res
-}
-
-// extractIntelDumpRows unpacks the top-level shape variations xpu-smi
-// dump has emitted across releases: a bare array of row objects, or an
-// object with a rows/data/device_list array of the same. Returns nil
-// when neither shape matches.
-func extractIntelDumpRows(out []byte) []map[string]any {
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" {
-		return nil
-	}
-	if strings.HasPrefix(trimmed, "[") {
-		var arr []map[string]any
-		if err := json.Unmarshal(out, &arr); err == nil {
-			return arr
-		}
-		return nil
-	}
-	var env map[string]any
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil
-	}
-	for _, key := range []string{"data", "rows", "device_list", "metrics"} {
-		if v, ok := env[key]; ok {
-			if arr, ok := v.([]any); ok {
-				rows := make([]map[string]any, 0, len(arr))
-				for _, r := range arr {
-					if m, ok := r.(map[string]any); ok {
-						rows = append(rows, m)
-					}
-				}
-				return rows
-			}
-		}
-	}
-	return nil
-}
-
-// matchIntelDumpRow resolves a dump row back to one of the adapters we
-// know about. Prefers device_id (an integer) when the row exposes it,
-// then falls back to matching on PCI BDF if the row carries one. A row
-// that can't be matched is skipped — a version of xpu-smi that reports
-// an adapter we didn't discover during startup is safely ignored.
-func matchIntelDumpRow(row map[string]any, byDeviceID map[int]string, byBDF map[string]string) string {
-	for k, v := range row {
-		lk := strings.ToLower(k)
-		if strings.Contains(lk, "deviceid") || lk == "device_id" || lk == "device" {
-			if id, ok := parseInt(v); ok {
-				if key, ok := byDeviceID[id]; ok {
-					return key
-				}
-			}
-		}
-		if strings.Contains(lk, "bdf") || strings.Contains(lk, "pci") {
-			if s, ok := v.(string); ok {
-				bdf := strings.ToLower(strings.TrimSpace(s))
-				if strings.Count(bdf, ":") == 1 {
-					bdf = "0000:" + bdf
-				}
-				if key, ok := byBDF[bdf]; ok {
-					return key
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// parseFloatishPercent accepts the integer, float, or string forms
-// xpu-smi has emitted for a percent column and returns a 0..100 uint32.
-// Values above 100 are clamped, matching the nvidia-smi treatment.
-func parseFloatishPercent(v any) (uint32, bool) {
-	f, ok := parseFloat(v)
-	if !ok {
-		return 0, false
-	}
-	if f < 0 {
-		return 0, false
-	}
-	if f > 100 {
-		f = 100
-	}
-	return uint32(f + 0.5), true
-}
-
-// parseIntelMemoryValue interprets the value of a memory column. xpu-smi
-// dump reports either raw bytes or MiB depending on the column heading;
-// we detect MiB from the header text and convert. Unknown units default
-// to bytes.
-func parseIntelMemoryValue(header string, v any) (uint64, bool) {
-	f, ok := parseFloat(v)
-	if !ok || f < 0 {
-		return 0, false
-	}
-	lh := strings.ToLower(header)
-	switch {
-	case strings.Contains(lh, "mib") || strings.Contains(lh, "(mib)"):
-		return uint64(f * 1024 * 1024), true
-	case strings.Contains(lh, "gib") || strings.Contains(lh, "(gib)"):
-		return uint64(f * 1024 * 1024 * 1024), true
-	default:
-		return uint64(f), true
-	}
-}
-
-func parseFloat(v any) (float64, bool) {
-	switch x := v.(type) {
-	case float64:
-		return x, true
-	case float32:
-		return float64(x), true
-	case int:
-		return float64(x), true
-	case int64:
-		return float64(x), true
-	case json.Number:
-		if f, err := x.Float64(); err == nil {
-			return f, true
-		}
-	case string:
-		s := strings.TrimSpace(x)
-		if s == "" || strings.EqualFold(s, "n/a") {
-			return 0, false
-		}
-		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			return f, true
-		}
-	}
-	return 0, false
-}
-
-func parseInt(v any) (int, bool) {
-	switch x := v.(type) {
-	case int:
-		return x, true
-	case int64:
-		return int(x), true
-	case float64:
-		return int(x), true
-	case json.Number:
-		if i, err := x.Int64(); err == nil {
-			return int(i), true
-		}
-	case string:
-		s := strings.TrimSpace(x)
-		if i, err := strconv.Atoi(s); err == nil {
-			return i, true
-		}
-	}
-	return 0, false
+	return result
 }
