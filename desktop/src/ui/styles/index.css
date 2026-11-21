@@ -302,6 +302,20 @@ body .os-scrollbar {
     text-decoration: underline;
 }
 
+/*
+ * Underscore-safe text inputs (model alias editor fields).
+ *
+ * The size="small" KUI input shell is 28px tall with border-box sizing: its
+ * 1px border and 6px block padding leave the inner input a 14px box, and a
+ * 12px monospace underscore draws at that bottom edge, so names like
+ * qwen38-fn-ud-q4_k_xl read as spaces. 32px gives the text an 18px box —
+ * still compact, glyph complete. Equal specificity to the vendor small-size
+ * rule but declared after the components.css @import, so it wins the cascade.
+ */
+.nv-input-shell.pair-underscore-safe {
+    --nv-input-height: 32px;
+}
+
 .pair-accordion {
     background: transparent;
     border: 0;

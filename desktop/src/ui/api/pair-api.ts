@@ -6,10 +6,13 @@ import type { PreloadServiceTransport as ServiceTransport } from '@/shared/types
 import type {
     AvailableNode,
     ClusterIdentityPayload,
+    ClusterModelAliasViewEntry,
     ClusterNode,
-    Invite
+    Invite,
+    ModelAlias
 } from '@/shared/types/cluster'
 import type { NodeItem } from '@/shared/types/nodes'
+import type { ClusterRouterConfig, ClusterRouterStatus } from '@/shared/types/ws-channels'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
@@ -66,6 +69,38 @@ export interface IClusterApi {
      * when that pairing failed and no peer joined. No-op otherwise.
      */
     abandonIfSolo(): Promise<void>
+    /**
+     * This node's configured cluster model aliases — caller-side synonyms that
+     * the cluster router resolves to engines on any cluster node.
+     */
+    getModelAliases(): Promise<ModelAlias[]>
+    /**
+     * Replace a node's alias list wholesale — this computer's own included, which
+     * is why one card edits every list. `nodeId` is the cluster id the Overview
+     * node cards use, and the broker decides where the document lives: written
+     * here when it is this machine, carried to the owning node otherwise and
+     * checked again by that node's own settings service. Rejects with that node's
+     * own reason when it refuses the document.
+     */
+    setNodeModelAliases(nodeId: string, aliases: ModelAlias[]): Promise<void>
+    /**
+     * The cluster alias view: every name this computer's cluster router routes
+     * by, peer-announced ones included, each marked with the node that wrote
+     * it. Read-only — a peer's alias is edited on that peer.
+     */
+    getRouterAliases(): Promise<ClusterModelAliasViewEntry[]>
+    /**
+     * This computer's cluster routing endpoint preference (whether it is served
+     * and on which loopback port). Takes effect at the next services restart.
+     */
+    getRouterConfig(): Promise<ClusterRouterConfig>
+    /**
+     * Persist part of that preference. Resolves with the whole stored value, so
+     * a port the bridge refuses snaps the editor back to what will be used.
+     */
+    setRouterConfig(patch: Partial<ClusterRouterConfig>): Promise<ClusterRouterConfig>
+    /** Whether the endpoint is listening right now, and on which port. */
+    getRouterStatus(): Promise<ClusterRouterStatus>
     /** An inbound pairing arrived; prompt the user for the PIN. */
     onInviteReceived(callback: (invite: Invite) => void): () => void
     /** The authoritative set of live inbound invites changed (add or prune). */
@@ -160,6 +195,14 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
             abandonIfSolo: async () => {
                 await transport.invoke('cluster:abandon-if-solo')
             },
+            getModelAliases: () => transport.invoke('cluster:get-model-aliases'),
+            setNodeModelAliases: async (nodeId, aliases) => {
+                await transport.invoke('cluster:set-node-model-aliases', { nodeId, aliases })
+            },
+            getRouterAliases: () => transport.invoke('cluster:get-router-aliases'),
+            getRouterConfig: () => transport.invoke('cluster:get-router-config'),
+            setRouterConfig: patch => transport.invoke('cluster:set-router-config', patch),
+            getRouterStatus: () => transport.invoke('cluster:get-router-status'),
             onInviteReceived: cb => transport.subscribePush('cluster:invite-received', cb),
             onPendingInvitesChanged: cb =>
                 transport.subscribePush('cluster:pending-invites-changed', cb)
