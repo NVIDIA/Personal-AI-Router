@@ -245,6 +245,9 @@ shows:
 
 - Host and GPU telemetry
 - Per-node model inventory, so the proxy can judge a node eligible for a request
+- Each node's own model aliases, so a name written on one machine routes from
+  another. Announced, not replicated: a node's list stays in that node's settings,
+  and a change to it is carried back to the machine that owns it.
 - Workload events, so every node can show jobs running anywhere in the cluster
 - Service errors, so a failure on one node is visible from another
 - Cluster-scoped engine control, for operating a remote node's engine
@@ -447,6 +450,107 @@ Where you put each model decides what routing can do with it:
 - **Where work actually ran is observable.** Use the **Jobs** view rather than
   inferring routing from inventory.
 
+### The Cluster Routing Endpoint
+
+Everything above describes a **facade**: one engine's dialect, one engine's
+owners. A second routing personality in the same `nvpair-proxy` process answers a
+different question — *whoever has this model, wherever they are* — on its own
+loopback port, and it exists only while the user's Cluster Settings switch is on.
+
+Its difference is one addressing class, not a second data plane. It shares the
+process's transports, cluster trust, reservation ledger, and workload stream, and
+adds:
+
+- **A catalog instead of one engine's candidate list.** It indexes the per-engine
+  routing overlays the facades in this process already maintain, so identity
+  gating, ranked addresses, and manual entries are the same facts, never a second
+  opinion. The catalog is built whole and replaced whole on a short TTL, so a
+  routing decision sees either the old cluster or the new one.
+- **Resolution across engines.** A requested name is matched as a native
+  identifier against every engine first, then under each engine's naming
+  convention, then as a configured model alias. Exact always wins, so an alias can
+  never shadow a model that was literally renamed to the alias name.
+- **A rewritten body.** The chosen provider's own model ID replaces `model` in the
+  request body, and nothing else about the request is touched. A friendly name is
+  therefore never on the wire: the engine sees the identifier it advertises, so
+  the model itself is unaffected by the alias and the same request with the real ID
+  keeps working.
+- **The same capacity ledger.** A cluster route takes its reservation from the
+  process-wide map keyed by node id, so a burst through the router and a burst
+  through a facade see each other's load on a host. The claim follows whichever
+  provider is actually being tried.
+
+The rules the facades follow still bind it, with one consequence worth naming: the
+provider set the resolver produced is the whole failover boundary. When nobody
+serves the name, or nobody who serves it is dialable, the answer is a local `502`
+and nothing is dialled — *"I cannot reach anybody who serves this"* never becomes
+*"let me try whatever is up"*. When the dispatch budget ends with providers
+untried, the answer is a local `503`, not the last provider's status read back as
+the cluster's verdict.
+
+Two boundaries keep it from becoming an amplification hazard. **The listener binds
+loopback only**, so there is no plaintext cluster-wide relay on a network; a peer
+that needs to route across nodes runs its own router locally. **And every hop is
+terminal**: the peer that receives a routed request is reached at an engine
+endpoint, whose cluster ingress forwards to its own local engine without
+consulting candidate resolution, so a cluster-routed request is dialled exactly
+once and a loop between two routers is unreachable by construction. Jobs started
+here are reported with `engine: "cluster"`, which is not an engine but the routing
+class — and an honest statement of what was known when the job was submitted.
+
+#### Model Aliases
+
+An alias is a `{ name, model }` pair: a name a client may use and the model it
+stands for. It is a synonym for a model, never a host list, which is what lets the
+same two strings route on every computer that hears them — each answers with the
+hosts it can actually see holding that model.
+
+**The list belongs to the node that typed it.** `nvpair-node-settings` stores and
+validates it and nothing replicates it; there is no global alias registry. A peer's
+aliases therefore travel the same one-way announcement path the model inventory
+does: the owning node's broker pushes the document to its engine-manager, which
+announces it on the `GET /v1/models` surface its peers already poll; a peer's
+scanner enriches that node's directory record with it, and the broker then relays
+the whole cluster's aliases to its own proxy's router. Local aliases arrive
+immediately through a direct push; peers' arrive at announcement pace. This node's
+own definitions lead the merge and peers' follow in node-id order, so which
+definition of a contested name wins never depends on which directory record sorted
+first.
+
+The announced field distinguishes *"this node configures no aliases"* from *"this
+node has not said"*, and that distinction is load-bearing rather than tidy: the
+editing surface over a node's list **replaces the whole document it displays**, so
+offering an empty editor over what was really silence is one Save away from
+erasing that node's aliases. A node whose engine-manager is unreachable, or whose
+settings service has not answered, therefore reports nothing at all, and the
+interface must not let anybody edit over that.
+
+There is exactly one editing surface for a node's document: that node's card in the
+Overview, this computer's own card included. Since the write is a whole-document
+replace with no revision field, a second editor for the same list would let two
+operators overwrite each other without either seeing it; what Settings shows
+instead is read-only — the aliases this computer's endpoint routes by that were
+written elsewhere, each naming its author.
+
+**Editing another node's list is that node's document, carried to that node.** A
+client calls the broker with the target's cluster id and the new list; the broker
+answers a write to its own id itself, and hands any other to `nvpair-workload-manager`,
+which POSTs it to that node's cluster-mTLS listener. The workload manager is a
+courier: it neither validates nor stores an alias. The document reaches the owning
+node's broker and from there its own `nvpair-node-settings`, so local and remote
+writes meet one validator, and a refusal is that node's own sentence, relayed
+verbatim. The caller's identity is the cluster id on the peer certificate, never a
+field in the body, so it is unforgeable and every write is attributable to a
+machine. The write replaces the whole document and is last-writer-wins: there is no
+revision field, because a version check buys detection for a collision that needs
+two operators editing one node at one moment.
+
+That the request rides the workload manager's port rather than a proxy's is
+deliberate. A proxy's facade port follows an engine: it closes whenever that engine
+is stopped, which is exactly when an operator may need to repair the alias that was
+pointing at it. The workload manager's listener is bound for the life of the
+process and its address is already in every peer's node record.
+
 ### Scheduler Limitations
 
 There is one policy today and it combines job count with coarse GPU utilization.
@@ -581,11 +685,12 @@ A default installation listens on these ports:
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
 | `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
 | `8080` | OpenAI-compatible llama.cpp proxy (managed router on `8081`) |
+| `9999` | Cluster routing endpoint, loopback only, listed only when the Cluster Settings switch turns it on; the user's number, and nothing to do with an engine's |
 | `14318` | Public hardware displays and peer node inventory |
 | `14319` | Service-error synchronization between nodes |
-| `14320` | Workload propagation between nodes |
+| `14320` | Workload propagation between nodes, and the carrier for a peer's model alias write |
 | `14321` | Pairing and cluster membership |
-| `14322` | Model list served to cluster peers |
+| `14322` | Model list served to cluster peers, with that node's model aliases |
 | `14323` | Cluster-scoped remote engine control |
 
 The `143xx` listeners are the peer surfaces from

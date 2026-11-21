@@ -294,7 +294,8 @@ feedback and contributions will help shape priorities.
 
 ### Routing and clusters
 
-- [ ] Route OpenAI-compatible API requests across different inference engines.
+- [x] Route OpenAI-compatible API requests across different inference engines.
+- [x] Name a model once and route it by that name from any node (model aliases).
 - [ ] Inference request queuing.
 - [ ] Increase number of scheduler variables for better QoS.
 - [ ] A "cluster as a node" view.
