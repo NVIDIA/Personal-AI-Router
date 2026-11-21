@@ -21,6 +21,17 @@ import (
 
 // proxyCallTimeout bounds how long the broker waits for the proxy to answer a
 // relayed control-plane request before giving up.
+//
+// The router/set-enabled relay is the one broker call that consumes this
+// budget twice sequentially: once for the apply call into nvpair-proxy, then
+// once for the deliberate courier-before-answer of the node's alias document.
+// Its worst case is therefore ~2x this constant. That equals the desktop
+// caller's default 10 s JSON-RPC budget (the timeoutMs default in
+// desktop/src/electron/service-bridge/json-rpc-subprocess.ts): a slow-but-alive
+// proxy can make the desktop give up at the same moment the apply succeeds.
+// The desktop recovers from card truth, but the budgets touching is a
+// deliberate relationship — do not lower one number without re-reading the
+// other.
 const proxyCallTimeout = 5 * time.Second
 
 // proxyProcess is the broker's handle on its child nvpair-proxy: a full
@@ -61,14 +72,27 @@ type proxyProcess struct {
 	// subIDs is keyed by engine because each facade subscribes for its own
 	// engine's discovery service: one id per process would let a second
 	// facade's subscribe replace the first's. Nil until the first subscribe.
+	// The process-scoped alias feed joins that map under proxyAliasFeedKey.
 	relayDir *relay.Directory
 	subMu    sync.Mutex
 	subIDs   map[string]int
-	// pendingNodes retains only the latest complete snapshot per engine while
-	// one sender writes to stdin. Both fields are protected by subMu.
+	// pendingNodes retains only the latest complete snapshot per subscription
+	// key while one sender writes to stdin. Both fields are protected by subMu.
 	pendingNodes map[string][]noderec.DirectoryNode
 	sendingNodes bool
 }
+
+// proxyAliasFeedKey is the subIDs/pendingNodes key of the proxy process's
+// process-scoped alias feed (cluster:subscribe-aliases). It rides the same
+// machinery as the per-facade subscriptions — one registration, one latest-
+// snapshot-pending slot, the same sender goroutine — because the delivery
+// shape is identical; only the notify method differs (sendNodeSnapshots).
+//
+// It lives in the engine-keyed map because "cluster" is not an engine id:
+// SplitAddressedMethod only strips known engine names, so no facade-scoped
+// message can ever be keyed this way, and the router's engine tag ("cluster")
+// is likewise not routable to a facade.
+const proxyAliasFeedKey = "cluster"
 
 // proxyReadyParams mirrors the proxy's "ready" notification payload: a facade
 // binds its port synchronously and echoes it here, the authoritative source of
@@ -156,8 +180,9 @@ func startProxy(name, binaryPath, logLevel string, relayDir *relay.Directory, on
 	go func() {
 		_ = cmd.Wait()
 		pp.peer.Close()
-		// Every facade's subscription goes, not just one: the process is gone,
-		// so a surviving registration would push snapshots at a closed peer.
+		// Every subscription goes, not just one: the process is gone, so a
+		// surviving registration — facade or process-scoped alias feed — would
+		// push snapshots at a closed peer.
 		pp.subMu.Lock()
 		for engine, id := range pp.subIDs {
 			if id != 0 && pp.relayDir != nil {
@@ -208,26 +233,37 @@ func (p *proxyProcess) handleNotify(method string, params json.RawMessage) {
 		p.handleSubscribe(engine, params)
 		return
 	}
+	// The process-scoped counterpart: the alias feed is one per process, not
+	// one per facade, so it has no engine address to key on. An engine-service
+	// filter would hide every alias announced by a peer that fronts no engine,
+	// which is exactly what the feed exists to carry.
+	if method == noderec.MethodSubscribePeerAliases {
+		p.handleSubscribe(proxyAliasFeedKey, params)
+		return
+	}
 	if p.onNotify != nil {
 		p.onNotify(method, params)
 	}
 }
 
-// handleSubscribe wires one facade's discovery:subscribe into the relay
+// handleSubscribe wires one upward subscription from the proxy into the relay
 // directory: it registers a subscriber whose Send pushes a discovery:nodes
 // snapshot down the proxy's peer, then sends the initial snapshot so the
 // facade's routing set is populated immediately. A re-subscribe (e.g. the
-// facade resends) drops that facade's prior registration so it isn't
+// facade resends) drops that subscription's prior registration so it isn't
 // double-fed.
 //
-// Subscriptions are tracked per engine, not per process. Each facade filters on
-// its own engine's discovery service, so a single id per process would make a
-// second facade's subscribe silently replace the first's — leaving that engine
-// with a routing set that never updates again.
+// key is the subscription's slot in subIDs/pendingNodes: the engine for a
+// facade-scoped discovery:subscribe, or proxyAliasFeedKey for the process-
+// scoped alias feed. Subscriptions are tracked per key, not per process. Each
+// facade filters on its own engine's discovery service, so a single id per
+// process would make a second facade's subscribe silently replace the first's
+// — leaving that engine with a routing set that never updates again.
 //
-// Snapshots are pushed back addressed to the requesting engine, so the child
-// hands each one to the facade that asked for it.
-func (p *proxyProcess) handleSubscribe(engine string, params json.RawMessage) {
+// Snapshots are pushed back under the method that belongs to the key
+// (sendNodeSnapshots): addressed to the requesting engine for a facade, bare
+// for the process-scoped feed, so the child hands each one where it belongs.
+func (p *proxyProcess) handleSubscribe(key string, params json.RawMessage) {
 	if p.relayDir == nil {
 		return
 	}
@@ -235,13 +271,13 @@ func (p *proxyProcess) handleSubscribe(engine string, params json.RawMessage) {
 	send := func(nodes []noderec.DirectoryNode) {
 		p.subMu.Lock()
 		defer p.subMu.Unlock()
-		if p.subIDs[engine] != id {
+		if p.subIDs[key] != id {
 			return // a delivery from a replaced subscription must not overwrite it
 		}
 		if p.pendingNodes == nil {
 			p.pendingNodes = make(map[string][]noderec.DirectoryNode)
 		}
-		p.pendingNodes[engine] = nodes
+		p.pendingNodes[key] = nodes
 		if !p.sendingNodes {
 			p.sendingNodes = true
 			go p.sendNodeSnapshots()
@@ -251,44 +287,47 @@ func (p *proxyProcess) handleSubscribe(engine string, params json.RawMessage) {
 	if p.subIDs == nil {
 		p.subIDs = make(map[string]int, len(engines.Names()))
 	}
-	if prior := p.subIDs[engine]; prior != 0 {
+	if prior := p.subIDs[key]; prior != 0 {
 		p.relayDir.Unsubscribe(prior)
 	}
-	delete(p.pendingNodes, engine)
+	delete(p.pendingNodes, key)
 	var sub *relay.Subscriber
 	var err error
 	id, sub, err = subscribeRelay(p.relayDir, params, send)
-	p.subIDs[engine] = id
+	p.subIDs[key] = id
 	p.subMu.Unlock()
 	if err != nil {
-		slog.Warn("proxy sent invalid discovery:subscribe", "engine", engine, "err", err)
+		slog.Warn("proxy sent invalid discovery:subscribe", "key", key, "err", err)
 		return
 	}
 	p.relayDir.Deliver(sub)
 }
 
 // The relay serializes initial and live deliveries before they are queued. A
-// blocked pipe retains one pending snapshot per engine, including empty sets,
-// while the writer runs outside discovery, relay, and subscription locks.
+// blocked pipe retains one pending snapshot per subscription, including empty
+// sets, while the writer runs outside discovery, relay, and subscription locks.
 func (p *proxyProcess) sendNodeSnapshots() {
 	for {
 		p.subMu.Lock()
-		engine := ""
+		key := ""
 		var nodes []noderec.DirectoryNode
 		for candidate, snapshot := range p.pendingNodes {
-			engine, nodes = candidate, snapshot
+			key, nodes = candidate, snapshot
 			delete(p.pendingNodes, candidate)
 			break
 		}
-		if engine == "" {
+		if key == "" {
 			p.sendingNodes = false
 			p.subMu.Unlock()
 			return
 		}
 		p.subMu.Unlock()
-		method := engines.AddressMethod(engine, noderec.NotifyNodes)
+		method := engines.AddressMethod(key, noderec.NotifyNodes)
+		if key == proxyAliasFeedKey {
+			method = noderec.NotifyPeerAliases
+		}
 		if err := p.peer.Notify(method, noderec.GetNodesResult{Nodes: nodes}); err != nil {
-			slog.Debug("failed to push node snapshot to proxy", "engine", engine, "err", err)
+			slog.Debug("failed to push node snapshot to proxy", "subscription", key, "err", err)
 		}
 	}
 }

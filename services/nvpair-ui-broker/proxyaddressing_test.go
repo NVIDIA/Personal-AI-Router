@@ -540,3 +540,62 @@ func TestProxyDiscovery_KeepsEachEnginesLatestSubscriptionSnapshot(t *testing.T)
 	}, snapshots)
 	waitForProxySnapshotSender(t, proxy)
 }
+
+// TestProcessAliasFeed_RegistersBesideFacadesAndDeliversUnaddressed pins the
+// broker half of the peer alias feed: the process-scoped
+// cluster:subscribe-aliases is a registration of its own — neither replacing
+// a facade's nor being replaced by one — and its snapshot comes back unad-
+// dressed, because the proxy process, not a facade, is the consumer. An
+// addressed snapshot would be dropped by the child's facade lookup, and a
+// registration keyed like a facade's would let one subscribe silently starve
+// the other. The directory node here advertises no engine service on purpose:
+// that is the announcer shape the feed exists to carry.
+func TestProcessAliasFeed_RegistersBesideFacadesAndDeliversUnaddressed(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	require.NoError(t, server.SetDeadline(time.Now().Add(3*time.Second)))
+
+	dir := relay.NewDirectory()
+	dir.Apply(noderec.NotifyNodeDiscovered, noderec.DirectoryNode{
+		HostUUID: "peer", DiscoveryRecordID: "peer", Name: "peer-host",
+		Aliases: []noderec.ModelAlias{{Name: "quick-chat", Model: "llama3.2:1b"}},
+	})
+	proxy := &proxyProcess{peer: NewPeer(NewCodec(client)), relayDir: dir}
+
+	allParams, err := json.Marshal(noderec.SubscribeParams{})
+	require.NoError(t, err)
+	proxy.handleNotify(noderec.MethodSubscribePeerAliases, allParams)
+	ollamaParams, err := json.Marshal(noderec.SubscribeParams{Services: []noderec.ServiceKey{noderec.ServiceOllama}})
+	require.NoError(t, err)
+	proxy.handleNotify(engines.AddressMethod("ollama", noderec.MethodSubscribe), ollamaParams)
+
+	proxy.subMu.Lock()
+	feedID, ollamaID := proxy.subIDs[proxyAliasFeedKey], proxy.subIDs["ollama"]
+	proxy.subMu.Unlock()
+	require.NotZero(t, feedID, "the alias feed was not registered")
+	require.NotZero(t, ollamaID, "the facade subscription was not registered")
+	assert.NotEqual(t, feedID, ollamaID, "the two registrations share one id, so one subscribe would unsubscribe the other")
+
+	// The order the sender drains the two keys is map order, so collect both
+	// frames and assert on content rather than sequence.
+	codec := NewCodec(server)
+	seen := map[string]noderec.GetNodesResult{}
+	for range 2 {
+		message, err := codec.Read()
+		require.NoError(t, err)
+		var result noderec.GetNodesResult
+		require.NoError(t, json.Unmarshal(message.Params, &result))
+		seen[message.Method] = result
+	}
+	require.Len(t, seen, 2)
+	feed, ok := seen[noderec.NotifyPeerAliases]
+	require.True(t, ok, "the alias snapshot did not arrive unaddressed (methods seen: %v)", seen)
+	require.Len(t, feed.Nodes, 1, "the engine-less announcer was filtered out of the feed")
+	assert.Equal(t, "peer-host", feed.Nodes[0].Name)
+	ollama, ok := seen[engines.AddressMethod("ollama", noderec.NotifyNodes)]
+	require.True(t, ok, "the facade snapshot did not arrive addressed (methods seen: %v)", seen)
+	assert.Empty(t, ollama.Nodes, "a facade filter must not widen to engine-less records")
+}

@@ -126,6 +126,19 @@ type AvailableNode struct {
 	// inventory was read and is empty; a missing key means it was not read.
 	// Omitted when no engine reports one.
 	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
+	// Aliases is the node's own cluster model alias document, announced by its
+	// engine-manager and carried here the same way its models are. It is the list
+	// the node has configured, not the list this node can route by: a node with no
+	// engine running still reports its aliases, which is what lets their owner be
+	// edited from anywhere in the cluster. Editing that document is
+	// settings/set-node-model-aliases.
+	//
+	// A nil list ("aliases": null) means that node has not reported a document —
+	// an older build, a peer whose model sweep has not answered — and an empty one
+	// is its report that it configures none. They stay distinguishable for the
+	// editor behind this read, which replaces the whole document it shows and so
+	// will edit a stated empty but never a silence.
+	Aliases []noderec.ModelAlias `json:"aliases"`
 	// Info is the latest hardware observation for this record. Unverified
 	// records carry display-only public previews, never scheduling evidence.
 	Info *noderec.NodeInfo `json:"info,omitempty"`
@@ -158,6 +171,30 @@ type ProxyStatusResult struct {
 	Port  int  `json:"port"`
 }
 
+// RouterStatusResult is the response to the process-scoped "router/status"
+// read: whether this machine has a cluster routing endpoint right now, and the
+// port it answers on. The broker does not keep that state — it relays the read
+// to the proxy child, which answers from its live listener — so a zero value
+// here means "no proxy to ask", not "the endpoint is configured and down".
+//
+// It is deliberately not derived from --cluster-router: that flag says what
+// was asked for, and a port somebody else already holds would then be listed as
+// an endpoint.
+type RouterStatusResult struct {
+	Running bool `json:"running"`
+	Port    int  `json:"port"`
+}
+
+// RouterAliasesResult is the shape of the process-scoped "router/get-aliases"
+// read: the cluster alias view — every synonym this node routes by, each with
+// the peer that announced it (empty origin for a local entry). Like
+// RouterStatusResult the broker does not keep this state, it relays the read to
+// the proxy child; the empty reply below means "no proxy to ask", which the
+// desktop draws the same as the child's own "no router, no view" reply.
+type RouterAliasesResult struct {
+	Aliases []json.RawMessage `json:"aliases"`
+}
+
 // Broker holds per-session state. A new Broker is constructed for every
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
@@ -184,6 +221,8 @@ type Broker struct {
 	nodeInfoPath          string
 	proxyPath             string
 	proxyEngines          []string
+	clusterRouter         bool
+	clusterRouterPort     int
 	workloadMgrPath       string
 	errorsPath            string
 	engineMgrPath         string
@@ -383,6 +422,15 @@ type Broker struct {
 	// and workload fanout. A restarted scheduler receives its active workload
 	// baseline before its discovery baseline, then only newer live events.
 	schedulerFeedMu sync.Mutex
+
+	// peerAliasMu guards peerAliasWrites, the client writes this broker has asked
+	// a peer to make and is still waiting to answer, and peerAliasSeq, which makes
+	// their correlation ids unique. peerAliasTimeout bounds that wait; NewBroker
+	// sets it.
+	peerAliasMu      sync.Mutex
+	peerAliasWrites  map[string]*peerAliasWrite
+	peerAliasSeq     uint64
+	peerAliasTimeout time.Duration
 }
 
 // workerPaths bundles the resolved binary paths for every worker the
@@ -397,13 +445,22 @@ type workerPaths struct {
 	// proxyEngines and then asked for that engine's facade via facade/enable.
 	proxy        string
 	proxyEngines []string
-	workloadMgr  string
-	errors       string
-	engineMgr    string
-	manualNodes  string
-	settings     string
-	clusterMgr   string
-	scheduler    string
+	// clusterRouter is the spawn-time preference for the cluster routing
+	// endpoint: whether the child starts with it bound. The port is the
+	// proxy's own default unless clusterRouterPort says otherwise; the
+	// endpoint is loopback-only either way. It reaches the child's argv and
+	// nothing else — the endpoint can also be lifted at runtime over
+	// router/set-enabled, and neither that relay nor the alias courier it
+	// triggers consults this field.
+	clusterRouter     bool
+	clusterRouterPort int
+	workloadMgr       string
+	errors            string
+	engineMgr         string
+	manualNodes       string
+	settings          string
+	clusterMgr        string
+	scheduler         string
 	// clusterDir is the cluster-manager config dir (node.crt/node.key +
 	// trusted/). Threaded to every worker that does cluster-scoped inter-node
 	// mTLS so they serve/dial pinned peers once this node joins a cluster.
@@ -442,6 +499,8 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		nodeInfoPath:          paths.nodeInfo,
 		proxyPath:             paths.proxy,
 		proxyEngines:          paths.proxyEngines,
+		clusterRouter:         paths.clusterRouter,
+		clusterRouterPort:     paths.clusterRouterPort,
 		workloadMgrPath:       paths.workloadMgr,
 		errorsPath:            paths.errors,
 		engineMgrPath:         paths.engineMgr,
@@ -457,6 +516,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		regCache:              relay.NewRegistrationCache(),
 		manualNodeStatuses:    make(map[string]manualNodeStatusEntry),
 		workloads:             workloadstore.New(),
+		peerAliasTimeout:      defaultPeerAliasWriteTimeout,
 		ollamaPortReady:       make(chan struct{}),
 		lmstudioPortReady:     make(chan struct{}),
 	}
@@ -726,10 +786,17 @@ func (b *Broker) clearNodeInfoState() {
 // in facade/enable, because the broker plans a different port per engine and a
 // single-valued flag cannot carry two plans.
 func (b *Broker) proxyArgs() []string {
-	// Thread the cluster dir so the proxy can bring up its pin-gated LAN mTLS
-	// ingress (and dial peers over mTLS) once this node is clustered; empty/
-	// absent certs leave it loopback-plaintext only.
-	return b.clusterDirArgs()
+	args := b.clusterDirArgs()
+	// The cluster router is process-scoped like the cluster dir: one listener
+	// across every facade, so it cannot travel in facade/enable the way an
+	// engine's port does. A port of 0 defers to the proxy's own default.
+	if b.clusterRouter {
+		args = append(args, "--cluster-router")
+		if b.clusterRouterPort > 0 {
+			args = append(args, "--cluster-router-port", strconv.Itoa(b.clusterRouterPort))
+		}
+	}
+	return args
 }
 
 // ollamaFacadeSpec is the enable request for Ollama's facade under one alias
@@ -1032,6 +1099,11 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 	if ready, port := pp.Status(lmstudioProxyProfile.Name); ready && port > 0 {
 		go b.reconcileLMStudioProxyPortOnReadyForGeneration(lmstudioGeneration, port)
 	}
+	// The router has been listening since before facade/enable, but it has
+	// never heard of this node's configured aliases. Deliver them before this
+	// incarnation is considered up, so a router started after the last edit
+	// still honors it.
+	b.syncClusterModelAliasesToProxy(pp)
 	return pp, nil
 }
 
@@ -1200,6 +1272,11 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 	// respawned engine-manager starts with an empty reservation and must not
 	// adopt or start a backend on the port the proxy alias owns.
 	b.syncCurrentEngineOllamaHostAliasReservation()
+	// Same rule for the cluster model alias announcement: a respawned
+	// engine-manager starts with an empty /v1/models modelAliases field, and
+	// peer scanners learn this node's configured aliases only from that
+	// announcement, so deliver the stored list before anything fetches it.
+	b.syncClusterModelAliasesToEngineManager()
 	b.reconcileLMStudioProxyAfterEngineManagerReady()
 	// Initial restore waits for both managed compatibility ports below. A later
 	// engine-manager respawn sees the already-open gates and restores here.
@@ -1858,6 +1935,15 @@ func (b *Broker) forwardSettingsNotification(method string, params json.RawMessa
 		if err := b.codec.Notify(method, params); err != nil {
 			slog.Warn("forward settings notification failed", "method", method, "err", err)
 		}
+	case "connection/cluster-model-aliases":
+		// Verbatim to the UI, and translated for the two consumers: the UI
+		// already holds the list it just set, but the proxy's router and
+		// engine-manager's peer-facing announcement only learn aliases
+		// through this push (or their bring-up sync).
+		if err := b.codec.Notify(method, params); err != nil {
+			slog.Warn("forward settings notification failed", "method", method, "err", err)
+		}
+		b.forwardClusterModelAliasesPush(params)
 	default:
 		slog.Debug("ignoring settings notification", "method", method)
 	}
@@ -2374,7 +2460,13 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// events.
 	if b.workloadMgrPath != "" {
 		b.workloadMgrSup = newSupervisor("workload-manager", defaultRestartPolicy(), b.spawnWorkloadManager)
-		b.workloadMgrSup.onCrash, b.workloadMgrSup.onRecovered = b.supervisedWorkerCallbacks("workload-manager", func() { b.setWorkloadMgr(nil) })
+		b.workloadMgrSup.onCrash, b.workloadMgrSup.onRecovered = b.supervisedWorkerCallbacks("workload-manager", func() {
+			b.setWorkloadMgr(nil)
+			// It also carries peer model alias writes, so one that was in flight when
+			// this manager died has no way left to be answered: its client hears that
+			// now rather than waiting out a clock nobody is keeping.
+			b.failPeerAliasWrites("the cluster worker on this computer stopped, so this change was not confirmed")
+		})
 		if err := b.workloadMgrSup.Start(); err != nil {
 			slog.Warn("workload-manager failed to start; continuing without cluster workload relay", "path", b.workloadMgrPath, "err", err)
 			b.workloadMgrSup = nil
@@ -3035,12 +3127,18 @@ func (b *Broker) removeScannerNode(node EnrichedNode) {
 // invokes on the manager's reader goroutine for every notification it emits
 // on stdout. The manager translates peer-origin lifecycle events into
 // workloads:upsert and peer-origin removals into workloads:remove (spec
-// 7.0); those are relayed to subscribed clients verbatim. Its startup
-// "ready" (and anything else) is internal and dropped.
+// 7.0); those are relayed to subscribed clients verbatim. The two alias frames
+// are the other half of its job: one is the verdict on a write this node asked
+// a peer to make, the other is a peer asking this node to make one. Anything
+// else it emits — its startup "ready" — is internal and dropped.
 func (b *Broker) forwardWorkloadManagerNotification(method string, params json.RawMessage) {
 	switch method {
 	case "workloads:upsert", "workloads:remove":
 		b.emitWorkloadEvent(method, params)
+	case noderec.MethodPeerAliasesResult:
+		b.onPeerAliasVerdict(params)
+	case noderec.MethodApplyAliases:
+		b.onPeerModelAliasesApply(params)
 	default:
 		slog.Debug("ignoring workload-manager notification", "method", method)
 	}
@@ -3505,6 +3603,27 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to workloads:get-initial: %v", err)
 		}
 
+	// The cluster endpoint's bound state, read from the proxy child rather than
+	// answered from --cluster-router. It gets its own case instead of the
+	// prefix-relay default because it names no engine: the endpoint is one
+	// listener across every facade, so there is no profile to route it through.
+	case "router/status":
+		go b.handleRouterStatus(msg)
+
+	// Turning the endpoint on or off. Process-scoped for the same reason as
+	// router/status — it names no engine, where engine-scoped methods ride
+	// the prefix-relay default — and the bind belongs to the child, so it
+	// is relayed there. A write that ends with the endpoint up carries the
+	// alias document with it; see handleRouterSetEnabled.
+	case "router/set-enabled":
+		go b.handleRouterSetEnabled(msg)
+
+	// The cluster alias view, relayed for the same reason as router/status:
+	// the merged table lives in the proxy child, not here, and the method
+	// names no engine.
+	case "router/get-aliases":
+		go b.handleRouterAliases(msg)
+
 	case "node/add", "node/remove", "nodes/list":
 		b.relayToManualNodes(msg)
 
@@ -3570,6 +3689,14 @@ func (b *Broker) handleMessage(msg *Message) {
 		}
 		if strings.HasPrefix(msg.Method, "engine:") {
 			b.relayToEngine(msg)
+			return
+		}
+		// One node's alias document belongs to that node, so a write aimed at a
+		// peer is not a local settings edit and must not be relayed to this node's
+		// settings service: it is named here and carried by the workload manager.
+		// Claimed before the settings pass-through below for that reason.
+		if msg.Method == noderec.MethodSetNodeModelAliases {
+			b.handleSetNodeModelAliases(msg)
 			return
 		}
 		if strings.HasPrefix(msg.Method, "settings/") {
@@ -3764,26 +3891,35 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 // (the same shape as the proxy relay). The method is forwarded verbatim —
 // nvpair-node-settings' methods are already settings/-prefixed.
 func (b *Broker) relayToSettings(msg *Message) {
+	b.callSettings(msg.ID, msg.Method, msg.Params)
+}
+
+// callSettings sends one request to nvpair-node-settings and answers id with its
+// result, its JSON-RPC error, or the transport failure that kept it from
+// answering. Split from the relay so a method the broker handles itself — a
+// peer's alias document, which is not this node's to pass through blindly — can
+// reach the settings service through the same answer-or-error contract.
+func (b *Broker) callSettings(id *json.RawMessage, method string, params json.RawMessage) {
 	st := b.getSettings()
 	if st == nil {
-		if err := b.codec.RespondError(msg.ID, -32000, "node-settings not available"); err != nil {
-			log.Printf("failed to respond to %s: %v", msg.Method, err)
+		if err := b.codec.RespondError(id, -32000, "node-settings not available"); err != nil {
+			log.Printf("failed to respond to %s: %v", method, err)
 		}
 		return
 	}
-	result, rpcErr, err := st.Call(context.Background(), msg.Method, msg.Params)
+	result, rpcErr, err := st.Call(context.Background(), method, params)
 	switch {
 	case err != nil:
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("settings call failed: %v", err)); err != nil {
-			log.Printf("failed to respond to %s: %v", msg.Method, err)
+		if err := b.codec.RespondError(id, -32000, fmt.Sprintf("settings call failed: %v", err)); err != nil {
+			log.Printf("failed to respond to %s: %v", method, err)
 		}
 	case rpcErr != nil:
-		if err := b.codec.RespondError(msg.ID, rpcErr.Code, rpcErr.Message); err != nil {
-			log.Printf("failed to relay settings error for %s: %v", msg.Method, err)
+		if err := b.codec.RespondError(id, rpcErr.Code, rpcErr.Message); err != nil {
+			log.Printf("failed to relay settings error for %s: %v", method, err)
 		}
 	default:
-		if err := b.codec.Respond(msg.ID, result); err != nil {
-			log.Printf("failed to relay settings result for %s: %v", msg.Method, err)
+		if err := b.codec.Respond(id, result); err != nil {
+			log.Printf("failed to relay settings result for %s: %v", method, err)
 		}
 	}
 }

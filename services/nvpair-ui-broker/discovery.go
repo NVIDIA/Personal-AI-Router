@@ -78,6 +78,17 @@ type EnrichedNode struct {
 	// engine-manager /v1/models downloadedByEngine field. Carried through to
 	// AvailableNode so a remote node's model manager keeps its rows.
 	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
+	// Aliases are the cluster model aliases configured on that node, announced on
+	// its engine-manager /v1/models and filed on its directory record. They are
+	// the node's own document, so a node whose engines are stopped still has one —
+	// unlike the routable alias view, which lists only what a router can resolve
+	// right now and would show a stopped node's list as empty.
+	//
+	// nil (no key on the wire) means that node has not reported a document; an
+	// empty list is its report that it configures none. Held apart because the
+	// editor downstream replaces the whole document it displays and offers that
+	// only over a stated empty.
+	Aliases []noderec.ModelAlias `json:"aliases"`
 }
 
 // directoryToEnriched preserves scanner provenance in the client-facing store.
@@ -113,6 +124,7 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		ModelsByEngine:       n.ModelsByEngine,
 		LoadedByEngine:       n.LoadedByEngine,
 		DownloadedByEngine:   n.DownloadedByEngine,
+		Aliases:              n.Aliases,
 	}
 }
 
@@ -458,6 +470,7 @@ func (sn storedNode) toAvailable(includeHardware bool) AvailableNode {
 		ModelsByEngine:       n.ModelsByEngine,
 		LoadedByEngine:       n.LoadedByEngine,
 		DownloadedByEngine:   n.DownloadedByEngine,
+		Aliases:              n.Aliases,
 		Info:                 info,
 	}
 }

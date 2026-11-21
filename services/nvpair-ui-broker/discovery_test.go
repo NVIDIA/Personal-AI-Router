@@ -800,6 +800,35 @@ func TestDiscoveryStore_CarriesEveryModelListFromTheScanner(t *testing.T) {
 	assert.Equal(t, map[string][]string{"vllm": {"Qwen/Qwen3.5-4B", "mistralai/Ministral-3-3B-Instruct-2512"}}, snap[0].DownloadedByEngine)
 }
 
+// A node's own alias document reaches the desktop the same way its model lists
+// do, and on its own: a node with no engine running has no models to report and
+// still has aliases configured, and the machine that owns them has to be able to
+// see and edit the list it has. The routable alias view cannot serve that
+// purpose because it lists only what a router can resolve right now, which for a
+// stopped node is nothing.
+func TestDiscoveryStore_CarriesANodesOwnAliasDocumentWithoutItsModels(t *testing.T) {
+	s := newDiscoveryStore()
+	s.Upsert(directoryToEnriched(noderec.DirectoryNode{
+		DiscoveryRecordID:    "pin:peer-uuid",
+		IdentityVerification: noderec.IdentityPinned,
+		Trusted:              true,
+		HostUUID:             "peer-uuid",
+		Name:                 "peer",
+		Aliases: []noderec.ModelAlias{
+			{Name: "fast", Model: "qwen/qwen3.6-35b-a3b"},
+			{Name: "long", Model: "google/gemma-4-12b"},
+		},
+	}), sourceScanner)
+
+	snap := s.Snapshot()
+	require.Len(t, snap, 1)
+	assert.Empty(t, snap[0].Models, "an engine that is stopped reports no models")
+	assert.Equal(t, []noderec.ModelAlias{
+		{Name: "fast", Model: "qwen/qwen3.6-35b-a3b"},
+		{Name: "long", Model: "google/gemma-4-12b"},
+	}, snap[0].Aliases, "the list its owner can still edit survives both projections")
+}
+
 func newManualTestBroker() *Broker {
 	return &Broker{
 		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
