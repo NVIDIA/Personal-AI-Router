@@ -73,6 +73,7 @@ PAIR has a small, fixed policy surface:
 | --- | --- |
 | `server.port` | Integer 1–65535, synchronized with the server-port field. |
 | `server.host` | Managed loopback host, keeping direct engine access behind the proxy. |
+| `network.access` | Strata's share kind: `local` (loopback) or `lan` (every interface address, no API key). Engines whose launch templates carry no `{host}` placeholder bind this instead of `server.host`. |
 | `cors.origins` | Comma-separated origin list, normalized and validated; changes are local-only. |
 | `cors.enabled` | Explicit boolean, normalized to `true` or `false`; changes are local-only. |
 

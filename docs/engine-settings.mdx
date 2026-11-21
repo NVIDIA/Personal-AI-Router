@@ -110,7 +110,7 @@ configuration consistent:
 | LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
 | llama.cpp | `--port` | `--host` | `--cors-origins` |
 | vLLM | `--port` | `--host` | Not managed |
-| Strata | `--port` | `--listen` | Not managed |
+| Strata | `--port` | `--access local` / `lan` | Not managed |
 
 For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235`, and `-p=1235`
 all synchronize the same server-port field. Conflicting repetitions and invalid
@@ -122,7 +122,13 @@ llama.cpp must remain in router mode. Model-selection arguments such as `-m`
 or `-hf` switch it to an incompatible single-model server and fail readiness.
 Strata also serves one model per instance, named as a launch pair: `--family
 qwen --model q2_0`, which **Load** writes from a catalog id like `qwen/q2_0`;
-changing it restarts the engine.
+changing it restarts the engine. Strata's bind follows its **Access** launch
+value instead of a host flag: `--access local` serves loopback only, and
+`--access lan` serves every address of the computer with no API key, which
+exposes the model and its file-access tools to anyone on your local network,
+so choose it only when that is what you want. The single-address kinds are not
+offered: they bind an interface address PAIR's loopback health probe and proxy
+could not reach.
 vLLM always serves one model: its launch arguments name that model with
 `--model <Hugging Face id>`, and changing it restarts the engine. At every start
 PAIR sizes the rest for that model: a 64K context (`--max-model-len`, shrunk if

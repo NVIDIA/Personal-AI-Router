@@ -977,7 +977,7 @@ func (p *Platform) validate(key string) error {
 		if _, err := formatLaunchText(policy.FixedArgs); err != nil {
 			return fmt.Errorf("platform %q: invalid fixed launch arguments", key)
 		}
-		if err := policy.validateControls(); err != nil {
+		if err := policy.validateControls(runtimeLaunchReferencesHost(p.Runtime)); err != nil {
 			return fmt.Errorf("platform %q: %w", key, err)
 		}
 	}

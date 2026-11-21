@@ -19,14 +19,14 @@
     "mode": "command",
     "cli": "~/.local/bin/strata",
     "editable_launch": {
-      "fixed_args": ["launch", "--yes", "--no-tui", "--access", "address", "--no-api-key"],
+      "fixed_args": ["launch", "--yes", "--no-tui", "--no-api-key"],
       "controls": [
-        { "flags": ["--listen"], "value": "{server.host}" },
+        { "flags": ["--access"], "value": "{network.access}" },
         { "flags": ["--port"], "value": "{server.port}" }
       ]
     },
     "start": [
-      ["{cli}", "launch", "--yes", "--no-tui", "--access", "address", "--no-api-key", "--listen", "{host}", "--data-dir", "{models_dir}", "--family", "qwen", "--model", "q2_0", "--port", "{port}"]
+      ["{cli}", "launch", "--yes", "--no-tui", "--no-api-key", "--access", "local", "--data-dir", "{models_dir}", "--family", "qwen", "--model", "q2_0", "--port", "{port}"]
     ],
     "stop": { "cmd": ["{cli}", "launch", "--stop"], "grace_s": 20 },
     "bind": "127.0.0.1",

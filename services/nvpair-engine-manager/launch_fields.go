@@ -41,6 +41,14 @@ var launchFields = map[string]launchField{
 		match:     func(string) string { return `(?i:true|false|t|f|1|0)` },
 		normalize: normalizeCORSBoolean, localOnly: true,
 	},
+	// An engine's reachability class, for engines that choose their bind by
+	// keyword rather than by address. PAIR must always reach the engine on
+	// loopback for readiness, health and the proxy, so single-address kinds
+	// are refused here rather than left to hang the launch probe.
+	"network.access": {
+		match:     func(string) string { return `(?i:local|lan)` },
+		normalize: normalizeNetworkAccess,
+	},
 }
 
 func normalizeServerPort(value, _ string) (string, error) {
@@ -56,6 +64,16 @@ func normalizeServerHost(value, host string) (string, error) {
 		return "", fmt.Errorf("the engine bind address is fixed to loopback")
 	}
 	return host, nil
+}
+
+func normalizeNetworkAccess(value, _ string) (string, error) {
+	switch strings.ToLower(value) {
+	case "local":
+		return "local", nil
+	case "lan":
+		return "lan", nil
+	}
+	return "", fmt.Errorf("engine access must be local or lan")
 }
 
 func normalizeCORSBoolean(value, _ string) (string, error) {

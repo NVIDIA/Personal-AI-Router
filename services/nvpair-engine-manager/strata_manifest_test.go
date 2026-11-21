@@ -37,11 +37,12 @@ func TestStrataManifest_DeclaresCommandLifecycleAndGuardedModelOps(t *testing.T)
 			assert.Contains(t, platform.Runtime.Ready.HTTP, "/health",
 				"readiness is the server's health endpoint")
 			require.NotNil(t, platform.Runtime.EditableLaunch)
-			// The pinned access contract: loopback only, never an API key
-			// the health probe could not present.
-			for _, arg := range []string{"--access", "address", "--no-api-key"} {
-				assert.Contains(t, platform.Runtime.EditableLaunch.FixedArgs, arg)
-			}
+			// Never an API key the health probe could not present. The access
+			// kind itself is editable text (local or lan), not a fixed arg.
+			assert.Contains(t, platform.Runtime.EditableLaunch.FixedArgs, "--no-api-key")
+			require.NotEmpty(t, platform.Runtime.Start)
+			assert.Contains(t, platform.Runtime.Start[0], "--access")
+			assert.Contains(t, platform.Runtime.Start[0], "local")
 		})
 	}
 

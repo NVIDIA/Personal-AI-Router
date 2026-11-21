@@ -108,7 +108,12 @@ func (p *EditableLaunch) environmentControl(name string) *LaunchControl {
 	return nil
 }
 
-func (p *EditableLaunch) validateControls() error {
+// launchTemplatesUseHost says whether the runtime's launch templates reference
+// {host}. A manifest whose templates carry no host placeholder (an engine that
+// picks its bind by keyword, such as Strata's access kinds) has no flag to keep
+// the managed loopback host in, so the host binding is not demanded; every
+// template placeholder that does exist must still have a binding.
+func (p *EditableLaunch) validateControls(launchTemplatesUseHost bool) error {
 	flags, env, fields := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, control := range p.Controls {
 		binding, err := control.binding()
@@ -137,10 +142,38 @@ func (p *EditableLaunch) validateControls() error {
 	}
 	for name, field := range launchFields {
 		if field.managed != nil && !fields[name] {
+			if name == "server.host" && !launchTemplatesUseHost {
+				continue
+			}
 			return fmt.Errorf("editable launch controls must bind managed field %s", name)
 		}
 	}
 	return nil
+}
+
+// runtimeLaunchReferencesHost reports whether any launch template (process
+// args, command-mode start commands, or runtime environment) carries the
+// {host} placeholder the managed server.host binding keeps in sync.
+func runtimeLaunchReferencesHost(rt Runtime) bool {
+	for _, templates := range [][]string{rt.Args, append([]string{}, mapValues(rt.Env)...)} {
+		if slices.ContainsFunc(templates, func(template string) bool { return strings.Contains(template, "{host}") }) {
+			return true
+		}
+	}
+	for _, command := range rt.Start {
+		if slices.ContainsFunc(command, func(template string) bool { return strings.Contains(template, "{host}") }) {
+			return true
+		}
+	}
+	return false
+}
+
+func mapValues(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for _, value := range m {
+		out = append(out, value)
+	}
+	return out
 }
 
 // Match exact long/short names, equals values and attached short values. A short
