@@ -231,6 +231,28 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		m.applyDiscovery(msg)
 		return
 	}
+	if msg.Method == "node/model-aliases" && msg.IsNotification() {
+		// The broker's courier re-push of this node's configured cluster model
+		// aliases. Only the announcement is stored here; the authoritative
+		// list lives in the settings service, and every replacement arrives
+		// complete (bring-up push and each change push).
+		var p struct {
+			Aliases *[]noderec.ModelAlias `json:"aliases"`
+		}
+		if err := json.Unmarshal(msg.Params, &p); err != nil {
+			slog.Warn("ignoring malformed node/model-aliases notification", "err", err)
+			return
+		}
+		// A delivered pointer is a document, empty included; a missing key is
+		// not one, so the announcement goes quiet rather than claiming this
+		// node configures nothing.
+		if p.Aliases == nil {
+			m.exec.SetModelAliases(nil)
+			return
+		}
+		m.exec.SetModelAliases(*p.Aliases)
+		return
+	}
 	if msg.Method == restoreEnabledMethod && msg.IsNotification() {
 		go func() {
 			if err := m.exec.RestoreEnabled(ctx); err != nil {
