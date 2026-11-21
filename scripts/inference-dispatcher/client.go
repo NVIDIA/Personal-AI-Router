@@ -115,7 +115,7 @@ func (c *backendClient) listModels(ctx context.Context) ([]RegisteredModel, erro
 	switch c.cfg.Backend {
 	case "lmstudio":
 		models, err = c.listLMStudioModels(ctx)
-	case "llamacpp":
+	case "llamacpp", "strata":
 		models, err = c.listLlamaCPPModels(ctx)
 	default:
 		models, err = c.listOllamaModels(ctx)
@@ -360,7 +360,7 @@ func (c *backendClient) inferencePath() string {
 }
 
 func (c *backendClient) usesOpenAIProtocol() bool {
-	return c.cfg.Backend == "lmstudio" || c.cfg.Backend == "llamacpp"
+	return c.cfg.Backend == "lmstudio" || c.cfg.Backend == "llamacpp" || c.cfg.Backend == "strata"
 }
 
 func (c *backendClient) infer(ctx context.Context, model, prompt string) (string, error) {

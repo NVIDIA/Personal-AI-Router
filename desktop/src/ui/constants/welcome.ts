@@ -15,7 +15,10 @@ export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
     'lm-studio': true,
     'llama-cpp': true,
-    vllm: true
+    vllm: true,
+    // Detect-only: PAIR never installs Strata, so the welcome flow does not
+    // preselect it (getWelcomeEngineCandidates drops it anyway).
+    strata: false
 }
 
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {

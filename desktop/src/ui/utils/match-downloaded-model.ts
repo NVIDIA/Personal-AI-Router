@@ -40,11 +40,24 @@ const matchHfPullKeyOrName: DownloadedMatcher = (hubEntry, d) => {
 
 const matchExactName: DownloadedMatcher = (hubEntry, downloaded) => downloaded.name === hubEntry.id
 
+// Strata's catalogue ids are "family/quant" pairs, but its model list reports
+// the run-config tag ("qwen3.8-flash-next-iq3_s"), which ends with the
+// quantization. Tags do not carry the family selector, so a quantization two
+// families share (unsloth/Q8_0, qwen36/Q8_0) matches either: imprecise by
+// construction, and closer than showing nothing.
+const matchStrataTag: DownloadedMatcher = (hubEntry, downloaded) => {
+    const quant = hubEntry.id.slice(hubEntry.id.indexOf('/') + 1).toLowerCase()
+    if (!quant || hubEntry.id === quant) return false
+    const name = downloaded.name.toLowerCase()
+    return name === quant || name.endsWith(`-${quant}`)
+}
+
 const MATCHERS: Partial<Record<EngineType, DownloadedMatcher>> = {
     ollama: matchOllama,
     'lm-studio': matchHfPullKeyOrName,
     'llama-cpp': matchExactName,
-    vllm: matchExactName
+    vllm: matchExactName,
+    strata: matchStrataTag
 }
 
 export function isHubEntryDownloaded(

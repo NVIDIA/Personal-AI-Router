@@ -126,7 +126,8 @@ describe('engines a node cannot run', () => {
         expect(rows).toEqual([
             ['ollama', 'running'],
             ['lm-studio', 'initializing'],
-            ['llama-cpp', 'initializing']
+            ['llama-cpp', 'initializing'],
+            ['strata', 'initializing']
         ])
     })
 })

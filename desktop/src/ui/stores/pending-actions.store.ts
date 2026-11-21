@@ -117,6 +117,11 @@ function timeoutFor(command: EngineCommandType, engineType: EngineType): number 
     if (command === 'loadModel' && engineType === 'vllm') {
         return VLLM_LOAD_PENDING_TIMEOUT_MS
     }
+    // Strata's load restarts a dedicated instance on the model: cold starts of
+    // a large MoE match vLLM's, not the default net.
+    if (command === 'loadModel' && engineType === 'strata') {
+        return VLLM_LOAD_PENDING_TIMEOUT_MS
+    }
     if (command === 'deleteModel' && EngineCapabilities[engineType]?.restartsOnModelDelete) {
         return RESTART_DELETE_TIMEOUT_MS
     }

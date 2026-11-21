@@ -19,17 +19,19 @@ import { engineManagerName } from '@/shared/utils/engines'
 
 describe('proxy engine identity', () => {
     it('declares the complete proxy set in stable order', () => {
-        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
+        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'strata'])
         expect(PROXY_NODE_SOURCES).toEqual([
             'ollama-proxy',
             'lmstudio-proxy',
             'llamacpp-proxy',
-            'vllm-proxy'
+            'vllm-proxy',
+            'strata-proxy'
         ])
         expect(isProxyEngine('ollama')).toBe(true)
         expect(isProxyEngine('lm-studio')).toBe(true)
         expect(isProxyEngine('llama-cpp')).toBe(true)
         expect(isProxyEngine('vllm')).toBe(true)
+        expect(isProxyEngine('strata')).toBe(true)
     })
 
     it('round-trips engine, manager, and relay source identities', () => {
@@ -118,7 +120,8 @@ describe('proxy engine identity', () => {
                     healthy: true,
                     port: 8081
                 },
-                { engine: 'vllm', installed: false, running: false, healthy: false, port: 0 }
+                { engine: 'vllm', installed: false, running: false, healthy: false, port: 0 },
+                { engine: 'strata', installed: false, running: false, healthy: false, port: 0 }
             ]
         })
 
@@ -142,7 +145,8 @@ describe('proxy engine identity', () => {
                 enginePort: 8081,
                 proxyPort: 8080
             }),
-            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' })
+            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' }),
+            expect.objectContaining({ engineType: 'strata', processStatus: 'not-installed' })
         ])
 
         const llamaModels = state
