@@ -17,6 +17,7 @@ import { EnginesListingModelsWhenStopped } from '@/shared/constants/engines'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
+import { engineProgressKey } from '@/shared/utils/engine-progress'
 import {
     getModularBridgeState,
     isUpstreamUnreachableError,
@@ -364,14 +365,7 @@ class ModularSupervisor {
     // broker restarts within one app process without adding a second auto-start
     // source of truth (the backend still owns lifecycle persistence).
     private firstOpenEngineStartDone = false
-    // Pinned cluster peer UUIDs (seeded from `nodes:get-initial` at broker ready,
-    // then kept current by the `nodes:changed` membership push, self excluded).
-    // These are the only nodes whose `ec` control surface we can reach, so they
-    // scope the remote-engine-status polling. Keyed by `ClusterNode.nodeUuid` —
-    // the backend keys peers by hostUuid, and it is the same key
-    // discovery/`engine:remote-*` use, never the hostname.
-    private clusterPeerIds = new Set<string>()
-    // Light interval that re-polls clusterPeerIds' authoritative engine status.
+    // Light interval that re-polls peers' authoritative engine status.
     private remoteStatusTimer: ReturnType<typeof setInterval> | null = null
     private engineUpdateChecks?: ReturnType<typeof watchEngineUpdates>
     // Debounced follow-up poll when discovery:nodes-changed lands — the ec peer
@@ -544,7 +538,6 @@ class ModularSupervisor {
         for (const timer of this.discoveryModelRetryTimers.values()) clearTimeout(timer)
         this.discoveryModelRetryTimers.clear()
         this.discoveryModelRetryAttempts.clear()
-        this.clusterPeerIds.clear()
         this.brokerHydrationDone = false
 
         // Teardown is timed phase by phase because a slow quit is otherwise
@@ -911,11 +904,14 @@ class ModularSupervisor {
      * carries pending invites, which have no reachable control surface yet.
      */
     private setClusterPeerIds(members: ClusterNode[]): void {
-        const selfId = getModularBridgeState().getSelfId()
-        this.clusterPeerIds = new Set(
-            members
-                .filter(m => m.state === 'member' && m.nodeUuid && m.nodeUuid !== selfId)
-                .map(m => m.nodeUuid)
+        const state = getModularBridgeState()
+        const selfId = state.getSelfId()
+        state.setClusterPeerIds(
+            new Set(
+                members
+                    .filter(m => m.state === 'member' && m.nodeUuid && m.nodeUuid !== selfId)
+                    .map(m => m.nodeUuid)
+            )
         )
     }
 
@@ -932,8 +928,8 @@ class ModularSupervisor {
             this.setClusterPeerIds(members)
             log.info({
                 sublevel: 'broker',
-                message: `cluster peer seed: ${this.clusterPeerIds.size} remote member(s)`,
-                data: { peerIds: Array.from(this.clusterPeerIds) }
+                message: 'Cluster peers initialized',
+                data: { peerIds: Array.from(getModularBridgeState().getClusterPeerIds()) }
             })
         } catch (err) {
             log.warn({
@@ -996,7 +992,7 @@ class ModularSupervisor {
     private async refreshAllRemoteEngineStatus(): Promise<void> {
         if (!this.brokerReady) return
         const selfId = getModularBridgeState().getSelfId()
-        const peerIds = new Set(this.clusterPeerIds)
+        const peerIds = new Set(getModularBridgeState().getClusterPeerIds())
         for (const node of getModularBridgeState().getAvailableNodes()) {
             if (node.id && node.id !== selfId) peerIds.add(node.id)
         }
@@ -1074,14 +1070,17 @@ class ModularSupervisor {
             const obj = objectValue(result)
             if (!obj || !Array.isArray(obj.engines) || obj.engines.length === 0) return
             getModularBridgeState().applyEngineManagerList(result)
-            this.engineUpdateChecks ??= watchEngineUpdates(engine =>
-                this.callProcess(
-                    'broker',
-                    'engine:check-updates',
-                    { engine: engineManagerName(engine) },
-                    30_000
-                )
-            )
+            this.engineUpdateChecks ??= watchEngineUpdates((nodeId, engineType) => {
+                const engine = engineManagerName(engineType)
+                return nodeId === getModularBridgeState().getSelfId()
+                    ? this.callProcess('broker', 'engine:check-updates', { engine }, 30_000)
+                    : this.callProcess(
+                          'broker',
+                          'engine:remote-check-updates',
+                          { node: nodeId, engine },
+                          30_000
+                      )
+            })
             for (const engine of obj.engines) {
                 this.refreshManagedEngineModels(engine)
             }
@@ -1096,6 +1095,7 @@ class ModularSupervisor {
     private stopEngineUpdateChecks(): void {
         this.engineUpdateChecks?.stop()
         this.engineUpdateChecks = undefined
+        getModularBridgeState().setClusterPeerIds(new Set())
     }
 
     /**
@@ -1907,40 +1907,54 @@ class ModularSupervisor {
     }
 
     /**
-     * Install (and optionally start) an engine on a remote peer via
-     * `engine:remote-install`. Streams progress frames as `engine:remote-progress`
-     * but its terminal is only the awaited RPC reply, so we clear the optimistic
-     * `installing` op here and refresh the peer's authoritative status.
+     * A peer streams install and update progress through the same channel.
+     * Its terminal RPC reply confirms whether the operation succeeded.
      */
-    async installEngineRemote(
+    async installOrUpdateEngineRemote(
         nodeId: string,
         engine: string,
         engineType: EngineType,
-        start: boolean
+        operation: 'install' | 'update',
+        start = false
     ): Promise<void> {
         const state = getModularBridgeState()
         state.beginRemoteEngineOp(nodeId, engineType, 'installing')
         try {
-            await this.callProcess(
-                'broker',
-                'engine:remote-install',
-                { node: nodeId, engine, start },
-                PULL_TIMEOUT_MS
-            )
-            await this.refreshRemoteEngineStatus(nodeId)
+            if (operation === 'update') {
+                const result = await this.callProcess(
+                    'broker',
+                    'engine:remote-update',
+                    { node: nodeId, engine },
+                    PULL_TIMEOUT_MS
+                )
+                state.applyRemoteEngineStatusResult(nodeId, engineType, objectValue(result)?.status)
+                state.finishRemoteEngineUpdate(nodeId, engineType)
+            } else {
+                await this.callProcess(
+                    'broker',
+                    'engine:remote-install',
+                    { node: nodeId, engine, start },
+                    PULL_TIMEOUT_MS
+                )
+                await this.refreshRemoteEngineStatus(nodeId)
+            }
         } catch (err) {
+            // A lost connection can interrupt the stream before its terminal frame.
+            emitBridgePush('engines:progress-cleared', {
+                key: engineProgressKey({ nodeId, engineType, operation: 'install' })
+            })
             // Use engine-manager's canonical error identity so a rejection here
             // upserts the backend's own report (and offers retry) rather than
             // duplicating it under a UI-synthesized id.
             this.reportError(
-                `Failed to install ${engine} on ${nodeId}: ${getErrorString(err)}`,
+                `Failed to ${operation} ${engine} on ${nodeId}: ${getErrorString(err)}`,
                 'error',
-                `engine-remote-install:${nodeId}:${engine}`,
+                `engine-remote-${operation}:${nodeId}:${engine}`,
                 {
-                    id: `engine-manager:install-failed:${engine}`,
+                    id: `engine-manager:${operation}-failed:${engine}`,
                     nodeId,
-                    engineType: engine,
-                    operation: 'install',
+                    engineType,
+                    operation,
                     action: 'retry'
                 }
             )

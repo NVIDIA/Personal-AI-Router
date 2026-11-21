@@ -11,44 +11,51 @@ import { getModularBridgeState } from './modular-state'
 const log = createStructuredLogger('service-bridge')
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-/** One timer per broker. Coalesce lifecycle changes independently for each engine. */
-export function watchEngineUpdates(check: (engine: EngineType) => Promise<JsonValue | undefined>): {
-    refresh: (engine?: EngineType) => Promise<void>
+/** One timer per broker; coalesce lifecycle changes for the same node and engine. */
+export function watchEngineUpdates(
+    check: (nodeId: string, engine: EngineType) => Promise<JsonValue | undefined>
+): {
+    refresh: (engine?: EngineType, nodeId?: string) => Promise<void>
     stop: () => void
 } {
     const state = getModularBridgeState()
     let active = true
-    const checking = new Set<EngineType>()
-    const requested = new Set<EngineType>()
+    const checking = new Set<string>()
+    const requested = new Set<string>()
 
-    async function checkEngine(engine: EngineType): Promise<void> {
-        requested.add(engine)
-        if (checking.has(engine)) return
-        checking.add(engine)
+    async function checkEngine(nodeId: string, engine: EngineType): Promise<void> {
+        const key = `${nodeId}:${engine}`
+        requested.add(key)
+        if (checking.has(key)) return
+        checking.add(key)
         try {
-            while (active && requested.delete(engine)) {
-                const nodeId = state.getSelfId()
-                if (!nodeId || !state.supportsEngine(engine)) return
+            while (active && requested.delete(key)) {
+                if (!state.canCheckEngineUpdate(nodeId, engine)) return
                 try {
-                    const result = await check(engine)
-                    if (active && !requested.has(engine)) {
+                    const result = await check(nodeId, engine)
+                    if (active && !requested.has(key)) {
                         state.applyEngineUpdateCheck(nodeId, engine, result)
                     }
                 } catch (error) {
                     log.verbose({
                         sublevel: 'engine-manager',
-                        message: `${engine} update check unavailable: ${getErrorString(error)}`
+                        message: `${engine} update check on ${nodeId} unavailable: ${getErrorString(error)}`
                     })
                 }
             }
         } finally {
-            checking.delete(engine)
+            checking.delete(key)
         }
     }
 
-    async function refresh(engine?: EngineType): Promise<void> {
-        if (engine) await checkEngine(engine)
-        else await Promise.all(EngineTypes.map(checkEngine))
+    async function refresh(engine?: EngineType, nodeId?: string): Promise<void> {
+        const selfId = state.getSelfId()
+        if (!selfId) return
+        if (engine) await checkEngine(nodeId ?? selfId, engine)
+        else {
+            const nodes = Array.from(new Set([selfId, ...state.getClusterPeerIds()]))
+            await Promise.all(nodes.flatMap(id => EngineTypes.map(type => checkEngine(id, type))))
+        }
     }
 
     const timer = setInterval(() => void refresh(), CHECK_INTERVAL_MS)

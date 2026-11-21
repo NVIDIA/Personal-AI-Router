@@ -10,6 +10,7 @@ import {
 const mocks = vi.hoisted(() => ({
     bridgeState: {
         handleNotification: vi.fn(),
+        setClusterPeerIds: vi.fn(),
         getSelfId: vi.fn(() => null),
         getProxyPort: vi.fn(() => null)
     },

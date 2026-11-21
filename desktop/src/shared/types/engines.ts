@@ -82,7 +82,7 @@ export interface EngineProgress {
     error?: string
 }
 
-/** Local engine manager update reported in the bridge snapshot and state patches. */
+/** Update reported by the engine manager on the named node. */
 export type EngineUpdateAvailable = {
     nodeId: string
     engineType: EngineType

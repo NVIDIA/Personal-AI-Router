@@ -13,12 +13,14 @@ type BridgeState = ReturnType<typeof getModularBridgeState>
 const mocks = vi.hoisted(() => ({
     state: {
         getSelfId: vi.fn<BridgeState['getSelfId']>(),
+        canCheckEngineUpdate: vi.fn<BridgeState['canCheckEngineUpdate']>(),
         beginLocalEngineOp: vi.fn<BridgeState['beginLocalEngineOp']>(),
         clearPendingEngineOp: vi.fn<BridgeState['clearPendingEngineOp']>()
     },
     supervisor: {
         callProcess: vi.fn<Supervisor['callProcess']>(),
         hasProcess: vi.fn<Supervisor['hasProcess']>(() => true),
+        installOrUpdateEngineRemote: vi.fn<Supervisor['installOrUpdateEngineRemote']>(),
         sendProcess: vi.fn<Supervisor['sendProcess']>(),
         reportError: vi.fn<Supervisor['reportError']>()
     }
@@ -88,17 +90,62 @@ describe('local engine update command', () => {
         )
     })
 
-    it('does not dispatch a peer update to the local engine manager', async () => {
+    it('waits for a local node identity before routing an update', async () => {
         mocks.supervisor.sendProcess.mockClear()
-        mocks.state.getSelfId.mockReturnValue('self')
+        mocks.supervisor.installOrUpdateEngineRemote.mockClear()
+        mocks.state.getSelfId.mockReturnValue(null)
         await handleServiceBridgeInvoke('engine:command', {
             command: 'update',
             engineType: 'ollama',
             nodeId: 'peer'
         })
-
         expect(mocks.supervisor.sendProcess).not.toHaveBeenCalled()
-        expect(mocks.supervisor.reportError).toHaveBeenCalled()
+        expect(mocks.supervisor.installOrUpdateEngineRemote).not.toHaveBeenCalled()
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Select an identified node to update its engine.',
+            'warning',
+            'engine-cmd:update'
+        )
+    })
+})
+
+describe('remote engine update command', () => {
+    it('routes the update to the selected peer and engine', async () => {
+        mocks.supervisor.sendProcess.mockClear()
+        mocks.state.getSelfId.mockReturnValue('self')
+        mocks.state.canCheckEngineUpdate.mockReturnValue(true)
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'update',
+            engineType: 'lm-studio',
+            nodeId: 'peer'
+        })
+
+        expect(mocks.state.canCheckEngineUpdate).toHaveBeenCalledWith('peer', 'lm-studio')
+        expect(mocks.supervisor.installOrUpdateEngineRemote).toHaveBeenCalledWith(
+            'peer',
+            'lmstudio',
+            'lm-studio',
+            'update'
+        )
+        expect(mocks.supervisor.sendProcess).not.toHaveBeenCalled()
+    })
+
+    it('declines a peer whose engine is unavailable', async () => {
+        mocks.supervisor.installOrUpdateEngineRemote.mockClear()
+        mocks.state.getSelfId.mockReturnValue('self')
+        mocks.state.canCheckEngineUpdate.mockReturnValue(false)
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'update',
+            engineType: 'lm-studio',
+            nodeId: 'peer'
+        })
+
+        expect(mocks.supervisor.installOrUpdateEngineRemote).not.toHaveBeenCalled()
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Updating requires a connected, paired node with this engine installed.',
+            'warning',
+            'engine-cmd:remote:update'
+        )
     })
 })
 

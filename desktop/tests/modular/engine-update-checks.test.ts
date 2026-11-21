@@ -17,9 +17,9 @@ const available = {
     installType: 'managed'
 }
 
-describe('local engine update checks', () => {
+describe('engine update checks', () => {
     const state = getModularBridgeState()
-    const check = vi.fn<(engine: EngineType) => Promise<JsonValue | undefined>>()
+    const check = vi.fn<(nodeId: string, engine: EngineType) => Promise<JsonValue | undefined>>()
     const sixHours = 6 * 60 * 60 * 1000
     let checks: ReturnType<typeof watchEngineUpdates>
     let unsubscribe: (() => void) | undefined
@@ -27,6 +27,7 @@ describe('local engine update checks', () => {
     beforeEach(() => {
         vi.useFakeTimers()
         vi.clearAllMocks()
+        state.setClusterPeerIds(new Set())
         state.setSelfId('local')
         state.applyEngineManagerList({ engines: [{ engine: 'ollama', installed: true }] })
         check.mockReset().mockResolvedValue({ updateAvailable: available })
@@ -76,12 +77,15 @@ describe('local engine update checks', () => {
         state.applyEngineManagerStatus(running)
         await vi.advanceTimersByTimeAsync(0)
         state.applyEngineManagerStatus({ ...running, healthy: true })
-        expect(check.mock.calls).toEqual([['lm-studio']])
+        expect(check.mock.calls).toEqual([['local', 'lm-studio']])
 
         state.applyEngineManagerStatus(stopped)
         await vi.advanceTimersByTimeAsync(0)
         state.applyEngineManagerStatus(stopped)
-        expect(check.mock.calls).toEqual([['lm-studio'], ['lm-studio']])
+        expect(check.mock.calls).toEqual([
+            ['local', 'lm-studio'],
+            ['local', 'lm-studio']
+        ])
     })
 
     it('checks vLLM when enabled or stopped without loading a model', async () => {
@@ -93,10 +97,13 @@ describe('local engine update checks', () => {
 
         state.applyEngineManagerStatus({ ...stopped, awaiting_model: true })
         await vi.advanceTimersByTimeAsync(0)
-        expect(check.mock.calls).toEqual([['vllm']])
+        expect(check.mock.calls).toEqual([['local', 'vllm']])
 
         state.applyEngineManagerStatus(stopped)
-        expect(check.mock.calls).toEqual([['vllm'], ['vllm']])
+        expect(check.mock.calls).toEqual([
+            ['local', 'vllm'],
+            ['local', 'vllm']
+        ])
     })
 
     it('publishes a completed start and keeps the previous offer when its update check fails', async () => {
@@ -106,7 +113,7 @@ describe('local engine update checks', () => {
         check.mockClear().mockReturnValueOnce(offline.promise)
 
         state.applyEngineManagerStatus({ engine: 'ollama', installed: true, running: true })
-        expect(check.mock.calls).toEqual([['ollama']])
+        expect(check.mock.calls).toEqual([['local', 'ollama']])
         expect(state.getEngineInitialState().statuses).toContainEqual(
             expect.objectContaining({
                 nodeId: 'local',
@@ -138,14 +145,18 @@ describe('local engine update checks', () => {
             downloadUrl: 'https://lmstudio.ai/download',
             installType: 'external'
         }
-        check.mockImplementation(async engine => {
+        check.mockImplementation(async (_node, engine) => {
             if (engine === 'llama-cpp') throw new Error('offline')
             return { updateAvailable: engine === 'lm-studio' ? lmStudio : available }
         })
         checks = watchEngineUpdates(check)
         await vi.advanceTimersByTimeAsync(0)
 
-        expect(check.mock.calls).toEqual([['ollama'], ['lm-studio'], ['llama-cpp']])
+        expect(check.mock.calls).toEqual([
+            ['local', 'ollama'],
+            ['local', 'lm-studio'],
+            ['local', 'llama-cpp']
+        ])
         expect(state.getEngineInitialState().updateAvailable).toEqual([
             { ...available, nodeId: 'local', engineType: 'ollama' },
             { ...lmStudio, nodeId: 'local', engineType: 'lm-studio' }
@@ -153,10 +164,67 @@ describe('local engine update checks', () => {
 
         check.mockClear().mockResolvedValue({ updateAvailable: null })
         await checks.refresh('lm-studio')
-        expect(check.mock.calls).toEqual([['lm-studio']])
+        expect(check.mock.calls).toEqual([['local', 'lm-studio']])
         expect(state.getEngineInitialState().updateAvailable).toEqual([
             { ...available, nodeId: 'local', engineType: 'ollama' }
         ])
+    })
+
+    it('checks installed engines on paired peers and keeps offers scoped to their nodes', async () => {
+        state.setClusterPeerIds(new Set(['peer']))
+        checks = watchEngineUpdates(check)
+        const installed = { engine: 'ollama', installed: true, running: false }
+        const inventory = { engines: [installed, { engine: 'vllm', installed: false }] }
+        state.applyRemoteEngineFacts('stranger', inventory)
+        state.applyRemoteEngineFacts('peer', inventory)
+        state.applyRemoteEngineFacts('peer', inventory)
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(check.mock.calls).toEqual([
+            ['local', 'ollama'],
+            ['peer', 'ollama']
+        ])
+        const localOffer = { ...available, nodeId: 'local', engineType: 'ollama' }
+        const peerOffer = { ...available, nodeId: 'peer', engineType: 'ollama' }
+        expect(state.getEngineInitialState().updateAvailable).toEqual([localOffer, peerOffer])
+
+        check.mockClear().mockRejectedValue(new Error('offline'))
+        state.applyRemoteEngineStatusResult('peer', 'ollama', { ...installed, running: true })
+        await vi.advanceTimersByTimeAsync(0)
+        state.applyRemoteEngineFacts('peer', inventory)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(check.mock.calls).toEqual([
+            ['peer', 'ollama'],
+            ['peer', 'ollama']
+        ])
+        expect(state.getEngineInitialState().updateAvailable).toEqual([localOffer, peerOffer])
+
+        check.mockClear()
+        await vi.advanceTimersByTimeAsync(sixHours)
+        expect(check.mock.calls).toEqual([
+            ['local', 'ollama'],
+            ['peer', 'ollama']
+        ])
+        check.mockClear()
+        state.finishRemoteEngineUpdate('peer', 'ollama')
+        await vi.advanceTimersByTimeAsync(0)
+        expect(check.mock.calls).toEqual([['peer', 'ollama']])
+        expect(state.getEngineInitialState().updateAvailable).toEqual([localOffer])
+    })
+
+    it('discards an in-flight offer when the peer leaves the cluster', async () => {
+        const pending = Promise.withResolvers<JsonValue>()
+        state.setClusterPeerIds(new Set(['peer']))
+        check.mockImplementation(async node =>
+            node === 'peer' ? pending.promise : { updateAvailable: null }
+        )
+        checks = watchEngineUpdates(check)
+        state.applyRemoteEngineFacts('peer', { engines: [{ engine: 'ollama', installed: true }] })
+        expect(check).toHaveBeenCalledWith('peer', 'ollama')
+        state.setClusterPeerIds(new Set())
+        pending.resolve({ updateAvailable: available })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(state.getEngineInitialState().updateAvailable).toEqual([])
     })
 
     it('requires a valid vendor download link for external installations', async () => {

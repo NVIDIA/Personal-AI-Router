@@ -296,7 +296,7 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
         case 'update':
             if (!payload.nodeId || payload.nodeId !== state.getSelfId()) {
                 supervisor.reportError(
-                    'Engine updates are available on the local node.',
+                    'Select an identified node to update its engine.',
                     'warning',
                     'engine-cmd:update'
                 )
@@ -441,13 +441,8 @@ async function toggleRemoteEngine(
 
 /**
  * Dispatch a UI engine command to a remote peer via `nvpair-engine-manager`'s
- * `engine:remote-*` client methods (cluster-scoped mTLS `ec` surface). Install,
- * start/stop, pull, and model load/unload/delete are supported remotely;
- * uninstall and update remain local-only. Ports are not commands at all — they
- * travel the settings channels, which do reach a peer.
- * (optimistic status, awaited completion, authoritative refresh) lives on the
- * supervisor because the backend settles these ops only via the RPC reply, never
- * a terminal notification.
+ * `engine:remote-*` client methods (cluster-scoped mTLS `ec` surface). The
+ * supervisor tracks progress until the RPC completes and refreshes peer state.
  */
 function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): void {
     const supervisor = getModularSupervisor()
@@ -461,7 +456,27 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
     switch (payload.command) {
         case 'install':
         case 'installAll':
-            void supervisor.installEngineRemote(nodeId, engine, payload.engineType, true)
+            void supervisor.installOrUpdateEngineRemote(
+                nodeId,
+                engine,
+                payload.engineType,
+                'install',
+                true
+            )
+            break
+        case 'update':
+            if (!getModularBridgeState().canCheckEngineUpdate(nodeId, payload.engineType)) {
+                refuseRemote(
+                    'Updating requires a connected, paired node with this engine installed.'
+                )
+                break
+            }
+            void supervisor.installOrUpdateEngineRemote(
+                nodeId,
+                engine,
+                payload.engineType,
+                'update'
+            )
             break
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
@@ -480,10 +495,7 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
             }
             break
         case 'uninstall':
-        case 'update':
-            refuseRemote(
-                `${payload.command} is only available on the local node — remote uninstall/update is not supported yet.`
-            )
+            refuseRemote('Engines can only be uninstalled on the local node.')
             break
         case 'deleteModel':
         case 'loadModel':
@@ -525,7 +537,7 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     // action; LM Studio and llama.cpp use their manifest `load_model` actions.
 
     // Remote peers: `nvpair-engine-manager` exposes `engine:remote-*` client methods
-    // (cluster mTLS `ec` surface) for install/start/stop/pull and model ops.
+    // (cluster mTLS `ec` surface) for lifecycle and model operations.
     // Local-only ops are refused in {@link routeRemoteEngineCommand}.
     noteStopRequest(payload)
     const selfId = getModularBridgeState().getSelfId()

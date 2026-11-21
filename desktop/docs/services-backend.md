@@ -174,9 +174,10 @@ Local engine operations include install, start, stop, uninstall, port changes,
 and model actions. The desktop calls `engine:check-updates` at startup and every
 six hours for each installed local engine. A local start or stop also triggers
 a background check for that engine. The bridge projects each successful result into
-`updateAvailable` for the renderer. Selecting **Update** sends `engine:update`
-for a managed installation. Remote cluster operations use the engine manager's
-remote control surface where supported.
+`updateAvailable` for the renderer. For a paired node, the desktop requests
+`engine:remote-check-updates` with the node and engine. Selecting **Update**
+sends `engine:update` locally or `engine:remote-update` to the peer. The
+selected node determines ownership and runs its own updater.
 
 ### Cancelling a download
 
