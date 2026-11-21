@@ -152,13 +152,25 @@ var modelWires = map[string]modelWire{
 		"delete": modelOnly("delete_model"),
 		"pull":   modelOnly("pull_model"),
 	},
+	// Strata serves one model per instance and names it as a family and quant
+	// pair: a "family/quant" id is split into --family/--model by the
+	// manifest's launch_model (load) and by the pull runner (pull), so the
+	// operations carry the whole id here.
+	engines.NameStrata: {
+		"load":   modelOnly("load_model"),
+		"unload": modelOnly("unload_model"),
+		"delete": nameAndModel("delete_model"),
+		"pull":   nameAndModel("pull_model"),
+	},
 }
 
 // pullsWhileStopped are the engines whose download does not go through their
-// server: vLLM downloads into the Hugging Face cache with its own tool. It
-// mirrors the desktop's modelOpsWhenStopped capability.
+// server: vLLM downloads into the Hugging Face cache with its own tool, and
+// Strata's install command fetches model and engine components with the
+// instance down. It mirrors the desktop's modelOpsWhenStopped capability.
 var pullsWhileStopped = map[string]bool{
-	engines.NameVLLM: true,
+	engines.NameVLLM:   true,
+	engines.NameStrata: true,
 }
 
 // downloadExamples show what a download name looks like for each engine. The
@@ -169,6 +181,7 @@ var downloadExamples = map[string]string{
 	engines.NameLMStudio: "lmstudio-community/Qwen3-8B-GGUF",
 	engines.NameLlamaCPP: "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
 	engines.NameVLLM:     "Qwen/Qwen3.5-4B",
+	engines.NameStrata:   "qwen/q2_0",
 }
 
 // downloadPrompt is the placeholder for the download-by-name field, with an

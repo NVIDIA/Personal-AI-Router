@@ -1,0 +1,61 @@
+{
+  "$schema": "../manifest.schema.json",
+  "engine": "strata",
+  "display_name": "Strata",
+  "manifest_version": 1,
+  "detect": ["~/.local/bin/strata"],
+  "models_dir": "~/.nvpair/models/strata",
+  "platforms": {
+    "linux/amd64": {
+      "detect": ["~/.local/bin/strata"],
+      "runtime": { "cli": "~/.local/bin/strata" }
+    },
+    "linux/arm64": {
+      "detect": ["~/.local/bin/strata"],
+      "runtime": { "cli": "~/.local/bin/strata" }
+    }
+  },
+  "runtime": {
+    "mode": "command",
+    "cli": "~/.local/bin/strata",
+    "editable_launch": {
+      "fixed_args": ["launch", "--yes", "--no-tui", "--access", "address", "--no-api-key"],
+      "controls": [
+        { "flags": ["--listen"], "value": "{server.host}" },
+        { "flags": ["--port"], "value": "{server.port}" }
+      ]
+    },
+    "start": [
+      ["{cli}", "launch", "--yes", "--no-tui", "--access", "address", "--no-api-key", "--listen", "{host}", "--data-dir", "{models_dir}", "--family", "qwen", "--model", "q2_0", "--port", "{port}"]
+    ],
+    "stop": { "cmd": ["{cli}", "launch", "--stop"], "grace_s": 20 },
+    "bind": "127.0.0.1",
+    "port": 8091,
+    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 1800 },
+    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List Strata's installed model run configs (ids are Strata's model tags, such as qwen3.8-flash-next-q2_0). Needs no running engine.",
+      "cmd": ["{cli}", "models", "list", "--output", "json"],
+      "result": { "array": "models", "field": "id" }
+    },
+    "loaded_models": {
+      "description": "List the model this Strata instance is serving (it serves exactly one). The name it reports is what peers and the proxy route inference requests by.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "pull_model": {
+      "description": "Download a model and its engine components without serving (params: {\"model\": \"<family/quant>\"}). Strata names a model as a family and quant pair, so qwen/q2_0 fetches with --family qwen --model q2_0; an id without a slash uses the qwen family. Needs no running engine.",
+      "cmd": ["{cli}", "install", "--family", "{family}", "--model", "{model}", "--yes"]
+    },
+    "load_model": {
+      "description": "Serve a different model (params: {\"model\": \"<family/quant>\"}). Strata serves one model per instance, so this saves the family and quant into the launch arguments and restarts the engine on them; if the new model does not start, the previous selection is restored.",
+      "launch_model": { "flag": "--model", "family_flag": "--family" }
+    },
+    "unload_model": {
+      "description": "Stop serving the loaded model (params: {\"model\": \"<served name>\"}). Strata serves one model per instance, so this stops its serving process and frees the GPU while keeping the saved launch selection; Load or Start serves that model again.",
+      "stop_engine": true
+    }
+  }
+}

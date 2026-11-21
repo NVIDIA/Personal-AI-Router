@@ -438,6 +438,12 @@ type ActionHFPull struct {
 // launch settings and restarts a running engine on it.
 type ActionLaunchModel struct {
 	Flag string `json:"flag"`
+	// FamilyFlag, when set, splits the model id on its first "/": the part
+	// before it goes to FamilyFlag, the remainder to Flag. Strata names its
+	// model as a family and quant pair (--family qwen --model q2_0) while a
+	// fleet names one model by a single string, so a "family/quant" id
+	// writes both flags of the launch.
+	FamilyFlag string `json:"family_flag,omitempty"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.

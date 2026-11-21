@@ -158,6 +158,14 @@ var vllmBaseRoutes = []route{
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
 
+// strataBaseRoutes is the engine-specific surface that Strata exposes before
+// the shared compatibility routes are added. Strata serves exactly one model
+// per instance, and it answers the OpenAI, Responses and Anthropic dialects
+// natively, so its base surface is the model list alone, same shape as vLLM.
+var strataBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -178,10 +186,12 @@ func buildProfiles() []engineProfile {
 	lmstudio, _ := engines.ByName("lmstudio")
 	llamacpp, _ := engines.ByName("llamacpp")
 	vllm, _ := engines.ByName("vllm")
+	strata, _ := engines.ByName("strata")
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
 	vllmRoutes := slices.Concat(vllmBaseRoutes, openAIInferenceRoutes)
+	strataRoutes := slices.Concat(strataBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -215,6 +225,13 @@ func buildProfiles() []engineProfile {
 			Routes:                vllmRoutes,
 			ModelNaming:           exactID,
 			ReservedPersistedPort: 8001,
+		},
+		{
+			Engine:                strata,
+			StandalonePort:        8090,
+			Routes:                strataRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: 8091,
 		},
 	}
 }

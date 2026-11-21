@@ -68,9 +68,9 @@ func waitsForEngineReadiness(path, engine string) bool {
 	// "Downloading" under a transfer that is stopping.
 	//
 	// vLLM's load_model restarts the engine on the new model and replies once
-	// it is ready.
+	// it is ready; Strata's does the same and may download the model first.
 	if path == controlLoadPath {
-		return engine == "ollama" || engine == "vllm"
+		return engine == "ollama" || engine == "vllm" || engine == "strata"
 	}
 	return path == controlStartPath || path == controlDeletePath || path == controlCancelPullPath
 }

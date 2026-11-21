@@ -112,7 +112,7 @@ func TestBundledLlamaCPP_DisablesCORSByDefault(t *testing.T) {
 func TestBundledManifests_DeclareReviewedNetworkingControls(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	// Adding a bundled engine requires an explicit networking review and cases.
-	wantEngines := []string{"llamacpp", "lmstudio", "ollama", "vllm"}
+	wantEngines := []string{"llamacpp", "lmstudio", "ollama", "strata", "vllm"}
 	names := reg.Names()
 	slices.Sort(names)
 	assert.Equal(t, wantEngines, names, "review networking controls for every bundled engine")
@@ -140,6 +140,15 @@ func TestBundledManifests_DeclareReviewedNetworkingControls(t *testing.T) {
 					require.Equal(t, []LaunchControl{{Value: "{server.host}", Flags: []string{"--host"}}, {Value: "{server.port}", Flags: []string{"--port"}}}, policy.Controls, "incomplete vLLM controls")
 					valid = []string{"--host 127.0.0.1 --port 23456", "--host=127.0.0.1 --port=23456", "--port 23456 --model Qwen/Qwen2.5-0.5B-Instruct"}
 					invalid = []string{"--host 0.0.0.0", "--host=::", "--port 0", "--port 65536", "--port", "--port 23456 --port 23457", "-- --host 0.0.0.0"}
+				case "strata":
+					// Strata binds the one address given with --listen only when
+					// access is "address"; loopback there keeps it this-computer
+					// only, and --no-api-key stops a non-local access kind from
+					// minting a key the loopback probe could not present.
+					require.Equal(t, []string{"launch", "--yes", "--no-tui", "--access", "address", "--no-api-key"}, policy.FixedArgs, "Strata serve subcommand and access policy are not fixed")
+					require.Equal(t, []LaunchControl{{Value: "{server.host}", Flags: []string{"--listen"}}, {Value: "{server.port}", Flags: []string{"--port"}}}, policy.Controls, "incomplete Strata controls")
+					valid = []string{"--listen 127.0.0.1 --port 23456", "--listen=127.0.0.1 --port=23456", "--port 23456 --family qwen --model q2_0"}
+					invalid = []string{"--listen 0.0.0.0", "--listen=::", "--port 0", "--port 65536", "--port", "--port 23456 --port 23457", "-- --listen 0.0.0.0"}
 				default:
 					require.Equal(t, []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"OLLAMA_HOST"}}, {Value: "{cors.origins}", Env: []string{"OLLAMA_ORIGINS"}}}, policy.Controls, "incomplete Ollama controls")
 					valid = []string{`OLLAMA_HOST="127.0.0.1:23456"`, `OLLAMA_HOST='127.0.0.1:23456'`, "OLLAMA_HOST=127.0.0.1:23456"}

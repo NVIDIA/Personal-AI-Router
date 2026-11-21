@@ -64,7 +64,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 
 func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 5)
+	ports := make([]int, 6)
 	releases := make([]func(), len(ports))
 	for i := range ports {
 		ports[i], releases[i] = reserveSettingsPort(t)
@@ -81,6 +81,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 		"lmstudio": {ready: true, port: ports[2]},
 		"llamacpp": {ready: true, port: ports[3]},
 		"vllm":     {ready: true, port: ports[4]},
+		"strata":   {ready: true, port: ports[5]},
 	}}
 	for _, profile := range engineProxyProfiles {
 		h.b.setEngineProxyHandle(profile, proxy)
