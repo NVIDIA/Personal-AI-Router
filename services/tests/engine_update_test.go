@@ -19,7 +19,7 @@ import (
 func TestBroker_RelaysLocalEngineUpdateRequests(t *testing.T) {
 	configDir := t.TempDir()
 	installDir := t.TempDir()
-	names := []string{engines.NameOllama, engines.NameLlamaCPP}
+	names := []string{engines.NameOllama, engines.NameLMStudio, engines.NameLlamaCPP}
 	ports := freePorts(t, len(names))
 	// Give each engine an empty installation on the host platform, including
 	// engines whose bundled manifests normally omit this OS or architecture.
@@ -56,12 +56,12 @@ func TestBroker_RelaysLocalEngineUpdateRequests(t *testing.T) {
 		})
 	}
 
-	t.Run("a broken Ollama binary leaves the llama.cpp check independent", func(t *testing.T) {
+	t.Run("a broken Ollama binary leaves the LM Studio check independent", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(installDir, engines.NameOllama), []byte("invalid executable"), 0o600))
 		reply := callRPC(t, stdin, messages, "engine:check-updates", map[string]string{"engine": engines.NameOllama}, 10*time.Second)
 		require.NotNil(t, reply.Error)
 		assert.Equal(t, -32000, reply.Error.Code)
-		expectNoUpdate(t, engines.NameLlamaCPP)
+		expectNoUpdate(t, engines.NameLMStudio)
 	})
 
 	for _, method := range []string{"engine:check-updates", "engine:update"} {

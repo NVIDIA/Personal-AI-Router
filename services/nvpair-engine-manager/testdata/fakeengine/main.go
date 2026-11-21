@@ -288,6 +288,14 @@ func main() {
 			time.Sleep(time.Minute)
 			os.Exit(2)
 		case "daemon", "server":
+			if strings.Join(os.Args[1:], " ") == "daemon status" {
+				if data, err := os.ReadFile(os.Getenv("PAIR_TEST_LMS_STOP")); err == nil && string(data) == `["daemon","down"]` {
+					fmt.Println("LM Studio is not running")
+					return
+				}
+				fmt.Println(os.Getenv("PAIR_TEST_LMS_HOST"))
+				return
+			}
 			if strings.Join(os.Args[1:], " ") == "daemon status --json" {
 				if os.Getenv("PAIR_TEST_LMS_STATUS") == "command-error" {
 					fmt.Fprintln(os.Stderr, "host status unavailable")
@@ -299,6 +307,19 @@ func main() {
 			data, err := json.Marshal(os.Args[1:])
 			if err != nil || os.WriteFile(os.Getenv("PAIR_TEST_LMS_STOP"), data, 0o600) != nil {
 				os.Exit(1)
+			}
+			return
+		case "upgrade":
+			// A staged llmster registers its new executable and waits for Enter on Windows.
+			key, err := bufio.NewReader(os.Stdin).ReadByte()
+			if err != nil || key != '\n' || strings.Join(os.Args[1:], " ") != "upgrade --channel=stable" {
+				os.Exit(1)
+			}
+			if pointer := os.Getenv("PAIR_TEST_LLMSTER_POINTER"); pointer != "" {
+				data, err := os.ReadFile(pointer + ".next")
+				if err != nil || os.WriteFile(pointer, data, 0o600) != nil {
+					os.Exit(1)
+				}
 			}
 			return
 		case "-I": // stand in for the memory probe's Python -I -c invocation

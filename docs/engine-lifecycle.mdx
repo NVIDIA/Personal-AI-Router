@@ -190,7 +190,7 @@ first.
 
 ## Updating and Uninstalling an Engine
 
-The desktop checks local Ollama and llama.cpp installations at startup, every
+The desktop checks local Ollama, LM Studio, and llama.cpp installations at startup, every
 six hours, and when the engine starts or stops. If the release service is
 unreachable, the engine continues normally and PAIR keeps the last offer. When PAIR
 finds a newer stable release, **Overview** shows a message once per release in
@@ -210,7 +210,11 @@ For llama.cpp, PAIR needs matching archives and checksums for the platform
 and CUDA variant. If the latest upstream files are unavailable, PAIR can
 offer its bundled build when that is newer than the installed build.
 
-Use the vendor's installer to update an existing LM Studio installation.
+LM Studio desktop and the headless daemon (`llmster`) have separate releases.
+PAIR offers vendor instructions for the desktop app and can update a headless
+installation it owns. Open a portable LM Studio AppImage if PAIR can only
+read its version while it is running.
+
 PAIR installs the vLLM build pinned for the platform.
 
 **Uninstall** removes the NVPAIR-installed copy of an engine, and applies only to

@@ -36,6 +36,7 @@ type engineUpdater struct {
 var engineUpdaters = map[string]engineUpdater{
 	engines.NameOllama:   {(*Executor).CheckOllamaUpdate, (*Executor).UpdateOllama},
 	engines.NameLlamaCPP: {(*Executor).CheckLlamaCppUpdate, (*Executor).UpdateLlamaCpp},
+	engines.NameLMStudio: {(*Executor).CheckLMStudioUpdate, (*Executor).UpdateLMStudio},
 }
 
 func (e *Executor) CheckEngineUpdate(ctx context.Context, engine string) (*EngineUpdateInfo, error) {
