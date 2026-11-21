@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from 'vitest'
+import type { EngineManagerName, EngineType } from '@/shared/types/engines'
 import type { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import type { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
 import type { getModularBridgeState } from '@/electron/service-bridge/modular-state'
@@ -39,12 +40,17 @@ vi.mock('@/electron/service-bridge/model-catalog', () => ({
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 
 describe('local engine update command', () => {
-    it('sends one managed Ollama update', async () => {
+    it.each<{ engineType: EngineType; engine: EngineManagerName }>([
+        { engineType: 'ollama', engine: 'ollama' },
+        { engineType: 'lm-studio', engine: 'lmstudio' },
+        { engineType: 'llama-cpp', engine: 'llamacpp' },
+        { engineType: 'vllm', engine: 'vllm' }
+    ])('sends one managed update for $engineType as $engine', async ({ engineType, engine }) => {
         mocks.supervisor.sendProcess.mockClear()
         mocks.state.getSelfId.mockReturnValue('self')
         await handleServiceBridgeInvoke('engine:command', {
             command: 'update',
-            engineType: 'ollama',
+            engineType,
             nodeId: 'self'
         })
 
@@ -52,7 +58,7 @@ describe('local engine update command', () => {
         expect(mocks.supervisor.sendProcess).toHaveBeenCalledWith(
             'broker',
             'engine:update',
-            { engine: 'ollama' },
+            { engine },
             expect.any(Function),
             true
         )
@@ -65,17 +71,17 @@ describe('local engine update command', () => {
         })
         await handleServiceBridgeInvoke('engine:command', {
             command: 'update',
-            engineType: 'ollama',
+            engineType: 'lm-studio',
             nodeId: 'self'
         })
         expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
-            'Failed to update ollama: update rejected',
+            'Failed to update lmstudio: update rejected',
             'error',
             undefined,
             {
-                id: 'engine-manager:update-failed:ollama',
+                id: 'engine-manager:update-failed:lmstudio',
                 nodeId: 'self',
-                engineType: 'ollama',
+                engineType: 'lm-studio',
                 operation: 'update',
                 action: 'retry'
             }

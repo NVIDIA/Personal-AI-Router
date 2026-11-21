@@ -83,12 +83,22 @@ function report(updateAvailable: EngineUpdateAvailable): void {
     publishPush('engines:state-changed', { nodeId, engineType, updateAvailable })
 }
 
-it('shows a local Ollama notification once per release and withdraws it when cleared', () => {
+it('deduplicates and withdraws local notices independently for each engine', () => {
     const unsubscribe = subscribeEngineUpdateNotifications(() => 'local-node')
     report({ ...update, nodeId: 'peer' })
+    const lmStudioUpdate: EngineUpdateAvailable = {
+        ...update,
+        engineType: 'lm-studio',
+        currentVersion: '0.10.0',
+        releaseUrl: 'https://lmstudio.ai/changelog/lmstudio',
+        installType: 'external',
+        downloadUrl: 'https://lmstudio.ai/download#lm-studio-download-heading'
+    }
+    report(lmStudioUpdate)
     report(update)
     report(update)
     report({ ...update, latestVersion: '0.10.3' })
+    report(lmStudioUpdate)
     publishPush('engines:state-changed', {
         nodeId: 'local-node',
         engineType: 'ollama',
@@ -96,6 +106,7 @@ it('shows a local Ollama notification once per release and withdraws it when cle
     })
     unsubscribe()
     expect(vi.mocked(showOverviewMessage).mock.calls.map(([message]) => message.id)).toEqual([
+        'engine-update:local-node:lm-studio:0.10.2',
         'engine-update:local-node:ollama:0.10.2',
         'engine-update:local-node:ollama:0.10.3'
     ])
@@ -103,18 +114,22 @@ it('shows a local Ollama notification once per release and withdraws it when cle
         ['engine-update:local-node:ollama:0.10.2'],
         ['engine-update:local-node:ollama:0.10.3']
     ])
-    expect(vi.mocked(showOverviewMessage).mock.calls[0][0].title).toBe('Ollama update available')
+    expect(vi.mocked(showOverviewMessage).mock.calls[0][0].title).toBe('LM Studio update available')
 })
 
-it('opens the local engine settings from the Ollama notification', async () => {
+it('opens the local engine settings from the vLLM notification', async () => {
     const unsubscribe = subscribeEngineUpdateNotifications(() => 'local-node')
-    report(update)
+    report({
+        ...update,
+        engineType: 'vllm',
+        releaseUrl: 'https://github.com/vllm-project/vllm/releases/tag/v0.10.2'
+    })
     unsubscribe()
     const [[message]] = vi.mocked(showOverviewMessage).mock.calls
     const onClose = vi.fn<() => void>()
     useOverviewUiStore.getState().openSettings('service')
     await act(() => root.render(createElement(AppMessageModal, { message, onClose })))
-    expect(document.body.textContent).toContain('Ollama update available')
+    expect(document.body.textContent).toContain('vLLM update available')
     await act(() => button('Open engine settings')?.click())
 
     expect(useOverviewUiStore.getState()).toMatchObject({
@@ -124,15 +139,27 @@ it('opens the local engine settings from the Ollama notification', async () => {
     expect(onClose).toHaveBeenCalledOnce()
 })
 
-it('shows the installed and available Ollama versions and dispatches Update', async () => {
+it('shows the managed llama.cpp build tags and dispatches Update', async () => {
     const onUpdate = vi.fn<() => void>()
+    const llama: BackendInfo = {
+        ...engine,
+        type: 'llama-cpp',
+        displayName: 'llama.cpp',
+        updateAvailable: {
+            ...update,
+            engineType: 'llama-cpp',
+            currentVersion: 'b12001',
+            latestVersion: 'b12002',
+            releaseUrl: 'https://github.com/ggml-org/llama.cpp/releases/tag/b12002'
+        }
+    }
     await act(() =>
         root.render(
-            createElement(BackendUpdateBanner, { backend: engine, disabled: false, onUpdate })
+            createElement(BackendUpdateBanner, { backend: llama, disabled: false, onUpdate })
         )
     )
-    expect(document.body.textContent).toContain('v0.10.1 installed')
-    expect(document.body.textContent).toContain('Ollama v0.10.2 is available')
+    expect(document.body.textContent).toContain('b12001 installed')
+    expect(document.body.textContent).toContain('llama.cpp b12002 is available')
     await act(() => button('Update')?.click())
 
     expect(onUpdate).toHaveBeenCalledOnce()
@@ -165,17 +192,49 @@ it('opens the official download and release notes for an externally installed Ol
     expect(onUpdate).not.toHaveBeenCalled()
 })
 
+it('opens the headless LM Studio update guide for a newly detected external daemon', async () => {
+    const onUpdate = vi.fn<() => void>()
+    const guide = 'https://lmstudio.ai/docs/cli/daemon/daemon-update'
+    const external: BackendInfo = {
+        ...engine,
+        type: 'lm-studio',
+        displayName: 'LM Studio',
+        // The update check may detect the daemon before the lifecycle snapshot refreshes.
+        processStatus: 'not-installed',
+        updateAvailable: {
+            ...update,
+            engineType: 'lm-studio',
+            installType: 'external',
+            releaseUrl: guide,
+            downloadUrl: guide
+        }
+    }
+    await act(() =>
+        root.render(
+            createElement(BackendUpdateBanner, {
+                backend: external,
+                disabled: false,
+                onUpdate
+            })
+        )
+    )
+    await act(() => button('Get update')?.click())
+    expect(openExternal.mock.calls).toEqual([['https://lmstudio.ai/docs/cli/daemon/daemon-update']])
+    expect(button('Update details')).toBeUndefined()
+    expect(onUpdate).not.toHaveBeenCalled()
+})
+
 it('retries a failed update only for the affected local engine', async () => {
     const retry = vi.fn<IEngineApi['update']>()
     vi.stubGlobal('pairApi', { engines: { update: retry }, errors: { clear: vi.fn() } })
     useConnectionStore.setState({ selfId: 'local-node' })
     const failure: ServiceError = {
-        id: 'engine-manager:update-failed:ollama',
+        id: 'engine-manager:update-failed:lmstudio',
         timestamp: 1,
         action: 'retry',
-        engineType: 'ollama',
+        engineType: 'lm-studio',
         operation: 'update',
-        message: 'Ollama update failed',
+        message: 'LM Studio update failed',
         nodeId: 'peer-node'
     }
     useErrorsStore.setState({ errors: [failure] })
@@ -184,5 +243,5 @@ it('retries a failed update only for the affected local engine', async () => {
 
     await act(() => useErrorsStore.setState({ errors: [{ ...failure, nodeId: 'local-node' }] }))
     await act(() => button('Retry')?.click())
-    expect(retry.mock.calls).toEqual([['ollama', 'local-node']])
+    expect(retry.mock.calls).toEqual([['lm-studio', 'local-node']])
 })

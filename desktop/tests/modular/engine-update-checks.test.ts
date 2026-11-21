@@ -64,11 +64,9 @@ describe('local engine update checks', () => {
     })
 
     it('checks only the engine that started or stopped, once per transition', async () => {
-        const stopped = { engine: 'ollama', installed: true, running: false }
+        const stopped = { engine: 'lmstudio', installed: true, running: false }
         const running = { ...stopped, running: true }
-        state.applyEngineManagerList({
-            engines: [stopped, { engine: 'lmstudio', installed: true }]
-        })
+        state.applyEngineManagerList({ engines: [stopped, { engine: 'ollama', installed: true }] })
         checks = watchEngineUpdates(check)
         await vi.advanceTimersByTimeAsync(0)
         check.mockClear()
@@ -78,12 +76,27 @@ describe('local engine update checks', () => {
         state.applyEngineManagerStatus(running)
         await vi.advanceTimersByTimeAsync(0)
         state.applyEngineManagerStatus({ ...running, healthy: true })
-        expect(check.mock.calls).toEqual([['ollama']])
+        expect(check.mock.calls).toEqual([['lm-studio']])
 
         state.applyEngineManagerStatus(stopped)
         await vi.advanceTimersByTimeAsync(0)
         state.applyEngineManagerStatus(stopped)
-        expect(check.mock.calls).toEqual([['ollama'], ['ollama']])
+        expect(check.mock.calls).toEqual([['lm-studio'], ['lm-studio']])
+    })
+
+    it('checks vLLM when enabled or stopped without loading a model', async () => {
+        const stopped = { engine: 'vllm', installed: true, running: false, awaiting_model: false }
+        state.applyEngineManagerList({ engines: [stopped] })
+        checks = watchEngineUpdates(check)
+        await vi.advanceTimersByTimeAsync(0)
+        check.mockClear()
+
+        state.applyEngineManagerStatus({ ...stopped, awaiting_model: true })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(check.mock.calls).toEqual([['vllm']])
+
+        state.applyEngineManagerStatus(stopped)
+        expect(check.mock.calls).toEqual([['vllm'], ['vllm']])
     })
 
     it('publishes a completed start and keeps the previous offer when its update check fails', async () => {
@@ -110,20 +123,40 @@ describe('local engine update checks', () => {
         ])
     })
 
-    it('checks Ollama and llama.cpp independently at startup and on a state change', async () => {
+    it('checks each supported engine and keeps its offers independent of other engines', async () => {
         state.applyEngineManagerList({
             engines: [
                 { engine: 'ollama', installed: true },
+                { engine: 'lmstudio', installed: false },
                 { engine: 'llamacpp', installed: true }
             ]
         })
+        const lmStudio = {
+            currentVersion: '0.4.0',
+            latestVersion: '0.4.1',
+            releaseUrl: 'https://lmstudio.ai/changelog',
+            downloadUrl: 'https://lmstudio.ai/download',
+            installType: 'external'
+        }
+        check.mockImplementation(async engine => {
+            if (engine === 'llama-cpp') throw new Error('offline')
+            return { updateAvailable: engine === 'lm-studio' ? lmStudio : available }
+        })
         checks = watchEngineUpdates(check)
         await vi.advanceTimersByTimeAsync(0)
-        expect(check.mock.calls).toEqual([['ollama'], ['llama-cpp']])
 
-        state.applyEngineManagerStatus({ engine: 'llamacpp', installed: true, running: true })
-        await vi.advanceTimersByTimeAsync(0)
-        expect(check.mock.calls).toEqual([['ollama'], ['llama-cpp'], ['llama-cpp']])
+        expect(check.mock.calls).toEqual([['ollama'], ['lm-studio'], ['llama-cpp']])
+        expect(state.getEngineInitialState().updateAvailable).toEqual([
+            { ...available, nodeId: 'local', engineType: 'ollama' },
+            { ...lmStudio, nodeId: 'local', engineType: 'lm-studio' }
+        ])
+
+        check.mockClear().mockResolvedValue({ updateAvailable: null })
+        await checks.refresh('lm-studio')
+        expect(check.mock.calls).toEqual([['lm-studio']])
+        expect(state.getEngineInitialState().updateAvailable).toEqual([
+            { ...available, nodeId: 'local', engineType: 'ollama' }
+        ])
     })
 
     it('requires a valid vendor download link for external installations', async () => {

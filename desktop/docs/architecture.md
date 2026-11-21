@@ -208,7 +208,7 @@ closed `EngineType` union and narrows external strings with `isEngineType()`.
 `engineManagerName()` / `engineTypeFromManagerName()` are the one place that
 translation to and from the engine manager's own spelling lives.
 
-The desktop schedules release checks for local Ollama. The engine manager
+The desktop schedules release checks for each installed local engine. The engine manager
 compares versions, determines installation ownership, and applies managed
 updates. The bridge publishes availability through the existing engine snapshot
 and `engines:state-changed` updates.

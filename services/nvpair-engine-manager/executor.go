@@ -317,6 +317,8 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		switch engine {
 		case "ollama", "llamacpp":
 			err = recoverStagedEngineInstall(installDir, engine)
+		case "vllm":
+			err = recoverVLLMUpdate(installDir)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("recover %s installation: %w", m.DisplayName, err)

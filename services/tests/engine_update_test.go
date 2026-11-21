@@ -19,7 +19,7 @@ import (
 func TestBroker_RelaysLocalEngineUpdateRequests(t *testing.T) {
 	configDir := t.TempDir()
 	installDir := t.TempDir()
-	names := []string{engines.NameOllama, engines.NameLMStudio, engines.NameLlamaCPP}
+	names := []string{engines.NameOllama, engines.NameLMStudio, engines.NameLlamaCPP, engines.NameVLLM}
 	ports := freePorts(t, len(names))
 	// Give each engine an empty installation on the host platform, including
 	// engines whose bundled manifests normally omit this OS or architecture.

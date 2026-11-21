@@ -212,7 +212,7 @@ detail of either; a change to one is a change to both. Neither drives the other.
 operations.
 
 - Local lifecycle supports install, start, stop, uninstall, and port changes.
-  The desktop checks local Ollama through `engine:check-updates` and
+  The desktop checks each local engine through `engine:check-updates` and
   sends `engine:update` for managed updates. An external update opens the
   engine manager's vendor download URL for the detected installation.
 - Remote lifecycle uses the engine manager's remote control methods where

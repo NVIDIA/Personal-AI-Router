@@ -4,12 +4,12 @@
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
 import type { EngineType } from '@/shared/types/engines'
+import { EngineTypes } from '@/shared/constants/engines'
 import type { JsonValue } from './json-rpc-subprocess'
 import { getModularBridgeState } from './modular-state'
 
 const log = createStructuredLogger('service-bridge')
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
-const updateEngines: readonly EngineType[] = ['ollama', 'lm-studio', 'llama-cpp']
 
 /** One timer per broker. Coalesce lifecycle changes independently for each engine. */
 export function watchEngineUpdates(check: (engine: EngineType) => Promise<JsonValue | undefined>): {
@@ -47,11 +47,8 @@ export function watchEngineUpdates(check: (engine: EngineType) => Promise<JsonVa
     }
 
     async function refresh(engine?: EngineType): Promise<void> {
-        if (engine) {
-            if (updateEngines.includes(engine)) await checkEngine(engine)
-        } else {
-            await Promise.all(updateEngines.map(checkEngine))
-        }
+        if (engine) await checkEngine(engine)
+        else await Promise.all(EngineTypes.map(checkEngine))
     }
 
     const timer = setInterval(() => void refresh(), CHECK_INTERVAL_MS)

@@ -172,8 +172,8 @@ progress, or error pushes.
 
 Local engine operations include install, start, stop, uninstall, port changes,
 and model actions. The desktop calls `engine:check-updates` at startup and every
-six hours for local Ollama. Starting or stopping Ollama also triggers a
-background check. The bridge projects each successful result into
+six hours for each installed local engine. A local start or stop also triggers
+a background check for that engine. The bridge projects each successful result into
 `updateAvailable` for the renderer. Selecting **Update** sends `engine:update`
 for a managed installation. Remote cluster operations use the engine manager's
 remote control surface where supported.

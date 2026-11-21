@@ -237,7 +237,7 @@ Each entry assumes the ones before it.
    lists what changed and the **[Upgrade guide](docs/upgrade-guide.mdx)** covers
    any steps the update needs.
 3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop, and
-   uninstall engines, check for Ollama updates on this machine, and see what PAIR
+   uninstall engines, check for updates on this machine, and see what PAIR
    restores on relaunch.
 4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and
    its launch command, on this machine or a paired one, and give a browser access
