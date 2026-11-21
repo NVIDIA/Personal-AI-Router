@@ -1,7 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { WsInvokeChannel, WsInvokeRequest, WsInvokeResponse } from '@/shared/types/ws-channels'
+import type {
+    ClusterRouterConfig,
+    ClusterRouterStatus,
+    WsInvokeChannel,
+    WsInvokeRequest,
+    WsInvokeResponse
+} from '@/shared/types/ws-channels'
 import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
@@ -14,12 +20,24 @@ import {
 import getErrorString from '@/shared/utils/get-error-string'
 import { engineManagerName } from '@/shared/utils/engines'
 import { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
+import {
+    getClusterRouterConfig,
+    isBindablePort,
+    mergeClusterRouterConfig,
+    setClusterRouterConfig
+} from '@/electron/config/ui-config'
 import { getModularSupervisor } from './modular-supervisor'
 import {
     parseEngineSettings,
     parseEngineSettingsPreview,
     parseEngineSettingsReceipt
 } from './engine-settings'
+import {
+    parseClusterModelAliasView,
+    parseModelAliasesFromWire,
+    toModelAliasesWire,
+    validateModelAliases
+} from './model-aliases'
 import {
     getModularBridgeState,
     isUpstreamUnreachableError,
@@ -56,6 +74,65 @@ function stringValue(value: JsonValue | undefined): string {
 
 function booleanValue(value: JsonValue | undefined): boolean {
     return typeof value === 'boolean' ? value : false
+}
+
+/**
+ * Decode a `router/status` reply into what the Endpoints list draws. Anything
+ * that is not a live listener — no `running`, a port outside 1–65535, a body
+ * that is not an object — reads as "no endpoint here", the same answer the proxy
+ * itself gives when it never bound one. A failed read never reaches this
+ * function: it stays a rejection, because unknown is not the same as absent.
+ */
+function parseClusterRouterStatus(value: JsonValue | undefined): ClusterRouterStatus {
+    const result = objectValue(value)
+    const port = result?.port
+    if (!booleanValue(result?.running)) return { running: false, port: 0 }
+    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) {
+        return { running: false, port: 0 }
+    }
+    return { running: true, port }
+}
+
+/**
+ * Apply a cluster routing endpoint write to the running services: ask the
+ * broker whenever one is up, store what the services accepted, and store
+ * nothing when they refuse. TypeScript never re-derives what should be
+ * listening — that is the services' answer. The reply is not what gets stored:
+ * the reply describes a listener, a disabled endpoint's reply carries port 0,
+ * and that must not replace the stored port. A refused apply persists nothing
+ * and rethrows, so the child's own words about the port it could not bind
+ * reach the renderer untouched.
+ */
+async function applyClusterRouterConfig(
+    patch: Partial<ClusterRouterConfig>
+): Promise<ClusterRouterConfig> {
+    // Carve-out, check not policy: a port this computer could never bind is
+    // answered from the stored preference without a service call, which is
+    // what lets the editor snap a half-typed draft back.
+    if ('port' in patch && !isBindablePort(patch.port)) {
+        return setClusterRouterConfig(patch)
+    }
+
+    const supervisor = getModularSupervisor()
+    // Carve-out: with no broker there is nothing to apply. The preference is
+    // stored for the next start — the spawn argv reads it from this same
+    // place — and that is a plain success, not a failure.
+    if (!supervisor.hasProcess('broker')) {
+        return setClusterRouterConfig(patch)
+    }
+
+    // The merge is the store's, used here without persisting: the payload
+    // names the whole desired endpoint, so a switch-only patch still carries
+    // the stored port to the child.
+    const desired = mergeClusterRouterConfig(patch)
+    await supervisor.callProcess('broker', 'router/set-enabled', {
+        enabled: desired.enabled,
+        port: desired.port
+    })
+    // Reached only when the apply answered: the child serves exactly the
+    // endpoint requested now, or answered there is none to serve. Persist the
+    // applied request; a rejection never gets here, so it stores nothing.
+    return setClusterRouterConfig(desired)
 }
 
 /**
@@ -792,6 +869,89 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'cluster:respond-to-invite': payload => handleClusterRespondToInvite(payload),
     'cluster:cancel-invite': payload => handleClusterCancelInvite(payload),
     'cluster:abandon-if-solo': () => handleClusterAbandonIfSolo(),
+
+    // Cluster model aliases ride the broker's verbatim `settings/` relay to
+    // nvpair-node-settings. A failed read is deliberately not swallowed (like
+    // nodeSettingString does): the alias editor saves the whole list, so an
+    // editor that rendered "no aliases" for "cannot read" would be one Save
+    // away from erasing a working alias set. The rejection surfaces as an
+    // error banner over a closed editor instead.
+    'cluster:get-model-aliases': async () => {
+        const result = await getModularSupervisor().callProcess(
+            'broker',
+            'settings/get-cluster-model-aliases'
+        )
+        return parseModelAliasesFromWire(objectValue(result)?.aliases)
+    },
+    // A node's alias document, written from here — this computer's own included.
+    // Which machine's document it is stays the broker's business: it holds this
+    // node's cluster id, so it applies it locally or carries it to the owning
+    // node, and a client that had to decide would eventually get it wrong. A node
+    // that refuses answers in its own words and those reach the operator
+    // untouched, because a sentence from the machine that owns the list is the
+    // one worth reading.
+    'cluster:set-node-model-aliases': async payload => {
+        // Two refusals before a document is replaced, and both are about blast
+        // radius: a whole configuration overwritten needs a named destination,
+        // and a list that is a list at all. Saving replaces the whole document
+        // wherever it lands, so an absent list is never read as "none" — only an
+        // explicit [] says that, and it comes from the editor. The settings
+        // service checks the same rows again on the document it stores, so a
+        // half-typed draft costs a banner here instead of a broken document
+        // travelling to another computer and being announced from there.
+        const target = payload?.nodeId.trim() ?? ''
+        const aliases = payload?.aliases
+        if (target === '') {
+            throw new Error('A destination node is required.')
+        }
+        if (!aliases || !Array.isArray(aliases)) {
+            throw new Error(
+                'A complete alias list is required; an empty list clears the node’s aliases.'
+            )
+        }
+        const invalid = validateModelAliases(aliases)
+        if (invalid) throw new Error(invalid)
+        await getModularSupervisor().callProcess('broker', 'settings/set-node-model-aliases', {
+            nodeId: target,
+            aliases: toModelAliasesWire(aliases)
+        })
+        return null
+    },
+    // The cluster alias view: what this node's router actually routes by,
+    // including names written on other machines. Read-only by construction —
+    // the merged answer lives in the proxy child, so there is no settings
+    // document this could be saved back through. A failed read stays a
+    // rejection; the card renders it as "unknown", never as an empty cluster.
+    'cluster:get-router-aliases': async () => {
+        const result = await getModularSupervisor().callProcess('broker', 'router/get-aliases')
+        return parseClusterModelAliasView(objectValue(result)?.aliases)
+    },
+
+    // Cluster routing endpoint. The read of the bound state relays the proxy's
+    // live listener; the config write now reaches a service too.
+    // `set` applies to the running services through the proxy's process-scoped
+    // `router/set-enabled` and persists what the services
+    // accepted; a refused apply persists nothing and rejects with the child's
+    // message, so a port nobody binds snaps back in the editor instead of
+    // sitting there looking applied. Only the bridge's own checks answer from
+    // `ui-config.json` without a service call: an unbindable port, and no
+    // broker running, which stores the preference for the next start — the
+    // argv channel still carries that spawn-time initial
+    // condition. Deliberately no `callCluster`: that helper is scoped to
+    // cluster-manager methods, and the endpoint lives in the proxy, so this
+    // write rides the broker's process-scoped relay like the `router/status`
+    // read below.
+    'cluster:get-router-config': () => getClusterRouterConfig(),
+    'cluster:set-router-config': payload => applyClusterRouterConfig(payload ?? {}),
+    // The endpoint's bound state is reported, not echoed from that preference:
+    // the proxy answers from its live listener, "no proxy to ask" arrives as
+    // `{running:false,port:0}`, and a call that fails stays a rejection. Answering
+    // from configuration would list a port somebody else already holds as an
+    // endpoint.
+    'cluster:get-router-status': async () =>
+        parseClusterRouterStatus(
+            await getModularSupervisor().callProcess('broker', 'router/status')
+        ),
 
     'engines:get-initial': () => getModularBridgeState().getEngineInitialState(),
     'engines:get-settings': async payload =>

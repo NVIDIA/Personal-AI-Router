@@ -138,6 +138,13 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         })
     }
 
+    /**
+     * The default budget equals a product relay's worst case: the broker's
+     * `router/set-enabled` relay can consume up to 2x its 5 s proxy-call
+     * timeout (`proxyCallTimeout` in services/nvpair-ui-broker/proxy.go).
+     * Lowering this default below that turns slow-but-successful applies
+     * into desktop timeouts.
+     */
     async call(
         method: string,
         params?: JsonValue,

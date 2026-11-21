@@ -14,8 +14,13 @@ import type { LogEntry, LogPage } from '@/shared/types/log'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
-import type { Workload, WorkloadState } from '@/shared/types/workloads'
-import type { ClusterNode, Invite, NodeIdentityVerification } from '@/shared/types/cluster'
+import type { Workload, WorkloadEngine, WorkloadState } from '@/shared/types/workloads'
+import type {
+    ClusterNode,
+    Invite,
+    ModelAlias,
+    NodeIdentityVerification
+} from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
@@ -29,9 +34,10 @@ import {
     unsupportedEngineStatus
 } from '@/shared/utils/engines'
 import { engineProgressKey, isEnginePullOutcome } from '@/shared/utils/engine-progress'
-import { workloadKey } from '@/shared/utils/workloads'
+import { isWorkloadEngineClass, workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
+import { parseModelAliasesFromWire } from './model-aliases'
 import { mergePullProgressPercent } from './pull-error-handling'
 import type { JsonObject, JsonRpcNotification, JsonValue } from './json-rpc-subprocess'
 import { serviceLogLevel } from './service-log-level'
@@ -181,6 +187,12 @@ interface ModularNode extends NodeHardware {
     // a missing key means it was not read. Mirrors
     // noderec.DirectoryNode.DownloadedByEngine.
     downloadedByEngine: Record<string, string[]>
+    // The node's own cluster model alias document, announced the same way its
+    // model lists are and kept for the node card's editor: it is what that node
+    // has configured, not what this computer can route by. `null` means the node
+    // has not reported one (see {@link nodeAliasesValue}); `[]` is a report of
+    // none. Mirrors broker `AvailableNode.aliases`.
+    aliases: ModelAlias[] | null
     engines: Record<ProxyEngine, EnginePresence>
     lastSeen: number
 }
@@ -294,6 +306,27 @@ function parseModelsByEngine(value: JsonValue | undefined): Record<string, strin
 }
 
 /**
+ * Read a node's own announced alias document, keeping the distinction the alias
+ * editor depends on: `null` means the node has not reported one — no key, a null,
+ * or a list this build cannot read whole — and `[]` is its report that it
+ * configures none. The two must not collapse because the editor downstream saves
+ * the whole list it displays, so an editor over a silence is one Save away from
+ * erasing aliases it never showed.
+ *
+ * An unreadable entry therefore lands on the silence side, deliberately: the
+ * strict decoder is the one the local editor uses, on the same grounds that a
+ * list with an entry hidden by a lenient parse must not be offered for replace.
+ */
+function nodeAliasesValue(value: JsonValue | undefined): ModelAlias[] | null {
+    if (!Array.isArray(value)) return null
+    try {
+        return parseModelAliasesFromWire(value)
+    } catch {
+        return null
+    }
+}
+
+/**
  * Read an optional string array, preserving the absent vs empty distinction the
  * `inference_hardware_ids` contract relies on: a missing field returns
  * `undefined` (backend reports no readiness — show all GPUs), an empty array
@@ -378,16 +411,32 @@ function isWorkloadState(value: string): value is WorkloadState {
     return WORKLOAD_STATE_SET.has(value)
 }
 
+/**
+ * What a job's `engine` field means for the row it produces.
+ *
+ * The workload-manager stamps the engine-manager id (`lmstudio`), so a known id
+ * is mapped onto our closed `EngineType` union (`lm-studio`) — otherwise LM
+ * Studio jobs would be silently dropped. The cluster router instead reports
+ * `cluster`: the engine that answered may live on another machine, so the row
+ * names the routing and attributes the job through `scheduledOn`. A name this
+ * build has never seen is contract drift, and it still ran: the job keeps its
+ * row under `unknown`, which is the visible signal, since this bridge has no
+ * logger to warn with. A row naming no engine at all is not a job, so it goes.
+ */
+function workloadEngineClass(value: string): WorkloadEngine | null {
+    if (!value) return null
+    const engineType = engineTypeFromManagerName(value)
+    if (engineType) return engineType
+    return isWorkloadEngineClass(value) ? value : 'unknown'
+}
+
 /** Parse a workload-manager `params.workloadInfo` into a typed Workload. */
 function parseWorkload(value: JsonValue | undefined): Workload | null {
     const obj = objectValue(value)
     if (!obj) return null
     const id = stringValue(obj.id)
     if (!id) return null
-    // The workload-manager stamps the engine-manager id (`lmstudio`); map it onto
-    // our closed `EngineType` union (`lm-studio`) before narrowing so LM Studio
-    // jobs are not silently dropped.
-    const engine = engineTypeFromManagerName(stringValue(obj.engine))
+    const engine = workloadEngineClass(stringValue(obj.engine))
     if (!engine) return null
     const stateValue = stringValue(obj.state)
     if (!isWorkloadState(stateValue)) return null
@@ -464,6 +513,22 @@ function sameStringList(left: string[], right: string[]): boolean {
         if (left[index] !== right[index]) return false
     }
     return true
+}
+
+/**
+ * Compare two announced alias documents. Element order is the owning node's own
+ * list order — the order its editor shows and saves back — so it is part of
+ * equality, and `null` (that node has not reported a document) is a different
+ * answer from an empty list (it reports none). That distinction is the reason
+ * this comparison exists at all: the editor downstream saves the whole list it
+ * displays, so it must see a node's silence as a change in what is known.
+ */
+function sameAliasDocument(left: ModelAlias[] | null, right: ModelAlias[] | null): boolean {
+    if (left === null || right === null) return left === right
+    if (left.length !== right.length) return false
+    return left.every(
+        (alias, index) => alias.name === right[index].name && alias.model === right[index].model
+    )
 }
 
 /**
@@ -655,6 +720,12 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
             storage: [],
             inferenceHardwareIds: node.inferenceHardwareIds
         },
+        // That node's own announced alias document, projected only when it
+        // reported one: absent means it has said nothing, which the node card
+        // reads as "there is nothing verified to edit" rather than as "this node
+        // has no aliases" — the two differ exactly where a save would erase a
+        // list nobody has seen.
+        ...(node.aliases ? { aliases: node.aliases } : {}),
         // The local node's OS is known from the running process; the backend's
         // discovery/node-info plane reports no OS for remote nodes, so they fall
         // back to a placeholder. Remote OS is not reported by the current
@@ -758,6 +829,9 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         // broker-enriched value is preserved across the proxy merge (see mergeNode).
         loadedByEngine: {},
         downloadedByEngine: {},
+        // A proxy `node/*` event carries no alias document either; the
+        // broker-announced one is preserved across the proxy merge (see mergeNode).
+        aliases: null,
         nodeInfoPort: 0,
         nodeInfoUp: false,
         // A proxy `node/*` event carries no broker ranking; its `Addresses` are
@@ -863,6 +937,10 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         // Broker `AvailableNode.downloadedByEngine`: what a vLLM peer has
         // downloaded, reported even while it is stopped. `omitempty` on the wire.
         downloadedByEngine: parseModelsByEngine(obj.downloadedByEngine),
+        // Broker `AvailableNode.aliases`: that node's own alias document, as it
+        // announced it. An absent key or a null is "not reported", which is not
+        // the same claim as `[]` — see {@link nodeAliasesValue}.
+        aliases: nodeAliasesValue(obj.aliases),
         engines: emptyEngines(),
         lastSeen: normalizeLastSeen(numberValue(obj.lastSeen) || numberValue(obj.last_seen))
     }
@@ -917,6 +995,10 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         // unchanged) must still count as a node change so the loaded dot updates.
         sameModelsByEngine(left.loadedByEngine, right.loadedByEngine) &&
         sameModelsByEngine(left.downloadedByEngine, right.downloadedByEngine) &&
+        // The node's own alias document drives the node card's editor, which
+        // saves the whole list it shows: a peer's edit has to reach that editor,
+        // and "not reported" arriving or going away is a change worth a push.
+        sameAliasDocument(left.aliases, right.aliases) &&
         sameEngines(left.engines, right.engines)
     )
 }
@@ -1229,7 +1311,11 @@ class ModularBridgeState {
                 // Invite eligibility: a node already in a cluster cannot be invited
                 // into another; `trusted` marks an already-pinned peer.
                 trusted: node.trusted,
-                clustered: node.clustered
+                clustered: node.clustered,
+                // The node's own alias document, projected only when it reported
+                // one: an absent key is the editor's cue that there is nothing
+                // verified to edit, so it must not be invented as an empty list.
+                ...(node.aliases ? { aliases: node.aliases } : {})
             }
         })
     }
@@ -2735,6 +2821,9 @@ class ModularBridgeState {
             modelsByEngine: existing.modelsByEngine,
             loadedByEngine: existing.loadedByEngine,
             downloadedByEngine: existing.downloadedByEngine,
+            // Same for the alias document: the proxy feed says nothing about it,
+            // and an editor must not lose the answer the broker did get.
+            aliases: existing.aliases,
             engines: setEngine(existing.engines, engine, next.engines[engine]),
             lastSeen: Math.max(existing.lastSeen, next.lastSeen)
         }

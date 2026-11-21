@@ -5,17 +5,25 @@ import fs from 'fs'
 import path from 'path'
 import { getPaths } from '@/electron/globals'
 import {
+    MODULAR_CLUSTER_ROUTER_DEFAULT_PORT,
+    MODULAR_CLUSTER_ROUTER_MAX_PORT,
+    MODULAR_CLUSTER_ROUTER_MIN_PORT,
     MODULAR_DEFAULT_LOG_LEVEL,
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
 import type { StartupSettings } from '@/shared/types/ipc-channels'
+import type { ClusterRouterConfig } from '@/shared/types/ws-channels'
 
 interface UiConfig {
     /** When true, first-run onboarding has not been completed or explicitly dismissed. */
     firstRun: boolean
     /** Log level passed to every backend binary (`--log-level` at spawn + live `log/set-level`). Authoritative source for the modular log level. */
     modularLogLevel: ModularLogLevel
+    /** Whether this computer serves the cluster routing endpoint. Read once at services start, like the log level: changing it takes effect on the next start, so it is a preference and not a live state. */
+    clusterRouterEnabled: boolean
+    /** Loopback port the cluster routing endpoint is asked for. Only honoured together with `clusterRouterEnabled`. */
+    clusterRouterPort: number
     /** macOS only: the one-time privileged-helper setup (register the SMAppService daemon + configure the Application Firewall) has completed. Gates the first-run admin prompt; left false until the daemon is enabled and firewall configuration succeeds, so an approval-pending launch retries next time. */
     macHelperSetupComplete: boolean
     /** Windows/macOS: register the app as an OS login item so it starts when the user signs in. Off until it is switched on, so an install or an upgrade never adds a login item on its own. */
@@ -31,6 +39,8 @@ interface UiConfig {
 const DEFAULTS: UiConfig = {
     firstRun: true,
     modularLogLevel: MODULAR_DEFAULT_LOG_LEVEL,
+    clusterRouterEnabled: true,
+    clusterRouterPort: MODULAR_CLUSTER_ROUTER_DEFAULT_PORT,
     macHelperSetupComplete: false,
     launchAtLogin: false,
     startHidden: true,
@@ -155,6 +165,66 @@ export function setStartupSettings(patch: Partial<StartupSettings>): StartupSett
     if (typeof patch.startHidden === 'boolean') next.startHidden = patch.startHidden
     config.launchAtLogin = next.launchAtLogin
     config.startHidden = next.startHidden
+    save()
+    return next
+}
+
+/** A port the proxy could actually bind without running as root. */
+export function isBindablePort(value: number | undefined): value is number {
+    return (
+        value !== undefined &&
+        Number.isInteger(value) &&
+        value >= MODULAR_CLUSTER_ROUTER_MIN_PORT &&
+        value <= MODULAR_CLUSTER_ROUTER_MAX_PORT
+    )
+}
+
+/**
+ * The persisted cluster routing endpoint preference.
+ *
+ * Read strictly, like the startup preferences: a config written by an older
+ * build has neither key and a hand-edited one can hold any scalar. A port
+ * outside the bindable range is rejected rather than coerced, because it would
+ * still reach the broker and quietly leave the endpoint down while looking
+ * configured. The endpoint is on by default: routing across the cluster is what
+ * the product does, so a machine where nobody has looked at this setting should
+ * route rather than serve only its own engines.
+ */
+export function getClusterRouterConfig(): ClusterRouterConfig {
+    return {
+        enabled:
+            typeof config.clusterRouterEnabled === 'boolean'
+                ? config.clusterRouterEnabled
+                : DEFAULTS.clusterRouterEnabled,
+        port: isBindablePort(config.clusterRouterPort)
+            ? config.clusterRouterPort
+            : DEFAULTS.clusterRouterPort
+    }
+}
+
+/**
+ * Merge a patch onto the stored endpoint preference without persisting it.
+ * A patch field is adopted only when it is valid — an absent or unbindable
+ * port keeps the stored one. Exported for the bridge, which asks the services
+ * with the merged *desired* config before anything is stored: one merge path,
+ * so the rules for what the store accepts are not kept twice.
+ */
+export function mergeClusterRouterConfig(patch: Partial<ClusterRouterConfig>): ClusterRouterConfig {
+    const next = getClusterRouterConfig()
+    if (typeof patch.enabled === 'boolean') next.enabled = patch.enabled
+    if (isBindablePort(patch.port)) next.port = patch.port
+    return next
+}
+
+/**
+ * Persist the given endpoint preference and return the merged result. Keys that
+ * are absent — or, for the port, outside the bindable range, since the payload
+ * crosses IPC from the renderer — keep their stored value.
+ */
+export function setClusterRouterConfig(patch: Partial<ClusterRouterConfig>): ClusterRouterConfig {
+    const next = mergeClusterRouterConfig(patch)
+    config.clusterRouterEnabled = next.enabled
+    config.clusterRouterPort = next.port
     save()
     return next
 }

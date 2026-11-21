@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadEngine, WorkloadEngineClass } from '@/shared/types/workloads'
+import { WorkloadEngineClassLabels } from '@/shared/constants/workloads'
+import { EngineDisplayNames } from '@/shared/constants/engines'
 
 /**
  * Stable catalog key for a workload.
@@ -35,4 +37,23 @@ export function workloadKey(originatedFrom: string | null, id: string): string {
  */
 export function workloadExecutionNodeId(workload: Pick<Workload, 'scheduledOn'>): string | null {
     return workload.scheduledOn ?? null
+}
+
+/** Runtime type guard — validates a string is a known `WorkloadEngineClass`. */
+export function isWorkloadEngineClass(value: string): value is WorkloadEngineClass {
+    return Object.hasOwn(WorkloadEngineClassLabels, value)
+}
+
+/**
+ * What to call whatever served a job, for display only.
+ *
+ * A class is not an engine: `cluster` means the cluster router answered, from
+ * whichever machine held the model, and `unknown` means no engine manager in
+ * this build uses the name the worker reported. Neither has a brand mark, so
+ * `EngineIcon` renders a routing glyph for them and this is the text that goes
+ * with it. Never send the result anywhere — the wire name is on `Workload.engine`.
+ */
+export function workloadEngineLabel(engine: WorkloadEngine): string {
+    if (isWorkloadEngineClass(engine)) return WorkloadEngineClassLabels[engine]
+    return EngineDisplayNames[engine]
 }

@@ -33,7 +33,8 @@ vi.mock('@/shared/utils/log', () => ({
 }))
 
 vi.mock('@/electron/config/ui-config', () => ({
-    isFirstRun: () => false
+    isFirstRun: () => false,
+    getClusterRouterConfig: () => ({ enabled: true, port: 9999 })
 }))
 
 vi.mock('@/electron/service-bridge/broadcaster', () => ({
