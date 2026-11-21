@@ -268,7 +268,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		}
 		go func() {
 			update, err := m.exec.CheckEngineUpdate(ctx, p.Engine)
-			m.respondOrErr(msg, map[string]any{"updateAvailable": update}, err)
+			m.respondOrErr(msg, engineUpdateResult{UpdateAvailable: update}, err)
 		}()
 
 	// Removes the engines PAIR installed. Long-running — each engine goes
@@ -370,6 +370,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		go func() { m.respondOrErr(msg, nil, wait(ctx)) }()
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
+		"engine:remote-check-updates", "engine:remote-update",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull",
 		"engine:remote-start", "engine:remote-stop":
 		// Place a remote pull, and a cancel chasing one, here for the same

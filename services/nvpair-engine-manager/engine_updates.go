@@ -28,6 +28,10 @@ type EngineUpdateInfo struct {
 	InstallType    string `json:"installType"`
 }
 
+type engineUpdateResult struct {
+	UpdateAvailable *EngineUpdateInfo `json:"updateAvailable"`
+}
+
 type engineUpdater struct {
 	check  func(*Executor, context.Context) (*EngineUpdateInfo, error)
 	update func(*Executor, context.Context) error
@@ -196,6 +200,12 @@ func (e *Executor) withEngineUpdate(ctx context.Context, engine string, op func(
 	}
 	st.lockOperation()
 	defer st.unlockOperation()
+	// An update waiting behind another install or update must only stream
+	// progress emitted while it owns this engine's operation lock.
+	if progress, ok := ctx.Value(remoteUpdateProgressKey{}).(chan ProgressEvent); ok {
+		e.progress.setUpdateStream(engine, progress)
+		defer e.progress.setUpdateStream(engine, nil)
+	}
 	// Stop and prepare-shutdown cancel the transfer before waiting on opMu.
 	// doStart registers its own cancellation callback during restart.
 	ctx, cancel := context.WithCancel(ctx)

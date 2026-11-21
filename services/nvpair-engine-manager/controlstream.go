@@ -4,7 +4,7 @@
 package main
 
 // controlstream.go holds the long-running ec endpoints that stream live
-// progress: remote install and remote model pull. Both return a chunked
+// progress: remote install, engine update, and model pull. Each returns a chunked
 // application/x-ndjson body — zero or more {"type":"progress",...} frames as the
 // operation advances, terminated by exactly one {"type":"result",...} or
 // {"type":"error",...} frame. The initiating node relays each progress frame up
@@ -154,9 +154,8 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 // frame (or an error frame) last. run executes on the request context, so a
 // disconnected initiator cancels the operation.
 //
-// A pull's stream carries only the frames of the download its request runs
-// as, which download reports; an install's, with no download, carries all of
-// the engine's.
+// A pull streams its claimed download. An update streams installer steps
+// emitted while that request owns the engine's operation lock.
 func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, engine, op string, download func() uint64, run func(ctx context.Context) (streamFrame, error)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -167,8 +166,16 @@ func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, e
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	events, cancelSub := s.exec.progress.subscribe(engine)
-	defer cancelSub()
+	var events <-chan ProgressEvent
+	if op == "update" {
+		progress := make(chan ProgressEvent, 64)
+		events = progress
+		r = r.WithContext(context.WithValue(r.Context(), remoteUpdateProgressKey{}, progress))
+	} else {
+		var unsubscribe func()
+		events, unsubscribe = s.exec.progress.subscribe(engine)
+		defer unsubscribe()
+	}
 
 	enc := json.NewEncoder(w)
 	// The subscription is per engine, so a pull's stream also sees the

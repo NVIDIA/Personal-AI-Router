@@ -16,7 +16,7 @@ import (
 	"nvpair-shared/engines"
 )
 
-func TestBroker_RelaysLocalEngineUpdateRequests(t *testing.T) {
+func TestBroker_RelaysEngineUpdateRequests(t *testing.T) {
 	configDir := t.TempDir()
 	installDir := t.TempDir()
 	names := []string{engines.NameOllama, engines.NameLMStudio, engines.NameLlamaCPP, engines.NameVLLM}
@@ -74,6 +74,16 @@ func TestBroker_RelaysLocalEngineUpdateRequests(t *testing.T) {
 			reply := callRPC(t, stdin, messages, method, map[string]string{}, 10*time.Second)
 			require.NotNil(t, reply.Error)
 			assert.Equal(t, -32602, reply.Error.Code)
+		})
+	}
+
+	for _, method := range []string{"engine:remote-check-updates", "engine:remote-update"} {
+		t.Run(method+" resolves the selected peer", func(t *testing.T) {
+			params := map[string]string{"node": "missing-update-peer", "engine": engines.NameOllama}
+			reply := callRPC(t, stdin, messages, method, params, 10*time.Second)
+			require.NotNil(t, reply.Error)
+			assert.Equal(t, -32000, reply.Error.Code)
+			assert.Contains(t, reply.Error.Message, "missing-update-peer is not a discovered ec peer")
 		})
 	}
 }

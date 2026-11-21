@@ -12,7 +12,7 @@ import "sync"
 type ProgressEvent struct {
 	Model   string `json:"model,omitempty"`
 	Engine  string `json:"engine"`
-	Op      string `json:"op"` // "install" | "pull"
+	Op      string `json:"op"` // "install" | "update" | "pull"
 	Stage   string `json:"stage,omitempty"`
 	Percent int    `json:"percent"`
 	Message string `json:"message,omitempty"`
@@ -49,9 +49,10 @@ func wirePercentIncluded(pct int) bool {
 // harmless — each stream's authoritative terminal result is the out-of-band
 // final frame, never a hub frame.
 type progressHub struct {
-	mu   sync.Mutex
-	next int
-	subs map[int]*progressSub
+	mu      sync.Mutex
+	next    int
+	subs    map[int]*progressSub
+	updates map[string]chan<- ProgressEvent
 }
 
 type progressSub struct {
@@ -60,7 +61,17 @@ type progressSub struct {
 }
 
 func newProgressHub() *progressHub {
-	return &progressHub{subs: make(map[int]*progressSub)}
+	return &progressHub{subs: make(map[int]*progressSub), updates: make(map[string]chan<- ProgressEvent)}
+}
+
+type remoteUpdateProgressKey struct{}
+
+// Updates reuse the installer. Its progress belongs exclusively to the remote
+// request while withEngineUpdate owns the engine's lifecycle lock.
+func (h *progressHub) setUpdateStream(engine string, progress chan<- ProgressEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.updates[engine] = progress
 }
 
 // subscribe registers interest in one engine's progress (empty engine = all).
@@ -89,6 +100,14 @@ func (h *progressHub) subscribe(engine string) (<-chan ProgressEvent, func()) {
 func (h *progressHub) publish(ev ProgressEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if progress := h.updates[ev.Engine]; progress != nil && ev.Op == "install" {
+		ev.Op = "update"
+		select {
+		case progress <- ev:
+		default:
+		}
+		return
+	}
 	for _, sub := range h.subs {
 		if sub.engine != "" && sub.engine != ev.Engine {
 			continue

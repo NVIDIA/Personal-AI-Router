@@ -24,8 +24,10 @@
 - ⚠️ nvpair-engine-manager → engine:logs
 - ⚠️ nvpair-engine-manager → engine:preview-launch
 - ⚠️ nvpair-engine-manager → engine:remote-apply-settings
+- ⚠️ nvpair-engine-manager → engine:remote-check-updates
 - ⚠️ nvpair-engine-manager → engine:remote-get-settings
 - ⚠️ nvpair-engine-manager → engine:remote-preview-settings
+- ⚠️ nvpair-engine-manager → engine:remote-update
 - ⚠️ nvpair-engine-manager → engine:restart
 - ⚠️ nvpair-engine-manager → engine:set-port
 - ⚠️ nvpair-engine-manager → internal:set-reserved-port
@@ -111,6 +113,7 @@
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-cancel-pull` | request (we call) | ✅ yes |
+| `engine:remote-check-updates` | request (we call) | ⚠️ not called |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
 | `engine:remote-get-settings` | request (we call) | ⚠️ not called |
@@ -121,6 +124,7 @@
 | `engine:remote-start` | request (we call) | ✅ yes |
 | `engine:remote-stop` | request (we call) | ✅ yes |
 | `engine:remote-unload-model` | request (we call) | ✅ yes |
+| `engine:remote-update` | request (we call) | ⚠️ not called |
 | `engine:restart` | request (we call) | ⚠️ not called |
 | `engine:set-port` | request (we call) | ⚠️ not called |
 | `engine:start` | request (we call) | ✅ yes |

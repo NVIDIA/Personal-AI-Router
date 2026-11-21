@@ -332,6 +332,8 @@ Requests (caller → service):
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"`, `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
+| `engine:remote-check-updates` | `{ node, engine }` | The target's `engine:check-updates` result. The target identifies the installed version, applicable release, and vendor URL for an external installation. |
+| `engine:remote-update` | `{ node, engine }` | `{ opId, status: EngineStatus }` after the target applies a managed update. `engine:remote-progress` carries `op: "update"`. |
 | `engine:remote-pull-model` | `{ node, engine, model?, params?, opId? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`). An `opId`, under the same rules as `engine:action`'s, names the pull in place of a minted one: on its `engine:remote-progress` frames, in the reply, and to the peer. Held until every `engine:remote-cancel-pull` of that download sent before it has ended, so a retry cannot reach the peer ahead of the cancel it follows and be stopped by it |
 | `engine:remote-cancel-pull` | `{ node, engine, model }` | the remote cancellation result. Held until every `engine:remote-pull-model` of that download sent before it has been accepted by the peer or has ended, so a cancel dispatched right behind a pull, or behind a duplicate of it, cannot reach the peer first |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
@@ -401,7 +403,7 @@ stop runs as no download yet, so that download's frames leave it out, and a
 client that names its requests can tell the cancelled download's late frames
 from its retry's, which name the same engine and model),
 `engine:remote-progress{opId, node, engine, model, op, stage, percent?, message, opIds?}`
-(relayed live progress for a remote install/pull, a pull's terminal frame
+(relayed live progress for a remote install, update, or pull, a pull's terminal frame
 included, which the initiator sends itself when the peer's stream dropped it;
 `opId` is the one the client named an `engine:remote-pull-model` with, or else
 one minted for the operation; only the last of this machine's pulls of one
@@ -446,7 +448,7 @@ The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
 relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
-`remote-install` / `remote-pull-model` — keys the operation by an `opId`, the
+`remote-install`, `remote-update`, and `remote-pull-model` — keys the operation by an `opId`, the
 one the caller named a pull with or else one it mints, relays each streamed
 progress frame up as `engine:remote-progress`, and settles the request with the
 terminal result. Each NDJSON progress or terminal frame uses the shared
@@ -755,6 +757,8 @@ Endpoints (all under `/v1`):
 |---|---|---|
 | `GET /v1/engines` | JSON | remote `engine:get-installed` |
 | `POST /v1/engines/install` | NDJSON stream | remote install (+ optional start) with live progress |
+| `POST /v1/engines/check-updates` | JSON | accepts `{ engine }` and returns the target's `{ updateAvailable }` |
+| `POST /v1/engines/update` | NDJSON stream | accepts `{ engine, opId }`, applies a managed update on the target, and returns its final status |
 | `POST /v1/models/pull` | NDJSON stream | remote model pull with live progress |
 | `POST /v1/models/cancel-pull` | JSON | remote `engine:cancel-pull` |
 | `POST /v1/engines/start` | JSON | remote start → `EngineStatus` |
