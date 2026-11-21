@@ -187,6 +187,7 @@ func TestManager_SnapshotCannotResurrectRemovedWorkload(t *testing.T) {
 	receiver := NewServer(0, newDedupIndex(8), nil,
 		func(*Workload) error { present = true; return nil },
 		func(string, string) error { present = false; removes++; return nil },
+		nil,
 	)
 	for len(m.broadcastCh) > 0 {
 		var frame Message

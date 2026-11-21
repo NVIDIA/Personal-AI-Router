@@ -111,6 +111,20 @@ All traffic is JSON-RPC 2.0. The local interface uses `stdin`/`stdout` (or a nam
 | `workload:errored` | Broker → WM; broadcast | Peer → WM; → `workloads:upsert` | — |
 | `workloads:upsert` | — | — | After validated remote `workload:*` |
 | `workloads:remove` | Broker → WM; broadcast | Peer → WM; → `workloads:remove` | After validated remote `workloads:remove` |
+| `settings/replace-peer-model-aliases` | Broker → WM; carried to one peer | — | — |
+| `settings/replace-model-aliases` | — | Peer → WM; → `settings/apply-model-aliases` | — |
+| `settings/apply-model-aliases` | — | — | On an inbound `settings/replace-model-aliases` |
+| `settings/apply-model-aliases-result` | Broker → WM; settles that inbound write | — | — |
+| `settings/peer-model-aliases-result` | — | — | After a carried write is answered |
+
+The last five are not workload traffic. They ride a second path on the same
+listener, `POST /v1/settings/model-aliases`, under the same trust rules as
+`POST /v1/workloads/events` (§7.2), and they are notifications on the local
+interface because that interface has no request/response — so `params.requestId` is
+the only thing tying a verdict to the request that asked for it. Each node's
+cluster model alias document belongs to that node: this component carries it and
+never validates, stores, or interprets it, so the rules an alias must satisfy stay
+in `nvpair-node-settings` for local and remote writes alike.
 
 - **Inbound `workload:*` (Broker → WM)**: local-origin transitions to broadcast cluster-wide; `params.workloadInfo` is a full `Workload`. No response.
 - **`workloads:upsert` (WM → Broker)**: emitted for remote-origin lifecycle updates — each validated inter-node `workload:*` is translated (not forwarded) into an upsert. Not used on inter-node HTTP or Broker `stdin`. Params: `workloadInfo` copied unchanged from the peer event. Semantics: upsert into the Broker catalog by `Workload.id` (create if absent, replace if present) — the latest metadata/state, not a replay of the method name.
@@ -160,8 +174,9 @@ Example `workloads:remove` (identical body inter-node and on `stdout`; `originat
   - `workload:started` — began executing
   - `workload:completed` — finished successfully
   - `workload:errored` — failed (may retry on another node)
-- **Outbound** (`stdout`): `workloads:upsert` after each validated remote `workload:*`; `workloads:remove` after each validated remote removal (see §7.0).
-- Params: lifecycle uses `params.workloadInfo`; `workloads:remove` uses `params.workloadId`.
+- **Outbound** (`stdout`): `workloads:upsert` after each validated remote `workload:*`; `workloads:remove` after each validated remote removal (see §7.0); `settings/apply-model-aliases` to hand a peer's alias write to this node's settings owner; `settings/peer-model-aliases-result` with the owning node's verdict on a write this node asked for.
+- Params: lifecycle uses `params.workloadInfo`; `workloads:remove` uses `params.workloadId`; the alias frames use `params.requestId` plus `params.aliases` / `params.applied` and `params.error`.
+- **A verdict is always reported for a well-formed alias request**, including "could not reach that node" and "this computer is not in a cluster". A write that went unanswered would leave the operator's Save spinning until the Broker gave up, which is a slower and less specific answer than the one this component can give. A frame naming no `requestId` or no target node is a Broker bug: it is logged, not answered, because there is nothing to correlate a reply to.
 
 Example notification:
 ```json
@@ -219,6 +234,14 @@ Example request (`POST /v1/workloads/events`):
 }
 ```
 Response: `200 OK`.
+
+**Alias document writes share this listener on a second path.** `POST /v1/settings/model-aliases` carries the single method `settings/replace-model-aliases` with `params: { requestId, aliases }`, and it exists because this port is the one thing on a node a pinned peer can always reach: it is bound for the life of the process and its address is already in every peer's node record, whereas a proxy's facade port follows an engine and is closed whenever that engine is stopped — which is exactly when an operator may need to fix the alias that was pointing at it.
+
+- **Identity comes from the certificate.** The route requires a client certificate, re-derives membership per request (`clustertrust.Mesh.Refresh`, then `VerifyClientPin`), and reports the caller's cluster id to the local Broker as `callerUuid` so a write that surprises an operator is traceable to a machine. Nothing in the body names the caller or the target: a body that named the machine to write to would be a body that could name any machine.
+- **`requestId` is the calling broker's and carries that broker's node id** — `aliases-<nodeId>-<n>`. This node keys pending writes by that id alone, so a bare per-node counter would let two machines that had each issued the same number of writes hand this node the same id, and the second operator would be refused a write of their own with a sentence about a stranger's. A `409` is therefore a replay from one machine, never two machines colliding.
+- **The write replaces the whole document and is validated by the owning node**, never here. An absent or `null` `aliases` is refused with `400` rather than read as `[]`, because the only way to state that a node configures none is an explicit empty list.
+- **Statuses name who spoke**: `200` with `{ requestId, applied: true }`; `400` malformed frame, wrong method, missing `requestId`, or absent `aliases`; `403` untrusted or absent client certificate; `405` non-`POST`; `409` a write with that `requestId` already in flight on this node; `422` the owning node's settings service refused the document, with **that service's own sentence** as the body, since retrying changes nothing until the document does; `502` this node has no local settings relay wired; `504` the document was handed over and no verdict arrived in time. A `504` is not reported as a failure — the change is already with the settings service, and "failed" is a sentence an operator would act on.
+- **One attempt, no retry.** Unlike lifecycle broadcast, an alias write is posted once: a retry of a write whose outcome is unknown is a second whole-document replace racing the first. `peerAliasApplyTimeout` (2 s) bounds this node's wait for its own settings service and sits under the pooled client's `perPeerTimeout` (3 s); the calling side's whole trip, address selection included, is bounded by `peerAliasTripTimeout` (10 s). If the inner wait were the longer one, the caller's clock would speak first and report an unreachable node for a write that may well have landed.
 
 ### 7.3 Versioning
 - URL path prefix (`/v1`) on the inter-node interface.
