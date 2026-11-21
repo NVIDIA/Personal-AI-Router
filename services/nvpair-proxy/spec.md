@@ -16,6 +16,13 @@ Carries inference **to** the node that should serve it. One process hosts a
 engine's own dialect, filtering to nodes that advertise the requested model,
 choosing among them, and failing over when one refuses.
 
+The same process can also host the **cluster routing endpoint**: one loopback
+listener speaking the OpenAI-compatible surface, routing a requested model name
+to *any* (node, engine) pair that provides it and rewriting the body's `model` to
+the identifier that engine expects. It is a second routing personality, not a
+second proxy — it shares this process's transports, trust fabric, reservation
+ledger, and workload stream, and adds one addressing class (§5.12).
+
 It is a data plane, not a policy component. Ranking belongs to
 `nvpair-job-scheduler`, and cluster membership and trust to
 `nvpair-cluster-manager`. `nvpair-engine-manager` owns an engine's *install and
@@ -92,6 +99,9 @@ a safety margin (§5.6).
 - Per-request workload lifecycle events.
 - The process-wide reservation map that makes concurrent dispatch spread.
 - The persisted per-engine port a user chose through `set-port`.
+- The cluster routing endpoint: one loopback listener, any engine's owner, the
+  body's `model` rewritten to what that engine calls it, and a generated
+  inventory built from the same resolution that routes (§5.12).
 
 **Out of scope**
 
@@ -99,6 +109,12 @@ a safety margin (§5.6).
   engine install/start/stop (engine-manager).
 - Any cryptography of its own: it consumes the trust fabric, never builds it.
 - Model search or catalog browsing.
+- Exposing the cluster routing endpoint to a network. It binds loopback only; a
+  peer that needs to route across nodes runs its own router on its own loopback
+  and hops over the dedicated engine endpoints, which are already pin-gated.
+- Control-plane fan-out (`/api/tags`, `/api/show`, `/api/pull` and friends) on
+  the router, and a cluster-scoped engine telemetry stream: each listed with its
+  reason in §5.12.
 
 ## 3. Process model
 
@@ -153,7 +169,7 @@ which takes one off and puts the other on.
 | Class | Addressed? | Examples |
 | --- | --- | --- |
 | Facade-scoped | yes | `ready`, `error`, `node/*`, `errors:*`, `set-port`, `discovery:subscribe`, `discovery:nodes` |
-| Process-scoped | no | `log/set-level`, `node/set-priority`, `workload:*`, `discovery:node-activity` |
+| Process-scoped | no | `log/set-level`, `node/set-priority`, `workload:*`, `discovery:node-activity`, `cluster/set-aliases`, `router/set-enabled`, `router/status`, `router/get-aliases` |
 | Bootstrap | names its engine in the payload | `facade/enable` |
 
 `facade/enable` is unaddressed because it runs *before* the facade it names
@@ -164,6 +180,15 @@ strip a real method down to `report`.
 An unaddressed facade-scoped message resolves to **no** facade. Falling back to
 "the only facade" would work with one engine enabled and misroute silently with
 two.
+
+The cluster routing endpoint adds a class with no engine in it at all. Its
+JSON-RPC surface (`cluster/set-aliases`, `router/set-enabled`,
+`router/status`, `router/get-aliases`) is process-scoped, because the router is
+not an engine and prefixing those names would make a caller guess an engine for
+something that routes across all of them. Its HTTP surface addresses by **the model name in the request body**,
+which the catalog resolves to a set of (node, engine, native identifier) triples
+— so the address is not known until the name is resolved, and the same name can
+address one machine today and three tomorrow (§5.12).
 
 ## 5. Request path
 
@@ -538,6 +563,11 @@ its address points:
 | An admitted peer this node holds a current pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | discovery supplies the verified identity and `trusted: true`; the live mesh authorizes the outbound connection against the current pin |
 | A manual node from `node/add-manual` | plain HTTP to the address the user supplied | a deliberate, separately labelled bypass |
 | Anything else — an unpinned peer, or any peer while this node is unclustered | dropped | a peer's facade refuses plaintext from the LAN, so it is not reachable |
+| The same owner reached from the cluster router (§5.12) | the same dial, through the same pooled client, at that peer's port **for that engine** | the hop is terminal by construction: the peer's cluster ingress forwards to its own local engine and never consults resolution, so a cluster-routed request is dialled exactly once |
+
+A router hop carries the facade whose address chooser selected it, so a transport
+error forgets the confirmed address on the same chooser that confirmed it rather
+than on a second one that never saw it.
 
 A defensive check then drops any target that still resolves to this facade, and
 targets are de-duplicated by resolved host, so one engine known under two ids —
@@ -577,6 +607,18 @@ with the same body when no candidate answered — every candidate unreachable or
 (§5.8). So the `503` arises only for a request without `Origin`. The
 aggregate is reported as one request with `target: "cluster"` and no node id.
 
+The cluster routing endpoint's `GET /v1/models` does not fan out at all: its list
+is **generated** from the catalog that routes the same request, so a name cannot
+appear in the listing without resolving, and cannot stop resolving while it is
+still listed (§5.12). Its dedupe key is the **name alone**, not the `(name,
+digest)` key above — two engines holding the same weights advertise different
+digests (GGUF file hashes against Ollama manifest digests), so digest dedupe
+would delete a real second provider and make the failover set depend on which
+host answered a list first. Every name with at least one dialable provider is
+listed, and its `owned_by` is the routing class (`cluster`) rather than an
+engine, because at list time the answering engine is not decided and a guess
+would read as a routing promise the moment load preferred somebody else.
+
 ### 5.11 Discovery input
 
 Each facade subscribes to the broker's discovery relay for its engine's own
@@ -608,6 +650,184 @@ when it returns. Manual nodes are a separate overlay the snapshots never touch,
 and a manual node is shadowed by a relay node with the same id. A `node/select`
 pin on a node that has left both overlays is cleared with
 `node/selection-changed`.
+
+### 5.12 The cluster routing endpoint
+
+A dedicated facade answers one engine's dialect and can only route to owners of
+that engine. The cluster routing endpoint answers the OpenAI-compatible surface
+and routes to whoever provides the named model — any (node, engine) pair — after
+rewriting the body's `model` to the identifier that provider expects. It is
+brought up by `--cluster-router` on `--cluster-router-port` at process start,
+and a live process can also switch it through `router/set-enabled` — up on a
+named port, an omitted port taking the default, or down by closing the
+listener — so the endpoint's presence is runtime state, not only a launch flag
+(default 9999, which is outside every engine profile's range for the same
+reason the facades' standalone ports are: a router sitting on an engine's port
+would be mistaken for that engine, by clients and by engine-manager's identity
+probe alike). The broker threads both flags only when the user's Cluster
+Settings switch asks for the endpoint.
+
+**The listener binds loopback only, and that is the posture, not a placeholder.**
+This endpoint routes to any node in the cluster, so handing it to a network in
+plaintext would give whoever shares that network a routing oracle for the whole
+cluster. A peer that needs to route across nodes runs its own router on its own
+loopback and hops over the dedicated engine endpoints, which are already
+pin-gated. The listener address is therefore the whole gate and no per-request
+`RemoteAddr` check is added on top of it.
+
+**A port nobody can listen on is a reason to have no cluster endpoint, not a
+reason to have no proxy.** The router shares this process with every facade, so
+exiting over a bind failure would turn off inference on every engine of the
+machine for a number the user typed. At process start the proxy logs once and
+stays up with `clusterRouter` nil; `router/status` then answers "there is none"
+as a normal result rather than an error, and `cluster/set-aliases` stores.
+The alias document is process configuration: the courier delivers it once per
+consumer bring-up and again on change, so refusing a router-less push would
+drop it and leave an endpoint started later routing only exact native names
+until somebody re-saved the list — broken-looking, not unconfigured. No
+listener means no routing, so storing costs nothing, and a bring-up installs
+the stored document before serving. At runtime the same fact comes
+back as a refusal — error code `-32011` (`codeRouterBindFailed`), naming the
+port — and the refusal changes
+nothing: the endpoint that was serving still serves, because moving a working
+endpoint off its port over a lost bind race would turn one wrong number into
+downtime on the path that was fine.
+
+**A runtime turn-off closes the listener and answers at once.** No drain: a
+generation mid-flight keeps streaming on its already-accepted connection — the
+no-abort invariant — while new connections to the port get nothing.
+`router/status` follows the socket: a closed listener still reports its
+address, so status reads the endpoint's stopped mark rather than the listener,
+and a re-enable of the port that already answers keeps that listener (the
+broker can resend after a reconnect). The desktop reads bound state from
+`router/status` — never from the port it asked for — and lists the endpoint
+only when a live listener answers.
+
+**What it serves:** `GET /v1/models`, and `POST` on any path the engine route
+tables declare inference on. Dialect comes before distance: a path every engine
+declares (the shared OpenAI/Anthropic surface) makes every engine hosting the
+requested model a candidate, while a path only Ollama declares (`/api/chat` and
+friends) makes Ollama providers the *only* candidates — sending it elsewhere
+would be a request to an endpoint that does not exist there. Anything else is
+`404 not-routable`: the facades forward unlisted paths verbatim because they
+front exactly one engine and the router has no such default. A request carrying
+the engine identity probe header gets `409 router-not-engine`, because answering
+a probe with a forwarded response would let engine-manager conclude an engine is
+present where nothing but a router is listening.
+
+**Resolution is D1's order, and it is one expansion.** The requested name is
+matched as a native identifier across every engine first — that pass
+short-circuits, so a model literally named after an alias keeps routing to
+itself — then under each engine's naming convention, then as a configured alias.
+An alias is a synonym for a model, never a host list, so the alias pass expands a
+name into whoever this catalog provides under the name it stands for. The target
+is resolved once, at catalog build: a synonym whose target is itself a configured
+name (including its own) yields nothing, because a two-hop synonym cannot be
+predicted from any one machine's catalog. Several machines may define one name,
+each standing for its own engine's spelling of the same weights, and **every
+definition that resolves contributes its hosts to that name's provider set** —
+which is what lets one client-side name reach any machine currently able to serve
+it. This node's own definitions lead and peer definitions follow in node-id
+order, so a merge never depends on which directory record sorted first.
+
+**The catalog is built whole and replaced whole**, on a 250 ms TTL, from three
+inputs: the per-engine routing overlays the facades in this process already
+maintain (so identity gating, ranked addresses and manual entries are shared, not
+re-derived); this node's configured alias list — the copy held on the process,
+installed into a fresh endpoint at bring-up and replaced whole by every
+`cluster/set-aliases`, whether or not an endpoint is up; and the relay-fed
+peer alias feed — a
+`cluster:subscribe-aliases` registration followed by `cluster:peer-aliases`
+snapshots, each replacing the feed. The peer feed deliberately does not travel
+through the per-engine overlays: an alias names a model, not the machines fronting
+it, so a node advertising no engine service announces aliases just as validly as
+one that does. This node's own record is filtered out of the feed, since its
+aliases are configuration and arrive immediately rather than at discovery pace. A
+routing decision therefore sees either the old cluster or the new one, never half
+of each.
+
+**Dialability is decided per attempt, from live trust.** The provider set names
+who could serve the name; each provider is then admitted by §5.9's rules — local
+backend for this node's own endpoint, cluster mTLS only while the live mesh still
+pins that peer, plain HTTP for an explicitly manual entry, everything else
+dropped — and the membership refresh runs again for each walk, so a peer unpaired
+since the catalog was built stops being routable immediately. Address selection
+uses the facade's own reach chooser for that engine, so a confirmed address is the
+same fact the facades hold and a transport error forgets it on the chooser that
+recorded it. Two refusals come back as local answers with nothing dialled: `502
+no-provider` when no node serves the name, and `502 no-provider` when providers
+exist but none can be dialled, which logs the providers considered because "the
+cluster says a host serves this and this process cannot dial it" is a different
+fix. A body that names no model is `400 no-model`.
+
+**One pass over the provider set is the whole walk.** The reservation is taken
+after the set is known and before anything is dialled, from the same
+process-wide ledger the facades use — keyed by node id at the same
+host-level granularity — so a burst through the router sees, and is seen by, the
+load the facades already put on that host. No user pin exempts a provider here:
+`node/select` is a per-engine selection and a cluster route has no engine to
+inherit one from. The claim moves to whichever provider is actually being tried
+and is released on every exit path, including the mid-copy upstream panic.
+Retryable statuses mirror the facade path (`404` included, because every name
+here arrived through an inventory that can go stale; genuine client errors are
+not replayed), commitment is the first byte of body (§5.2), and the final
+provider's answer is the client's answer. What differs is that a cluster provider
+set can be every host in the cluster, so the dispatch budget can end the walk
+with providers still untried; that is a local `503 exhausted`, never the fifth
+provider's `503` read back as the cluster's verdict, and never a widened set
+(D9).
+
+**Only `model` is rewritten.** When the chosen provider spells the model
+differently, the body's `model` is replaced with that native identifier through a
+JSON object round trip; a body that is not an object carrying a string `model`
+travels as it arrived, and the corrected `Content-Length` is sent with the body
+that was actually written. Nothing else about the request is touched, so a
+friendly name never reaches the wire: the provider sees only its own identifier,
+and a client's `Authorization` travels through as on the facade path.
+
+**Every hop is terminal.** A peer's advertised engine endpoint is that peer's
+proxy, and a request arriving there over the cluster ingress is forwarded to that
+peer's local engine without consulting candidate resolution (§7). Nothing
+re-routes a second time, so a cluster-routed request is dialled exactly once and
+a request loop between two routers is unreachable by construction; the same rule
+is applied on this node by the self-forward guard that stops a hop resolving to
+this process's own listener.
+
+**Jobs are the router's own.** A workload carries `engine: "cluster"` — a routing
+class, not a fifth engine, and a true statement about the moment of submission:
+which engine would run it was not yet known — and its ids count on a
+router-private counter, since the workload key carries the engine and a router job
+and an Ollama-facade job may both be id `1`. One id spans the whole walk, so a
+request that fails over twice is one job card, and re-placement between attempts
+re-publishes `scheduledOn` so the scheduler counts the host actually being held.
+Rejections before admission create no workload record, and terminal classification
+follows §5.5 — including a committed stream whose copy was cut short, which stays
+`completed` because the truncation is the caller's to resume.
+
+**Deliberately absent, each with its reason:**
+
+- *The dropped-target watcher.* The facades poll a dispatched node's discovery
+  record during an attempt and abandon early when it disappears. This path finds
+  out when the dispatch fails or the first-byte budget expires, so the bound is
+  failover latency, not correctness: the hop still counts once and nothing
+  re-routes.
+- *Re-resolution between attempts.* This is one pass over what the resolver
+  produced; a facade's multi-round wait is not a state this walk reaches.
+- *Per-engine user pins,* for the reason given with the ledger above.
+- *The paired-addressed telemetry pair* (`request-started` / `request`). It
+  travels through a facade because the broker attributes those events to an
+  engine; a cluster-scoped stream needs a broker-side decision about what engine
+  "cluster" means there. Workload events stay on the process-scoped channel,
+  which already accepts any engine tag.
+- *Control-plane fan-out* (`/api/tags`, `/api/show`, `/api/pull` and friends).
+  The router is inference plus a generated inventory and never fetches a list
+  from upstream, so the credential-stripping question the model-list fan-out
+  carries does not arise here.
+- *A LAN personality,* per the listener posture above. A clustered mTLS
+  personality for the router is deferred, not declined.
+- *Finer capacity granularity.* The open question is the ledger key's
+  granularity, not the claim: any (host, engine) split waits for a mixed-host
+  burst run that shows starvation.
 
 ## 6. Reservations
 
@@ -684,6 +904,25 @@ loopback-only **alias** addresses, so clients already using that variable enter
 the same routing path. An occupied alias is non-fatal: the existing owner is
 untouched, the primary listener stays up, and a warning is reported.
 
+The cluster routing endpoint is a **third personality shape**: its own port, with
+no demultiplexing, because it has exactly one — loopback plaintext, always. There
+is no cluster mTLS personality on it, so a peer never arrives here; a peer's
+routing starts on its own loopback and enters this process through one of the
+engine ports above (§5.12). It answers its own refusals in the same small JSON
+body:
+
+| Condition | Status and code |
+| --- | --- |
+| Request carries `X-NVPAIR-Engine-Identity-Probe: 1` | `409 router-not-engine` |
+| Path is not an inference route or `GET /v1/models` | `404 not-routable` |
+| Body names no model | `400 no-model` |
+| No node provides the requested model, or none of its providers is dialable | `502 no-provider` |
+| The dispatch budget ended with providers untried | `503 exhausted` |
+
+Unlike the facade personalities, it never forwards to a local engine: everything
+it accepts is resolved against the catalog and dialled as a candidate, which is
+why the identity probe is refused rather than answered.
+
 ## 8. Ports
 
 | | Ollama | LM Studio | llama.cpp | vLLM |
@@ -692,6 +931,13 @@ untouched, the primary listener stays up, and a warning is reported.
 | Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
 | Standalone port, when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
 | Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
+
+The cluster routing endpoint is not in that table because it belongs to no
+engine: `--cluster-router-port` (default 9999) is its own number, chosen by the
+user in Cluster Settings and deliberately outside every engine profile's range.
+It is **not** persisted per-engine and not announced to peers — the endpoint is
+loopback-only, so there is nothing for a peer to dial here, and each node runs
+its own (§5.12).
 
 A port chosen at runtime via `set-port` is persisted per engine and restored
 when that facade is enabled, taking precedence over the requested port, so the

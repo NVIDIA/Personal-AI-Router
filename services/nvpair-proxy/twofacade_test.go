@@ -215,8 +215,8 @@ func TestFacades_ShareSchedulerStateAndReservations(t *testing.T) {
 	})
 
 	// One dispatch through each facade. The second must see the first's claim.
-	_, firstRes := p.reserveCandidate(p.facadeFor(first.Name), reservationCandidates("x", "y"))
-	_, secondRes := p.reserveCandidate(p.facadeFor(second.Name), reservationCandidates("x", "y"))
+	_, firstRes := p.reserveCandidate(p.facadeFor(first.Name).SelectedID(), reservationCandidates("x", "y"))
+	_, secondRes := p.reserveCandidate(p.facadeFor(second.Name).SelectedID(), reservationCandidates("x", "y"))
 
 	require.True(t, firstRes.held, "a facade failed to take a reservation from the shared snapshot")
 	require.True(t, secondRes.held, "a facade failed to take a reservation from the shared snapshot")

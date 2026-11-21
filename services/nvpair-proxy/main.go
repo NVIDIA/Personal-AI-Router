@@ -22,6 +22,8 @@ import (
 func main() {
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
+	clusterRouter := flag.Bool("cluster-router", false, "start the cluster routing endpoint (OpenAI-compatible, all engines) on loopback; the desktop turns this on from its Cluster Settings switch")
+	clusterRouterPort := flag.Int("cluster-router-port", routerDefaultPort, "port for the cluster routing endpoint when --cluster-router is set; loopback-only regardless")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -81,6 +83,30 @@ func main() {
 	// presence: a left/removed node keeps its keypair by design, and would
 	// otherwise keep logging cluster_ingress with no cluster peers to serve.
 	proxy.mesh = clustertrust.Open(*clusterDir)
+
+	// The cluster router is a second routing personality hosted by this same
+	// process: it shares the transports, the trust fabric, and the workload
+	// stream, and adds a loopback endpoint that routes across every enabled
+	// engine. It stays dark unless the flag asks for it — a machine that only
+	// needs per-engine endpoints binds no extra port. The desktop asks for it
+	// from its Cluster Settings switch, which is why the port is a number a
+	// person can change rather than a fixed one.
+	if *clusterRouter {
+		// Nil means "this process has no cluster endpoint", whether the port
+		// was taken or none was asked for: router/status reports no endpoint,
+		// and a pushed alias document stays on the process — bringUpRouter
+		// installs it into whatever endpoint comes up later, so a late
+		// endpoint is not nameless. Everything else here keeps serving, and
+		// the same states are reachable later at runtime through
+		// router/set-enabled; see bringUpRouter.
+		router, err := proxy.bringUpRouter(ctx, *clusterRouterPort)
+		if err != nil {
+			slog.Warn("cluster routing endpoint is down; the engine facades are unaffected",
+				"port", *clusterRouterPort, "err", err)
+		} else {
+			proxy.clusterRouter = router
+		}
+	}
 
 	go proxy.mesh.Watch(ctx, func(clustered bool) {
 		slog.Info("cluster inference ingress switched personality", "cluster_ingress", clustered)
