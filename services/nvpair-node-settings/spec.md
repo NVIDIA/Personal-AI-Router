@@ -128,10 +128,12 @@ Requests (broker → service):
 | `settings/set-cluster-friendly-name` | `{ value: string }` | `{ ok: true }` |
 | `settings/get-engine-allow-lan-bind` | — | `{ value: boolean }` |
 | `settings/set-engine-allow-lan-bind` | `{ value: boolean }` | `{ ok: true }` |
+| `settings/get-cluster-model-aliases` | — | `{ aliases: [{name, model}] }`, or `{ aliases: null }` while nobody has saved a list on this computer |
+| `settings/set-cluster-model-aliases` | `{ aliases: [{name, model}] }` | `{ ok: true }` |
 | `log/set-level` | `{ level }` | `{ level }` |
 | `shutdown` | — | `null` |
 
-Notifications (service → broker): `ready {version}` once on startup; `connection/cluster-identity {id}` after each successful `settings/set-cluster-id`; `connection/cluster-auto-sync {value}` after each successful `settings/set-cluster-auto-sync`. `log/set-level` is also accepted as an inbound notification, in which case the level changes with no response. Any other inbound notification is logged and ignored.
+Notifications (service → broker): `ready {version}` once on startup; `connection/cluster-identity {id}` after each successful `settings/set-cluster-id`; `connection/cluster-auto-sync {value}` after each successful `settings/set-cluster-auto-sync`; `connection/cluster-model-aliases {aliases}` after each successful `settings/set-cluster-model-aliases`. None of the cluster pushes is emitted on startup — a consumer that needs the current value at startup reads it with the matching `settings/get-*`. `log/set-level` is also accepted as an inbound notification, in which case the level changes with no response. Any other inbound notification is logged and ignored.
 
 ### 7.1 Local interface (UI Broker ↔ Node Settings)
 
@@ -142,8 +144,9 @@ The broker is also a direct caller in its own right, not only a relay:
 - `settings/get-force-ports` while preparing the managed Ollama and LM Studio facades and the inherited `OLLAMA_HOST` alias.
 - `settings/get-cluster-id` and `settings/get-cluster-friendly-name` each time it spawns `nvpair-cluster-manager`, to replay the identity with `cluster:set-identity`.
 - `settings/set-cluster-id` then `settings/set-cluster-friendly-name` on each `cluster:identity-changed` from the cluster manager. These writes run off the cluster manager's reader and log failures rather than surfacing them, because the cluster manager already holds the authoritative state.
+- `settings/get-cluster-model-aliases` to read this node's alias document when it points the cluster router at it and when it re-arms the peer announcement — at each worker's bring-up, since the push is change-only and neither the router nor the announcement may come up blank while the file already names aliases.
 
-The broker re-emits `connection/cluster-identity` and `connection/cluster-auto-sync` to its own clients verbatim and unconditionally — there is no opt-in subscription for these two. Every other notification from this service is ignored by the broker, except `errors:report` / `errors:clear`, which the broker routes into the errors pipeline like any other producer's.
+The broker re-emits `connection/cluster-identity` and `connection/cluster-auto-sync` to its own clients verbatim and unconditionally — there is no opt-in subscription for these two. It consumes `connection/cluster-model-aliases` rather than only relaying it: the payload is forwarded to `nvpair-proxy` as `cluster/set-aliases` and to `nvpair-engine-manager` as `node/model-aliases`, and it is also re-emitted verbatim, which the desktop deliberately does not subscribe to — an interface that just saved the list already holds it, and a read goes through `settings/get-cluster-model-aliases`. Every other notification from this service is ignored by the broker, except `errors:report` / `errors:clear`, which the broker routes into the errors pipeline like any other producer's.
 
 ### 7.2 Settings schema and defaults
 
@@ -153,10 +156,15 @@ The broker re-emits `connection/cluster-identity` and `connection/cluster-auto-s
 | `cluster_auto_sync` | boolean | `false` | `connection/cluster-auto-sync` | none at runtime; no UI editor |
 | `cluster_id` | string | `""` | `connection/cluster-identity` | broker replay into `nvpair-cluster-manager`; desktop cluster state |
 | `cluster_friendly_name` | string | `""` | no | broker replay into `nvpair-cluster-manager`; desktop cluster snapshot; `nvpair-tui` Nodes and Service tabs |
+| `model_aliases` | array of `{name, model}` | none at all: the getter answers `null` until a list is saved | `connection/cluster-model-aliases` | broker → `nvpair-proxy` cluster router (`cluster/set-aliases`) and `nvpair-engine-manager` peer announcement (`node/model-aliases`) |
 
-`nvpair-tui` reads and writes only `cluster_friendly_name` through the broker relay: it edits the name on its Service tab and shows it on its Nodes tab. It offers no editor for the other three settings.
+`nvpair-tui` reads and writes only `cluster_friendly_name` through the broker relay: it edits the name on its Service tab and shows it on its Nodes tab. It offers no editor for the other four settings.
 
-`force_ports` is the one product default: the file is decoded *over* `defaultSettings()`, so a missing key enables the recommended managed-port policy while an explicitly persisted `false` remains an opt-out. The other three default to their Go zero values.
+`force_ports` is the one product default: the file is decoded *over* `defaultSettings()`, so a missing key enables the recommended managed-port policy while an explicitly persisted `false` remains an opt-out. The other four default to their Go zero values.
+
+**`model_aliases` is the one document, not setting, this service owns.** One entry is two names — what a caller types and the model it stands for — and it carries no host or engine, which is what lets a list written on one machine route on machines that never saw it. The list belongs to this node: `nvpair-ui-broker` answers a write aimed at another node by handing it to `nvpair-workload-manager` to carry, and this service is the only writer on the node that owns it, so local and remote writes meet one validator. That validator (`validateModelAliases`) refuses an empty or padded name, a duplicate name, a missing or padded target, an alias that stands for itself, and a target that is another entry's name. It deliberately does not check that any engine serves the target: that answer lives in the cluster's catalogs, and an alias that resolves nowhere is inert rather than a guess. Padded fields are the exception to that tolerance, because whitespace is invisible — such a row can never be typed and never repaired by waiting for a model. The setter replaces the whole document and is last-writer-wins; there is no revision field, because a version check buys detection for a collision that needs two operators editing one node at one moment. `docs/architecture.mdx` §Model Aliases owns the wire and routing half of this story.
+
+The stored form keeps the two answers apart that the announcement keeps apart: a node nobody has edited stores `null` (and no key at all before its first save), and a node whose operator saved an empty list stores `[]`. Collapsing the second into the first at the next restart would let a machine that was told "none" be mistaken for one that has not said, and the editing surface over a node's list replaces the whole document it displays.
 
 `cluster_id` is the identity anything operational keys off; `""` means "not in a cluster". `cluster_friendly_name` is presentation metadata with no operational meaning.
 
