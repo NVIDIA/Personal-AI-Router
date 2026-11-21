@@ -847,7 +847,7 @@ func TestBundledVLLMManifest_PinsTheInstallAndSizesTheLaunchOnEachPlatform(t *te
 	}
 	test("linux/amd64", "vllm==")
 	test("linux/arm64", "vllm==")
-	test("darwin/arm64", "vllm-0.32.0")
+	test("darwin/arm64", "vllm-$3+cpu")
 }
 
 func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.T) {
