@@ -4,7 +4,6 @@
   "display_name": "Strata",
   "manifest_version": 1,
   "detect": ["~/.local/bin/strata"],
-  "models_dir": "~/.nvpair/models/strata",
   "platforms": {
     "linux/amd64": {
       "detect": ["~/.local/bin/strata"],
@@ -26,7 +25,7 @@
       ]
     },
     "start": [
-      ["{cli}", "launch", "--yes", "--no-tui", "--no-api-key", "--access", "local", "--data-dir", "{models_dir}", "--family", "qwen", "--model", "q2_0", "--port", "{port}"]
+      ["{cli}", "launch", "--yes", "--no-tui", "--no-api-key", "--access", "local", "--family", "qwen", "--model", "q2_0", "--port", "{port}"]
     ],
     "stop": { "cmd": ["{cli}", "launch", "--stop"], "grace_s": 20 },
     "bind": "127.0.0.1",
