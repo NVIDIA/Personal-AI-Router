@@ -164,9 +164,11 @@ if (!gotTheLock || exitRequested) {
 
         registerAllIpc()
         initializeUpdater()
-        const unsubscribeEngineUpdates = subscribeEngineUpdateNotifications(() =>
-            getModularBridgeState().getSelfId()
-        )
+        const unsubscribeEngineUpdates = subscribeEngineUpdateNotifications(nodeId => {
+            const state = getModularBridgeState()
+            if (nodeId === state.getSelfId()) return 'This node'
+            return state.getNodesInitial().nodes[nodeId]?.name || nodeId
+        })
         app.once('will-quit', unsubscribeEngineUpdates)
 
         // Bound startup on broker `app:ready` before opening the normal Overview.

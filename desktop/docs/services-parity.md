@@ -27,7 +27,7 @@ history.
 | llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                                                                                                                    |
 | vLLM engine                | Integrated (Linux, macOS arm64) | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), Hugging Face catalog search and download, endpoints and routing; eject (stops the engine), delete of cached models; no demo traffic |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                                                                                                          |
-| Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                                                                                                                        |
+| Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, update checks, managed updates, and model pull are supported                                                                                                                                         |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                                                                                                                    |
 | Engine version metadata    | Local engines                   | The engine manager compares the installed version with the applicable platform release and distinguishes managed and external installs. |
 | Errors                     | Complete                        | Broker-relayed registry with peer synchronization                                                                                                                                                                                        |
@@ -279,8 +279,8 @@ genuinely foreign listener (with an actionable error). Personal AI Router treats
 desired state as authoritative and surfaces a stop error as guidance, not as a
 sign the OFF choice was discarded.
 
-Every install sends `engine:install` with `start: true`, so a successful install
-starts the engine. A managed engine update uses `engine:update` and preserves
+Every local install sends `engine:install` with `start: true`, so a successful install
+starts the engine. A local managed engine update uses `engine:update` and preserves
 the engine's running or stopped state. On the first app open Personal AI Router
 starts every already-installed local engine once. Install and first-open starts
 rely on the engine manager recording desired-enabled as a side
@@ -291,9 +291,9 @@ Personal AI Router synthesizes one centralized pending-action state while waitin
 terminal backend notifications. It never treats optimistic state as
 authoritative.
 
-Remote cluster support includes status, install, start, stop, model pull, and
-remote model load, unload (eject), and delete via the `ec` surface. Uninstall
-and update remain local-only.
+Remote cluster support includes status, install, start, stop, update checks,
+managed updates, and model pull, load, unload (eject), and delete via the
+`ec` surface. Uninstall requires the local client.
 
 Server port, proxy port, and engine arguments are one authoritative record owned
 by the node running the engine, read and written through the broker's
@@ -358,7 +358,7 @@ Load uses a separate 10/31-minute response-header budget:
 | `OLLAMA_LOAD_PENDING_TIMEOUT_MS` (`pending-actions.store.ts`) | 32min | Ollama's Load control stays locked beyond the remote path's 31-minute header budget, while backend success or failure still clears it immediately.                                                                                                                                   |
 | `PENDING_TIMEOUT_MS`                                          | 60s   | Unchanged for every other command, including an Ollama delete.                                                                                                                                                                                                                       |
 | `remoteReadyResponseHeaderTimeout` (`remoteclient.go`)        | 31min | Start, settings apply, delete, Ollama and vLLM loads (a vLLM load restarts vLLM on the new model), and download cancel can answer only after slow work on the peer, so `waitsForEngineReadiness` sends them to the client pool `NewManager` (`manager.go`) creates with this budget. |
-| `remoteResponseHeaderTimeout` (`remoteclient.go`)             | 30s   | Every other remote call, a streamed pull or install included. It bounds only how long the peer takes to begin its answer, not how long the call runs.                                                                                                                                |
+| `remoteResponseHeaderTimeout` (`remoteclient.go`)             | 30s   | Every other remote call, including a streamed pull, install, or update. It bounds only how long the peer takes to begin its answer, not how long the call runs.                                                                                                                                |
 
 The net is a backstop, not the mechanism: a delete now ends the spinner on real
 backend truth either way. On success the refreshed `list_models` drops the model;

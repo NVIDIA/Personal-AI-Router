@@ -190,12 +190,15 @@ first.
 
 ## Updating and Uninstalling an Engine
 
-PAIR checks for updates at startup and every six hours. It also checks an
-individual engine in the background when it starts or stops. If the release
-service is unreachable, the engine continues normally and PAIR keeps any
-previously reported offer for that installation. When PAIR identifies a newer
-release, **Overview** shows a message once per engine and release in that
-desktop session. Select **Open engine settings** to see the installed and
+The desktop app checks local engines at startup and paired engines when it
+first receives the peer's engine list. It checks again every six hours and
+when an engine starts or stops. If the release service is unreachable, the
+engine continues normally and PAIR keeps any previously reported offer for
+that installation.
+
+When a newer version is available, **Overview** shows a notice once per
+machine, engine, and release in that desktop session. Select **Open engine
+settings** on the notice to see the installed and
 available versions.
 
 - **Update** lets PAIR update the copy it installed and controls. PAIR keeps
@@ -203,6 +206,7 @@ available versions.
   stopped state.
 - **Get update** opens the vendor's release page or instructions for a
   user-installed copy or an installation whose ownership PAIR cannot confirm.
+  Follow those instructions on the machine where the engine is installed.
 
 If GitHub rate-limits a release lookup, wait until the time in the error
 message, then select **Retry** in the desktop app.
@@ -260,9 +264,11 @@ architecture guide.
 
 ## Managing Engines on Other Machines
 
-After systems are paired, you can view another machine's engines from
-**Overview** and, where supported, start or stop engines and pull models on that
-peer.
+After systems are paired, open the peer's **Engine settings** from **Overview**.
+You can start and stop engines, pull models, and update a managed engine there.
+When you select **Update**, the peer downloads and applies the update on its own
+machine. Both machines must run a version of PAIR that supports remote engine
+updates for an offer to appear.
 
 Some actions stay **local only** on each machine: uninstalling an engine and
 changing its CORS settings. Perform those on the machine that owns the

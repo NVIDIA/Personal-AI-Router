@@ -96,7 +96,7 @@ export function BackendRow({
     const selfId = useConnectionStore(state => state.selfId)
     const isLocalNode = nodeId === selfId
     const updateAvailable = useEngineUpdateAvailableStore(state =>
-        isLocalNode ? state.getInfo(nodeId, backend.type) : undefined
+        state.getInfo(nodeId, backend.type)
     )
 
     const displayBackend = useMemo((): BackendInfo => {
@@ -158,8 +158,8 @@ export function BackendRow({
         )
     }, [displayBackend.processStatus, isUnavailable])
 
-    const nodeOs = useNodesStore(state => state.nodes.get(nodeId)?.os)
-    const targetOs = nodeOs ?? window.windowApi.platform
+    const node = useNodesStore(state => state.nodes.get(nodeId))
+    const targetOs = node?.os ?? window.windowApi.platform
 
     const handleToggle = useCallback(() => {
         window.pairApi.engines.toggle(backend.type, nodeId)
@@ -190,8 +190,6 @@ export function BackendRow({
         setExpanded(prev => !prev)
     }, [isUnavailable])
 
-    // Install/start/stop, model pull, and the settings editor work on clustered
-    // peers; uninstall, update, and model load/delete remain local-only.
     const controlsDisabled = isTransitioning
 
     const content = expanded ? (
@@ -238,7 +236,12 @@ export function BackendRow({
                     />
                     <BackendUpdateBanner
                         backend={displayBackend}
-                        disabled={controlsDisabled || !isLocalNode}
+                        remoteNodeName={isLocalNode ? undefined : node?.name}
+                        disabled={
+                            controlsDisabled ||
+                            isUnavailable ||
+                            (!isLocalNode && node?.status !== 'active')
+                        }
                         onUpdate={handleUpdate}
                     />
                     {expanded && <Divider />}

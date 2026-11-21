@@ -17,10 +17,12 @@ const BANNER_LINK_STYLE: CSSProperties = {
 
 export function BackendUpdateBanner({
     backend,
+    remoteNodeName,
     disabled,
     onUpdate
 }: {
     backend: BackendInfo
+    remoteNodeName?: string
     disabled: boolean
     onUpdate: () => void
 }) {
@@ -54,6 +56,9 @@ export function BackendUpdateBanner({
                     </Text>
                     <Text kind="body/regular/sm">
                         {displayEngineVersion(updateAvailable.currentVersion)} installed
+                        {remoteNodeName && updateAvailable.installType === 'external'
+                            ? `. Update manually on ${remoteNodeName}.`
+                            : ''}
                     </Text>
                     {(updateAvailable.installType === 'managed' ||
                         updateAvailable.releaseUrl !== updateAvailable.downloadUrl) && (

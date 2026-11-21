@@ -10,12 +10,18 @@ import { publishPush } from '@/electron/service-bridge/push-bus'
 import { dismissOverviewMessage, showOverviewMessage } from '@/electron/window'
 import type { EngineUpdateAvailable } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
+import type { NodeItem } from '@/shared/types/nodes'
 import type { IEngineApi } from '@/ui/api/engine-api'
 import { AppMessageModal } from '@/ui/components/AppMessageModal'
+import { BackendRow } from '@/ui/components/BackendRow/BackendRow'
 import { BackendUpdateBanner } from '@/ui/components/BackendRow/BackendUpdateBanner'
 import { ErrorModal } from '@/ui/components/ErrorModal'
 import { useConnectionStore } from '@/ui/stores/connection.store'
+import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
+import { useEngineUpdateAvailableStore } from '@/ui/stores/engine-update-available.store'
 import { useErrorsStore } from '@/ui/stores/errors.store'
+import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import type { BackendInfo } from '@/ui/types/engine-info'
 
@@ -29,7 +35,9 @@ vi.mock('@nvidia/foundations-react-core', async importOriginal => {
     const kit = await importOriginal<typeof import('@nvidia/foundations-react-core')>()
     const container = ({ children }: { children?: ReactNode }) =>
         createElement('div', null, children)
-    return { ...kit, ModalRoot: container, ModalDialog: container, ModalContent: container }
+    const modal = ({ children, open }: { children?: ReactNode; open: boolean }) =>
+        open ? container({ children }) : null
+    return { ...kit, ModalRoot: modal, ModalDialog: container, ModalContent: container }
 })
 
 const update: EngineUpdateAvailable = {
@@ -53,6 +61,17 @@ const engine: BackendInfo = {
     updateAvailable: update
 }
 
+const peer: NodeItem = {
+    id: 'peer-node',
+    name: 'Studio workstation',
+    status: 'active',
+    ipAddress: '192.0.2.5',
+    port: 8080,
+    allIpAddresses: ['192.0.2.5'],
+    topology: { cpu: { model: 'CPU', cores: 8, threads: 16 }, gpus: [], ram: 32, storage: [] },
+    os: 'Linux'
+}
+
 let root: Root
 const openExternal = vi.fn<(url: string) => Promise<void>>()
 
@@ -69,6 +88,9 @@ afterEach(async () => {
     useOverviewUiStore.setState({ activeTab: 'overview', focusNodeId: null })
     useErrorsStore.setState({ errors: [] })
     useConnectionStore.setState({ selfId: null })
+    useNodesStore.setState({ nodes: new Map() })
+    useEngineUpdateAvailableStore.setState({ entries: new Map() })
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
 })
 
@@ -83,9 +105,12 @@ function report(updateAvailable: EngineUpdateAvailable): void {
     publishPush('engines:state-changed', { nodeId, engineType, updateAvailable })
 }
 
-it('deduplicates and withdraws local notices independently for each engine', () => {
-    const unsubscribe = subscribeEngineUpdateNotifications(() => 'local-node')
-    report({ ...update, nodeId: 'peer' })
+it('deduplicates and withdraws notices independently for each node and engine', () => {
+    const unsubscribe = subscribeEngineUpdateNotifications(nodeId =>
+        nodeId === peer.id ? peer.name : 'This node'
+    )
+    const peerUpdate = { ...update, nodeId: peer.id }
+    report(peerUpdate)
     const lmStudioUpdate: EngineUpdateAvailable = {
         ...update,
         engineType: 'lm-studio',
@@ -97,6 +122,7 @@ it('deduplicates and withdraws local notices independently for each engine', () 
     report(lmStudioUpdate)
     report(update)
     report(update)
+    report(peerUpdate)
     report({ ...update, latestVersion: '0.10.3' })
     report(lmStudioUpdate)
     publishPush('engines:state-changed', {
@@ -104,23 +130,31 @@ it('deduplicates and withdraws local notices independently for each engine', () 
         engineType: 'ollama',
         updateAvailable: null
     })
+    publishPush('engines:state-changed', {
+        nodeId: peer.id,
+        engineType: 'ollama',
+        updateAvailable: null
+    })
     unsubscribe()
     expect(vi.mocked(showOverviewMessage).mock.calls.map(([message]) => message.id)).toEqual([
+        'engine-update:peer-node:ollama:0.10.2',
         'engine-update:local-node:lm-studio:0.10.2',
         'engine-update:local-node:ollama:0.10.2',
         'engine-update:local-node:ollama:0.10.3'
     ])
     expect(vi.mocked(dismissOverviewMessage).mock.calls).toEqual([
         ['engine-update:local-node:ollama:0.10.2'],
-        ['engine-update:local-node:ollama:0.10.3']
+        ['engine-update:local-node:ollama:0.10.3'],
+        ['engine-update:peer-node:ollama:0.10.2']
     ])
-    expect(vi.mocked(showOverviewMessage).mock.calls[0][0].title).toBe('LM Studio update available')
+    expect(vi.mocked(showOverviewMessage).mock.calls[1][0].title).toBe('LM Studio update available')
 })
 
-it('opens the local engine settings from the vLLM notification', async () => {
-    const unsubscribe = subscribeEngineUpdateNotifications(() => 'local-node')
+it('names the peer and opens its engine settings from the vLLM notification', async () => {
+    const unsubscribe = subscribeEngineUpdateNotifications(() => peer.name)
     report({
         ...update,
+        nodeId: peer.id,
         engineType: 'vllm',
         releaseUrl: 'https://github.com/vllm-project/vllm/releases/tag/v0.10.2'
     })
@@ -130,13 +164,42 @@ it('opens the local engine settings from the vLLM notification', async () => {
     useOverviewUiStore.getState().openSettings('service')
     await act(() => root.render(createElement(AppMessageModal, { message, onClose })))
     expect(document.body.textContent).toContain('vLLM update available')
+    expect(document.body.textContent).toContain('Studio workstation has 0.10.1 installed')
     await act(() => button('Open engine settings')?.click())
 
     expect(useOverviewUiStore.getState()).toMatchObject({
         activeTab: 'overview',
-        focusNodeId: 'local-node'
+        focusNodeId: peer.id
     })
     expect(onClose).toHaveBeenCalledOnce()
+})
+
+it('updates the selected peer using its own available version', async () => {
+    const sendUpdate = vi.fn<IEngineApi['update']>()
+    vi.stubGlobal('pairApi', { engines: { update: sendUpdate } })
+    vi.spyOn(useEngineStatusStore.getState(), 'initialize').mockResolvedValue()
+    vi.spyOn(useEngineModelsStore.getState(), 'initialize').mockResolvedValue()
+    useConnectionStore.setState({ selfId: 'local-node' })
+    useNodesStore.setState({ nodes: new Map([[peer.id, peer]]) })
+    useEngineUpdateAvailableStore.setState({
+        entries: new Map([
+            ['local-node:ollama', update],
+            ['peer-node:ollama', { ...update, nodeId: peer.id, latestVersion: '0.11.0' }]
+        ])
+    })
+    await act(() =>
+        root.render(
+            createElement(BackendRow, { backend: engine, nodeId: peer.id, statusKnown: true })
+        )
+    )
+    expect(document.body.textContent).toContain('Ollama v0.11.0 is available')
+    await act(() => button('Update')?.click())
+    expect(sendUpdate.mock.calls).toEqual([['ollama', peer.id]])
+
+    await act(() =>
+        useNodesStore.setState({ nodes: new Map([[peer.id, { ...peer, status: 'offline' }]]) })
+    )
+    expect(button('Update')?.disabled).toBe(true)
 })
 
 it('shows the managed llama.cpp build tags and dispatches Update', async () => {
@@ -166,21 +229,28 @@ it('shows the managed llama.cpp build tags and dispatches Update', async () => {
     expect(openExternal).not.toHaveBeenCalled()
 })
 
-it('opens the official download and release notes for an externally installed Ollama', async () => {
+it('identifies the peer to update manually and opens the official Ollama downloads', async () => {
     const onUpdate = vi.fn<() => void>()
     const external: BackendInfo = {
         ...engine,
         updateAvailable: {
             ...update,
+            nodeId: peer.id,
             installType: 'external',
             downloadUrl: 'https://ollama.com/download'
         }
     }
     await act(() =>
         root.render(
-            createElement(BackendUpdateBanner, { backend: external, disabled: false, onUpdate })
+            createElement(BackendUpdateBanner, {
+                backend: external,
+                remoteNodeName: peer.name,
+                disabled: false,
+                onUpdate
+            })
         )
     )
+    expect(document.body.textContent).toContain('Update manually on Studio workstation.')
     await act(() => button('Get update')?.click())
     await act(() => button('Update details')?.click())
 
@@ -224,9 +294,10 @@ it('opens the headless LM Studio update guide for a newly detected external daem
     expect(onUpdate).not.toHaveBeenCalled()
 })
 
-it('retries a failed update only for the affected local engine', async () => {
+it('retries a local update or a reachable peer’s current managed update', async () => {
     const retry = vi.fn<IEngineApi['update']>()
-    vi.stubGlobal('pairApi', { engines: { update: retry }, errors: { clear: vi.fn() } })
+    const clear = vi.fn<(id: string) => void>()
+    vi.stubGlobal('pairApi', { engines: { update: retry }, errors: { clear } })
     useConnectionStore.setState({ selfId: 'local-node' })
     const failure: ServiceError = {
         id: 'engine-manager:update-failed:lmstudio',
@@ -241,7 +312,24 @@ it('retries a failed update only for the affected local engine', async () => {
     await act(() => root.render(createElement(ErrorModal, {})))
     expect(button('Retry')).toBeUndefined()
 
+    await act(() =>
+        useEngineUpdateAvailableStore.setState({
+            entries: new Map([
+                ['peer-node:lm-studio', { ...update, nodeId: peer.id, engineType: 'lm-studio' }]
+            ])
+        })
+    )
+    expect(button('Retry')).toBeUndefined()
+    await act(() => useNodesStore.setState({ nodes: new Map([[peer.id, peer]]) }))
+    await act(() => button('Retry')?.click())
+    expect(retry.mock.calls).toEqual([['lm-studio', peer.id]])
+    expect(clear).not.toHaveBeenCalled()
+
     await act(() => useErrorsStore.setState({ errors: [{ ...failure, nodeId: 'local-node' }] }))
     await act(() => button('Retry')?.click())
-    expect(retry.mock.calls).toEqual([['lm-studio', 'local-node']])
+    expect(retry.mock.calls).toEqual([
+        ['lm-studio', peer.id],
+        ['lm-studio', 'local-node']
+    ])
+    expect(clear.mock.calls).toEqual([[failure.id]])
 })
