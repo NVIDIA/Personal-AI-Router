@@ -286,8 +286,11 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   refusing when it cannot tell, and holds the engine's operation lock until the
   removal and any rollback of the launch settings are done.
 - **`launch_model`** — switch the model an engine serves, for an engine with no
-  load call because the model is a launch argument (vLLM). `launch_model.flag`
-  names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
+  load call because the model is a launch argument (vLLM, Strata). `launch_model.flag`
+  names the flag (`"--model"`); where the engine names its model with a pair of
+  launch flags, `launch_model.family_flag` names the second (Strata: `"--family"`)
+  and the id is split at its first `/`, so `family/quant` writes both. The
+  action takes `{"model": "<id>"}` (a
   Hugging Face id such as `org/name`; anything that could be read as a flag, a
   path or a shell fragment is refused), writes it into the saved launch
   settings exactly as the settings editor would, and restarts a running engine

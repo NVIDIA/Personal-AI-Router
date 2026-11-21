@@ -8,7 +8,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 */}
 
-Open a device's Ollama, LM Studio, llama.cpp, or vLLM row and expand **Settings**.
+Open a device's Ollama, LM Studio, llama.cpp, vLLM, or Strata row and expand **Settings**.
 Edit the server port, proxy port, and engine arguments, then select the green **Apply** button.
 A paired device that supports settings can be edited from another device in the
 cluster.
@@ -110,6 +110,7 @@ configuration consistent:
 | LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
 | llama.cpp | `--port` | `--host` | `--cors-origins` |
 | vLLM | `--port` | `--host` | Not managed |
+| Strata | `--port` | `--listen` | Not managed |
 
 For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235`, and `-p=1235`
 all synchronize the same server-port field. Conflicting repetitions and invalid
@@ -119,6 +120,9 @@ Add or remove the switch locally. Origin lists are normalized before validation,
 and conflicting repeated lists are rejected. Other vendor options remain opaque.
 llama.cpp must remain in router mode. Model-selection arguments such as `-m`
 or `-hf` switch it to an incompatible single-model server and fail readiness.
+Strata also serves one model per instance, named as a launch pair: `--family
+qwen --model q2_0`, which **Load** writes from a catalog id like `qwen/q2_0`;
+changing it restarts the engine.
 vLLM always serves one model: its launch arguments name that model with
 `--model <Hugging Face id>`, and changing it restarts the engine. At every start
 PAIR sizes the rest for that model: a 64K context (`--max-model-len`, shrunk if

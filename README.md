@@ -2,6 +2,7 @@
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 -->
+# EXPERIMENTAL STRATA SUPPORT FORK
 
 # NVIDIA Personal AI Router (PAIR)
 
@@ -38,7 +39,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama, LM Studio, llama.cpp, and vLLM (Linux with an NVIDIA GPU, or Apple Silicon macOS) |
+| **Inference engines** | Ollama, LM Studio, llama.cpp, and vLLM (Linux with an NVIDIA GPU, or Apple Silicon macOS); a `strata` already installed on Linux is detected and managed |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements

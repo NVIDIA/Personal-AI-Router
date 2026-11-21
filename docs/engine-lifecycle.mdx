@@ -9,9 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 */}
 
 An **engine** is the local inference runtime NVIDIA PAIR uses to
-run models. Today that means Ollama, LM Studio, llama.cpp, or vLLM on a given machine.
+run models. Today that means Ollama, LM Studio, llama.cpp, vLLM, or Strata on a given machine.
 PAIR can install and run those engines for you, or work with a supported
-existing Ollama or LM Studio installation. This page explains what you can
+existing Ollama, LM Studio, or Strata installation. This page explains what you can
 expect when you install, start, stop, or remove an engine, and how to move one
 to a newer release.
 
@@ -145,6 +145,15 @@ When you install an engine, consider the following:
   a saved selection leaves the enabled engine waiting for another model. vLLM
   does not unload automatically after inactivity. Use **Eject** to release its
   memory.
+
+- Strata is detected on Linux when a `strata` CLI is already installed at
+  a known location (`~/.local/bin/strata`); PAIR does not install or uninstall
+  it yet. `strata launch` starts the server detached, so PAIR drives it through
+  its CLI and follows the server's health endpoint instead of owning the
+  process, and stop and **Eject** go through `strata launch --stop`. Strata
+  serves one model per instance, named by a family and quantization pair from
+  its fixed catalog, such as `qwen/q2_0`: **Load** switches models by restarting
+  the engine, and downloads run while the engine is stopped.
 
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model
