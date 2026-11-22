@@ -42,6 +42,12 @@ func TestStrataManifest_DeclaresCommandLifecycleAndGuardedModelOps(t *testing.T)
 			assert.Equal(t, "strata", platform.Runtime.Ready.JSONMatch.Value)
 			require.NotNil(t, platform.Runtime.AdoptPortFiles,
 				"PAIR reads Strata's runtime ready files to find instances on any port")
+			ii := platform.Runtime.AdoptPortFiles.InstanceInfo
+			require.NotNil(t, ii, "Strata's launch config store is declared for external-instance display")
+			assert.Equal(t, "~/.local/state/strata/launch", ii.ConfigDir)
+			assert.Equal(t, "launch-", ii.StripPrefix)
+			assert.Equal(t, "args_written", ii.ArgsField)
+			assert.Equal(t, "model_name", ii.ModelField)
 			assert.Equal(t, []string{"~/.local/state/strata/runtime/*.ready.json"}, platform.Runtime.AdoptPortFiles.Globs)
 			assert.Equal(t, "bound_port", platform.Runtime.AdoptPortFiles.PortField)
 			require.NotNil(t, platform.Runtime.EditableLaunch)

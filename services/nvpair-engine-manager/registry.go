@@ -244,6 +244,21 @@ type Runtime struct {
 type AdoptPortFiles struct {
 	Globs     []string `json:"globs"`
 	PortField string   `json:"port_field,omitempty"`
+	// InstanceInfo optionally names the engine's own per-instance launch
+	// config store, so the settings page can show what an adopted instance
+	// was actually started with. The config file is linked by name from the
+	// ready file: base name minus StripPrefix and minus a trailing hex token
+	// (Strata's launch-<preset>-<hash>.ready.json names launch/<preset>.json).
+	InstanceInfo *InstanceInfo `json:"instance_info,omitempty"`
+}
+
+// InstanceInfo maps fields of the engine's launch config file for display.
+// Host and Model fall back to the ready file's own fields when absent.
+type InstanceInfo struct {
+	ConfigDir   string `json:"config_dir"`
+	StripPrefix string `json:"strip_prefix,omitempty"`
+	ArgsField   string `json:"args_field,omitempty"`
+	ModelField  string `json:"model_field,omitempty"`
 }
 
 // AutoLaunch configures start-time launch arguments. The only kind is
@@ -949,6 +964,9 @@ func (p *Platform) validate(key string) error {
 	if apf := p.Runtime.AdoptPortFiles; apf != nil && len(apf.Globs) > 0 {
 		if p.Runtime.Ready == nil || p.Runtime.Ready.JSONMatch == nil {
 			return fmt.Errorf("platform %q: adopt_port_files requires runtime.ready with a json_match, so an adopted listener is positively identified as this engine", key)
+		}
+		if ii := apf.InstanceInfo; ii != nil && strings.TrimSpace(ii.ConfigDir) == "" {
+			return fmt.Errorf("platform %q: adopt_port_files.instance_info needs config_dir", key)
 		}
 	}
 	if p.InstallDir != "" {

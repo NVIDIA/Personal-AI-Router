@@ -223,6 +223,7 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 	snapshot.EffectiveProxyPort = proxyPort
 	snapshot.Running = launch.Running
 	snapshot.Adopted = launch.Adopted
+	snapshot.External = launch.External
 	snapshot.Format = launch.Format
 	snapshot.Editable = launch.Editable && ready
 	snapshot.Reason = launch.Reason

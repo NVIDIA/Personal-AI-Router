@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 
@@ -932,4 +934,85 @@ func newEditableStatusFixture(t *testing.T) blockedReadinessFixture {
 	}
 	ex.overrideDir = t.TempDir()
 	return fixture
+}
+
+// TestLaunchSettings_ExternalInstanceFromEngineStateFiles: an instance
+// adopted from the engine's own ready file also reports what the engine's
+// own launch config recorded for it - linked by name through strip_prefix
+// and the trailing hex token - so the settings page can show the real port
+// and arguments without PAIR ever having started the process.
+func TestLaunchSettings_ExternalInstanceFromEngineStateFiles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"status":"ok","service":"strata"}`))
+	}))
+	defer srv.Close()
+	anyPort := portOf(t, srv.URL)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	primaryPort := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	state := t.TempDir()
+	launchDir := t.TempDir()
+	// The Strata naming convention: launch-<preset>-<hash>.ready.json pairs
+	// with <config_dir>/<preset>.json; a stale file for a dead pid is skipped.
+	require.NoError(t, os.WriteFile(filepath.Join(state, "launch-dead-"+strings.Repeat("a", 32)+".ready.json"),
+		[]byte(`{"bound_port": `+itoa(anyPort)+`, "pid": 2147483647}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(state, "launch-demo-"+strings.Repeat("b", 32)+".ready.json"),
+		[]byte(`{"bound_port": `+itoa(anyPort)+`, "pid": `+itoa(os.Getpid())+`, "bound_host": "127.0.0.1", "model_id": "model-x"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(launchDir, "demo.json"),
+		[]byte(`{"host": "127.0.0.1", "model_name": "model-x", "args_written": ["--model", "m", "--port", "`+itoa(anyPort)+`"]}`), 0o644))
+
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	m := &Manifest{
+		Engine: "extinst", DisplayName: "Ext Inst", ManifestVersion: 1,
+		Platforms: map[string]Platform{
+			key: {
+				Detect: []string{filepath.Join(t.TempDir(), "missing"+exeExt())},
+				Runtime: Runtime{
+					Bin:  filepath.Join(t.TempDir(), "does-not-exist"+exeExt()),
+					Port: primaryPort,
+					AdoptPortFiles: &AdoptPortFiles{
+						Globs:     []string{filepath.Join(state, "*.ready.json")},
+						PortField: "bound_port",
+						InstanceInfo: &InstanceInfo{
+							ConfigDir:   launchDir,
+							StripPrefix: "launch-",
+							ArgsField:   "args_written",
+							ModelField:  "model_name",
+						},
+					},
+					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/health", Status: 200, TimeoutS: 5,
+						JSONMatch: &ProbeJSONMatch{Field: "service", Value: "strata"}},
+				},
+			},
+		},
+	}
+	ex := newTestExecutor(t, m)
+	st, err := ex.Status("extinst")
+	require.NoError(t, err)
+	require.True(t, st.Running && st.Port == anyPort)
+
+	launch, err := ex.LaunchSettings("extinst")
+	require.NoError(t, err)
+	require.NotNil(t, launch.External, "an adopted instance with instance_info must report its engine-recorded launch")
+	assert.Equal(t, anyPort, launch.External.Port)
+	assert.Equal(t, "demo", launch.External.Preset, "ready-file name minus prefix and hex token names the config")
+	assert.Equal(t, "127.0.0.1", launch.External.Host)
+	assert.Equal(t, "model-x", launch.External.Model)
+	assert.Equal(t, []string{"--model", "m", "--port", itoa(anyPort)}, launch.External.Args)
+	assert.NotEmpty(t, launch.External.ReadyFile)
+	assert.NotEmpty(t, launch.External.ConfigFile)
+
+	// No instance_info: the block disappears without touching discovery.
+	m.Platforms[key].Runtime.AdoptPortFiles.InstanceInfo = nil
+	ex2 := newTestExecutor(t, m)
+	st2, err := ex2.Status("extinst")
+	require.NoError(t, err)
+	require.True(t, st2.Running)
+	launch2, err := ex2.LaunchSettings("extinst")
+	require.NoError(t, err)
+	assert.Nil(t, launch2.External)
 }

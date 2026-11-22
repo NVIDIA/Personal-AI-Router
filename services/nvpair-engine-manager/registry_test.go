@@ -912,6 +912,14 @@ func TestPlatformValidate_AdoptPorts(t *testing.T) {
 	require.ErrorContains(t, p2.validate("linux/amd64"), "json_match")
 	p2.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service", Value: "strata"}
 	require.NoError(t, p2.validate("linux/amd64"))
+	// Empty globs are legal: that is how a user override disables file
+	// nomination (user manifests deep-merge, so omission cannot remove the
+	// bundled list and an invalid replacement would drop the override).
 	p2.Runtime.AdoptPortFiles.Globs = nil
+	require.NoError(t, p2.validate("linux/amd64"))
+	p2.Runtime.AdoptPortFiles.Globs = []string{"~/state/*.ready.json"}
+	p2.Runtime.AdoptPortFiles.InstanceInfo = &InstanceInfo{}
+	require.ErrorContains(t, p2.validate("linux/amd64"), "instance_info needs config_dir")
+	p2.Runtime.AdoptPortFiles.InstanceInfo = &InstanceInfo{ConfigDir: "~/state/launch"}
 	require.NoError(t, p2.validate("linux/amd64"))
 }

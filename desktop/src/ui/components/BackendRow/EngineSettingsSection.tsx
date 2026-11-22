@@ -244,6 +244,31 @@ export function EngineSettingsSection({
                         must be changed on the device running the engine.
                     </Text>
                 )}
+                {snapshot?.external && (
+                    <Stack gap="1">
+                        <Text kind="body/semibold/sm">
+                            External instance (started outside PAIR)
+                        </Text>
+                        <Text kind="body/regular/sm">
+                            {`Listening on ${snapshot.external.host ?? '127.0.0.1'}:${snapshot.external.port}`}
+                            {snapshot.external.model ? ` · ${snapshot.external.model}` : ''}
+                            {snapshot.external.preset
+                                ? ` · profile: ${snapshot.external.preset}`
+                                : ''}
+                        </Text>
+                        {snapshot.external.launchArgs.length > 0 && (
+                            <TextArea
+                                size="small"
+                                aria-label="External instance arguments"
+                                value={snapshot.external.launchArgs.join(' ')}
+                                rows={3}
+                                resizeable="auto"
+                                disabled
+                                className="font-mono"
+                            />
+                        )}
+                    </Stack>
+                )}
                 <Flex gap="3">
                     <FormField slotLabel="Server port">
                         <TextInput

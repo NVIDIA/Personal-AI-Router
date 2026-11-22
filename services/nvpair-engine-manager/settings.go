@@ -138,6 +138,9 @@ func (e *Executor) launchStateLocked(engine string, st *engineState) settings.La
 	default:
 		result.Editable = true
 	}
+	if result.Running && result.Adopted {
+		result.External = e.externalInstance(st, result.EffectivePort)
+	}
 	return result
 }
 

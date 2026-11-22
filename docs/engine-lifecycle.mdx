@@ -82,7 +82,10 @@ When you install an engine, consider the following:
   that install instead of downloading another copy. Adoption helps when the
   usual engine port is already in use. PAIR also finds a **Strata** you
   started yourself in a terminal, on whatever port it is listening on,
-  because its health endpoint identifies it.
+  because its health endpoint identifies it. While a Strata you started
+  outside PAIR is running, its **Settings** page shows the port, model and
+  launch arguments from Strata's own state files, read-only - PAIR displays
+  what the instance actually runs with, and never changes it.
 - llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
   checksum-pinned CUDA server/runtime archives. Apple silicon Macs download the
   standard Metal-enabled archive, and Intel Macs download the CPU-only build,

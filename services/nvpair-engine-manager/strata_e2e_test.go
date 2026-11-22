@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -142,8 +143,10 @@ func writeStrataE2EManifest(t *testing.T, dir string) {
 	// test's engine would adopt it. User manifests deep-merge onto the
 	// bundled JSON (arrays are replaced wholesale), so pin the globs empty
 	// rather than deleting them. The fake owns only the reserved port above.
-	require.Contains(t, edited, `"adopt_port_files": { "globs": ["~/.local/state/strata/runtime/*.ready.json"], "port_field": "bound_port" },`)
-	edited = strings.ReplaceAll(edited, `"adopt_port_files": { "globs": ["~/.local/state/strata/runtime/*.ready.json"], "port_field": "bound_port" },`, `"adopt_port_files": { "globs": [] },`)
+	adoptLine := regexp.MustCompile(`(?m)^([ \t]+)"adopt_port_files":.*\n`)
+	require.True(t, adoptLine.MatchString(edited), "the bundled manifest must declare adopt_port_files for this pin to mean anything")
+	edited = adoptLine.ReplaceAllString(edited, `${1}"adopt_port_files": { "globs": [] },
+`)
 	require.True(t, json.Valid([]byte(edited)), "the rewritten manifest is not valid JSON")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "strata.json"), []byte(edited), 0o644))
