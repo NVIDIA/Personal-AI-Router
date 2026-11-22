@@ -70,11 +70,12 @@ func (c *clusterManagerProcess) Done() <-chan struct{} { return c.done }
 // workers, the node would pair successfully into a directory nothing reads —
 // healthy roster, no cluster traffic. An empty configDir leaves the manager on its
 // own default (standalone invocation).
-func startClusterManager(binaryPath, logLevel, configDir string, relayDir *relay.Directory, onNotify func(method string, params json.RawMessage)) (*clusterManagerProcess, error) {
+func startClusterManager(binaryPath, logLevel, configDir string, relayDir *relay.Directory, onNotify func(method string, params json.RawMessage), extraArgs ...string) (*clusterManagerProcess, error) {
 	args := []string{"--log-level", logLevel}
 	if configDir != "" {
 		args = append(args, "--config-dir", configDir)
 	}
+	args = append(args, extraArgs...)
 	cmd := exec.Command(binaryPath, args...)
 	configureSubprocess(cmd)
 

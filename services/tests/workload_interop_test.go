@@ -82,7 +82,7 @@ func startBrokerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan jsonr
 // cluster that directory describes (see newInterNodeCluster).
 func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
-	args = append([]string{"--cluster-dir", clusterDir}, args...)
+	args = appendPortBase(append([]string{"--cluster-dir", clusterDir}, args...), testPortBase)
 	cmd := exec.Command(brokerBin, args...)
 	cmd.Stderr = os.Stderr
 
@@ -139,9 +139,9 @@ func TestWorkloadManager_RelaysInboundPeerEventsToClients(t *testing.T) {
 	t.Log("subscribed to workloads stream")
 
 	// POST a peer workload to the manager's inter-node endpoint over cluster mTLS.
-	// The manager binds :14320 in a goroutine, so retry until it accepts.
+	// The manager binds the block's wl port in a goroutine, so retry until it accepts.
 	const peerEvent = `{"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"peer-wl-1","model":"llama-3-70b","engine":"trt-llm","state":"running","originatedFrom":"peer-node-A","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}`
-	postPeerEvent(t, fx.clientAsPeer(t), "https://127.0.0.1:14320/v1/workloads/events", peerEvent, 15*time.Second)
+	postPeerEvent(t, fx.clientAsPeer(t), "https://"+workloadEventsURL, peerEvent, 15*time.Second)
 	t.Log("peer workload accepted by manager")
 
 	// The manager translates the peer lifecycle event into workloads:upsert
@@ -173,7 +173,7 @@ func TestWorkloadRelay_SuppressesOutOfOrderStateUpdates(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ack.Result, &sr), "subscribe ack")
 	require.True(t, sr.Subscribed, "subscribe ack")
 
-	const endpoint = "https://127.0.0.1:14320/v1/workloads/events"
+	endpoint := "https://" + workloadEventsURL
 	peer := fx.clientAsPeer(t)
 	// Same (originatedFrom, id, createdAt) — one workload, two lifecycle events,
 	// delivered terminal-first (the inversion the network can produce).
@@ -268,7 +268,7 @@ func TestWorkloadRelay_FailsActiveWorkWhenNodeDisappears(t *testing.T) {
 	// tracked workloads:upsert. Stamped with the peer's HostUUID (not its
 	// name), as a real proxy does.
 	peerEvent := fmt.Sprintf(`{"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"wl-nodeloss-1","model":"llama-3-8b","engine":"ollama","state":"running","originatedFrom":%q,"scheduledOn":%q,"createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}`, peerUUID, peerUUID)
-	postPeerEvent(t, fx.clientAsPeer(t), "https://127.0.0.1:14320/v1/workloads/events", peerEvent, 15*time.Second)
+	postPeerEvent(t, fx.clientAsPeer(t), "https://"+workloadEventsURL, peerEvent, 15*time.Second)
 
 	running := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 10*time.Second)
 	require.Equal(t, "running", running.WorkloadInfo.State, "initial upsert state")

@@ -73,7 +73,7 @@ type subscriptionResult struct {
 
 func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, cleanup func()) {
 	t.Helper()
-	cmd := exec.Command(brokerBin, "--scanner-path", scannerBin, "--cluster-dir", t.TempDir())
+	cmd := exec.Command(brokerBin, appendPortBase([]string{"--scanner-path", scannerBin, "--cluster-dir", t.TempDir()}, testPortBase)...)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -286,9 +286,6 @@ func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 // A subsequent discovery query must include that cached hardware under the same
 // host and record identities, without waiting for another collection cycle.
 func TestBroker_IncludesLocalHardwareInQueriesAndUpdates(t *testing.T) {
-	if portBusy(14318) {
-		t.Skip("node-info port 14318 is already in use")
-	}
 	stdin, messages, _, cleanup := startBrokerWith(t, "--node-info-path", nodeInfoBin)
 	t.Cleanup(cleanup)
 	waitForMethod(t, messages, "app:ready", 10*time.Second)
@@ -336,9 +333,10 @@ func TestBroker_IncludesLocalHardwareInQueriesAndUpdates(t *testing.T) {
 // worker and broker must deliver its hardware under the independent manual
 // record, without adopting those claims or marking the entry trusted.
 func TestBroker_DeliversManualPreviewWithoutTrustingPublicIdentity(t *testing.T) {
-	// Manual previews use the default node-info port. A tls_port override would
-	// disable public previews, so use a fixed loopback listener and skip if busy.
-	listener, err := net.Listen("tcp", "127.0.0.1:14318")
+	// Manual previews use the block's node-info port — the broker hands it to
+	// the manual worker as --node-info-port. A tls_port override would disable
+	// public previews, so bind that port here and skip if something squatted it.
+	listener, err := net.Listen("tcp", blockHostPort(t, noderec.ServiceNodeInfo))
 	if err != nil {
 		t.Skipf("hardware preview port unavailable: %v", err)
 	}

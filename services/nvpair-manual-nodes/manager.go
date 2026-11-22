@@ -66,7 +66,8 @@ type NodeInfoResponse struct {
 
 // ManualEntry identifies a user-configured endpoint by its bare hostname or IP
 // address and optional name. TLSPort overrides the node-info port, defaulting
-// to 14318 when zero. Hardware probes always use HTTPS with current cluster
+// to the manager's configured default (14318 in production) when zero. Hardware
+// probes always use HTTPS with current cluster
 // pins and our client certificate, regardless of TLSPort or MTLS. MTLS is an
 // informational configuration flag echoed in status, not a transport switch.
 // The separate Ollama and LM Studio engine probes use plain HTTP.
@@ -216,13 +217,20 @@ type Manager struct {
 
 	mu    sync.RWMutex
 	nodes map[string]*trackedNode
+
+	// defaultNodeInfoPort is the node-info port used for entries without an
+	// explicit tls_port. The broker passes its resolved ni port (the block's
+	// first port), so manual entries follow a --port-base shift; standalone
+	// runs keep the canonical 14318.
+	defaultNodeInfoPort int
 }
 
-func NewManager(codec *Codec, mesh *clustertrust.Mesh) *Manager {
+func NewManager(codec *Codec, mesh *clustertrust.Mesh, defaultNodeInfoPort int) *Manager {
 	return &Manager{
-		codec:       codec,
-		mesh:        mesh,
-		peerClients: clustertrust.NewPeerClientPool(mesh, probeTimeout),
+		codec:               codec,
+		mesh:                mesh,
+		defaultNodeInfoPort: defaultNodeInfoPort,
+		peerClients:         clustertrust.NewPeerClientPool(mesh, probeTimeout),
 		client: &http.Client{
 			Timeout:   probeTimeout,
 			Transport: noKeepAliveTransport(),
@@ -308,11 +316,11 @@ func (n *trackedNode) permitsPreview() bool {
 		n.status.IdentityVerification != noderec.IdentityPinned && !n.everAuthenticated
 }
 
-func (n *trackedNode) previewPort() int {
+func (n *trackedNode) previewPort(defaultPort int) int {
 	if n.status.NodeInfoPort > 0 {
 		return n.status.NodeInfoPort
 	}
-	return 14318
+	return defaultPort
 }
 
 type previewTarget struct {
@@ -332,7 +340,7 @@ func (m *Manager) previewAll(ctx context.Context) {
 		if !node.permitsPreview() {
 			continue
 		}
-		targets = append(targets, previewTarget{id: id, entry: node.entry, port: node.previewPort(), tracked: node})
+		targets = append(targets, previewTarget{id: id, entry: node.entry, port: node.previewPort(m.defaultNodeInfoPort), tracked: node})
 	}
 	m.mu.RUnlock()
 
@@ -360,7 +368,7 @@ func (m *Manager) previewAll(ctx context.Context) {
 func (m *Manager) currentPreviewTarget(target previewTarget) *trackedNode {
 	node := m.nodes[target.id]
 	if node == nil || node != target.tracked || node.entry != target.entry ||
-		!node.permitsPreview() || node.previewPort() != target.port {
+		!node.permitsPreview() || node.previewPort(m.defaultNodeInfoPort) != target.port {
 		return nil
 	}
 	return node
@@ -441,9 +449,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
 	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
 
-	// The entry selects a port, not a protocol: even the default 14318 is
-	// probed with pinned HTTPS, never through the public HTTP hardware path.
-	nodeInfoPort := 14318
+	// The entry selects a port, not a protocol: even the manager's default port
+	// is probed with pinned HTTPS, never through the public HTTP hardware path.
+	nodeInfoPort := m.defaultNodeInfoPort
 	if entry.TLSPort > 0 {
 		nodeInfoPort = entry.TLSPort
 	}
@@ -784,7 +792,7 @@ func (m *Manager) probeNodeInfo(client *http.Client, addr string, port int, loca
 func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 	id := nodeID(entry)
 
-	nodeInfoPort := 14318
+	nodeInfoPort := m.defaultNodeInfoPort
 	if entry.TLSPort > 0 {
 		nodeInfoPort = entry.TLSPort
 	}

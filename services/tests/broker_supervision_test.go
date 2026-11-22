@@ -71,7 +71,7 @@ func startBrokerWithConfigDirAndEnv(t *testing.T, configDir string, extraEnv []s
 
 func startBrokerWithDirsAndEnv(t *testing.T, configDir, clusterDir string, extraEnv []string, extraArgs ...string) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, stderrLines <-chan string, cleanup func()) {
 	t.Helper()
-	args := append([]string{"--scanner-path", scannerBin, "--cluster-dir", clusterDir}, extraArgs...)
+	args := appendPortBase(append([]string{"--scanner-path", scannerBin, "--cluster-dir", clusterDir}, extraArgs...), testPortBase)
 	cmd := exec.Command(brokerBin, args...)
 	// Every supervised worker must use disposable per-test config. In
 	// particular, managed-port startup can persist an Ollama backend port; a
@@ -183,11 +183,20 @@ const methodErrorsUpdate = "errors:update"
 var proxyPidRe = regexp.MustCompile(`proxy started.*\bpid=(\d+)`)
 
 // portBusy reports whether a TCP port on localhost is already bound — used
-// to skip tests whose supervised workers need a fatal-on-conflict listener
-// (nvpair-errors --peer-sync on 14319, ollama-proxy on 11435) when something
-// else on the host already holds it.
+// to skip tests whose supervised proxy needs a fatal-on-conflict listener
+// (ollama-proxy on 11435 and friends) when something else on the host already
+// holds it. The six block-service ports need no such guard: the suite started
+// its brokers on an allocated block (#226), so the canonical ports staying
+// busy with a live PAIR no longer matters.
+//
+// It must probe the wildcard socket shape (":N") the facade itself binds, not
+// 127.0.0.1 only. A live PAIR's proxy listens on the IPv6 wildcard, which
+// silently admits a loopback IPv4 bind — a loopback probe reported that port
+// free, the guarded test ran, and its broker landed on the facade's fallback
+// port instead of the 11434 it asserts (found by the #226 live-PAIR
+// acceptance run).
 func portBusy(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return true
 	}
@@ -205,9 +214,6 @@ func portBusy(port int) bool {
 // naming a single engine would claim that only that engine went down when in
 // fact all of them did.
 func TestBroker_ReportsWorkerCrashAndRestartsWorker(t *testing.T) {
-	if portBusy(14319) {
-		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
-	}
 	if portBusy(11435) {
 		t.Skip("ollama-proxy port 11435 already in use; skipping")
 	}
@@ -332,11 +338,11 @@ func TestBroker_ShutsDownOnSignal(t *testing.T) {
 		// other tests' teardown already exercises.
 		t.Skip("signalling a specific process is not supported on Windows")
 	}
-	cmd := exec.Command(brokerBin,
+	cmd := exec.Command(brokerBin, appendPortBase([]string{
 		"--scanner-path", scannerBin,
 		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 		"--cluster-dir", t.TempDir(),
-	)
+	}, testPortBase)...)
 	cmd.Stderr = os.Stderr
 	// Keep stdin OPEN for the lifetime of the test so shutdown is driven
 	// purely by the signal, not by stdin EOF (closing stdin would shut the
@@ -461,15 +467,19 @@ func proxyStatus(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, id 
 // running, the requested port is free, so the broker relays it unchanged (no
 // bump) — exercising the interception + relay + rebind wiring end to end.
 func TestBrokerProxySetPort_Rebinds(t *testing.T) {
-	if portBusy(11435) {
-		t.Skip("ollama-proxy default port 11435 already in use; skipping")
+	// The set-port preview validates the whole ollama plan, including the 11434
+	// backend port, with a wildcard probe. A live PAIR's proxy facade on 11434
+	// is a real conflict for that check, so this test needs the facade pair
+	// free — same canonical-port caveat as the 11435 guard above.
+	if portBusy(11434) || portBusy(11435) {
+		t.Skip("ollama proxy ports 11434/11435 already in use; skipping")
 	}
 	cfg := t.TempDir()
-	cmd := exec.Command(brokerBin,
+	cmd := exec.Command(brokerBin, appendPortBase([]string{
 		"--scanner-path", scannerBin,
 		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
 		"--engine-manager-path", engineMgrBin,
-	)
+	}, testPortBase)...)
 	// Isolate per-user state (proxy-port.json, any engine override) to a
 	// temp dir so the test leaves the real config untouched.
 	cmd.Env = append(os.Environ(),
