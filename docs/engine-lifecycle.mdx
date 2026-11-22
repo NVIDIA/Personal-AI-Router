@@ -80,7 +80,9 @@ When you install an engine, consider the following:
   normally do not need a separate start step right after install.
 - If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
   that install instead of downloading another copy. Adoption helps when the
-  usual engine port is already in use.
+  usual engine port is already in use. PAIR also finds a **Strata** you
+  started yourself in a terminal, on whatever port it is listening on,
+  because its health endpoint identifies it.
 - llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
   checksum-pinned CUDA server/runtime archives. Apple silicon Macs download the
   standard Metal-enabled archive, and Intel Macs download the CPU-only build,
@@ -226,6 +228,10 @@ controlled:
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
   instance that way and restart it on the port you chose.
+- **Strata** that you launched yourself stays yours. PAIR lists it as running
+  on the port it found it on, but Stop is refused, because running Strata's
+  own stop command would end an instance PAIR never started. Stop it in your
+  terminal when you want it down.
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.

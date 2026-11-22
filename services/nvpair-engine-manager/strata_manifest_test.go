@@ -36,6 +36,14 @@ func TestStrataManifest_DeclaresCommandLifecycleAndGuardedModelOps(t *testing.T)
 			require.NotNil(t, platform.Runtime.Ready)
 			assert.Contains(t, platform.Runtime.Ready.HTTP, "/health",
 				"readiness is the server's health endpoint")
+			require.NotNil(t, platform.Runtime.Ready.JSONMatch,
+				"the ready probe must positively identify Strata by body")
+			assert.Equal(t, "service", platform.Runtime.Ready.JSONMatch.Field)
+			assert.Equal(t, "strata", platform.Runtime.Ready.JSONMatch.Value)
+			require.NotNil(t, platform.Runtime.AdoptPortFiles,
+				"PAIR reads Strata's runtime ready files to find instances on any port")
+			assert.Equal(t, []string{"~/.local/state/strata/runtime/*.ready.json"}, platform.Runtime.AdoptPortFiles.Globs)
+			assert.Equal(t, "bound_port", platform.Runtime.AdoptPortFiles.PortField)
 			require.NotNil(t, platform.Runtime.EditableLaunch)
 			// Never an API key the health probe could not present. The access
 			// kind itself is editable text (local or lan), not a fixed arg.

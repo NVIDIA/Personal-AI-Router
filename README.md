@@ -2,7 +2,7 @@
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 -->
-# EXPERIMENTAL STRATA SUPPORT FORK
+# EXPERIMENTAL FORK WITH STRATA SUPPORT (Linux)
 
 # NVIDIA Personal AI Router (PAIR)
 

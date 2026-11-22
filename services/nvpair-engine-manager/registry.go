@@ -222,6 +222,28 @@ type Runtime struct {
 	Stop *StopSpec `json:"stop,omitempty"`
 	// Health is the periodic availability probe for a running engine.
 	Health *Probe `json:"health,omitempty"`
+	// AdoptPorts are additional well-known ports to probe for a listener that
+	// identifies as this engine - a vendor stock port where the user may have
+	// started it themselves. The status poll probes the resolved runtime port
+	// first and these after it; a listener is adopted only when the Ready
+	// probe (with its json_match when declared) positively identifies it, so
+	// an engine without a distinctive readiness body must not declare these:
+	// adoption must never claim another engine's or PAIR's own listener.
+	AdoptPorts []int `json:"adopt_ports,omitempty"`
+	// AdoptPortFiles enumerates further candidate ports from small JSON
+	// state files the engine writes while it runs (Strata records the bound
+	// port of every running instance in its runtime directory). The files
+	// only nominate ports; adoption still requires the Ready probe's
+	// json_match to positively identify each listener.
+	AdoptPortFiles *AdoptPortFiles `json:"adopt_port_files,omitempty"`
+}
+
+// AdoptPortFiles points at engine-written JSON files whose named port field
+// marks a port a listener may live on. Globs expand with the same path rules
+// as other manifest paths; PortField (default "port") selects the integer.
+type AdoptPortFiles struct {
+	Globs     []string `json:"globs"`
+	PortField string   `json:"port_field,omitempty"`
 }
 
 // AutoLaunch configures start-time launch arguments. The only kind is
@@ -912,6 +934,22 @@ const (
 func (p *Platform) validate(key string) error {
 	if source := p.Runtime.ModelSource; source != "" && source != "huggingface" && source != "modelscope" {
 		return fmt.Errorf("platform %q: invalid model_source", key)
+	}
+	for _, ap := range p.Runtime.AdoptPorts {
+		if ap < 1 || ap > 65535 {
+			return fmt.Errorf("platform %q: adopt_ports entry %d is not a port", key, ap)
+		}
+		if p.Runtime.Port > 0 && ap == p.Runtime.Port {
+			return fmt.Errorf("platform %q: adopt_ports must not repeat the runtime port %d", key, p.Runtime.Port)
+		}
+	}
+	if len(p.Runtime.AdoptPorts) > 0 && (p.Runtime.Ready == nil || p.Runtime.Ready.JSONMatch == nil) {
+		return fmt.Errorf("platform %q: adopt_ports requires runtime.ready with a json_match, so an adopted listener is positively identified as this engine", key)
+	}
+	if apf := p.Runtime.AdoptPortFiles; apf != nil && len(apf.Globs) > 0 {
+		if p.Runtime.Ready == nil || p.Runtime.Ready.JSONMatch == nil {
+			return fmt.Errorf("platform %q: adopt_port_files requires runtime.ready with a json_match, so an adopted listener is positively identified as this engine", key)
+		}
 	}
 	if p.InstallDir != "" {
 		if strings.TrimSpace(p.InstallDir) == "" {

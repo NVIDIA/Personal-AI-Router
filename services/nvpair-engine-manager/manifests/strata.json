@@ -30,8 +30,9 @@
     "stop": { "cmd": ["{cli}", "launch", "--stop"], "grace_s": 20 },
     "bind": "127.0.0.1",
     "port": 8091,
-    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 1800 },
-    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }
+    "adopt_port_files": { "globs": ["~/.local/state/strata/runtime/*.ready.json"], "port_field": "bound_port" },
+    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 1800, "json_match": { "field": "service", "value": "strata" } },
+    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10, "json_match": { "field": "service", "value": "strata" } }
   },
   "actions": {
     "list_models": {

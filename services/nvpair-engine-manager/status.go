@@ -5,6 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"math"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -251,6 +255,7 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 		return
 	}
 	running, adopted, proc := st.running, st.adopted, st.proc
+	starting := st.starting
 	ready := st.plat.Runtime.Ready
 	mode := st.plat.Runtime.modeOrDefault()
 	st.mu.Unlock()
@@ -272,6 +277,10 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 		case listenerProbeReachable:
 			identified = e.probe(ctx, ready, key.port)
 		}
+	}
+	adoptPort := 0
+	if checkPresence && listener == listenerProbeRefused && !starting && !(running && adopted) {
+		adoptPort = e.discoverAdoptPort(ctx, st, key.port)
 	}
 	if ctx.Err() != nil {
 		run.err = ctx.Err()
@@ -303,6 +312,18 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 			st.running = false
 			st.healthy = false
 			st.adopted = false
+			if !pathInstalled {
+				st.binPath = ""
+			}
+		case adoptPort > 0 && !st.stopping:
+			// A listener on a stock port positively identified as this
+			// engine: it is running, started outside PAIR, on that port.
+			emit = !before.Running || !before.Healthy || !oldAdopted || before.Port != adoptPort
+			st.installed = true
+			st.running = true
+			st.healthy = true
+			st.adopted = true
+			st.port = adoptPort
 			if !pathInstalled {
 				st.binPath = ""
 			}
@@ -360,6 +381,7 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	running := st.running
 	adopted := st.adopted
 	proc := st.proc
+	starting := st.starting
 	ready := st.plat.Runtime.Ready
 	st.mu.Unlock()
 
@@ -377,6 +399,15 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	probeCtx, cancel := context.WithTimeout(ctx, presenceRefusalWindow)
 	listener := probeListener(probeCtx, ready, port)
 	cancel()
+	// A closed runtime port is also the state of an engine the user started
+	// themselves on a stock port. Before concluding absence, probe the
+	// manifest's adopt_ports for a listener that identifies as this engine.
+	if listener == listenerProbeRefused && !starting && !(running && adopted) {
+		if p := e.discoverAdoptPort(ctx, st, port); p > 0 {
+			port = p
+			listener = listenerProbeReachable
+		}
+	}
 	if listener == listenerProbeRefused {
 		if !running || !adopted || !e.waitUnavailable(ready, port, presenceRefusalWindow) {
 			return presenceResult{}
@@ -466,6 +497,100 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 		e.emitState(engine)
 	}
 	return presenceResult{Identified: true, Occupied: true}
+}
+
+// discoverAdoptPort probes the manifest's adopt_ports, then the ports
+// nominated by its adopt_port_files, for a listener that positively
+// identifies as this engine. The Ready probe - status plus its json_match,
+// which the manifest validation requires whenever either is declared - is
+// the identity test, so a foreign service on a shared stock port stays
+// foreign. Returns the first matching port, or 0 for none.
+func (e *Executor) discoverAdoptPort(ctx context.Context, st *engineState, primary int) int {
+	st.mu.Lock()
+	ready := st.plat.Runtime.Ready
+	ports := st.plat.Runtime.AdoptPorts
+	apf := st.plat.Runtime.AdoptPortFiles
+	current := st.port
+	st.mu.Unlock()
+	if ready == nil {
+		return 0
+	}
+	seen := map[int]bool{0: true, primary: true, current: true}
+	try := func(p int) int {
+		if p < 1 || p > 65535 || seen[p] {
+			return 0
+		}
+		seen[p] = true
+		probeCtx, cancel := context.WithTimeout(ctx, passiveProbeTimeout)
+		ok := e.probe(probeCtx, ready, p)
+		cancel()
+		if ok {
+			return p
+		}
+		return 0
+	}
+	for _, p := range ports {
+		if got := try(p); got > 0 {
+			return got
+		}
+		if ctx.Err() != nil {
+			return 0
+		}
+	}
+	if apf != nil {
+		field := apf.PortField
+		if field == "" {
+			field = "port"
+		}
+		for _, p := range adoptPortsFromFiles(apf.Globs, field) {
+			if got := try(p); got > 0 {
+				return got
+			}
+			if ctx.Err() != nil {
+				return 0
+			}
+		}
+	}
+	return 0
+}
+
+// adoptPortsFromFiles reads the engine-written JSON state files matched by
+// the manifest's globs and returns the ports they nominate. Files are
+// nominated only: a stale file costs one failed probe, and a port reused by
+// another service fails the json_match identity test.
+func adoptPortsFromFiles(globs []string, field string) []int {
+	const limit = 16
+	var out []int
+	seen := map[string]bool{}
+	for _, g := range globs {
+		matches, err := filepath.Glob(expandPath(g))
+		if err != nil {
+			continue
+		}
+		for _, path := range matches {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(data, &doc); err != nil {
+				continue
+			}
+			v, ok := doc[field].(float64)
+			if !ok || v != math.Trunc(v) || v < 1 || v > 65535 {
+				continue
+			}
+			out = append(out, int(v))
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func (e *Executor) emitState(engine string) {

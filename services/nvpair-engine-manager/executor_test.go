@@ -376,6 +376,186 @@ func TestStatus_ReportsExternallyRunning(t *testing.T) {
 	require.True(t, st.Healthy, "expected externally-running engine adopted as installed and healthy (%v)", st)
 }
 
+// TestStatus_AdoptsListenerOnAnAdoptPort: an engine the user started
+// themselves on its vendor stock port must show as running and healthy even
+// though the port PAIR would manage is closed. The adopt_ports probe's ready
+// body (json_match) is what identifies the listener as this engine.
+func TestStatus_AdoptsListenerOnAnAdoptPort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"status":"ok","service":"strata"}`))
+	}))
+	defer srv.Close()
+	stockPort := portOf(t, srv.URL)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	primaryPort := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	m := &Manifest{
+		Engine: "adoptport", DisplayName: "Adopt Port", ManifestVersion: 1,
+		Platforms: map[string]Platform{
+			key: {
+				Detect: []string{filepath.Join(t.TempDir(), "missing"+exeExt())},
+				Runtime: Runtime{
+					Bin:        filepath.Join(t.TempDir(), "does-not-exist"+exeExt()),
+					Port:       primaryPort,
+					AdoptPorts: []int{stockPort},
+					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/health", Status: 200, TimeoutS: 5,
+						JSONMatch: &ProbeJSONMatch{Field: "service", Value: "strata"}},
+				},
+			},
+		},
+	}
+	ex := newTestExecutor(t, m)
+	st, err := ex.Status("adoptport")
+	require.NoError(t, err)
+	require.True(t, st.Running, "stock-port listener identifying as the engine must be adopted (%v)", st)
+	require.True(t, st.Healthy, "stock-port listener identifying as the engine must be healthy (%v)", st)
+	require.Equal(t, stockPort, st.Port, "adoption must report the port the engine actually listens on (%v)", st)
+}
+
+// TestStatus_DoesNotAdoptForeignListenerOnAdoptPort: a service on a stock
+// port that does not identify as the engine (json_match miss) stays foreign -
+// never adopted, and the engine stays not running.
+func TestStatus_DoesNotAdoptForeignListenerOnAdoptPort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer srv.Close()
+	stockPort := portOf(t, srv.URL)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	primaryPort := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	m := &Manifest{
+		Engine: "foreign", DisplayName: "Foreign", ManifestVersion: 1,
+		Platforms: map[string]Platform{
+			key: {
+				Detect: []string{filepath.Join(t.TempDir(), "missing"+exeExt())},
+				Runtime: Runtime{
+					Bin:        filepath.Join(t.TempDir(), "does-not-exist"+exeExt()),
+					Port:       primaryPort,
+					AdoptPorts: []int{stockPort},
+					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/health", Status: 200, TimeoutS: 5,
+						JSONMatch: &ProbeJSONMatch{Field: "service", Value: "strata"}},
+				},
+			},
+		},
+	}
+	ex := newTestExecutor(t, m)
+	st, err := ex.Status("foreign")
+	require.NoError(t, err)
+	require.False(t, st.Running, "a listener that does not identify as the engine must not be adopted (%v)", st)
+	require.False(t, st.Healthy, "a listener that does not identify as the engine must not be adopted (%v)", st)
+}
+
+// TestStop_RefusesAdoptedStockPortEngine: an engine discovered on a stock
+// port belongs to the machine's owner. A Stop must decline - running the
+// manifest's stop CLI would terminate a service PAIR never started - while a
+// PAIR-started instance on the runtime port keeps its normal CLI stop path.
+func TestStop_RefusesAdoptedStockPortEngine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"status":"ok","service":"strata"}`))
+	}))
+	defer srv.Close()
+	stockPort := portOf(t, srv.URL)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	primaryPort := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	bin := filepath.Join(t.TempDir(), "fake-strata-cli"+exeExt())
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	m := &Manifest{
+		Engine: "stockadopt", DisplayName: "Stock Adopt", ManifestVersion: 1,
+		Platforms: map[string]Platform{
+			key: {
+				Detect: []string{bin},
+				Runtime: Runtime{
+					Mode:       "command",
+					Bin:        bin,
+					Port:       primaryPort,
+					AdoptPorts: []int{stockPort},
+					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/health", Status: 200, TimeoutS: 5,
+						JSONMatch: &ProbeJSONMatch{Field: "service", Value: "strata"}},
+					Stop: &StopSpec{Cmd: []string{"never-run-this"}},
+				},
+			},
+		},
+	}
+	ex := newTestExecutor(t, m)
+	st, err := ex.Status("stockadopt")
+	require.NoError(t, err)
+	require.True(t, st.Running, "fixture must adopt the stock-port listener first (%v)", st)
+	err = ex.Stop("stockadopt")
+	require.ErrorContains(t, err, "external management",
+		"Stop must decline an engine the owner started, never run the stop CLI over it")
+}
+
+// TestStatus_AdoptsListenerFromPortFile: an engine instance on an arbitrary
+// port records its bound port in a per-instance ready file; the manifest's
+// adopt_port_files globs nominate those ports, and the json_match probe
+// still decides identity - files naming a closed port or with no port field
+// are skipped without ending the search.
+func TestStatus_AdoptsListenerFromPortFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"status":"ok","service":"strata"}`))
+	}))
+	defer srv.Close()
+	anyPort := portOf(t, srv.URL)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	stalePort := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+	ln, err = net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	primaryPort := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	state := t.TempDir()
+	// Names sort so the stale and junk files are probed before the live one.
+	require.NoError(t, os.WriteFile(filepath.Join(state, "a-stale.ready.json"),
+		[]byte(`{"bound_port": `+itoa(stalePort)+`}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(state, "b-junk.ready.json"),
+		[]byte(`{"nope": true}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(state, "c-live.ready.json"),
+		[]byte(`{"bound_port": `+itoa(anyPort)+`, "pid": 1}`), 0o644))
+
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	m := &Manifest{
+		Engine: "portfile", DisplayName: "Port File", ManifestVersion: 1,
+		Platforms: map[string]Platform{
+			key: {
+				Detect: []string{filepath.Join(t.TempDir(), "missing"+exeExt())},
+				Runtime: Runtime{
+					Bin:            filepath.Join(t.TempDir(), "does-not-exist"+exeExt()),
+					Port:           primaryPort,
+					AdoptPortFiles: &AdoptPortFiles{Globs: []string{filepath.Join(state, "*.ready.json")}, PortField: "bound_port"},
+					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/health", Status: 200, TimeoutS: 5,
+						JSONMatch: &ProbeJSONMatch{Field: "service", Value: "strata"}},
+				},
+			},
+		},
+	}
+	ex := newTestExecutor(t, m)
+	st, err := ex.Status("portfile")
+	require.NoError(t, err)
+	require.True(t, st.Running, "a ready file naming a live identifying listener must be adopted (%v)", st)
+	require.Equal(t, anyPort, st.Port, "adoption must report the port the ready file named (%v)", st)
+}
+
 func TestStatusAtPort_AdoptsLegacyListener(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

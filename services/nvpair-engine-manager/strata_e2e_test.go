@@ -122,9 +122,9 @@ func TestStrataFakeEngine_LifecycleOverStdio(t *testing.T) {
 
 // writeStrataE2EManifest drops the bundled strata manifest into the
 // user-manifest directory, where the registry lets it override the
-// bundled one by name. Only two things change: the control CLI points at
-// the fake binary, and the fixed engine port 8091 becomes a free
-// loopback port this test just reserved. The port stays a real fixed
+// bundled one by name. Three things change: the control CLI points at
+// the fake binary, the fixed engine port 8091 becomes a free loopback
+// port this test just reserved, and the stock-port adoption probe goes. The port stays a real fixed
 // port because launch settings (model switches) validate and persist it;
 // only process-mode fake engines use the port 0 auto-assign path.
 func writeStrataE2EManifest(t *testing.T, dir string) {
@@ -137,6 +137,13 @@ func writeStrataE2EManifest(t *testing.T, dir string) {
 	require.NoError(t, err)
 	edited := strings.ReplaceAll(string(raw), "~/.local/bin/strata", fakeStrataBin)
 	edited = strings.ReplaceAll(edited, `"port": 8091`, fmt.Sprintf(`"port": %d`, port))
+	// The ready-file port probe belongs to the machine, not the scenario: a
+	// real Strata instance's ready file would nominate its port and this
+	// test's engine would adopt it. User manifests deep-merge onto the
+	// bundled JSON (arrays are replaced wholesale), so pin the globs empty
+	// rather than deleting them. The fake owns only the reserved port above.
+	require.Contains(t, edited, `"adopt_port_files": { "globs": ["~/.local/state/strata/runtime/*.ready.json"], "port_field": "bound_port" },`)
+	edited = strings.ReplaceAll(edited, `"adopt_port_files": { "globs": ["~/.local/state/strata/runtime/*.ready.json"], "port_field": "bound_port" },`, `"adopt_port_files": { "globs": [] },`)
 	require.True(t, json.Valid([]byte(edited)), "the rewritten manifest is not valid JSON")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "strata.json"), []byte(edited), 0o644))

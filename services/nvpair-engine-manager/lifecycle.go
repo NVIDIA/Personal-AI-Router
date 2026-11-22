@@ -563,6 +563,11 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 	port := st.port
 	adopted := st.adopted
 	binPath := st.binPath
+	if mode == "command" && adopted && rt.Port != 0 && port != rt.Port {
+		st.mu.Unlock()
+		e.emitState(engine)
+		return fmt.Errorf("cannot stop engine %q: it is running under external management; stop it in its own application, then retry", engine)
+	}
 	if mode != "command" && proc == nil {
 		st.mu.Unlock()
 		if adopted {
