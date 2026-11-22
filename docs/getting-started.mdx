@@ -193,9 +193,10 @@ inference engine or the node that serves the request. PAIR calls that local
 address an endpoint.
 
 Select **Endpoints** in the top toolbar to open the **API endpoints** window. It
-lists one copyable `http://127.0.0.1:<port>` URL for each engine. Copy the one for the
-engine you prepared. If it says **No engines are running**, return to step 4 and
-start an engine.
+lists one copyable `http://127.0.0.1:<port>` URL for each engine running on any
+cluster node - the local proxy routes requests to whichever node runs it. Copy
+the one for the engine you prepared. If it says **No engines are running**,
+return to step 4 and start an engine.
 
 ![The API endpoints window listing a copyable local URL for each running engine.](assets/onboarding/getting-started/08-api-endpoints.png)
 
