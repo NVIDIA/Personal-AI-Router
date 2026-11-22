@@ -214,9 +214,10 @@ func (b *Broker) reconcileAdvertiseEngine(profile engineProxyProfile, client *ht
 		b.reconcileRequestedModelEngine(profile)
 		return
 	}
-	enginePort := int(b.engineProxy(profile).backendPort.Load())
+	enginePort, probe := b.localEnginePort(profile.Name, int(b.engineProxy(profile).backendPort.Load()))
 	proxyPort := b.engineProxyListenPort(profile)
-	up := enginePort > 0 &&
+	up := probe &&
+		enginePort > 0 &&
 		proxyPort > 0 &&
 		enginePort != proxyPort &&
 		checkEngineHealth(profile, client, enginePort)
