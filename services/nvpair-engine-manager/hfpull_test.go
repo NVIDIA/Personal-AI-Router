@@ -635,7 +635,9 @@ func TestHFToolPath_FindsHFBesideTheEngineALinkPointsTo(t *testing.T) {
 	tool, err := hfToolPath(st, "hf")
 
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(env, "hf"), tool)
+	resolvedEnv, err := filepath.EvalSymlinks(env)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(resolvedEnv, "hf"), tool)
 }
 
 // PAIR reads the same Hugging Face settings vLLM's huggingface_hub reads, in
