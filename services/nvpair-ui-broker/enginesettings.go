@@ -256,7 +256,7 @@ func (b *Broker) publishSettingsLocked() {
 	}
 }
 
-func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string, config settings.Config, current settings.Snapshot) error {
+func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string, config settings.Config, current settings.Snapshot, restart bool) error {
 	if config.ServerPort < 1 || config.ServerPort > 65535 || config.ProxyPort < 1 || config.ProxyPort > 65535 {
 		return fmt.Errorf("ports must be between 1 and 65535")
 	}
@@ -310,8 +310,14 @@ func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string,
 		}
 	}
 	for _, port := range []int{config.ServerPort, config.ProxyPort} {
-		if port == current.EffectiveProxyPort || (current.Running && port == current.EffectiveServerPort) {
+		if port == current.EffectiveProxyPort {
 			continue
+		}
+		if current.Running && port == current.EffectiveServerPort {
+			if restart || port == config.ServerPort {
+				continue
+			}
+			return fmt.Errorf("port %d is held by the running %s engine; move the engine or choose another proxy port", port, engine)
 		}
 		if !tcpPortAvailable(port) {
 			return fmt.Errorf("port %d is already in use", port)
@@ -341,7 +347,7 @@ func (b *Broker) previewSettingsLocked(ctx context.Context, p settings.Request) 
 		preview.Errors["settings"] = current.Reason
 	}
 	if len(preview.Errors) == 0 && preview.Conflict == nil {
-		if err := b.validateSettingsPortsLocked(ctx, p.Engine, preview.Settings, current); err != nil {
+		if err := b.validateSettingsPortsLocked(ctx, p.Engine, preview.Settings, current, preview.Restart); err != nil {
 			preview.Errors["ports"] = err.Error()
 		}
 	}
