@@ -646,7 +646,7 @@ Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim an
 
 #### `settings/<method>` (generic relay)
 
-Any `settings/*` request is forwarded to `nvpair-node-settings` and its response relayed back: `settings/get-force-ports`, `settings/set-force-ports`, `settings/get-cluster-id`, `settings/set-cluster-id`, `settings/get-cluster-auto-sync`, `settings/set-cluster-auto-sync`, `settings/get-cluster-friendly-name`, `settings/set-cluster-friendly-name`. Error `-32000 "node-settings not available"` when no settings worker is supervised.
+Any `settings/*` request is forwarded to `nvpair-node-settings` and its response relayed back: `settings/get-force-ports`, `settings/set-force-ports`, `settings/get-cluster-id`, `settings/set-cluster-id`, `settings/get-cluster-auto-sync`, `settings/set-cluster-auto-sync`, `settings/get-cluster-friendly-name`, `settings/set-cluster-friendly-name`, `settings/get-engine-allow-lan-bind`, `settings/set-engine-allow-lan-bind`. Error `-32000 "node-settings not available"` when no settings worker is supervised.
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 

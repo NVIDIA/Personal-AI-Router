@@ -36,7 +36,7 @@ func TestLaunchControls_BuildEquivalentLaunchesAcrossSources(t *testing.T) {
 			require.Empty(t, preview.Errors, " (%v)", preview)
 			require.Nil(t, preview.Conflict, " (%v)", preview)
 			rt.LaunchArgs, rt.LaunchEnv = preview.Args, preview.Env
-			launch, err := launchForState(settingsState(t, e), preview.Settings.ServerPort)
+			launch, err := launchForState(settingsState(t, e), preview.Settings.ServerPort, false)
 			require.NoError(t, err)
 			require.NoError(t, validateEffectiveLaunch(*rt, launch, "127.0.0.1", "23456"))
 			for _, control := range rt.EditableLaunch.Controls {
@@ -64,7 +64,7 @@ func TestSavedControls_CannotBypassLaunchValidation(t *testing.T) {
 			e := settingsExecutor(t, command)
 			rt := settingsState(t, e).plat.Runtime
 			request := settingsRequest(t, e)
-			launch, err := launchForState(settingsState(t, e), request.Settings.ServerPort)
+			launch, err := launchForState(settingsState(t, e), request.Settings.ServerPort, false)
 			require.NoError(t, err)
 			if command {
 				launch.Args = append(launch.Args, "-p0")

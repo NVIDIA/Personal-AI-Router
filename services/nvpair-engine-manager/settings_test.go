@@ -211,9 +211,9 @@ func TestSettingsArguments_DoNotIncludeExecutableOrSubcommand(t *testing.T) {
 		rt := st.plat.Runtime
 		rt.LaunchArgs = result.Args
 		rt.LaunchEnv = result.Env
-		launch, err := launchForState(st, p.Settings.ServerPort)
+		launch, err := launchForState(st, p.Settings.ServerPort, false)
 		require.NoError(t, err)
-		actual, err := applyLiteralLaunch(rt, launch, map[string]string{"host": "127.0.0.1", "port": fmt.Sprint(p.Settings.ServerPort)})
+		actual, err := applyLiteralLaunch(rt, launch, map[string]string{"host": "127.0.0.1", "port": fmt.Sprint(p.Settings.ServerPort)}, false)
 		require.NoError(t, err, "apply literal launch")
 		fixed := rt.EditableLaunch.FixedArgs
 		require.Equal(t, fakeEngineBin, actual.Bin, "arguments changed the executable")
@@ -224,10 +224,54 @@ func TestSettingsArguments_DoNotIncludeExecutableOrSubcommand(t *testing.T) {
 	})
 }
 
+// TestApplyLiteralLaunchHonorsLanBindOptIn: the engine:start gate and the
+// launch path must agree. With the node setting off, a non-loopback bind
+// that passed the gate is impossible — and the launch still refuses it.
+// With the setting on, the gate's decision travels through startOpts and
+// the same launch resolves. An unparseable host fails either way.
+func TestApplyLiteralLaunchHonorsLanBindOptIn(t *testing.T) {
+	eachEngineMode(t, func(t *testing.T, e *Executor) {
+		p := settingsRequest(t, e)
+		st := settingsState(t, e)
+		rt := st.plat.Runtime
+		rt.LaunchArgs = []string{}
+		rt.LaunchEnv = []string{}
+		launch, err := launchForState(st, p.Settings.ServerPort, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vars := map[string]string{"host": "192.168.1.5", "port": fmt.Sprint(p.Settings.ServerPort)}
+		if _, err := applyLiteralLaunch(rt, launch, vars, false); err == nil || !strings.Contains(err.Error(), "configured engines must bind to loopback") {
+			t.Fatalf("non-loopback host without opt-in: error %v, want loopback refusal", err)
+		}
+		resolved, err := applyLiteralLaunch(rt, launch, vars, true)
+		if err != nil {
+			t.Fatalf("non-loopback host with opt-in refused: %v", err)
+		}
+		text, err := resolved.text()
+		if err != nil || !strings.Contains(text, "192.168.1.5") {
+			t.Fatalf("opted-in launch lost the LAN bind: %q, %v", text, err)
+		}
+		if _, err := applyLiteralLaunch(rt, launch, map[string]string{"host": "not-an-ip", "port": fmt.Sprint(p.Settings.ServerPort)}, true); err == nil {
+			t.Fatal("unparseable host must fail even with the opt-in")
+		}
+
+		// launchForState threads the same flag: a manifest bind off
+		// loopback resolves only when the opt-in is carried.
+		st.plat.Runtime.Bind = "192.168.1.5"
+		if _, err := launchForState(st, p.Settings.ServerPort, false); err == nil {
+			t.Fatal("manifest LAN bind without opt-in must fail")
+		}
+		if _, err := launchForState(st, p.Settings.ServerPort, true); err != nil {
+			t.Fatalf("manifest LAN bind with opt-in refused: %v", err)
+		}
+	})
+}
+
 func TestSettings_MigratesFullCommandWithoutChangingArguments(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
-		launch, err := launchForState(settingsState(t, e), p.Settings.ServerPort)
+		launch, err := launchForState(settingsState(t, e), p.Settings.ServerPort, false)
 		require.NoError(t, err)
 		p.Settings.LaunchText, err = launch.text()
 		require.NoError(t, err)
@@ -576,7 +620,7 @@ func TestSettingsSafeEdit_PreservesManifestEnvironment(t *testing.T) {
 			require.NoError(t, err)
 			state := settingsState(t, e)
 			state.installDir = "/updated-install"
-			launch, err := launchForState(state, request.Settings.ServerPort)
+			launch, err := launchForState(state, request.Settings.ServerPort, false)
 			require.NoError(t, err, "default environment stopped following the manifest")
 			require.Equal(t, "/updated-install/lib/ollama", launch.Env["LD_LIBRARY_PATH"], "default environment stopped following the manifest (%v)", err)
 		})
@@ -620,7 +664,7 @@ func TestSavedLaunch_OverridesManifestEnvironmentLiterally(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			env := []string{"LD_LIBRARY_PATH=" + value}
 			rt.LaunchEnv = env
-			launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"})
+			launch, err := resolveProcessLaunch(rt, "engine", map[string]string{"install_dir": "/default", "host": "127.0.0.1", "port": "12345"}, false)
 			require.NoError(t, err, "saved launch environment")
 			assert.Equal(t, value, launch.Env["LD_LIBRARY_PATH"], "saved launch environment")
 		})

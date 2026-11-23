@@ -129,7 +129,7 @@ func formatLaunchParts(environment map[string]string, args []string) (string, er
 	return text, nil
 }
 
-func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (launchCommand, error) {
+func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string, allowLanBind bool) (launchCommand, error) {
 	if binPath == "" {
 		bin, err := resolvePlaceholders(rt.Bin, vars)
 		if err != nil {
@@ -158,7 +158,7 @@ func resolveProcessLaunch(rt Runtime, binPath string, vars map[string]string) (l
 		// it resolves the engine's state.
 		env[key] = resolved
 	}
-	return applyLiteralLaunch(rt, launchCommand{Bin: binPath, Args: args, Env: env}, resolvedVars)
+	return applyLiteralLaunch(rt, launchCommand{Bin: binPath, Args: args, Env: env}, resolvedVars, allowLanBind)
 }
 
 // resolveCommandLaunch preserves manifest expansion for trusted start steps.
