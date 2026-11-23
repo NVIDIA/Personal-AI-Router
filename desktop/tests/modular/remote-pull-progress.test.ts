@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
 
+import type { EngineProgress } from '@/shared/types/engines'
 import { subscribePush } from '@/electron/service-bridge/push-bus'
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import {
@@ -62,48 +63,169 @@ describe('pull error handling', () => {
     })
 })
 
+/** Collect the pull progress pushed to the renderer. */
+function capturePullProgress(): EngineProgress[] {
+    const frames: EngineProgress[] = []
+    unsubscribe = subscribePush(event => {
+        if (event.channel === 'engines:progress-changed' && event.payload.operation === 'pull') {
+            frames.push(event.payload)
+        }
+    })
+    return frames
+}
+
+// The frames carry the model the way the peer stamps it: it is what keys a
+// frame to the row of the download it reports on.
 describe('remote pull progress', () => {
+    afterEach(() => {
+        const state = getModularBridgeState()
+        state.finishRemoteModelPull('remote-node', 'lm-studio', 'demo-model')
+        state.finishRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        state.finishRemoteModelPull('remote-node', 'ollama', 'qwen3:4b')
+    })
+
     it('keeps indeterminate percent when the wire omits percent', () => {
         const state = getModularBridgeState()
-        const progressEvents: Array<{ percent?: number }> = []
-        unsubscribe = subscribePush(event => {
-            if (event.channel === 'engines:progress-changed') {
-                progressEvents.push(event.payload)
-            }
-        })
+        const progress = capturePullProgress()
 
         state.beginRemoteModelPull('remote-node', 'lm-studio', 'demo-model')
         state.applyRemoteEngineProgress({
             node: 'remote-node',
             engine: 'lmstudio',
+            model: 'demo-model',
             op: 'pull',
             stage: 'pulling',
             message: 'demo-model'
         })
 
-        expect(progressEvents.at(-1)?.percent).toBeUndefined()
+        expect(progress.at(-1)).toMatchObject({ model: 'demo-model', status: 'pulling' })
+        expect(progress.at(-1)?.percent).toBeUndefined()
     })
 
     it('advances percent when the wire carries byte progress', () => {
         const state = getModularBridgeState()
-        const progressEvents: Array<{ percent?: number }> = []
-        unsubscribe = subscribePush(event => {
-            if (event.channel === 'engines:progress-changed') {
-                progressEvents.push(event.payload)
-            }
-        })
+        const progress = capturePullProgress()
 
         state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
         state.applyRemoteEngineProgress({
             node: 'remote-node',
             engine: 'ollama',
+            model: 'llama3.1:8b',
             op: 'pull',
             stage: 'pulling',
             percent: 42,
             message: 'llama3.1:8b'
         })
 
-        expect(progressEvents.at(-1)?.percent).toBe(42)
+        expect(progress.at(-1)).toMatchObject({ model: 'llama3.1:8b', percent: 42 })
+    })
+
+    // An engine downloads one model at a time and queues the rest, so a node can
+    // have several pulls outstanding on one engine, and only the model a frame
+    // names says which of them it reports on.
+    it('applies a frame only to the download its model names', () => {
+        const state = getModularBridgeState()
+        const progress = capturePullProgress()
+        const frame = { node: 'remote-node', engine: 'ollama', op: 'pull' }
+
+        state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        state.beginRemoteModelPull('remote-node', 'ollama', 'qwen3:4b')
+        state.applyRemoteEngineProgress({
+            ...frame,
+            model: 'llama3.1:8b',
+            stage: 'downloading',
+            percent: 60
+        })
+        state.applyRemoteEngineProgress({ ...frame, model: 'qwen3:4b', stage: 'queued' })
+
+        expect(progress.at(-1)).toMatchObject({ model: 'qwen3:4b', status: 'queued' })
+        // Sharing an entry, the queued download would have taken the other's
+        // percentage as its own.
+        expect(progress.at(-1)?.percent).toBeUndefined()
+    })
+
+    // Without a model a frame cannot be told apart from any other download on
+    // its engine, so it is credited to none of them.
+    it('credits no download with a frame that names no model', () => {
+        const state = getModularBridgeState()
+        const progress = capturePullProgress()
+        const frame = { node: 'remote-node', engine: 'ollama', op: 'pull' }
+
+        state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        state.applyRemoteEngineProgress({ ...frame, stage: 'downloading', percent: 60 })
+        state.applyRemoteEngineProgress({ ...frame, model: 'llama3.1:8b', stage: 'pulling' })
+
+        expect(progress.at(-1)).toMatchObject({ model: 'llama3.1:8b', status: 'pulling' })
+        expect(progress.at(-1)?.percent).toBeUndefined()
+    })
+
+    // The awaited pull clears the row, and a download can go on being reported
+    // after that: one that outlived the request's timeout, or its own late last
+    // frame. Rebuilt from such a frame, the row was one nothing cleared, and a
+    // retry of the model on that node was silently ignored.
+    it('ignores a frame for a download whose row has cleared', () => {
+        const state = getModularBridgeState()
+        const frame = { node: 'remote-node', engine: 'ollama', model: 'llama3.1:8b', op: 'pull' }
+        state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        state.finishRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        const progress = capturePullProgress()
+
+        state.applyRemoteEngineProgress({ ...frame, stage: 'downloading', percent: 80 })
+        state.applyRemoteEngineProgress({ ...frame, stage: 'success', percent: 100 })
+
+        expect(progress).toEqual([])
+        expect(state.isRemoteModelPullActive('remote-node', 'ollama', 'llama3.1:8b')).toBe(false)
+    })
+})
+
+describe('local pull progress', () => {
+    afterEach(() => {
+        const state = getModularBridgeState()
+        state.finishModelPull('ollama', 'llama3.1:8b')
+        state.finishModelPull('ollama', 'qwen3:4b')
+    })
+
+    it('applies a frame only to the download its model names', () => {
+        const state = getModularBridgeState()
+        state.setSelfId('local-node')
+        const progress = capturePullProgress()
+
+        state.beginModelPull('ollama', 'llama3.1:8b')
+        state.beginModelPull('ollama', 'qwen3:4b')
+        state.applyLocalEngineProgress({
+            engine: 'ollama',
+            model: 'llama3.1:8b',
+            op: 'pull',
+            stage: 'downloading',
+            percent: 60
+        })
+        state.applyLocalEngineProgress({
+            engine: 'ollama',
+            model: 'qwen3:4b',
+            op: 'pull',
+            stage: 'queued'
+        })
+
+        expect(progress.at(-1)).toMatchObject({ model: 'qwen3:4b', status: 'queued' })
+        expect(progress.at(-1)?.percent).toBeUndefined()
+    })
+
+    // The engine manager reports every download on the machine, a terminal UI's
+    // included, and only the ones this app started have a row to update.
+    it('ignores a frame for a download this app did not start', () => {
+        const state = getModularBridgeState()
+        state.setSelfId('local-node')
+        const progress = capturePullProgress()
+
+        state.applyLocalEngineProgress({
+            engine: 'ollama',
+            model: 'qwen3:4b',
+            op: 'pull',
+            stage: 'downloading',
+            percent: 5
+        })
+
+        expect(progress).toEqual([])
     })
 })
 

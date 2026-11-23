@@ -24,24 +24,39 @@ import (
 )
 
 func TestPullProgressFromLine_ExtractsProgressAndStatus(t *testing.T) {
-	ev := pullProgressFromLine("ollama", []byte(`{"status":"pulling manifest","total":200,"completed":50}`))
+	ev := pullProgressFromLine("ollama", "llama3.2", []byte(`{"status":"pulling manifest","total":200,"completed":50}`))
 	require.Equal(t, "pull", ev.Op, "unexpected event meta (%v)", ev)
 	require.Equal(t, "ollama", ev.Engine, "unexpected event meta (%v)", ev)
+	require.Equal(t, "llama3.2", ev.Model, "every pull frame names its model")
 	require.Equal(t, 25, ev.Percent, "expected 25")
 	require.Equal(t, "pulling manifest", ev.Stage, "expected stage from status")
 
 	// No total -> 0% (avoids divide-by-zero), still carries the status.
-	ev = pullProgressFromLine("ollama", []byte(`{"status":"verifying"}`))
+	ev = pullProgressFromLine("ollama", "llama3.2", []byte(`{"status":"verifying"}`))
 	require.Equal(t, 0, ev.Percent, "unexpected zero-total event (%v)", ev)
 	require.Equal(t, "verifying", ev.Stage, "unexpected zero-total event (%v)", ev)
 }
 
+// The model is what scopes a pull: it keys the claim a cancel is matched
+// against, and it is streamOp's progress filter. A request that does not name
+// one has to be refused rather than run unscoped — an empty filter disables
+// filtering, so the initiator would receive every other model's pull progress
+// on that engine stamped with its own opID.
 func TestHandlePull_RejectsMissingTarget(t *testing.T) {
-	s := &controlServer{exec: &Executor{progress: newProgressHub()}}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(`{"opId":"x","engine":"ollama"}`))
-	s.handlePull(rec, req)
-	require.Equal(t, 400, rec.Code, "expected 400 when neither model nor params set")
+	test := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			s := &controlServer{exec: &Executor{progress: newProgressHub()}}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", controlPullPath, strings.NewReader(body))
+			s.handlePull(rec, req)
+			require.Equal(t, 400, rec.Code, "a pull that names no model must be refused")
+		})
+	}
+	test("neither model nor params", `{"opId":"x","engine":"ollama"}`)
+	// Params carrying no recognisable model name used to satisfy the check
+	// purely by being non-empty.
+	test("params naming no model", `{"opId":"x","engine":"ollama","params":{"insecure":true}}`)
+	test("params with an empty model", `{"opId":"x","engine":"ollama","params":{"name":""}}`)
 }
 
 func TestModelFromParams_ExtractsRequestedModel(t *testing.T) {
@@ -387,11 +402,12 @@ func TestActionPullModel_StreamsProgress(t *testing.T) {
 	require.True(t, sawPercent, "expected at least one frame with a computed percent > 0 (%v)", pulls)
 }
 
-// TestActionPullModelCmdMarkerAndResult covers the CLI (LM Studio `lms get`)
+// TestActionPullModelCmdMarkerAndResult covers the CLI fallback
 // pull path through the same engine:action routing: a Cmd-based pull_model can't
-// expose structured line progress, so it emits a single "pulling" marker and
-// returns the command's terminal result — the counterpart to the HTTP streaming
-// path in TestActionPullModelStreamsProgress.
+// expose structured line progress, so it emits a "pulling" marker, then the
+// terminal success frame every pull ends with, and returns the command's
+// result — the counterpart to the HTTP streaming path in
+// TestActionPullModelStreamsProgress.
 func TestActionPullModel_ReturnsCommandResultAndProgressMarker(t *testing.T) {
 	m := testEngineManifest(fakeEngineBin)
 	m.Actions["pull_model"] = Action{Cmd: []string{fakeEngineBin, "echo", "pulled:{model}"}}
@@ -410,6 +426,9 @@ func TestActionPullModel_ReturnsCommandResultAndProgressMarker(t *testing.T) {
 		mu.Unlock()
 	}, t.TempDir())
 
+	progress, unsubscribe := ex.progress.subscribe(m.Engine)
+	defer unsubscribe()
+
 	// A Cmd action just runs a binary; the engine need not be started.
 	var out bytes.Buffer
 	mgr := NewManager(NewCodec(&out), ex, nil)
@@ -421,11 +440,21 @@ func TestActionPullModel_ReturnsCommandResultAndProgressMarker(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, pulls, 1, "expected exactly one pulling marker for a CLI pull")
+	require.Len(t, pulls, 2, "expected a pulling marker and the terminal frame for a CLI pull")
 	require.Equal(t, "pull", pulls[0]["op"], "unexpected CLI pull marker")
 	require.Equal(t, "pulling", pulls[0]["stage"], "unexpected CLI pull marker")
 	require.Equal(t, "demo:1b", pulls[0]["message"], "unexpected CLI pull marker")
+	require.Equal(t, "demo:1b", pulls[0]["model"], "CLI pull marker must name its model")
 	require.NotContains(t, pulls[0], "percent", "CLI pull marker must omit indeterminate percent")
+	require.Equal(t, "success", pulls[1]["stage"], "unexpected terminal frame")
+	require.Equal(t, 100, pulls[1]["percent"], "unexpected terminal frame")
+	require.Equal(t, "demo:1b", pulls[1]["model"], "the terminal frame must name its model")
+	select {
+	case event := <-progress:
+		require.Equal(t, "demo:1b", event.Model, "CLI pull hub frame must name its model")
+	default:
+		require.Fail(t, "CLI pull did not publish progress to the hub")
+	}
 }
 
 // TestActionPullModelFailureEmitsTerminalError proves a failed LOCAL pull emits

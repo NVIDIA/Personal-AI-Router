@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # Engine settings protocol
 
 The broker owns combined settings operations for Ollama, LM Studio,
-llama.cpp, and Colibri. Each node owns its own configuration. `nodeId` selects a discovered,
+llama.cpp, vLLM, and Colibri. Each node owns its own configuration. `nodeId` selects a discovered,
 currently pinned peer; omission or the local host ID selects this node. Bulk
 propagation is not part of this API.
 
@@ -16,8 +16,12 @@ propagation is not part of this API.
 | `engine:preview-settings` | `{engine, nodeId?, expectedRevision, settings, resolution?}` | Normalized settings, errors, conflict, restart/rebind summary |
 | `engine:apply-settings` | Preview request plus `requestId` | `{revision, phase}` acknowledgement |
 
-`engine` is `ollama`, `lmstudio`, `llamacpp`, or `colibri`. `settings` contains all three
-fields: `serverPort`, `proxyPort`, `launchText`. The last field contains
+`engine` is `ollama`, `lmstudio`, `llamacpp`, `vllm`, or `colibri`. `settings`
+contains all three fields: `serverPort`, `proxyPort`, `launchText`. llama.cpp additionally exposes
+`modelSource` (`huggingface` or `modelscope`, default `huggingface`); other engines
+omit it. The selection is persisted and relayed with the rest of the settings.
+Changing it restarts a running llama.cpp router and changes both its catalogue
+and downloads. `launchText` contains
 arguments and leading environment assignments, without the executable or
 startup subcommand. The argument grammar is
 [`pair-arguments-v1`](../nvpair-engine-manager/LAUNCH_TEXT.md). Preview does not
@@ -95,7 +99,7 @@ limited to 64 KiB and cannot forward another hop. The authenticated caller ID is
 carried through correlated `engine:settings-request` / `engine:settings-reply`
 notifications to the local broker. Cancellation and pin removal cancel queued
 work; the broker rechecks the caller after acquiring the node lock. Once
-durably accepted, the target completes under its own eleven-minute deadline even
+durably accepted, the target completes under its own thirty-one-minute deadline even
 if the initiating peer disconnects.
 
 `engine:settings-projection` seeds the worker's subscription hub with full local

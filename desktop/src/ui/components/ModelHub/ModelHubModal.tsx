@@ -10,11 +10,14 @@ import type { ModelItem } from '@/ui/types/engine-info'
 
 export const ModelHubModal = ({
     engine,
+    nodeId,
     onOpenChange,
     onSubmit,
     downloadedModels
 }: {
     engine: EngineType | null
+    /** The node the chosen model is downloaded to. */
+    nodeId: string
     onOpenChange: (open: boolean) => void
     onSubmit: (models: ModelEntry[]) => void
     /** Already-installed models for this engine. Results matching these are hidden. */
@@ -45,6 +48,7 @@ export const ModelHubModal = ({
                     >
                         <ModelHubContent
                             engine={engine}
+                            nodeId={nodeId}
                             multiple={false}
                             onSubmit={onSubmit}
                             downloadedModels={downloadedModels}

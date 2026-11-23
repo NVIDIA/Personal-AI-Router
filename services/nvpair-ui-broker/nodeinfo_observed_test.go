@@ -46,7 +46,7 @@ func TestForwardNodeInfoObservedAddresses_ReachesTheScanner(t *testing.T) {
 				relayed <- msg
 			}()
 
-			b.forwardNodeInfoNotification(noderec.NotifyObservedAddresses, json.RawMessage(from))
+			b.nodeInfoNotificationHandler(0)(noderec.NotifyObservedAddresses, json.RawMessage(from))
 
 			select {
 			case msg := <-relayed:

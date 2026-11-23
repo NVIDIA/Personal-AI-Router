@@ -76,15 +76,7 @@ func (c *RegistrationCache) Snapshot() []noderec.RegisterParams {
 }
 
 func registerEqual(a, b noderec.RegisterParams) bool {
-	if a.Service != b.Service || a.Port != b.Port || len(a.TXT) != len(b.TXT) {
-		return false
-	}
-	for i := range a.TXT {
-		if a.TXT[i] != b.TXT[i] {
-			return false
-		}
-	}
-	return true
+	return a.Service == b.Service && a.Port == b.Port && slices.Equal(a.TXT, b.TXT)
 }
 
 // Subscriber is a client interested in directory changes: a service filter and a
@@ -105,7 +97,7 @@ type Subscriber struct {
 	sendMu sync.Mutex
 }
 
-// Directory is the broker's view of all LAN nodes (keyed by hostUuid) plus its
+// Directory is the broker's view of all LAN nodes (keyed by discoveryRecordId) plus its
 // subscriber set. It's fed by the daemon's node-* events via Apply and queried
 // by discovery:get-nodes via Snapshot.
 type Directory struct {
@@ -160,7 +152,7 @@ func (d *Directory) filteredLocked(f noderec.SubscribeParams) []noderec.Director
 		}
 	}
 	slices.SortFunc(out, func(a, b noderec.DirectoryNode) int {
-		return cmp.Compare(a.HostUUID, b.HostUUID)
+		return cmp.Compare(a.DiscoveryRecordID, b.DiscoveryRecordID)
 	})
 	return out
 }
@@ -172,20 +164,24 @@ func (d *Directory) Unsubscribe(id int) {
 	d.mu.Unlock()
 }
 
-// Apply folds a daemon node-* delta into the directory, then re-sends every
-// subscriber its full filtered snapshot. method (one of noderec.NotifyNode{
-// Discovered,Updated,Removed}) only updates the directory — removed drops the
-// node by hostUuid, discovered/updated upsert it. Every subscriber is re-pushed
-// on any change (not just those matching the changed node) so each consumer's
-// set is always the authoritative current list; the push is idempotent (the
-// consumer replaces with the same set), so a re-push for an unrelated change is a
-// cheap no-op at this scale.
+// Apply adds, replaces, or removes one scanner record by DiscoveryRecordID.
+// HostUUID is only a claim in an unverified record. Records with the same
+// HostUUID must stay independent, so removing an unverified discovery cannot
+// remove the verified peer's record.
+//
+// It then sends every subscriber the complete set matching that subscriber's
+// filter. Subscribers replace their previous set rather than applying changes
+// to individual records. Refreshing every subscriber also removes records that
+// no longer match after an update.
 func (d *Directory) Apply(method string, node noderec.DirectoryNode) {
+	if node.HostUUID == "" || node.DiscoveryRecordID == "" {
+		return
+	}
 	d.mu.Lock()
 	if method == noderec.NotifyNodeRemoved {
-		delete(d.nodes, node.HostUUID)
+		delete(d.nodes, node.DiscoveryRecordID)
 	} else {
-		d.nodes[node.HostUUID] = node
+		d.nodes[node.DiscoveryRecordID] = node
 	}
 	subs := make([]*Subscriber, 0, len(d.subs))
 	for _, s := range d.subs {
@@ -201,7 +197,7 @@ func (d *Directory) Apply(method string, node noderec.DirectoryNode) {
 }
 
 // Snapshot returns the directory optionally filtered to one service, sorted by
-// hostUuid.
+// DiscoveryRecordID.
 func (d *Directory) Snapshot(filter noderec.ServiceKey) []noderec.DirectoryNode {
 	d.mu.Lock()
 	out := make([]noderec.DirectoryNode, 0, len(d.nodes))
@@ -213,7 +209,7 @@ func (d *Directory) Snapshot(filter noderec.ServiceKey) []noderec.DirectoryNode 
 	}
 	d.mu.Unlock()
 	slices.SortFunc(out, func(a, b noderec.DirectoryNode) int {
-		return cmp.Compare(a.HostUUID, b.HostUUID)
+		return cmp.Compare(a.DiscoveryRecordID, b.DiscoveryRecordID)
 	})
 	return out
 }

@@ -17,7 +17,7 @@
     "args": ["serve", "--host", "{host}", "--port", "{port}"],
     "env": { "COLI_MODEL": "{models_dir}/{model}", "COLI_MODEL_ID": "{model}" },
     "bind": "127.0.0.1",
-    "port": 8001,
+    "port": 8003,
     "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 600, "json_match": { "field": "status", "value": "ok" } },
     "stop": { "signal": "term", "grace_s": 15 },
     "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }

@@ -37,6 +37,16 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if act.HFSnapshot != nil {
 		return e.PullModelStream(ctx, engine, modelFromParams(params), params)
 	}
+	// Only the flag form switches and restarts here; the path form is a store
+	// action that goes through dispatchAction and restart_after below.
+	if act.LaunchModel != nil && act.LaunchModel.Flag != "" {
+		// Like restart_after, the restart gets the caller's context: it is a stop
+		// plus a readiness-probed start that the action timeout does not budget for.
+		return e.switchLaunchModel(ctx, engine, act.LaunchModel, params)
+	}
+	if act.StopEngine {
+		return e.ejectByStopping(ctx, engine, params)
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err
@@ -70,8 +80,8 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 //     model must not rewrite the engine's saved ON/OFF intent. doStop/doStart
 //     are the intent-neutral pair (StopAll uses them for the same reason).
 func (e *Executor) restartAfterAction(ctx context.Context, st *engineState, engine, action string) error {
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	st.mu.Lock()
 	running := st.running
 	st.mu.Unlock()
@@ -114,6 +124,9 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	}
 	if act.LaunchModel != nil {
 		return e.runLaunchModelAction(st, engine, act, params)
+	}
+	if act.HFCache != nil {
+		return e.runHFCacheAction(ctx, st, engine, act, params)
 	}
 	if len(act.Cmd) > 0 {
 		return e.runCmdAction(ctx, st, act, port, params)
@@ -318,6 +331,9 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		// failure is *not* retried in place — it falls through to the next
 		// source below (and runWithResume returns it immediately).
 		if lmsGet {
+			if output, ok := ctx.Value(downloadOutputKey{}).(*lmsDownloadOutput); ok {
+				output.trying(cand)
+			}
 			out, lastErr = e.runWithResume(ctx, argv)
 		} else {
 			out, lastErr = e.runCommandOutput(ctx, argv)
@@ -348,6 +364,9 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 func (e *Executor) runCommandOutput(ctx context.Context, argv []string) (string, error) {
 	if len(argv) == 0 {
 		return "", nil
+	}
+	if output, ok := ctx.Value(downloadOutputKey{}).(*lmsDownloadOutput); ok {
+		return runLMSDownloadCommand(ctx, argv, output)
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	configureSysProcAttr(cmd)
@@ -386,14 +405,25 @@ func (e *Executor) runWithResume(ctx context.Context, argv []string) (string, er
 		if err == nil {
 			return out, nil
 		}
-		if attempt >= lmsGetResumeAttempts || ctx.Err() != nil || !isLMSTransientDownloadError(err) {
+		if !isLMSTransientDownloadError(err) {
+			return out, err
+		}
+		// The CLI exited on a failure `lms get` resumes on re-run, so nothing
+		// is downloading until the next attempt starts. A context that ends
+		// before then — a cancel, shutdown, the action timeout — is what
+		// settles the pull, and a cancel must read as the cancellation it was
+		// rather than as the failure it interrupted.
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if attempt >= lmsGetResumeAttempts {
 			return out, err
 		}
 		slog.Warn("lms get download failed transiently; resuming",
 			"attempt", attempt, "of", lmsGetResumeAttempts, "err", err)
 		select {
 		case <-ctx.Done():
-			return out, err
+			return out, ctx.Err()
 		case <-time.After(lmsGetResumeBackoff):
 		}
 	}

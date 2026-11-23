@@ -1,13 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Cross-process test for the models-http path: a node advertises an
-// engine-manager (em) service on its _nvpair-node record, and the promoted
-// discovery daemon enriches the node's model list by fetching /v1/models over
-// plain HTTP from that em port — replacing the retired models= TXT key. We stand
-// in for engine-manager with a tiny HTTP server, advertise em=<port> + ip so the
-// daemon dials it over loopback, and assert the enriched list surfaces on the
-// broker's discovery:get-nodes response.
+// Cross-process test for model inventory from a pinned cluster peer. Scanner
+// authenticates its node-info metadata, then fetches /v1/models over mTLS and
+// carries the flat, per-engine, and loaded inventories through the broker.
 package tests
 
 import (
@@ -24,15 +20,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/grandcat/zeroconf"
+
+	"nvpair-shared/noderec"
 )
 
 func TestDiscovery_EnrichesModelsThroughHTTP(t *testing.T) {
-	// Stand-in engine-manager HTTP surface serving the model list.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			http.NotFound(w, r)
-			return
-		}
+	const instance = "xproc-models-1"
+	cluster := newInterNodeCluster(t)
+	cluster.startModelsPeer(t, instance, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Flat union + per-engine attribution, exactly the shape engine-manager's
 		// ModelsResult serializes. The daemon must enrich both onto the node.
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
@@ -49,62 +44,54 @@ func TestDiscovery_EnrichesModelsThroughHTTP(t *testing.T) {
 			},
 		}))
 	}))
-	t.Cleanup(srv.Close)
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err, "parse stub url")
-	emPort, err := strconv.Atoi(u.Port())
-	require.NoError(t, err, "stub port")
 
-	const instance = "xproc-models-1"
-	// Advertise a _nvpair-node with em=<port> and ip=127.0.0.1 so the daemon
-	// fetches the model list from the stub over loopback (ip= wins over the mDNS
-	// address in the daemon's enrichment target selection).
-	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
-	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	require.NoError(t, err, "register (%v)", instance)
-	t.Cleanup(zsrv.Shutdown)
-	t.Logf("advertising %s @ %s (em=%d)", instance, nodeRecordService, emPort)
-
-	stdin, msgs, cleanup := startBroker(t)
+	stdin, msgs, _, cleanup := startBrokerWithDirs(t, t.TempDir(), cluster.nodeDir)
 	t.Cleanup(cleanup)
 
-	// Poll get-nodes until the node appears carrying the enriched model list.
-	deadline := time.After(30 * time.Second)
-	ticker := time.NewTicker(1500 * time.Millisecond)
-	defer ticker.Stop()
-	id := 100
-	sendReq(t, stdin, id, "discovery:get-nodes")
-	for {
-		select {
-		case msg, ok := <-msgs:
-			require.True(t, ok, "broker stream closed unexpectedly")
-			if msg.Method == "" && msg.ID != nil {
-				var res availableNodesResult
-				require.NoError(t, json.Unmarshal(msg.Result, &res))
-
-				if n, found := findNode(res.Nodes, instance); found &&
-					modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
-					loadedByEngineMatch(n.LoadedByEngine) {
-					return // enriched flat + per-engine + loaded lists surfaced
-				}
-
-			}
-		case <-ticker.C:
-			id++
-			sendReq(t, stdin, id, "discovery:get-nodes")
-		case <-deadline:
-			require.FailNow(t, fmt.Sprintf("timed out waiting for %q with an enriched model list", instance))
-		}
-	}
+	pollForNode(t, stdin, msgs, cluster.peerUUID, 30*time.Second, func(n availableNode) bool {
+		return n.ID == instance && modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
+			loadedByEngineMatch(n.LoadedByEngine)
+	})
 }
 
-func findNode(nodes []availableNode, id string) (availableNode, bool) {
-	for _, n := range nodes {
-		if n.ID == id {
-			return n, true
+// startModelsPeer serves authenticated node metadata and a model handler using
+// the same pinned identity. The one announcement remains fixed during refresh tests.
+func (c *interNodeCluster) startModelsPeer(t *testing.T, instance string, models http.Handler) {
+	t.Helper()
+	var port int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
+		info := noderec.NodeInfo{
+			HostUUID: c.peerUUID, ClusterUUID: &c.peerUUID,
+			Peer: &noderec.PeerMetadata{
+				Name: instance, Addresses: []string{"127.0.0.1"},
+				Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: port, noderec.ServiceEngineManager: port},
+			},
 		}
-	}
-	return availableNode{}, false
+		assert.NoError(t, json.NewEncoder(w).Encode(info))
+	})
+	mux.Handle("/v1/models", models)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := c.peer.VerifyClientPin(r); !ok {
+			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	server.TLS = c.peer.ServerTLSConfig()
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	u, err := url.Parse(server.URL)
+	require.NoError(t, err, "parse model peer URL")
+	port, err = strconv.Atoi(u.Port())
+	require.NoError(t, err, "model peer port")
+
+	txt := []string{"v=1", "uuid=" + c.peerUUID, "cluster-uuid=" + c.peerUUID, "ip=127.0.0.1",
+		fmt.Sprintf("ni=%d", port), fmt.Sprintf("em=%d", port)}
+	advertisement, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
+	require.NoError(t, err, "register model peer")
+	t.Cleanup(advertisement.Shutdown)
+	t.Logf("advertising %s with pinned node-info and models (port=%d)", instance, port)
 }
 
 func modelsMatch(models []string) bool {

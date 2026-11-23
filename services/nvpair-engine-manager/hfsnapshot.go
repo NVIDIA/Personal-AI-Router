@@ -112,6 +112,10 @@ func (e *Executor) hfBase() string {
 // pullHFSnapshot runs an hf_snapshot pull_model action for model, an
 // owner/name repository id, and returns {"model","files","bytes"}. A
 // repository the manifest lists is downloaded by its entry's rules.
+//
+// Two pulls of one model would write the same partial files, so a second is
+// queued behind the first by trackedPull rather than racing it; a snapshot
+// never writes a destination twice at once.
 func (e *Executor) pullHFSnapshot(ctx context.Context, st *engineState, engine, model string, act Action) (json.RawMessage, error) {
 	if !hfRepoPattern.MatchString(model) {
 		return nil, fmt.Errorf("%q is not a Hugging Face repository id (owner/name)", model)
@@ -124,23 +128,17 @@ func (e *Executor) pullHFSnapshot(ctx context.Context, st *engineState, engine, 
 	marker, _, layout := st.manifest.modelStoreLayout()
 	if layout && hasMarker(dest, marker) {
 		// Complete but for a step: a copy downloaded before the step was listed,
-		// or one whose step failed after the files were in.
+		// or one whose step failed after the files were in. trackedPull reports
+		// the terminal frame, as it does for every engine's pull.
 		if err := e.runAfterDownload(ctx, st, model, entry.AfterDownload, dest); err != nil {
 			return nil, err
 		}
-		e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: model})
 		return json.Marshal(map[string]any{"model": model, "already": true})
 	}
 
-	// Two pulls of one model would write the same partial files.
-	if _, busy := e.snapshotPulls.LoadOrStore(dest, struct{}{}); busy {
-		return nil, fmt.Errorf("%s is already being downloaded", model)
-	}
-	defer e.snapshotPulls.Delete(dest)
-
 	pullCtx, watchdog := newPullProgressWatchdog(ctx, e.pullProgressTimeout)
 	defer watchdog.stop()
-	e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: model})
+	e.emitPullProgress(ProgressEvent{Engine: engine, Model: model, Op: "pull", Stage: "pulling", Message: model})
 
 	meta, err := e.fetchHFRepoMeta(pullCtx, model, entry.Revision)
 	if err != nil {
@@ -212,7 +210,6 @@ func (e *Executor) pullHFSnapshot(ctx context.Context, st *engineState, engine, 
 		}
 		st.opMu.Unlock()
 	}
-	e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "success", Percent: 100, Message: model})
 	return json.Marshal(map[string]any{"model": model, "files": len(files), "bytes": total})
 }
 
@@ -468,13 +465,13 @@ func (p *snapshotProgress) add(n int64) {
 	if p.total <= 0 {
 		return
 	}
-	// 100 is the success frame's, sent once the model is in place.
+	// 99 caps the byte counter: trackedPull's terminal frame is the 100.
 	pct := int(min(max(p.done*100/p.total, 0), 99))
 	if pct == p.lastPct {
 		return
 	}
 	p.lastPct = pct
-	p.emit(ProgressEvent{Engine: p.engine, Op: "pull", Stage: "downloading", Percent: pct, Message: p.model})
+	p.emit(ProgressEvent{Engine: p.engine, Model: p.model, Op: "pull", Stage: "downloading", Percent: pct, Message: p.model})
 }
 
 // formatGB renders a byte count for an error message.

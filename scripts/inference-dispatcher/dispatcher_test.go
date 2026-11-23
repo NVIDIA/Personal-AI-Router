@@ -418,11 +418,11 @@ func TestLlamaCPP_UsesPort8080ByDefault(t *testing.T) {
 	require.Equal(t, 8080, effectivePort(cfg))
 }
 
-func TestColibri_DefaultsToItsNativePort(t *testing.T) {
+func TestColibri_DefaultsToItsFacadePort(t *testing.T) {
 	var stderr bytes.Buffer
 	cfg, err := parseConfig([]string{"--backend", "colibri"}, &stderr)
 	require.NoError(t, err, "parse config")
-	assert.Equal(t, 8000, effectivePort(cfg), "Colibri default port")
+	assert.Equal(t, 8002, effectivePort(cfg), "Colibri default port")
 }
 
 func TestResponseText_NeverReachesStdout(t *testing.T) {

@@ -25,9 +25,10 @@ const (
 	defaultLMStudioPort = 1234
 	// llama.cpp's OpenAI-compatible proxy facade uses its stock router port.
 	defaultLlamaCPPPort = 8080
-	// Colibri's proxy facade claims its stock server port; PAIR's managed
-	// Colibri runs behind it on 8001.
-	defaultColibriPort = 8000
+	// Colibri's stock server defaults to 8000 too, but vLLM's facade claims it,
+	// so PAIR fronts Colibri on 8002 and runs its managed engine behind that on
+	// 8003.
+	defaultColibriPort = 8002
 	defaultErrorLog    = "inference_errors.txt"
 	maxPromptsPerBatch = 100
 )

@@ -11,6 +11,146 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.1.1 — Keep cluster inference available while vLLM starts (#218)
+
+- Re-enabling vLLM now lets requests fail over to another eligible model owner while the local engine loads.
+- Stale routing to a disabled engine also permits failover without starting that engine.
+
+## 1.0.38 — Cancel model downloads and see their progress (#111)
+
+- Model downloads show live progress and a Cancel button for Ollama, LM Studio, llama.cpp, and vLLM, including downloads running on remote nodes.
+- Canceling an Ollama or LM Studio download removes the partial files PAIR can attribute to it, while preserving completed models, other quantizations, and downloads belonging to other clients on the same machine. llama.cpp and vLLM keep a canceled download's files so the next download can resume them.
+- Downloads for one engine queue behind each other instead of failing, a second request for a model that is already downloading joins that download, and a queued download can be canceled or retried before it starts.
+- The terminal interface can cancel a download from a node's detail screen, on this machine or a peer.
+
+## 1.0.37 — vLLM starts on DGX Spark, and a timed-out start explains itself (#215)
+
+- Enabling vLLM on Linux now installs vLLM 0.34.0 and loads model weights into memory first, which fixes starts that took over eight minutes on DGX Spark and failed with "not ready after 8m0s".
+- vLLM now has 30 minutes to become ready before PAIR reports a failure, and the app, terminal interface and cluster peers wait that long too.
+- A start that times out now shows the last lines of the engine's output instead of a long, cut-off log tail.
+
+## 1.0.36 — Choose vLLM models and load downloaded models on request (#203)
+
+- New vLLM setups wait for model selection without downloading a default model. Requests can load models that are already fully downloaded.
+- Eject frees model memory while keeping vLLM enabled. Model changes wait for active responses to finish, and cancelling one request does not interrupt a shared model load.
+- Model lists reflect what each computer can serve and refresh after remote downloads or deletions.
+
+## 1.0.35 — Add model shows more ModelScope models and says the list is partial (#212)
+
+- With ModelScope as the llama.cpp download source, Add model now lists more models when the search box is empty, including popular chat models it used to leave out. Before, it could show as few as three.
+- Add model now says it is showing popular models and that a search finds more, for llama.cpp and vLLM.
+- Add model no longer offers ModelScope embedding, speech and image models that ModelScope labels as text generation.
+- During a ModelScope outage, Add model keeps the last list it loaded, even after many searches. A few models whose details ModelScope fails to return can be missing until the list refreshes.
+- On a slow connection, Add model shows the ModelScope models it loaded in time instead of none, and tries again for the rest two minutes later.
+
+## 1.0.34 — Add model for a peer's llama.cpp lists that peer's download source (#214)
+
+- Opening Add model for llama.cpp on another device now lists models from that device's Model download source, Hugging Face or ModelScope. Before, it listed this device's source, so a device set to ModelScope showed Hugging Face models when opened from a peer.
+- If that device runs a PAIR version older than 1.0.18, Add model for its llama.cpp asks you to update PAIR on that device instead of listing models.
+
+## 1.0.33 — Explain Metal startup memory failures (#208)
+
+- When an engine reports a recognized Metal memory shortage during captured startup, PAIR includes advice to unload models from other engines or free memory before retrying. Existing engine or command context remains before the advice, followed by bounded, redacted diagnostics.
+- Cancelled or timed-out startup operations retain their interruption cause instead of being relabelled as memory failures because of earlier Metal output.
+
+## 1.0.32 — No console windows when LM Studio starts on Windows (#211)
+
+- Starting the LM Studio engine on Windows no longer opens empty console windows.
+
+## 1.0.31 — Long requests are no longer cut off while an engine is still working (#209)
+
+- The router no longer gives up on an engine after two minutes without a response. Queued Ollama requests and long non-streaming generations now run to completion instead of being restarted on another machine.
+- An engine that starts responding but then stalls is still failed over, now after three minutes instead of two.
+
+## 1.0.30 — fix(node-info): report Apple Silicon GPU memory in use (#213)
+
+- Apple Silicon Macs now report GPU memory in use instead of allocated GPU memory. GPU memory usage is unavailable when the driver does not provide an in-use reading.
+
+## 1.0.29 — vLLM launches that use -tp or -pp are left as written (#204)
+
+- A vLLM launch that sets tensor or pipeline parallelism with the short `-tp` or `-pp` flags is no longer given a 64K `--max-model-len`, YaRN rope scaling or a GPU memory share. The long `--tensor-parallel-size` and `--pipeline-parallel-size` flags already behaved this way.
+
+## 1.0.28 — Release LM Studio daemon memory when stopping the engine (#198)
+
+- Turning off LM Studio shuts down headless llmster and releases its models. GUI-hosted engines stop their HTTP server while leaving the GUI open. Restart and application shutdown use the same policy.
+
+## 1.0.27 — Launch at login stays on after enabling it on Windows (#210)
+
+- On Windows, turning on Launch at login in Settings > Service now keeps the switch on. Before, the switch went back to off even though PAIR was set to start at sign-in, and it could not be turned off from Settings.
+- Turning Start minimized to tray on or off on Windows now updates the startup entry straight away.
+- A startup entry disabled in Windows Task Manager or the startup apps settings now reads off in Settings, and PAIR leaves it off.
+
+## 1.0.26 — Proxy "no node" errors are labelled as JSON (#199)
+
+- When no node can serve a request, the proxy's error response now carries `Content-Type: application/json`, like its other errors. Clients that read the error message only from JSON responses, such as the Ollama JavaScript library, now show the message instead of the raw `{"error": ...}` text.
+
+## 1.0.25 — Proxy request hardening: 32 MiB body cap, loopback-only engine addresses, fail-closed peer TLS (#79)
+
+- The proxy now rejects inference request bodies over 32 MiB with 413 before routing, closing an unauthenticated OOM vector on the loopback ingress.
+- Engine addresses supplied via set-local-backend must be loopback; anything else is refused at store time.
+- A missing peer certificate pin now fails closed (every dial errors) instead of falling back to an unpinned transport.
+
+## 1.0.24 — More reliable vLLM setup and model loading across supported devices (#188)
+
+- Install PAIR-managed vLLM outside the space-containing app-data directory to avoid GPU-kernel compilation failures.
+- Size vLLM memory allocations using reliable device readings, including verified shared-memory systems.
+
+## 1.0.23 — Authenticate peer inventory before using it for service decisions (#179)
+
+- Verify discovered peers before using their identities, service endpoints, models, or hardware measurements.
+- Preserve public hardware previews and explicitly configured manual engine routes.
+- Withdraw obsolete peer state after trust changes and recover worker state without making cached measurements appear fresh.
+- Remove custom certificate/CA flags from standalone scanner and manual-node commands; authenticated hardware reads use paired cluster identities.
+- Broker node removal now distinguishes exact manual entry IDs from broker node keys; callers using a node key must send nodeId.
+- Deliver GUI and TUI hardware displays through broker snapshots and live updates instead of plaintext HTTP.
+
+## 1.0.22 — Refresh vLLM model lists after peer downloads and deletions (#200)
+
+- The owning computer's vLLM model list now updates automatically when a peer downloads or deletes a model, including while the engine is stopped.
+
+## 1.0.21 — Keep slow engine status checks from delaying engine controls (#180)
+
+- Starting, stopping, and changing an engine's port no longer wait for a separate status check to finish.
+- Model-list requests from other devices now return an error if they cannot finish in time, allowing those devices to keep their last known model lists.
+
+## 1.0.20 — Recover stale macOS helper registrations after upgrades (#201)
+
+- Allow a delayed, bounded retry when macOS retains the privileged helper's old signing identity after an upgrade.
+- Preserve the retry limit across application restarts and pending background-item approval.
+
+## 1.0.19 — Launch at login and start minimized to the tray (#97)
+
+- New Startup section in Settings > Service with two switches: launch at login, and start minimized to the tray.
+- A launch by the login item stays in the tray and opens the Overview from the tray menu; a launch by hand still opens the window.
+- Launch at login shows what the operating system will do. If you disable or remove PAIR's startup entry outside the app (Windows Task Manager or startup apps settings, macOS System Settings, or your Linux desktop's startup settings), PAIR leaves it off and the switch shows off; turning the switch on again enables it.
+- Supported on Windows, macOS and Linux. Off by default: nothing is registered until launch at login is enabled.
+
+## 1.0.18 — Choose ModelScope for llama.cpp model downloads (#186)
+
+- Select Hugging Face or ModelScope in llama.cpp Settings. The saved choice controls model browsing, search, and downloads on that device; Hugging Face remains the default.
+- ModelScope verifies complete download sizes and SHA-256 checksums. Interrupted downloads restart from the beginning.
+- Model search runs automatically after two characters and a short typing pause. Searches run one at a time, with only the latest query continuing next; Enter and the search button bypass the pause.
+
+## 1.0.17 — Stalled candidates yield to their peers for one deadline (#144)
+
+- A candidate that used up a full first-byte deadline without producing content is ranked behind its peers for one deadline.
+
+## 1.0.16 — Local node figures stay current in discovery (#5)
+
+- The scanner republishes its own entry on every peer refresh, so GPU, CPU and memory figures follow the node instead of freezing at daemon start.
+
+## 1.0.15 — vLLM engine support (#181)
+
+- vLLM can now be installed and managed from PAIR like the other engines.
+- vLLM can download, load, eject and delete models from the local Hugging Face cache; loading another model restarts vLLM on it, and the previous model is restored if it fails.
+- vLLM picks the right tool-call parser for each model, so agent clients work with Qwen, Granite and other models.
+- vLLM uses the Hugging Face cache (or its `--download-dir`), mirror, token and offline settings set in its launch settings, and downloads only the weights it loads.
+- vLLM is shown as starting while it downloads and loads a model, and Stop or Eject works during that time.
+- A download that vLLM could not load is refused before anything is downloaded, and Add model shows who published each model.
+- On a Mac, FP8 models that vLLM-Metal cannot run are refused with a message to choose the BF16 version.
+- The terminal interface shows a downloaded or deleted model straight away, and can download into a stopped vLLM.
+- vLLM is no longer offered on Windows, where it cannot run.
+
 ## 1.0.14 — Simplify Go concurrency and collections with standard library helpers (#195)
 
 - Refresh internal service concurrency and collection code while preserving intended application behavior.

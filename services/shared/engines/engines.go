@@ -75,6 +75,9 @@ import (
 
 // Engine is the cross-process identity of one inference engine.
 type Engine struct {
+	// LoadOnRequest means the proxy prepares a downloaded model before inference.
+	LoadOnRequest bool
+
 	// Name is the canonical engine id used by engine-manager RPCs, discovery
 	// model attribution, workload records, the scheduler, and the manifest
 	// basename. It must match services/nvpair-engine-manager/manifests/<Name>.json.
@@ -131,6 +134,7 @@ const (
 	NameOllama   = "ollama"
 	NameLMStudio = "lmstudio"
 	NameLlamaCPP = "llamacpp"
+	NameVLLM     = "vllm"
 	NameColibri  = "colibri"
 )
 
@@ -161,13 +165,22 @@ var all = []Engine{
 		PortFile:         "llamacpp-proxy-port.json",
 	},
 	{
-		// Colibri's stock server listens on 8000; PAIR's facade claims that port
-		// and runs the managed engine on 8001.
+		Name:             NameVLLM,
+		LoadOnRequest:    true,
+		DisplayName:      "vLLM",
+		DiscoveryService: noderec.ServiceVLLM,
+		FacadePort:       8000,
+		EnginePortBase:   8001,
+		PortFile:         "vllm-proxy-port.json",
+	},
+	{
+		// Colibri's stock server also defaults to 8000, but vLLM's facade already
+		// claims it, so Colibri's facade takes the next free pair instead.
 		Name:             NameColibri,
 		DisplayName:      "Colibri",
 		DiscoveryService: noderec.ServiceColibri,
-		FacadePort:       8000,
-		EnginePortBase:   8001,
+		FacadePort:       8002,
+		EnginePortBase:   8003,
 		PortFile:         "colibri-proxy-port.json",
 	},
 }

@@ -42,12 +42,27 @@ flowchart TD
 `runMacPrivilegedSetup()` runs once per launch:
 
 1. **First run only** — show an info dialog explaining macOS will ask to approve a
-   background helper.
+   background helper. A launch that starts hidden (the login item with **Start
+   minimized to tray** on) has nobody to read it, so it checks
+   `macPrivilege.status()` first. If the helper is already enabled, nothing left
+   needs a person: it runs `ensureConfigured(true)` without any dialog and marks
+   setup complete. Otherwise the first-run flow waits for the Overview window's first
+   `show` (a tray or Dock click) and runs then, once. Only one setup run is ever in
+   flight, so the deferred run cannot overlap a launch-time one, and it is skipped if
+   that launch already completed setup. Once setup is complete, a hidden launch
+   still runs step 2, which has no UI.
 2. Call `macPrivilege.ensureConfigured(firstTime)`, which (no UI):
     - reads `nvpair-helper-ctl status`;
     - if enabled but unreachable, or the daemon version differs from the app
-      version, attempt `uninstall` + `install` once per app version, re-check
-      `status`, and force a firewall reconfigure;
+      version, attempt `uninstall` + `install` at most twice per app version,
+      re-check `status`, and force a firewall reconfigure;
+    - before the second replacement, wait 12 seconds for macOS to repair a stale
+      launch constraint, then re-check status; skip replacement if the helper
+      has recovered or now requires approval;
+    - after unregistering, retry a failed registration at most twice, two seconds
+      apart, only while both the registration result and current status report
+      `notRegistered`; re-check status after each delay and stop retrying if it
+      changes, including when approval is required;
     - if not registered, `install` (which calls `SMAppService.daemon().register()`);
     - when `enabled` and reachable with no known version mismatch, run
       `configure-firewall` (no `--app-path`: the daemon
@@ -60,17 +75,79 @@ flowchart TD
    `macHelperSetupComplete` flag in `ui-config.ts`. Clear it if setup fails or
    approval is pending so firewall configuration is retried on the next launch.
 
-Before replacing a stale helper, PAIR persists `macHelperRepairAttemptVersion`
-and clears `macHelperSetupComplete` in `configs/ui-config.json`. This also covers
-upgrades from 1.0.0 where signature rejection prevents reading a daemon version.
-An interrupted or unsuccessful replacement is not repeated for the same app
-version. An enabled helper that remains unreachable or reports a different
-version leaves setup incomplete; registration alone does not imply success.
+Before each replacement, PAIR persists `macHelperRepairAttemptVersion` and
+`macHelperRepairAttemptCount` and clears `macHelperSetupComplete` in
+`configs/ui-config.json`. Interrupted attempts count toward the two-attempt
+limit. A saved version without a count represents one previous attempt. Pending
+approval stops recovery; after approval, a subsequent launch can use any
+remaining attempt. A new app version gets a new allowance.
+
+This covers upgrades from 1.0.0 where signature rejection prevents reading a
+daemon version. A correctly signed replacement can also be rejected by launchd
+because its cached launch constraint still requires the old signing identifier.
+In the reproduced failure, macOS invalidated that registration about 10 seconds
+after rejecting the launch, but another unregister/register cycle was needed to
+bind the replacement record. The 12-second wait allows that observed repair
+window to elapse; it is not a macOS timing guarantee. If two attempts fail, setup
+stays incomplete and subsequent launches do not repeat replacement for the same
+version. Registration alone never implies successful XPC communication.
+
+macOS can also reject registration immediately after a successful asynchronous
+unregister, even though its API promises that re-registration is safe after the
+completion callback. [Apple DTS acknowledges this behavior as a bug](https://developer.apple.com/forums/thread/783539).
+The bounded registration retries allow that transition to settle without another
+unregister or consuming another replacement attempt. The delay is a workaround,
+not a macOS timing guarantee; persistent errors still leave setup incomplete.
 
 The firewall is reconfigured on first run, after a version refresh, and after a
 fresh registration (so a release that adds a networked binary still gets its
 rule); otherwise the idempotent `socketfilterfw` work is skipped to keep launches
 cheap.
+
+## Manual recovery
+
+If automatic repair fails or its two attempts have been exhausted, re-register
+the helper manually. This does not require deleting PAIR's app data or resetting
+the saved repair counter.
+
+1. Fully quit PAIR using **Quit** in its menu bar menu; closing the window is not
+   enough. Keep the current signed app installed in `/Applications`.
+2. In Terminal, run these commands one at a time as your normal macOS user,
+   without `sudo`:
+
+   ```bash
+   "/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" uninstall
+   "/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" install
+   ```
+
+   The `uninstall` command unregisters the helper; it does not remove PAIR or
+   its models and settings. If either command reports an error, stop and keep
+   its output for troubleshooting. If registration reports `Operation not
+   permitted` immediately after a successful uninstall, wait a few seconds and
+   retry `install` once, as described in the asynchronous-unregister limitation
+   above.
+3. If macOS requests approval, enable **NVIDIA PAIR** under **System Settings →
+   General → Login Items & Extensions**.
+4. Check communication before reopening PAIR:
+
+   ```bash
+   "/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" status
+   ```
+
+   Require `registration: "enabled"`, `reachable: true`, and a `daemonVersion`
+   matching `ctlVersion`. Then run:
+
+   ```bash
+   "/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" configure-firewall
+   ```
+
+   Require JSON `ok: true`, then reopen PAIR and complete setup if prompted.
+   Quit and reopen it again to confirm the setup warning no longer appears.
+
+If the helper remains unreachable or a command keeps failing, retain the command
+output and app/build version for a bug report, following
+[Collecting logs](../../docs/log-collection.mdx). Do not clear all app data or
+weaken the signing requirements to work around the failure.
 
 ## XPC command surface
 
@@ -228,9 +305,12 @@ For upgrade coverage, first confirm the affected release reports `enabled` but
 `reachable: false`, then replace the app in place without unregistering the old
 helper or clearing user data. On the updated app's first launch, confirm it
 re-registers the helper and records the new app version in
-`macHelperRepairAttemptVersion`. Follow the checks below after any required
-approval. If repair fails, verify setup remains incomplete and relaunching the
-same version does not trigger another unregister/register cycle.
+`macHelperRepairAttemptVersion` and `macHelperRepairAttemptCount`. Follow the
+checks below after any required approval. Exercise both approval during initial
+registration and approval followed by relaunch. If the first replacement stays
+unreachable, confirm a delayed second attempt. If both attempts fail, verify
+setup remains incomplete and relaunching the same version does not trigger
+another unregister/register cycle.
 
 1. Run the release validation command above against the installed app.
 2. Run `"/Applications/NVIDIA PAIR.app/Contents/MacOS/nvpair-helper-ctl" status`.

@@ -4,10 +4,11 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { setTimeout } from 'node:timers/promises'
 import { app } from 'electron'
 import {
-    getMacHelperRepairAttemptVersion,
-    setMacHelperRepairAttemptVersion
+    getMacHelperRepairAttempts,
+    recordMacHelperRepairAttempt
 } from '@/electron/config/ui-config'
 import { currentPlatform } from '@/shared/utils/platform'
 import { createStructuredLogger } from '@/shared/utils/log'
@@ -28,6 +29,13 @@ import { createStructuredLogger } from '@/shared/utils/log'
 const log = createStructuredLogger('mac-helper')
 
 const CTL_BINARY_NAME = 'nvpair-helper-ctl'
+const MANUAL_RECOVERY_URL =
+    'https://github.com/NVIDIA/Personal-AI-Router/blob/develop/desktop/docs/macos-privileged-helper.md#manual-recovery'
+const MAX_REPAIR_ATTEMPTS = 2
+const MAX_REGISTRATION_RETRIES = 2
+const REGISTRATION_RETRY_WAIT_MS = 2000
+// launchd's observed stale-constraint repair runs about 10 seconds after rejection.
+const LAUNCH_REPAIR_WAIT_MS = 12000
 
 type HelperRegistration = 'enabled' | 'requiresApproval' | 'notRegistered' | 'notFound' | 'unknown'
 
@@ -178,11 +186,19 @@ async function removeFirewall(): Promise<boolean> {
     return result ? boolField(result, 'ok') : false
 }
 
+function isStale(current: HelperStatus, targetVersion: string): boolean {
+    return (
+        current.registration === 'enabled' &&
+        (!current.reachable ||
+            (current.daemonVersion !== null && current.daemonVersion !== targetVersion))
+    )
+}
+
 /**
  * Drive the helper to the desired end state in one call (no UI). Registers the
  * daemon if missing, refreshes a stale daemon after an in-place app update
  * (version mismatch or unreachable), and configures the firewall when reachable.
- * Replacement is attempted once per app version, persisted before unregistering.
+ * Replacement is bounded per app version, persisted before each unregister.
  *
  * `forceFirewall` should be true on the first-run flow; the firewall is also
  * (re)configured automatically after a version refresh or fresh registration so
@@ -203,35 +219,55 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
     let current = await status()
     let reconfigureFirewall = forceFirewall
 
-    const stale =
-        current.registration === 'enabled' &&
-        (!current.reachable ||
-            (current.daemonVersion !== null && current.daemonVersion !== targetVersion))
-    const refresh = stale && getMacHelperRepairAttemptVersion() !== targetVersion
-    if (refresh) {
-        setMacHelperRepairAttemptVersion(targetVersion)
-        log.info({
-            sublevel: 'mac-helper',
-            message: `Refreshing helper ${current.daemonVersion ?? 'unreachable'} -> ${targetVersion}`
-        })
-        if (!(await uninstall())) {
-            return {
-                supported: true,
-                registration: current.registration,
-                firewallConfigured: false,
-                firewallError: 'Could not unregister the stale privileged helper'
+    for (let round = 0; round < MAX_REPAIR_ATTEMPTS; round++) {
+        const attempts = getMacHelperRepairAttempts(targetVersion)
+        if (isStale(current, targetVersion) && attempts > 0 && attempts < MAX_REPAIR_ATTEMPTS) {
+            await setTimeout(LAUNCH_REPAIR_WAIT_MS)
+            current = await status()
+        }
+        const refresh = isStale(current, targetVersion) && attempts < MAX_REPAIR_ATTEMPTS
+        if (refresh) {
+            recordMacHelperRepairAttempt(targetVersion)
+            log.info({
+                sublevel: 'mac-helper',
+                message: `Refreshing helper ${current.daemonVersion ?? 'unreachable'} -> ${targetVersion} (attempt ${attempts + 1}/${MAX_REPAIR_ATTEMPTS})`
+            })
+            if (!(await uninstall())) {
+                return {
+                    supported: true,
+                    registration: current.registration,
+                    firewallConfigured: false,
+                    firewallError: `Could not unregister the stale privileged helper. For manual recovery, see ${MANUAL_RECOVERY_URL}`
+                }
             }
         }
-    }
 
-    if (
-        refresh ||
-        current.registration === 'notRegistered' ||
-        current.registration === 'notFound' ||
-        current.registration === 'unknown'
-    ) {
-        const installation = await install()
+        if (
+            !refresh &&
+            current.registration !== 'notRegistered' &&
+            current.registration !== 'notFound' &&
+            current.registration !== 'unknown'
+        ) {
+            break
+        }
+
+        let installation = await install()
         current = await status()
+        for (
+            let retry = 0;
+            refresh &&
+            !installation.ok &&
+            installation.registration === 'notRegistered' &&
+            current.registration === 'notRegistered' &&
+            retry < MAX_REGISTRATION_RETRIES;
+            retry++
+        ) {
+            await setTimeout(REGISTRATION_RETRY_WAIT_MS)
+            current = await status()
+            if (current.registration !== 'notRegistered') break
+            installation = await install()
+            current = await status()
+        }
         reconfigureFirewall = true
         if (!installation.ok) {
             return {
@@ -241,6 +277,7 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
                 firewallError: installation.error ?? 'Could not register the privileged helper'
             }
         }
+        if (!refresh) break
     }
 
     if (current.registration !== 'enabled') {
@@ -261,8 +298,8 @@ async function ensureConfigured(forceFirewall: boolean): Promise<EnsureConfigure
             registration: current.registration,
             firewallConfigured: false,
             firewallError: current.reachable
-                ? 'Privileged helper is still running a different version'
-                : 'Could not communicate with the privileged helper'
+                ? `Privileged helper is still running a different version. For manual recovery, see ${MANUAL_RECOVERY_URL}`
+                : `Could not communicate with the privileged helper. For manual recovery, see ${MANUAL_RECOVERY_URL}`
         }
     }
 

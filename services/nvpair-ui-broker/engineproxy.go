@@ -90,6 +90,8 @@ func (p engineProxyProfile) blocksOnOccupiedFacade() bool {
 // noted per field. The map itself is built once and never mutated afterwards,
 // so resolving a runtime needs no lock — only its fields do.
 type engineProxyRuntime struct {
+	requestEnabled atomic.Bool
+
 	// profile is the descriptor this runtime belongs to.
 	profile engineProxyProfile
 
@@ -97,6 +99,8 @@ type engineProxyRuntime struct {
 	// supervisor swaps it on restart from the monitor goroutine while request
 	// handlers read it from the read loop.
 	proxy *proxyProcess
+	// manualBridge owns this facade's ordered manual-target sender.
+	manualBridge manualProxyBridge
 
 	// subscribed reports whether a client asked for this engine's relay
 	// stream. Guarded by Broker.proxyMu.
@@ -166,6 +170,7 @@ func buildEngineProxyProfiles() []engineProxyProfile {
 		// llama.cpp's managed process is stopped directly by engine-manager.
 		"lmstudio": {Ownership: managedEngine, HealthProbePath: "/v1/models"},
 		"llamacpp": {Ownership: managedEngine, HealthProbePath: "/health"},
+		"vllm":     {Ownership: managedEngine, HealthProbePath: "/health"},
 		// Colibri's /health answers 503 until the model has loaded, so the
 		// engine is advertised only once it can actually serve.
 		"colibri": {Ownership: managedEngine, HealthProbePath: "/health"},
@@ -530,6 +535,9 @@ func (b *Broker) forwardDefaultEngineProxyNotification(profile engineProxyProfil
 // be handled once per process: dispatching them through each engine's handler
 // in turn would file every workload twice.
 func (b *Broker) routeProcessScopedProxyNotification(method string, params json.RawMessage) bool {
+	if b.relayModelPreparation(method, params) {
+		return true
+	}
 	switch {
 	case proxyWorkloadMethods[method]:
 		b.routeProxyWorkload(method, params)

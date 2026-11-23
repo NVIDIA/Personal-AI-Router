@@ -4,8 +4,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -23,10 +26,11 @@ const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
 // engine, never re-routed to a peer, so the ingress path is strictly terminal
 // and cannot recurse or amplify.
 type localBackend struct {
-	Engine  string `json:"engine"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	Healthy bool   `json:"healthy"`
+	Engine        string `json:"engine"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	Healthy       bool   `json:"healthy"`
+	LoadOnRequest bool   `json:"loadOnRequest,omitempty"`
 }
 
 // currentLocalBackend snapshots the configured local engine.
@@ -51,6 +55,9 @@ func (f *facade) setLocalBackend(b localBackend) error {
 	}
 	f.backendMu.Lock()
 	defer f.backendMu.Unlock()
+	if f.backend != b || !b.Healthy || !b.LoadOnRequest {
+		f.invalidatePreparedModel()
+	}
 	f.backend = b
 	return nil
 }
@@ -61,7 +68,7 @@ func (f *facade) setLocalBackend(b localBackend) error {
 // store anything that is not loopback, so this is always a loopback target.
 func (f *facade) localBackendTarget() (*url.URL, bool) {
 	b := f.currentLocalBackend()
-	if b.Port <= 0 || !b.Healthy {
+	if b.Port <= 0 || (!b.Healthy && !b.LoadOnRequest) {
 		return nil, false
 	}
 	host := b.Host
@@ -113,6 +120,9 @@ func (f *facade) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 			"client certificate is not a pinned member of this node's cluster")
 		return
 	}
+	if f.serveLocalAvailableModels(w, r) {
+		return
+	}
 	target, ok := f.localBackendTarget()
 	if !ok {
 		writeIngressError(w, http.StatusServiceUnavailable, "no-local-backend",
@@ -121,6 +131,26 @@ func (f *facade) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Debug("cluster ingress forwarding to local backend",
 		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host)
+	if f.profile.LoadOnRequest && f.currentLocalBackend().LoadOnRequest && isInferenceRequest(f.profile, r.Method, r.URL.Path) {
+		body, model, err := bufferBodyAndModel(r, false)
+		if err != nil {
+			status, message := http.StatusBadRequest, "request body could not be read"
+			if errors.Is(err, errBodyTooLarge) {
+				status, message = http.StatusRequestEntityTooLarge, "request body exceeds 32 MiB limit"
+			}
+			writeIngressError(w, status, "request-body", message)
+			return
+		}
+		if body != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		proxy := f.newLocalReverseProxy(target)
+		copy := r.Clone(r.Context())
+		copy.URL.Host = target.Host
+		proxy.Transport = f.requestTransport(proxy.Transport, copy, model)
+		proxy.ServeHTTP(w, r)
+		return
+	}
 	f.reverseProxyToLocal(w, r, target)
 }
 

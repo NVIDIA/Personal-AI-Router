@@ -14,8 +14,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRestoreEnabled_PreservesWaitingForModelAcrossShutdown(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	e.StopAll()
+	fresh := NewExecutor(e.reg, NewReporter(nil), func(string, any) {}, e.baseDir)
+	t.Cleanup(fresh.StopAll)
+	require.NoError(t, fresh.RestoreEnabled(t.Context()))
+
+	status, err := fresh.Status("fake")
+	require.NoError(t, err)
+	assert.True(t, status.AwaitingModel)
+	assert.False(t, status.Running)
+}
+
+func TestRestoreEnabled_AwaitsModelAfterEject(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	_, err := loadModel(t, e, "org/selected")
+	require.NoError(t, err)
+	_, err = ejectEngine(t, e, "org/selected")
+	require.NoError(t, err)
+	e.StopAll()
+	fresh := NewExecutor(e.reg, NewReporter(nil), func(string, any) {}, e.baseDir)
+	t.Cleanup(fresh.StopAll)
+
+	require.NoError(t, fresh.RestoreEnabled(t.Context()))
+
+	assert.True(t, mustStatus(t, fresh).AwaitingModel)
+	assert.False(t, mustStatus(t, fresh).Running)
+}
 
 func desiredTestExecutor(t *testing.T, manifest *Manifest, baseDir string) *Executor {
 	t.Helper()

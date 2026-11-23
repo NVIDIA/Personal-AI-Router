@@ -73,7 +73,7 @@ parameter, because one flag cannot carry multiple engines' plans.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `engine` | *(required)* | Which engine to front: `ollama`, `lmstudio`, `llamacpp`, or `colibri`. An unknown name is rejected with the accepted values. |
+| `engine` | *(required)* | Which engine to front: `ollama`, `lmstudio`, `llamacpp`, `vllm`, or `colibri`. An unknown name is rejected with the accepted values. |
 | `port` | per engine, see below | HTTP listen port for request forwarding. Must be 1–65535, or omitted for the engine's standalone default. `0` means "the default" rather than "pick an ephemeral port", and any other out-of-range value is rejected, because the facade announces the requested port in its `ready` notification and the broker would be told `0`. |
 | `aliasAddresses` | *(empty)* | Optional secondary `host:port` values for the same routing handler, one per loopback family so `localhost` resolves either way. Only literal loopback addresses are accepted; the broker uses this for a safe inherited local `OLLAMA_HOST`, and the aliases are not advertised to peers. Accepted only for an engine with an inherited host variable — today Ollama alone — and rejected for any other. |
 | `ignorePersistedPort` | `false` | Use `port` even when a saved port exists (used by broker-managed startup) |
@@ -83,10 +83,10 @@ parameter, because one flag cannot carry multiple engines' plans.
 Everything engine-specific is one entry in `engines.go`, plus the shared
 identity in `nvpair-shared/engines`.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"colibri"` |
-|---|---|---|---|---|
-| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` | `colibri-proxy` |
-| Discovery service key | `ol` | `lm` | `lc` | `co` |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` | `"engine":"colibri"` |
+|---|---|---|---|---|---|
+| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` | `vllm-proxy` | `colibri-proxy` |
+| Discovery service key | `ol` | `lm` | `lc` | `vl` | `co` |
 
 The **log component, supervisor label, and TUI health crash key are not in that
 table**: they name the process (`nvpair-proxy`), not a facade, because one
@@ -95,15 +95,18 @@ Facade-scoped log records carry an `engine` field instead. The supervisor label
 and the health crash key are matched against each other, so they move together
 — see `nvpair-shared/engines` and `spec.md` §9.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"colibri"` |
-|---|---|---|---|---|
-| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
-| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
-| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `colibri-proxy-port.json` |
-| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI; each server reports its one model) |
-| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI and Anthropic Messages sets below |
-| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | `owner/repository` ids compared byte for byte |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` | `"engine":"colibri"` |
+|---|---|---|---|---|---|
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 | 8000 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 | 8003 |
+| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 | 8002 |
+| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` | `colibri-proxy-port.json` |
+| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI; each server reports its one model) |
+| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below | OpenAI and Anthropic Messages sets below |
+| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte | `owner/repository` ids compared byte for byte |
+
+Colibri's own server defaults to `8000`, the port vLLM's facade already claims,
+so Colibri's facade listens on `8002` and its managed engine on `8003`.
 
 Every facade classifies these OpenAI-compatible POST routes as inference:
 
@@ -119,9 +122,10 @@ The route table is a **classifier, not an allowlist**. An unlisted path is
 forwarded verbatim, which is how `/api/show`, `/api/pull`, `/api/ps`,
 `/api/version` and `OPTIONS` preflights keep working.
 
-The broker enables all four facades by default. Local llama.cpp-compatible
-clients use `8080`, while the managed `llama-server` stays on `8081`; Colibri
-clients use `8000`, while the managed `coli serve` stays on `8001`.
+The broker enables all five facades by default. Local llama.cpp-compatible
+clients use `8080`, while the managed `llama-server` stays on `8081`; vLLM
+clients use `8000`, while the managed `vllm serve` stays on `8001`; Colibri
+clients use `8002`, while the managed `coli serve` stays on `8003`.
 `--proxy-engines` can restrict a standalone broker or TUI to a subset.
 
 ### HTTP Reverse Proxy
@@ -247,3 +251,51 @@ Add one entry to `nvpair-shared/engines` for the cross-process identity, one to
 proxy-unification plan for the full checklist, including the one-liners that are
 still per-engine (a `noderec.ServiceKey`, the TUI health label, the desktop
 engine-type constants, and an engine-manager manifest).
+
+## Request hardening
+
+Three fixes to the request path, all in the proxy. Nothing here changes the
+JSON-RPC surface or the endpoints clients use.
+
+**Request bodies are capped at 32 MiB.** `handleHTTP` buffers the entire
+request body so each failover attempt can replay it. The read was uncapped,
+so any loopback client could grow the proxy until it OOMed, and the
+permissive loopback CORS posture made this reachable from any web page the
+user visits. `maxInferenceBodyBytes = 32 << 20` now caps a single body.
+`bufferBodyAndModel` reads through a limit reader: bodies over the cap get
+a 413 with a JSON error before candidate selection or any engine work, and a
+`proxy/request` notification marked rejected. Bodies at or under the cap
+behave exactly as before. The proxy never holds more than cap+1 bytes per
+in-flight request body.
+
+**The local engine address must be loopback.** The old per-engine
+`localBackendTarget()` built a dial URL from whatever host the broker
+supplied via `set-local-backend`, so a compromised or buggy broker could
+point the cluster mTLS ingress at an arbitrary LAN address. `setLocalBackend()`
+in `ingress.go` now refuses a non-loopback host outright and returns an
+error, so a bad value never reaches the dial path. `127.0.0.1`, `::1`,
+other `127.x` addresses, and the empty default are accepted as before.
+
+**Unpinned peers fail closed.** `peerHTTPTransport()` used to return an
+unpinned transport when the cluster pin was absent, so a request could
+silently reach a peer with no mutual-TLS authentication. It now returns a
+fail-closed transport whose dial always fails with `errPeerUnpinned`.
+Dial errors flow through the existing failover path: the request tries the
+next candidate, or the proxy answers 502 when none remain.
+
+Validation: `proxy_hardening_test.go` covers all three fixes. Run with
+`go test -race ./...` from the component directory.
+### vLLM loading on request
+
+An enabled node advertises its complete cached vLLM models. Inference through
+PAIR prepares the requested model before forwarding; it loads from an ejected
+state or switches after current responses finish. Same-model requests may run
+concurrently. Explicit OFF prevents loading; missing models are not downloaded.
+Engine-manager owns preparation, while the proxy owns request and stream
+lifetimes. Direct requests to the native vLLM engine port do not use this feature.
+
+For vLLM, the aggregated `/v1/models` response is limited to each peer's
+advertised model-owner inventory. A peer's fresher HTTP list cannot expose a
+new model before this facade can route an inference request to it. The model
+appears after discovery convergence; removed models disappear when the peer no
+longer reports them. Other engines retain their existing aggregation behavior.

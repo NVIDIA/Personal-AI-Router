@@ -19,16 +19,18 @@ import { engineManagerName } from '@/shared/utils/engines'
 
 describe('proxy engine identity', () => {
     it('declares the complete proxy set in stable order', () => {
-        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'colibri'])
+        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'colibri'])
         expect(PROXY_NODE_SOURCES).toEqual([
             'ollama-proxy',
             'lmstudio-proxy',
             'llamacpp-proxy',
+            'vllm-proxy',
             'colibri-proxy'
         ])
         expect(isProxyEngine('ollama')).toBe(true)
         expect(isProxyEngine('lm-studio')).toBe(true)
         expect(isProxyEngine('llama-cpp')).toBe(true)
+        expect(isProxyEngine('vllm')).toBe(true)
         expect(isProxyEngine('colibri')).toBe(true)
     })
 
@@ -41,6 +43,7 @@ describe('proxy engine identity', () => {
         expect(proxyEngineFromSource('other-proxy')).toBeNull()
         expect(proxyEngineFromManagerId('other')).toBeNull()
         expect(proxyEngineFromManagerId('llamacpp')).toBe('llama-cpp')
+        expect(proxyEngineFromManagerId('vllm')).toBe('vllm')
         expect(proxyEngineFromManagerId('colibri')).toBe('colibri')
     })
 
@@ -106,15 +109,19 @@ describe('proxy engine identity', () => {
                 ]
             }
         })
+        // A peer lists every engine it can run; one it leaves out is unsupported.
         state.applyRemoteEngineFacts(nodeId, {
             engines: [
+                { engine: 'ollama', installed: true, running: true, healthy: true, port: 11435 },
+                { engine: 'lmstudio', installed: true, running: true, healthy: true, port: 1235 },
                 {
                     engine: 'llamacpp',
                     installed: true,
                     running: true,
                     healthy: true,
                     port: 8081
-                }
+                },
+                { engine: 'vllm', installed: false, running: false, healthy: false, port: 0 }
             ]
         })
 
@@ -137,7 +144,10 @@ describe('proxy engine identity', () => {
                 processStatus: 'running',
                 enginePort: 8081,
                 proxyPort: 8080
-            })
+            }),
+            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' }),
+            // Colibri is absent from the peer's listing, so it is unsupported there.
+            expect.objectContaining({ engineType: 'colibri', processStatus: 'unsupported' })
         ])
 
         const llamaModels = state
@@ -181,7 +191,7 @@ describe('proxy engine identity', () => {
             port: 8081
         })
         state.setLocalEngineModels('llama-cpp', [model])
-        state.applyLocalLoadedModels({ llamacpp: [model] })
+        state.applyLocalModelSnapshot({ models: { loadedByEngine: { llamacpp: [model] } } })
 
         const initial = state.getEngineInitialState()
         expect(
@@ -198,5 +208,203 @@ describe('proxy engine identity', () => {
                 models => models.nodeId === nodeId && models.engineType === 'llama-cpp'
             )?.models
         ).toEqual([expect.objectContaining({ name: model, status: 'loaded' })])
+    })
+    it('projects local vLLM lifecycle and its single served model into the initial snapshot', () => {
+        const state = getModularBridgeState()
+        const nodeId = 'proxy-identity-vllm-local'
+        const model = 'Qwen/Qwen2.5-0.5B-Instruct'
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'proxy-identity-vllm-host',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+        state.handleNotification({
+            source: 'vllm-proxy',
+            method: 'ready',
+            params: { port: 8000 }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            running: true,
+            healthy: true,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', [model])
+        state.applyLocalModelSnapshot({ models: { loadedByEngine: { vllm: [model] } } })
+
+        const initial = state.getEngineInitialState()
+        expect(
+            initial.statuses.find(
+                status => status.nodeId === nodeId && status.engineType === 'vllm'
+            )
+        ).toMatchObject({
+            processStatus: 'running',
+            enginePort: 8001,
+            proxyPort: 8000
+        })
+        expect(
+            initial.models.find(models => models.nodeId === nodeId && models.engineType === 'vllm')
+                ?.models
+        ).toEqual([expect.objectContaining({ name: model, status: 'loaded' })])
+    })
+    it('keeps cached vLLM models idle while the enabled engine awaits a request', () => {
+        const state = getModularBridgeState()
+        const nodeId = 'vllm-cached-awaiting-request'
+        const models = ['org/model-a', 'org/model-b']
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'awaiting-request',
+                        ipAddress: '127.0.0.1',
+                        port: 14318,
+                        modelsByEngine: { vllm: models },
+                        downloadedByEngine: { vllm: models },
+                        loadedByEngine: { vllm: [] },
+                        requestableByEngine: { vllm: models }
+                    }
+                ]
+            }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            enabled: true,
+            running: false,
+            awaiting_model: true,
+            healthy: false,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', models)
+        state.applyLocalModelSnapshot({ models: { loadedByEngine: { vllm: [] } } })
+        const initial = state.getEngineInitialState()
+        expect(
+            initial.statuses.find(
+                engine => engine.nodeId === nodeId && engine.engineType === 'vllm'
+            )
+        ).toMatchObject({ processStatus: 'awaiting-model' })
+        expect(
+            initial.models.find(engine => engine.nodeId === nodeId && engine.engineType === 'vllm')
+                ?.models
+        ).toEqual(models.map(name => expect.objectContaining({ name, status: 'idle' })))
+    })
+    it.each([
+        {
+            description: 'removes a remotely deleted row while awaiting a model',
+            downloaded: ['org/model-a'],
+            expected: ['org/model-a']
+        },
+        {
+            description: 'clears the inventory after the last remote deletion',
+            downloaded: [],
+            expected: []
+        },
+        {
+            description: 'adds a remotely downloaded row while awaiting a model',
+            downloaded: ['org/model-a', 'org/model-b', 'org/model-c'],
+            expected: ['org/model-a', 'org/model-b', 'org/model-c']
+        },
+        {
+            description: 'preserves the inventory when its read is unavailable',
+            downloaded: undefined,
+            expected: ['org/model-a', 'org/model-b']
+        }
+    ])('$description', ({ downloaded, expected }) => {
+        const state = getModularBridgeState()
+        const nodeId = 'local-model-inventory-push'
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'inventory-owner',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+        state.applyEngineManagerStatus({
+            engine: 'vllm',
+            installed: true,
+            enabled: true,
+            running: false,
+            awaiting_model: true,
+            healthy: false,
+            port: 8001
+        })
+        state.setLocalEngineModels('vllm', ['org/model-a', 'org/model-b'])
+
+        state.applyLocalModelSnapshot({
+            models: {
+                loadedByEngine: { vllm: [] },
+                ...(downloaded === undefined ? {} : { downloadedByEngine: { vllm: downloaded } })
+            }
+        })
+
+        const initial = state.getEngineInitialState()
+        expect(
+            initial.models.find(row => row.nodeId === nodeId && row.engineType === 'vllm')
+        ).toMatchObject({
+            inventoryKnown: true,
+            models: expected.map(name => expect.objectContaining({ name, status: 'idle' }))
+        })
+        expect(
+            initial.statuses.find(row => row.nodeId === nodeId && row.engineType === 'vllm')
+        ).toMatchObject({ processStatus: 'awaiting-model' })
+    })
+
+    it('keeps a loaded local path visible alongside downloaded inventory', () => {
+        const state = getModularBridgeState()
+        const nodeId = 'local-path-inventory-push'
+        state.setSelfId(nodeId)
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: nodeId,
+                        name: 'local-path-owner',
+                        ipAddress: '127.0.0.1',
+                        port: 14318
+                    }
+                ]
+            }
+        })
+
+        state.applyLocalModelSnapshot({
+            models: {
+                downloadedByEngine: { vllm: ['org/model-a'] },
+                loadedByEngine: { vllm: ['/models/local-model'] }
+            }
+        })
+
+        expect(
+            state
+                .getEngineInitialState()
+                .models.find(row => row.nodeId === nodeId && row.engineType === 'vllm')?.models
+        ).toEqual([
+            expect.objectContaining({ name: 'org/model-a', status: 'idle' }),
+            expect.objectContaining({ name: '/models/local-model', status: 'loaded' })
+        ])
     })
 })

@@ -87,11 +87,18 @@ function writeEntry(scope: string, level: string, payload: StructuredLogPayload)
         }
     }
 
-    // Console output with scope prefix
+    // Console output with scope prefix. Best-effort: a closed stdout (parent
+    // process gone, launched from a pipe that later closed) raises write EPIPE
+    // from afterWriteDispatched. That is an uncaughtException in Electron and
+    // surfaces as "A JavaScript error occurred in the main process".
     const prefix = `(${scope})`.padEnd(24)
     const msg = payload.message ?? ''
     const dataStr = payload.data ? ` ${JSON.stringify(payload.data)}` : ''
-    process.stdout.write(`${now.toLocaleTimeString()} ${prefix} > ${msg}${dataStr}\n`)
+    try {
+        process.stdout.write(`${now.toLocaleTimeString()} ${prefix} > ${msg}${dataStr}\n`)
+    } catch {
+        /* best-effort */
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +133,15 @@ export function initFileLogger(paths: PathProvider): void {
         approxFileSize = stat.size
     } catch {
         approxFileSize = 0
+    }
+
+    // Swallow async write errors on stdio. try/catch around write() only
+    // covers the synchronous throw; EPIPE from a broken pipe is emitted later.
+    if (process.stdout.listenerCount('error') === 0) {
+        process.stdout.on('error', () => {})
+    }
+    if (process.stderr.listenerCount('error') === 0) {
+        process.stderr.on('error', () => {})
     }
 }
 

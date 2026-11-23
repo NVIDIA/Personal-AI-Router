@@ -37,9 +37,16 @@ type EngineStatus struct {
 	Engine      string `json:"engine"`
 	DisplayName string `json:"display_name"`
 	Installed   bool   `json:"installed"`
-	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port,omitempty"`
+	// Enabled records ON intent independently of process residency.
+	Enabled bool `json:"enabled"`
+	Running bool `json:"running"`
+	// Starting is true while a start is launching the engine and waiting for
+	// it to become ready. Running is false until it is.
+	Starting bool `json:"starting,omitempty"`
+	// AwaitingModel is enabled user intent without a running serving process.
+	AwaitingModel bool `json:"awaiting_model,omitempty"`
+	Healthy       bool `json:"healthy"`
+	Port          int  `json:"port,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -53,26 +60,60 @@ type engineState struct {
 	// none, in which case uninstall has nothing to preserve.
 	modelsDir string
 
-	// opMu serializes lifecycle operations (install / start / stop /
-	// restart / uninstall) for this engine, so concurrent calls can't
-	// double-spawn or interleave. Lock order is opMu → mu; the per-op
-	// st.mu is released around probes, and the background health loop
-	// never takes opMu.
+	// opMu serializes lifecycle operations and settings reads for this engine.
+	// Only operations that can change state use lockOperation to invalidate
+	// pending status checks. Passive status checks never take opMu.
+	// Lock order is opMu → mu; the background health loop only takes mu.
 	opMu sync.Mutex
 
-	mu         sync.Mutex
+	mu sync.Mutex
+	// revision changes at both ends of an operation and whenever a passive
+	// observation changes state. A probe may commit only against the revision
+	// it captured, so a Start/Stop/SetPort cannot be undone by old I/O.
+	revision   uint64
+	opDone     chan struct{} // non-nil while an operation is active
+	statusRuns map[statusProbeKey]*statusProbeRun
 	installed  bool
 	running    bool
 	healthy    bool
 	stopping   bool
-	adopted    bool  // started externally; we can't stop it
-	gen        int64 // bumped each start; gates stale health loops
-	port       int
-	binPath    string
-	proc       *managedProc
-	healthStop context.CancelFunc
-	// startCancel lets StopAll unblock doStart before waiting on opMu.
+	// starting is true while a start launches the engine and waits for readiness.
+	awaitingModel  bool
+	starting       bool
+	adopted        bool  // started externally; we can't stop it
+	gen            int64 // bumped each start; gates stale health loops
+	port           int
+	binPath        string
+	proc           *managedProc
+	healthStop     context.CancelFunc
+	enabling       bool
+	modelSwitching bool
+	// startCancel lets StopAll, Stop and Eject unblock doStart before waiting
+	// on opMu.
 	startCancel context.CancelFunc
+	// stopsWaiting counts Stop and Eject calls waiting for opMu. While it is
+	// above zero no start begins, and a model switch that a stop cancelled
+	// puts its previous launch back without starting it.
+	stopsWaiting int
+}
+
+// lockOperation marks the entire serialized operation, including its external
+// I/O, as a state transition before any lifecycle fields can change.
+func (st *engineState) lockOperation() {
+	st.opMu.Lock()
+	st.mu.Lock()
+	st.opDone = make(chan struct{})
+	st.revision++
+	st.mu.Unlock()
+}
+
+func (st *engineState) unlockOperation() {
+	st.mu.Lock()
+	st.revision++
+	close(st.opDone)
+	st.opDone = nil
+	st.mu.Unlock()
+	st.opMu.Unlock()
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
@@ -80,6 +121,23 @@ type engineState struct {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	pullMu sync.Mutex
+	pulls  map[pullKey]*activePull
+	// downloads counts the downloads registered so far, so each has an ID of
+	// its own; see activePull.id.
+	downloads uint64
+	// stopsUnconfirmed holds, per engine+model, the failure of the last
+	// download whose engine could not confirm it stopped, until the next
+	// download of that model registers. See stopUnconfirmed.
+	stopsUnconfirmed map[pullKey]error
+	// shutdown closes when shutdown begins, so that stopping a download's tool
+	// then shortens its waits, and partial cleanup stops sampling. Made on
+	// first use; see shutdownSignal.
+	shutdown chan struct{}
+	// pullClaims holds the accepted pull requests per engine+model that have
+	// not finished, so a cancel can stop one that has not registered its
+	// download yet. Claimed where the request is accepted; see claimPull.
+	pullClaims       map[pullKey][]*pullClaim
 	settingsHub      settings.Hub
 	settingsParent   func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg              *Registry
@@ -91,7 +149,7 @@ type Executor struct {
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
 	progress *progressHub
-	baseDir  string // user-scoped install base
+	baseDir  string // default user-scoped install base
 	// desired persists explicit per-engine ON/OFF intent. Runtime state remains
 	// in-memory; shutdown cleanup must not rewrite this store.
 	desired *desiredStateStore
@@ -127,9 +185,6 @@ type Executor struct {
 	// hfBaseURL overrides the Hugging Face hub for hf_snapshot pulls in tests.
 	// Empty means the real one.
 	hfBaseURL string
-	// snapshotPulls holds the destination of every hf_snapshot pull in
-	// flight, so two pulls of one model cannot write the same files.
-	snapshotPulls sync.Map
 
 	reservedPort atomic.Int32
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
@@ -141,10 +196,12 @@ type Executor struct {
 	// or a stop command, which later StopAll callers retry. The sweep writes it
 	// without retryMu, since stopAllOnce returns to no caller before the sweep
 	// finishes; retryMu serializes the retries that follow.
-	retryMu     sync.Mutex
-	failedStops []string
-	mu          sync.Mutex
-	engines     map[string]*engineState
+	retryMu       sync.Mutex
+	failedStops   []string
+	mu            sync.Mutex
+	engines       map[string]*engineState
+	modelScope    *http.Server
+	modelScopeURL string
 }
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
@@ -260,20 +317,36 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	}
 	plat, ok := m.HostPlatform()
 	if !ok {
-		return nil, fmt.Errorf("engine %q has no platform block for %s/%s", engine, runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("%s is not supported on %s/%s", m.DisplayName, runtime.GOOS, runtime.GOARCH)
+	}
+	installDir, err := engineInstallDir(e.baseDir, engine, plat.InstallDir)
+	if err != nil {
+		return nil, fmt.Errorf("engine %q: %w", engine, err)
 	}
 	st := &engineState{
 		manifest:   m,
 		plat:       plat,
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
-		installDir: filepath.Join(e.baseDir, engine),
+		installDir: installDir,
 	}
 	if plat.ModelsDir != "" {
 		st.modelsDir = expandPath(plat.ModelsDir)
 	}
 	e.engines[engine] = st
 	return st, nil
+}
+
+func engineInstallDir(defaultBase, engine, configured string) (string, error) {
+	if configured == "" {
+		return filepath.Join(defaultBase, engine), nil
+	}
+	dir := expandPath(configured)
+	// Clean turns an empty expansion into ".", which is unsafe as an uninstall target.
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("install_dir must not expand to an empty path")
+	}
+	return filepath.Clean(dir), nil
 }
 
 // pathVars are the directory placeholders every templated manifest string can
@@ -318,9 +391,24 @@ func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string
 // ec streaming handler can relay it to a remote initiator). It mirrors
 // emitInstallProgress; pull carries op/message so a local UI renders the same
 // "Pulling · %" feed a remote pull already gets via engine:remote-progress.
+//
+// The notification names, in opIds, the requests the frame speaks for, so a
+// client can tell a retry's frames from those of the download it replaced,
+// which name the same engine and model.
 func (e *Executor) emitPullProgress(ev ProgressEvent) {
 	params := map[string]any{
 		"engine": ev.Engine, "op": ev.Op, "stage": ev.Stage, "message": ev.Message,
+	}
+	if ev.Model != "" {
+		params["model"] = ev.Model
+		// A download publishes frames only while it is registered, and no
+		// other download of its model registers until it has settled, so the
+		// one registered is the one this frame is from.
+		var opIDs []string
+		ev.Download, opIDs = e.registeredDownloadRequests(ev.Engine, ev.Model)
+		if len(opIDs) > 0 {
+			params["opIds"] = opIDs
+		}
 	}
 	if wirePercentIncluded(ev.Percent) {
 		params["percent"] = ev.Percent

@@ -25,7 +25,7 @@ import (
 
 const (
 	remoteResponseHeaderTimeout      = 30 * time.Second
-	remoteReadyResponseHeaderTimeout = 11 * time.Minute
+	remoteReadyResponseHeaderTimeout = 31 * time.Minute
 	remoteStreamFrameBytes           = maxFrameBytes
 )
 
@@ -39,9 +39,13 @@ type remoteClient struct {
 	forget    func()
 }
 
-// waitsForEngineReadiness reports whether a peer may only answer after an
-// engine is healthy or an Ollama model is loaded, which the ordinary 30s
-// response-header budget cannot cover.
+// waitsForEngineReadiness reports whether a peer may only answer after slow
+// work inside its own handler — an engine becoming healthy, an Ollama or vLLM
+// model loading, or a download being stopped — which the ordinary 30s
+// response-header budget cannot cover. It only picks the client: the budgets
+// themselves are the pools NewManager builds, remoteHTTP with
+// remoteResponseHeaderTimeout and readyHTTP with
+// remoteReadyResponseHeaderTimeout.
 //
 // Cutting such a call off is worse than slow. The initiator's cancellation
 // propagates into the peer's in-flight handler, so bringUpCommand tears the
@@ -52,13 +56,24 @@ func waitsForEngineReadiness(path, engine string) bool {
 		return true
 	}
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
-	// peer replies only after the post-delete restart is ready. Colibri's
-	// load_model does too: it switches models by restarting onto the new one,
-	// so the peer replies only once that model has loaded.
+	// peer replies only after the post-delete restart is ready.
+	//
+	// controlCancelPullPath: the peer stops the download — interrupting LM
+	// Studio's CLI and waiting for it to acknowledge, or having llama.cpp's
+	// router stop it — and removes partial files before writing a header. The
+	// ordinary budget can expire while that is still in progress. Here the
+	// cancellation is already latched before the peer starts waiting, so being
+	// cut off does not undo it — the damage is that the initiator reports a
+	// cancel that is succeeding as failed, and the row rolls back to
+	// "Downloading" under a transfer that is stopping.
+	//
+	// load_model does the same wait for the engines that switch models by
+	// restarting: vLLM reloads on the new launch argument, Colibri comes up on
+	// the model directory it now serves.
 	if path == controlLoadPath {
-		return engine == "ollama" || engine == "colibri"
+		return engine == "ollama" || engine == "vllm" || engine == "colibri"
 	}
-	return path == controlStartPath || path == controlDeletePath
+	return path == controlStartPath || path == controlDeletePath || path == controlCancelPullPath
 }
 
 func newRemoteHTTPClient(base *http.Transport, responseHeaderTimeout time.Duration) *http.Client {
@@ -161,7 +176,18 @@ func (c *remoteClient) postJSON(ctx context.Context, path, engine string, body a
 // stream POSTs body to a streaming ec endpoint and consumes its NDJSON frames,
 // calling onProgress for each progress frame and returning the terminal result
 // frame. An error frame (or a stream that ends without a result) is an error.
-func (c *remoteClient) stream(ctx context.Context, path string, body any, onProgress func(streamFrame)) (streamFrame, error) {
+//
+// onAccepted, when set, is called once the peer has answered with a success
+// status. The peer's handler has taken the operation by the time it writes that
+// header, so this is the point at which a second request about the same
+// operation can expect the peer to recognize it — see remotePullGate.
+func (c *remoteClient) stream(
+	ctx context.Context,
+	path string,
+	body any,
+	onProgress func(streamFrame),
+	onAccepted func(),
+) (streamFrame, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return streamFrame{}, err
@@ -180,6 +206,9 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return streamFrame{}, fmt.Errorf("remote %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	if onAccepted != nil {
+		onAccepted()
 	}
 
 	scanner := bufio.NewScanner(resp.Body)

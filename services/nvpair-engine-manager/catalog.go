@@ -31,8 +31,7 @@ import (
 // holds, but not what its upstream offers.
 //
 // It lives here rather than in a client so both the desktop app and the terminal
-// interface see the same catalogue. Each engine has exactly one curated source,
-// and they are deliberately different in kind:
+// interface see the same catalogue. Sources differ by engine:
 //
 //   - Ollama has no public library API, only a client-rendered web page. A live
 //     scrape was fragile and broke whenever the markup changed, so the list is a
@@ -41,10 +40,10 @@ import (
 //   - LM Studio's catalogue *is* a Hugging Face org (`lmstudio-community`), whose
 //     repo ids are exactly the strings `lms get` accepts. That has a real API, so
 //     it is fetched live and cached.
-//   - llama.cpp downloads any GGUF repo on Hugging Face as `repo:quantization`.
-//     The browse list is the GGUF repos of a few approved publishers, fetched
-//     live and cached; a query searches all of Hugging Face, each query cached
-//     on its own.
+//   - llama.cpp downloads GGUF repos from its selected Hugging Face or ModelScope
+//     source as `repo:quantization`.
+//     Hugging Face browses approved publishers; ModelScope browses popular
+//     repositories. Both fetch live, with each source and search cached separately.
 
 // catalogSourceKind distinguishes how an engine's catalogue is obtained.
 type catalogSourceKind int
@@ -115,10 +114,11 @@ type CatalogResult struct {
 // Query searches the upstream, for a source that reports Searchable. Any other
 // source ignores it and returns its whole list for the client to filter.
 type catalogParams struct {
-	Engine   string `json:"engine"`
-	Platform string `json:"platform"`
-	Arch     string `json:"arch"`
-	Query    string `json:"query"`
+	Engine      string `json:"engine"`
+	Platform    string `json:"platform"`
+	Arch        string `json:"arch"`
+	Query       string `json:"query"`
+	ModelSource string `json:"modelSource"` // Peer selection; omitted uses this node's setting.
 }
 
 //go:embed catalog/ollama-models.json
@@ -161,10 +161,10 @@ const (
 	llamaCPPQuantization = "Q4_K_M"
 	// llamaCPPLimit is the page size for each publisher and for each search.
 	llamaCPPLimit = 50
-	// catalogSearchCacheLimit bounds how many distinct queries are kept across
-	// the searchable sources, oldest use evicted first. Each is a short list,
-	// but the set of possible queries is not bounded at all.
-	catalogSearchCacheLimit = 20
+	// searchCacheLimit bounds how many distinct queries are kept across every
+	// engine's catalog, oldest use evicted first. Each is a short list, but the
+	// set of possible queries is not bounded at all.
+	searchCacheLimit = 20
 	// maxCatalogQuery bounds a query passed upstream, in characters. A longer
 	// one is refused rather than shortened, which would search for something
 	// the operator did not type.
@@ -231,20 +231,22 @@ type hfModelRow struct {
 	Gated       json.RawMessage `json:"gated"`
 	PipelineTag string          `json:"pipeline_tag"`
 	Siblings    []hfSibling     `json:"siblings"`
+	// Safetensors is present when the listing asks to expand it: the parameter
+	// count per tensor type, which gives a model's size without a second request.
+	Safetensors struct {
+		Parameters map[string]int64 `json:"parameters"`
+		Total      int64            `json:"total"`
+	} `json:"safetensors"`
 	// Config is the part of the root config.json the hub parses, returned
 	// when the listing asks for config=true.
 	Config *hfModelConfig `json:"config"`
 }
 
-// hfModelConfig is the field of a repository's config.json an engine that
-// picks its code by model_type is matched on.
-type hfModelConfig struct {
-	ModelType string `json:"model_type"`
-}
-
 // hfSibling is one file in a Hugging Face repo.
 type hfSibling struct {
 	RFilename string `json:"rfilename"`
+	// Size is reported only when the repo is asked for with blobs=true.
+	Size int64 `json:"size"`
 }
 
 // catalogService answers engine:catalog. The embedded list is parsed once; each
@@ -254,9 +256,11 @@ type catalogService struct {
 
 	ollamaCatalog func() (CatalogResult, error)
 
-	lmStudio *listingCache
-	llamaCPP *listingCache
-	colibri  *listingCache
+	lmStudio   *listingCache
+	llamaCPP   *listingCache
+	vllm       *listingCache
+	modelScope *listingCache
+	colibri    *listingCache
 	// colibriListed is the current state of the models Colibri's manifest
 	// lists by repository; listed returns an engine's entries (nil lists none).
 	colibriListed *listingCache
@@ -274,8 +278,14 @@ type catalogService struct {
 	// baseURL overrides the listing endpoint in tests. Empty means the real one;
 	// the caching and coalescing around the fetch is the part worth testing, and
 	// it cannot be exercised against the live API.
-	baseURL string
+	baseURL            string
+	modelScopeEndpoint string
+	llamaSource        func() (string, error)
 }
+
+// errCatalogPartial marks a fetch that ended before it read the whole
+// catalogue. The fetch returns the models it did read alongside it.
+var errCatalogPartial = errors.New("catalog incomplete")
 
 // listingCache holds one fetched catalogue. It serves from memory while the
 // list is fresh, keeps the previous list through a failed refresh, retries a
@@ -292,6 +302,10 @@ type listingCache struct {
 	mu      sync.Mutex
 	models  []CatalogModel
 	fetched time.Time
+	// partial marks models from an incomplete fetch. They are served until
+	// the failure backoff ends rather than for catalogCacheTTL, and never
+	// replace a complete list.
+	partial bool
 	// failed is when the last fetch failed, so a dead upstream is retried on a
 	// backoff rather than on every call.
 	failed   time.Time
@@ -315,8 +329,15 @@ func newCatalogService() *catalogService {
 		ollamaCatalog: sync.OnceValues(loadOllamaCatalog),
 		searches:      map[string]*listingCache{},
 	}
+	// ModelScope serves file lists over HTTP/1.1, so keep a connection idle for
+	// every concurrent request rather than redialling past Go's default of two.
+	c.client.Transport.(*http.Transport).MaxIdleConnsPerHost = modelScopeFileListConcurrency
 	c.lmStudio = &listingCache{label: "lm studio catalog", fetch: c.fetchLmStudio}
 	c.llamaCPP = &listingCache{label: "llama.cpp catalog", fetch: c.fetchLlamaCPP}
+	c.vllm = &listingCache{label: "vllm catalog", fetch: c.fetchVLLM}
+	c.modelScope = &listingCache{label: "ModelScope catalog", fetch: func(ctx context.Context) ([]CatalogModel, error) {
+		return c.fetchModelScope(ctx, "")
+	}}
 	c.colibri = &listingCache{label: "colibri catalog", fetch: c.fetchColibri}
 	c.colibriListed = &listingCache{label: "colibri listed models", fetch: c.fetchColibriListed, emptyOK: true}
 	return c
@@ -325,7 +346,7 @@ func newCatalogService() *catalogService {
 // Catalog returns the downloadable models for an engine, filtered for the
 // machine they will be installed on, or the results of a query for a source
 // that can search.
-func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, query string) (CatalogResult, error) {
+func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, query, selectedSource string) (CatalogResult, error) {
 	platform, arch = catalogTarget(platform, arch)
 	switch normalizeCatalogEngine(engine) {
 	case "ollama":
@@ -354,6 +375,29 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		if err != nil {
 			return CatalogResult{}, err
 		}
+		if selectedSource == "" && c.llamaSource != nil {
+			selectedSource, err = c.llamaSource()
+			if err != nil {
+				return CatalogResult{}, err
+			}
+		}
+		switch selectedSource {
+		case "modelscope":
+			cache := c.modelScope
+			if query != "" {
+				cache = c.searchCache("modelscope:"+strings.ToLower(query), "ModelScope catalog", func(ctx context.Context) ([]CatalogModel, error) {
+					return c.fetchModelScope(ctx, query)
+				})
+			}
+			models, fetchedAt, err := cache.get(ctx)
+			if err != nil {
+				return CatalogResult{}, err
+			}
+			return CatalogResult{Models: models, Source: modelScopeURL + "/models", Platform: platform, Arch: arch, FetchedAt: fetchedAt.UTC().Format(time.RFC3339), Searchable: true, Query: query}, nil
+		case "", "huggingface":
+		default:
+			return CatalogResult{}, errors.New("unsupported model download source")
+		}
 		models, fetchedAt, err := c.llamaCPPCatalog(ctx, query)
 		if err != nil {
 			return CatalogResult{}, err
@@ -365,6 +409,28 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		return CatalogResult{
 			// GGUF has no machine-locked quantizations, so nothing is filtered
 			// for the target.
+			Models:     models,
+			Source:     source,
+			Platform:   platform,
+			Arch:       arch,
+			FetchedAt:  fetchedAt.UTC().Format(time.RFC3339),
+			Searchable: true,
+			Query:      query,
+		}, nil
+	case "vllm":
+		query, err := catalogQuery(query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		models, fetchedAt, err := c.vllmCatalog(ctx, query)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		source := hfModelsAPI + "?filter=safetensors&author=" + strings.Join(vllmPublishers, ",")
+		if query != "" {
+			source = hfModelsAPI + "?filter=safetensors&search=" + url.QueryEscape(query)
+		}
+		return CatalogResult{
 			Models:     models,
 			Source:     source,
 			Platform:   platform,
@@ -454,6 +520,8 @@ func normalizeCatalogEngine(engine string) string {
 		return "lmstudio"
 	case "llama-cpp", "llama.cpp", "llamacpp":
 		return "llamacpp"
+	case "vllm":
+		return "vllm"
 	case "colibri", "colibrì":
 		return "colibri"
 	default:
@@ -540,7 +608,7 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	// re-fetching on every call against a dead upstream just made each caller
 	// wait out the full timeout for the same stale answer.
 	haveList := !l.fetched.IsZero()
-	fresh := haveList && time.Since(l.fetched) < catalogCacheTTL
+	fresh := haveList && !l.partial && time.Since(l.fetched) < catalogCacheTTL
 	backingOff := !l.failed.IsZero() && time.Since(l.failed) < catalogRetryAfterFailure
 	if fresh || (haveList && backingOff) {
 		models, at := l.models, l.fetched
@@ -583,9 +651,15 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	}
 
 	l.mu.Lock()
-	if err == nil {
-		l.models, l.fetched, l.failed = models, time.Now(), time.Time{}
-	} else {
+	keptPartial := false
+	switch {
+	case err == nil:
+		l.models, l.fetched, l.failed, l.partial = models, time.Now(), time.Time{}, false
+	case errors.Is(err, errCatalogPartial) && len(models) > 0 &&
+		(l.fetched.IsZero() || (l.partial && len(models) > len(l.models))):
+		l.models, l.fetched, l.failed, l.partial = models, time.Now(), time.Now(), true
+		keptPartial = true
+	default:
 		l.failed = time.Now()
 	}
 	served, at := l.models, l.fetched
@@ -600,7 +674,11 @@ func (l *listingCache) get(ctx context.Context) ([]CatalogModel, time.Time, erro
 	if at.IsZero() {
 		return nil, time.Time{}, err
 	}
-	if err != nil {
+	switch {
+	case keptPartial:
+		slog.Warn("model catalog fetch incomplete; serving what it read",
+			"catalog", l.label, "models", len(served), "err", err)
+	case err != nil:
 		slog.Warn("model catalog refresh failed; serving the previous list",
 			"catalog", l.label, "models", len(served), "err", err)
 	}
@@ -628,14 +706,15 @@ func (c *catalogService) llamaCPPCatalog(ctx context.Context, query string) ([]C
 	return c.llamaCPPSearch(query).get(ctx)
 }
 
-// llamaCPPSearch is the cache for one llama.cpp query.
+// llamaCPPSearch is the cache for one query, created on first use. Queries
+// differing only in case share one.
 func (c *catalogService) llamaCPPSearch(query string) *listingCache {
-	return c.searchCache("llamacpp", "llama.cpp search", query, func(ctx context.Context) ([]CatalogModel, error) {
+	return c.searchCache("llamacpp:"+strings.ToLower(query), "llama.cpp search", func(ctx context.Context) ([]CatalogModel, error) {
 		rows, err := c.fetchHF(ctx, llamaCPPListing("search", query))
 		if err != nil {
 			return nil, err
 		}
-		return normalizeLlamaCPPRows(rows), nil
+		return normalizeListing(rows, llamaCPPModel), nil
 	})
 }
 
@@ -706,16 +785,14 @@ func (c *catalogService) fetchColibriListed(ctx context.Context) ([]CatalogModel
 	found := make([]bool, len(entries))
 	var wg sync.WaitGroup
 	for i, entry := range entries {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			row, err := c.fetchHFRepo(ctx, entry.Repo)
 			if err != nil {
 				slog.Debug("listed model unavailable", "engine", "colibri", "model", entry.Repo, "err", err)
 				return
 			}
 			models[i], found[i] = listedModel(entry, row)
-		}()
+		})
 	}
 	wg.Wait()
 	out := make([]CatalogModel, 0, len(entries))
@@ -786,7 +863,7 @@ func listedModel(entry CatalogEntry, row hfModelRow) (CatalogModel, bool) {
 
 // colibriSearch is the cache for one Colibri query.
 func (c *catalogService) colibriSearch(query string) *listingCache {
-	return c.searchCache("colibri", "colibri search", query, func(ctx context.Context) ([]CatalogModel, error) {
+	return c.searchCache("colibri:"+strings.ToLower(query), "colibri search", func(ctx context.Context) ([]CatalogModel, error) {
 		rows, err := c.fetchHF(ctx, colibriListing("search", query))
 		if err != nil {
 			return nil, err
@@ -818,11 +895,10 @@ func (c *catalogService) servesModelType(engine string) func(string) bool {
 	return m.servesModelType
 }
 
-// searchCache is the cache for one query of one searchable source, created on
-// first use. Queries differing only in case share one. The searches of every
-// source share one bound, evicting the least recently used.
-func (c *catalogService) searchCache(engine, label, query string, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
-	key := engine + "\n" + strings.ToLower(query)
+// searchCache returns the cache for one search, creating it on first use and
+// marking it most recently used. The set of possible queries is unbounded, so
+// the least recently used are evicted past searchCacheLimit.
+func (c *catalogService) searchCache(key, label string, fetch func(context.Context) ([]CatalogModel, error)) *listingCache {
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
 	search, ok := c.searches[key]
@@ -837,23 +913,37 @@ func (c *catalogService) searchCache(engine, label, query string, fetch func(con
 		}
 	}
 	c.searchOrder = append(c.searchOrder, key)
-	for len(c.searchOrder) > catalogSearchCacheLimit {
+	for len(c.searchOrder) > searchCacheLimit {
 		delete(c.searches, c.searchOrder[0])
 		c.searchOrder = c.searchOrder[1:]
 	}
 	return search
 }
 
-// fetchLlamaCPP reads every approved publisher's GGUF repos. Any publisher
-// failing fails the whole fetch, so a refresh never replaces the cached list
-// with one that is silently missing a publisher.
+// fetchLlamaCPP reads every approved publisher's GGUF repos.
 func (c *catalogService) fetchLlamaCPP(ctx context.Context) ([]CatalogModel, error) {
-	batches := make([][]hfModelRow, len(llamaCPPPublishers))
-	errs := make([]error, len(llamaCPPPublishers))
+	queries := make([]url.Values, 0, len(llamaCPPPublishers))
+	for _, publisher := range llamaCPPPublishers {
+		queries = append(queries, llamaCPPListing("author", publisher))
+	}
+	rows, err := c.fetchListings(ctx, queries)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeListing(rows, llamaCPPModel), nil
+}
+
+// fetchListings reads several listing requests at once and returns their
+// entries in request order. Any request failing fails the whole fetch, so a
+// refresh never replaces the cached list with one that is silently missing a
+// publisher.
+func (c *catalogService) fetchListings(ctx context.Context, queries []url.Values) ([]hfModelRow, error) {
+	batches := make([][]hfModelRow, len(queries))
+	errs := make([]error, len(queries))
 	var wg sync.WaitGroup
-	for i, publisher := range llamaCPPPublishers {
+	for i, q := range queries {
 		wg.Go(func() {
-			batches[i], errs[i] = c.fetchHF(ctx, llamaCPPListing("author", publisher))
+			batches[i], errs[i] = c.fetchHF(ctx, q)
 		})
 	}
 	wg.Wait()
@@ -864,7 +954,7 @@ func (c *catalogService) fetchLlamaCPP(ctx context.Context) ([]CatalogModel, err
 	for _, batch := range batches {
 		rows = append(rows, batch...)
 	}
-	return normalizeLlamaCPPRows(rows), nil
+	return rows, nil
 }
 
 // withoutURL drops the request URL a net/http error carries, keeping the cause.
@@ -1098,8 +1188,12 @@ func isMLX(id string, tags []string) bool {
 	return mlxPattern.MatchString(id)
 }
 
-// The shapes a llama.cpp download depends on.
+// The shapes a catalog download depends on.
 var (
+	// hfRepoPattern is a Hugging Face repo id safe to pass to an engine's
+	// download: owner/name, each starting with a letter or digit, nothing that
+	// could read as a path or a flag.
+	hfRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	// llamaCPPQuantFile matches the offered quantization in a GGUF file name.
 	llamaCPPQuantFile = regexp.MustCompile(`(?i)` + llamaCPPQuantization + `[.-]`)
 	// splitGGUFPattern matches a shard of a model split across files.
@@ -1114,14 +1208,16 @@ var generativePipelines = map[string]bool{
 	"any-to-any":         true,
 }
 
-// normalizeLlamaCPPRows converts listing entries into llama.cpp downloads,
-// dropping the ones llama.cpp cannot fetch or serve, de-duplicating across
-// publishers, and putting the most-downloaded first.
-func normalizeLlamaCPPRows(rows []hfModelRow) []CatalogModel {
+// normalizeListing converts listing entries into one engine's downloads with
+// toModel, which drops the entries that engine cannot fetch or serve. Entries
+// are de-duplicated across publishers and pipelines, the later one winning, and
+// the most-downloaded come first. llama.cpp and vLLM read the same Hugging Face
+// listing and differ only in toModel.
+func normalizeListing(rows []hfModelRow, toModel func(hfModelRow) (CatalogModel, bool)) []CatalogModel {
 	seen := make(map[string]int, len(rows))
 	out := make([]CatalogModel, 0, len(rows))
 	for _, r := range rows {
-		model, ok := llamaCPPModel(r)
+		model, ok := toModel(r)
 		if !ok {
 			continue
 		}

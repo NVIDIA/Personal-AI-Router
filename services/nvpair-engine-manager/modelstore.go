@@ -23,11 +23,6 @@ import (
 	"strings"
 )
 
-// hfRepoPattern is a Hugging Face repository id that is safe to use as a path
-// and as a command-line value: owner/name, each part starting with a letter or
-// digit, so nothing can read as a parent reference, an absolute path or a flag.
-var hfRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
-
 // modelSegmentPattern is one directory name of a model id.
 var modelSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 

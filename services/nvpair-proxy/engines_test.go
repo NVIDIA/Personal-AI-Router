@@ -45,8 +45,8 @@ func TestColibriProfile_ServesOpenAIAndAnthropicByRepositoryID(t *testing.T) {
 	assert.Equal(t, roleModelListOpenAIGET, route.Role)
 	assert.Equal(t, "/v1/models", route.upstreamPath())
 	assert.Equal(t, "Justvugg/GLM-5.3-colibri-int4-g64", profile.normalizeModel("Justvugg/GLM-5.3-colibri-int4-g64"), "a repository id is used as is")
-	assert.Equal(t, 8000, profile.StandalonePort, "facade port")
-	assert.Equal(t, 8001, profile.ReservedPersistedPort, "reserved engine port")
+	assert.Equal(t, 8002, profile.StandalonePort, "facade port")
+	assert.Equal(t, 8003, profile.ReservedPersistedPort, "reserved engine port")
 	assert.False(t, profile.SupportsHostAlias, "host alias")
 }
 
@@ -76,6 +76,8 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	require.True(t, ok, "lmstudio profile missing")
 	llamacpp, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")
+	vllm, ok := profileFor("vllm")
+	require.True(t, ok, "vllm profile missing")
 
 	accept := func(name string, profile engineProfile, method, path string, wantRole routeRole) {
 		t.Run(name, func(t *testing.T) {
@@ -122,6 +124,16 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	reject("lmstudio has no show", lmstudio, http.MethodPost, "/api/show")
 
 	reject("llamacpp models post passthrough", llamacpp, http.MethodPost, "/models")
+
+	accept("vllm chat", vllm, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
+	accept("vllm completions", vllm, http.MethodPost, "/v1/completions", roleInferencePOST)
+	accept("vllm embeddings", vllm, http.MethodPost, "/v1/embeddings", roleInferencePOST)
+	accept("vllm responses", vllm, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("vllm list", vllm, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
+	// vLLM's own /health and /tokenize are forwarded verbatim, not classified.
+	reject("vllm health passthrough", vllm, http.MethodGet, "/health")
+	reject("vllm no native routes", vllm, http.MethodPost, "/api/chat")
+	reject("vllm wrong method on list", vllm, http.MethodPost, "/v1/models")
 }
 
 func TestIsInferenceRequest_FollowsTheProfile(t *testing.T) {

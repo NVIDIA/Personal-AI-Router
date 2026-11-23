@@ -151,6 +151,13 @@ var llamaCPPBaseRoutes = []route{
 	{Path: "/v1/models", UpstreamPath: "/models", Role: roleModelListOpenAIGET},
 }
 
+// vllmBaseRoutes is the engine-specific surface that vLLM exposes before the
+// shared OpenAI routes are added. vLLM serves one model per process, so the
+// fleet inventory is what makes /v1/models useful across nodes.
+var vllmBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+}
+
 // colibriBaseRoutes is Colibri's model list. Its server reports the one model
 // it was launched with, under the id it was given, in the OpenAI envelope.
 var colibriBaseRoutes = []route{
@@ -176,10 +183,12 @@ func buildProfiles() []engineProfile {
 	ollama, _ := engines.ByName("ollama")
 	lmstudio, _ := engines.ByName("lmstudio")
 	llamacpp, _ := engines.ByName("llamacpp")
+	vllm, _ := engines.ByName("vllm")
 	colibri, _ := engines.ByName(engines.NameColibri)
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
+	vllmRoutes := slices.Concat(vllmBaseRoutes, openAIInferenceRoutes)
 	// Colibri serves the Anthropic Messages API alongside the OpenAI one.
 	colibriRoutes := slices.Concat(colibriBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 
@@ -210,14 +219,21 @@ func buildProfiles() []engineProfile {
 			ReservedPersistedPort: 8081,
 		},
 		{
+			Engine:                vllm,
+			StandalonePort:        8000,
+			Routes:                vllmRoutes,
+			ModelNaming:           exactID,
+			ReservedPersistedPort: 8001,
+		},
+		{
 			Engine:         colibri,
-			StandalonePort: 8000,
+			StandalonePort: 8002,
 			Routes:         colibriRoutes,
 			// Colibri reports the owner/repository id it was launched with.
 			ModelNaming: exactID,
-			// 8001 is where engine-manager runs a managed Colibri, so a proxy
+			// 8003 is where engine-manager runs a managed Colibri, so a proxy
 			// that restored it would sit on the engine's own port.
-			ReservedPersistedPort: 8001,
+			ReservedPersistedPort: 8003,
 		},
 	}
 }

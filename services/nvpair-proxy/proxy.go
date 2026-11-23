@@ -33,6 +33,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/engines"
+	"nvpair-shared/modelrequest"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -215,34 +216,42 @@ type workloadParams struct {
 	WorkloadInfo Workload `json:"workloadInfo"`
 }
 
+// errBodyTooLarge is returned by bufferBodyAndModel when the request body
+// exceeds maxInferenceBodyBytes.
+var errBodyTooLarge = stderrors.New("request body exceeds 32 MiB limit")
+
 // bufferBodyAndModel reads the request body once and returns the raw bytes
 // (so each failover attempt can replay it — see the loop in handleHTTP) along
 // with the JSON "model" field for workload tracking. With nameFallback set, an
 // empty "model" falls back to "name", which is how /api/show clients name the
 // model. Inference bodies are small (prompt + model), so full buffering is
-// cheap. Returns (nil, "") when the body is absent and an empty model when none
-// is parseable. The caller restores r.Body from the returned bytes before each
-// forward attempt.
-func bufferBodyAndModel(r *http.Request, nameFallback bool) ([]byte, string) {
+// cheap. Returns (nil, "", nil) when the body is absent and an empty model when
+// none is parseable. The caller restores r.Body from the returned bytes before
+// each forward attempt. Bodies over maxInferenceBodyBytes are rejected with
+// errBodyTooLarge.
+func bufferBodyAndModel(r *http.Request, nameFallback bool) ([]byte, string, error) {
 	if r.Body == nil {
-		return nil, ""
+		return nil, "", nil
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxInferenceBodyBytes+1))
 	_ = r.Body.Close()
 	if err != nil {
-		return body, ""
+		return body, "", err
+	}
+	if len(body) > maxInferenceBodyBytes {
+		return nil, "", errBodyTooLarge
 	}
 	var probe struct {
 		Model string `json:"model"`
 		Name  string `json:"name"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
-		return body, ""
+		return body, "", nil
 	}
 	if probe.Model == "" && nameFallback {
-		return body, probe.Name
+		return body, probe.Name, nil
 	}
-	return body, probe.Model
+	return body, probe.Model, nil
 }
 
 type statusCapture struct {
@@ -390,6 +399,21 @@ type Proxy struct {
 	// SetPrioritySnapshot.
 	appliedPriorityGeneration uint64
 
+	// coolMu guards coolUntil, the per-node first-byte cooldown: a candidate
+	// that just spent a whole first-byte deadline without producing content is
+	// ordered behind its peers until its stamp expires.
+	//
+	// Process-local and in-memory on purpose. The stamp records what this proxy
+	// measured on its own path to that node, which is the only thing it can
+	// honestly claim; nothing is shared between processes and nothing is
+	// persisted. Two proxies are therefore free to disagree about a peer, each
+	// reflecting its own experience, and a restart starts from no opinion.
+	//
+	// Shared across facades, like the reservations above: a stalled node is
+	// stalled for every engine this process fronts.
+	coolMu    sync.Mutex
+	coolUntil map[string]time.Time
+
 	// transportMu guards the long-lived HTTP transports reused across forwards
 	// and model-list fetches. Allocating a new http.Transport per request
 	// defeats connection pooling and leaks idle sockets until GC.
@@ -535,11 +559,10 @@ func (p *Proxy) Run(ctx context.Context) error {
 // jobDeadline governs the wait for an owner to exist at all — a wait that costs
 // no attempts and would otherwise be unbounded.
 //
-// Read only against dispatch failures the deadline looks unreachable, and the
-// arithmetic says so: five attempts at a 120s first-content cap plus 15s of
-// cumulative backoff span 615s, so every reschedule check before the last sees
-// a clock under 600s. It is not dead — it is the only bound on the no-owner
-// wait. Do not remove it as unreachable.
+// Both bounds are reachable. A node that sends headers and then stalls costs a
+// 180s first-content cap per attempt, so with backoff the fifth dispatch would
+// start past 600s and the deadline ends that job after four. The deadline is
+// also the only bound on the no-owner wait.
 const maxDispatchAttempts = 5
 
 // jobDeadline is a var (not a const) only so a test can shorten it; production
@@ -733,7 +756,6 @@ func awaitFirstBody(body io.ReadCloser, budget time.Duration) (io.ReadCloser, er
 const (
 	proxyDialTimeout     = 10 * time.Second
 	proxyKeepAlive       = 30 * time.Second
-	proxyResponseTimeout = 120 * time.Second
 	proxyMaxIdleConns    = 50
 	proxyIdleConnTimeout = 90 * time.Second
 	// Inbound http.Server limits — keep IdleTimeout aligned with client
@@ -741,6 +763,12 @@ const (
 	proxyReadHeaderTimeout = 10 * time.Second
 	proxyServerIdleTimeout = 90 * time.Second
 	maxModelListBytes      = 16 << 20
+	// maxInferenceBodyBytes caps a single proxied request body. handleHTTP
+	// buffers the whole body to replay it across failover attempts, so an
+	// uncapped read lets any loopback client grow the proxy until it OOMs.
+	// Bodies over the cap are rejected with 413 before any routing work
+	// happens.
+	maxInferenceBodyBytes = 32 << 20
 )
 
 // idleClientWriteTimeout bounds how long a single write of streamed response
@@ -758,16 +786,23 @@ const (
 var idleClientWriteTimeout = 30 * time.Second
 
 // firstBodyTimeout bounds how long awaitFirstBody waits for an engine to emit
-// its first content byte. It matches proxyResponseTimeout, the budget the
-// transport applies to headers, because from the caller's point of view the two
-// bound the same thing: how long we wait for a node to start the work. Keeping
-// it generous is deliberate — it also covers a cold model load, which is real
-// work rather than a stall, and which cannot be told apart from a queue wait
-// from outside the engine.
+// its first content byte, measured from the arrival of headers. The wait for
+// headers itself is unbounded: the transport sets no response-header timeout.
+// Keeping it generous is deliberate — it also covers a cold model load, which
+// is real work rather than a stall, and which cannot be told apart from a queue
+// wait from outside the engine.
 //
 // It is a var (not a const) only so a test can shorten it; production never
 // reassigns it.
-var firstBodyTimeout = proxyResponseTimeout
+var firstBodyTimeout = 180 * time.Second
+
+// candidateCooldown is how long a node that spent a full first-byte deadline
+// without producing content is ordered behind its peers. It is set on its own,
+// not derived from firstBodyTimeout.
+//
+// It is a var (not a const) only so a test can shorten it; production never
+// reassigns it.
+var candidateCooldown = 120 * time.Second
 
 var modelListClient = &http.Client{
 	Transport: &http.Transport{
@@ -812,6 +847,9 @@ func (p *Proxy) emitWorkload(method string, w Workload) {
 // pinned to that peer's exact server cert. Empty peerUUID means a plain-HTTP
 // dial — the local backend (self) or an explicit manual node.
 type candidate struct {
+	localInventoryKnown bool
+	availableModels     []string
+
 	id       string
 	url      *url.URL
 	peerUUID string
@@ -834,10 +872,9 @@ func newProxyTransport(tlsCfg *tls.Config) *http.Transport {
 			Timeout:   proxyDialTimeout,
 			KeepAlive: proxyKeepAlive,
 		}).DialContext,
-		ResponseHeaderTimeout: proxyResponseTimeout,
-		MaxIdleConns:          proxyMaxIdleConns,
-		MaxIdleConnsPerHost:   proxyMaxIdleConns,
-		IdleConnTimeout:       proxyIdleConnTimeout,
+		MaxIdleConns:        proxyMaxIdleConns,
+		MaxIdleConnsPerHost: proxyMaxIdleConns,
+		IdleConnTimeout:     proxyIdleConnTimeout,
 	}
 	if tlsCfg != nil {
 		tr.TLSClientConfig = tlsCfg
@@ -865,11 +902,11 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 		delete(p.peerTransports, peerUUID)
 	}
 	if p.mesh == nil {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	cfg, ok := p.mesh.ClientTLSConfig(peerUUID)
 	if !ok {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	tr := newProxyTransport(cfg)
 	if p.peerTransports == nil {
@@ -877,6 +914,22 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 	}
 	p.peerTransports[peerUUID] = tr
 	return tr
+}
+
+// errPeerUnpinned is the dial error of a fail-closed peer transport: the
+// peer's certificate pin was absent when the transport was built.
+var errPeerUnpinned = stderrors.New("peer is not a pinned cluster member")
+
+// unpinnedPeerTransport returns a transport that fails every dial. It is the
+// fail-closed answer when a peer has no live certificate pin — used instead
+// of an unpinned (plaintext-auth) transport so a vanished pin can never
+// silently downgrade a peer connection.
+func unpinnedPeerTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errPeerUnpinned
+		},
+	}
 }
 
 // dropUnpinnedPeerTransports closes idle conns for peer Transports whose pins
@@ -950,6 +1003,11 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 	results := make([]modelListResult, len(candidates))
 	var wg sync.WaitGroup
 	for i, cand := range candidates {
+		if openAI && cand.localInventoryKnown && r.Header.Get("Origin") == "" {
+			items, err := availableModelItems(cand.availableModels)
+			results[i] = modelListResult{items: items, ok: err == nil, err: err}
+			continue
+		}
 		target := *cand.url
 		target.Path = matchedRoute.upstreamPath()
 		if matchedRoute.UpstreamPath == "" {
@@ -1048,6 +1106,11 @@ func (f *facade) serveModelList(w http.ResponseWriter, r *http.Request, matchedR
 				if key == "" {
 					results[i].err = fmt.Errorf("model record has no identity")
 					return
+				}
+				// The remote list can be fresher than discovery. Do not list a
+				// model before this facade's owner gate can route it.
+				if f.profile.LoadOnRequest && cand.availableModels != nil && !slices.Contains(cand.availableModels, key) {
+					continue
 				}
 				items = append(items, modelListItem{key: key, digest: identity.Digest, raw: raw})
 			}
@@ -1168,7 +1231,24 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	isInf := isInferenceRequest(f.profile, r.Method, r.URL.Path)
 	role, routed := f.profile.roleFor(r.Method, r.URL.Path)
 	lookup := routed && role == roleModelLookupPOST
-	bodyBytes, model := bufferBodyAndModel(r, lookup)
+	bodyBytes, model, bodyErr := bufferBodyAndModel(r, lookup)
+	if bodyErr != nil {
+		// errBodyTooLarge (413) is answered here so the oversized body never
+		// reaches candidate selection or an engine. Any other read error
+		// leaves bodyBytes as whatever was read before the failure.
+		if stderrors.Is(bodyErr, errBodyTooLarge) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(`{"error":"request body exceeds 32 MiB limit"}`))
+			_ = f.notify("proxy/request", RequestEvent{
+				ID: reqID, Method: r.Method, Path: r.URL.Path, Target: "rejected",
+				Status: http.StatusRequestEntityTooLarge, Duration: time.Since(start).Milliseconds(),
+				Error: bodyErr.Error(),
+			})
+			return
+		}
+		slog.Warn("request body read error", "id", reqID, "err", bodyErr)
+	}
 	routingModel := ""
 	if isInf || lookup {
 		routingModel = model
@@ -1247,7 +1327,12 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("proxy request rejected",
 			"id", reqID, "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr, "reason", rejectionError)
-		http.Error(w, rejectionBody, rejectionStatus)
+		// Not http.Error: it labels the body text/plain, so clients that read
+		// the error from a JSON response (ollama-js, for one) show it raw.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(rejectionStatus)
+		w.Write([]byte(rejectionBody))
 		_ = f.notify("proxy/request", RequestEvent{
 			ID:       reqID,
 			Method:   r.Method,
@@ -1640,6 +1725,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// distinction is load-bearing: the disconnect watcher and the terminal
 		// classification both read r.Context(), the parent, so cancelling a
 		// child cannot be mistaken for the client going away.
+		attemptStart := time.Now()
 		attemptCtx, cancelAttempt := context.WithCancel(r.Context())
 		// claim decides, once, whether this attempt commits or is abandoned;
 		// see attemptClaim for why a pair of channels could not.
@@ -1703,7 +1789,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
-			Transport: p.candidateTransport(cand),
+			Transport: f.requestTransportForCandidate(cand, r, model),
 			// ModifyResponse fires when the upstream's status line + headers
 			// have arrived but before the body streams. That's both the retry
 			// decision point and, on commit, the time-to-first-byte boundary.
@@ -1880,6 +1966,30 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 		proxy.ServeHTTP(sc, attemptReq)
 		cancelAttempt()
+		// Record how this candidate behaved for the next request's ordering.
+		// Measured, not classified from the error: a dial failure is bounded by
+		// the much shorter dial timeout and a status-based retry commits a
+		// response, so only an attempt that produced no content at all can reach
+		// the first-byte budget. Headers with no body are ended by the budget
+		// itself. No headers has no cap, so it reaches the budget only when
+		// something else ends it after that long: the connection failing or the
+		// target leaving discovery.
+		//
+		// A no-content attempt that did not reach the budget leaves the stamp
+		// untouched on purpose. It cost too little to be evidence of a stall, so
+		// stamping would overstate it; and a fast failure is no evidence the node
+		// is serving either, so clearing an existing stamp would understate it.
+		// Only a byte clears, and only a full budget stamps.
+		//
+		// A requester that gave up leaves it untouched too. The attempt measured
+		// the client's patience, not the node, which may still be generating.
+		if noContent := retry || respondedWithError; noContent {
+			if time.Since(attemptStart) >= firstBodyTimeout && r.Context().Err() == nil {
+				p.noteNoFirstByte(cand.id, time.Now())
+			}
+		} else {
+			p.noteFirstByte(cand.id)
+		}
 		if claim.abandoned() {
 			// Name the real reason rather than the bare "context canceled" the
 			// transport reports, which reads identically to a client hangup.
@@ -2000,12 +2110,19 @@ func (f *facade) resolveCandidates(model string) []candidate {
 		// targetURL picks a reachable address for a multi-homed node (cached,
 		// TCP-probed), falling back to the first candidate; nil only when the
 		// node advertises no usable address.
-		u := f.targetURL(n)
+		var u *url.URL
+		if n.Local {
+			u, _ = f.localBackendTarget()
+		} else {
+			u = f.targetURL(n)
+		}
 		if u == nil {
 			return
 		}
 		peerUUID := ""
 		switch {
+		case n.Local:
+			// Engine-manager's immediate inventory is this node's own capability.
 		case isSelfTarget(u, selfPort) || isAnyAliasSelfTarget(u, aliasBoundAddresses):
 			// Our own advertised endpoint (ol now points at this proxy). Serve
 			// it from the explicit local backend — the loopback engine — rather
@@ -2018,15 +2135,10 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			}
 			u = lb
 		case p.mesh.HasPin(n.ClusterUUID):
-			// A pinned cluster peer: reach it only over mTLS to its promoted
-			// proxy (the ol port now advertises the proxy, not the engine).
-			// The pin is read from the live mesh refreshed above, not from the
-			// relayed n.Trusted: that flag is the scanner's answer from whenever
-			// it last saw this peer's mDNS record, so a peer discovered before
-			// this node's pins were written stays false until its record next
-			// changes. It is also strictly weaker than what we hold here — the
-			// dial itself is gated on ClientTLSConfig finding the same pin — so
-			// the relayed value can only ever disagree by being stale.
+			// Reach this peer's proxy over mTLS using its current pin. Relay-fed
+			// remote records have already passed pinned-and-trusted admission;
+			// the refreshed mesh and the pinned client also authorize this dial
+			// against live membership and trust.
 			u.Scheme = "https"
 			peerUUID = n.ClusterUUID
 		case f.discovery.IsManual(n.ID):
@@ -2050,10 +2162,16 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			return
 		}
 		seenHost[u.Host] = true
+		var availableModels []string
+		if f.profile.LoadOnRequest {
+			availableModels = append([]string{}, n.Models...)
+		}
 		out = append(out, candidate{
-			id:       n.ID,
-			url:      u,
-			peerUUID: peerUUID,
+			localInventoryKnown: n.Local && f.profile.LoadOnRequest,
+			availableModels:     availableModels,
+			id:                  n.ID,
+			url:                 u,
+			peerUUID:            peerUUID,
 		})
 	}
 
@@ -2074,6 +2192,10 @@ func (f *facade) resolveCandidates(model string) []candidate {
 			add(n)
 		}
 	}
+
+	// Last, so it holds over all three passes above: a candidate that just cost a
+	// full first-byte deadline is ordered behind the rest.
+	out = demoteCooling(out, p.coolingSet(time.Now()))
 
 	slog.Debug("resolveCandidates resolved",
 		"selected", id, "priority", len(priority), "candidates", len(out),
@@ -2132,6 +2254,10 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		candidateIndex[cand.id] = i
 	}
 
+	// Read before taking priorityMu: the cooldown has its own lock and nothing
+	// else nests the two.
+	cooling := p.coolingSet(time.Now())
+
 	p.priorityMu.Lock()
 	defer p.priorityMu.Unlock()
 	if len(p.priority) == 0 {
@@ -2141,9 +2267,19 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		p.priorityReservations = make(map[string]int)
 	}
 
-	bestIndex := -1
-	bestOrder := len(p.priority)
-	var bestLoad uint64
+	// The reserved head is picked by load, not by list position, so the ordering
+	// in resolveCandidates does not reach it: a cooling node would be chosen
+	// straight back to the front. Skipping it here is what makes the demotion hold
+	// for scheduler-ranked nodes.
+	//
+	// One pass, two bests tracked: the least-loaded node that is not cooling, and
+	// the least-loaded one that is. The second is kept rather than recomputed
+	// because demotion must not become exclusion — when every listed candidate is
+	// cooling there is nothing to prefer, and leaving the round unreserved would be
+	// worse than dispatching to one of them.
+	bestIndex, bestOrder := -1, len(p.priority)
+	coolIndex, coolOrder := -1, len(p.priority)
+	var bestLoad, coolLoad uint64
 	for order, id := range p.priority {
 		index, ok := candidateIndex[id]
 		if !ok {
@@ -2152,11 +2288,16 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		load := uint64(p.priorityPending[id]) +
 			uint64(p.priorityGPUPressure[id]) +
 			uint64(p.priorityReservations[id])
-		if bestIndex < 0 || load < bestLoad || (load == bestLoad && order < bestOrder) {
-			bestIndex = index
-			bestOrder = order
-			bestLoad = load
+		if cooling[id] {
+			if coolIndex < 0 || load < coolLoad || (load == coolLoad && order < coolOrder) {
+				coolIndex, coolOrder, coolLoad = index, order, load
+			}
+		} else if bestIndex < 0 || load < bestLoad || (load == bestLoad && order < bestOrder) {
+			bestIndex, bestOrder, bestLoad = index, order, load
 		}
+	}
+	if bestIndex < 0 {
+		bestIndex = coolIndex
 	}
 	if bestIndex < 0 {
 		return candidates, reservation{}
@@ -2173,6 +2314,86 @@ func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate
 		generation: p.appliedPriorityGeneration,
 		held:       true,
 	}
+}
+
+// noteNoFirstByte records that a candidate consumed its whole first-byte budget
+// and produced nothing, so the ordering passes put it behind its peers for one
+// cooldown. Demotion, never exclusion: see demoteCooling.
+func (p *Proxy) noteNoFirstByte(id string, now time.Time) {
+	if id == "" {
+		return
+	}
+	p.coolMu.Lock()
+	defer p.coolMu.Unlock()
+	if p.coolUntil == nil {
+		p.coolUntil = make(map[string]time.Time)
+	}
+	p.coolUntil[id] = now.Add(candidateCooldown)
+}
+
+// noteFirstByte clears a candidate's cooldown on evidence that it is serving
+// again, rather than holding it down for the rest of the window. A node coming
+// back from its own silence is direct evidence about itself, and needs no
+// inference about anybody else.
+func (p *Proxy) noteFirstByte(id string) {
+	if id == "" {
+		return
+	}
+	p.coolMu.Lock()
+	defer p.coolMu.Unlock()
+	if len(p.coolUntil) == 0 {
+		return
+	}
+	delete(p.coolUntil, id)
+}
+
+// coolingSet returns the node ids still inside their cooldown, and nil when no
+// node has a stamp at all. That nil is the ordinary case, and both callers branch
+// on the length, so a process that has never met a stalled node does exactly what
+// it did before this existed.
+//
+// Expired stamps are dropped here rather than on a timer: the map is only read
+// on the routing path, so that is the only place a sweep is worth doing.
+func (p *Proxy) coolingSet(now time.Time) map[string]bool {
+	p.coolMu.Lock()
+	defer p.coolMu.Unlock()
+	if len(p.coolUntil) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(p.coolUntil))
+	for id, until := range p.coolUntil {
+		if now.Before(until) {
+			out[id] = true
+		} else {
+			delete(p.coolUntil, id)
+		}
+	}
+	return out
+}
+
+// demoteCooling moves cooling candidates to the back, keeping the relative order
+// of both groups so the scheduler's ranking still decides within each.
+//
+// Demotion, not exclusion. With a single candidate the back is also the front,
+// so a one-node cluster is unaffected, and a cooling node is still tried once the
+// others are exhausted.
+func demoteCooling(cands []candidate, cooling map[string]bool) []candidate {
+	if len(cooling) == 0 || len(cands) < 2 {
+		return cands
+	}
+	hot := make([]candidate, 0, len(cands))
+	cold := make([]candidate, 0, len(cands))
+	for _, c := range cands {
+		if cooling[c.id] {
+			cold = append(cold, c)
+		} else {
+			hot = append(hot, c)
+		}
+	}
+	if len(cold) == 0 {
+		return cands
+	}
+	return append(hot, cold...)
 }
 
 // releaseReservation drops an in-flight dispatch's reservation once its request
@@ -2525,12 +2746,21 @@ func (p *Proxy) setPriorityLocked(priority schedulerwire.Priority) int {
 	return len(cleaned)
 }
 
-// subscribedToNode projects a relay DirectoryNode onto the proxy's routable Node
-// for the ol service, returning false when the node doesn't advertise ol or has
-// no dialable address. The engine port comes from the ol service key (the real
-// Ollama port the broker's engine poller registered, not the proxy's listen
-// port).
+// subscribedToNode projects a local record or a trusted pinned peer into a
+// routable node for this engine. It requires the engine's advertised service
+// and a dialable IP. The service supplies the engine's registered server port.
 func subscribedToNode(p engineProfile, n noderec.DirectoryNode) (Node, bool) {
+	verification := n.IdentityVerification
+	if verification != noderec.IdentityLocal && verification != noderec.IdentityPinned {
+		// UUID, trusted, and loopback claims cannot make an unverified
+		// advertisement eligible for inference routing.
+		return Node{}, false
+	}
+	if verification == noderec.IdentityPinned && !n.Trusted {
+		// A proved remote identity still needs current trust. Local records
+		// come from the owned worker and do not require a peer pin.
+		return Node{}, false
+	}
 	svc, ok := n.Services[p.DiscoveryService]
 	if !ok || n.IP == "" {
 		return Node{}, false
@@ -2594,6 +2824,9 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 // httpMu on every request and stopServing takes it during teardown, so the
 // facade bring-up path in facade.go is held to the same rule.
 func (p *Proxy) handleMessage(msg *Message) {
+	if p.handleModelPrepared(msg) {
+		return
+	}
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
@@ -2648,6 +2881,21 @@ func (p *Proxy) handleMessage(msg *Message) {
 	}
 
 	switch method {
+	case "node/set-local-models":
+		f, ok := p.requireFacade(msg, engine)
+		if !ok {
+			return
+		}
+		var inventory modelrequest.LocalInventory
+		if json.Unmarshal(msg.Params, &inventory) != nil || inventory.ID == "" || inventory.Engine != engine || !f.profile.LoadOnRequest {
+			p.codec.RespondError(msg.ID, -32602, "invalid local model inventory")
+			return
+		}
+		if err := f.setLocalModelInventory(inventory); err != nil {
+			p.codec.RespondError(msg.ID, -32602, err.Error())
+			return
+		}
+		p.codec.Respond(msg.ID, map[string]bool{"ok": true})
 	case "facade/enable":
 		var params enableFacadeParams
 		if err := json.Unmarshal(msg.Params, &params); err != nil {

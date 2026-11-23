@@ -401,23 +401,48 @@ func TestHFSnapshotStreamsToRemoteInitiator(t *testing.T) {
 	}
 }
 
-func TestHFSnapshotOnlyOnePullPerModel(t *testing.T) {
+// TestHFSnapshotJoinsAPullOfTheSameModel checks a second request for a model
+// already downloading joins that download rather than writing the same partial
+// files a second time: it starts no transfer of its own and answers once the
+// download it joined ends.
+func TestHFSnapshotJoinsAPullOfTheSameModel(t *testing.T) {
 	hub := newFakeHub(t, colibriFiles())
 	hub.blockAfter["model-00000.safetensors"] = 10
 	e, _, _ := snapshotEngine(t, hub)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	first := make(chan error, 1)
 	go func() {
-		_, _ = e.PullModelStream(ctx, "fake", "o/r", nil)
-		close(done)
+		_, err := e.PullModelStream(firstCtx, "fake", "o/r", nil)
+		first <- err
 	}()
 	<-hub.stalled
-	if _, err := e.PullModelStream(context.Background(), "fake", "o/r", nil); err == nil || !strings.Contains(err.Error(), "already being downloaded") {
-		t.Fatalf("concurrent pull = %v", err)
+	hits := hub.fileHits.Load()
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := e.PullModelStream(context.Background(), "fake", "o/r", nil)
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		t.Fatalf("the joined pull answered before the download it joined ended: %v", err)
+	case <-hub.stalled:
+		t.Fatal("two pulls of one model wrote the same files at once")
+	case <-time.After(200 * time.Millisecond):
 	}
-	cancel()
-	<-done
+	if got := hub.fileHits.Load(); got != hits {
+		t.Errorf("the second pull started a transfer of its own: %d requests → %d", hits, got)
+	}
+
+	cancelFirst()
+	if err := <-first; err == nil {
+		t.Fatal("the cancelled pull succeeded")
+	}
+	if err := <-second; err == nil {
+		t.Fatal("the pull that joined it reported success")
+	}
 }
 
 func TestSafeRepoFileName(t *testing.T) {

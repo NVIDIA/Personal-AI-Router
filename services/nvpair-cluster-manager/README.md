@@ -86,9 +86,10 @@ settings store**. Concretely, the parent must:
   `cluster:invite-canceled` for the old ID before `cluster:invite-received`
   for the replacement; dismiss the old prompt and keep the newest one.
 - **Resolve invite targets to an address.** `cluster:invite-node` takes a
-  reachable `address` (and optional `port`/`nodeId`). You pick the target
-  (from `nvpair-node-scanner`, manual nodes, etc.) and pass a resolved
-  address; the manager does not do UUID→address resolution for you.
+  reachable `address` and optional `port`/`nodeId`. The supplied address is tried
+  first, followed by addresses resolved from discovery. With only `nodeId`, the
+  manager looks up a discovery record ID, then a host UUID, then a hostname.
+  Discovery record IDs remain selectable independently of advertised UUID claims.
 - **Don't re-invite an already-clustered node.** If the target is already
   in a cluster it **rejects** the pairing: `cluster:invite-node` returns
   `state:"rejected"` (`reason:"already-clustered"`) with no PIN. Skip the

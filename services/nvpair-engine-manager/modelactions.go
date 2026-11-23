@@ -104,7 +104,7 @@ func (e *Executor) persistLaunchModel(engine string, st *engineState, model stri
 	st.mu.Lock()
 	port := st.plat.Runtime.Port
 	st.mu.Unlock()
-	if err := e.persistRuntimeConfig(engine, port, nil, nil, &model); err != nil {
+	if err := e.persistRuntimeConfig(engine, port, nil, nil, &model, nil); err != nil {
 		return fmt.Errorf("save the launch model: %w", err)
 	}
 	st.mu.Lock()

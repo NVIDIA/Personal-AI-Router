@@ -45,6 +45,11 @@ SPDX-License-Identifier: Apache-2.0
   backend services; PAIR relays control-plane requests through the broker.
 - Public inference clients connect to local Ollama- or OpenAI-compatible proxy
   endpoints.
+- Hardware displays consume broker snapshots and push events.
+- `nvpair-node-info` publishes local hardware over owned worker IPC and serves
+  peer inventory. Scanner and manual-node workers collect pinned-mTLS peer
+  measurements and display-only public HTTP previews. Verified service and
+  scheduling inputs require owned or authenticated measurements.
 
 ## Documentation
 

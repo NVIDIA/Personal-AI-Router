@@ -96,16 +96,16 @@ socket, or local control server.
 
 ### Node telemetry
 
-Electron directly polls each discovered node's advertised `/v1/node-info`
-endpoint every two seconds while it is healthy. Consecutive failures back off to
-4, 8, 16, then 30 seconds and reset on success or an endpoint change. This is the
-only service-data HTTP exception because rich telemetry is not exposed by the
-broker JSON-RPC contract.
+Desktop and TUI receive full hardware through broker `AvailableNode.info`
+snapshots and `discovery:node-info` updates. Workers own collection, retries,
+address failover, and authentication.
 
-This renderer-facing metrics path is display-only. Independently, the backend
-scanner provides compact maximum-GPU utilization on the same healthy cadence and
-capped failure backoff; the manual-node worker supplies the same payload shape.
-The broker uses both for scheduling.
+Local measurements come from owned worker IPC; paired peers use pinned mTLS.
+Scanner and manual-node workers also collect public HTTP previews for unverified
+records. Those previews are display-only, retain their discovery record identity,
+and cannot supply verified metadata, routing, liveness, or scheduling. The broker
+preserves source sample age and invalidates hardware with its source record.
+Compact scanner/manual GPU telemetry is internal to scheduling.
 
 ### Inference HTTP
 
@@ -123,7 +123,6 @@ Backend-coupled constants belong in
 - Native chat fallbacks are Ollama `127.0.0.1:11434`, LM Studio
   `127.0.0.1:1234`, and llama.cpp `127.0.0.1:8080`.
 - Cluster pairing currently uses port `14321`.
-- Node telemetry path is `/v1/node-info`.
 
 Backend discovery service names and TXT layouts are not PAIR contracts. Consume
 the broker's reported discovery snapshots instead of duplicating those details.

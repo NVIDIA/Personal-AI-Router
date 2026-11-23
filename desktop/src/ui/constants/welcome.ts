@@ -15,6 +15,7 @@ export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
     'lm-studio': true,
     'llama-cpp': true,
+    vllm: true,
     // Colibri models are tens to hundreds of gigabytes and its launcher needs
     // Python 3.10+, so it is offered during onboarding but not preselected.
     colibri: false
