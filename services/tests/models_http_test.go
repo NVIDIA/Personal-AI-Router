@@ -19,8 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grandcat/zeroconf"
-
 	"nvpair-shared/noderec"
 )
 
@@ -88,10 +86,8 @@ func (c *interNodeCluster) startModelsPeer(t *testing.T, instance string, models
 
 	txt := []string{"v=1", "uuid=" + c.peerUUID, "cluster-uuid=" + c.peerUUID, "ip=127.0.0.1",
 		fmt.Sprintf("ni=%d", port), fmt.Sprintf("em=%d", port)}
-	advertisement, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
-	require.NoError(t, err, "register model peer")
-	t.Cleanup(advertisement.Shutdown)
-	t.Logf("advertising %s with pinned node-info and models (port=%d)", instance, port)
+	registerTestAdvertisement(t, instance, nodeRecordService, testHostSeven, port, txt)
+	t.Logf("advertising %s with pinned node-info and models (port=%d, host=%s)", instance, port, testHostSeven)
 }
 
 func modelsMatch(models []string) bool {

@@ -5,6 +5,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -24,9 +25,7 @@ func TestDiscovery_ResolvesRegisteredNode(t *testing.T) {
 		port     = 55555
 	)
 
-	server, err := zeroconf.Register(instance, service, testDomain, port, []string{"env=test"}, nil)
-	require.NoError(t, err, "register")
-	defer server.Shutdown()
+	registerTestAdvertisement(t, instance, service, testHostOne, port, []string{"env=test"})
 	time.Sleep(500 * time.Millisecond)
 
 	resolver, err := zeroconf.NewResolver(nil)
@@ -65,12 +64,9 @@ func TestDiscovery_ResolvesMultipleRegisteredNodes(t *testing.T) {
 	const service = "_test-multi._tcp"
 	instances := []string{"node-alpha", "node-beta", "node-gamma"}
 
-	var servers []*zeroconf.Server
 	for i, inst := range instances {
-		s, err := zeroconf.Register(inst, service, testDomain, 50000+i, nil, nil)
-		require.NoError(t, err, "register %s", inst)
-		servers = append(servers, s)
-		defer s.Shutdown()
+		// registerTestAdvertisement registers t.Cleanup(srv.Shutdown) itself.
+		registerTestAdvertisement(t, inst, service, fmt.Sprintf("%s-%d", testHostLoopPrefix, i+1), 50000+i, nil)
 	}
 	time.Sleep(500 * time.Millisecond)
 
@@ -110,8 +106,7 @@ func TestDiscovery_RemovesDepartedNode(t *testing.T) {
 		port     = 55556
 	)
 
-	server, err := zeroconf.Register(instance, service, testDomain, port, nil, nil)
-	require.NoError(t, err, "register")
+	server := registerTestAdvertisement(t, instance, service, testHostThree, port, nil)
 
 	// Phase 1: verify discoverable
 	entry := browseForInstance(t, service, instance, 5*time.Second)

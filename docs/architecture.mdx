@@ -631,6 +631,10 @@ PAIR keys the owned local node and authenticated peers by stable host UUID.
 That UUID correlates cluster membership, workload attribution, error reports,
 scheduling telemetry, and verified proxy routes. Hostnames are display names,
 so renaming a host or sharing a hostname does not merge distinct hosts.
+PAIR's own host record follows that line: the scanner advertises it under a
+synthetic host label, never a name the operating system owns, with the rule
+that derives it in the `nvpair-node-scanner` spec §7.1. The computer's
+hostname remains only the record's display instance name.
 
 Unverified announcements have independent discovery record IDs. Their claimed
 UUIDs cannot select a local or authenticated peer's record. A manual engine

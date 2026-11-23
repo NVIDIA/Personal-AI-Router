@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,7 @@ import (
 
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
+	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
 )
 
@@ -129,6 +131,114 @@ func newSelfTestDaemon(hostUUID, ip string) *daemon {
 		authWake:       make(chan struct{}, 1),
 		modelsWake:     make(chan struct{}, 1),
 	}
+}
+
+// TestNewDaemon_AdvertisesASyntheticHostLabelNotTheMachineName covers the
+// newDaemon wiring no test reached before: newSelfTestDaemon builds a daemon
+// literal, so the responder construction that decides which host name this
+// node advertises over mDNS was never exercised by anything.
+func TestNewDaemon_AdvertisesASyntheticHostLabelNotTheMachineName(t *testing.T) {
+	dir := t.TempDir()
+	// Pin the node identity through nodeid's own file so the label is
+	// UUID-derived (same trick as newDiscoveryPeerFixture), with a real UUID so
+	// HostLabel takes the UUID rule and not the hostname hash.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node-id.json"),
+		[]byte(`{"node_uuid":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"}`), 0o600))
+	// A nil codec is safe (emit and friends check for nil), and clustertrust.Open
+	// on a fresh directory yields an unclustered mesh.
+	logs := captureLogs(t)
+
+	// baseDir becomes dir, so the pinned node-id.json is what nodeid.Resolve
+	// reads here.
+	d := newDaemon(nil, clustertrust.Open(dir), filepath.Join(dir, "cluster"))
+
+	instance, err := os.Hostname()
+	require.NoError(t, err)
+	// Assert against nodeid.Resolve(dir) rather than a literal UUID so the
+	// expectation cannot drift from what the resolver hands the daemon.
+	want, err := noderec.HostLabel(nodeid.Resolve(dir), instance)
+	require.NoError(t, err)
+	assert.Equal(t, want, d.hostLabel, "newDaemon must advertise the HostLabel of the node UUID")
+	// With a usable node UUID, the label must be UUID-derived: the label
+	// HostLabel would have produced from the hostname alone must NOT be what is
+	// advertised. (Skips only where os.Hostname() is unusable, which is where
+	// no hostname-derived label exists to begin with.)
+	if fallback, fallbackErr := noderec.HostLabel("", instance); fallbackErr == nil {
+		assert.NotEqual(t, fallback, d.hostLabel,
+			"with a usable node UUID the label must not follow the hostname")
+	}
+	assert.NotContains(t, logs.String(), "hostname-derived",
+		"only a hostname-derived label is worth warning about; this one came from the node UUID")
+
+	if d.responder == nil {
+		// A disabled responder is only an environment when the log names the
+		// multicast precondition NewResponder documents; any other reason to
+		// have no responder is the failure this test exists to catch.
+		if !strings.Contains(logs.String(), "no multicast-capable IPv4 interface") {
+			t.Fatalf("newDaemon left d.responder nil without naming the multicast precondition:\n%s", logs)
+		}
+		t.Skipf("no multicast-capable IPv4 interface on this host, so only the hostLabel wiring was asserted")
+	}
+	assert.Equal(t, want+".local.", d.responder.AdvertisedHost(),
+		"the responder's SRV target and A owner name is the synthetic label under the domain")
+	require.NotEqual(t, instance+".local.", d.responder.AdvertisedHost(),
+		"the machine's hostname must never become the advertised host record")
+}
+
+// TestNewDaemon_WarnsWhenTheHostLabelIsHostnameDerived pins the operational
+// warning beside that name: when the node UUID is empty or unusable the
+// advertised label follows the machine's hostname and will move with it, so
+// the log must say so rather than let an operator assume the name is stable.
+func TestNewDaemon_WarnsWhenTheHostLabelIsHostnameDerived(t *testing.T) {
+	dir := t.TempDir()
+	// "self-uuid" is neither empty nor a usable UUID — fewer than twelve hex
+	// digits once sanitized — so HostLabel falls back to hashing the hostname.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node-id.json"),
+		[]byte(`{"node_uuid":"self-uuid"}`), 0o600))
+	logs := captureLogs(t)
+
+	d := newDaemon(nil, clustertrust.Open(dir), filepath.Join(dir, "cluster"))
+
+	require.NotEmpty(t, d.hostLabel, "a hostname-derived label is still advertised, not withheld")
+	assert.Contains(t, logs.String(), "advertising a hostname-derived mDNS host label",
+		"the hostname-derived provenance of the label must be visible in the operational log")
+	assert.Contains(t, logs.String(), "level=WARN", "the warning must be visible at default log level")
+}
+
+// TestNewDaemon_AdvertisesNothingWhenNoHostLabelCanBeDerived pins the branch
+// D6 forbids any fallback into: when HostLabel finds no entropy at all,
+// newDaemon must start no responder, claim no label, and name why in the
+// operational log — never fall back to the machine's hostname. hostLabelOf
+// stands in for the real derivation only because os.Hostname() never fails
+// in-process, so the real HostLabel can never error here; nothing else about
+// newDaemon's path is faked.
+//
+// Tests that touch hostLabelOf must not use t.Parallel: it is package state.
+func TestNewDaemon_AdvertisesNothingWhenNoHostLabelCanBeDerived(t *testing.T) {
+	realHostLabelOf := hostLabelOf
+	t.Cleanup(func() { hostLabelOf = realHostLabelOf })
+	hostLabelOf = func(string, string) (string, error) {
+		return "", errors.New("host label: no node UUID and no usable hostname to derive one from")
+	}
+
+	dir := t.TempDir()
+	logs := captureLogs(t)
+
+	d := newDaemon(nil, clustertrust.Open(dir), filepath.Join(dir, "cluster"))
+
+	assert.Nil(t, d.responder, "without a host label the daemon must advertise nothing, not fall back to one")
+	assert.Empty(t, d.hostLabel, "no label may be claimed when HostLabel found no entropy")
+	assert.Contains(t, logs.String(), "no host label to advertise",
+		"the operational log must name why mDNS advertising was disabled")
+	assert.Contains(t, logs.String(), "level=ERROR", "the reason must be visible at default log level")
+	assert.NotContains(t, logs.String(), "advertisedHost",
+		"nothing was advertised, so no responder success line may have been logged")
+
+	hostname, err := os.Hostname()
+	require.NoError(t, err)
+	require.NotEmpty(t, hostname, "this assertion is vacuous on a host with no hostname to leak")
+	require.NotContains(t, logs.String(), hostname,
+		"the machine hostname must not appear in any log line, least of all as a fallback advertised name")
 }
 
 // The scanner may create a UUID before cluster-manager writes identity.json.
@@ -556,6 +666,35 @@ func TestDiscovery_ReplacesUnverifiedDiscoveryWithVerifiedPeer(t *testing.T) {
 	assert.Equal(t, fakePeerPort, node.Services[noderec.ServiceOllama].Port)
 	assert.Equal(t, f.info.GPUs, node.GPUs)
 	assert.Len(t, f.daemon.dir.snapshot(""), 1)
+}
+
+// A promoted peer's record ID comes from the local certificate pin
+// (Mesh.PeerRecordID), never from the observation hash, so the SRV target stays
+// out of a verified identity on both sides of promotion. This test is a guard and
+// not the red: it passes whether or not raw.Host is a hash input, because nothing
+// on the pinning path reads that field. The tests that do fail while the SRV
+// target is hashed are TestToDirectoryNode_DoesNotHashTheSRVTarget and
+// TestNodeDiscoveryRecordID_IgnoresTheSRVTarget in directory_test.go.
+func TestDiscovery_PinnedPeerRecordIDIgnoresTheSRVTarget(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	pinned, ok := f.daemon.dir.get("peer-uuid")
+	require.True(t, ok, "the pinned peer is missing from the directory")
+	require.Equal(t, noderec.IdentityPinned, pinned.IdentityVerification)
+	require.Equal(t, f.daemon.mesh.PeerRecordID("peer-uuid"), pinned.DiscoveryRecordID)
+	assert.False(t, strings.HasPrefix(pinned.DiscoveryRecordID, "observation:"),
+		"a verified record must not carry the unverified observation prefix (%q)", pinned.DiscoveryRecordID)
+
+	// Announce the same connection candidate again, under another SRV target.
+	f.raw.Host = "another-host.local."
+	f.discover(t)
+
+	again, ok := f.daemon.dir.get("peer-uuid")
+	require.True(t, ok, "the peer disappeared after re-announcing a different host label")
+	assert.Equal(t, pinned.DiscoveryRecordID, again.DiscoveryRecordID,
+		"the host label moved a verified record's ID")
+	snapshot := f.daemon.dir.snapshot("")
+	assert.Len(t, snapshot, 1, "the host label left a second record behind (%v)", snapshot)
 }
 
 // Authenticate a real pinned test peer and inspect the scanner's outbound

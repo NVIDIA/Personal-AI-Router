@@ -73,6 +73,12 @@ type daemon struct {
 	// empty selects nodeid's shared default (production's default layout).
 	baseDir string
 
+	// hostLabel is the single DNS label PAIR claims as its mDNS host record —
+	// the SRV target and A owner name the responder advertises — derived from
+	// the node UUID by noderec.HostLabel, never the machine's name. Empty when
+	// HostLabel refused and this node advertises nothing over mDNS.
+	hostLabel string
+
 	// clusterDir is the cluster trust subtree (--cluster-dir) holding this node's
 	// keypair, pins, and admission record. It gates whether we advertise a
 	// cluster-uuid=: we advertise only while actually a member
@@ -298,6 +304,12 @@ func telemetryRetryDelay(consecutiveFailures int) time.Duration {
 }
 
 // newDaemon builds the registry publisher and pinned peer discovery daemon.
+// hostLabelOf is the source of the advertised mDNS host label. It is a
+// variable only so a test can force the no-entropy error the real
+// noderec.HostLabel cannot produce in-process (os.Hostname() never fails or
+// empties here); production always uses noderec.HostLabel.
+var hostLabelOf = noderec.HostLabel
+
 func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon {
 	// nodeid reads <base>/cluster/identity.json; --cluster-dir is that cluster
 	// subdir, so its parent is the base. Empty -> nodeid's shared default.
@@ -320,11 +332,18 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 	reg := newRegistry(hostUUID, cluUUID, netpick.LocalCandidates(netpick.Evidence{}))
 
 	instance, _ := os.Hostname()
+	// The host record advertised over mDNS is PAIR's own label from the node
+	// UUID, never `instance`: claiming the machine's name is the contention
+	// that makes macOS append a digit to the computer's Local hostname (issue
+	// #229). The instance name stays the hostname — it is a display name and is
+	// legal even when the hostname is not a single DNS label.
+	hostLabel, labelErr := hostLabelOf(hostUUID, instance)
 	d := &daemon{
 		codec:           codec,
 		mesh:            mesh,
 		reg:             reg,
 		instance:        instance,
+		hostLabel:       hostLabel,
 		baseDir:         baseDir,
 		clusterDir:      clusterDir,
 		dir:             newDirectory(),
@@ -342,10 +361,30 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 	d.browser = NewDiscovery(noderec.ServiceType, noderec.Domain,
 		WithKeyFunc(nodeDiscoveryRecordID),
 	)
-	if resp, err := mdns.NewResponder(instance, noderec.ServiceType, noderec.Domain, noderec.SRVPort, reg.txt()); err != nil {
-		slog.Warn("mDNS advertising disabled for _nvpair-node", "err", err)
+	if labelErr != nil {
+		// No entropy to name this host with; advertising a fixed placeholder
+		// would give every host on this path the same record, recreating the
+		// contention the synthetic label exists to avoid. Advertise nothing.
+		slog.Error("mDNS advertising disabled for _nvpair-node: no host label to advertise",
+			"err", labelErr, "baseDir", baseDir)
 	} else {
-		d.responder = resp
+		// HostLabel is pure by design — it cannot log which rule produced the
+		// label — so ask it the fallback question directly: the same call with
+		// no node UUID is hostname-derived by definition, and an equal answer
+		// means the UUID passed in was empty or unusable, so the advertised
+		// name moves if the hostname moves.
+		if derived, derivedErr := noderec.HostLabel("", instance); derivedErr == nil && derived == hostLabel {
+			slog.Warn("advertising a hostname-derived mDNS host label",
+				"hostLabel", hostLabel, "hostUUID", hostUUID,
+				"reason", "no usable node identity, so the label follows the hostname and will move with it")
+		}
+		if resp, err := mdns.NewResponder(instance, hostLabel, noderec.ServiceType, noderec.Domain,
+			noderec.SRVPort, reg.txt()); err != nil {
+			slog.Warn("mDNS advertising disabled for _nvpair-node", "err", err)
+		} else {
+			d.responder = resp
+			slog.Info("advertising _nvpair-node", "instance", instance, "advertisedHost", resp.AdvertisedHost())
+		}
 	}
 	return d
 }
@@ -353,8 +392,17 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 // run starts the _nvpair-node responder and browser, folding browse events into
 // the directory and emitting discovery:node-* until ctx is cancelled.
 func (d *daemon) run(ctx context.Context) {
+	// responderDone closes when responder.Run returns — including the
+	// shutdown goodbye it sends after ctx is cancelled (RFC 6762 §10.1),
+	// which is why Scanner.Run joins this before allowing process exit.
+	// Nil when the responder is disabled, meaning there is nothing to wait
+	// for.
+	var responderDone <-chan struct{}
 	if d.responder != nil {
+		done := make(chan struct{})
+		responderDone = done
 		go func() {
+			defer close(done)
 			if err := d.responder.Run(ctx); err != nil {
 				slog.Warn("_nvpair-node responder exited", "err", err)
 			}
@@ -388,6 +436,14 @@ func (d *daemon) run(ctx context.Context) {
 			if d.nodeInfoClients != nil {
 				d.nodeInfoClients.CloseIdle()
 			}
+			// responder.Run returns only after its shutdown goodbye has
+			// left the machine, so returning here first would let
+			// Scanner.Run return — and the process exit — with the
+			// retraction still unsent. The other background loops are not
+			// joined: after cancellation they hold nothing the wire still
+			// needs, and joining them could outlast the responder send for
+			// no retraction benefit.
+			waitForShutdown(responderDone, shutdownJoinTimeout, "_nvpair-node mDNS responder")
 			return
 		case ev, ok := <-events:
 			if !ok {

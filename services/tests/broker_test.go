@@ -105,17 +105,15 @@ func sendReq(t *testing.T, w io.Writer, id int, method string) {
 	require.NoError(t, err, "write %s request", method)
 }
 
-func registerNodeInfo(t *testing.T, instance string, port int) *zeroconf.Server {
+func registerNodeInfo(t *testing.T, instance, hostLabel string, port int) *zeroconf.Server {
 	t.Helper()
 	// One consolidated _nvpair-node record carrying ni=<port> (the node-info
 	// service). A distinct uuid keeps each stub from colliding with this node's
 	// own record or the others. The daemon browses this, folds it into its
 	// directory, and pushes it to the broker store.
 	txt := []string{"v=1", "uuid=" + instance + "-uuid", fmt.Sprintf("ni=%d", port)}
-	srv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
-	require.NoError(t, err, "register %s", instance)
-	t.Cleanup(srv.Shutdown)
-	t.Logf("advertising %s @ %s (ni=%d)", instance, nodeRecordService, port)
+	srv := registerTestAdvertisement(t, instance, nodeRecordService, hostLabel, port, txt)
+	t.Logf("advertising %s @ %s (ni=%d, host=%s)", instance, nodeRecordService, port, hostLabel)
 	return srv
 }
 
@@ -199,7 +197,7 @@ func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 
 	// Advertise the first node before the broker starts so it is in the
 	// store by the time we query it.
-	registerNodeInfo(t, inst1, port1)
+	registerNodeInfo(t, inst1, testHostFour, port1)
 
 	stdin, msgs, cleanup := startBroker(t)
 	t.Cleanup(cleanup)
@@ -242,7 +240,7 @@ func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 	t.Log("phase 2 OK: subscribe acked and baseline snapshot received")
 
 	// Phase 3 — subscribed: a newly advertised node must be pushed.
-	registerNodeInfo(t, inst2, port2)
+	registerNodeInfo(t, inst2, testHostBrokerTwo, port2)
 	waitForPushContaining(t, msgs, inst2, 25*time.Second)
 	t.Log("phase 3 OK: live push received for new node while subscribed")
 
@@ -275,7 +273,7 @@ func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 	// discovered (visible via get-nodes) but must NOT be pushed. Keying
 	// the negative assertion on inst3 (which only exists from now on)
 	// makes it immune to any pre-unsubscribe push still draining.
-	registerNodeInfo(t, inst3, port3)
+	registerNodeInfo(t, inst3, testHostBrokerThree, port3)
 	pollNodeListed(t, stdin, msgs, inst3, 300, 25*time.Second, func(nodes []availableNode) bool {
 		return !containsNode(nodes, inst3)
 	})

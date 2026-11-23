@@ -36,7 +36,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +77,7 @@ type Responder struct {
 	service  string // e.g. "_nvpair-ollama._tcp"
 	domain   string // e.g. "local"
 	port     int
-	hostName string // e.g. "myhost.local."
+	hostName string // the host record PAIR owns, e.g. "nvpair-0123456789ab.local."; never derived from the environment
 
 	serviceName  string // "_nvpair-ollama._tcp.local."
 	instanceName string // "myhost._nvpair-ollama._tcp.local."
@@ -98,11 +97,22 @@ type Responder struct {
 	ifaceAddrs map[int][]net.IP
 }
 
+// enumerateSnapshot is the source of interface addresses. It is a variable
+// only so a test can supply a snapshot on a host with no multicast-capable
+// interface; production always uses netmon.Enumerate.
+var enumerateSnapshot = netmon.Enumerate
+
 // NewResponder builds a Responder for the given service instance. domain
-// defaults to "local" if empty. The hostname is taken from os.Hostname().
-// Returns an error if no multicast-capable IPv4 interface with at least one
-// non-loopback address can be found.
-func NewResponder(instance, service, domain string, port int, txt []string) (*Responder, error) {
+// defaults to "local" if empty. hostLabel is the single DNS label the responder
+// claims as its own host record — the SRV target and the owner name of its A
+// records, as returned by AdvertisedHost — never the machine's hostname;
+// claiming that contends with the host's own mDNS responder over a name it
+// already owns (RFC 6762 §9 renamed macOS Local hostnames, issue #229).
+// hostLabel is one label, not an FQDN: a trailing dot is decoration (trimmed,
+// like the instance and service), anything else that is not one DNS label is
+// refused. Returns an error if no multicast-capable IPv4 interface with at
+// least one non-loopback address can be found.
+func NewResponder(instance, hostLabel, service, domain string, port int, txt []string) (*Responder, error) {
 	domain = strings.Trim(domain, ".")
 	if domain == "" {
 		domain = "local"
@@ -120,12 +130,16 @@ func NewResponder(instance, service, domain string, port int, txt []string) (*Re
 		return nil, errors.New("missing port")
 	}
 
-	hostBase, err := os.Hostname()
-	if err != nil {
-		return nil, fmt.Errorf("hostname: %w", err)
+	// A trailing dot is decoration, trimmed like the other name arguments, so a
+	// caller that passed an FQDN ("nvpair-x.local.") is refused below for
+	// carrying two labels instead of being assembled into one name by accident.
+	// Validation runs before enumerating interfaces so a bad label is rejected
+	// cheaply and identically on every host.
+	hostLabel = strings.TrimSuffix(hostLabel, ".")
+	if err := validateHostLabel(hostLabel); err != nil {
+		return nil, err
 	}
-	hostBase = strings.Trim(hostBase, ".")
-	hostName := hostBase + "." + domain + "."
+	hostName := hostLabel + "." + domain + "."
 
 	r := &Responder{
 		instance:     instance,
@@ -139,12 +153,40 @@ func NewResponder(instance, service, domain string, port int, txt []string) (*Re
 		// netmon's IfaceV4 applies the same filter we used to build by hand
 		// (up + multicast + non-loopback interface, non-loopback IPv4), and
 		// is what watchAddrs feeds back on every change.
-		ifaceAddrs: netmon.Enumerate().IfaceV4,
+		ifaceAddrs: enumerateSnapshot().IfaceV4,
 	}
 	if len(r.ifaceAddrs) == 0 {
 		return nil, errors.New("no multicast-capable IPv4 interfaces with non-loopback addresses")
 	}
 	return r, nil
+}
+
+// validateHostLabel reports whether label is a single DNS label the responder
+// may advertise: 1-63 bytes of the letters, digits, and hyphens DNS allows. A
+// label carrying a dot would silently become a two-label host name once the
+// domain is appended, so it is refused here rather than on the wire — macOS
+// does not author or resolve a name like "indigo.lab.local.". shared/mdns
+// assembles DNS names for any PAIR service type, so it validates its inputs
+// defensively instead of trusting every caller.
+func validateHostLabel(label string) error {
+	if label == "" || len(label) > 63 {
+		return fmt.Errorf("invalid host label %q: must be a single DNS label of 1-63 bytes", label)
+	}
+	for i := range len(label) {
+		c := label[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' {
+			continue
+		}
+		return fmt.Errorf("invalid host label %q: must contain only letters, digits, or hyphens", label)
+	}
+	return nil
+}
+
+// AdvertisedHost returns the FQDN this responder claims as its own host
+// record — the SRV target and the name every A record answers under, trailing
+// dot included. Peers resolve the service by following the SRV to this name.
+func (r *Responder) AdvertisedHost() string {
+	return r.hostName
 }
 
 // ifaces returns the current interface→addresses map. The returned map is
@@ -352,7 +394,7 @@ func (r *Responder) handleQuery(query *dns.Msg, ifIndex int, from net.Addr) {
 			}
 		case r.hostName:
 			if q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY {
-				resp.Answer = r.appendAddrRecords(resp.Answer, ifIndex, false)
+				resp.Answer = r.appendAddrRecords(resp.Answer, ifIndex, false, recordTTL)
 				matched = true
 			}
 		}
@@ -382,36 +424,38 @@ func (r *Responder) appendBrowseRRs(resp *dns.Msg, ifIndex int) {
 		Hdr: dns.RR_Header{Name: r.serviceName, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: recordTTL},
 		Ptr: r.instanceName,
 	})
-	resp.Extra = append(resp.Extra, r.srvRR(false), r.txtRR(false))
-	resp.Extra = r.appendAddrRecords(resp.Extra, ifIndex, false)
+	resp.Extra = append(resp.Extra, r.srvRR(false, recordTTL), r.txtRR(false, recordTTL))
+	resp.Extra = r.appendAddrRecords(resp.Extra, ifIndex, false, recordTTL)
 }
 
 // appendLookupRRs fills resp for a direct instance lookup (an SRV/TXT question):
 // SRV+TXT as the Answer, A records as Extra.
 func (r *Responder) appendLookupRRs(resp *dns.Msg, ifIndex int, flushCache bool) {
-	resp.Answer = append(resp.Answer, r.srvRR(flushCache), r.txtRR(flushCache))
-	resp.Extra = r.appendAddrRecords(resp.Extra, ifIndex, flushCache)
+	resp.Answer = append(resp.Answer, r.srvRR(flushCache, recordTTL), r.txtRR(flushCache, recordTTL))
+	resp.Extra = r.appendAddrRecords(resp.Extra, ifIndex, flushCache, recordTTL)
 }
 
 // srvRR builds the instance's SRV record. flushCache sets the cache-flush bit
 // (RFC 6762 §10.2) — set on unsolicited announcements so peers replace a stale
 // cached value, clear on reactive replies. The same convention applies to
-// txtRR and appendAddrRecords.
-func (r *Responder) srvRR(flushCache bool) *dns.SRV {
+// txtRR and appendAddrRecords. ttl is the record's RR TTL: announcements pass
+// recordTTL, a goodbye passes 0 (§10.1 retracts the identical record at TTL
+// 0), so the caller states the TTL instead of a value corrected after the fact.
+func (r *Responder) srvRR(flushCache bool, ttl uint32) *dns.SRV {
 	class := uint16(dns.ClassINET)
 	if flushCache {
 		class |= cacheFlush
 	}
 	return &dns.SRV{
-		Hdr:    dns.RR_Header{Name: r.instanceName, Rrtype: dns.TypeSRV, Class: class, Ttl: recordTTL},
+		Hdr:    dns.RR_Header{Name: r.instanceName, Rrtype: dns.TypeSRV, Class: class, Ttl: ttl},
 		Port:   uint16(r.port),
 		Target: r.hostName,
 	}
 }
 
 // txtRR builds the instance's TXT record from the live set (which UpdateTXT may
-// have swapped). See srvRR for flushCache.
-func (r *Responder) txtRR(flushCache bool) *dns.TXT {
+// have swapped). See srvRR for flushCache and ttl.
+func (r *Responder) txtRR(flushCache bool, ttl uint32) *dns.TXT {
 	class := uint16(dns.ClassINET)
 	if flushCache {
 		class |= cacheFlush
@@ -423,21 +467,21 @@ func (r *Responder) txtRR(flushCache bool) *dns.TXT {
 		txt = []string{""}
 	}
 	return &dns.TXT{
-		Hdr: dns.RR_Header{Name: r.instanceName, Rrtype: dns.TypeTXT, Class: class, Ttl: recordTTL},
+		Hdr: dns.RR_Header{Name: r.instanceName, Rrtype: dns.TypeTXT, Class: class, Ttl: ttl},
 		Txt: txt,
 	}
 }
 
 // appendAddrRecords appends A records for the addresses we advertise on ifIndex
-// (see addrsForResponse). See srvRR for flushCache.
-func (r *Responder) appendAddrRecords(list []dns.RR, ifIndex int, flushCache bool) []dns.RR {
+// (see addrsForResponse). See srvRR for flushCache and ttl.
+func (r *Responder) appendAddrRecords(list []dns.RR, ifIndex int, flushCache bool, ttl uint32) []dns.RR {
 	class := uint16(dns.ClassINET)
 	if flushCache {
 		class |= cacheFlush
 	}
 	for _, ip := range r.addrsForResponse(ifIndex) {
 		list = append(list, &dns.A{
-			Hdr: dns.RR_Header{Name: r.hostName, Rrtype: dns.TypeA, Class: class, Ttl: recordTTL},
+			Hdr: dns.RR_Header{Name: r.hostName, Rrtype: dns.TypeA, Class: class, Ttl: ttl},
 			A:   ip,
 		})
 	}
@@ -486,24 +530,30 @@ func (r *Responder) announceLoop(ctx context.Context) {
 	}
 }
 
-// sendAnnouncement multicasts an unsolicited PTR+SRV+TXT+A (with the cache-flush
-// bit) on every interface, so peers learn or refresh our record without querying.
+// announcementMsg builds the unsolicited PTR+SRV+TXT+A announcement sent on
+// ifIdx (with the cache-flush bit), so peers learn or refresh our record
+// without querying. The A records are scoped to ifIdx's addresses.
+func (r *Responder) announcementMsg(ifIdx int) *dns.Msg {
+	resp := new(dns.Msg)
+	resp.MsgHdr.Response = true
+	resp.MsgHdr.Authoritative = true
+	resp.Compress = true
+	resp.Answer = append(resp.Answer,
+		&dns.PTR{
+			Hdr: dns.RR_Header{Name: r.serviceName, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: recordTTL},
+			Ptr: r.instanceName,
+		},
+		r.srvRR(true, recordTTL),
+		r.txtRR(true, recordTTL),
+	)
+	resp.Answer = r.appendAddrRecords(resp.Answer, ifIdx, true, recordTTL)
+	return resp
+}
+
+// sendAnnouncement multicasts announcementMsg on every interface.
 func (r *Responder) sendAnnouncement() {
 	for ifIdx := range r.ifaces() {
-		resp := new(dns.Msg)
-		resp.MsgHdr.Response = true
-		resp.MsgHdr.Authoritative = true
-		resp.Compress = true
-		resp.Answer = append(resp.Answer,
-			&dns.PTR{
-				Hdr: dns.RR_Header{Name: r.serviceName, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: recordTTL},
-				Ptr: r.instanceName,
-			},
-			r.srvRR(true),
-			r.txtRR(true),
-		)
-		resp.Answer = r.appendAddrRecords(resp.Answer, ifIdx, true)
-		buf, err := resp.Pack()
+		buf, err := r.announcementMsg(ifIdx).Pack()
 		if err != nil {
 			continue
 		}
@@ -511,22 +561,90 @@ func (r *Responder) sendAnnouncement() {
 	}
 }
 
-// sendGoodbye multicasts a TTL=0 PTR on every interface so peers evict us at
-// once on shutdown instead of waiting out the record TTL.
-func (r *Responder) sendGoodbye() {
-	for ifIdx := range r.ifaces() {
-		resp := new(dns.Msg)
-		resp.MsgHdr.Response = true
-		resp.MsgHdr.Authoritative = true
-		resp.Answer = append(resp.Answer, &dns.PTR{
+// goodbyeMsg builds the TTL=0 PTR+SRV+TXT+A that tells peers to evict our
+// records at once instead of waiting out the record TTL. RFC 6762 §10.1 makes
+// a retraction the announced record with only its RR TTL set to zero, so the
+// records come from the same builders announcementMsg uses — at ttl 0, with
+// its flushCache arguments — never a hand-rolled second copy whose rdata
+// could drift from what the peer actually cached. ifIdx scopes the retraction
+// A records to the addresses announced on the interface the goodbye goes out.
+//
+// Why every record type retracts: §10.1, "In the case where a host knows
+// that certain resource record data is about to become invalid (for example,
+// when the host is undergoing a clean shutdown), the host SHOULD send an
+// unsolicited Multicast DNS response packet, giving the same resource record
+// name, rrtype, rrclass, and rdata, but an RR TTL of zero." At shutdown our
+// A records are record data about to become invalid too. §8.4's "In the case
+// of unique records, a host SHOULD omit the 'goodbye' announcement, since
+// the cache-flush bit on the newly announced records will cause old rdata to
+// be flushed from peer caches anyway" is about *updates*: there a replacement
+// arrives and its flush bit does the retracting. Shutdown has no replacement,
+// so §10.1 governs and §10.2 requires the whole set — "it MUST send the
+// entire RRSet" and "The host MUST set the cache-flush bit on all members of
+// the unique RRSet." A goodbye that dropped the flush bit would carry a
+// different rrclass on the wire than the peer cached and would retract
+// nothing, so the unique members keep the bit exactly as announced.
+//
+// Why one goodbye per record instead of repeating §8.3's "at least two
+// unsolicited responses, one second apart": that repetition is §8.3's
+// robustness device for announcements, and §10.1 asks for no such repetition
+// for retractions. The peer's one-second hold on a TTL=0 record — "Queriers
+// receiving a Multicast DNS response with a TTL of zero SHOULD NOT
+// immediately delete the record from the cache, but instead record a TTL of
+// 1 and then delete the record one second later" — gives "other cooperating
+// responders one second to send out their own response to 'rescue' the
+// records", which by design rescues records that should live, not our
+// retraction; and it cannot rescue a goodbye that was never sent. What
+// protects the single retraction is that sendGoodbye fails loudly, and that
+// Run's caller treats Run's return — not its own cancel — as permission to
+// exit, so the packet has left before the process does.
+func (r *Responder) goodbyeMsg(ifIdx int) *dns.Msg {
+	resp := new(dns.Msg)
+	resp.MsgHdr.Response = true
+	resp.MsgHdr.Authoritative = true
+	resp.Compress = true
+	resp.Answer = append(resp.Answer,
+		&dns.PTR{
 			Hdr: dns.RR_Header{Name: r.serviceName, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 0},
 			Ptr: r.instanceName,
-		})
-		buf, err := resp.Pack()
+		},
+		r.srvRR(true, 0),
+		r.txtRR(true, 0),
+	)
+	resp.Answer = r.appendAddrRecords(resp.Answer, ifIdx, true, 0)
+	return resp
+}
+
+// goodbyeSend is the single place a retraction leaves the machine; it exists
+// as a variable only so a test can watch what shutdown offers each interface
+// and force one interface's failure without touching the others. Production
+// always uses the real multicast send.
+var goodbyeSend = func(r *Responder, buf []byte, ifIndex int) error {
+	return r.sendOnInterface(buf, ifIndex, mdnsTargetV4)
+}
+
+// sendGoodbye multicasts goodbyeMsg on every interface so peers evict us at
+// once on shutdown instead of waiting out the record TTL. A lost retraction
+// is operational impact — every peer then resolves this dead node until the
+// record TTL expires — so a goodbye that cannot be serialized or sent on one
+// interface is logged at Warn, the level the desktop configures services at
+// by default, and the other interfaces still retract.
+func (r *Responder) sendGoodbye() {
+	for ifIdx := range r.ifaces() {
+		buf, err := r.goodbyeMsg(ifIdx).Pack()
 		if err != nil {
+			slog.Warn("mdns: goodbye could not be serialized",
+				"ifIndex", ifIdx, "instance", r.instance, "err", err)
 			continue
 		}
-		r.sendOnInterface(buf, ifIdx, mdnsTargetV4)
+		if err := goodbyeSend(r, buf, ifIdx); err != nil {
+			name := ""
+			if ifi, ifErr := net.InterfaceByIndex(ifIdx); ifErr == nil {
+				name = ifi.Name
+			}
+			slog.Warn("mdns: goodbye send failed",
+				"iface", name, "ifIndex", ifIdx, "instance", r.instance, "err", err)
+		}
 	}
 }
 

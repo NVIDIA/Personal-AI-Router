@@ -36,8 +36,6 @@ import (
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/netpick"
 	"nvpair-shared/noderec"
-
-	"github.com/grandcat/zeroconf"
 )
 
 // The block's wl and er endpoints for this run, set by TestMain from the
@@ -152,8 +150,7 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance string) (
 	txt := []string{"v=1", "uuid=" + c.peerUUID, "ip=" + addresses[0], "ips=" + strings.Join(addresses, ","),
 		fmt.Sprintf("ni=%d", port), fmt.Sprintf("wl=%d", port),
 		clustertrust.ClusterUUIDTXTKey + "=" + c.peerUUID}
-	adv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
-	require.NoError(t, err, "register stub peer")
+	adv := registerTestAdvertisement(t, instance, nodeRecordService, testHostFive, port, txt)
 	stop := sync.OnceFunc(func() {
 		adv.Shutdown()
 		if err := srv.Close(); err != nil {
@@ -161,7 +158,8 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance string) (
 		}
 	})
 	t.Cleanup(stop)
-	t.Logf("stub cluster peer advertising %s (ni=%d, wl=%d, cluster-uuid=%s)", nodeRecordService, port, port, c.peerUUID)
+	t.Logf("stub cluster peer advertising %s (ni=%d, wl=%d, cluster-uuid=%s, host=%s)",
+		nodeRecordService, port, port, c.peerUUID, testHostFive)
 	return received, stop
 }
 
