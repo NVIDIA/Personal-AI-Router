@@ -23,7 +23,9 @@ import (
 )
 
 // Action runs a manifest-declared action against the engine and, when the
-// action declares restart_after, restarts the engine on success.
+// action declares restart_after, restarts the engine on success. When the action
+// declares stop_before, the engine is stopped and its port waited out first, unless it
+// answers that it is not serving what the action removes: see stopBeforeAction.
 func (e *Executor) Action(ctx context.Context, engine, action string, params json.RawMessage) (json.RawMessage, error) {
 	st, err := e.state(engine)
 	if err != nil {
@@ -41,6 +43,18 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if act.StopEngine {
 		return e.ejectByStopping(ctx, engine, params)
 	}
+	if act.StopBefore {
+		// One operation lock for the whole sequence, taken here rather than inside the
+		// steps so they cannot be interleaved with a Stop or a Start: the answer to
+		// "is this pack the one being served?" is only worth what it cost if nothing
+		// can start or stop the engine between reading it and removing the pack. The
+		// defer runs when Action returns, so it still covers the dispatch below.
+		st.lockOperation()
+		defer st.unlockOperation()
+		if err := e.stopBeforeAction(ctx, st, engine, action, act, params); err != nil {
+			return nil, err
+		}
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err
@@ -54,6 +68,91 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	}
 	return res, nil
 }
+
+// stopBeforeAction does what a stop_before action promises before it removes
+// anything: it asks what the running engine has mapped, and only when that answer is
+// this pack — or when there is no answer to read — stops the engine and waits for its
+// port to stop answering. It is the
+// other half of the residency join Task 5 built for loaded_models, read here at the
+// moment it is true rather than from an earlier sweep — the one question this sequence
+// cannot afford to answer from memory is whether this engine is holding the pack.
+//
+// MTPLX is what it is for. Its server keeps a pack mapped for the life of the
+// process, so `mtplx remove` deletes what a running server is serving, and the eject
+// that releases the GPU memory is a stop. The action's own removal, whatever it
+// declares, then runs — normally the engine's `remove` command; a guarded path is
+// refused while the engine runs, so a manifest that removes by path must go through
+// its CLI for a pack the engine could be holding.
+//
+// Residency is read here in three states, because two of them arrive as the same value
+// unless something keeps them apart and they lead to different actions: "this server has
+// nothing mapped" and "we could not get an answer". A server that answers for something
+// else — nothing loaded, or a directory its own listing keys to a different pack — is left
+// running with its port answering, because the removal cannot be removing what is running
+// and PAIR was asked to delete a file, not to take anyone's model down. That covers the
+// engine the user started themselves as well as an idle one PAIR brought up: an engine PAIR
+// did not start is one it adopts rather than quits. A server that cannot be asked is treated
+// as if this pack were mapped, which is the same caution the eject takes from the other side
+// — the eject refuses to claim a pack is not resident when it cannot read, and here the safe
+// reading of the same unknown is that the pack is in use and the engine has to come down
+// first. The opposite direction would let a status blip delete a pack a server has mapped.
+//
+// Not running is an answer, not a failed read: the join reports nothing when the engine is
+// down, so a stopped engine is checked first and its pack cannot be mapped.
+//
+// The stop is doStop, so the same engine that Stop reports as running under external
+// management refuses here, in the same words, and the pack stays.
+func (e *Executor) stopBeforeAction(ctx context.Context, st *engineState, engine, action string, act Action, params json.RawMessage) error {
+	var pack struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(params, &pack); err != nil {
+		return fmt.Errorf("action %q: params must be a JSON object with a model string: %w", action, err)
+	}
+	repoID := strings.TrimSpace(pack.Model)
+
+	st.mu.Lock()
+	running, port := st.running, st.port
+	st.mu.Unlock()
+	if !running {
+		return nil
+	}
+
+	// Three answers, two actions. See residencyState for why the middle one is not
+	// folded into either side.
+	state := e.residencyForDelete(ctx, engine, repoID)
+	switch state {
+	case residencyNotMapped:
+		// The engine answered clearly for something else, so the removal below cannot
+		// be removing what its process holds, and the port keeps answering through it.
+		slog.Debug("engine:residency the running server says this pack is not what it has mapped",
+			"engine", engine, "action", action, "port", port)
+		return nil
+	case residencyMappedHere, residencyUnknown:
+		// Either this pack is the one being served, or there was no answer to read,
+		// which is taken the same way: the pack stays unreachable rather than going
+		// missing under a server that still has it mapped.
+	}
+
+	slog.Info("stopping engine before removing what it may have mapped",
+		"engine", engine, "action", action, "port", port, "residency", state)
+	if err := e.doStop(st, engine); err != nil {
+		return err
+	}
+	if !e.confirmPortsQuiet(ctx, st.plat.Runtime.Ready, singlePortSweep(port), stopBeforeQuietBound) {
+		return fmt.Errorf("action %q: engine %q was stopped but something still answers on port %d, so nothing was removed", action, engine, port)
+	}
+	return nil
+}
+
+// stopBeforeQuietBound is how long a stop_before sequence waits, after stopping the
+// engine, for the engine's port to stop answering before it will remove anything. It
+// bounds the wait a manifest takes responsibility for when it declares stop_before, so
+// a listener that outlives the engine delays a removal instead of allowing it.
+//
+// It is the same shape as stopGrace: the sequence's whole cost is a stop the user asked
+// for plus this allowance, and it is a var so a test can prove it waits at all.
+var stopBeforeQuietBound = 15 * time.Second
 
 // restartAfterAction restarts a running engine after one of its actions
 // succeeded (see Action.RestartAfter). A stopped engine has no serving state to

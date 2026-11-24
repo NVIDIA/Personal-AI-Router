@@ -479,6 +479,13 @@ type Action struct {
 	// only a restart makes the deletion visible to clients. A stopped engine is
 	// left stopped; a restart failure fails the action.
 	RestartAfter bool `json:"restart_after,omitempty"`
+	// StopBefore, for a manifest whose engine keeps the pack it serves inside a
+	// running process, makes the action stop that engine first and wait for its
+	// port to stop answering, unless the engine answers clearly that it is not
+	// serving what the action removes. It means "this action removes something the
+	// running engine may have mapped": what is removed is still whatever else the
+	// action declares. See Executor.stopBeforeAction.
+	StopBefore bool `json:"stop_before,omitempty"`
 }
 
 // ActionResult is the list-extraction spec on an Action (see Action.Result).
@@ -1088,10 +1095,15 @@ func (m *Manifest) Validate() error {
 			// something that only looks. stop_engine, restart_after and launch_model
 			// each take the engine down or re-tune it, and any of them on the source
 			// would make answering a question about a pack stop, restart or re-launch
-			// the engine that holds it. Nothing bundled does that today; the rule is
-			// here so a manifest cannot add the path later.
-			if source.StopEngine || source.RestartAfter || source.LaunchModel != nil {
-				return fmt.Errorf("action %q: result.residency.source %q stops, restarts or relaunches the engine, and a residency lookup must only read", name, a.Result.Residency.Source)
+			// the engine that holds it. remove_path and stop_before are the same
+			// mistake in the other direction: one deletes the pack the lookup was
+			// only meant to find, and the other takes the engine down as its first
+			// step, on the operation lock the lookup is already holding and cannot
+			// take again. hf_cache.delete is refused by the older rule that reserves
+			// it for delete_model. Nothing bundled does any of these today; the rule
+			// is here so a manifest cannot add the path later.
+			if declared := residencySourceChange(source); declared != "" {
+				return fmt.Errorf("action %q: result.residency.source %q declares %s, and a residency lookup must only read", name, a.Result.Residency.Source, declared)
 			}
 		}
 	}
@@ -1118,7 +1130,42 @@ func (m *Manifest) Validate() error {
 	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded && m.AdvertisedModels != advertisedModelsAvailable {
 		return fmt.Errorf("action %q: result.inventory_field requires advertised_models %q", "loaded_models", advertisedModelsLoaded)
 	}
+	// stop_before is "this action removes what the running engine may have mapped",
+	// and the only way to know that is the residency join. A manifest that declares
+	// no join has no answer to ask for, so the stop would take down whatever engine
+	// happens to be up. result.residency is itself only valid on loaded_models.
+	for name, a := range m.Actions {
+		if !a.StopBefore {
+			continue
+		}
+		loaded := m.Actions["loaded_models"]
+		if loaded.Result == nil || loaded.Result.Residency == nil {
+			return fmt.Errorf("action %q: stop_before requires loaded_models to declare result.residency, so the pack the engine has mapped is known before it is stopped", name)
+		}
+	}
 	return m.validatePlaceholders()
+}
+
+// residencySourceChange names the first declaration on an action used as a
+// result.residency.source that would change the engine or its packs, or "" when the
+// action only looks. It is the residency fence in Manifest.Validate: see the comment
+// there for what each declaration would do.
+func residencySourceChange(source Action) string {
+	for _, declaration := range []struct {
+		set  bool
+		name string
+	}{
+		{source.StopEngine, "stop_engine"},
+		{source.RestartAfter, "restart_after"},
+		{source.StopBefore, "stop_before"},
+		{source.LaunchModel != nil, "launch_model"},
+		{source.RemovePath != nil, "remove_path"},
+	} {
+		if declaration.set {
+			return declaration.name
+		}
+	}
+	return ""
 }
 
 // advertisedModels values for Manifest.AdvertisedModels.
@@ -1414,6 +1461,12 @@ func (a *Action) validate(name string) error {
 	}
 	if a.StopEngine && name != "unload_model" {
 		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)
+	}
+	if a.StopBefore && a.RestartAfter {
+		return fmt.Errorf("action %q: stop_before and restart_after cannot both be declared: the action stops the engine itself, on the operation lock the restart would have to take again", name)
+	}
+	if a.StopBefore && a.StopEngine {
+		return fmt.Errorf("action %q: stop_before and stop_engine cannot both be declared: that action is the stop, so there would be no removal for a stop before it to protect", name)
 	}
 	if hasHFPull {
 		tool := a.HFPull.Tool

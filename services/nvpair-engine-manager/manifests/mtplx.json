@@ -79,8 +79,9 @@
       "cmd": ["{cli}", "pull", "{model}", "--json"]
     },
     "delete_model": {
-      "description": "Delete a model pack from the local MTPLX cache (params: {\"model\": \"<cache id>\"}). Eject it first: MTPLX has no in-use guard, so this deletes a pack the running server still has mapped, and it does not take the deleted pack out of the launch arguments of a stopped engine. Download it again to recover either way.",
-      "cmd": ["{cli}", "remove", "{model}", "--yes", "--json"]
+      "description": "Delete a model pack from the local MTPLX cache (params: {\"model\": \"<cache id>\"}). MTPLX has no in-use guard, so when the running server has this pack mapped the action stops MTPLX and waits for its port to stop answering before deleting anything; a pack the server is not serving is removed without stopping it. The engine is left stopped rather than restarted, and a pack that was in the launch arguments of a stopped engine stays there, so choose another model before starting again. Download the pack again to recover.",
+      "cmd": ["{cli}", "remove", "{model}", "--yes", "--json"],
+      "stop_before": true
     }
   }
 }

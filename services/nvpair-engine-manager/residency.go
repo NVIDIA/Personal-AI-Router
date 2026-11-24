@@ -333,33 +333,172 @@ func (e *Executor) residentJoin(ctx context.Context, engine string, inventory in
 	return residencyAnswer{row: row, named: true, complete: true}
 }
 
-// loadedPackPath asks a running engine which directory it loaded its model from, at
-// the answer its manifest named (ActionResidency.Read) and in the field it named
-// there (PathField).
+// residencyState is one reading of what a running engine has mapped, in the three states
+// a delete has to act on.
 //
-// The read is the one every probe answer is read under — 3 s bound, the
-// maxProbeJSONBytes cap, drain-and-close on every path — because this is a health
-// check being asked one more question, and two bounds on the same request are two
-// chances to disagree about whether an engine is answering. The cap is why a body
-// bigger than PAIR reads answers unknown rather than half-parsed: readProbeBody
-// returns no body at all for an answer it could not read whole, so there is nothing
-// here to mistake for a partial answer.
+// It is three states, not the two residentJoin reports, because the middle one is a fact
+// rather than a gap. residentJoin's empty answer means both "the engine named a directory
+// no cached pack sits in" and "PAIR never got an answer", which is enough for a caller
+// showing a badge or refusing an eject: both of those do the cautious thing either way. A
+// caller about to delete a file is not choosing between two safe options — one of these
+// states means the engine gets quit to delete a file nobody had open, and the other means
+// it does not — so the two have to stay apart here even though they stay together in the
+// join. That is why this is its own reading rather than a third field on residencyAnswer:
+// the eject reads residencyAnswer's `complete` to decide whether it may claim a pack is
+// not resident, and a flag that means both "not resident" and "unknown" on the same struct
+// is the exact shape that made the delete wrong.
+type residencyState int
+
+const (
+	// residencyMappedHere is the engine naming this pack's directory, so the delete
+	// would be removing what a live server has open.
+	residencyMappedHere residencyState = iota
+	// residencyNotMapped is the engine answering clearly for something else: either it
+	// has nothing mapped at all, or it named a directory that this machine's own
+	// listing keys to a different pack. Removing this pack cannot be removing what is
+	// running, so nothing is stopped for it.
+	residencyNotMapped
+	// residencyUnknown is no answer to act on, which is taken the same way as a mapped
+	// pack: the read failed, or arrived bigger than PAIR reads, or named no loaded
+	// path, or named a directory no row in the listing holds. The last two are the same
+	// unknown the eject reads from the other side, and a pack deleted from under a
+	// server still serving it cannot be put back.
+	residencyUnknown
+)
+
+// String names the reading for the log, so the record says why an engine was stopped for
+// a delete rather than only that it was.
+func (s residencyState) String() string {
+	switch s {
+	case residencyMappedHere:
+		return "this pack is what it has mapped"
+	case residencyNotMapped:
+		return "it answered this pack is not mapped"
+	default:
+		return "cannot tell what it has mapped"
+	}
+}
+
+// residencyForDelete answers, for the pack a delete names, whether the running engine has
+// that pack mapped, for a caller that will act differently on each of the three answers.
 //
-// No status code is consulted, deliberately: the field is the evidence, and an answer
-// that names a loaded path is an engine talking about its model whatever it arrived
-// with. An error answer that names none is unknown like every other non-answer.
-func (e *Executor) loadedPackPath(ctx context.Context, engine string, port int, residency *ActionResidency) (string, bool) {
+// It reads the same two answers residentJoin joins — where the running server loaded its
+// model from, and which directories the engine's own listing names — but it stops reading
+// as soon as the answer is decided, because what it costs is a subprocess. An engine that
+// says it has nothing mapped is answered from the first read: no cache listing can turn "I
+// loaded nothing" back into a pack being served, so running `mtplx models --json` to
+// confirm it would buy nothing and delay the delete by however long that takes to time
+// out.
+//
+// The join stays exact string equality, with no case folding, separator rewriting or
+// symlink resolution, for the reason packRowForKey gives: on the machines measured, the
+// spellings that differ really are different packs. A path that only looks like a known
+// directory once something normalises it therefore answers residencyUnknown, and the
+// delete stops the engine. Guessing here deletes a pack a server has mapped, which is the
+// one thing this sequence exists to avoid.
+func (e *Executor) residencyForDelete(ctx context.Context, engine, repoID string) residencyState {
+	st, err := e.state(engine)
+	if err != nil {
+		return residencyUnknown
+	}
+	residency := residencyDeclaration(st)
+	if residency == nil || residency.Read == nil {
+		// Nothing is declared to ask this engine by, so nothing is ruled out. A
+		// manifest that declares stop_before has to declare the read (Manifest.Validate
+		// refuses it without), which leaves this the unconfigured engine rather than a
+		// shortcut past the question.
+		return residencyUnknown
+	}
+	st.mu.Lock()
+	running, port := st.running, st.port
+	st.mu.Unlock()
+	if !running {
+		// A stopped engine cannot have anything mapped, and the delete gate answers
+		// that for itself before asking — see stopBeforeAction. Asked anyway, it gets
+		// the cautious state: there is nothing here to tell an engine that is down from
+		// one that is up and silent.
+		return residencyUnknown
+	}
+
+	path, state := e.readLoadedPath(ctx, engine, port, residency)
+	if state == loadedPathNothing {
+		// The server answered clearly that it has nothing mapped. MTPLX always sends
+		// `model_path` and sends it empty when it loaded no model, so this is a
+		// readable answer about a running process and not a failed read; folding it
+		// into residencyUnknown is what quit an idle engine to delete a file.
+		return residencyNotMapped
+	}
+	if state != loadedPathNamed {
+		return residencyUnknown
+	}
+	rows, ok := e.packInventoryFrom(ctx, engine, inventoryAnswer{})
+	if !ok {
+		return residencyUnknown
+	}
+	row, found := packRowForKey(rows, path)
+	if !found {
+		// Something is mapped that no row holds: a pack handed over as a pair bundle,
+		// a cache that moved, a pack already deleted from under a server still serving
+		// it — and possibly this pack under a spelling PAIR does not match. None of
+		// those is evidence that the pack being deleted is free.
+		return residencyUnknown
+	}
+	if row.repoID == repoID {
+		return residencyMappedHere
+	}
+	return residencyNotMapped
+}
+
+// loadedPathState is what one read of "which directory does this engine have mapped"
+// amounts to, before anyone joins it to a cache listing.
+type loadedPathState int
+
+const (
+	// loadedPathUnreadable is no answer: nothing arrived, more arrived than PAIR
+	// reads, it was not a JSON object, the field the manifest named was absent, or it
+	// held something other than a string.
+	loadedPathUnreadable loadedPathState = iota
+	// loadedPathNothing is the field arriving with an empty string in it, which is an
+	// engine saying it loaded no model.
+	loadedPathNothing
+	// loadedPathNamed is the field arriving with a directory in it, whether or not any
+	// cached pack sits there.
+	loadedPathNamed
+)
+
+// readLoadedPath asks a running engine where it loaded its model from, at the answer its
+// manifest named (ActionResidency.Read) and in the field it named there (PathField), and
+// says which of the three kinds of answer came back.
+//
+// It is the read loadedPackPath reports as one value, kept in three: what the field says
+// and whether there was a field to read are different facts, and the delete gate is the
+// caller that cannot afford to mix them up. The shape of the read is unchanged from it —
+// the same 3 s bound, the same maxProbeJSONBytes cap, drain-and-close on every path —
+// because this is a health check being asked one more question, and two bounds on the same
+// request are two chances to disagree about whether an engine is answering. The cap is why
+// a body bigger than PAIR reads answers loadedPathUnreadable rather than a half-parsed
+// pack identity: readProbeBody returns no body at all for an answer it could not read
+// whole, so there is nothing here to mistake for a partial answer.
+//
+// No status code is consulted, deliberately: the field is the evidence, and an answer that
+// names a loaded path is an engine talking about its model whatever it arrived with. An
+// error answer that names none is unknown like every other non-answer. A field that is
+// absent, or holds something other than a string, is unknown for the same reason and not
+// for free: MTPLX's server always answers `model_path`, so the only way to see none is for
+// the answer to have stopped being this engine's, and guessing from that is how a pack a
+// server has open gets deleted.
+func (e *Executor) readLoadedPath(ctx context.Context, engine string, port int, residency *ActionResidency) (string, loadedPathState) {
 	path, err := resolvePlaceholders(residency.Read.Path, map[string]string{"port": strconv.Itoa(port)})
 	if err != nil {
 		slog.Debug("engine:residency loaded-path read names an unresolvable path", "engine", engine, "path", residency.Read.Path)
-		return "", false
+		return "", loadedPathUnreadable
 	}
 	requestURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 	pctx, cancel := context.WithTimeout(ctx, probeReadTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(pctx, strings.ToUpper(residency.Read.Method), requestURL, nil)
 	if err != nil {
-		return "", false
+		return "", loadedPathUnreadable
 	}
 	// The probe marker, so PAIR's own facade answers this itself instead of
 	// forwarding a residency read through to whatever it fronts.
@@ -367,28 +506,48 @@ func (e *Executor) loadedPackPath(ctx context.Context, engine string, port int, 
 	resp, err := e.client.Do(req)
 	if err != nil {
 		slog.Debug("engine:residency loaded-path read failed", "engine", engine, "path", path)
-		return "", false
+		return "", loadedPathUnreadable
 	}
 	body := readProbeBody(resp.Body)
 	if body == "" {
 		// Either nothing arrived or more arrived than PAIR reads; readProbeBody
-		// answers both with no body, and the join does not care which it was.
+		// answers both with no body, and neither of them is an engine saying it
+		// loaded nothing.
 		slog.Debug("engine:residency loaded-path answer was empty or larger than PAIR reads", "engine", engine, "path", path)
-		return "", false
+		return "", loadedPathUnreadable
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(body), &obj); err != nil {
 		slog.Debug("engine:residency loaded-path answer was not a JSON object", "engine", engine, "path", path, "bytes", len(body))
-		return "", false
+		return "", loadedPathUnreadable
 	}
 	value, ok := resolveObjectPath(obj, residency.PathField)
 	if !ok {
 		slog.Debug("engine:residency loaded-path answer named no loaded path", "engine", engine, "path", path, "field", residency.PathField)
-		return "", false
+		return "", loadedPathUnreadable
 	}
 	var loaded string
-	if err := json.Unmarshal(value, &loaded); err != nil || loaded == "" {
-		slog.Debug("engine:residency loaded-path answer held no path PAIR can read", "engine", engine, "path", path, "field", residency.PathField)
+	if err := json.Unmarshal(value, &loaded); err != nil {
+		slog.Debug("engine:residency loaded-path answer held a path PAIR cannot read", "engine", engine, "path", path, "field", residency.PathField)
+		return "", loadedPathUnreadable
+	}
+	if loaded == "" {
+		return "", loadedPathNothing
+	}
+	return loaded, loadedPathNamed
+}
+
+// loadedPackPath asks a running engine which directory it loaded its model from, and
+// answers two-valued: a directory, or no answer.
+//
+// The two empty cases are deliberately folded here. residentJoin reads this for a row to
+// name, and "the engine loaded nothing" and "the engine did not say" both leave it with no
+// row and no evidence, which is what residencyAnswer.complete is for; only the delete gate
+// needs the difference, and it reads readLoadedPath. Callers that want a name must not
+// take the empty result as "it serves nothing".
+func (e *Executor) loadedPackPath(ctx context.Context, engine string, port int, residency *ActionResidency) (string, bool) {
+	loaded, state := e.readLoadedPath(ctx, engine, port, residency)
+	if state != loadedPathNamed {
 		return "", false
 	}
 	return loaded, true
