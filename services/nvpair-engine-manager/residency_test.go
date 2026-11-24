@@ -323,10 +323,10 @@ func residencyManifestWithRestart(t *testing.T) *Manifest {
 	return manifest
 }
 
-func TestPackInventory_ReadsRowsFromTheMeasuredModelsListing(t *testing.T) {
+func TestPackInventoryFrom_ReadsRowsFromTheMeasuredModelsListing(t *testing.T) {
 	ex := residencyAsking(t, residencyManifest(t), map[string]string{residencyInventoryPath: sagittariusModelsBody})
 
-	rows, ok := ex.packInventory(t.Context(), "mtplx")
+	rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 	require.True(t, ok, "the listing arrived whole, so the inventory is known")
 	require.Len(t, rows, 1, "that capture holds one pack")
@@ -354,10 +354,10 @@ func TestPackInventory_ReadsRowsFromTheMeasuredModelsListing(t *testing.T) {
 	assert.False(t, found, "the join is exact, so an upper-cased spelling finds nothing")
 }
 
-func TestPackInventory_KeepsTwoRootsApartAndNeverGuessesASymlink(t *testing.T) {
+func TestPackInventoryFrom_KeepsTwoRootsApartAndNeverGuessesASymlink(t *testing.T) {
 	ex := residencyAsking(t, residencyManifest(t), map[string]string{residencyInventoryPath: bellatrixModelsBody})
 
-	rows, ok := ex.packInventory(t.Context(), "mtplx")
+	rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 	require.True(t, ok, "the listing arrived whole, so the inventory is known")
 	require.Len(t, rows, 3, "that machine caches three packs")
@@ -401,13 +401,13 @@ func TestPackInventory_KeepsTwoRootsApartAndNeverGuessesASymlink(t *testing.T) {
 	assert.False(t, found, "a trailing separator is not trimmed either")
 }
 
-func TestPackInventory_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *testing.T) {
+func TestPackInventoryFrom_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *testing.T) {
 	manifest := residencyManifest(t)
 
 	t.Run("an empty cache is an answer", func(t *testing.T) {
 		ex := residencyAsking(t, manifest, map[string]string{residencyInventoryPath: `{"models":[]}`})
 
-		rows, ok := ex.packInventory(t.Context(), "mtplx")
+		rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 		require.True(t, ok, "a listing that says nothing cached was still read")
 		assert.Empty(t, rows, "nothing cached has to stay distinguishable from nothing read")
@@ -418,7 +418,7 @@ func TestPackInventory_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *tes
 		// cannot read, not a cache full of packs that went missing.
 		ex := residencyAsking(t, manifest, map[string]string{residencyInventoryPath: `{"models":[{"foo":1},{"bar":2}]}`})
 
-		rows, ok := ex.packInventory(t.Context(), "mtplx")
+		rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 		assert.False(t, ok, "a malformed inventory must not become authoritative empty")
 		assert.Nil(t, rows)
@@ -428,7 +428,7 @@ func TestPackInventory_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *tes
 		for _, body := range []string{`{}`, `{"models":null}`, `{"models":"Youssofal/Gemma4-MTPLX-Optimized-Speed"}`} {
 			ex := residencyAsking(t, manifest, map[string]string{residencyInventoryPath: body})
 
-			rows, ok := ex.packInventory(t.Context(), "mtplx")
+			rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 			assert.False(t, ok, "a body that carries no inventory is unknown (%s)", body)
 			assert.Nil(t, rows)
@@ -442,7 +442,7 @@ func TestPackInventory_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *tes
 
 		ex := residencyAsking(t, manifest, map[string]string{residencyInventoryPath: body})
 
-		rows, ok := ex.packInventory(t.Context(), "mtplx")
+		rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 		assert.False(t, ok, "a truncated listing must not report the packs it happened to hold")
 		assert.Nil(t, rows)
@@ -453,7 +453,7 @@ func TestPackInventory_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *tes
 		// "the read did not happen" is staged.
 		ex := residencyAsking(t, manifest, map[string]string{})
 
-		rows, ok := ex.packInventory(t.Context(), "mtplx")
+		rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 		assert.False(t, ok, "no answer is not an empty cache")
 		assert.Nil(t, rows)
@@ -470,7 +470,7 @@ func TestPackInventory_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *tes
 		// the read does not happen: unknown, not empty.
 		ex := newTestExecutor(t, manifest)
 
-		rows, ok := ex.packInventory(t.Context(), "mtplx")
+		rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 		assert.False(t, ok, "a refused read cannot have produced rows")
 		assert.Nil(t, rows)
@@ -483,14 +483,14 @@ func TestPackInventory_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *tes
 		withoutResidency.Actions["loaded_models"] = loaded
 		ex := residencyAsking(t, withoutResidency, map[string]string{residencyInventoryPath: sagittariusModelsBody})
 
-		rows, ok := ex.packInventory(t.Context(), "mtplx")
+		rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 
 		assert.False(t, ok, "no declared join means nothing was read, not that nothing is cached")
 		assert.Nil(t, rows)
 	})
 }
 
-func TestResidentPack_JoinsHealthModelPathWithTheCacheRow(t *testing.T) {
+func TestResidentJoin_JoinsHealthModelPathWithTheCacheRow(t *testing.T) {
 	// One running server, three questions: what does your cache hold, which
 	// directory did you map, and what do you answer requests as. The join is the
 	// first two meeting, and the third must not be folded in with them: the row is
@@ -502,12 +502,12 @@ func TestResidentPack_JoinsHealthModelPathWithTheCacheRow(t *testing.T) {
 		residencyServedPath:    residencyServedBody,
 	})
 
-	row, ok := ex.residentPack(t.Context(), "mtplx")
+	answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-	require.True(t, ok, "the directory this server mapped is a pack the cache lists, so the resident pack is known")
-	assert.Equal(t, "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed", row.repoID,
+	require.True(t, answer.named, "the directory this server mapped is a pack the cache lists, so the resident pack is known")
+	assert.Equal(t, "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed", answer.row.repoID,
 		"the answer is the cache's own spelling of the pack, not the name the server answers to")
-	assert.Equal(t, mtplxServedPath, row.path,
+	assert.Equal(t, mtplxServedPath, answer.row.path,
 		"the row comes back whole: a caller that has to show or remove the directory needs it")
 
 	names, namesOK := ex.servedNames(t.Context(), "mtplx")
@@ -515,19 +515,26 @@ func TestResidentPack_JoinsHealthModelPathWithTheCacheRow(t *testing.T) {
 	require.True(t, namesOK, "the same server also answers what it answers to")
 	assert.Equal(t, []string{"mtplx-flash-next-optimized-speed"}, names,
 		"the wire name survives the join; reporting only the repo id would leave PAIR with a name no request uses")
-	require.NotEmpty(t, row.repoID)
-	assert.NotEqual(t, row.repoID, names[0],
+	require.NotEmpty(t, answer.row.repoID)
+	assert.NotEqual(t, answer.row.repoID, names[0],
 		"had the two come back the same, one of them would have been guessed from the other rather than read")
 }
 
-func TestResidentPack_TreatsAnUnreadableOrMatchlessHealthAsUnknown(t *testing.T) {
-	// Every case here is answered `false`, and `false` is the only right answer for
-	// four quite different reasons: nothing to ask, an answer too big to have read,
-	// an answer that is not the engine, and an answer that names a pack no row
-	// holds. They agree on one thing, which is what these subtests pin — none of
-	// them may mark a row loaded. For an engine that serves exactly one pack, the
-	// first wrong row is not a miss but a confident claim about a pack that is
-	// merely cached, and that is the mistake residency exists to prevent.
+func TestResidentJoin_AnswersEmptyForFourReasonsAndKeepsEvidenceApart(t *testing.T) {
+	// No row comes back for four quite different reasons: nothing to ask, an answer
+	// too big to have read, an answer that is not the engine, and an answer that
+	// names a pack no row holds. They agree on one thing, which is what these
+	// subtests have always pinned — none of them may mark a row loaded. For an
+	// engine that serves exactly one pack, the first wrong row is not a miss but a
+	// confident claim about a pack that is merely cached, and that is the mistake
+	// residency exists to prevent.
+	//
+	// They are not alike in what they rule out, and that is what complete is for. An
+	// eject weighing whether to refuse has to know whether an empty answer is
+	// evidence or the absence of any, so each case below says which it is, and the
+	// last is the one that is evidence: both halves answered, and the directory the
+	// engine named is one no row holds. That distinction is more than a bare `false`
+	// could carry, which is why these cases read the join rather than a name.
 	manifest := residencyManifest(t)
 
 	t.Run("a stopped engine is answered without asking it anything", func(t *testing.T) {
@@ -542,10 +549,11 @@ func TestResidentPack_TreatsAnUnreadableOrMatchlessHealthAsUnknown(t *testing.T)
 			residencyHealthPath:    residencyHealthBody(mtplxServedPath),
 		}, &asked)
 
-		row, ok := ex.residentPack(t.Context(), "mtplx")
+		answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-		assert.False(t, ok, "nothing is running, so which pack it would have mapped is unknown")
-		assert.Equal(t, packRow{}, row, "unknown must not arrive as an empty row that some caller reads as nothing resident")
+		assert.False(t, answer.named, "nothing is running, so which pack it would have mapped is unknown")
+		assert.Equal(t, packRow{}, answer.row, "unknown must not arrive as an empty row that some caller reads as nothing resident")
+		assert.False(t, answer.complete, "nothing was asked, so this emptiness rules nothing out")
 		assert.Empty(t, asked, "a stopped engine is not asked")
 	})
 
@@ -560,12 +568,13 @@ func TestResidentPack_TreatsAnUnreadableOrMatchlessHealthAsUnknown(t *testing.T)
 			residencyHealthPath:    residencyOversizedHealthBody(t),
 		})
 
-		row, ok := ex.residentPack(t.Context(), "mtplx")
+		answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-		assert.False(t, ok, "a truncated health answer identifies no pack")
-		assert.Equal(t, packRow{}, row, "no row may be marked loaded from a body that was never read")
+		assert.False(t, answer.named, "a truncated health answer identifies no pack")
+		assert.Equal(t, packRow{}, answer.row, "no row may be marked loaded from a body that was never read")
+		assert.False(t, answer.complete, "the half that names the directory never answered, so what is loaded stays open")
 
-		rows, inventoryOK := ex.packInventory(t.Context(), "mtplx")
+		rows, inventoryOK := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 		require.True(t, inventoryOK, "the cache listing still arrived, so the unknown answer is the health read's own")
 		assert.Len(t, rows, 1, "and it is not the unknown that emptied it")
 	})
@@ -581,10 +590,11 @@ func TestResidentPack_TreatsAnUnreadableOrMatchlessHealthAsUnknown(t *testing.T)
 			residencyHealthPath:    residencyForeignBody,
 		})
 
-		row, ok := ex.residentPack(t.Context(), "mtplx")
+		answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-		assert.False(t, ok, "an HTML body is not an engine's answer about its model")
-		assert.Equal(t, packRow{}, row, "no row may be marked loaded from a body that is not the engine's")
+		assert.False(t, answer.named, "an HTML body is not an engine's answer about its model")
+		assert.Equal(t, packRow{}, answer.row, "no row may be marked loaded from a body that is not the engine's")
+		assert.False(t, answer.complete, "an answer from something that is not this engine leaves what is loaded open")
 	})
 
 	t.Run("a loaded path under no cache root matches no row", func(t *testing.T) {
@@ -602,18 +612,25 @@ func TestResidentPack_TreatsAnUnreadableOrMatchlessHealthAsUnknown(t *testing.T)
 			residencyHealthPath:    residencyHealthBody(residencyPairBundlePath),
 		})
 
-		row, ok := ex.residentPack(t.Context(), "mtplx")
+		answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-		assert.False(t, ok, "a path no row holds has no row to return")
-		assert.Equal(t, packRow{}, row, "the pack this machine does cache must not stand in for the one it is serving")
+		assert.False(t, answer.named, "a path no row holds has no row to return")
+		assert.Equal(t, packRow{}, answer.row, "the pack this machine does cache must not stand in for the one it is serving")
+		// Where complete earns its keep. Every case above answered this same empty
+		// pair, and this one is the opposite of all of them: the engine said where it
+		// loaded and the listing said what it holds, so the emptiness is a fact about
+		// the pack rather than a failure to look. An eject guard may refuse on this one
+		// and may not refuse on any of the others, and no bare `false` said which was
+		// which.
+		assert.True(t, answer.complete, "both halves answered, so this emptiness is evidence")
 
-		rows, inventoryOK := ex.packInventory(t.Context(), "mtplx")
+		rows, inventoryOK := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 		require.True(t, inventoryOK, "the listing was read, so the miss is the path's and not a failed read")
 		require.Len(t, rows, 1, "the one pack it holds is the pack this answer is not about")
 	})
 }
 
-func TestResidentPack_ReportsUnknownWhenOnlyATidiedPathWouldMatch(t *testing.T) {
+func TestResidentJoin_JoinsNoRowWhenOnlyATidiedPathWouldMatch(t *testing.T) {
 	// The join is exact string equality, and this pins it where the engine's answer
 	// arrives rather than only at the comparison. Every other path in these fixtures
 	// is already clean and single-slashed, so an extraction that tidied separators on
@@ -658,12 +675,17 @@ func TestResidentPack_ReportsUnknownWhenOnlyATidiedPathWouldMatch(t *testing.T) 
 				residencyHealthPath:    residencyHealthBody(tc.reported),
 			})
 
-			row, ok := ex.residentPack(t.Context(), "mtplx")
+			answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-			assert.False(t, ok, "the path this server named is not any row's path, so no pack is known")
-			assert.Equal(t, packRow{}, row, "a path that joins only after tidying must not mark the row it tidies to as loaded")
+			assert.False(t, answer.named, "the path this server named is not any row's path, so no pack is known")
+			assert.Equal(t, packRow{}, answer.row, "a path that joins only after tidying must not mark the row it tidies to as loaded")
+			// The join is exact, and it is not silent about having read: both halves
+			// answered, so this is an emptiness an eject refuses on rather than one it
+			// has to stop for. "Unknown" is the wrong word for it, and the one bool
+			// these cases had before complete could not tell the two apart.
+			assert.True(t, answer.complete, "the engine answered, the listing answered, and the miss between them is the finding")
 
-			rows, inventoryOK := ex.packInventory(t.Context(), "mtplx")
+			rows, inventoryOK := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
 			require.True(t, inventoryOK, "the listing arrived, so the miss belongs to the reported path")
 			require.Len(t, rows, 1, "the cache holds exactly the pack this answer is one separator away from")
 			require.Equal(t, tc.tidied, rows[0].path, "separator redundancy is the only difference between the two spellings")
@@ -675,13 +697,16 @@ func TestResidentPack_ReportsUnknownWhenOnlyATidiedPathWouldMatch(t *testing.T) 
 	}
 }
 
-func TestResidentPack_WithoutADeclaredReadAnswersUnknown(t *testing.T) {
+func TestResidentJoin_WithoutADeclaredReadAnswersNothingWasAsked(t *testing.T) {
 	// A residency block that names no read has not said where the loaded path is
-	// answered, so there is nothing to ask and no guessing where to ask it anyway.
-	// The fixture still answers the inventory, so the `false` cannot be blamed on a
-	// listing that failed to arrive: it comes from having no declared question to
-	// ask, and the answer must be "unknown", never the empty answer some caller
-	// would render as "this engine has nothing loaded".
+	// answered, so there is nothing to ask and no guessing where to ask it anyway. The
+	// fixture still answers the inventory, so an empty answer here cannot be blamed on a
+	// listing that failed to arrive: it comes from having no declared question to ask.
+	// Complete is the word for that — there is nothing this engine could still tell PAIR
+	// about what it has mapped — and it is still not the answer "this engine has nothing
+	// loaded", which is the reading a caller has to be kept off either way. It is what
+	// lets a guard refuse on this emptiness when it cannot refuse on the emptiness of a
+	// read that never came: see residencyAnswer.
 	manifest := residencyManifest(t)
 	loaded := manifest.Actions["loaded_models"]
 	loaded.Result.Residency.Read = nil
@@ -692,14 +717,15 @@ func TestResidentPack_WithoutADeclaredReadAnswersUnknown(t *testing.T) {
 		residencyHealthPath:    residencyHealthBody(mtplxServedPath),
 	}, &asked)
 
-	row, ok := ex.residentPack(t.Context(), "mtplx")
+	answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-	assert.False(t, ok, "a manifest that names no read cannot be asked what it loaded")
-	assert.Equal(t, packRow{}, row, "and not being able to ask is not the same as nothing being resident")
+	assert.False(t, answer.named, "a manifest that names no read cannot be asked what it loaded")
+	assert.Equal(t, packRow{}, answer.row, "and not being able to ask is not the same as nothing being resident")
+	assert.True(t, answer.complete, "there is no read left to make, so this emptiness is all there is to know")
 	assert.Empty(t, asked, "so the engine is not asked")
 }
 
-func TestResidentPack_ReadsAnExternallyStartedServerOnPort6666(t *testing.T) {
+func TestResidentJoin_ReadsAnExternallyStartedServerOnPort6666(t *testing.T) {
 	// Review Focus 1: a MTPLX PAIR never started, on a port PAIR never chose. The
 	// name keeps the measurement — this is the server found on port 6666 on the Mac
 	// these fixtures came from, kept in a settings file rather than in PAIR. The
@@ -707,35 +733,39 @@ func TestResidentPack_ReadsAnExternallyStartedServerOnPort6666(t *testing.T) {
 	// test is somebody's live session and no test may bind it, read it or disturb
 	// it. The health answer is at the measured size all the same: a join proven
 	// against a 30-byte stub has not been proven against a real MTPLX.
-	skipWithoutShell(t)
-
-	// Nothing here reaches this user's MTPLX. The detect path is a script this test
-	// wrote rather than any path the manifest names, the binary is a name in a
-	// directory nothing is in, and the settings-file port source is dropped — that
-	// file is this machine's real `~/Library/Application Support/MTPLX/settings.json`,
-	// and reading it would both make the test depend on it and point the read at a
-	// live server. So the only port in the test is the one the OS handed over.
-	// relocationRegistry pins the same things for the same reason.
+	// Nothing here reaches this user's MTPLX. The tool the manifest's {cli} resolves
+	// to is the fake engine rather than any path the manifest names, the binary is a
+	// name in a directory nothing is in, and the settings-file port source is dropped
+	// — that file is this machine's real
+	// `~/Library/Application Support/MTPLX/settings.json`, and reading it would both
+	// make the test depend on it and point the read at a live server. So the only
+	// port in the test is the one the OS handed over. relocationRegistry pins the same
+	// things for the same reason.
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
 	manifest, platform := hostPlatformBlock(t, reg, "mtplx")
 
 	port := portRun(t, 1)[0]
 
-	// The shipped inventory read is `mtplx models --json`, and no test may run a
-	// real MTPLX, so a script answers the same body from a file. This is also the
-	// only place the cmd half of the join is driven end to end: Task 1 pinned the
-	// cmd shapes at the extractor because no binary could be staged there.
+	// The shipped inventory read is `mtplx models --json`, and no test may run a real
+	// MTPLX, so the fake engine's CLI answers the measured body from a file: {cli} and
+	// a listing-answering subcommand, in place of the shipped subcommand and nothing
+	// else. This is also the only place the cmd half of the join is driven end to end:
+	// Task 1 pinned the cmd shapes at the extractor because no binary could be staged
+	// there.
 	dir := t.TempDir()
 	listing := filepath.Join(dir, "models.json")
 	require.NoError(t, os.WriteFile(listing, []byte(sagittariusModelsBody), 0o600))
-	cli := filepath.Join(dir, "mtplx"+exeExt())
-	require.NoError(t, os.WriteFile(cli, []byte("#!/bin/sh\ncat '"+listing+"'\n"), 0o755))
 	listModels := manifest.Actions["list_models"]
-	listModels.Cmd = []string{cli, "models", "--json"}
+	listModels.Cmd = []string{"{cli}", "listfrom", listing}
 	manifest.Actions["list_models"] = listModels
 
-	platform.Detect = []string{cli}
+	// {cli} follows the tool the platform is observed to have, and nothing is observed
+	// here: with no detect path, the manifest's own literal is the only candidate, so
+	// the literal is the fake engine. Staging a detect path instead would leave this
+	// action running a tool other than the one it wrote.
+	platform.Detect = nil
+	platform.Runtime.CLI = fakeEngineBin
 	platform.Runtime.Bin = filepath.Join(dir, "mtplx-started-by-nobody"+exeExt())
 	platform.Runtime.PortSource = nil
 	platform.Runtime.Port = port
@@ -756,10 +786,10 @@ func TestResidentPack_ReadsAnExternallyStartedServerOnPort6666(t *testing.T) {
 		residencyServedPath: residencyServedBody,
 	}, &asked)
 
-	row, ok := ex.residentPack(t.Context(), "mtplx")
+	answer := ex.residentJoin(t.Context(), "mtplx", inventoryAnswer{})
 
-	require.True(t, ok, "the pack a server PAIR did not start has mapped has to be answerable, or the card says nothing true about it")
-	assert.Equal(t, "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed", row.repoID,
+	require.True(t, answer.named, "the pack a server PAIR did not start has mapped has to be answerable, or the card says nothing true about it")
+	assert.Equal(t, "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed", answer.row.repoID,
 		"a relocated server's answer joins to the same row a locally started one would")
 	require.Len(t, asked, 1, "one question per call, and of the server that is running")
 	assert.Equal(t, fmt.Sprintf("127.0.0.1:%d%s", port, residencyHealthPath), asked[0].target,

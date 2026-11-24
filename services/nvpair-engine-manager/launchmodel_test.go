@@ -7,7 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -423,6 +428,559 @@ func TestEject_StopsTheEngineAndKeepsItsModelChoice(t *testing.T) {
 	assert.Contains(t, launchTextOf(t, e), "--model org/served", "eject must keep the model choice so Load can serve it again")
 
 	assert.Equal(t, ejectReply{Stopped: false}, eject("org/served"), "ejecting from a stopped engine is a no-op")
+}
+
+// The cases below are the eject guard's, and they come from the residency
+// fixtures because that is where the pack this guard has to recognise is measured:
+// one MTPLX answers a request as "mtplx-flash-next-optimized-speed", its own cache
+// listing calls the same pack "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed",
+// and the directory holding it is spelled with a double dash. The manifest tells the
+// user to eject by cache id, and the model list it builds reports the listing's
+// spelling, so a guard that reads only the served names refuses the pack that really
+// is resident. The answers here are those measurements; the engine they are staged on
+// is one this machine never had.
+
+// ejectableMTPLX is that engine: up, stoppable for real, and asked only the questions
+// a fixture declared the answers to.
+type ejectableMTPLX struct {
+	ex      *Executor
+	asked   []residencyAsk
+	process *managedProc
+	stalled *stalledResidencyTransport
+}
+
+// stalledResidencyTransport is an engine that is up on its port and stuck inside one of
+// its answers: the reads named in stalled are held until the test lets them go, and the
+// rest are answered from bodies. A missing key cannot stand in for this, because a
+// missing key fails the moment it is asked and says nothing about what a caller does with
+// a read it is still waiting for.
+type stalledResidencyTransport struct {
+	inner   http.RoundTripper
+	stalled map[string]bool
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *stalledResidencyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !s.stalled[req.URL.Path] {
+		return s.inner.RoundTrip(req)
+	}
+	select {
+	case <-s.release:
+		return nil, fmt.Errorf("the fixture answered %s only after PAIR stopped waiting for it", req.URL.Path)
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+}
+
+func (s *stalledResidencyTransport) letGo() {
+	s.once.Do(func() { close(s.release) })
+}
+
+// ejectableMTPLXStalledOn is the resident engine whose answer to `stalled` never comes
+// back, for the cases about how long an eject is willing to wait for one. Those cases
+// lower the bound they are waiting out, so they stay about the waiting rather than about
+// how long production is willing to wait.
+func ejectableMTPLXStalledOn(t *testing.T, bodies map[string]string, stalled ...string) *ejectableMTPLX {
+	t.Helper()
+
+	probeReadTimeoutGiven(t, 250*time.Millisecond)
+	paths := make(map[string]bool, len(stalled))
+	for _, path := range stalled {
+		paths[path] = true
+	}
+	transport := &stalledResidencyTransport{
+		inner:   residencyStubTransport(bodies),
+		stalled: paths,
+		release: make(chan struct{}),
+	}
+	t.Cleanup(transport.letGo)
+	return ejectableMTPLXStaged(t, func(f *ejectableMTPLX) {
+		f.ex.client.Transport = transport
+		f.stalled = transport
+	})
+}
+
+// ejectableMTPLXAsking stages that engine answering exactly bodies.
+func ejectableMTPLXAsking(t *testing.T, bodies map[string]string) *ejectableMTPLX {
+	t.Helper()
+
+	return ejectableMTPLXStaged(t, func(f *ejectableMTPLX) {
+		f.ex.client.Transport = residencyRecordingTransport(bodies, &f.asked)
+	})
+}
+
+// ejectableMTPLXListingRunByCLI is the resident engine with its cache listing read the
+// way the shipped manifest reads MTPLX's — as a cmd action, the engine's own control tool
+// rather than the fixture's HTTP stand-in. That difference is the whole case: a subprocess
+// is bounded by different machinery from a request.
+func ejectableMTPLXListingRunByCLI(t *testing.T, cmd []string, bodies map[string]string) *ejectableMTPLX {
+	t.Helper()
+
+	return ejectableMTPLXStagedManifest(t, func(manifest *Manifest) {
+		platform := manifest.Platforms[hostPlatformKey()]
+		// {cli} follows the tool the platform is observed to have, so the residency read
+		// would run the fixture's Detect entry rather than anything the case asked for.
+		// With nothing observed, the literal is the only candidate, and the literal is the
+		// fake engine: the guard runs a real subprocess of a real manifest-shaped argv.
+		platform.Detect = nil
+		platform.Runtime.CLI = fakeEngineBin
+		manifest.Platforms[hostPlatformKey()] = platform
+		manifest.Actions["list_models"] = Action{
+			Cmd:    cmd,
+			Result: &ActionResult{Array: "models", Field: "repo_id"},
+		}
+	}, func(f *ejectableMTPLX) {
+		f.ex.client.Transport = residencyRecordingTransport(bodies, &f.asked)
+	})
+}
+
+// ejectableMTPLXStaged is the engine every eject-guard case shares: a MTPLX running on a
+// port with nothing behind it, with the launch controls that make eject a stop, and with
+// a process that really exits when the stop comes. It takes the answers as a function
+// rather than a map because the cases differ in how much of an answer ever arrives, and
+// one of them is "none of it, ever".
+func ejectableMTPLXStaged(t *testing.T, answers func(f *ejectableMTPLX)) *ejectableMTPLX {
+	t.Helper()
+
+	return ejectableMTPLXStagedManifest(t, nil, answers)
+}
+
+// ejectableMTPLXStagedManifest is ejectableMTPLXStaged for a case that has to change the
+// manifest it stages on. The change runs before the manifest is validated, so a fixture
+// that edits itself into an illegal shape fails there rather than quietly never reaching
+// the guard it is meant to be exercising.
+func ejectableMTPLXStagedManifest(t *testing.T, changeManifest func(manifest *Manifest), answers func(f *ejectableMTPLX)) *ejectableMTPLX {
+	t.Helper()
+
+	manifest := residencyManifestWithRestart(t)
+	platform := manifest.Platforms[hostPlatformKey()]
+	// The four keys the shipped manifest declares for an engine that serves one pack per
+	// process: it waits for a model, it serves on a host and port it is told, it names
+	// the pack to serve with --model, and ejecting that model stops the engine rather
+	// than dropping it. Without them the eject these cases are about is a different
+	// action, and an engine with no launch arguments has no launch to keep.
+	platform.Runtime.WaitForModel = true
+	platform.Runtime.Args = []string{"serve", "--host", "{host}", "--port", "{port}"}
+	manifest.Platforms[hostPlatformKey()] = platform
+	manifest.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: []string{"--model", "--model-id"}}}
+	manifest.Actions["unload_model"] = Action{StopEngine: true}
+	if changeManifest != nil {
+		changeManifest(manifest)
+	}
+	require.NoError(t, manifest.Validate(), "a manifest that is not legal never reaches the guard")
+
+	fixture := &ejectableMTPLX{}
+	fixture.ex = newTestExecutor(t, manifest)
+	residencyMarkRunning(t, fixture.ex, manifest.Engine)
+	answers(fixture)
+	// Ejecting the pack keeps the launch it was served on, and keeping that is a write to
+	// the engine's settings override — a directory only settingsExecutor hands out, and
+	// one an eject needs whether or not the case is about settings.
+	fixture.ex.overrideDir = t.TempDir()
+	// The stop has to be a stop. Marking the engine running is enough to reach the
+	// guard, but not enough to tell an eject that stopped something from one that
+	// stopped nothing, so the state carries a process that really is running and
+	// really does exit. It binds no port, so no case here meets a listener it did not
+	// declare.
+	process, err := startManagedProc(fakeEngineBin, []string{"noserve"}, nil, nil)
+	require.NoError(t, err, "the engine being ejected has to be a live process")
+	t.Cleanup(func() { process.stop(2 * time.Second) })
+	fixture.process = process
+	st, err := fixture.ex.state("mtplx")
+	require.NoError(t, err)
+	st.mu.Lock()
+	st.proc = process
+	st.mu.Unlock()
+	return fixture
+}
+
+// residentMTPLXAnswers is one running MTPLX's three answers about the pack it serves:
+// the listing its cache gives, the directory it loaded that pack from, and the name it
+// answers requests as. Each case gets its own copy because each changes one entry.
+func residentMTPLXAnswers() map[string]string {
+	return map[string]string{
+		residencyInventoryPath: sagittariusModelsBody,
+		residencyHealthPath:    residencyHealthBody(mtplxServedPath),
+		residencyServedPath:    residencyServedBody,
+	}
+}
+
+// probeReadTimeoutGiven gives every read of the engine a shorter bound than it is really
+// given, and puts the real one back when the case ends. The bound being a var is what
+// lets a case watch a caller stop waiting for a read without the case being about how
+// long a stalled engine can hold up a suite.
+func probeReadTimeoutGiven(t *testing.T, bound time.Duration) {
+	t.Helper()
+
+	was := probeReadTimeout
+	probeReadTimeout = bound
+	t.Cleanup(func() { probeReadTimeout = was })
+}
+
+func (f *ejectableMTPLX) eject(t *testing.T, model string) (json.RawMessage, error) {
+	t.Helper()
+	return f.ex.Action(t.Context(), "mtplx", "unload_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+}
+
+// requireEjected asserts the eject of this name was carried out end to end: the engine
+// stopped, the process PAIR was handed gone with it, and what is left is what ejecting a
+// pack leaves on an engine that serves one model per process — enabled, and waiting for
+// the next model to be chosen.
+func (f *ejectableMTPLX) requireEjected(t *testing.T, model, why string) {
+	t.Helper()
+
+	raw, err := f.eject(t, model)
+	f.requireEjectionOf(t, raw, err, model, why)
+}
+
+// requireEjectedWithin is requireEjected for the eject that has to stop waiting for
+// something: it runs the eject on its own goroutine and the case fails if the eject is
+// still running when limit passes. The waiting is what those cases are about, and an
+// eject that waits for the read rather than for the bound it set would otherwise hold the
+// suite for the whole action timeout — which is the same thing it does to the click.
+func (f *ejectableMTPLX) requireEjectedWithin(t *testing.T, model string, limit time.Duration, why string) {
+	t.Helper()
+
+	type ejection struct {
+		raw json.RawMessage
+		err error
+	}
+	finished := make(chan ejection, 1)
+	eject := t.Context()
+	go func() {
+		raw, err := f.ex.Action(eject, "mtplx", "unload_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+		finished <- ejection{raw, err}
+	}()
+	select {
+	case got := <-finished:
+		f.requireEjectionOf(t, got.raw, got.err, model, why)
+	case <-time.After(limit):
+		if f.stalled != nil {
+			f.stalled.letGo()
+		}
+		require.FailNow(t, "the eject is still waiting on a read that never answers", "%s: ejecting %s waited %s for it", why, model, limit)
+	}
+}
+
+func (f *ejectableMTPLX) requireEjectionOf(t *testing.T, raw json.RawMessage, err error, model, why string) {
+	t.Helper()
+
+	require.NoError(t, err, "%s: ejecting %s", why, model)
+	var reply struct {
+		Model   string `json:"model"`
+		Stopped bool   `json:"stopped"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &reply))
+	assert.Equal(t, model, reply.Model, "the reply names the model it ejected")
+	assert.True(t, reply.Stopped, "%s: the reply says stopped", why)
+	select {
+	case <-f.process.done:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the engine process is still running", why)
+	}
+	f.requireState(t, false, true, why)
+}
+
+// requireRefusedWithin is requireRefused for a case measuring the waiting: the refusal has
+// to arrive within limit, because a refusal that spent the whole action timeout getting
+// there is the same stall with a message on it. It hands back the error so the case can
+// say which refusal it saw.
+func (f *ejectableMTPLX) requireRefusedWithin(t *testing.T, model string, limit time.Duration, why string) error {
+	t.Helper()
+
+	eject := t.Context()
+	finished := make(chan error, 1)
+	go func() {
+		_, err := f.ex.Action(eject, "mtplx", "unload_model", json.RawMessage(`{"model":`+quoteJSON(model)+`}`))
+		finished <- err
+	}()
+
+	var err error
+	select {
+	case err = <-finished:
+	case <-time.After(limit):
+		if f.stalled != nil {
+			f.stalled.letGo()
+		}
+		require.FailNow(t, "the eject is still waiting on a read that never answers",
+			"%s: refusing to eject %s waited %s for the read to answer", why, model, limit)
+	}
+
+	require.Error(t, err, "%s: ejecting %s must be refused", why, model)
+	select {
+	case <-f.process.done:
+		require.FailNow(t, "a refused eject stopped the engine", why)
+	default:
+	}
+	f.requireState(t, true, false, why)
+	return err
+}
+
+// requireRefused asserts the eject of this name was refused and the engine was left
+// serving: an eject that refuses must not have stopped anything.
+func (f *ejectableMTPLX) requireRefused(t *testing.T, model, why string) error {
+	t.Helper()
+
+	_, err := f.eject(t, model)
+	require.Error(t, err, "%s: ejecting %s must be refused", why, model)
+	select {
+	case <-f.process.done:
+		require.FailNow(t, "a refused eject stopped the engine", why)
+	default:
+	}
+	f.requireState(t, true, false, why)
+	return err
+}
+
+// requireState reads back the fact the guard is gated on: it only asks an engine what
+// it has resident when the executor believes that engine is up. A case that never
+// reached the guard would otherwise pass against an engine that was never running.
+func (f *ejectableMTPLX) requireState(t *testing.T, wantRunning, wantAwaitingModel bool, why string) {
+	t.Helper()
+
+	st, err := f.ex.state("mtplx")
+	require.NoError(t, err)
+	st.mu.Lock()
+	running, awaiting := st.running, st.awaitingModel
+	st.mu.Unlock()
+	assert.Equal(t, wantRunning, running, "%s: running", why)
+	assert.Equal(t, wantAwaitingModel, awaiting, "%s: awaiting a model", why)
+}
+
+func TestEjectByStopping_ServesTheEjectForTheResidentPackUnderItsServedName(t *testing.T) {
+	// The same pack, resident on the same engine, named both ways a user can have it:
+	// the name the engine answers requests as, which the guard has always known, and the
+	// cache id the manifest and PAIR's own model list use, which is the one that was
+	// refused.
+	for _, asked := range []struct{ name, model string }{
+		{"the name the engine answers requests as", mtplxServedModel},
+		{"the cache id the model list carries", mtplxPackRepoID},
+	} {
+		t.Run(asked.name, func(t *testing.T) {
+			fixture := ejectableMTPLXAsking(t, residentMTPLXAnswers())
+			fixture.requireState(t, true, false, "the engine starts up")
+
+			fixture.requireEjected(t, asked.model, "the resident pack is ejectable however this MTPLX spells it")
+		})
+	}
+}
+
+func TestEjectByStopping_StillRefusesAPackThatIsNotResident(t *testing.T) {
+	// The other side of the same join. The server says it loaded from a directory its
+	// own listing holds no row for — where a pack handed over as a pair bundle lands —
+	// while that listing does hold a pack whose folder ends with the same name. So which
+	// pack is resident is genuinely open, and the pack the cache names is not the one
+	// this server is running off. A guard that joined loosely enough to let this eject
+	// through is a guard that stops the engine to eject a pack nobody is serving, on the
+	// strength of a folder name.
+	answers := residentMTPLXAnswers()
+	answers[residencyHealthPath] = residencyHealthBody(residencyPairBundlePath)
+	fixture := ejectableMTPLXAsking(t, answers)
+
+	err := fixture.requireRefused(t, mtplxPackRepoID, "a cached pack this engine did not load")
+	assert.ErrorContains(t, err, mtplxPackRepoID+" is not the model mtplx is serving")
+	assert.Contains(t, err.Error(), mtplxServedModel, "the refusal names what the engine does serve, in the spelling that would work")
+	assert.NotContains(t, err.Error(), residencyPairBundlePath, "a refusal quotes names, never the directory a model was loaded from")
+	require.Len(t, asksForPath(fixture.asked, residencyInventoryPath), 1,
+		"the refusal came from asking the engine and the cache, not from skipping the join")
+}
+
+// TestEjectByStopping_StopsTheEngineThatCannotSayWhatIsResident is the half of the guard
+// with nothing to refuse on. `TestEjectByStopping_StillRefusesAPackThatIsNotResident` is
+// the other half and keeps refusing: the engine answered where it loaded from, the
+// listing answered what it holds, and the name the user gave matches neither, so the
+// refusal is evidence and it quotes the name that would work. Every stage here is a way
+// that join fails to produce evidence at all — an answer that is not the engine's, an
+// answer bigger than PAIR reads, no answer, and an answer that arrives after PAIR stopped
+// waiting — and what is left in those cases is the served names alone, which for an
+// engine that serves one pack per process is a spelling no model list and no listing ever
+// showed the user. The eject button carries the cache id this join produces; refuse here
+// and the click does nothing, the model stays resident, and the message names a string
+// nobody can type, to prevent an outcome the Stop button beside it reaches unasked.
+func TestEjectByStopping_StopsTheEngineThatCannotSayWhatIsResident(t *testing.T) {
+	stages := []struct {
+		name    string
+		fixture func(t *testing.T) *ejectableMTPLX
+	}{
+		{"answers with a web app's bundle", func(t *testing.T) *ejectableMTPLX {
+			answers := residentMTPLXAnswers()
+			answers[residencyHealthPath] = residencyForeignBody
+			return ejectableMTPLXAsking(t, answers)
+		}},
+		{"answers with more than PAIR reads", func(t *testing.T) *ejectableMTPLX {
+			answers := residentMTPLXAnswers()
+			answers[residencyHealthPath] = residencyOversizedHealthBody(t)
+			return ejectableMTPLXAsking(t, answers)
+		}},
+		{"says nothing about its own model", func(t *testing.T) *ejectableMTPLX {
+			answers := residentMTPLXAnswers()
+			delete(answers, residencyHealthPath)
+			return ejectableMTPLXAsking(t, answers)
+		}},
+		// The two reads of the join held open one at a time, because they are two
+		// different reads and only one of them was ever unbounded: the loaded path is a
+		// probe read of a server that is answering, and the listing the answer joins
+		// against runs through the action machinery, where the eject's own bound is all
+		// it gets — left to that machinery's own budget, the read has the action timeout
+		// instead.
+		{"takes longer than the eject will wait for the loaded path", func(t *testing.T) *ejectableMTPLX {
+			return ejectableMTPLXStalledOn(t, residentMTPLXAnswers(), residencyHealthPath)
+		}},
+		{"takes longer than the eject will wait for the cache listing", func(t *testing.T) *ejectableMTPLX {
+			return ejectableMTPLXStalledOn(t, residentMTPLXAnswers(), residencyInventoryPath)
+		}},
+	}
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			// An eject that does not wait for a stalled read is done in milliseconds;
+			// one that waits for the read is waiting for the action timeout, which is
+			// 30 minutes. Three seconds tells those apart without leaning on the
+			// machine the test runs on.
+			const limit = 3 * time.Second
+			for _, named := range []struct{ label, model string }{
+				{"the name the engine answers requests as", mtplxServedModel},
+				{"the cache id the model list carries", mtplxPackRepoID},
+			} {
+				t.Run("it ejects "+named.label, func(t *testing.T) {
+					fixture := stage.fixture(t)
+					fixture.requireState(t, true, false, "the engine starts up")
+
+					fixture.requireEjectedWithin(t, named.model, limit,
+						"an engine that cannot say what it has mapped does not get to hold its model hostage")
+				})
+			}
+		})
+	}
+}
+
+func TestEjectByStopping_RefusesANearMissSpellingOfTheResidentPack(t *testing.T) {
+	// Joining the two halves is a comparison, so what it must not accept is part of the
+	// contract. The same pack has other spellings nearby: the folder its files sit in,
+	// differing from the cache id by a doubled separator; that folder's full directory,
+	// which is what the join reads rather than a name; and the cache id with its org
+	// dropped or its case changed. A guard that folded case, rewrote separators, settled
+	// for a substring or read a path as a name would let all of them through, and then an
+	// eject typed as a typo stops the engine on the grounds that some part of the request
+	// looks like what is resident.
+	for _, asked := range []struct{ name, model string }{
+		{"the cache id in another case", strings.ToUpper(mtplxPackRepoID)},
+		{"the folder the pack sits in", filepath.Base(mtplxServedPath)},
+		{"the cache id without its org", strings.SplitN(mtplxPackRepoID, "/", 2)[1]},
+		{"the directory the pack sits in", mtplxServedPath},
+	} {
+		t.Run(asked.name, func(t *testing.T) {
+			fixture := ejectableMTPLXAsking(t, residentMTPLXAnswers())
+
+			err := fixture.requireRefused(t, asked.model, "what is resident is ejectable under its two names and no other")
+			assert.ErrorContains(t, err, asked.model+" is not the model mtplx is serving")
+			assert.ErrorContains(t, err, mtplxPackRepoID, "the refusal gives the spelling that does work")
+		})
+	}
+}
+
+func TestEjectByStopping_ReadsThePackInventoryNoMoreThanOnce(t *testing.T) {
+	// For this engine the inventory is a `mtplx models --json` subprocess rather than a
+	// request, so what the guard pays for its answer is worth a case of its own: a
+	// second read per eject is invisible in a stubbed transport unless the transport
+	// counts.
+	t.Run("once, when the engine says where its model came from", func(t *testing.T) {
+		fixture := ejectableMTPLXAsking(t, residentMTPLXAnswers())
+
+		fixture.requireEjected(t, mtplxPackRepoID, "the eject runs the join")
+
+		require.Len(t, asksForPath(fixture.asked, residencyInventoryPath), 1,
+			"one eject runs the cache listing once")
+		require.Len(t, asksForPath(fixture.asked, residencyHealthPath), 1,
+			"one eject asks where the model was loaded from once")
+	})
+	t.Run("not at all, when the engine cannot say", func(t *testing.T) {
+		answers := residentMTPLXAnswers()
+		delete(answers, residencyHealthPath)
+		fixture := ejectableMTPLXAsking(t, answers)
+
+		fixture.requireEjected(t, mtplxServedModel, "the eject of a served name runs without the inventory")
+
+		require.Empty(t, asksForPath(fixture.asked, residencyInventoryPath),
+			"an engine that says nothing about its own pack must not cost a cache listing run")
+	})
+}
+
+// TestEjectByStopping_BoundsACacheListingRunAsASubprocess is the eject's bound on the
+// transport the shipped manifest actually uses.
+//
+// Every case above stages the cache listing as an HTTP action, because that is how the
+// fixture delivers a measured body without a real MTPLX. manifests/mtplx.json runs it as
+// `mtplx models --json` instead, and a subprocess is not bounded the way a request is:
+// exec.CommandContext signals the CLI when the caller's deadline passes, but Wait ends
+// only when the command's output pipes reach EOF — and a process the CLI started inherits
+// those pipes and outlives it. Measured on this machine against a helper that sleeps a
+// minute, the read came back when the helper finally went away, and the deadline had
+// nothing to say about the wait. For an eject that means the action timeout: 30 minutes of
+// an eject button that does nothing while it holds the engine's operation lock.
+//
+// The limit below is not a tightened copy of the bound: the read gets probeReadTimeout,
+// the 3 s every other case here pays for, and a bounded read of this fixture's shape is
+// done about a sixth of the way in (measured: 1.02 s of the 6 s, the drain timeout being
+// what it waits on). A case that goes past this limit is waiting on the action timeout
+// instead.
+func TestEjectByStopping_BoundsACacheListingRunAsASubprocess(t *testing.T) {
+	const limit = 6 * time.Second
+
+	dir := t.TempDir()
+	listing := filepath.Join(dir, "models.json")
+	require.NoError(t, os.WriteFile(listing, []byte(sagittariusModelsBody), 0o600))
+	pidFile := filepath.Join(dir, "listing-helper.pid")
+
+	t.Run("a listing whose CLI leaves a helper holding its output is not waited on", func(t *testing.T) {
+		// The finding. The CLI prints the listing and exits 0 while something it started
+		// keeps the pipe the listing came down open, so the wait never sees EOF and the
+		// read runs to the helper's schedule instead of the eject's bound. This fails
+		// before the fix by still being in flight at the limit: the helper goes away a
+		// minute later, and the read returns then, which is the same class of stall the
+		// guard is not allowed to put a click through.
+		fixture := ejectableMTPLXListingRunByCLI(t,
+			[]string{"{cli}", "listleavesahelper", listing, pidFile}, residentMTPLXAnswers())
+		t.Cleanup(func() { killFakeHelper(pidFile) })
+		fixture.requireState(t, true, false, "the engine starts up")
+
+		fixture.requireEjectedWithin(t, mtplxPackRepoID, limit,
+			"an eject is a click, and a listing whose CLI stopped answering a second ago is not a reason to keep waiting")
+
+		// The other direction on the same run: if the CLI had never got as far as leaving
+		// a helper, this case would pass on a read that was never wedged and pin nothing.
+		require.FileExists(t, pidFile, "the listing's CLI never left a helper holding its output")
+	})
+
+	t.Run("a listing a helper is still holding is the listing the guard refuses on", func(t *testing.T) {
+		// Bounding the wait must not throw the answer away. The CLI exited of its own
+		// accord, so the listing arrived whole, and what the join does with the rows in
+		// front of it is refuse — an eject that proceeded here stopped an engine serving
+		// a different pack. Before the fix this case parks exactly as long as the one
+		// above; a fix that gave up the listing to get the timing right turns it into an
+		// engine stopped in error.
+		fixture := ejectableMTPLXListingRunByCLI(t,
+			[]string{"{cli}", "listleavesahelper", listing, pidFile}, residentMTPLXAnswers())
+		t.Cleanup(func() { killFakeHelper(pidFile) })
+
+		err := fixture.requireRefusedWithin(t, "Youssofal/Gemma4-MTPLX-Optimized-Speed", limit,
+			"the pack this MTPLX's own listing does not hold")
+		assert.ErrorContains(t, err, "is not the model mtplx is serving")
+	})
+
+	t.Run("a listing whose CLI never answers is stopped at the bound", func(t *testing.T) {
+		// A pin, not a fix: this one already came back inside the bound, because the CLI
+		// is still the only writer on its output when the deadline kills it and the pipe
+		// closes with it. It is here so that a fix which dropped the caller's context into
+		// the command, or gave the read a budget of its own — which is what the action
+		// timeout already is, and the thing this is meant to shorten — fails something
+		// rather than quietly putting the eject back on 30 minutes.
+		fixture := ejectableMTPLXListingRunByCLI(t, []string{"{cli}", "holdoutput"}, residentMTPLXAnswers())
+		fixture.requireState(t, true, false, "the engine starts up")
+
+		fixture.requireEjectedWithin(t, mtplxPackRepoID, limit,
+			"a CLI that never answers gets killed at the bound the eject set, not waited out")
+	})
 }
 
 func TestLaunchModel_RefusesAnythingThatIsNotAModelID(t *testing.T) {

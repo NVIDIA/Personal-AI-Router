@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -334,6 +335,27 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 	return wrapped, nil
 }
 
+// commandDrainTimeout is how long the output of a manifest command is waited on
+// after the command itself has stopped answering.
+//
+// A context bounds a process, not the wait for its output: exec ends a command when
+// the caller's deadline passes but ends the read only when the output pipes close,
+// and a process the command started inherits them and outlives it. A tool that
+// prints its answer, exits, and leaves something behind holding stdout therefore
+// leaves the read sitting on a pipe nobody is going to close — measured with a
+// helper that sleeps a minute, cmd.Output came back when the helper went away, a
+// minute after a deadline that had nothing to say about the wait. Every action that
+// runs a command is exposed this way, and for the eject's residency read that is
+// 30 minutes of a dead button holding the engine's operation lock, not the 3 s the
+// read was given.
+//
+// A second is enough because the answer is already in the pipe by the time the tool
+// is seen to exit: what the remaining window can hold is whatever a leftover helper
+// has to add, and that is not what the caller is waiting for. It is not
+// downloadWaitDelay, which is how long a tool that is still transferring gets before
+// PAIR gives up on it; this times a tool that is demonstrably done.
+const commandDrainTimeout = time.Second
+
 // runCommandOutput runs argv and returns its stdout; on failure it
 // returns the error with stderr attached for diagnostics.
 func (e *Executor) runCommandOutput(ctx context.Context, argv []string) (string, error) {
@@ -345,7 +367,21 @@ func (e *Executor) runCommandOutput(ctx context.Context, argv []string) (string,
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	configureSysProcAttr(cmd)
+	cmd.WaitDelay = commandDrainTimeout
 	out, err := cmd.Output()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The command answered and exited on its own terms; the drain was cut off by
+		// something that inherited the output and never wrote to it. The exit status is
+		// the fact callers act on, and out holds what the tool wrote, so this read is
+		// the answer rather than a failure — the residency join needs those rows.
+		//
+		// This cannot hide a read that ran out of time: exec documents ErrWaitDelay as
+		// what a process that exited successfully gets when its pipes outlive the delay,
+		// and reports the exit status instead for a command that failed or was killed —
+		// confirmed against a killed command whose helper was still holding the pipe,
+		// which came back as its own signal error with what it had written so far.
+		return string(out), nil
+	}
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(ee.Stderr)))

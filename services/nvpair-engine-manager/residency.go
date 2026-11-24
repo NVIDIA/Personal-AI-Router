@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // packRow is one model pack as the engine's own inventory reports it: the name it
@@ -62,25 +61,6 @@ type inventoryAnswer struct {
 	read bool
 }
 
-// packInventory reads what an engine holds on disk, in the engine's terms, for an
-// engine that serves one model at a time and can only be asked what it is running.
-// It is how PAIR finds out which pack a running engine loaded: the answer to the
-// engine's own loaded-path question is joined onto the rows read here (see
-// residentPack), so a model name is not mistaken for a model just because they are
-// spelled alike.
-//
-// The second result separates what an engine's cache holds from what PAIR managed to
-// find out, because they lead to different advice. ok=false means the inventory was
-// not read: the source action failed, its answer was not a listing, or it was larger
-// than the body PAIR reads. ok=true with no rows is the answer "nothing is cached", so
-// the two are never collapsed into each other.
-//
-// A caller that has already read the listing this join is declared against hands it in
-// rather than running it a second time: see packInventoryFrom and inventoryAnswer.
-func (e *Executor) packInventory(ctx context.Context, engine string) ([]packRow, bool) {
-	return e.packInventoryFrom(ctx, engine, inventoryAnswer{})
-}
-
 // packRowLookup is where one action's answer keeps its pack rows: which array holds
 // them, which field keys a row, and which field says where that pack sits. It is a
 // recipe rather than three loose arguments because two of the three are field names in
@@ -122,24 +102,37 @@ func (l packRowLookup) rowsFrom(engine, action string, raw json.RawMessage) ([]p
 	return rows, ok
 }
 
-// packInventoryFrom reads the pack rows packInventory reads, reusing an answer the
-// caller has already got when it came from the action this join was declared against,
-// and reading that action itself otherwise.
+// packInventoryFrom reads what an engine holds on disk, in the engine's terms, reusing an
+// answer the caller has already got when it came from the action this join was declared
+// against, and reading that action itself otherwise. It is how PAIR finds out which packs
+// a machine has; which one a running engine has loaded is found by joining the engine's own
+// loaded-path answer onto these rows (see residentJoin), so a model name is not mistaken
+// for a model just because they are spelled alike.
+//
+// The second result separates what an engine's cache holds from what PAIR managed to find
+// out, because they lead to different advice. ok=false means the inventory was not read: the
+// source action failed, its answer was not a listing, or it was larger than the body PAIR
+// reads. ok=true with no rows is the answer "nothing is cached", so the two are never
+// collapsed into each other.
 //
 // Reuse is not a shortcut past a read the engine would rather not do twice: it is one
-// question about one fact, and for MTPLX the read is `mtplx models --json` — a
-// subprocess, carrying the action timeout with it, rather than a request bounded by the
-// residency probe's 3 s. Rows from any other action are not the rows the join was
-// declared against, so a join that names another source gets its own read, and the
-// listing the sweep read is still read only once.
+// question about one fact, and for MTPLX the read is `mtplx models --json` — a subprocess,
+// whose cost is decided by how long its output is waited on, rather than a request with a
+// bound on it. Rows from any other action are not the rows the join was declared against, so
+// a join that names another source gets its own read, and the listing the sweep read is
+// still read only once.
 //
-// The read runs through the action machinery, so it takes the action timeout with
-// it. Whether an engine answers at all is the source action's business: HTTP actions
-// are gated on a running engine and cmd actions deliberately are not (see
-// dispatchAction), which is why MTPLX's manifest describes its `mtplx models --json`
-// read as needing no running engine. So "the read failed" is not the same statement
-// as "the engine is down" — and the fixture's HTTP stand-in answers less than a
-// stopped MTPLX would.
+// The read runs through the action machinery, so the caller's context is what bounds it:
+// one probe read for the eject (see ejectableNames), the caller's whole request for the
+// model sweep. A command that has stopped answering is ended at that bound — killed if it
+// is still running, and given up on one commandDrainTimeout after it exits if it left
+// something behind holding its output — so "the read failed" arrives within the time the
+// caller set instead of on the schedule of whatever the engine left running. Whether an
+// engine answers at all is the source action's business: HTTP actions are gated on a running
+// engine and cmd actions deliberately are not (see dispatchAction), which is why MTPLX's
+// manifest describes its `mtplx models --json` read as needing no running engine. So "the
+// read failed" is not the same statement as "the engine is down" — and the fixture's HTTP
+// stand-in answers less than a stopped MTPLX would.
 //
 // What is this function's business is keeping the lookup a lookup: a residency
 // source that also declared stop_engine, restart_after or launch_model would turn a
@@ -189,56 +182,90 @@ func packRowForKey(rows []packRow, path string) (packRow, bool) {
 	return packRow{}, false
 }
 
-// residentPack answers which pack a running engine has mapped, as the inventory row
-// the engine itself gives for it.
+// residentPackFrom answers which pack a running engine has mapped, as the inventory row
+// the engine itself gives for it, for a caller that has already read the inventory the join
+// joins against. The answer is reused only when it came from the action the join names;
+// anything else, including no answer at all, reads that action once.
 //
-// It is a join rather than a read, because the two halves answer different questions
-// in different spellings and only one of them needs a running server: packInventory
-// reads what the cache holds, which for MTPLX is a CLI read that works with the
-// engine stopped, and the residency read says which directory the running server
-// loaded. Where those agree — one directory, string for string — PAIR has a pack it
-// can name, locate and act on. Where they do not, it has one or the other and has to
-// say so rather than choose.
-//
-// The second result is false for every case where PAIR does not know, and it is never
-// the answer "nothing is resident". Nothing here could mean that: an engine that
-// serves exactly one pack has to be running to have one, and each false case — no
-// engine running, no read declared to ask it by, an answer that never arrived or was
-// larger than PAIR reads, an answer from something that is not the engine, a directory
-// no row holds — leaves what is loaded genuinely open. Reporting the empty answer
-// would move a pack from loaded to not loaded on the strength of a request that
-// failed, which is the same mistake as naming the wrong row, travelling the other
-// way.
-//
-// Nothing is cached: each half is read once per call, which makes a call two reads
-// rather than the one its signature suggests. They are not alike in what they cost,
-// and the difference is what a caller has to plan around. The first is the probe read
-// — 3 s, against a server that is answering — for where the model was loaded from.
-// The second is the inventory that answer joins against: it runs through the action
-// machinery, so it carries the action timeout with it (30 minutes, not 3 s), and for
-// MTPLX it is a `mtplx models --json` subprocess rather than a request. That is why the
-// join takes an inventory answer it did not read itself (see residentPackFrom): the
-// model sweep has that listing in hand for its rows, and one sweep should run the CLI
-// once. A caller that wants the row together with the served names it pairs with is
-// paying three reads, not the two this join makes: asked once per row of a listing,
-// this starts one CLI run per row. Re-reading is correct because an engine changes what
-// it has mapped only across a load or an eject — both of which PAIR drives itself.
-// Correct is not the same as cheap.
-func (e *Executor) residentPack(ctx context.Context, engine string) (packRow, bool) {
-	return e.residentPackFrom(ctx, engine, inventoryAnswer{})
+// The false this returns is residentJoin's "not named", which covers both "that pack is not
+// the resident one" and "PAIR could not ask". A caller that only needs a name can take that
+// at face value; a caller about to act on the difference, like an eject weighing whether to
+// refuse, asks residentJoin, which keeps the two apart. Everything the join reads, and what
+// each read costs, is on residentJoin.
+func (e *Executor) residentPackFrom(ctx context.Context, engine string, inventory inventoryAnswer) (packRow, bool) {
+	answer := e.residentJoin(ctx, engine, inventory)
+	return answer.row, answer.named
 }
 
-// residentPackFrom is residentPack for a caller that has already read the inventory the
-// join joins against. The answer is reused only when it came from the action the join
-// names; anything else, including no answer at all, reads that action once.
-func (e *Executor) residentPackFrom(ctx context.Context, engine string, inventory inventoryAnswer) (packRow, bool) {
+// residencyAnswer is one residency join's finding, keeping apart the two things a
+// caller cannot tell from a pack row alone.
+//
+// "No row" is not one answer. It is what PAIR says when the engine told it where the
+// model was loaded from and the cache listing held no row for that directory — a real
+// fact about a real pack, which rules the listing's own packs out — and it is also what
+// PAIR says when it never got an answer at all, which rules nothing out. Callers that
+// only want a name can take (row, named) from residentPackFrom; a caller about to act on
+// the difference, like an eject that is weighing refusing, has to look at complete.
+type residencyAnswer struct {
+	// row is the cached pack the engine says it has mapped, when it named one this
+	// machine has a row for.
+	row packRow
+	// named says row is that pack: the engine answered, the listing answered, and a
+	// row in it holds the directory in the answer.
+	named bool
+	// complete says this is all PAIR could learn from this engine about what it has
+	// mapped: either both halves of the join answered, or the manifest declares no
+	// residency read to answer with. It is false only where there was a read to make
+	// and no answer came — the one case in which "that pack is not the resident one"
+	// is a statement PAIR has no evidence for.
+	complete bool
+}
+
+// residentJoin answers which pack a running engine has mapped, as the inventory row the
+// engine itself gives for it, keeping apart the cases a caller cannot tell from a row alone.
+//
+// It is a join rather than a read, because the two halves answer different questions in
+// different spellings and only one of them needs a running server: packInventoryFrom reads
+// what the cache holds, which for MTPLX is a CLI read that works with the engine stopped,
+// and the residency read says which directory the running server loaded. Where those agree —
+// one directory, string for string — PAIR has a pack it can name, locate and act on. Where
+// they do not, it has one or the other and has to say so rather than choose.
+//
+// The row is empty for every case where PAIR does not know, and that is never the answer
+// "nothing is resident". Nothing here could mean that: an engine that serves exactly one
+// pack has to be running to have one, and each empty case — no engine running, no read
+// declared to ask it by, an answer that never arrived or was larger than PAIR reads, an
+// answer from something that is not the engine, a directory no row holds — leaves what is
+// loaded genuinely open. Reading the empty row as "nothing is resident" would move a pack
+// from loaded to not loaded on the strength of a request that failed, which is the same
+// mistake as naming the wrong row, travelling the other way. Those cases are not alike in
+// what they rule out, and complete is what keeps them apart: see residencyAnswer, and
+// residentPackFrom for a caller that only wants a name.
+//
+// Nothing here is cached: each half is read once per call, which makes a call two reads
+// rather than the one its signature suggests. They are not alike in what they cost, and the
+// difference is what a caller has to plan around. The first is the probe read — 3 s, against
+// a server that is answering — for where the model was loaded from. The second is the
+// inventory that answer joins against: it runs through the action machinery, so the bound on
+// it is the caller's own rather than the 3 s, and for MTPLX it is a `mtplx models --json`
+// subprocess rather than a request. That is why the join takes an inventory answer it did not
+// read itself: the model sweep has that listing in hand for its rows, and one sweep should
+// run the CLI once. A caller that wants the row together with the served names it pairs with
+// is paying three reads, not the two this join makes: asked once per row of a listing, this
+// starts one CLI run per row. Re-reading is correct because an engine changes what it has
+// mapped only across a load or an eject — both of which PAIR drives itself. Correct is not
+// the same as cheap, and a caller that cannot spend that on a name — an eject, which is a
+// click — bounds the join itself. See ejectableNames.
+func (e *Executor) residentJoin(ctx context.Context, engine string, inventory inventoryAnswer) residencyAnswer {
 	st, err := e.state(engine)
 	if err != nil {
-		return packRow{}, false
+		return residencyAnswer{}
 	}
 	residency := residencyDeclaration(st)
 	if residency == nil {
-		return packRow{}, false
+		// Nothing is declared to ask about what is mapped, so there is nothing here
+		// left unanswered: the answer is complete, and empty.
+		return residencyAnswer{complete: true}
 	}
 	if residency.Read == nil {
 		// The manifest has not said where this engine answers where its model lives,
@@ -246,7 +273,7 @@ func (e *Executor) residentPackFrom(ctx context.Context, engine string, inventor
 		// engine that carried the path inside its loaded_models answer would need
 		// that declared, not inferred from whatever that answer happens to hold.
 		slog.Debug("engine:residency no loaded-path read declared", "engine", engine)
-		return packRow{}, false
+		return residencyAnswer{complete: true}
 	}
 	st.mu.Lock()
 	running, port := st.running, st.port
@@ -255,8 +282,9 @@ func (e *Executor) residentPackFrom(ctx context.Context, engine string, inventor
 		// A clean unknown, not an error, and nothing asked. The join's second half
 		// needs a server; the first half is readable right now, which is exactly why
 		// the answer cannot be read off it — rows that exist on disk say nothing
-		// about which of them a stopped process has mapped.
-		return packRow{}, false
+		// about which of them a stopped process has mapped. Nothing was asked, so
+		// nothing is ruled out.
+		return residencyAnswer{}
 	}
 
 	// The loaded path is asked first: one bounded GET against the server that is
@@ -264,12 +292,13 @@ func (e *Executor) residentPackFrom(ctx context.Context, engine string, inventor
 	// says nothing about its own model should not cost a subprocess.
 	loadedPath, ok := e.loadedPackPath(ctx, engine, port, residency)
 	if !ok {
-		return packRow{}, false
+		return residencyAnswer{}
 	}
 	rows, ok := e.packInventoryFrom(ctx, engine, inventory)
 	if !ok {
-		return packRow{}, false
+		return residencyAnswer{}
 	}
+	// Both halves have answered from here, so what follows is evidence.
 	row, found := packRowForKey(rows, loadedPath)
 	if !found {
 		// The engine has a directory mapped that its own listing does not name: a
@@ -278,9 +307,9 @@ func (e *Executor) residentPackFrom(ctx context.Context, engine string, inventor
 		// here may stand in for it — the pack this machine does cache, shown as
 		// loaded, is how an eject or a delete ends up aimed at the wrong directory.
 		slog.Debug("engine:residency loaded path matched no cached pack", "engine", engine, "rows", len(rows))
-		return packRow{}, false
+		return residencyAnswer{complete: true}
 	}
-	return row, true
+	return residencyAnswer{row: row, named: true, complete: true}
 }
 
 // loadedPackPath asks a running engine which directory it loaded its model from, at
@@ -305,7 +334,7 @@ func (e *Executor) loadedPackPath(ctx context.Context, engine string, port int, 
 		return "", false
 	}
 	requestURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
-	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	pctx, cancel := context.WithTimeout(ctx, probeReadTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(pctx, strings.ToUpper(residency.Read.Method), requestURL, nil)
 	if err != nil {
@@ -348,12 +377,12 @@ func (e *Executor) loadedPackPath(ctx context.Context, engine string, port int, 
 // would use: for MTPLX "mtplx-flash-next-optimized-speed", where its own inventory
 // calls the same pack Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed.
 //
-// It is the read the model list already makes, offered next to residentPack for a
+// It is the read the model list already makes, offered next to residentJoin for a
 // caller that needs both halves of one answer: the row is what a cached pack's eject
 // or delete acts on, and the served name is what a request has to be routed by, so
 // neither can be derived from the other and a caller showing both has to have both.
 // ok is false when the engine did not answer or answered with something that is not
-// a listing — which, like residentPack's false, is not "it serves nothing".
+// a listing — which, like an empty residentJoin, is not "it serves nothing".
 func (e *Executor) servedNames(ctx context.Context, engine string) ([]string, bool) {
 	st, err := e.state(engine)
 	if err != nil {

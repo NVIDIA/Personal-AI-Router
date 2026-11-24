@@ -270,6 +270,36 @@ func main() {
 		case "holdoutput": // the helper downloadleavesahelper starts
 			time.Sleep(time.Minute)
 			os.Exit(2)
+		case "listfrom": // stand in for `mtplx models --json` answering: print the
+			// listing held in the named file and exit. This is a cache listing run as
+			// a command rather than a request, with no shell between the two.
+			// args: listfrom <bodyfile>
+			if len(os.Args) < 3 {
+				os.Exit(2)
+			}
+			body, err := os.ReadFile(os.Args[2])
+			if err != nil {
+				os.Exit(2)
+			}
+			os.Stdout.Write(body)
+			return
+		case "listleavesahelper": // stand in for `mtplx models --json` printing its
+			// listing and exiting while a process it started keeps that output open.
+			// args: listleavesahelper <bodyfile> <pidfile>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			body, err := os.ReadFile(os.Args[2])
+			if err != nil {
+				os.Exit(2)
+			}
+			helper := exec.Command(os.Args[0], "holdoutput")
+			helper.Stdout, helper.Stderr = os.Stdout, os.Stderr
+			if helper.Start() != nil || os.WriteFile(os.Args[3], []byte(strconv.Itoa(helper.Process.Pid)), 0o644) != nil {
+				os.Exit(2)
+			}
+			os.Stdout.Write(body)
+			return
 		case "daemon", "server":
 			if strings.Join(os.Args[1:], " ") == "daemon status --json" {
 				if os.Getenv("PAIR_TEST_LMS_STATUS") == "command-error" {

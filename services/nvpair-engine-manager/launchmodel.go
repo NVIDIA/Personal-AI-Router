@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	settings "nvpair-shared/enginesettings"
 )
@@ -353,6 +355,9 @@ func launchModelValue(tokens []string, flags []string) string {
 // wrong one.
 // The served model is asked of the engine itself, not read from the saved
 // launch arguments, because an adopted engine may have been started on another.
+// The names it may be asked under are the engine's answer plus the resident
+// pack's cache id, which for these engines is the spelling the caller has: see
+// ejectableNames.
 func (e *Executor) ejectByStopping(ctx context.Context, engine string, params json.RawMessage) (json.RawMessage, error) {
 	var request struct {
 		Model string `json:"model"`
@@ -385,9 +390,11 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 			return nil
 		}
 		// When the engine cannot say what it serves, it is stopped anyway: Eject
-		// exists to free the GPU, and stopping the engine is all it can do.
+		// exists to free the GPU, and stopping the engine is all it can do. The
+		// residency join being unreadable is that same case (see ejectableNames): the
+		// only name it could have added is the one the user is holding.
 		if model != "" {
-			if serving, err := e.servingModels(ctx, edit.st, engine); err == nil && !slices.Contains(serving, model) {
+			if serving, complete, err := e.ejectableNames(ctx, edit.st, engine); err == nil && complete && !slices.Contains(serving, model) {
 				return fmt.Errorf("%s is not the model %s is serving (%s)", model, engine, strings.Join(serving, ", "))
 			}
 		}
@@ -458,4 +465,58 @@ func (e *Executor) servingModels(ctx context.Context, st *engineState, engine st
 		names = append(names, ids...)
 	}
 	return names, nil
+}
+
+// ejectableNames is what one eject may be asked for: every name the engine reports for
+// the models it serves, plus the cache id of the pack the residency join says it has
+// mapped. The join is here because the two spellings are not alike for an engine that
+// serves one pack per process — MTPLX answers requests as
+// "mtplx-flash-next-optimized-speed" while its own cache listing, and so PAIR's model
+// list, calls the same pack by its repo id — and a guard that reads only the served
+// names refuses the pack that really is resident while serving the eject of a name no
+// listing carries.
+//
+// The second result is whether these names are worth refusing on. A join that never
+// answered adds nothing to them and rules nothing out, and for these engines the name the
+// user has is exactly the one that read would have produced: the model list, and so the
+// eject button, carries the cache id. So an unreadable residency is reported as
+// incomplete rather than as a list of one served name, and the eject goes ahead — as it
+// always has on an engine that cannot say what it serves, and with the same result as the
+// Stop button beside it. A join that answered and named another pack, including one whose
+// directory no row holds, is a complete answer and the guard refuses on it, and so is a
+// manifest that declares no residency read at all: that engine has never had a second
+// spelling to offer, which is why its guard refuses exactly as it did before the join.
+//
+// The join gets one probe read's time. Its second half runs through the action machinery,
+// which hands the caller's context to whatever the manifest declared: a request is bound by
+// it, and a `mtplx models --json` subprocess is killed at it — and a CLI that answered and
+// left something behind holding its output is given up on one commandDrainTimeout later,
+// rather than whenever that leftover process decides to exit. An eject is a click, so PAIR
+// stops the engine on the served names rather than leave the user waiting on a listing that
+// is not coming; unbounded, that wait is the action timeout, 30 minutes of a dead button
+// holding the engine's operation lock. The served-names read keeps the bound the action
+// machinery gives it. The join is asked only of an engine that has answered that read, so a
+// stopped engine and one that declares no loaded_models action cost no inventory run at all.
+func (e *Executor) ejectableNames(ctx context.Context, st *engineState, engine string) (names []string, complete bool, err error) {
+	names, err = e.servingModels(ctx, st, engine)
+	if err != nil {
+		return nil, false, err
+	}
+	bound, cancel := context.WithTimeout(ctx, probeReadTimeout)
+	defer cancel()
+	began := time.Now()
+	answer := e.residentJoin(bound, engine, inventoryAnswer{})
+	if !answer.complete {
+		elapsed := time.Since(began).Round(time.Millisecond)
+		if errors.Is(bound.Err(), context.DeadlineExceeded) {
+			slog.Debug("engine:eject gave up waiting for what the engine has mapped", "engine", engine, "action", "unload_model", "elapsed", elapsed)
+		} else {
+			slog.Debug("engine:eject could not read what the engine has mapped", "engine", engine, "action", "unload_model", "elapsed", elapsed)
+		}
+		return names, false, nil
+	}
+	if answer.named {
+		names = append(names, answer.row.repoID)
+	}
+	return names, true, nil
 }

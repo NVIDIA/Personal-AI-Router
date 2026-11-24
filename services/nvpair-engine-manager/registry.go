@@ -541,7 +541,7 @@ type ActionResidency struct {
 	// that reports it separately from the name it serves. It is declared apart
 	// from the action's own HTTP call because the two are different questions:
 	// loaded_models asks what is served, this is where the answer says it lives.
-	// Left unset, there is no declared place to ask, and residentPack answers
+	// Left unset, there is no declared place to ask, and residentJoin answers
 	// unknown rather than going looking anyway.
 	Read *ActionHTTP `json:"read,omitempty"`
 	// PathField is the field in the read answer that names the loaded pack's

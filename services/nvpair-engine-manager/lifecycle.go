@@ -33,6 +33,15 @@ const (
 	maxProbeJSONBytes         = 1 << 20
 )
 
+// probeReadTimeout is how long one read of an engine that may not be answering gets:
+// the identity probe, over HTTP or over a socket; the read of where a running engine
+// loaded its model from; and the residency join an eject guard asks for. They share a
+// bound because they are the same kind of question — put to a process PAIR does not own,
+// on the way to saying something true about it — and a caller that waited longer than
+// this for one of them would be waiting, not asking. Var, not const, so a case can watch
+// a caller give up on a read that never comes back without waiting out the real bound.
+var probeReadTimeout = 3 * time.Second
+
 type listenerProbeResult uint8
 
 const (
@@ -1154,7 +1163,7 @@ func (e *Executor) probeIdentity(ctx context.Context, p *Probe, port int) probeR
 		if err != nil {
 			return probeResult{}
 		}
-		pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		pctx, cancel := context.WithTimeout(ctx, probeReadTimeout)
 		defer cancel()
 		req, err := http.NewRequestWithContext(pctx, http.MethodGet, u, nil)
 		if err != nil {
@@ -1247,7 +1256,7 @@ func (e *Executor) probeIdentity(ctx context.Context, p *Probe, port int) probeR
 		if err != nil {
 			return probeResult{}
 		}
-		pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		pctx, cancel := context.WithTimeout(ctx, probeReadTimeout)
 		defer cancel()
 		conn, err := (&net.Dialer{}).DialContext(pctx, "tcp", addr)
 		if err != nil {
