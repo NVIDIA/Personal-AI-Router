@@ -169,7 +169,10 @@ describe('local model load command', () => {
         })
     })
 
-    it('leaves the LM Studio load path unobserved', async () => {
+    // A failed `lms load` is reported nowhere else: the model never enters memory,
+    // so no model-list push arrives to release the row either. The reply has to be
+    // observed and the failure has to name the row.
+    it('observes and attributes an LM Studio load rejection to the pending model row', async () => {
         await handleServiceBridgeInvoke('engine:command', {
             command: 'loadModel',
             engineType: 'lm-studio',
@@ -178,8 +181,9 @@ describe('local model load command', () => {
         })
 
         expect(mocks.supervisor.sendProcess).toHaveBeenCalledOnce()
-        expect(mocks.supervisor.sendProcess.mock.calls[0]).toHaveLength(4)
-        expect(mocks.supervisor.sendProcess).toHaveBeenCalledWith(
+        const [name, method, params, onFailure, observeResponse] =
+            mocks.supervisor.sendProcess.mock.calls[0]
+        expect([name, method, params, observeResponse]).toEqual([
             'broker',
             'engine:action',
             {
@@ -187,7 +191,21 @@ describe('local model load command', () => {
                 action: 'load_model',
                 params: { model: 'publisher/demo' }
             },
-            expect.any(Function)
+            true
+        ])
+
+        assert.isDefined(onFailure)
+        onFailure('load failed: no compatible runtime', true)
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Failed to load model on lmstudio: load failed: no compatible runtime',
+            'error',
+            'engine-cmd:load model:lmstudio',
+            {
+                nodeId: 'local-node',
+                engineType: 'lm-studio',
+                operation: 'load',
+                modelName: 'publisher/demo'
+            }
         )
     })
 
@@ -205,6 +223,7 @@ describe('local model load command', () => {
             model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M'
         })
 
+        // Both manifest actions answer in their own reply, so both are observed.
         expect(mocks.supervisor.sendProcess).toHaveBeenNthCalledWith(
             1,
             'broker',
@@ -214,7 +233,8 @@ describe('local model load command', () => {
                 action: 'load_model',
                 params: { model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M' }
             },
-            expect.any(Function)
+            expect.any(Function),
+            true
         )
         expect(mocks.supervisor.sendProcess).toHaveBeenNthCalledWith(
             2,
@@ -225,7 +245,8 @@ describe('local model load command', () => {
                 action: 'unload_model',
                 params: { model: 'ggml-org/gemma-3-1b-it-GGUF:Q4_K_M' }
             },
-            expect.any(Function)
+            expect.any(Function),
+            true
         )
     })
 })
