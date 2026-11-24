@@ -195,9 +195,10 @@ function getOverviewWindow(): BrowserWindow | null {
     return overviewWindow && !overviewWindow.isDestroyed() ? overviewWindow : null
 }
 
-export const refreshDockVisibility = createDockVisibilityController(
-    () => getOverviewWindow()?.isVisible() ?? false
-)
+export const refreshDockVisibility = createDockVisibilityController(() => {
+    const window = getOverviewWindow()
+    return window !== null && (window.isVisible() || window.isMinimized())
+})
 
 /**
  * Flush queued Overview commands once the renderer has mounted and subscribed
@@ -317,6 +318,8 @@ export function createOverviewWindow(): void {
     window.on('show', refreshDockVisibility)
     window.on('hide', refreshDockVisibility)
     window.on('focus', refreshDockVisibility)
+    window.on('minimize', refreshDockVisibility)
+    window.on('restore', refreshDockVisibility)
     // Application Hide emits no window hide event; order it out so the popup
     // can activate PAIR without macOS restoring Overview along with it.
     window.on('blur', () =>
