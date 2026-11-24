@@ -110,7 +110,7 @@ describe('local engine update checks', () => {
         ])
     })
 
-    it('checks only Ollama when other engines are installed or change state', async () => {
+    it('checks Ollama and llama.cpp independently at startup and on a state change', async () => {
         state.applyEngineManagerList({
             engines: [
                 { engine: 'ollama', installed: true },
@@ -119,11 +119,11 @@ describe('local engine update checks', () => {
         })
         checks = watchEngineUpdates(check)
         await vi.advanceTimersByTimeAsync(0)
-        expect(check.mock.calls).toEqual([['ollama']])
+        expect(check.mock.calls).toEqual([['ollama'], ['llama-cpp']])
 
         state.applyEngineManagerStatus({ engine: 'llamacpp', installed: true, running: true })
         await vi.advanceTimersByTimeAsync(0)
-        expect(check.mock.calls).toEqual([['ollama']])
+        expect(check.mock.calls).toEqual([['ollama'], ['llama-cpp'], ['llama-cpp']])
     })
 
     it('requires a valid vendor download link for external installations', async () => {

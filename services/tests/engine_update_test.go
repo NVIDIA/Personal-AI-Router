@@ -19,37 +19,49 @@ import (
 func TestBroker_RelaysLocalEngineUpdateRequests(t *testing.T) {
 	configDir := t.TempDir()
 	installDir := t.TempDir()
-	writeUserManifest(t, configDir, map[string]any{
-		"engine": engines.NameOllama,
-		"platforms": map[string]any{runtime.GOOS + "/" + runtime.GOARCH: map[string]any{
-			"detect":  []string{filepath.Join(installDir, engines.NameOllama)},
-			"install": nil,
-			"runtime": map[string]any{"port": freePorts(t, 1)[0]},
-		}},
-	})
+	names := []string{engines.NameOllama, engines.NameLlamaCPP}
+	ports := freePorts(t, len(names))
+	// Give each engine an empty installation on the host platform, including
+	// engines whose bundled manifests normally omit this OS or architecture.
+	for i, name := range names {
+		writeUserManifest(t, configDir, map[string]any{
+			"engine": name,
+			"platforms": map[string]any{runtime.GOOS + "/" + runtime.GOARCH: map[string]any{
+				"detect":  []string{filepath.Join(installDir, name)},
+				"install": nil,
+				"runtime": map[string]any{"port": ports[i]},
+			}},
+		})
+	}
 	stdin, messages, _, cleanup := startBrokerWithConfigDir(t, configDir, "--engine-manager-path", engineMgrBin)
 	t.Cleanup(cleanup)
 	waitForMethod(t, messages, "app:ready", 15*time.Second)
 
-	t.Run("absent Ollama has no update", func(t *testing.T) {
-		reply := callRPC(t, stdin, messages, "engine:check-updates", map[string]string{"engine": engines.NameOllama}, 10*time.Second)
+	expectNoUpdate := func(t *testing.T, name string) {
+		t.Helper()
+		reply := callRPC(t, stdin, messages, "engine:check-updates", map[string]string{"engine": name}, 10*time.Second)
 		require.Nil(t, reply.Error)
 		var result map[string]any
 		require.NoError(t, json.Unmarshal(reply.Result, &result))
 		require.Contains(t, result, "updateAvailable")
 		assert.Nil(t, result["updateAvailable"])
-	})
-	t.Run("an update cannot install absent Ollama", func(t *testing.T) {
-		reply := callRPC(t, stdin, messages, "engine:update", map[string]string{"engine": engines.NameOllama}, 10*time.Second)
-		require.NotNil(t, reply.Error)
-		assert.Equal(t, -32000, reply.Error.Code)
-	})
+	}
 
-	t.Run("a broken Ollama executable reports a check error", func(t *testing.T) {
+	for _, name := range names {
+		t.Run(name+" has no update when absent", func(t *testing.T) { expectNoUpdate(t, name) })
+		t.Run(name+" cannot be installed by an update", func(t *testing.T) {
+			reply := callRPC(t, stdin, messages, "engine:update", map[string]string{"engine": name}, 10*time.Second)
+			require.NotNil(t, reply.Error)
+			assert.Equal(t, -32000, reply.Error.Code)
+		})
+	}
+
+	t.Run("a broken Ollama binary leaves the llama.cpp check independent", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(installDir, engines.NameOllama), []byte("invalid executable"), 0o600))
 		reply := callRPC(t, stdin, messages, "engine:check-updates", map[string]string{"engine": engines.NameOllama}, 10*time.Second)
 		require.NotNil(t, reply.Error)
 		assert.Equal(t, -32000, reply.Error.Code)
+		expectNoUpdate(t, engines.NameLlamaCPP)
 	})
 
 	for _, method := range []string{"engine:check-updates", "engine:update"} {

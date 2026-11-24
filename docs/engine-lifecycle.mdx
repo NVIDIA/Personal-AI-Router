@@ -190,9 +190,9 @@ first.
 
 ## Updating and Uninstalling an Engine
 
-The desktop checks the local Ollama installation at startup, every six hours,
-and when Ollama starts or stops. If the release service is unreachable, Ollama
-continues normally and PAIR keeps any previously reported offer. When PAIR
+The desktop checks local Ollama and llama.cpp installations at startup, every
+six hours, and when the engine starts or stops. If the release service is
+unreachable, the engine continues normally and PAIR keeps the last offer. When PAIR
 finds a newer stable release, **Overview** shows a message once per release in
 that desktop session. Select **Open engine settings** to see the installed and
 available versions.
@@ -200,14 +200,18 @@ available versions.
 - **Update** lets PAIR update the copy it installed in its standard folder when
   the official package is available for this platform. PAIR keeps downloaded
   models and settings and restores the previous running or stopped state.
-- **Get update** opens Ollama's download page for a user-installed copy or an
+- **Get update** opens the vendor's download page for a user-installed copy or an
   installation whose ownership PAIR cannot confirm.
 
 If GitHub rate-limits a release lookup, wait until the time in the error
 message, then select **Retry** in the desktop app.
 
+For llama.cpp, PAIR needs matching archives and checksums for the platform
+and CUDA variant. If the latest upstream files are unavailable, PAIR can
+offer its bundled build when that is newer than the installed build.
+
 Use the vendor's installer to update an existing LM Studio installation.
-PAIR installs the llama.cpp and vLLM builds pinned for the platform.
+PAIR installs the vLLM build pinned for the platform.
 
 **Uninstall** removes the NVPAIR-installed copy of an engine, and applies only to
 an engine PAIR installed. Use it when you no longer want PAIR to own that engine

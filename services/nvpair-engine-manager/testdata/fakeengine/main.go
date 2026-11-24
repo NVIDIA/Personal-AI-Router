@@ -149,6 +149,10 @@ func downloadUntilInterrupted(interrupts int) {
 func main() {
 	// Installed and staged test executables each report their own release.
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		if output, err := os.ReadFile(os.Args[0] + ".version-output"); err == nil {
+			fmt.Fprint(os.Stderr, string(output))
+			return
+		}
 		version, err := os.ReadFile(os.Args[0] + ".version")
 		if err != nil {
 			os.Exit(2)

@@ -315,7 +315,7 @@ func (e *Executor) state(engine string) (*engineState, error) {
 	if bundled, ok := e.reg.bundledPlatform(engine); ok && plat.InstallDir == bundled.InstallDir && filepath.IsAbs(installDir) {
 		st.bundledInstall = bundled.Install
 		switch engine {
-		case "ollama":
+		case "ollama", "llamacpp":
 			err = recoverStagedEngineInstall(installDir, engine)
 		}
 		if err != nil {

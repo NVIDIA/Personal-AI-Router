@@ -9,6 +9,7 @@ import { getModularBridgeState } from './modular-state'
 
 const log = createStructuredLogger('service-bridge')
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const updateEngines: readonly EngineType[] = ['ollama', 'llama-cpp']
 
 /** One timer per broker. Coalesce lifecycle changes independently for each engine. */
 export function watchEngineUpdates(check: (engine: EngineType) => Promise<JsonValue | undefined>): {
@@ -45,8 +46,12 @@ export function watchEngineUpdates(check: (engine: EngineType) => Promise<JsonVa
         }
     }
 
-    async function refresh(engine: EngineType = 'ollama'): Promise<void> {
-        if (engine === 'ollama') await checkEngine(engine)
+    async function refresh(engine?: EngineType): Promise<void> {
+        if (engine) {
+            if (updateEngines.includes(engine)) await checkEngine(engine)
+        } else {
+            await Promise.all(updateEngines.map(checkEngine))
+        }
     }
 
     const timer = setInterval(() => void refresh(), CHECK_INTERVAL_MS)
