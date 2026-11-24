@@ -55,6 +55,9 @@ type engineState struct {
 	plat       *Platform
 	logs       *logBuffer
 	installDir string
+	// bundledInstall is the unmodified vendor recipe, available only when
+	// this engine's active install directory matches the bundled location.
+	bundledInstall *Install
 	// modelsDir is the resolved {models_dir}: the engine's model store, which no
 	// removal this service performs may delete. Empty when the manifest declares
 	// none, in which case uninstall has nothing to preserve.
@@ -305,6 +308,16 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
 		installDir: installDir,
+	}
+	if bundled, ok := e.reg.bundledPlatform(engine); ok && plat.InstallDir == bundled.InstallDir && filepath.IsAbs(installDir) {
+		st.bundledInstall = bundled.Install
+		switch engine {
+		case "ollama":
+			err = recoverStagedEngineInstall(installDir, engine)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("recover %s installation: %w", m.DisplayName, err)
+		}
 	}
 	if plat.ModelsDir != "" {
 		st.modelsDir = expandPath(plat.ModelsDir)
