@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,6 +34,15 @@ type githubRelease struct {
 	Assets     []githubReleaseAsset `json:"assets"`
 	Draft      bool                 `json:"draft"`
 	Prerelease bool                 `json:"prerelease"`
+}
+
+// Each upstream has one entry. A new tagged release replaces the old entry.
+// The gate lets concurrent clients share a lookup and cancel their own wait.
+type cachedGitHubRelease struct {
+	gate    chan struct{}
+	ref     string
+	release *githubRelease
+	expires time.Time
 }
 
 // A version probe can read a local executable or listener and then wait on a
@@ -126,17 +136,97 @@ func (e *Executor) githubRelease(ctx context.Context, repo, ref string) (*github
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	e.mu.Lock()
+	entry := e.githubReleases[repo]
+	if entry == nil {
+		entry = &cachedGitHubRelease{gate: make(chan struct{}, 1)}
+		e.githubReleases[repo] = entry
+	}
+	e.mu.Unlock()
+	select {
+	case entry.gate <- struct{}{}:
+		defer func() { <-entry.gate }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if entry.ref == ref && time.Now().Before(entry.expires) {
+		return entry.release, nil
+	}
+	e.mu.Lock()
+	retryAt := e.githubRetryAt
+	e.mu.Unlock()
+	if time.Now().Before(retryAt) {
+		return nil, githubRateLimitError(retryAt)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/"+ref, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("check %s releases: %w", repo, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		if retryAt := githubRateLimitReset(resp); !retryAt.IsZero() {
+			e.mu.Lock()
+			if retryAt.After(e.githubRetryAt) {
+				e.githubRetryAt = retryAt
+			}
+			e.mu.Unlock()
+			return nil, fmt.Errorf("check %s releases: HTTP %d: %w", repo, resp.StatusCode, githubRateLimitError(retryAt))
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("GitHub denied access to %s release metadata (HTTP 403). Check this node's access to api.github.com", repo)
+		}
+		return nil, fmt.Errorf("check %s releases: HTTP %d", repo, resp.StatusCode)
+	}
 	var release githubRelease
-	if err := readEngineVersionJSON(e.client, req, &release); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&release); err != nil {
 		return nil, fmt.Errorf("check %s releases: %w", repo, err)
 	}
 	if release.Tag == "" || release.Draft || (!tagged && release.Prerelease) || (tagged && release.Tag != tag) {
 		return nil, fmt.Errorf("%s did not return the requested release %q", repo, ref)
 	}
-	return &release, nil
+	// The vendor's stable pointer is still read on each llama.cpp check.
+	// Reuse its exact build and checksums through the six-hour check window.
+	ttl := 15 * time.Minute
+	if tagged {
+		ttl = 6 * time.Hour
+	}
+	entry.ref, entry.release, entry.expires = ref, &release, time.Now().Add(ttl)
+	return entry.release, nil
+}
+
+func githubRateLimitError(retryAt time.Time) error {
+	return fmt.Errorf("GitHub's API rate limit was reached. Retry after %s", retryAt.UTC().Format(time.RFC1123))
+}
+
+func githubRateLimitReset(resp *http.Response) time.Time {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return time.Time{}
+	}
+	now := time.Now()
+	if seconds, err := strconv.ParseUint(resp.Header.Get("Retry-After"), 10, 32); err == nil {
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	exhausted := resp.Header.Get("X-RateLimit-Remaining") == "0"
+	if exhausted {
+		if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && reset > now.Unix() {
+			return time.Unix(reset, 0)
+		}
+	}
+	// GitHub can report a secondary limit in its JSON message without a
+	// Retry-After header. Keep unrelated HTTP 403 responses distinguishable.
+	if !exhausted && resp.StatusCode == http.StatusForbidden {
+		var details struct{ Message string }
+		if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&details) != nil || !strings.Contains(strings.ToLower(details.Message), "rate limit") {
+			return time.Time{}
+		}
+	}
+	return now.Add(time.Minute)
 }

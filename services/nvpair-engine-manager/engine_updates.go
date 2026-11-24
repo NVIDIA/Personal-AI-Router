@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"nvpair-shared/engines"
 )
 
 type EngineUpdateInfo struct {
@@ -24,6 +26,31 @@ type EngineUpdateInfo struct {
 	ReleaseURL     string `json:"releaseUrl"`
 	DownloadURL    string `json:"downloadUrl,omitempty"`
 	InstallType    string `json:"installType"`
+}
+
+type engineUpdater struct {
+	check  func(*Executor, context.Context) (*EngineUpdateInfo, error)
+	update func(*Executor, context.Context) error
+}
+
+var engineUpdaters = map[string]engineUpdater{
+	engines.NameOllama: {(*Executor).CheckOllamaUpdate, (*Executor).UpdateOllama},
+}
+
+func (e *Executor) CheckEngineUpdate(ctx context.Context, engine string) (*EngineUpdateInfo, error) {
+	provider, ok := engineUpdaters[engine]
+	if !ok {
+		return nil, fmt.Errorf("update checks are not supported for engine %q", engine)
+	}
+	return provider.check(e, ctx)
+}
+
+func (e *Executor) UpdateEngine(ctx context.Context, engine string) error {
+	provider, ok := engineUpdaters[engine]
+	if !ok {
+		return fmt.Errorf("updates are not supported for engine %q", engine)
+	}
+	return provider.update(e, ctx)
 }
 
 // The vendor recipe determines the exact release URL and platform archive.

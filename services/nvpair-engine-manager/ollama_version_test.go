@@ -140,19 +140,24 @@ func TestCheckOllamaUpdate_OffersManagedUpdatesWhenThePlatformArchiveIsReady(t *
 		Run:   []string{"unzip", "{download}", "-d", "{install_dir}"},
 	}
 	manifest.Platforms[key] = platform
-	ex := newTestExecutor(t, manifest)
 	bundled, err := json.Marshal(manifest)
 	require.NoError(t, err)
-	ex.reg.bundledRaw["ollama"] = bundled
-	st, err := ex.state("ollama")
-	require.NoError(t, err)
-	require.NoError(t, writeInstallMarker(st.installDir, "ollama"))
-	bin := filepath.Join(st.installDir, filepath.Base(fakeEngineBin))
-	copyFile(t, fakeEngineBin, bin)
-	require.NoError(t, os.WriteFile(bin+".version", []byte("0.9.5"), 0o600))
+	installedOllama := func(t *testing.T) *Executor {
+		t.Helper()
+		ex := newTestExecutor(t, manifest)
+		ex.reg.bundledRaw["ollama"] = bundled
+		st, err := ex.state("ollama")
+		require.NoError(t, err)
+		require.NoError(t, writeInstallMarker(st.installDir, "ollama"))
+		bin := filepath.Join(st.installDir, filepath.Base(fakeEngineBin))
+		copyFile(t, fakeEngineBin, bin)
+		require.NoError(t, os.WriteFile(bin+".version", []byte("0.9.5"), 0o600))
+		return ex
+	}
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	t.Run("platform archive published", func(t *testing.T) {
+		ex := installedOllama(t)
 		mockOllamaFeed(t, ex, http.StatusOK, `{
 			"tag_name": "v0.10.0",
 			"assets": [{
@@ -168,6 +173,7 @@ func TestCheckOllamaUpdate_OffersManagedUpdatesWhenThePlatformArchiveIsReady(t *
 		assert.Empty(t, update.DownloadURL)
 	})
 	t.Run("platform archive missing", func(t *testing.T) {
+		ex := installedOllama(t)
 		mockOllamaFeed(t, ex, http.StatusOK, `{"tag_name":"v0.10.0","assets":[]}`)
 		update, err := ex.CheckOllamaUpdate(t.Context())
 		require.NoError(t, err)
@@ -283,15 +289,15 @@ func TestCheckOllamaUpdate_DistinguishesACurrentVersionFromAReleaseCheckFailure(
 	require.NoError(t, os.WriteFile(bin+".version", []byte("0.10.0"), 0o600))
 	manifest := testEngineManifest(bin)
 	manifest.Engine = "ollama"
-	ex := newTestExecutor(t, manifest)
-
 	t.Run("current version clears the notification", func(t *testing.T) {
+		ex := newTestExecutor(t, manifest)
 		mockOllamaFeed(t, ex, http.StatusOK, `{"tag_name":"v0.10.0"}`)
 		update, err := ex.CheckOllamaUpdate(t.Context())
 		require.NoError(t, err)
 		assert.Nil(t, update)
 	})
 	t.Run("rate limited check returns an error", func(t *testing.T) {
+		ex := newTestExecutor(t, manifest)
 		mockOllamaFeed(t, ex, http.StatusTooManyRequests, "")
 		update, err := ex.CheckOllamaUpdate(t.Context())
 		require.ErrorContains(t, err, "HTTP 429")
