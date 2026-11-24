@@ -73,6 +73,16 @@ export interface EngineCaps {
      */
     deleteBlockedWhileLoaded?: boolean
     /**
+     * When true, deleting a model the engine could be holding quits the engine
+     * first and leaves it down, so Delete names that on the item and asks before
+     * firing. Mirrors the manifest's `stop_before`, which is what makes the engine
+     * manager stop and wait out the port — including when the engine cannot be
+     * asked what it holds. Declared instead of inferred from
+     * `loadRestartsEngine` because loading and deleting take the engine down for
+     * opposite reasons, and only one of them brings it back.
+     */
+    stopsEngineBeforeDelete?: boolean
+    /**
      * If the engine has its own public model catalog (e.g. ollama.com), provide the
      * hub config here. Presence doubles as the truthy flag for the hub source selector.
      */

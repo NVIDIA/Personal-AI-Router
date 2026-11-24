@@ -32,6 +32,7 @@ function buttonMarkup(
         proxyPort: null,
         models: [],
         modelsKnown: false,
+        residencyKnown: false,
         installUrl: VLLM_INSTALL_URL,
         ...facts
     }

@@ -294,8 +294,18 @@ invisible while clearly running. Identifier matching is
 byte-exact, as on LM Studio, llama.cpp and vLLM, rather than Ollama's implied
 `:latest`. Pulls and deletes are CLI actions with no byte progress, so a pull shows
 only that it is pulling. `mtplx remove` has no in-use guard and does not clear a
-deleted pack from a stopped engine's launch arguments, so the desktop app blocks
-Delete on the pack being served (`deleteBlockedWhileLoaded`).
+deleted pack from a stopped engine's launch arguments, so the engine manager quits
+MTPLX and waits for its port to stop answering before removing a pack the running
+server could be holding, and leaves it down (`stop_before`). The desktop says that
+on the row: Delete reads "Quit MTPLX and delete" and asks first, on the pack being
+served and on any pack whose residency could not be read, because a one-click delete
+is only safe where the engine has shown it is not in use. It is not blocked the way
+vLLM blocks its served model (`deleteBlockedWhileLoaded`), and "eject first" was
+never a way round it: eject is the same stop. Both spellings appear only while MTPLX
+is up, though: the desktop hides the whole model list for a stopped engine, while the
+engine manager reads MTPLX's pack cache offline and the terminal interface keeps
+Delete available with the engine down. That is an open divergence between the desktop
+and the two clients of the same data, not a deliberate narrowing.
 
 MTPLX's catalogue is MTPLX's own published pack list rather than a Hugging Face
 browse, because the engine loads only packs rebuilt for its decode path and a general
@@ -405,23 +415,34 @@ for any other engine and never issues `engine:restart` itself, so the bundled
 deletion in-process, so their manifests omit `restart_after` and their capability
 entries omit `restartsOnModelDelete`: no engine bounce and no restart
 confirmation. llama.cpp may stop the selected model while removing its cache
-entry, but the router and its other models stay up. Those manifest and
-capability facts have to stay in step across Go and TypeScript, which nothing in
-either type system enforces — so
+entry, but the router and its other models stay up. MTPLX changes itself a third
+way: its `delete_model` declares `stop_before`, so the engine manager quits MTPLX
+and waits for its port to stop answering before removing a pack the running server
+could be holding — `mtplx remove` has no in-use guard — and leaves it down rather
+than restarting it. Because that also interrupts inference,
+`EngineCapabilities.mtplx.stopsEngineBeforeDelete` confirms it first, with wording
+that says the engine is quitting rather than bouncing. It is asked per row, not per
+engine: MTPLX removes a pack it reports not serving without stopping anything, so a
+row only asks where non-residency is not established — which includes a residency
+answer that could not be read.
+Those manifest and capability facts have to stay in step across Go and TypeScript,
+which nothing in either type system enforces — so
 `tests/modular/delete-model-restart.test.ts` reads the shipped manifests and
-asserts the pair agrees, and `TestBundledManifestsRestartOnlyLMStudio` guards the
-same thing from the Go side.
+asserts the pair agrees, for `restart_after` and `stop_before` alike and for the
+two never appearing together, and
+`TestBundledManifestsRestartOnlyLMStudio` guards the restart half from the Go side.
 
-Several model-action timeouts have to be ordered correctly. For a
-restart-backed delete, the reply is withheld until the engine is ready again
-(LM Studio's `ready.timeout_s` alone is 60s), so
+Several model-action timeouts have to be ordered correctly. For a delete that
+changes the engine, the reply is withheld until that is done — LM Studio's
+`ready.timeout_s` alone is 60s, and MTPLX spends its stop grace plus the 15s it
+waits for the port to go quiet — so
 `MODULAR_MODEL_ACTION_TIMEOUT_MS` anchors the delete-specific observers. Ollama
 Load uses a separate 10/31-minute response-header budget:
 
 | Budget                                                        | Value | Why                                                                                                                                                                                                                                                                                  |
 | ------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `MODULAR_MODEL_ACTION_TIMEOUT_MS` (`modular-runtime.ts`)      | 120s  | The RPC must outlast a full stop + readiness-probed start.                                                                                                                                                                                                                           |
-| `RESTART_DELETE_TIMEOUT_MS` (`pending-actions.store.ts`)      | 180s  | The optimistic-spinner safety net must outlast the RPC, or it expires mid-flight and drops the spinner while the delete is still running.                                                                                                                                            |
+| `DELETE_ENGINE_CHANGE_TIMEOUT_MS` (`pending-actions.store.ts`)      | 180s  | The optimistic-spinner safety net for either engine-changing delete. It must outlast the RPC, or it expires mid-flight and drops the spinner while the delete is still running.                                                                                                                                            |
 | `engineResponseHeaderTimeout` (`executor.go`)                 | 30s   | Downloads and ordinary local HTTP actions retain a prompt response-header bound; probe contexts stay shorter.                                                                                                                                                                        |
 | `pullProgressTimeout` (`executor.go`)                         | 30min | Streaming Ollama and llama.cpp pulls may run indefinitely while layer/file completed bytes advance; 30 minutes without advancing bytes cancels the stalled pull.                                                                                                                     |
 | `ollamaLoadResponseHeaderTimeout` (`executor.go`)             | 10min | Only Ollama's local `run_model` action gets the cold-load allowance.                                                                                                                                                                                                                 |
@@ -728,6 +749,16 @@ load/eject pending-action clears on the resulting model patch instead of its
 safety-net timeout (`pending-actions.store.ts`). Loaded state carries no
 `sizeVram`/`expiresAt` — the backend delivers the simpler `loadedByEngine`
 name-set, not structured details.
+
+A missing `loadedByEngine` key is not an empty one, and the desktop keeps that
+apart: `EngineModels.residencyKnown` says whether anything answered what the
+engine holds, the same presence test `inventoryKnown` uses for the downloaded
+list and the same three answers the terminal interface shows as `"no"`, `"yes"`
+and `"?"`. A row whose residency is unknown still reads as idle, because
+nothing claimed it was loaded, but it does not get the one-click Delete that a
+known-idle row gets: on MTPLX an unreadable answer is treated as the pack being
+in use, which is what the engine manager does with it. See
+`modelDeleteMode` (`src/ui/utils/model-delete.ts`).
 
 vLLM and MTPLX advertise only the model they are serving, so each `modelsByEngine`
 entry is that one name, for routing. The whole downloaded list arrives as

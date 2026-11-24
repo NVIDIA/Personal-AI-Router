@@ -118,10 +118,13 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // and its list comes from `mtplx models --json`, which answers offline.
         hasModelSearchOnlyWhenRunning: false,
         hasDeleteModel: true,
-        // `mtplx remove` has no in-use guard, and a stopped engine keeps the
-        // deleted pack in its launch arguments, so Delete is refused on the pack
-        // being served: eject first.
-        deleteBlockedWhileLoaded: true,
+        // `mtplx remove` has no in-use guard, so the engine manager quits MTPLX and
+        // waits for its port to go quiet before removing a pack the running server
+        // could be holding, and leaves it down (`stop_before`). It is not blocked
+        // the way vLLM blocks, and "eject first" was never a way round it: eject is
+        // the same stop, and with the engine down the model list is hidden and every
+        // row's controls are disabled anyway.
+        stopsEngineBeforeDelete: true,
         // Load writes the pack's directory into MTPLX's launch arguments and
         // restarts the engine on them.
         loadRestartsEngine: true,

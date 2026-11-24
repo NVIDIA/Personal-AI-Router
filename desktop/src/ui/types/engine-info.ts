@@ -102,6 +102,13 @@ export interface BackendInfo {
      * be, so an empty list is not shown as "nothing downloaded".
      */
     modelsKnown: boolean
+    /**
+     * Whether the engine answered which of {@link models} it holds in memory,
+     * carried here from the node's model snapshot. False is not "holds none":
+     * with no answer, deleting a model has to assume the engine could be serving
+     * it, which is what decides that row's Delete affordance.
+     */
+    residencyKnown: boolean
     /** System-level dependencies required before install/run (local node only) */
     prerequisites?: BackendPrerequisite[]
     /** Progress info during install/uninstall (local node only, ephemeral) */

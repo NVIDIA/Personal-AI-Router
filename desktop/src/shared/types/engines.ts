@@ -126,6 +126,17 @@ export interface EngineModels {
      * list must not be shown as "nothing downloaded".
      */
     inventoryKnown: boolean
+    /**
+     * Whether the engine answered what it holds in memory, which is what lets a
+     * row say a model is *not* resident rather than merely unreported. False
+     * keeps that question open: every model is then treated as possibly resident
+     * wherever acting on that doubt is destructive. `ModelItem.status` answers
+     * only "known resident", so it cannot carry this — an unanswered read still
+     * stamps `idle` — and a per-engine flag is the twin of
+     * {@link inventoryKnown}. `modelDeleteMode` in `src/ui/utils/model-delete.ts`
+     * is what reads it.
+     */
+    residencyKnown: boolean
 }
 
 export interface ModelItem {

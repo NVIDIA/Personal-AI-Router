@@ -25,9 +25,11 @@ let nextNode = 0
  * A Mac that already runs MTPLX before PAIR starts: the engine-manager reports
  * MTPLX online and the self node is known. `discoveryResident` is what the node's
  * discovery record says MTPLX has in memory before any model sweep is read; each
- * case then decides what `engine:models` answers.
+ * case then decides what `engine:models` answers. Pass `null` for a node that
+ * never reported residency at all — no `loadedByEngine` key, which is a third
+ * answer rather than an empty one.
  */
-function startMTPLX(discoveryResident: string[]) {
+function startMTPLX(discoveryResident: string[] | null) {
     const state = getModularBridgeState()
     const supervisor = getModularSupervisor()
     const nodeId = `mtplx-served-model-${++nextNode}`
@@ -44,9 +46,11 @@ function startMTPLX(discoveryResident: string[]) {
                     name: `${nodeId}-host`,
                     ipAddress: '192.0.2.10',
                     port: 14318,
-                    models: discoveryResident,
-                    modelsByEngine: { mtplx: discoveryResident },
-                    loadedByEngine: { mtplx: discoveryResident }
+                    models: discoveryResident ?? [],
+                    modelsByEngine: { mtplx: discoveryResident ?? [] },
+                    ...(discoveryResident === null
+                        ? {}
+                        : { loadedByEngine: { mtplx: discoveryResident } })
                 }
             ]
         }
@@ -169,5 +173,67 @@ describe('MTPLX model list', () => {
 
         await vi.waitFor(() => expect(machine.call).toHaveBeenCalledOnce())
         expect(machine.rows()?.models.map(model => model.name)).toEqual([cachedPack, servedModel])
+    })
+
+    it('reports residency as unknown, not as empty, when no source names what MTPLX serves', async () => {
+        // MTPLX is up and its cache was read, but nothing answered what it holds in
+        // memory: no `loadedByEngine` key in the discovery record and none in the
+        // `engine:models` reply. That is the third answer, and rendering it as
+        // "holds nothing" would tell the row a one-click Delete is safe.
+        //
+        // These pack names appear in no other case here. The bridge caches one
+        // model list per engine for the whole file, so names the earlier cases
+        // already used would let this assertion read that stale list and pass
+        // without ever reading the reply.
+        const packOnDisk = 'unreported/mtplx-lite'
+        const packServedFromPath = 'unreported/mtplx-flash-next-optimized-speed'
+        const machine = startMTPLX(null)
+        machine.call.mockResolvedValue({
+            downloadedByEngine: { mtplx: [packOnDisk, packServedFromPath] }
+        })
+
+        machine.supervisor.refreshManagedEngineModels({ engine: 'mtplx', running: true })
+
+        await vi.waitFor(() =>
+            expect(machine.rows()?.models.map(model => model.name)).toEqual([
+                packOnDisk,
+                packServedFromPath
+            ])
+        )
+        expect(machine.rows()?.inventoryKnown).toBe(true)
+        expect(machine.rows()?.residencyKnown).toBe(false)
+        expect(
+            machine.rows()?.models.map(model => ({ name: model.name, status: model.status }))
+        ).toEqual([
+            { name: packOnDisk, status: 'idle' },
+            { name: packServedFromPath, status: 'idle' }
+        ])
+    })
+
+    it('reports residency as known when MTPLX answers that it serves nothing', async () => {
+        // Same reply plus one key. An empty `loadedByEngine` for a running MTPLX
+        // is an answer — the server was queried and holds no pack — so the rows may
+        // offer the plain Delete that the case above has to withhold.
+        const packOnDisk = 'reported/mtplx-lite'
+        const packServedFromPath = 'reported/mtplx-flash-next-optimized-speed'
+        const machine = startMTPLX(null)
+        machine.call.mockResolvedValue({
+            downloadedByEngine: { mtplx: [packOnDisk, packServedFromPath] },
+            loadedByEngine: { mtplx: [] }
+        })
+
+        machine.supervisor.refreshManagedEngineModels({ engine: 'mtplx', running: true })
+
+        // Wait on the list, not on the call: names and `residencyKnown` arrive in
+        // the same push, and the bridge still holds the previous case's list until
+        // this read lands.
+        await vi.waitFor(() =>
+            expect(machine.rows()?.models.map(model => model.name)).toEqual([
+                packOnDisk,
+                packServedFromPath
+            ])
+        )
+        expect(machine.rows()?.residencyKnown).toBe(true)
+        expect(machine.rows()?.models.map(model => model.status)).toEqual(['idle', 'idle'])
     })
 })

@@ -104,6 +104,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                 proxyPort: status.proxyPort,
                 models: models.models,
                 modelsKnown: models.inventoryKnown,
+                residencyKnown: models.residencyKnown,
                 docsUrl: EngineDefaultLinks[type]?.docsUrl,
                 installUrl: EngineDefaultLinks[type]?.installUrl,
                 installedVersion: status.installedVersion,

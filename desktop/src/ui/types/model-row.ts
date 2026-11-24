@@ -16,6 +16,14 @@ export type ModelRowDropdownControl = {
 export interface ModelRowProps {
     model: ModelItem
     isRunning: boolean
+    /** Display name of the engine owning this row, used to name it in Delete copy. */
+    engineName: string
+    /**
+     * Whether the engine answered what it holds in memory. False is not "holds
+     * nothing": it keeps the question open, which is what decides whether this
+     * row can offer a one-click Delete. See `modelDeleteMode`.
+     */
+    residencyKnown: boolean
     capabilities: EngineCaps
     progress?: EngineProgress
     /**

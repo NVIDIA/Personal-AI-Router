@@ -6,6 +6,7 @@ import { Banner, Button, Flex, Stack, Text } from '@nvidia/foundations-react-cor
 import type { BackendInfo } from '@/ui/types/engine-info'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
+import { deleteConfirmCopy } from '@/ui/utils/model-delete'
 import { ModelExpiry } from '@/shared/types/engines'
 
 import { ConfirmModal } from '@/ui/components/ConfirmModal'
@@ -119,14 +120,15 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         return results
     })()
 
-    // Only an engine that restarts to pick a deletion up (LM Studio today)
-    // confirms first, because the restart interrupts in-flight inference.
-    // Ollama and every other engine delete straight away — this stays false for
-    // them, which `tests/modular/delete-model-restart.test.ts` pins against the
-    // engine-manager manifests. The restart itself belongs to the engine
-    // manager, not to this click.
-    const confirmBeforeDelete = caps?.restartsOnModelDelete ?? false
-
+    // Whether a delete asks before firing is decided per row by `modelDeleteMode`
+    // and travels to this handler as the menu item's id: `delete` acts now,
+    // `delete-confirm` asks first. Only an engine that has to change itself to
+    // remove a pack asks — LM Studio restarts for every delete, MTPLX quits
+    // wherever it cannot rule the model out — because that change interrupts
+    // in-flight inference. Ollama, llama.cpp and vLLM delete straight away, which
+    // `tests/modular/delete-model-restart.test.ts` pins against the engine-manager
+    // manifests. The engine change itself belongs to the engine manager, not to
+    // this click.
     const handleAction = useCallback(
         (modelName: string, action: string) => {
             if (!canManageModels) return
@@ -138,15 +140,25 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     window.pairApi.engines.unloadModel(backendType, nodeId, modelName)
                     break
                 case 'delete':
-                    if (confirmBeforeDelete) {
-                        setModelPendingDelete(modelName)
-                        break
-                    }
                     window.pairApi.engines.deleteModel(backendType, nodeId, modelName)
+                    break
+                case 'delete-confirm':
+                    setModelPendingDelete(modelName)
                     break
             }
         },
-        [backendType, confirmBeforeDelete, canManageModels, nodeId]
+        [backendType, canManageModels, nodeId]
+    )
+
+    // One dialog serves every row, so its wording comes from what the engine
+    // declares, not from the row: a delete that quits the engine and one that
+    // restarts it need different sentences, and no engine does both —
+    // `Manifest.Validate` (`services/nvpair-engine-manager/registry.go`) refuses a
+    // manifest declaring `stop_before` and `restart_after` together. The dialog
+    // only ever opens for a delete that changes the engine.
+    const deleteCopy = useMemo(
+        () => deleteConfirmCopy(caps, backend.displayName, displayName(modelPendingDelete ?? '')),
+        [caps, backend.displayName, displayName, modelPendingDelete]
     )
 
     // `ConfirmModal` closes (`onOpenChange(false)`) before it calls `onConfirm`,
@@ -267,6 +279,8 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                     key={model.name}
                                     model={model}
                                     isRunning={canManageModels}
+                                    engineName={backend.displayName}
+                                    residencyKnown={backend.residencyKnown}
                                     capabilities={caps}
                                     progress={getProgress(nodeId, backend.type, 'pull', model.name)}
                                     pendingAction={usePendingActionsStore
@@ -288,8 +302,8 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     if (!open) setModelPendingDelete(null)
                 }}
                 title="Delete model?"
-                message={`Deleting ${displayName(modelPendingDelete ?? '')} requires ${backend.displayName} to be restarted.`}
-                confirmLabel="Delete and restart"
+                message={deleteCopy.message}
+                confirmLabel={deleteCopy.confirmLabel}
                 confirmColor="danger"
                 onConfirm={handleConfirmDelete}
             />

@@ -41,6 +41,7 @@ function engineInfo(type: EngineType, overrides: Partial<BackendInfo> = {}): Bac
         proxyPort: 8000,
         models: [],
         modelsKnown: true,
+        residencyKnown: true,
         ...overrides
     }
 }

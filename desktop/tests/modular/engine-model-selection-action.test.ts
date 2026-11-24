@@ -256,7 +256,16 @@ function cachedModel(name: string, downloaded = true): ModelItem {
 function reportModels(models: ModelItem[], engineType: EngineType = 'vllm') {
     useEngineModelsStore.setState({
         models: new Map([
-            [`${nodeId}:${engineType}`, { engineType, nodeId, models, inventoryKnown: true }]
+            [
+                `${nodeId}:${engineType}`,
+                {
+                    engineType,
+                    nodeId,
+                    models,
+                    inventoryKnown: true,
+                    residencyKnown: true
+                }
+            ]
         ])
     })
 }

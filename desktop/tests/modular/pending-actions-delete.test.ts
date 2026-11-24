@@ -173,6 +173,29 @@ describe('pending-actions store: model actions', () => {
         ).toBeUndefined()
     })
 
+    it('keeps an MTPLX delete pending past the default net, since it awaits a quit', () => {
+        usePendingActionsStore.getState().begin({
+            command: 'deleteModel',
+            engineType: 'mtplx',
+            nodeId: 'node-1',
+            model: 'mtplx/mtplx-lite'
+        })
+
+        // MTPLX quits and waits out its stop grace plus the 15s it gives the port
+        // to stop answering before removing anything, so the reply can arrive well
+        // after the 60s default and even after the main process's 120s RPC
+        // timeout. Graded by `stopsEngineBeforeDelete`, not by the engine's name.
+        vi.advanceTimersByTime(130_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('node-1', 'mtplx', 'mtplx/mtplx-lite')
+        ).toBe('deleteModel')
+
+        vi.advanceTimersByTime(60_000)
+        expect(
+            usePendingActionsStore.getState().getModelPending('node-1', 'mtplx', 'mtplx/mtplx-lite')
+        ).toBeUndefined()
+    })
+
     it('leaves the default net in place for an Ollama delete, which never bounces', () => {
         usePendingActionsStore.getState().begin({
             command: 'deleteModel',
@@ -211,7 +234,8 @@ describe('pending-actions store: model actions', () => {
                 nodeId: 'local-node',
                 engineType: 'ollama',
                 models: [loadedModel('llama3.2')],
-                inventoryKnown: true
+                inventoryKnown: true,
+                residencyKnown: true
             }
         })
         errorsCb?.([
@@ -312,7 +336,8 @@ describe('a vLLM Load is one pending action for the row and the engine', () => {
                 nodeId: 'local-node',
                 engineType: 'vllm',
                 models: [loadedModel('Qwen/Qwen3-8B')],
-                inventoryKnown: true
+                inventoryKnown: true,
+                residencyKnown: true
             }
         })
 

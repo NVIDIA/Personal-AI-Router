@@ -39,6 +39,7 @@ function cardFor(
         proxyPort: 8100,
         models: [],
         modelsKnown: EnginesListingModelsWhenStopped.includes(engineType),
+        residencyKnown: false,
         docsUrl: EngineDefaultLinks[engineType].docsUrl,
         installUrl: EngineDefaultLinks[engineType].installUrl,
         ...facts

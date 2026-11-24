@@ -47,16 +47,22 @@ const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 32 * 60_000
  */
 const RESTART_LOAD_PENDING_TIMEOUT_MS = MODEL_SWITCH_TIMEOUT_MS
 /**
- * Safety net for a delete on an engine whose backend restarts to pick the
- * deletion up (`EngineCaps.restartsOnModelDelete` / the manifest's
- * `restart_after`). That delete does not reply until the engine has stopped and
- * passed its readiness probe again — for LM Studio, `ready.timeout_s` alone is
- * 60s — so the default net would expire mid-flight and drop the spinner while
- * the operation is still running. Keep this above
- * `MODULAR_MODEL_ACTION_TIMEOUT_MS` (120s) so the real result, success or
- * failure, always wins the race against the net.
+ * Safety net for a delete on an engine that has to change itself to remove a
+ * model, rather than just losing a file: one that restarts to pick the deletion
+ * up (`EngineCaps.restartsOnModelDelete` / the manifest's `restart_after`, LM
+ * Studio) and one that quits first and stays down
+ * (`EngineCaps.stopsEngineBeforeDelete` / `stop_before`, MTPLX). Neither replies
+ * until that is done — LM Studio bounces the server and passes its readiness
+ * probe again, `ready.timeout_s` alone being 60s, and MTPLX spends its stop
+ * grace plus the 15s it waits for the port to go quiet
+ * (`stopBeforeQuietBound`, `actions.go`) before it removes anything. The default
+ * net would expire mid-flight and drop the spinner while the operation is still
+ * running, and a row that re-enables Delete there hands back a destructive
+ * control to fire again. Keep this above
+ * `MODULAR_MODEL_ACTION_TIMEOUT_MS` (120s) so the real
+ * result, success or failure, always wins the race against the net.
  */
-const RESTART_DELETE_TIMEOUT_MS = 180_000
+const DELETE_ENGINE_CHANGE_TIMEOUT_MS = 180_000
 /** How often the sweep drops expired entries. */
 const SWEEP_INTERVAL_MS = 1_000
 
@@ -111,8 +117,10 @@ interface PendingAction {
 
 /**
  * How long the safety net waits for a command before re-enabling its control.
- * Slow Ollama loads and restart-backed Loads or deletes outlast the default net;
- * every other command keeps 60 seconds.
+ * Slow Ollama loads and engine-changing Loads or deletes outlast the default net;
+ * every other command keeps 60 seconds. A delete is graded by how the engine
+ * reacts to it, not by which engine it is: the two delete flags name the two
+ * ways an engine changes to lose a model, and no manifest declares both.
  */
 function timeoutFor(command: EngineCommandType, engineType: EngineType): number {
     if (command === 'loadModel' && engineType === 'ollama') {
@@ -121,8 +129,12 @@ function timeoutFor(command: EngineCommandType, engineType: EngineType): number 
     if (command === 'loadModel' && EngineCapabilities[engineType]?.loadRestartsEngine) {
         return RESTART_LOAD_PENDING_TIMEOUT_MS
     }
-    if (command === 'deleteModel' && EngineCapabilities[engineType]?.restartsOnModelDelete) {
-        return RESTART_DELETE_TIMEOUT_MS
+    if (
+        command === 'deleteModel' &&
+        (EngineCapabilities[engineType]?.restartsOnModelDelete ||
+            EngineCapabilities[engineType]?.stopsEngineBeforeDelete)
+    ) {
+        return DELETE_ENGINE_CHANGE_TIMEOUT_MS
     }
     return PENDING_TIMEOUT_MS
 }

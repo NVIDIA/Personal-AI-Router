@@ -140,6 +140,7 @@ function backend(
         port: 8001,
         proxyPort: 8000,
         modelsKnown: true,
+        residencyKnown: true,
         models: [
             {
                 name: 'org/cached-model',

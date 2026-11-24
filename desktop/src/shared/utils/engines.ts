@@ -94,13 +94,17 @@ export function engineOwnerTool(owner: string | undefined): string | null {
 /**
  * Shallow placeholder when no model list has been pushed for this node/engine
  * yet. For an engine whose list is read from disk and shown while it is stopped,
- * no list yet means unknown, not "nothing downloaded".
+ * no list yet means unknown, not "nothing downloaded". Nothing is known about
+ * residency either, which is why {@link EngineModels.residencyKnown} is false
+ * here rather than derived from the other flag: an engine that was never asked
+ * what it holds has not answered "nothing".
  */
 export function emptyEngineModels(nodeId: string, engineType: EngineType): EngineModels {
     return {
         nodeId,
         engineType,
         models: [],
-        inventoryKnown: !EnginesListingModelsWhenStopped.includes(engineType)
+        inventoryKnown: !EnginesListingModelsWhenStopped.includes(engineType),
+        residencyKnown: false
     }
 }

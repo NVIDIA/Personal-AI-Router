@@ -67,12 +67,19 @@ describe('engine identity', () => {
         // MTPLX serves one pack per process, the way vLLM serves one model: Eject
         // stops the engine and Load starts it again on the chosen pack. Its manifest
         // declares only darwin/arm64 and declares no installer, so PAIR drives an
-        // engine the user installed and never offers to install one.
+        // engine the user installed and never offers to install one. Where it
+        // differs from vLLM is the delete: vLLM refuses one on the model it serves,
+        // so there is nothing to offer (`deleteBlockedWhileLoaded`), while MTPLX's
+        // `stop_before` performs it after quitting the engine — so its row warns
+        // instead of disabling, which is `stopsEngineBeforeDelete`. The two are
+        // separate answers, not spellings of one: see
+        // `tests/modular/delete-model-restart.test.ts`, which ties both back to the
+        // manifests.
         expect(EngineCapabilities.mtplx).toMatchObject({
             hasEject: true,
             hasModelSearchOnlyWhenRunning: false,
             hasDeleteModel: true,
-            deleteBlockedWhileLoaded: true,
+            stopsEngineBeforeDelete: true,
             loadRestartsEngine: true,
             hasInstall: [],
             hasEnginePort: true,
