@@ -110,6 +110,14 @@ ships in `cli-bin` and the app's updater replaces it.
   which its progress reports carry, so a late report from the ended download
   is not taken for the new one's and does not bring the ended one back.
 
+Opening a local or paired node checks its installed engines for updates. The
+TUI checks again when an engine starts or stops and every six hours while the
+node detail screen is open. A newer release appears as **update** in the
+**Installed** column. Select the engine to see its installed and available
+versions. For an external installation, the detail screen shows the vendor's
+update URL. Checks fail quietly offline.
+`NVPAIR_NO_UPDATE_CHECK` disables automatic checks.
+
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a
 source that cannot search, such as Ollama's list of thousands of entries. For
