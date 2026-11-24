@@ -294,10 +294,10 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 		// Every candidate port is asked, not only the one being watched. An
 		// engine the user started themselves answers on whatever port their own
 		// app chose, and that is the only place it will ever answer.
-		ports := e.candidatePorts(st, key.port)
-		obs = e.probePortObservation(ctx, ready, ports)
+		sweep := e.candidatePorts(st, key.port)
+		obs = e.probePortObservation(ctx, ready, sweep)
 		if obs.quiet && running && adopted {
-			refusedConfirmed = e.confirmPortsQuiet(ctx, ready, ports, presenceRefusalWindow)
+			refusedConfirmed = e.confirmPortsQuiet(ctx, ready, sweep, presenceRefusalWindow)
 		}
 	}
 	if ctx.Err() != nil {
@@ -433,11 +433,11 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 		}
 	}
 
-	ports := e.candidatePorts(st, port)
-	obs := e.probePortObservation(ctx, ready, ports)
+	sweep := e.candidatePorts(st, port)
+	obs := e.probePortObservation(ctx, ready, sweep)
 	identified := obs.identified
 	if obs.quiet {
-		if !running || !adopted || !e.confirmPortsQuiet(ctx, ready, ports, presenceRefusalWindow) {
+		if !running || !adopted || !e.confirmPortsQuiet(ctx, ready, sweep, presenceRefusalWindow) {
 			return presenceResult{obs: obs}
 		}
 		st.mu.Lock()

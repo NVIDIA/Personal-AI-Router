@@ -241,6 +241,18 @@ type Runtime struct {
 	// themselves is found wherever their app happens to keep it instead of being
 	// mistaken for an empty port.
 	PortSource *PortSource `json:"port_source,omitempty"`
+	// ProbePorts lists loopback ports worth probing beside the configured one,
+	// because the engine's own software either looks there for a server that is
+	// already up or lands there when its preferred port is taken. The configured
+	// port is where a copy PAIR launches would go, which is not the same question
+	// as where an engine already running keeps itself.
+	ProbePorts []int `json:"probe_ports,omitempty"`
+	// ProbeRun bounds how far the search walks upward from a port that answers,
+	// counting the port it starts from. An engine that relocates when its port is
+	// taken takes the next bindable port, so a server pushed off the port it
+	// wanted leaves a run of listeners behind it, and the port it ended on is
+	// somewhere inside that run. Zero asks the declared ports alone.
+	ProbeRun int `json:"probe_run,omitempty"`
 	// Bind is the default listener address, used as the value of {host}.
 	// Empty defaults to loopback; a per-call bind can override it.
 	Bind string `json:"bind,omitempty"`
@@ -337,12 +349,66 @@ func (r *Runtime) hasCustomLaunch() bool {
 	return len(r.LaunchArgs) > 0 || len(r.LaunchEnv) > 0
 }
 
-// ProbeJSONMatch optionally identifies an HTTP service by a string field in
-// its JSON response body. Field supports the same validated dotted object path
-// syntax as action result filters.
+// ProbeJSONMatch optionally identifies an HTTP service by a field in its JSON
+// response body. Field supports the same validated dotted object path syntax as
+// action result filters.
+//
+// Value names the field's value the way the service writes it, not the way Go
+// would spell it: "router" is the string router, "true" the boolean true, "8" the
+// number 8. A field holding a string is compared after decoding, anything else by
+// the JSON text it holds. This exists because the engines that collide on /health
+// identify themselves with non-strings — MTPLX answers "ok": true — and a matcher
+// that could only compare strings left such an engine with no way to be recognised
+// as itself.
 type ProbeJSONMatch struct {
 	Field string `json:"field"`
 	Value string `json:"value"`
+}
+
+// identityAnswer is one manifest's claim about how its engine answers an identity
+// probe: this field holding this value means the service on that port is that
+// engine.
+type identityAnswer struct {
+	field string
+	value string
+}
+
+// declaredIdentityAnswers collects the identity claims of every loaded manifest,
+// read from each platform block's readiness and ongoing-health probes.
+//
+// A probe that declares no identity of its own consults this, which is how a port
+// answering somebody else's question stops being read as an answer to PAIR's. The
+// knowledge lives here rather than in the manifest that gets it wrong so that
+// declaring "MTPLX answers ok:true" is enough on its own: no engine has to name
+// the engines it might be confused with, and that list would have been out of date
+// the moment someone added another router.
+//
+// Every platform block is read, not only the host's. The question a probe asks is
+// about a port, and what answers there does not depend on which platforms the other
+// engine's manifest happens to describe.
+func (r *Registry) declaredIdentityAnswers() []identityAnswer {
+	var out []identityAnswer
+	add := func(p *Probe) {
+		if p == nil || p.JSONMatch == nil {
+			return
+		}
+		answer := identityAnswer{field: p.JSONMatch.Field, value: p.JSONMatch.Value}
+		if !slices.Contains(out, answer) {
+			out = append(out, answer)
+		}
+	}
+	for _, name := range r.Names() {
+		m, ok := r.Get(name)
+		if !ok {
+			continue
+		}
+		for _, key := range slices.Sorted(maps.Keys(m.Platforms)) {
+			platform := m.Platforms[key]
+			add(platform.Runtime.Ready)
+			add(platform.Runtime.Health)
+		}
+	}
+	return out
 }
 
 // Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP should be

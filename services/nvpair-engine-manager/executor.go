@@ -137,6 +137,12 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	// identityAnswers are the identity probes the loaded manifests declare. They
+	// let a probe that asks no question of its own tell "nothing answered" from
+	// "somebody else's engine answered". Written once, when the registry is
+	// already complete, and read-only afterwards, so no lock guards it.
+	identityAnswers []identityAnswer
+
 	pullMu sync.Mutex
 	pulls  map[pullKey]*activePull
 	// downloads counts the downloads registered so far, so each has an ID of
@@ -218,8 +224,12 @@ type Executor struct {
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
-		reg:                 reg,
-		reporter:            reporter,
+		reg:      reg,
+		reporter: reporter,
+		// The registry is loaded before an Executor is built, in every entry
+		// point, so what its manifests declare about their engines is settled
+		// here and fixed for the life of the process.
+		identityAnswers:     reg.declaredIdentityAnswers(),
 		emit:                emit,
 		client:              newEngineHTTPClient(engineResponseHeaderTimeout),
 		ollamaLoadClient:    newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),

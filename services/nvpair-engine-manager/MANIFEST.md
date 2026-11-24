@@ -229,6 +229,8 @@ applies to the host the test runs on.
 | `env` | object | no | Extra environment (merged over the inherited env). Use `{host}`/`{port}` for the listen address, e.g. `"OLLAMA_HOST": "{host}:{port}"`. |
 | `port` | int | no | Fixed port, or `0` to auto-assign a free loopback port. |
 | `port_source` | object | no | Where the engine keeps the port it really listens on: `{"file":"<path>","field":"<dotted key>"}`, `field` defaulting to `port`. PAIR probes that port beside `port`, so an engine the user started themselves is adopted wherever their own app put it instead of being read as an empty port. Read fresh each poll; a missing file or key tells PAIR nothing. Requires `ready`. |
+| `probe_ports` | int[] | no | Loopback ports worth probing beside `port`, because the engine's own software either looks there for a server that is already up, or lands there when its preferred port is taken. PAIR does not invent these: they are the ports the engine itself keeps, which is why a hand-started instance is found instead of read as an empty port. Requires `ready`. |
+| `probe_run` | int | no | How many ports a search walks upward from each port it asks, counting the port it starts from (`0`/`1` ask the declared ports alone). An engine that relocates when its port is taken takes the next bindable port, so one pushed off the port it wanted leaves a run of listeners behind it, and its real port is somewhere inside that run. A round asks at most 40 ports; a range it could not finish reads as unknown, never as empty. Requires `ready`. |
 | `bind` | string | no | Listen address, substituted as `{host}`. Empty ⇒ `127.0.0.1` (the safe default); an inference engine that serves the cluster sets `"0.0.0.0"`. A per-call `bind` via `engine:start {bind}` overrides this for one call, but a non-loopback value is honored only when the `engine_allow_lan_bind` node setting is on — otherwise the start is rejected with `-32602` (`bind must be a loopback address`). Probes always target loopback. |
 | `start` | string[][] | command mode | Ordered bring-up commands (each an argv) for `command` mode, e.g. `[["{cli}","server","start","--port","{port}"]]`. |
 | `cli` | string | no | The engine's control-CLI path for this platform, referenced as `{cli}` by start/stop/actions so the manifest's **global** actions resolve to the correct per-OS binary. |
@@ -243,6 +245,22 @@ loopback URLs/addresses. An HTTP probe may also set
 string at that dotted object path. Missing, malformed, oversized, or
 wrong-typed response data fails the probe. `json_match` is invalid on TCP
 probes.
+
+A probe answers two questions at once: whether an engine is up, and whether the
+thing answering *is* that engine. A status code is not evidence about who is
+listening — on one Mac's loopback, vLLM answers `/health` with a bare `200`,
+llama.cpp with `200 {"status":"ok"}`, and MTPLX with `200 {"ok":true,…}` — so
+the body is read for every HTTP probe. A body naming another engine's declared
+identity, a body that is not a JSON object, or a body PAIR could not read
+counts as a foreign service rather than as this engine. A `409` whose body
+carries the `proxy-facade` error code is NVIDIA PAIR's own compatibility facade
+answering, which counts as an empty port: the facade fronts ports, it does not
+serve models, and a marked request is answered before it is ever forwarded.
+Declare `json_match` on `ready` and `health` wherever a bare success would
+identify the wrong process: MTPLX asks for `"ok": "true"` because another
+engine on the same machine answers `/health` with `{"status":"ok"}` and a third
+answers it with nothing at all, while llama.cpp separates itself on `/props`
+with `"role": "router"`.
 
 ### Actions
 

@@ -61,25 +61,39 @@ type portObservation struct {
 	// something that is not this engine.
 	stranger int
 	// unsure names a candidate that could not be read at all — a dial that timed
-	// out or failed for a reason other than refusal. That proves nothing about
-	// whether anything listens, so it is never read as an empty port.
+	// out or failed for a reason other than refusal, or a port the round gave up
+	// on once it ran out of ports or time. That proves nothing about whether
+	// anything listens, so it is never read as an empty port.
 	unsure int
-	// quiet says every candidate refused the connection: nothing is listening.
+	// incomplete says the round stopped before it finished looking: it ran out of
+	// ports or out of time. Nothing is proved about the ports it never reached, so
+	// an unfinished search is never read as an empty port range.
+	incomplete bool
+	// quiet says nothing that could be an inference engine is listening anywhere
+	// the round looked: every port it asked either refused the connection or
+	// answered as NVIDIA PAIR's own compatibility facade.
 	quiet bool
+	// asked records every port the round dialed, in the order it dialed them. It
+	// is how a round spends its budget and how it refuses to ask the same port
+	// twice, and it is the record of ground a search covered: a search that
+	// stopped short has to stay distinguishable from one that covered the range
+	// and found nobody, or a quiet status round is only a search that gave up.
+	asked []int
 }
 
 // answered says the round found a live service that is not this engine.
 func (o portObservation) answered() bool { return o.blocked != 0 || o.stranger != 0 }
 
-// occupied says the round heard something back anywhere: the engine answering as
-// itself, a stranger, a credential refusal, or a port it could not read. Both of
-// the callers that ask this question are about to act on the assumption that
+// occupied says the round heard something back anywhere, or could not finish
+// telling: the engine answering as itself, a stranger, a credential refusal, a port
+// it could not read, or ports it never reached because it ran out of ground or time.
+// Both of the callers that ask this question are about to act on the assumption that
 // nothing is there — delete the engine's files, or call its service gone — and
 // neither can tell which of the ports it asked was the one it needed, so none of
 // them counts as empty. Whether a port stands in the way of a second copy is the
 // narrower question, and spawnBlocked answers it.
 func (o portObservation) occupied() bool {
-	return o.identified != 0 || o.answered() || o.unsure != 0
+	return o.identified != 0 || o.answered() || o.unsure != 0 || o.incomplete
 }
 
 // spawnBlocked says a Start or Install must not bring up a second copy.
@@ -172,9 +186,53 @@ func (o portObservation) authBlockedNotice(displayName string) string {
 		displayName, o.blocked, o.blockedStatus, o.blockedAnswer(), neverSendsKey)
 }
 
-// candidatePorts lists the loopback ports worth probing for one engine, in
-// probe order: the port being watched, then the port the engine's own settings
-// file names when that differs.
+// portSweep is one round of asking: which loopback ports are worth a probe, and
+// how far the search may travel from each of them. It is built once per round,
+// because how much ground a round may cover is a property of the round rather
+// than of any one port inside it.
+type portSweep struct {
+	// anchors lists the ports worth probing wherever they came from: the port
+	// being watched, the port an engine's own settings file names, and the ports
+	// the engine's own software looks at.
+	anchors []int
+	// run bounds how many ports one walk covers, counting the port it starts
+	// from. One asks the anchors alone, which is every engine that serves on the
+	// port it is given; more follows an engine that had to move.
+	run int
+	// budget bounds how many ports the whole round may ask, so a machine with a
+	// wide field of listeners does not turn one status check into a port scan.
+	budget int
+}
+
+const (
+	// portSweepBudget is the most ports one round will ask, counting the anchors
+	// and every walk. The ports a MTPLX-style search covers are its configured
+	// port, its settings-file port, four ports the engine probes itself, and the
+	// run above each, which fits inside this with room to spare; past it the
+	// round gives up and says it is unsure.
+	portSweepBudget = 40
+
+	// portSweepRoundTime bounds one whole round, so that a listener which accepts
+	// connections and never answers cannot make a status check spend its every
+	// probe's full wait against every port in range: stalled listeners cost this
+	// much in total, not three seconds times forty ports. A machine with nothing
+	// listening finishes a round in milliseconds, and a caller's own deadline (the
+	// quiet check gives itself less than this) still cuts it shorter. A round that
+	// hits the bound is marked unsure rather than quiet, because ports never asked
+	// prove nobody is home.
+	portSweepRoundTime = time.Second
+)
+
+// singlePortSweep asks one port with no walk beside it: the port a stop was
+// carried out against, where there is no relocation to follow.
+func singlePortSweep(port int) portSweep {
+	return portSweep{anchors: []int{port}, run: 1}
+}
+
+// candidatePorts lists the loopback ports worth probing for one engine, in probe
+// order: the port being watched, then the port the engine's own settings file
+// names when that differs, then the ports the engine's own software looks at,
+// with how far the search may walk upward from any of them.
 //
 // The settings file is what lets an engine the user started themselves be found
 // on whatever port their own app chose, which is the only port it will ever
@@ -182,9 +240,15 @@ func (o portObservation) authBlockedNotice(displayName string) string {
 // own app takes effect on the next poll without restarting PAIR. An engine whose
 // manifest declares no port source gets exactly the one port it probed before
 // any of this existed.
-func (e *Executor) candidatePorts(st *engineState, watched int) []int {
+//
+// The declared probe ports, and the walk above them, are for the other way an
+// engine ends up away from its configured port: it cannot bind it. An engine that
+// finds its preferred port taken moves to the next bindable one, so a server that
+// had to move leaves a run of listeners behind it, and the one place PAIR knows to
+// look — the port it would have used — is exactly the place that was already taken.
+func (e *Executor) candidatePorts(st *engineState, watched int) portSweep {
 	// plat is fixed when the engine is registered, so no lock guards it.
-	source := st.plat.Runtime.PortSource
+	rt := st.plat.Runtime
 
 	var ports []int
 	add := func(port int) {
@@ -193,12 +257,15 @@ func (e *Executor) candidatePorts(st *engineState, watched int) []int {
 		}
 	}
 	add(watched)
-	if source != nil {
+	if source := rt.PortSource; source != nil {
 		if port, ok := settingsPort(source, st.pathVars()); ok {
 			add(port)
 		}
 	}
-	return ports
+	for _, port := range rt.ProbePorts {
+		add(port)
+	}
+	return portSweep{anchors: ports, run: max(rt.ProbeRun, 1), budget: portSweepBudget}
 }
 
 // settingsPort reads the port an engine keeps in its own settings file, from
@@ -250,68 +317,141 @@ func settingsPort(source *PortSource, vars map[string]string) (int, bool) {
 	return port, port > 0 && port <= 65535
 }
 
-// probePortObservation asks each candidate port, cheapest check first: a
-// transport dial before an HTTP request. It stops at the first port that
-// identifies, because one identified service is all an engine needs and every
-// later port would only be asked the same question. Each answer is filed under
-// the port it came from: whether one port counts against an operation depends on
-// which port it is, and a refusal has to say where the service it names is.
-func (e *Executor) probePortObservation(ctx context.Context, ready *Probe, ports []int) portObservation {
-	obs := portObservation{quiet: len(ports) > 0}
-	if len(ports) > 0 {
-		obs.bind = ports[0]
+// probePortObservation asks the ports a sweep covers, cheapest check first: a
+// transport dial before an HTTP request. Each ladder walks upward only while its
+// ports take connections, and the round returns at the first port that identifies,
+// because one identified service is all an engine needs and every later port would
+// only be asked the same question.
+//
+// Each answer is filed under the port it came from: whether one port counts against
+// an operation depends on which port it is, and a refusal has to say where the
+// service it names is.
+func (e *Executor) probePortObservation(ctx context.Context, ready *Probe, sweep portSweep) portObservation {
+	run := max(sweep.run, 1)
+	budget := max(sweep.budget, 1)
+
+	// A round with no port to ask says nothing at all. It stays not-quiet, so a
+	// caller about to delete an engine's files, or to call its service gone, keeps
+	// failing closed instead of reading an empty question as an empty port.
+	obs := portObservation{}
+	if len(sweep.anchors) == 0 {
+		return obs
 	}
-	for _, port := range ports {
-		switch probeListener(ctx, ready, port) {
-		case listenerProbeRefused:
-			continue
-		case listenerProbeIndeterminate:
-			obs.quiet = false
-			if obs.unsure == 0 {
-				obs.unsure = port
-			}
-			continue
+	obs.bind = sweep.anchors[0]
+	obs.quiet = true
+
+	// asked is the round's ledger: it spends the budget, it keeps the search from
+	// asking one port twice, and it is the only record that a range was covered
+	// rather than skipped.
+	asked := make(map[int]bool, budget)
+	deadline := time.Now().Add(portSweepRoundTime)
+	// roundOver ends the whole sweep at once: either an engine answered as itself,
+	// or the round ran out of ports or time and did not finish looking.
+	roundOver := false
+	for _, anchor := range sweep.anchors {
+		if roundOver {
+			break
 		}
-		// The port takes connections, so what it answers says what is behind it.
-		obs.quiet = false
-		answer := e.probeIdentity(ctx, ready, port)
-		switch {
-		case answer.outcome == probeIdentified:
-			obs.identified = port
-			return obs
-		case answer.blocked():
-			if obs.blocked == 0 {
-				obs.blocked = port
-				obs.blockedStatus = answer.status
+		// One ladder per anchor, walked upward while the ports stay busy. The way
+		// an engine ends up away from the port it wanted is that the ports above it
+		// were taken too, so a run of listeners is the trail to follow and an empty
+		// port is the end of it. A busy port is only a reason to stop looking when
+		// what lives there is a service PAIR could have used: a stranger, or PAIR's
+		// own facade, says nothing about where this engine is.
+	portRange:
+		for step := 0; step < run; step++ {
+			port := anchor + step
+			if port > 65535 {
+				break
 			}
-		default:
-			if obs.stranger == 0 {
-				obs.stranger = port
+			// One ask per port: a declared probe port can fall inside a ladder that
+			// has already covered it.
+			if asked[port] {
+				continue
+			}
+			if len(obs.asked) >= budget || time.Now().After(deadline) {
+				// Stopping short is not the same as having looked, and a quiet round
+				// unblocks an uninstall and reports an engine stopped, so a round
+				// that gave up claims nothing.
+				obs.incomplete = true
+				obs.quiet = false
+				roundOver = true
+				break
+			}
+			asked[port] = true
+			obs.asked = append(obs.asked, port)
+
+			switch probeListener(ctx, ready, port) {
+			case listenerProbeRefused:
+				break portRange
+			case listenerProbeIndeterminate:
+				// A dial that timed out, or failed for a reason other than refusal,
+				// does not prove the port is empty either.
+				obs.quiet = false
+				if obs.unsure == 0 {
+					obs.unsure = port
+				}
+				break portRange
+			}
+
+			// The port takes connections, so what it answers says what is behind
+			// it — except for PAIR's own facade, which is not a place an inference
+			// engine lives. See probePairFacade.
+			answer := e.probeIdentity(ctx, ready, port)
+			if answer.outcome != probePairFacade {
+				obs.quiet = false
+			}
+			switch {
+			case answer.outcome == probeIdentified:
+				obs.identified = port
+				roundOver = true
+				break portRange
+			case answer.outcome == probePairFacade:
+				// NVIDIA PAIR's compatibility facade answering that it is not an
+				// inference engine. There is nothing behind it to adopt and nobody
+				// to leave alone, so it neither fills a port range nor keeps a
+				// quit engine marked running.
+			case answer.blocked():
+				if obs.blocked == 0 {
+					obs.blocked = port
+					obs.blockedStatus = answer.status
+				}
+			default:
+				if obs.stranger == 0 {
+					obs.stranger = port
+				}
 			}
 		}
 	}
 	return obs
 }
 
-// confirmPortsQuiet re-probes ports until every one of them refuses three times
-// in a row. That is the evidence PAIR demands before it says a service it was
+// confirmPortsQuiet re-runs the whole port round until it comes back quiet three
+// times in a row. That is the evidence PAIR demands before it says a service it was
 // watching has stopped — both when a stop command has just run against one port
-// and when a passive status round finds nothing answering. A service that moved
-// to another port still answers here, so it is not reported gone, and another
-// engine's listener is never read as this one leaving.
-func (e *Executor) confirmPortsQuiet(parent context.Context, ready *Probe, ports []int, timeout time.Duration) bool {
+// and when a passive status round finds nothing answering.
+//
+// It re-runs the round rather than just dialing the ports again because being quiet
+// now includes what a port answers. NVIDIA PAIR's own facade takes connections on
+// every port it fronts, so a dial-only check could never go quiet while PAIR's proxy
+// runs: a MTPLX the user quit would stay lit forever and every uninstall would be
+// refused, over a listener that is PAIR's own plumbing. A service that moved to
+// another port still answers here, so it is not reported gone, and another engine's
+// listener is never read as this one leaving.
+func (e *Executor) confirmPortsQuiet(parent context.Context, ready *Probe, sweep portSweep, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	misses := 0
 	for {
-		if allPortsRefused(ctx, ready, ports) {
+		if e.probePortObservation(ctx, ready, sweep).quiet {
 			misses++
 			if misses == unavailableConfirmations {
 				return true
 			}
 		} else {
-			// A reachable listener, a timeout, or a malformed probe target
-			// cannot prove shutdown. Require a fresh consecutive sequence.
+			// A reachable listener, a timeout, a malformed probe target, or a round
+			// that stopped short cannot prove shutdown. Require a fresh consecutive
+			// sequence.
 			misses = 0
 		}
 		select {
@@ -320,14 +460,4 @@ func (e *Executor) confirmPortsQuiet(parent context.Context, ready *Probe, ports
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-}
-
-// allPortsRefused reports whether every port explicitly refused a connection.
-func allPortsRefused(ctx context.Context, ready *Probe, ports []int) bool {
-	for _, port := range ports {
-		if probeListener(ctx, ready, port) != listenerProbeRefused {
-			return false
-		}
-	}
-	return len(ports) > 0
 }

@@ -200,7 +200,7 @@ func TestCandidatePorts_AddsThePortTheEngineKeepsInItsOwnSettingsFile(t *testing
 			st, err := ex.state("mtplx")
 			require.NoError(t, err)
 
-			assert.Equal(t, tc.want, ex.candidatePorts(st, watched))
+			assert.Equal(t, tc.want, ex.candidatePorts(st, watched).anchors)
 		})
 	}
 }
@@ -213,7 +213,7 @@ func TestCandidatePorts_WithoutAPortSource_JustWatchesTheConfiguredPort(t *testi
 	st, err := ex.state("mtplx")
 	require.NoError(t, err)
 
-	assert.Equal(t, []int{watched}, ex.candidatePorts(st, watched))
+	assert.Equal(t, []int{watched}, ex.candidatePorts(st, watched).anchors)
 }
 
 // A status check has to ask about every candidate port, or an engine running

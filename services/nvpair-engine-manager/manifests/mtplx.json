@@ -37,9 +37,11 @@
         "bind": "127.0.0.1",
         "port": 8101,
         "port_source": { "file": "~/Library/Application Support/MTPLX/settings.json", "field": "port" },
-        "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 600 },
+        "probe_ports": [8000, 18083, 18084, 18085],
+        "probe_run": 8,
+        "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 600, "json_match": { "field": "ok", "value": "true" } },
         "stop": { "signal": "term", "grace_s": 15 },
-        "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5 }
+        "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5, "json_match": { "field": "ok", "value": "true" } }
       },
       "models_dir": "~/.mtplx/models"
     }
