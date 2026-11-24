@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"syscall"
 )
 
 type downloadHTTPError struct{ status int }
@@ -61,7 +60,7 @@ func classifyLMSInstallFailure(err error) string {
 	if errors.As(err, &dnsError) && dnsError.IsTemporary {
 		return "network"
 	}
-	if errors.Is(err, syscall.ECONNRESET) {
+	if isInstallConnectionReset(err) {
 		return "network"
 	}
 	var httpError *downloadHTTPError
