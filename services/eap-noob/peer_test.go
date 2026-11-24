@@ -236,6 +236,57 @@ func TestPeer_RejectsKeyExchangeAfterInitialExchange(t *testing.T) {
 	assert.Equal(t, StateWaiting, peer.State())
 }
 
+// An inviter whose key-exchange response was lost retries with a new server.
+// That server starts a fresh Initial Exchange with a peer that is already
+// Waiting, and the retry must be able to finish pairing.
+func TestPeer_PairsWhenANewServerRestartsTheInitialExchange(t *testing.T) {
+	firstServer := NewServer(ServerConfig{}, nil)
+	peer := NewPeer(PeerConfig{}, nil)
+	require.Nil(t, driveConversation(t, firstServer, peer).Err)
+	require.Equal(t, StateWaiting, peer.State())
+
+	retryServer := NewServer(ServerConfig{}, nil)
+	initial := driveConversation(t, retryServer, peer)
+	require.Nil(t, initial.Err)
+	require.Equal(t, StateWaiting, retryServer.State())
+	require.Equal(t, StateWaiting, peer.State())
+	noob := bytes.Repeat([]byte{0xCD}, 16)
+	require.NoError(t, retryServer.OOBOutputWith(noob))
+	require.NoError(t, peer.OOBInputNoob(noob))
+
+	out := driveConversation(t, retryServer, peer)
+
+	require.Nil(t, out.Err)
+	assert.True(t, out.Success)
+	assert.Equal(t, StateRegistered, peer.State())
+	assert.Equal(t, StateRegistered, retryServer.State())
+}
+
+// A negotiation permits only the key-exchange request that immediately
+// follows it.
+func TestPeer_RejectsKeyExchangeAfterInterruptedNegotiation(t *testing.T) {
+	server := NewServer(ServerConfig{}, nil)
+	peer := NewPeer(PeerConfig{}, nil)
+	selection, err := peer.Receive(negotiationRequest(t, server, peer))
+	require.NoError(t, err)
+	require.Nil(t, selection.Err)
+	keyExchange, err := server.Receive(selection.Send)
+	require.NoError(t, err)
+	require.Nil(t, keyExchange.Err)
+	discovery, err := peer.Receive([]byte(`{"Type":1}`))
+	require.NoError(t, err)
+	require.Nil(t, discovery.Err)
+
+	out, err := peer.Receive(keyExchange.Send)
+
+	require.NoError(t, err)
+	require.NotNil(t, out.Err)
+	assert.Equal(t, ErrStateMismatch, out.Err.Code)
+	assert.True(t, out.Done)
+	assert.False(t, out.Success)
+	assert.Equal(t, StateUnregistered, peer.State())
+}
+
 // peerAwaitingSuccess returns a peer that verified the server's Completion and
 // has not yet received EAP-Success.
 func peerAwaitingSuccess(t *testing.T) *Peer {

@@ -105,7 +105,9 @@ conversation for the Initial Exchange, perform the OOB relay, then run a second
 conversation for the Completion Exchange (call `srv.Start()` again to begin it).
 `Done` alone does not mean pairing succeeded.
 
-Key exchange requires completed negotiation. Completion requires derived
+Key exchange must immediately follow a completed negotiation. A server may
+restart the Initial Exchange with a peer that is already Waiting, for example
+after a lost response. Completion requires derived
 authentication keys, and the peer accepts success only after verifying the
 server's completion message authentication code (MAC).
 

@@ -28,6 +28,10 @@ type Peer struct {
 	store              Store
 	state              State
 	completionVerified bool
+	// keyExchangeExpected is set by a successful negotiation and cleared by
+	// any other message, so a server that restarts the Initial Exchange can
+	// finish it while a stray key-exchange request is still rejected.
+	keyExchangeExpected bool
 
 	methodState
 }
@@ -65,6 +69,8 @@ func (p *Peer) Export(label string, context []byte, length int) ([]byte, error) 
 // Receive processes one inbound message from the server and returns the next
 // action.
 func (p *Peer) Receive(in []byte) (Outcome, error) {
+	keyExchangeExpected := p.keyExchangeExpected
+	p.keyExchangeExpected = false
 	wm, err := decode(in)
 	if err != nil {
 		return p.fail(ErrInvalidMessageStructure, "malformed JSON")
@@ -85,6 +91,9 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 	case typeNegotiation:
 		return p.onNegotiationRequest(wm)
 	case typeKeyExchange:
+		if !keyExchangeExpected {
+			return p.fail(ErrStateMismatch, "key exchange requires a preceding negotiation")
+		}
 		return p.onKeyExchangeRequest(wm)
 	case typeWaiting:
 		return p.onWaitingRequest(wm)
@@ -207,13 +216,11 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	p.keyExchangeExpected = true
 	return Outcome{Send: b, State: p.state}, nil
 }
 
 func (p *Peer) onKeyExchangeRequest(wm *wireMessage) (Outcome, error) {
-	if p.state != StateUnregistered || p.suite == nil {
-		return p.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
-	}
 	jwk, err := rawToJWK(wm.PKs)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad PKs")
