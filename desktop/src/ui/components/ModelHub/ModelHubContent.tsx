@@ -274,7 +274,6 @@ export const ModelHubContent = ({
             try {
                 const result = await request
                 if (searchGenRef.current !== generation) return
-                setCatalogError(null)
                 setRemoteModels(result.searchable ? result.models : [])
             } catch (error) {
                 if (searchGenRef.current !== generation) return
@@ -330,7 +329,11 @@ export const ModelHubContent = ({
                         </Text>
                     )}
                 </Stack>
-                {catalogError && !loading && !searching && visibleModels.length === 0 ? (
+                {catalogError &&
+                !query.trim() &&
+                !loading &&
+                !searching &&
+                visibleModels.length === 0 ? (
                     <Stack align="center" justify="center" className="grow" role="alert">
                         <StatusMessage
                             size="small"

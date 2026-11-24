@@ -36,8 +36,21 @@ vi.mock('@nvidia/foundations-react-core', () => {
     }
 })
 vi.mock('@/ui/components/ModelHub/ModelHubSearchBar', () => ({
-    ModelHubSearchBar: ({ onSearch }: ComponentProps<typeof ModelHubSearchBar>) =>
-        createElement('button', { onClick: () => onSearch('small-model') }, 'Search fixture')
+    ModelHubSearchBar: ({
+        query,
+        onQueryChange,
+        onSearch
+    }: ComponentProps<typeof ModelHubSearchBar>) =>
+        createElement(
+            'div',
+            null,
+            createElement('input', {
+                value: query,
+                'aria-label': 'Search for a model',
+                onInput: event => onQueryChange(event.currentTarget.value)
+            }),
+            createElement('button', { onClick: () => onSearch(query) }, 'Search fixture')
+        )
 }))
 vi.mock('@/ui/components/ModelHub/EngineHubListRow', () => ({
     default: ({ model }: ComponentProps<typeof EngineHubListRow>) =>
@@ -138,6 +151,15 @@ async function click(text: string) {
     )
     if (!button) throw new Error(`Missing button: ${text}`)
     await act(() => button.click())
+}
+
+async function changeQuery(query: string) {
+    const input = host.querySelector('input')
+    if (!input) throw new Error('Missing model search input')
+    await act(() => {
+        input.value = query
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
 }
 
 const testManualRecovery = (name: string, engine: EngineType) => {
@@ -292,12 +314,85 @@ it('permits a search to recover after the initial browse fails', async () => {
         .mockResolvedValueOnce(populatedCatalog)
     await openCatalog()
 
+    await changeQuery('small-model')
     await click('Search fixture')
 
     expect(host.textContent).toContain('org/small-model')
     expect(host.textContent).not.toContain("Couldn't load models")
     expect(searchHub).toHaveBeenLastCalledWith('vllm', 'fresh-node', 'small-model')
 })
+
+const testBrowseErrorAfterSearch = (
+    name: string,
+    engine: EngineType,
+    searchResult: EngineHubSearchResponse,
+    expectedSearchText: string
+) => {
+    it(name, async () => {
+        searchHub
+            .mockResolvedValueOnce({ models: [], searchable: null })
+            .mockResolvedValueOnce(searchResult)
+            .mockResolvedValueOnce(populatedCatalog)
+        await openCatalog(engine)
+
+        await changeQuery('small-model')
+        await click('Search fixture')
+
+        expect(host.textContent).toContain(expectedSearchText)
+        expect(host.textContent).not.toContain("Couldn't load models")
+        expect(host.querySelector('[role="timer"]')).toBeNull()
+        await act(() => vi.advanceTimersByTimeAsync(60_000))
+        expect(searchHub).toHaveBeenCalledTimes(2)
+
+        await changeQuery('')
+
+        expect(host.textContent).toContain("Couldn't load models")
+        expect(host.textContent).not.toContain('No models found')
+        expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 5s…')
+
+        await click('Retry')
+
+        expect(searchHub).toHaveBeenLastCalledWith(engine, 'fresh-node', undefined)
+        expect(host.textContent).toContain('org/small-model')
+        expect(host.textContent).not.toContain("Couldn't load models")
+    })
+}
+testBrowseErrorAfterSearch(
+    'restores vLLM browse Retry after clearing a successful search',
+    'vllm',
+    populatedCatalog,
+    'org/small-model'
+)
+testBrowseErrorAfterSearch(
+    'restores LM Studio browse Retry after clearing a successful search',
+    'lm-studio',
+    populatedCatalog,
+    'org/small-model'
+)
+testBrowseErrorAfterSearch(
+    'restores llama.cpp browse Retry after clearing a successful search',
+    'llama-cpp',
+    populatedCatalog,
+    'org/small-model'
+)
+testBrowseErrorAfterSearch(
+    'keeps an empty vLLM search distinct from a failed browse',
+    'vllm',
+    { models: [], searchable: true },
+    'No models found'
+)
+testBrowseErrorAfterSearch(
+    'keeps an empty LM Studio search distinct from a failed browse',
+    'lm-studio',
+    { models: [], searchable: true },
+    'No models found'
+)
+testBrowseErrorAfterSearch(
+    'keeps an empty llama.cpp search distinct from a failed browse',
+    'llama-cpp',
+    { models: [], searchable: true },
+    'No models found'
+)
 
 it('shows a failed request when the rejection reaches the dialog', async () => {
     searchHub.mockRejectedValueOnce(new Error('Catalog temporarily unavailable'))
