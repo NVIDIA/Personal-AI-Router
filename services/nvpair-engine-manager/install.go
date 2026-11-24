@@ -49,8 +49,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	}
 	if presence.Occupied && st.plat.Runtime.modeOrDefault() == "process" {
 		err := fmt.Errorf("cannot install engine %q for port %d: the port is occupied by a service that did not identify as %s; use the existing service or choose another port", engine, port, st.manifest.DisplayName)
-		e.reportInstallFailed(engine, err)
-		return err
+		return e.reportInstallFailed(engine, err)
 	}
 	inst := st.plat.Install
 	if inst == nil {
@@ -58,8 +57,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	}
 	if inst.ModeOrDefault() == "admin" {
 		err := fmt.Errorf("engine %q declares an admin install, which is refused (engine-manager is user-mode only)", engine)
-		e.reportInstallFailed(engine, err)
-		return err
+		return e.reportInstallFailed(engine, err)
 	}
 	if err := os.MkdirAll(st.installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
@@ -74,24 +72,21 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		e.emitInstallProgress(engine, "installing", 0)
 		argv, err := resolveArgs(inst.Script, vars)
 		if err != nil {
-			e.reportInstallFailed(engine, err)
-			return err
+			return e.reportInstallFailed(engine, err)
 		}
 		for i := range argv {
 			argv[i] = expandPath(argv[i])
 		}
 		if err := e.runCommand(ctx, argv); err != nil {
 			werr := fmt.Errorf("script install failed: %w", err)
-			e.reportInstallFailed(engine, werr)
-			return werr
+			return e.reportInstallFailed(engine, werr)
 		}
 	} else {
 		if inst.Fetch != nil {
 			e.emitInstallProgress(engine, "downloading", 0)
 			dp, err := e.download(ctx, engine, inst.Fetch)
 			if err != nil {
-				e.reportInstallFailed(engine, err)
-				return err
+				return e.reportInstallFailed(engine, err)
 			}
 			defer os.Remove(dp)
 			vars["download"] = dp
@@ -101,8 +96,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
 			defer removeDownloadedFiles(paths)
 			if err != nil {
-				e.reportInstallFailed(engine, err)
-				return err
+				return e.reportInstallFailed(engine, err)
 			}
 			maps.Copy(vars, artifactVars)
 			e.emitInstallProgress(engine, "verified", 50)
@@ -111,24 +105,21 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			e.emitInstallProgress(engine, "installing", 0)
 			args, err := resolveArgs(inst.Run, vars)
 			if err != nil {
-				e.reportInstallFailed(engine, err)
-				return err
+				return e.reportInstallFailed(engine, err)
 			}
 			for i := range args {
 				args[i] = expandPath(args[i])
 			}
 			if err := e.runCommandWithEnv(ctx, args, installCommandEnv(vars, inst.Artifacts)); err != nil {
 				werr := fmt.Errorf("install command failed: %w", err)
-				e.reportInstallFailed(engine, werr)
-				return werr
+				return e.reportInstallFailed(engine, werr)
 			}
 		}
 	}
 
 	if !e.waitDetect(engine, true, e.detectTimeout) {
 		err := fmt.Errorf("engine %q was not detected after install", engine)
-		e.reportInstallFailed(engine, err)
-		return err
+		return e.reportInstallFailed(engine, err)
 	}
 	// Claim the install now that it is real and detected. A failure to record it
 	// only costs the ability to uninstall later, so it must not fail the install.
@@ -384,7 +375,7 @@ func (e *Executor) downloadWithProgress(
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download %s: HTTP %d", f.URL, resp.StatusCode)
+		return "", fmt.Errorf("download %s: %w", f.URL, &downloadHTTPError{status: resp.StatusCode})
 	}
 
 	// Preserve the URL suffix so tools that require one (notably PowerShell's
@@ -458,12 +449,19 @@ func runManifestCommand(ctx context.Context, argv []string, environment map[stri
 	return nil
 }
 
-func (e *Executor) reportInstallFailed(engine string, err error) {
+func (e *Executor) reportInstallFailed(engine string, err error) error {
+	if engine == "lmstudio" {
+		if kind := classifyLMSInstallFailure(err); kind != "" {
+			slog.Warn("LM Studio installer download failed", "engine", engine, "attempt", 1, "category", kind, "err", err)
+			err = &lmsInstallFailure{cause: err, kind: kind, attempts: 1}
+		}
+	}
 	e.emitInstallFrame(engine, "failed", -1, err.Error())
 	e.reporter.report(serviceError{
 		ID: installFailedID(engine), Message: err.Error(),
 		Severity: "error", Action: "retry", EngineType: engine, Operation: "install",
 	})
+	return err
 }
 
 // progressWriter counts bytes and reports integer-percent download
