@@ -53,9 +53,18 @@
       "result": { "array": "models", "field": "repo_id" }
     },
     "loaded_models": {
-      "description": "List the model this MTPLX server serves (it serves exactly one). MTPLX is started with --model-id set to the cache id, so the name it answers to is the same string list_models reports and what a client puts in its request.",
+      "description": "List the model this MTPLX server serves (it serves exactly one). The name it answers with is not the cache id: a machine serving the Qwen3.5 pack answered \"youssofal-qwen3.5-4b-mtplx-optimized-speed\" while its cache lists that pack as \"Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed\", so no spelling of the served name can be matched to a pack by eye. /health reports the directory the pack was loaded from, and that is what residency joins to the listing.",
       "http": { "method": "GET", "path": "/v1/models" },
-      "result": { "array": "data", "field": "id" }
+      "result": {
+        "array": "data",
+        "field": "id",
+        "residency": {
+          "source": "list_models",
+          "read": { "method": "GET", "path": "/health" },
+          "path_field": "model_path",
+          "row_path_field": "path"
+        }
+      }
     },
     "load_model": {
       "description": "Serve a different model pack (params: {\"model\": \"<cache id>\"}). MTPLX serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored. --model-id is written beside --model so the served name stays the cache id.",

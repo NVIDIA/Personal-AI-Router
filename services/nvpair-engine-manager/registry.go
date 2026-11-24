@@ -499,6 +499,12 @@ type ActionResult struct {
 	// model it loaded as "root" (its --model): peers and the proxy are told the
 	// id, and the loaded marker on the model list uses the root.
 	InventoryField string `json:"inventory_field,omitempty"`
+	// Residency, when set, declares how to join the answer this spec extracts
+	// onto the pack that answer sits in. Only loaded_models may declare it: the
+	// join starts from what is being served, and it is only worth making for an
+	// engine that serves one whole pack at a time, where "what is served" and
+	// "what is cached" are two different questions with two different answers.
+	Residency *ActionResidency `json:"residency,omitempty"`
 }
 
 // ResultMatch is the optional row filter on an ActionResult. Exactly one of
@@ -511,6 +517,44 @@ type ResultMatch struct {
 	Field    string   `json:"field"`              // element field to test, e.g. "state" / "loaded_instances"
 	In       []string `json:"in,omitempty"`       // accepted string values, e.g. ["loaded"]
 	Nonempty bool     `json:"nonempty,omitempty"` // true → Field must be a nonempty JSON array
+}
+
+// ActionResidency is the residency-declaration block inside an ActionResult (see
+// ActionResult.Residency, which a manifest writes as `result.residency`): where PAIR
+// reads the engine's pack inventory, where it reads what the engine is serving, and
+// which field carries the path in each.
+//
+// A loaded answer is only a name until something joins it to a place. MTPLX names
+// the model it serves "mtplx-flash-next-optimized-speed", keeps that pack in a
+// directory called Youssofal--Qwen3.8-Flash-Next-MTPLX-Optimized-Speed, and calls
+// the same thing Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed when it lists
+// the cache; the /health answer carries the directory under "model_path". With
+// those three names treated as one, a request for any model sharing a prefix reads
+// as the model being served, so the join is declared per engine and checked at
+// manifest load rather than guessed from a name at request time.
+type ActionResidency struct {
+	// Source names the action whose response carries the pack rows. For MTPLX
+	// that is list_models, which reads the cache directory and needs no running
+	// engine.
+	Source string `json:"source"`
+	// Read, when set, is where the loaded model's path is answered, for an engine
+	// that reports it separately from the name it serves. It is declared apart
+	// from the action's own HTTP call because the two are different questions:
+	// loaded_models asks what is served, this is where the answer says it lives.
+	// Left unset, there is no declared place to ask, and residentPack answers
+	// unknown rather than going looking anyway.
+	Read *ActionHTTP `json:"read,omitempty"`
+	// PathField is the field in the read answer that names the loaded pack's
+	// directory, and RowPathField is the field on each inventory row that names
+	// the directory that pack sits in. The two are joined by exact string
+	// comparison (see packRowForKey), so both have to be named rather than
+	// inferred from whatever else the response happens to carry.
+	PathField    string `json:"path_field"`
+	RowPathField string `json:"row_path_field"`
+	// RowKeyField names the field on each inventory row that keys it, for an
+	// engine whose rows are not keyed on the inventory's own field. Empty means
+	// the source action's result.field is the key.
+	RowKeyField string `json:"row_key_field,omitempty"`
 }
 
 // ActionRemovePath deletes a filesystem path declared in the manifest.
@@ -982,6 +1026,29 @@ func (m *Manifest) Validate() error {
 				}
 			}
 		}
+		if a.Result != nil && a.Result.Residency != nil {
+			// Both halves of the join have to exist. A residency block naming an
+			// action this manifest does not declare, or one whose answer carries no
+			// declared field to read rows out of, reads as an engine with nothing
+			// cached — the exact wrong answer the block is here to prevent.
+			source, ok := m.Actions[a.Result.Residency.Source]
+			if !ok {
+				return fmt.Errorf("action %q: result.residency.source %q is not an action this manifest declares", name, a.Result.Residency.Source)
+			}
+			if source.Result == nil {
+				return fmt.Errorf("action %q: result.residency.source %q declares no result, so there are no pack rows to read from it", name, a.Result.Residency.Source)
+			}
+			// A residency source is read every time PAIR asks what an engine is
+			// serving, including while that engine is running, so it has to be
+			// something that only looks. stop_engine, restart_after and launch_model
+			// each take the engine down or re-tune it, and any of them on the source
+			// would make answering a question about a pack stop, restart or re-launch
+			// the engine that holds it. Nothing bundled does that today; the rule is
+			// here so a manifest cannot add the path later.
+			if source.StopEngine || source.RestartAfter || source.LaunchModel != nil {
+				return fmt.Errorf("action %q: result.residency.source %q stops, restarts or relaunches the engine, and a residency lookup must only read", name, a.Result.Residency.Source)
+			}
+		}
 	}
 	if m.AdvertisedModels == advertisedModelsAvailable {
 		action, ok := m.Actions["list_models"]
@@ -1381,6 +1448,11 @@ func (a *Action) validate(name string) error {
 			return fmt.Errorf("action %q: result.match requires exactly one of a non-empty in or nonempty=true", name)
 		}
 	}
+	if a.Result != nil && a.Result.Residency != nil {
+		if err := a.Result.Residency.validate(name); err != nil {
+			return err
+		}
+	}
 	if a.ModelResolution != "" {
 		switch a.ModelResolution {
 		case modelResolutionLMSGet:
@@ -1397,6 +1469,41 @@ func (a *Action) validate(name string) error {
 		default:
 			return fmt.Errorf("action %q: model_resolution %q invalid (want %q or %q)", name, a.ModelResolution, modelResolutionLMSGet, modelResolutionLMSDiskPath)
 		}
+	}
+	return nil
+}
+
+// validate checks a residency declaration that can be judged from the declaring
+// action alone: which action may carry one, and whether the three names the join
+// needs are actually there. Whether Source names an action this manifest declares,
+// and whether that action has rows to read, is checked by Manifest.Validate, where
+// both actions are visible.
+func (r *ActionResidency) validate(name string) error {
+	if name != "loaded_models" {
+		return fmt.Errorf("action %q: result.residency belongs to loaded_models, which is the action that answers what is being served", name)
+	}
+	if strings.TrimSpace(r.Source) == "" {
+		return fmt.Errorf("action %q: result.residency.source is required: it names the action whose answer carries the pack rows", name)
+	}
+	if r.Source == name {
+		return fmt.Errorf("action %q: result.residency.source must name another action: the one that says what is served has no rows to look a pack up in", name)
+	}
+	if r.Read != nil && (strings.TrimSpace(r.Read.Method) == "" || strings.TrimSpace(r.Read.Path) == "") {
+		return fmt.Errorf("action %q: result.residency.read must give both a method and a path", name)
+	}
+	for _, field := range []struct{ key, value string }{
+		{"path_field", r.PathField},
+		{"row_path_field", r.RowPathField},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("action %q: result.residency.%s is required, and must name a field rather than be guessed from the answer", name, field.key)
+		}
+		if !resultFieldNameRe.MatchString(field.value) {
+			return fmt.Errorf("action %q: result.residency.%s %q is not a valid field name", name, field.key, field.value)
+		}
+	}
+	if r.RowKeyField != "" && !resultFieldNameRe.MatchString(r.RowKeyField) {
+		return fmt.Errorf("action %q: result.residency.row_key_field %q is not a valid field name", name, r.RowKeyField)
 	}
 	return nil
 }

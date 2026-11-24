@@ -128,6 +128,109 @@ func TestExtractStringsResult_DistinguishesEmptyFromUnknown(t *testing.T) {
 	test("invalid JSON", `not-json`)
 }
 
+// TestInventoryArray_KeepsTheEmptyAndUnknownSplitForBothExtractors pins the shapes
+// where the two inventory extractors must agree: whether the body is an inventory
+// answer at all. They differ on purpose about what happens inside a valid array —
+// extractStringsResult skips rows missing its field, extractPackRows needs two
+// fields per row — so only the shapes where neither could read a row are compared.
+// A change to the shared preamble has to keep all of these reading as "not read",
+// which is the reason they are one helper rather than two copies.
+func TestInventoryArray_KeepsTheEmptyAndUnknownSplitForBothExtractors(t *testing.T) {
+	spec := &ActionResult{Array: "models", Field: "name"}
+
+	t.Run("a present empty array is known empty for both", func(t *testing.T) {
+		names, namesOK := extractStringsResult(json.RawMessage(`{"models":[]}`), spec)
+		rows, rowsOK := extractPackRows(json.RawMessage(`{"models":[]}`), "models", "repo_id", "path")
+
+		require.True(t, namesOK, "names: an empty inventory was still read")
+		assert.NotNil(t, names, "names: an empty inventory serialises as []")
+		assert.Empty(t, names, "names")
+		require.True(t, rowsOK, "rows: an empty inventory was still read")
+		assert.NotNil(t, rows, "rows: an empty inventory serialises as []")
+		assert.Empty(t, rows, "rows")
+	})
+
+	asBoth := func(name, body string) {
+		t.Run(name, func(t *testing.T) {
+			names, ok := extractStringsResult(json.RawMessage(body), spec)
+			assert.False(t, ok, "names: this body carries no inventory (%s)", body)
+			assert.Nil(t, names, "names")
+
+			rows, ok := extractPackRows(json.RawMessage(body), "models", "repo_id", "path")
+			assert.False(t, ok, "rows: the same body has to read the same way (%s)", body)
+			assert.Nil(t, rows, "rows")
+		})
+	}
+	asBoth("no answer", ``)
+	asBoth("empty command stdout", `null`)
+	asBoth("no models array", `{"other":[]}`)
+	asBoth("null models array", `{"models":null}`)
+	asBoth("models as a string", `{"models":"llama3:8b"}`)
+	asBoth("models as an object", `{"models":{"name":"llama3:8b"}}`)
+	asBoth("the whole answer is an array", `["llama3:8b"]`)
+	asBoth("a listing wrapped as command output", `"mtplx: warning: stale venv\n{\"models\":[]}"`)
+	asBoth("a listing wrapped and cut off", `"mtplx: warning: stale venv\n{\"models\":[{\"repo_id\":\"o"`)
+}
+
+// TestExtractPackRows_ReadsCmdStdoutAsUnreadUnlessItIsOneWholeListing covers the
+// shapes a cmd-sourced inventory read arrives in, which is how the shipped MTPLX
+// manifest reads its cache. When stdout is not valid JSON, runCmdAction hands the
+// trimmed stdout to the reader as one JSON string; these are the shapes that
+// produces for a model listing. The transport itself is not exercised — a test
+// cannot shell out to a real `mtplx`, which is why the fixture in residency_test.go
+// stages the same body through an HTTP action (see residencyInventoryPath). A
+// truncated listing is the case that matters: read charitably it names the packs
+// above the cut, and a partially readable cache must not be reported as the whole
+// cache.
+func TestExtractPackRows_ReadsCmdStdoutAsUnreadUnlessItIsOneWholeListing(t *testing.T) {
+	const wholeListing = `{"cache_dir":"/Users/Shared/mtplx/models","models":[{"path":"/Users/Shared/mtplx/models/Youssofal--Qwen3.8-Flash-Next-MTPLX-Optimized-Speed","repo_id":"Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed"}]}`
+
+	// asStdout is the dispatcher's wrap: a stdout that json.Valid rejects is
+	// quoted, so the reader sees one JSON string, not a body.
+	asStdout := func(t *testing.T, stdout string) json.RawMessage {
+		t.Helper()
+
+		require.False(t, json.Valid([]byte(stdout)), "the fixture has to be a stdout the dispatcher would wrap")
+		body, err := json.Marshal(stdout)
+		require.NoError(t, err)
+		return body
+	}
+
+	t.Run("a whole listing arrives as rows", func(t *testing.T) {
+		rows, ok := extractPackRows(json.RawMessage(wholeListing), "models", "repo_id", "path")
+
+		require.True(t, ok, "valid JSON passes through the dispatcher unchanged")
+		require.Len(t, rows, 1, "that listing holds one pack")
+		assert.Equal(t, "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed", rows[0].repoID)
+	})
+
+	t.Run("a listing with a log line in front of it is unread", func(t *testing.T) {
+		rows, ok := extractPackRows(asStdout(t, "mtplx: warning: runtime venv is out of date\n"+wholeListing), "models", "repo_id", "path")
+
+		assert.False(t, ok, "log noise around a listing is not a partial cache")
+		assert.Nil(t, rows)
+	})
+
+	t.Run("a listing cut off mid-body is unread", func(t *testing.T) {
+		// The second pack's name is there and its path is cut mid-string, so a
+		// reader that looked only at what decoded would report one and a half
+		// packs, and then be asked to choose a model from that.
+		rows, ok := extractPackRows(asStdout(t, `{"models":[{"repo_id":"Youssofal/Gemma4-MTPLX-Optimized-Speed","path":"/Users/steven/.mtplx/models/Youssofal--Gemma4-MTPLX-Optimized-Speed"},{"repo_id":"Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed","path":"/Users/steven/.mtplx/mo`), "models", "repo_id", "path")
+
+		assert.False(t, ok, "a truncated listing must not report the packs above the cut")
+		assert.Nil(t, rows)
+	})
+
+	t.Run("a command that printed nothing is unread", func(t *testing.T) {
+		// Empty stdout is reported as JSON null, which is not the same answer as
+		// a cache that printed an empty models array.
+		rows, ok := extractPackRows(json.RawMessage("null"), "models", "repo_id", "path")
+
+		assert.False(t, ok, "no output did not report an empty cache")
+		assert.Nil(t, rows)
+	})
+}
+
 // TestModels drives Models() against the running fake engine: a running engine
 // with a Result-bearing list_models action contributes its models; a stopped
 // engine contributes nothing.
@@ -479,6 +582,57 @@ func TestModelsResult_MarksTheCachedModelLoadedWhenServedUnderAnAlias(t *testing
 	assert.Equal(t, map[string][]string{"fake": {"qwen-api"}}, res.ByEngine, "advertised per engine")
 	assert.Equal(t, []string{"qwen-api"}, res.Models, "advertised union")
 	assert.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.LoadedByEngine, "loaded")
+}
+
+// Reporting a resident pack as the inventory row it belongs to is something only a
+// manifest that declares the join can ask for, and this is the gate that says nothing
+// else moved: vLLM, which answers the inventory terms of its loaded model through
+// result.inventory_field, and an engine like Ollama, whose advertised list is its
+// inventory and whose loaded list is read apart from it, produce this payload
+// byte for byte. Both strings are the answer those engines give today, so a residency
+// join that leaked into a shared code path — or a runtime branch on which engine is
+// being asked — shows up here rather than in someone's model list.
+func TestLoadedModels_LeavesOtherEnginesComparingNames(t *testing.T) {
+	t.Run("vLLM answers its loaded model in the inventory terms it declared", func(t *testing.T) {
+		ex := newTestExecutor(t, loadedOnlyManifest(t, fakeEngineBin))
+		ctx := t.Context()
+		t.Cleanup(func() { _ = ex.Stop("fake") })
+		require.NoError(t, ex.Start(ctx, "fake"))
+
+		res := ex.ModelsResult(ctx)
+		require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.LoadedByEngine,
+			"the loaded marker comes from result.inventory_field, which is this engine's own row key")
+		assert.JSONEq(t, `{"models":["llama3.2:1b"],
+			"modelsByEngine":{"fake":["llama3.2:1b"]},
+			"loadedByEngine":{"fake":["llama3.2:1b"]},
+			"downloadedByEngine":{"fake":["other/cached-model"]}}`, string(mustMarshal(t, res)),
+			"the whole payload for an engine that declares no residency join")
+	})
+
+	t.Run("an engine whose advertised list is its inventory compares names as before", func(t *testing.T) {
+		ex := newTestExecutor(t, loadedActionManifest())
+		ctx := t.Context()
+		t.Cleanup(func() { _ = ex.Stop("fake") })
+		require.NoError(t, ex.Start(ctx, "fake"))
+
+		res := ex.ModelsResult(ctx)
+		require.Equal(t, map[string][]string{"fake": {"llama3.2:1b"}}, res.LoadedByEngine,
+			"loaded_models is read for its names, with no inventory to join them onto")
+		assert.JSONEq(t, `{"models":["llama3.2:1b"],
+			"modelsByEngine":{"fake":["llama3.2:1b"]},
+			"loadedByEngine":{"fake":["llama3.2:1b"]}}`, string(mustMarshal(t, res)),
+			"and no downloaded key appears for an engine that advertises its inventory")
+	})
+}
+
+// mustMarshal is the payload as it goes on the wire, for a case whose whole point is
+// that the whole payload has not moved.
+func mustMarshal(t *testing.T, value any) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(value)
+	require.NoError(t, err)
+	return body
 }
 
 // An engine whose advertised list is its inventory reports nothing apart.

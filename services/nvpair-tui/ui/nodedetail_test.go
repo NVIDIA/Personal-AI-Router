@@ -215,6 +215,55 @@ func TestModelRows_ListAServedModelThatIsNotInTheDownloadedList(t *testing.T) {
 	assert.Equal(t, map[string]string{"/models/qwen": "yes", "Qwen/Qwen3.5-4B": "no"}, modelRowStates(d))
 }
 
+// The two names one MTPLX pack carries on the machine these measurements came from:
+// what its server answers requests as, and what its own cache listing calls it. The
+// engine manager reports residency by the second, because that is the name the
+// engine's rows carry, and the terminal is a second client of that same payload — it
+// de-dupes and marks loaded by its own exact-string comparison over it.
+const (
+	mtplxServedName = "mtplx-flash-next-optimized-speed"
+	mtplxCachedRow  = "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed"
+)
+
+func TestManagedModels_ListsOneRowPerPackInTheSpellingTheRowsCarry(t *testing.T) {
+	t.Run("a resident pack named by its cached row adds no second row", func(t *testing.T) {
+		d := localDetail()
+		d.models = modelsResult{
+			Models:             []string{mtplxServedName},
+			ModelsByEngine:     map[string][]string{"mtplx": {mtplxServedName}},
+			LoadedByEngine:     map[string][]string{"mtplx": {mtplxCachedRow}},
+			DownloadedByEngine: map[string][]string{"mtplx": {mtplxCachedRow}},
+		}
+
+		assert.Equal(t, []string{mtplxCachedRow}, managedModels(d.models, "mtplx"),
+			"one pack on disk and one resident pack is one row, not a row and its alias")
+
+		d.refreshModels()
+		assert.Equal(t, map[string]string{mtplxCachedRow: "yes"}, modelRowStates(d),
+			"and that row says loaded, which is what keeps a serving engine's row offering Load rather than Eject")
+	})
+
+	t.Run("a resident pack no cached row names still gets a row", func(t *testing.T) {
+		// A pair bundle handed straight to the server is really being served and really
+		// is not in the cache listing, so the engine manager leaves the join unanswered
+		// and the served name keeps a loaded row of its own. Dropping it would hide a
+		// model that is answering requests, and marking the cached pack in its place
+		// would point Eject and Delete at a directory nobody is serving.
+		d := localDetail()
+		d.models = modelsResult{
+			Models:             []string{mtplxServedName},
+			ModelsByEngine:     map[string][]string{"mtplx": {mtplxServedName}},
+			LoadedByEngine:     map[string][]string{"mtplx": {mtplxServedName}},
+			DownloadedByEngine: map[string][]string{"mtplx": {mtplxCachedRow}},
+		}
+
+		assert.Equal(t, []string{mtplxCachedRow, mtplxServedName}, managedModels(d.models, "mtplx"))
+
+		d.refreshModels()
+		assert.Equal(t, map[string]string{mtplxCachedRow: "no", mtplxServedName: "yes"}, modelRowStates(d))
+	})
+}
+
 // "Nothing downloaded" is said only when an engine read its inventory and found
 // it empty. A peer whose inventory could not be read is not described that way.
 func TestEmptyModelsHint_SaysNothingIsDownloadedOnlyWhenTheInventoryWasRead(t *testing.T) {
