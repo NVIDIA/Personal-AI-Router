@@ -77,5 +77,8 @@ export async function searchEngineHub(
 ): Promise<EngineHubSearchResponse<ModelEntry>> {
     if (!getEngineHub(engine)) return { models: [], searchable: false }
     const { models, searchable } = await window.pairApi.engines.searchHub(engine, nodeId, query)
+    if (searchable === null) {
+        throw new Error('Available models could not be loaded. Please try again.')
+    }
     return { models: models.map(hubModelToEntry), searchable }
 }

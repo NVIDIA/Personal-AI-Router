@@ -175,6 +175,14 @@ The `engine:catalog` request accepts `modelSource` for a peer's saved choice.
 Omitting it uses this node's setting. Only `huggingface` and `modelscope` are
 accepted for llama.cpp; each source keeps its own browse/search cache.
 
+Fetched catalogues coalesce concurrent callers and retain a complete cached
+list if refresh fails. A transport or HTTP 5xx failure permits another attempt
+after five seconds. Other failures, including HTTP 429 without `Retry-After`,
+retain a two-minute backoff. A valid `Retry-After` delta or HTTP date is honored
+for failed listings; the longest delay applies when several publishers or file
+listings fail. These are cooldowns checked on the next request, not background
+fetch timers. Catalogue request and response payloads are unchanged.
+
 ModelScope's public GGUF catalogue is normalized through the same quantization
 and generative-model filters as Hugging Face. Browse and search each read one
 50-entry page by downloads, the largest ModelScope serves, and list each
