@@ -11,6 +11,10 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.1.4 — Simplify pairing code and reject out-of-order messages (#184)
+
+- Pairing rejects premature completion and key-exchange messages, preventing authentication bypasses, crashes, and stuck pairing sessions.
+
 ## 1.1.3 — Recover model catalogs without reopening Add model (#219)
 
 - Add model distinguishes unavailable catalogs from empty results and provides Retry with a countdown to automatic recovery attempts.
