@@ -198,8 +198,6 @@ func TestDownloadOpID_IsOneTheEngineManagerAccepts(t *testing.T) {
 // than saying nothing. Quick operations get no such excuse, because a deadline
 // there is a real fault.
 func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
-	// Only operations engineOps actually declares: the TUI offers no engine
-	// update, so listing one here would assert against a path nothing reaches.
 	// Start and restart wait on the engine's readiness probe, which the
 	// manifests allow up to thirty minutes, so a deadline on either is a slow
 	// reply rather than a failed start.
@@ -213,6 +211,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	longRunning("pull remains running", "pull")
 	longRunning("load remains running", "load")
 	longRunning("install remains running", "install")
+	longRunning("update remains running", "update")
 	longRunning("uninstall remains running", "uninstall")
 	longRunning("start remains running", "start")
 	longRunning("restart remains running", "restart")

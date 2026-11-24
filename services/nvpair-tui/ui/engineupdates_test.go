@@ -58,6 +58,32 @@ func answerUpdateCall(t *testing.T, cmd tea.Cmd, broker *rpc.Codec, method strin
 	}
 }
 
+func TestEngineUpdates_ApplyManagedReleaseOnSelectedNode(t *testing.T) {
+	t.Setenv(disableUpdateCheckEnv, "")
+	test := func(name string, node nodeRow, checkMethod, updateMethod string, wantParams map[string]string, updateResult string) {
+		t.Run(name, func(t *testing.T) {
+			client, broker := engineUpdateBroker(t)
+			d := newNodeDetail(client, node)
+			d.SetSize(120, 30)
+			check, _ := d.update(detailEnginesMsg{engines: []engineStatus{{Engine: "ollama", Installed: true}}})
+			d.update(answerUpdateCall(t, check, broker, checkMethod, wantParams, rpc.Message{Result: json.RawMessage(managedUpdateResult)}))
+
+			assert.Contains(t, d.View(), "0.9.5")
+			assert.Contains(t, d.View(), "0.10.0")
+			apply := d.handleKeyForTest(t, "U")
+			assert.Nil(t, d.handleKeyForTest(t, "U"), "repeated key presses must issue only one update")
+			reply := answerUpdateCall(t, apply, broker, updateMethod, wantParams, rpc.Message{Result: json.RawMessage(updateResult)})
+			d.update(reply)
+			assert.NotContains(t, d.View(), "0.10.0", "the applied update should leave the engine row")
+		})
+	}
+	test("this machine", nodeRow{key: "self", name: "my-node", self: true, presence: presenceOnline}, "engine:check-updates", "engine:update",
+		map[string]string{"engine": "ollama"}, `{"engine":"ollama","installed":true}`)
+	test("paired peer", nodeRow{key: "peer-id", name: "peer-host", membership: membershipMember, presence: presenceOnline},
+		"engine:remote-check-updates", "engine:remote-update", map[string]string{"engine": "ollama", "node": "peer-id"},
+		`{"opId":"test-update","status":{"engine":"ollama","installed":true}}`)
+}
+
 func TestEngineUpdates_ShowExternalInstructionsForThePairedNode(t *testing.T) {
 	t.Setenv(disableUpdateCheckEnv, "")
 	client, broker := engineUpdateBroker(t)
@@ -72,6 +98,40 @@ func TestEngineUpdates_ShowExternalInstructionsForThePairedNode(t *testing.T) {
 	d.update(answerUpdateCall(t, check, broker, "engine:remote-check-updates", map[string]string{"engine": "lmstudio", "node": "peer"}, rpc.Message{Result: json.RawMessage(external)}))
 
 	assert.Contains(t, d.View(), "https://lmstudio.ai/docs/cli/daemon/daemon-update")
+	assert.Nil(t, d.handleKeyForTest(t, "U"), "an external installation must stay under its owner's control")
+}
+
+func TestEngineUpdates_KeepThePeersOutcomeWhenTheRequestTimesOut(t *testing.T) {
+	t.Setenv(disableUpdateCheckEnv, "")
+	start := func(t *testing.T) (*nodeDetail, engineUpdateAppliedMsg) {
+		t.Helper()
+		d := remoteDetail()
+		client, broker := engineUpdateBroker(t)
+		d.client, d.node.membership = client, membershipMember
+		check, _ := d.update(detailEnginesMsg{engines: []engineStatus{{Engine: "ollama", DisplayName: "Ollama", Installed: true}}})
+		d.update(answerUpdateCall(t, check, broker, "engine:remote-check-updates", map[string]string{"node": "peer", "engine": "ollama"}, rpc.Message{Result: json.RawMessage(managedUpdateResult)}))
+		require.NotNil(t, d.handleKeyForTest(t, "U"))
+		return d, engineUpdateAppliedMsg{engineOpMsg{engine: "ollama", detached: true}, d.engineUpdates["ollama"]}
+	}
+	t.Run("timeout waits for the peer to report failure before allowing retry", func(t *testing.T) {
+		d, timeout := start(t)
+		d.update(timeout)
+		assert.Nil(t, d.handleKeyForTest(t, "U"))
+		d.update(progressPush(t, "engine:remote-progress", map[string]any{
+			"node": "peer", "op": "update", "engine": "ollama", "stage": "failed", "message": "disk full",
+		}))
+		assert.Contains(t, d.View(), "disk full")
+		assert.NotNil(t, d.handleKeyForTest(t, "U"))
+	})
+	t.Run("success before timeout remains visible", func(t *testing.T) {
+		d, timeout := start(t)
+		d.update(progressPush(t, "engine:remote-progress", map[string]any{
+			"node": "peer", "op": "update", "engine": "ollama", "stage": "done",
+		}))
+		d.update(timeout)
+		assert.Contains(t, d.View(), "updated Ollama on peer-host")
+		assert.Nil(t, d.handleKeyForTest(t, "U"))
+	})
 }
 
 func TestEngineUpdates_KeepLastOfferWhenALifecycleCheckFails(t *testing.T) {
@@ -115,6 +175,7 @@ func TestEngineUpdates_IgnoreOffersFromAPreviousInstallation(t *testing.T) {
 	d.update(oldOffer)
 
 	assert.NotContains(t, d.View(), "0.10.0")
+	assert.Nil(t, d.handleKeyForTest(t, "U"), "the old installation's offer must not enable an update")
 }
 
 func TestEngineUpdates_CheckEachInstalledEngineEverySixHours(t *testing.T) {

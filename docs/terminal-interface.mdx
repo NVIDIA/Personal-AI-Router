@@ -273,6 +273,7 @@ between with `h` / `l`:
 | Key | Action |
 | --- | --- |
 | `i` | Install |
+| `U` (Shift+U) | Apply an available managed update on the selected machine |
 | `s` | Start |
 | `x` | Stop |
 | `r` | Restart (this machine only) |
@@ -282,9 +283,10 @@ between with `h` / `l`:
 | `a` | Edit the startup arguments |
 
 An engine row shows when an update is available. Select it to see the installed
-and available versions. For an externally managed engine, follow the displayed
-vendor link on the machine where the engine is installed. A paired machine
-checks its own installation.
+and available versions. For a PAIR-managed engine, press `U` to start the update
+immediately. For an externally managed engine, follow the displayed vendor link
+on the machine where the engine is installed. A paired machine checks its own
+installation and runs its own update.
 
 The terminal checks installed engines when you open the node, after an engine
 starts or stops, and every six hours while the node stays open. Checks fail

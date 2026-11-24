@@ -114,8 +114,9 @@ Opening a local or paired node checks its installed engines for updates. The
 TUI checks again when an engine starts or stops and every six hours while the
 node detail screen is open. A newer release appears as **update** in the
 **Installed** column. Select the engine to see its installed and available
-versions. For an external installation, the detail screen shows the vendor's
-update URL. Checks fail quietly offline.
+versions. For a PAIR-managed engine, press uppercase `U` in **Engines** to
+install the update on the selected node. For an external installation, the
+detail screen shows the vendor's update URL. Checks fail quietly offline.
 `NVPAIR_NO_UPDATE_CHECK` disables automatic checks.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the

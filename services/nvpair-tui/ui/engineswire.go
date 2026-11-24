@@ -66,10 +66,11 @@ type engineOp struct {
 
 // engineOps are the lifecycle operations, keyed by the local method name. The
 // remote variants take a node and cover a deliberately smaller set: the manager
-// has remote install/start/stop but no remote restart, uninstall, or port
+// has remote install/update/start/stop but no remote restart, uninstall, or port
 // change, because those need process ownership on the target host.
 var engineOps = map[string]engineOp{
 	"install":   {method: "engine:install", what: "install"},
+	"update":    {method: "engine:update", what: "update"},
 	"start":     {method: "engine:start", what: "start"},
 	"stop":      {method: "engine:stop", what: "stop"},
 	"restart":   {method: "engine:restart", what: "restart", localOnly: true},
@@ -78,6 +79,7 @@ var engineOps = map[string]engineOp{
 
 // remoteEngineMethods maps a local lifecycle method to its remote counterpart.
 var remoteEngineMethods = map[string]string{
+	"engine:update":        "engine:remote-update",
 	"engine:check-updates": "engine:remote-check-updates",
 	"engine:install":       "engine:remote-install",
 	"engine:start":         "engine:remote-start",
@@ -440,6 +442,7 @@ var longRunningOps = map[string]bool{
 	"pull":      true,
 	"load":      true,
 	"install":   true,
+	"update":    true,
 	"uninstall": true,
 	"start":     true,
 	"restart":   true,

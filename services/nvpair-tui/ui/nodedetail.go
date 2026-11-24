@@ -222,6 +222,7 @@ var (
 	detailBackKey    = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
 	detailPaneKey    = key.NewBinding(key.WithKeys("left", "right", "h", "l"), key.WithHelp("h/l", "pane"))
 	detailInstallKey = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "install"))
+	detailUpdateKey  = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update"))
 	detailStartKey   = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start"))
 	detailStopKey    = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "stop"))
 	detailRestartKey = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restart"))
@@ -639,6 +640,9 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 	case engineUpdateCheckedMsg:
 		return d.receiveEngineUpdateCheck(msg), true
 
+	case engineUpdateAppliedMsg:
+		return d.finishEngineUpdate(msg), true
+
 	case TickMsg:
 		if !msg.Now.Before(d.nextEngineUpdateCheck) {
 			d.nextEngineUpdateCheck = msg.Now.Add(updateCheckInterval)
@@ -838,6 +842,9 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			Error   string `json:"error"`
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
+		if entry := d.engineUpdates[p.Engine]; entry != nil && entry.apply != nil {
+			return d.showEngineUpdateProgress(p.Engine, p.Stage, p.Percent, p.Error)
+		}
 		if d.promptArmed() {
 			return nil
 		}
@@ -889,6 +896,12 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
 		if p.Node != d.node.key {
+			return nil
+		}
+		if p.Op == "update" {
+			if d.remote() && d.enginesQueryable() {
+				return d.showEngineUpdateProgress(p.Engine, p.Stage, p.Percent, p.Message)
+			}
 			return nil
 		}
 		// A peer's pull reports on the same frames as this machine's, model
@@ -1315,6 +1328,8 @@ func (d *nodeDetail) handleEngineKey(msg tea.KeyMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, detailInstallKey):
 		return d.lifecycle(engine, "install")
+	case key.Matches(msg, detailUpdateKey):
+		return d.applyEngineUpdate(engine)
 	case key.Matches(msg, detailStartKey):
 		return d.lifecycle(engine, "start")
 	case key.Matches(msg, detailStopKey):
@@ -2162,6 +2177,8 @@ func (d *nodeDetail) View() string {
 			note := fmt.Sprintf("%s %s is available (%s installed).", engine.label(), offer.LatestVersion, offer.CurrentVersion)
 			if offer.InstallType == "external" {
 				note += fmt.Sprintf(" To update it on %s, visit %s", d.node.name, offer.DownloadURL)
+			} else if d.pane == detailEngines {
+				note += " Press U to update."
 			}
 			enginesBody += "\n" + footerStyle.Render(indentWrap(note, d.width))
 		}
@@ -2458,6 +2475,11 @@ func (d *nodeDetail) Help() []key.Binding {
 	}
 	bindings := []key.Binding{detailBackKey, detailPaneKey}
 	if d.pane == detailEngines {
+		if engine := d.selectedEngine(); engine != nil {
+			if offer := d.engineUpdateOffer(engine.Engine); offer != nil && offer.InstallType == "managed" {
+				bindings = append(bindings, detailUpdateKey)
+			}
+		}
 		bindings = append(bindings, detailInstallKey, detailStartKey, detailStopKey)
 		// The settings keys are offered on a peer too: the engine manager
 		// relays them, and whether a particular engine will accept the write

@@ -209,7 +209,8 @@ available versions.
   Follow those instructions on the machine where the engine is installed.
 
 If GitHub rate-limits a release lookup, wait until the time in the error
-message, then select **Retry** in the desktop app.
+message, then select **Retry** in the desktop app or press **Shift+U** in
+the TUI's engine list.
 
 | Engine | Release PAIR checks |
 | --- | --- |
@@ -338,9 +339,10 @@ the cancel to finish and then starts.
 
 ![An engine's model list showing the Load, Eject, and Delete actions against a downloaded model.](assets/onboarding/engine-lifecycle/04-model-actions.png)
 
-On a headless machine the terminal interface covers installing, starting,
-stopping, restarting, and uninstalling an engine; pulling a model or cancelling
-its download; and listing, loading, unloading, or deleting models.
+On a headless machine the terminal interface covers installing, updating,
+starting, stopping, restarting, and uninstalling engines. You can also pull,
+list, load, unload, or delete models and cancel downloads from the
+[node's detail screen](terminal-interface.mdx#look-at-one-machine).
 
 PAIR does **not** warm models. Starting an engine does not pre-load models into
 memory, and it holds nothing ready in advance. Depending on the engine, a model

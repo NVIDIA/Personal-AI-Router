@@ -212,7 +212,7 @@ detail of either; a change to one is a change to both. Neither drives the other.
 operations.
 
 - Local lifecycle supports install, start, stop, uninstall, and port changes.
-  The desktop uses `engine:check-updates` and `engine:update` locally.
+  Desktop and TUI use `engine:check-updates` and `engine:update` locally.
   On a paired node, `engine:remote-check-updates` and `engine:remote-update`
   delegate both operations to the target engine manager. It selects the
   release, verifies ownership, and supplies vendor links for external copies.
