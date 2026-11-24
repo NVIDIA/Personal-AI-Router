@@ -47,6 +47,18 @@ type EngineStatus struct {
 	AwaitingModel bool `json:"awaiting_model,omitempty"`
 	Healthy       bool `json:"healthy"`
 	Port          int  `json:"port,omitempty"`
+	// CanInstall reports that this machine has a way for NVPAIR to obtain the
+	// engine, for an engine that is not already here: the platform declares an
+	// install, anything it needs is present, and no copy of the engine sits in a
+	// folder the platform named as already having it. The engine card's Install
+	// button comes from this, so a card never offers an install this service
+	// would refuse. See installfacts.go.
+	CanInstall bool `json:"can_install,omitempty"`
+	// Owner names whose copy of the engine is here: "pair" for an NVPAIR-managed
+	// install, a package manager's name for its install, "other" for a copy that
+	// was merely found, and "" when nothing is. Uninstall is offered only for
+	// "pair", because it is refused for anything else. See installfacts.go.
+	Owner string `json:"owner,omitempty"`
 }
 
 // engineState is the per-engine runtime state.

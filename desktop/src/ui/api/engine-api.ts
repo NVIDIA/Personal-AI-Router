@@ -15,6 +15,7 @@ import type {
     EngineCommandPayload
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
+import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
@@ -91,15 +92,18 @@ function fireCommand(transport: ServiceTransport, payload: EngineCommandPayload)
     // Remember the user's setup interaction across the backend's install/start
     // reports. Only an awaiting-model report opens the picker; a saved model
     // resuming normally needs no intervention. This covers onboarding and Retry
-    // as well as both engine switches.
+    // as well as both engine switches, and it names the engine so a picker offer
+    // reads that engine's state rather than always vLLM's.
     if (
-        payload.engineType === 'vllm' &&
+        EngineCapabilities[payload.engineType].needsModelSelection &&
         (payload.command === 'install' ||
             (payload.command === 'toggle' &&
-                useEngineStatusStore.getState().statusByNode.get(payload.nodeId)?.get('vllm')
-                    ?.processStatus === 'stopped'))
+                useEngineStatusStore
+                    .getState()
+                    .statusByNode.get(payload.nodeId)
+                    ?.get(payload.engineType)?.processStatus === 'stopped'))
     ) {
-        useOverviewUiStore.getState().requestModelSelection(payload.nodeId)
+        useOverviewUiStore.getState().requestModelSelection(payload.nodeId, payload.engineType)
     }
     // Optimistically flip the clicked control to a "working"/disabled state so
     // the user gets immediate feedback even when the backend push lags (esp.

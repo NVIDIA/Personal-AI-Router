@@ -110,6 +110,17 @@ export interface BackendInfo {
     docsUrl?: string
     /** URL to download/install the backend */
     installUrl?: string
+    /**
+     * Whether the node that owns this backend can install it on request, as
+     * that node's engine manager reports it. See `EngineStatusData.canInstall`.
+     */
+    canInstall?: boolean
+    /**
+     * Who owns the copy of the backend on its owning node. See
+     * `EngineStatusData.owner`. Read it with `isPairManagedInstall` /
+     * `engineOwnerTool`.
+     */
+    owner?: string
     /** User-configured path to the backend installation directory */
     installPath?: string
     /** True when the backend was stopped by user action (not a crash) */

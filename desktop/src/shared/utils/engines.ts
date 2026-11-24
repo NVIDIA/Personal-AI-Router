@@ -70,6 +70,27 @@ export function unsupportedEngineStatus(nodeId: string, engineType: EngineType):
     }
 }
 
+/** The two `EngineStatusData.owner` spellings that name no tool behind the copy. */
+const OWNERS_WITHOUT_A_TOOL: ReadonlySet<string> = new Set(['pair', 'other'])
+
+/**
+ * True when the copy of an engine on a node is the one PAIR installed — the only
+ * copy PAIR may remove, so the only one worth offering Uninstall for.
+ */
+export function isPairManagedInstall(owner: string | undefined): boolean {
+    return owner === 'pair'
+}
+
+/**
+ * The tool to name for a copy PAIR must not remove, which is the package manager
+ * that owns it. Null for a copy PAIR made itself, one that was merely found, and
+ * for a node where nothing is installed: none of those have a tool to name.
+ */
+export function engineOwnerTool(owner: string | undefined): string | null {
+    if (!owner || OWNERS_WITHOUT_A_TOOL.has(owner)) return null
+    return owner
+}
+
 /**
  * Shallow placeholder when no model list has been pushed for this node/engine
  * yet. For an engine whose list is read from disk and shown while it is stopped,

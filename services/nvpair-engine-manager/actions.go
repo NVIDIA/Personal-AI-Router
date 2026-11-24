@@ -259,8 +259,9 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 	// A caller param can never override a runner-owned placeholder
 	// ({bin},{cli},{port},{download},{install_dir}): those keys are dropped
 	// from params, then seeded from trusted values — so a malicious param
-	// can't hijack argv[0]. Param values are also not env-expanded (only
-	// the manifest-authored {cli} value is).
+	// can't hijack argv[0]. Param values are also not env-expanded (only the
+	// manifest-authored {cli} value is, and that is either a detect path or the
+	// manifest's CLI literal, expanded exactly once).
 	vars := map[string]string{}
 	if len(params) > 0 {
 		var pm map[string]any
@@ -275,8 +276,8 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 	}
 	vars["port"] = strconv.Itoa(port)
 	maps.Copy(vars, st.pathVars())
-	if cli := st.plat.Runtime.CLI; cli != "" {
-		vars["cli"] = expandPath(cli)
+	if cli := observedEngineCLI(st); cli != "" {
+		vars["cli"] = cli
 	}
 
 	// Most cmd actions run once with the params as given. An action that

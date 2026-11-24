@@ -12,9 +12,20 @@
         "/opt/homebrew/bin/mtplx",
         "~/.local/bin/mtplx"
       ],
+      "conflicts": [
+        "/Applications/MTPLX.app"
+      ],
+      "install": {
+        "pkg": {
+          "manager": "homebrew",
+          "tap": "youssofal/mtplx",
+          "formula": "mtplx"
+        }
+      },
       "runtime": {
         "bin": "~/.mtplx/bin/mtplx",
         "cli": "~/.mtplx/bin/mtplx",
+        "wait_for_model": true,
         "editable_launch": {
           "fixed_args": ["serve"],
           "controls": [

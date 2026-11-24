@@ -10,7 +10,6 @@ import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
-import { useNodesStore } from '@/ui/stores/nodes.store'
 
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
@@ -153,9 +152,6 @@ export function BackendRow({
         )
     }, [displayBackend.processStatus, isUnavailable])
 
-    const nodeOs = useNodesStore(state => state.nodes.get(nodeId)?.os)
-    const targetOs = nodeOs ?? window.windowApi.platform
-
     const handleToggle = useCallback(() => {
         window.pairApi.engines.toggle(backend.type, nodeId)
     }, [backend.type, nodeId])
@@ -212,7 +208,6 @@ export function BackendRow({
 
             <BackendFooter
                 backend={displayBackend}
-                targetOs={targetOs}
                 showUninstall={isLocalNode}
                 disabled={controlsDisabled}
                 onUninstall={requestUninstall}
@@ -234,7 +229,6 @@ export function BackendRow({
                         onExpand={handleExpand}
                         expanded={expanded}
                         isLocalNode={isLocalNode}
-                        targetOs={targetOs}
                         onInstall={handleInstall}
                     />
                     {expanded && <Divider />}

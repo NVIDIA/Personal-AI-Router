@@ -246,8 +246,8 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	vars := st.pathVars()
 	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
 	vars["port"] = strconv.Itoa(port)
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	if cli := observedEngineCLI(st); cli != "" {
+		vars["cli"] = cli
 	}
 
 	// Report the start while it runs, which for vLLM can be minutes of
@@ -656,8 +656,8 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	}
 	vars := st.pathVars()
 	vars["port"] = strconv.Itoa(port)
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	if cli := observedEngineCLI(st); cli != "" {
+		vars["cli"] = cli
 	}
 	argv, err := resolveArgs(sp.Cmd, vars)
 	if err != nil {

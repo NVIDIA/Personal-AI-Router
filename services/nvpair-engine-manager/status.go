@@ -86,6 +86,24 @@ func detectPath(st *engineState) (bool, string) {
 	return installed, binPath
 }
 
+// conflictingEnginePath answers whether the engine is already on this machine by a
+// route PAIR does not own. It reads the manifest's conflict paths the way
+// detectPath reads its detect paths, and names the first that exists, so a refusal
+// can point at the folder the user would have to open instead of describing a
+// condition nobody can see.
+func conflictingEnginePath(st *engineState) string {
+	for _, p := range st.plat.Conflicts {
+		r, err := resolvePlaceholders(p, st.pathVars())
+		if err != nil {
+			continue // conflict path references something other than a known directory
+		}
+		if ep := expandPath(r); fileExists(ep) {
+			return ep
+		}
+	}
+	return ""
+}
+
 // Status refreshes installation and fixed-port presence when no lifecycle
 // operation is active. During an operation it returns the current snapshot.
 func (e *Executor) Status(engine string) (EngineStatus, error) {
@@ -224,7 +242,7 @@ func statusLocked(engine string, st *engineState, enabled bool) EngineStatus {
 	// Enabled model-selecting engines remain available for another Load or
 	// request after their serving process exits unexpectedly.
 	awaitingModel := st.awaitingModel || (enabled && st.plat != nil && st.plat.Runtime.WaitForModel)
-	return EngineStatus{
+	status := EngineStatus{
 		Engine:        engine,
 		DisplayName:   st.manifest.DisplayName,
 		Installed:     st.installed,
@@ -234,7 +252,10 @@ func statusLocked(engine string, st *engineState, enabled bool) EngineStatus {
 		AwaitingModel: st.installed && awaitingModel && !st.running && !st.starting && !st.modelSwitching,
 		Healthy:       st.healthy,
 		Port:          st.port,
+		Owner:         installOwner(st),
 	}
+	status.CanInstall = canInstallHere(st)
+	return status
 }
 
 // refreshPassiveStatus stages filesystem and network observations without an

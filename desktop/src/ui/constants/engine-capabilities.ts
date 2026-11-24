@@ -83,6 +83,12 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         deleteBlockedWhileLoaded: true,
         // Load writes the model into the launch arguments and restarts vLLM on it.
         loadRestartsEngine: true,
+        // vLLM takes its model as a launch argument and will not start without
+        // one, so turning it on offers the picker.
+        needsModelSelection: true,
+        // A request naming a cached model prepares it first, which is why the
+        // waiting banner can say a request may load it.
+        loadsModelOnRequest: true,
         engineHub: {
             label: 'vLLM',
             url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
@@ -93,11 +99,13 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // MTPLX serves one pack per process and cannot drop it while running, so
         // Eject stops the engine and Load starts it again on the chosen pack.
         hasEject: true,
-        // Detect-only, and Apple Silicon only: PAIR drives the `mtplx` CLI of an
-        // install the user made themselves and never installs or uninstalls it.
-        // An empty list means no auto-install, and `getWelcomeEngineCandidates`
-        // leaves the engine out of onboarding rather than showing an install row
-        // that cannot be fulfilled.
+        // Apple Silicon only, and obtained through Homebrew rather than a copy PAIR
+        // downloads, so an empty list here does not mean "cannot be installed": the
+        // engine card asks the owning node (`canInstall`, which needs a Homebrew
+        // prefix on that machine) and offers the vendor's download page where brew
+        // is missing. The empty list is only what keeps MTPLX out of the onboarding
+        // picker, which would otherwise offer a default install whose tool most
+        // fresh Macs do not have.
         hasInstall: [],
         hasEnginePort: true,
         hasInstallPath: false,
@@ -116,6 +124,9 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         deleteBlockedWhileLoaded: true,
         // Load rewrites the model launch flags and restarts MTPLX on them.
         loadRestartsEngine: true,
+        // Like vLLM, MTPLX takes its pack as a launch argument and PAIR will not
+        // start it without one, so turning it on offers the picker too.
+        needsModelSelection: true,
         // MTPLX only runs packs built for it, and that list is the only place
         // they are named, so the hub lists those rather than any safetensors repo.
         engineHub: {

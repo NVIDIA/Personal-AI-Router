@@ -91,11 +91,20 @@ type Platform struct {
 	// InstallDir overrides the default app-data-root engine directory. It is a
 	// literal user path with the same ~ and OS environment expansion as detect
 	// paths; its resolved value is exposed to the manifest as {install_dir}.
-	InstallDir string     `json:"install_dir,omitempty"`
-	Detect     []string   `json:"detect,omitempty"`
-	Install    *Install   `json:"install,omitempty"`
-	Uninstall  *Uninstall `json:"uninstall,omitempty"`
-	Runtime    Runtime    `json:"runtime"`
+	InstallDir string   `json:"install_dir,omitempty"`
+	Detect     []string `json:"detect,omitempty"`
+	// Conflicts lists paths whose presence means the engine is already on this
+	// machine by a route PAIR does not own — the vendor's own application bundle,
+	// most often. A hit here does not make the engine read as installed, the way
+	// detect does: PAIR cannot start what it only found a folder of. It stops an
+	// install, because a second copy of an engine that shares one model library
+	// and one port is worse than no install at all, and a package manager would
+	// otherwise write it without being asked to. Paths get the same ~ and OS
+	// environment expansion as detect paths.
+	Conflicts []string   `json:"conflicts,omitempty"`
+	Install   *Install   `json:"install,omitempty"`
+	Uninstall *Uninstall `json:"uninstall,omitempty"`
+	Runtime   Runtime    `json:"runtime"`
 	// ModelsDir is the engine's on-disk model store, referenced elsewhere as
 	// {models_dir}. Nothing this service removes may delete it: Uninstall skips
 	// it, validation keeps it outside an explicit managed install directory, and
@@ -118,10 +127,29 @@ type Install struct {
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
 	// a script or artifact so remote content is downloaded before execution.
 	Script []string `json:"script,omitempty"`
+	// Pkg installs through a package manager the machine already has, which is
+	// how a vendor that ships no installer is still installable. It is
+	// exclusive with Script/Fetch/Artifacts/Run: the package manager does its
+	// own fetching, so there is nothing for PAIR to download or verify, and it
+	// chooses where its files go, so the install stays outside PAIR's ownership.
+	Pkg *PkgInstall `json:"pkg,omitempty"`
 	// Mode defaults to "user" (user-scoped, no elevation). "admin" is
 	// an explicit, rarely-used exception the runner surfaces loudly
 	// rather than silently escalating.
 	Mode string `json:"mode,omitempty"`
+}
+
+// PkgInstall names the package manager and the package to install through it.
+// Manager must be one of the managers this build can drive (see
+// packageManagerKinds); Formula is the package name, which a tap qualifies; Tap
+// is "<user>/<repository>" when the package does not come from the manager's own
+// repository. There is deliberately no version field: a package manager resolves
+// its own dependencies, so pinning one package name would still leave two Macs
+// building different things from the same manifest.
+type PkgInstall struct {
+	Manager string `json:"manager"`
+	Tap     string `json:"tap,omitempty"`
+	Formula string `json:"formula"`
 }
 
 // Uninstall removes a user-mode install. Run is for work only a command can do
@@ -926,6 +954,18 @@ func (p *Platform) validate(key string) error {
 	if source := p.Runtime.ModelSource; source != "" && source != "huggingface" && source != "modelscope" {
 		return fmt.Errorf("platform %q: invalid model_source", key)
 	}
+	for _, conflict := range p.Conflicts {
+		if strings.TrimSpace(conflict) == "" {
+			return fmt.Errorf("platform %q: conflicts lists a blank path", key)
+		}
+		// Listing a detect path twice means the author did not know detect already
+		// reads it, and a path that makes the engine read as installed can never
+		// be reached as a conflict: an install is not offered for an installed
+		// engine, so the entry would only ever look like it was doing something.
+		if slices.Contains(p.Detect, conflict) {
+			return fmt.Errorf("platform %q: conflicts lists %q, which detect already answers for", key, conflict)
+		}
+	}
 	if p.InstallDir != "" {
 		if strings.TrimSpace(p.InstallDir) == "" {
 			return fmt.Errorf("platform %q: install_dir cannot be blank", key)
@@ -1042,6 +1082,16 @@ func (p *Platform) validate(key string) error {
 		}
 	}
 	if p.Install != nil {
+		// Checked first so a package mode declared beside a download reports as
+		// the contradiction it is, not as a missing install.run.
+		if p.Install.Pkg != nil {
+			if err := validatePkgInstall(key, p.Install); err != nil {
+				return err
+			}
+			if p.Uninstall != nil {
+				return fmt.Errorf("platform %q: uninstall is not allowed with install.pkg — %s owns the files it installs, so PAIR neither removes them nor offers to", key, p.Install.Pkg.Manager)
+			}
+		}
 		hasArtifacts := len(p.Install.Artifacts) > 0
 		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || hasArtifacts || len(p.Install.Run) > 0) {
 			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/artifacts/run (a script install cannot also be checksum-pinned)", key)

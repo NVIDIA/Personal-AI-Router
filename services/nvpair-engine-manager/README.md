@@ -286,7 +286,10 @@ The status has `installed:true`, `awaiting_model:true`, `running:false`, and
 `healthy:false`; no vLLM serving process or loaded model is advertised. The
 optional `awaiting_model` field is false or omitted in other lifecycle states.
 The desktop shows **Select a model**, keeps the switch on, and offers **Add model**
-and **Load** for downloaded models. A stopped engine hides its model controls.
+and **Load** for downloaded models. A stopped engine hides its model controls. The
+same flow covers any engine whose platform sets `wait_for_model` and declares a
+`launch_model` action — today vLLM and MTPLX — so MTPLX gets the same picker,
+titled **Choose a model for MTPLX**, and the same orange **No model loaded** banner.
 
 An explicit Load saves the chosen model and performs the normal readiness-probed
 start. Existing saved model arguments remain in effect, so upgrading preserves
@@ -303,13 +306,39 @@ engine manager on any other host therefore leaves MTPLX out of
 `engine:get-installed` rather than reporting it as available, and no client offers
 it there.
 
-It also declares no `install` block, so MTPLX is detected and never installed.
-`~/.mtplx/bin/mtplx`, the MTPLX app's own runtime venv, `/opt/homebrew/bin/mtplx`
-and `~/.local/bin/mtplx` are checked in that order and the first one found is
-launched. An explicit `engine:uninstall` is an error for it ("no uninstall defined
-for this platform") and "reset all data" skips it, because neither has a PAIR
-install marker to work from: the engine, and the pack cache the user filled, stay
-exactly where they were.
+Its `install` block is a `pkg` install, so on a Mac with no `mtplx` anywhere PAIR
+installs one: it finds `brew` in `/opt/homebrew/bin` or `/usr/local/bin` (PATH is
+never consulted), and runs `brew tap youssofal/mtplx`,
+`brew trust --formula youssofal/mtplx/mtplx` — tolerated, because a brew older than
+the trust gate has no such command and installs anyway — and
+`brew install youssofal/mtplx/mtplx`, with `HOMEBREW_NO_AUTO_UPDATE` and
+`HOMEBREW_NO_ENV_HINTS` set so the install spends its budget on this formula. Each
+command's output is kept and the tail of it reaches the failure message, because
+"Refusing to load formula … from untrusted tap" names the fix and "exit status 1"
+does not. Whatever brew reports, the install is only done once
+`/opt/homebrew/bin/mtplx --version` answers, run from the same bin directory. That
+check is not decoration: brew can exit 0 with MTPLX's Python runtime still unbuilt,
+because the launcher would build the venv inside the first launch, and paying for
+that inside a start — which has 600 seconds, not the install's 30 minutes, and shows
+a spinner instead of a progress line — is how an install that "succeeded" turns out
+to never work. With no brew on the machine the install is refused with a pointer to
+brew.sh, and `can_install` is reported false, so no card offers the button.
+
+`detect` checks `~/.mtplx/bin/mtplx`, the MTPLX app's own runtime venv,
+`/opt/homebrew/bin/mtplx` and `~/.local/bin/mtplx` in that order and the first one
+found is launched, and every `{cli}` action runs that same binary rather than the
+manifest's `cli` path — a Homebrew or app-venv `mtplx` found there is the one this
+machine has. `/Applications/MTPLX.app` is declared under `conflicts`, so a brew
+install is refused while the desktop app is installed, and the card shows no Install
+button: the two share `~/.mtplx/models`, and a second copy beside it is a second set
+of files in the user's model library that PAIR could not take back out.
+
+Either way there is nothing for `engine:uninstall` to remove. A `pkg` install
+records no PAIR ownership marker, and an explicit uninstall of a `pkg` platform is
+refused as "it was installed through Homebrew, which owns where it lives", naming
+`brew uninstall youssofal/mtplx/mtplx`; "reset all data" skips it for the same
+reason. The engine, and the pack cache the user filled, stay exactly where they
+were.
 
 `mtplx serve` runs in the foreground as one process, binding loopback `8101` while
 the proxy facade owns `8100`. Port `8000` is deliberately not reused for it: that

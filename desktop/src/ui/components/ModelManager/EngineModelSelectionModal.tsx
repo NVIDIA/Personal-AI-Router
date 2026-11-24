@@ -21,14 +21,36 @@ import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useErrorsStore } from '@/ui/stores/errors.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
+import { EngineDisplayNames } from '@/shared/constants/engines'
+import { engineManagerName } from '@/shared/utils/engines'
+import type { EngineType } from '@/shared/types/engines'
 import type { ModelEntry } from '@/ui/types/model-hub'
 
-/** Mounted only for an explicit turn-on/install, never for Eject or restored idle state. */
-export function EngineModelSelectionModal({ nodeId }: { nodeId: string }) {
+/**
+ * Mounted only for an explicit turn-on/install, never for Eject or restored idle
+ * state, and only for one engine on one node: the app keeps a single setup
+ * interaction alive, so a second one replaces the first rather than stacking a
+ * second dialog over it.
+ *
+ * It names the engine because a model-selecting engine has to be told which model
+ * to serve. vLLM and MTPLX both take theirs as a launch argument and both refuse
+ * to come up without one, so the picker offers whatever each of them has already
+ * downloaded and searches that engine's own catalog.
+ */
+export function EngineModelSelectionModal({
+    nodeId,
+    engineType
+}: {
+    nodeId: string
+    engineType: EngineType
+}) {
     const dialogId = useId()
-    const status = useEngineStatusStore(s => s.statusByNode.get(nodeId)?.get('vllm')?.processStatus)
-    const inventory = useEngineModelsStore(s => s.models.get(`${nodeId}:vllm`))
-    const pending = usePendingActionsStore(s => s.getLifecyclePending(nodeId, 'vllm'))
+    const displayName = EngineDisplayNames[engineType]
+    const status = useEngineStatusStore(
+        s => s.statusByNode.get(nodeId)?.get(engineType)?.processStatus
+    )
+    const inventory = useEngineModelsStore(s => s.models.get(`${nodeId}:${engineType}`))
+    const pending = usePendingActionsStore(s => s.getLifecyclePending(nodeId, engineType))
     const isRemote = useConnectionStore(s => s.selfId !== nodeId)
     const isDisconnected = useNodesStore(s => isRemote && s.nodes.get(nodeId)?.status === 'offline')
     const [addingModel, setAddingModel] = useState(false)
@@ -38,16 +60,19 @@ export function EngineModelSelectionModal({ nodeId }: { nodeId: string }) {
     const waiting = status === 'awaiting-model' && !pending && !isDisconnected
 
     useEffect(() => {
+        // A failed start also lands as the toggle command's own error, which
+        // names the engine the way the engine manager spells it.
         const failed = errors.some(
             error =>
                 initialErrors.get(error.id) !== error.timestamp &&
                 error.severity !== 'info' &&
                 error.severity !== 'warning' &&
-                (error.engineType === 'vllm' || error.id === 'engine-cmd:toggle:vllm') &&
+                (error.engineType === engineType ||
+                    error.id === `engine-cmd:toggle:${engineManagerName(engineType)}`) &&
                 (error.nodeId ? error.nodeId === nodeId : !isRemote)
         )
         if (failed) useOverviewUiStore.getState().dismissModelSelection()
-    }, [errors, initialErrors, nodeId, isRemote])
+    }, [errors, initialErrors, nodeId, engineType, isRemote])
 
     useEffect(() => {
         const ui = useOverviewUiStore.getState()
@@ -73,23 +98,23 @@ export function EngineModelSelectionModal({ nodeId }: { nodeId: string }) {
         // Read current service state so a request that has already started
         // loading a model is never canceled by a stale dialog close event.
         if (
-            useEngineStatusStore.getState().statusByNode.get(nodeId)?.get('vllm')?.processStatus ===
-            'awaiting-model'
+            useEngineStatusStore.getState().statusByNode.get(nodeId)?.get(engineType)
+                ?.processStatus === 'awaiting-model'
         ) {
-            window.pairApi.engines.stop('vllm', nodeId)
+            window.pairApi.engines.stop(engineType, nodeId)
         }
     }
 
     const loadModel = (name: string) => {
         useOverviewUiStore.getState().dismissModelSelection()
-        window.pairApi.engines.loadModel('vllm', nodeId, name)
+        window.pairApi.engines.loadModel(engineType, nodeId, name)
     }
 
     const downloadModels = (entries: ModelEntry[]) => {
         if (entries.length === 0) return
         useOverviewUiStore.getState().dismissModelSelection()
         for (const entry of entries) {
-            window.pairApi.engines.pullModel('vllm', nodeId, entry.name)
+            window.pairApi.engines.pullModel(engineType, nodeId, entry.name)
         }
     }
 
@@ -98,7 +123,7 @@ export function EngineModelSelectionModal({ nodeId }: { nodeId: string }) {
     if (addingModel) {
         return (
             <ModelHubModal
-                engine="vllm"
+                engine={engineType}
                 nodeId={nodeId}
                 onOpenChange={open => {
                     if (!open) setAddingModel(false)
@@ -123,11 +148,11 @@ export function EngineModelSelectionModal({ nodeId }: { nodeId: string }) {
                         maxHeight: 'calc(100vh - 32px)'
                     }}
                 >
-                    <ModalHeading>Choose a model for vLLM</ModalHeading>
+                    <ModalHeading>Choose a model for {displayName}</ModalHeading>
                     <Stack gap="4" className="min-h-0">
                         <Text kind="body/regular/sm">
-                            vLLM needs a loaded model, please click on an existing model below to
-                            load or add one.
+                            {displayName} needs a loaded model, please click on an existing model
+                            below to load or add one.
                         </Text>
                         {models.length > 0 ? (
                             <Stack gap="2" className="overflow-y-auto max-h-[45vh]">
@@ -140,7 +165,7 @@ export function EngineModelSelectionModal({ nodeId }: { nodeId: string }) {
                                         aria-label={`Load ${model.name}`}
                                         onClick={() => loadModel(model.name)}
                                     >
-                                        {formatModelDisplayName(model.name, 'vllm')}
+                                        {formatModelDisplayName(model.name, engineType)}
                                     </Button>
                                 ))}
                             </Stack>

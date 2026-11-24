@@ -60,8 +60,9 @@ export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUr
         docsUrl: 'https://docs.vllm.ai/',
         installUrl: 'https://docs.vllm.ai/en/latest/getting_started/installation.html'
     },
-    // PAIR never installs MTPLX; these are for reading about it and getting it
-    // from its own distribution.
+    // MTPLX installs through Homebrew where the Mac has it and PAIR can find
+    // brew; these links are for reading about it and, where there is no
+    // Homebrew, for getting MTPLX's own installer instead.
     mtplx: {
         docsUrl: 'https://mtplx.com/docs/',
         installUrl: 'https://mtplx.com/download'

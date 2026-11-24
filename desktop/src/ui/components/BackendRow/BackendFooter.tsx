@@ -6,8 +6,7 @@ import type { CSSProperties } from 'react'
 import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import { OpenInNew } from '@/ui/components/icons'
 import type { BackendInfo } from '@/ui/types/engine-info'
-import type { PlatformDisplayName } from '@/shared/types/platform'
-import { canAutoInstallBackendForOs } from '@/ui/utils/backend-target-os'
+import { engineOwnerTool, isPairManagedInstall } from '@/shared/utils/engines'
 
 const INLINE_LINK_STYLE: CSSProperties = {
     alignItems: 'center',
@@ -22,22 +21,28 @@ function displayVersion(version: string): string {
 
 export function BackendFooter({
     backend,
-    targetOs,
     showUninstall,
     disabled,
     onUninstall
 }: {
     backend: BackendInfo
-    targetOs: PlatformDisplayName
     showUninstall: boolean
     disabled: boolean
     onUninstall: () => void
 }) {
-    const autoInstall = canAutoInstallBackendForOs(backend.type, targetOs)
     const isTransitioning =
         backend.processStatus === 'installing' || backend.processStatus === 'uninstalling'
     const isNotInstalled = backend.processStatus === 'not-installed'
     const isInstalled = !isNotInstalled && !isTransitioning
+
+    // Uninstall appears only for the copies NVPAIR is allowed to remove. Who owns
+    // the copy that is here is the owning node's engine manager's answer, reported
+    // with its state, and it is the same answer the service would give if the
+    // button were clicked: it refuses to remove a package manager's install and a
+    // copy it merely found. A copy owned by a tool gets that tool named instead,
+    // because the command that removes it is the user's to run.
+    const ownerTool = engineOwnerTool(backend.owner)
+    const canUninstall = isPairManagedInstall(backend.owner)
 
     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
 
@@ -97,9 +102,14 @@ export function BackendFooter({
                             {installedVersion}
                         </Text>
                     )}
+                    {ownerTool && (
+                        <Text kind="body/regular/sm" className="text-subtle-color">
+                            Installed with {ownerTool}
+                        </Text>
+                    )}
                 </Flex>
 
-                {autoInstall && showUninstall && isInstalled && (
+                {canUninstall && showUninstall && isInstalled && (
                     <Button onClick={onUninstall} kind="tertiary" size="small" disabled={disabled}>
                         Uninstall
                     </Button>

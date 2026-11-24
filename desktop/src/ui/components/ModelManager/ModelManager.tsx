@@ -201,7 +201,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
     return (
         <Stack gap="4">
-            {backend.type === 'vllm' &&
+            {caps?.needsModelSelection &&
                 backend.processStatus === 'awaiting-model' &&
                 !modelLoadPending &&
                 !models.some(model => model.status === 'loading') && (
@@ -213,8 +213,10 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     >
                         <Text kind="body/regular/sm">
                             <strong>No model loaded.</strong> Load a downloaded model from the list
-                            below, or add one. Requests to the PAIR vLLM endpoint can also load
-                            downloaded models.
+                            below, or add one.
+                            {caps?.loadsModelOnRequest
+                                ? ` Requests to the PAIR ${backend.displayName} endpoint can also load downloaded models.`
+                                : ''}
                         </Text>
                     </Banner>
                 )}

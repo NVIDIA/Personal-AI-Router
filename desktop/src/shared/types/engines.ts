@@ -49,6 +49,24 @@ export interface EngineStatusData {
      * reported version data or engines that are not installed.
      */
     installedVersion?: string
+    /**
+     * True when the owning node's engine manager could install this engine on
+     * request: that platform declares a way to obtain it, and whatever that way
+     * needs is on that machine. Only the service can answer it, so it travels with
+     * the state instead of being guessed from a per-engine list of operating
+     * systems. The engine card's Install button comes from this, which is how a
+     * card avoids offering an install its own service would refuse.
+     */
+    canInstall?: boolean
+    /**
+     * Who owns the copy of the engine that is on the owning node: `'pair'` for an
+     * install PAIR made and can take back out, a package manager's name
+     * (`'Homebrew'`) for its install, `'other'` for a copy that was merely found,
+     * and absent when nothing is installed. Uninstall appears only for `'pair'`,
+     * because it is refused for everything else. Read it with
+     * `isPairManagedInstall` / `engineOwnerTool`.
+     */
+    owner?: string
 }
 
 export type ModelItemStatus = (typeof ModelItemStatuses)[number]

@@ -91,7 +91,12 @@ loading is provided by the PAIR proxy endpoint.
   The normative operation and failure contract is
   [ENGINE_SETTINGS.md](../nvpair-ui-broker/ENGINE_SETTINGS.md); launch grammar is
   [LAUNCH_TEXT.md](LAUNCH_TEXT.md).
-- Detect installation; **user-mode** install (HTTPS download + checksum-verify-when-pinned + run) per OS/arch.
+- Detect installation; **user-mode** install per OS/arch, in one of three modes: a
+  fetch (HTTPS download + checksum-verify-when-pinned + run), a vendor `script`, or
+  a `pkg` install run through a package manager found in `/opt/homebrew` or
+  `/usr/local` (PATH is never consulted), which is then proved by running the
+  installed command. A `pkg` install writes no install marker and is never
+  uninstalled by this service: the package manager owns where the files live.
 - Lifecycle: start (with readiness probe), stop, restart, status, periodic health.
 - The bundled LM Studio stop policy reads `lms daemon status --json`: a headless
   host uses `lms daemon down` to release its daemon and loaded models; a GUI host
@@ -119,7 +124,13 @@ loading is provided by the PAIR proxy endpoint.
   `load_model` is a `launch_model` action that rewrites the model in the launch
   arguments and restarts the engine on it, and their `unload_model` is a
   `stop_engine` action, because neither can release its model and keep serving.
-  MTPLX declares no install block, so it is only ever detected. `loaded_models` reports
+  MTPLX declares a `pkg` install (`youssofal/mtplx`, Apple Silicon macOS only) and a
+  `conflicts` path (`/Applications/MTPLX.app`), so it is installed through Homebrew
+  on a Mac with neither, and never beside one. vLLM and MTPLX both set
+  `wait_for_model`, so a start whose launch arguments name no model is refused and
+  the clients open the model picker first. Only vLLM also loads a cached model on
+   request: MTPLX advertises just the pack it serves, so a request naming another
+   cached pack is refused until it is loaded. `loaded_models` reports
   models currently resident in memory, name-extracted via the same declarative
   `result` spec with optional nested-path and row filters: Ollama uses
   `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
@@ -164,6 +175,18 @@ loading is provided by the PAIR proxy endpoint.
 
 ## 3. Key Use Cases
 - **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
+- **Install an engine through a package manager**: a platform whose `install` block
+  declares `pkg` fetches nothing. The service finds the manager in
+  `/opt/homebrew/bin` or `/usr/local/bin` (PATH is not consulted, because a
+  Finder-launched host may not have it and a `brew` found there may not fetch
+  prebuilt packages), runs the manager's own steps, then runs the command the
+  manager installed with `--version` and only calls the install done when that
+  answers. A machine with no package manager gets a refusal naming the manager and
+  its site, and `can_install` stays absent, so no client offers the button.
+- **Edge case — a `pkg` install is never a PAIR-owned install**: it writes no
+  install marker, `engine:uninstall` refuses it by name, and
+  `engine:uninstall-managed` skips it, because the files are the manager's and
+  sit beside a model store the user filled.
 - **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port — the configured port, plus the port the engine records for itself when the manifest declares `runtime.port_source`.
 - **Run a declared action**: `engine:action {engine, action, params}` → the manifest-declared HTTP call to the engine's loopback control API (e.g. `127.0.0.1:{port}/api/pull`). (Methods, notifications, and UI events all use the colon form `engine:*`, matching the POC UI and the `errors:*` notifications.)
 - **Onboard a new engine (no code)**: a vendor adds `engines/<vendor>.json`; the generic runner exposes their lifecycle + actions immediately.
@@ -261,7 +284,7 @@ implementation is used.
 
 ## 6. Inputs and Outputs
 
-**Inputs** — from the orchestrator (`nvpair-ui-broker`) over stdio / `--ipc`, plus engine manifests from disk. Newline-delimited JSON-RPC 2.0 `engine:*` requests; manifest JSON (`engine`, `display_name`, `manifest_version`, `platforms{<os/arch>{detect, install, runtime}}`, `actions`). Every manifest is validated on load and rejected with a specific, human-readable error if malformed; manifests are read-only to this service.
+**Inputs** — from the orchestrator (`nvpair-ui-broker`) over stdio / `--ipc`, plus engine manifests from disk. Newline-delimited JSON-RPC 2.0 `engine:*` requests; manifest JSON (`engine`, `display_name`, `manifest_version`, `platforms{<os/arch>{detect, conflicts, install, runtime}}`, `actions`). Every manifest is validated on load and rejected with a specific, human-readable error if malformed; manifests are read-only to this service.
 
 `EngineStatus` object (returned by `engine:status` and `engine:get-installed`):
 ```json
@@ -274,8 +297,21 @@ implementation is used.
   awaiting_model?: boolean
   healthy: boolean
   port: number
+  can_install?: boolean
+  owner?: string
 }
 ```
+
+`can_install` is present only when it is true: an engine that is already here, or
+one this machine has no way to obtain (no `install` block, an admin install, a
+`pkg` install with no package manager on the machine, or a `conflicts` path that
+exists) simply omits it. `owner` is `"pair"` for an install this service made, a
+package manager's name (`"Homebrew"`) for one it ran through a manager, `"other"`
+for a copy it merely found, and omitted when nothing is installed. Both are
+recomputed from the filesystem on each status, and a client that hides an Install
+or Uninstall button on them is hiding exactly the buttons this service would
+refuse. A remote `engine:remote-start` / `:stop` answer is a full `EngineStatus`,
+so it restates both.
 
 `LogLine` object (entry in `engine:logs`):
 ```json
@@ -428,7 +464,10 @@ fails it with the peer's error message.
 
   One persisted file: `installed-by-pair.json` in the engine's managed install
   directory (normally `engine-bin/<engine>` under app data, or the platform's
-  explicit `install_dir`), written after an install this service performed. It is the only record distinguishing an
+  explicit `install_dir`), written after an install this service performed, except
+  a `pkg` install, which deliberately writes none: a package manager put its files
+  in its own tree, where a removal list built from the manifest would take the
+  model store beside them. It is the only record distinguishing an
   install PAIR made from one the user made themselves, which an engine whose
   vendor script chooses its own destination cannot be told apart any other way,
   and it gates both `engine:uninstall` for such an engine and

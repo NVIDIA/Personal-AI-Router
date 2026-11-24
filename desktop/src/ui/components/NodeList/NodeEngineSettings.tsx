@@ -36,8 +36,11 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
         if (!nodeStatuses) return ''
         const parts: string[] = []
         for (const [type, s] of nodeStatuses) {
+            // The two install facts are part of the fingerprint: an install that
+            // finishes, or a copy that turns out to belong to Homebrew, changes
+            // which buttons the card may offer.
             parts.push(
-                `${type}:${s.processStatus}:${s.enginePort ?? ''}:${s.proxyPort ?? ''}:${s.installedVersion ?? ''}`
+                `${type}:${s.processStatus}:${s.enginePort ?? ''}:${s.proxyPort ?? ''}:${s.installedVersion ?? ''}:${s.canInstall ? 'installable' : ''}:${s.owner ?? ''}`
             )
         }
         return parts.join('|')
@@ -104,6 +107,8 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                 docsUrl: EngineDefaultLinks[type]?.docsUrl,
                 installUrl: EngineDefaultLinks[type]?.installUrl,
                 installedVersion: status.installedVersion,
+                canInstall: status.canInstall,
+                owner: status.owner,
                 updateAvailable
             },
             statusKnown

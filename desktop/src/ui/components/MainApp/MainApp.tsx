@@ -34,7 +34,7 @@ function MainApp() {
     const { connected, selfId } = useConnectionStore(state => state)
     const { fetchedNodes, clearNodes } = useNodesStore(state => state)
     const activeTab = useOverviewUiStore(state => state.activeTab)
-    const modelSelectionNodeId = useOverviewUiStore(state => state.modelSelectionNodeId)
+    const modelSelection = useOverviewUiStore(state => state.modelSelection)
     const settingsSubTab = useOverviewUiStore(state => state.settingsSubTab)
     const serviceSettingsOpen = activeTab === 'settings' && settingsSubTab === 'service'
     const serviceStatus = useServiceStatusStore(state => state.status)
@@ -138,10 +138,11 @@ function MainApp() {
             <InferenceDemoToast />
 
             {/* Keep setup intent in sync while Overview's node controls are unmounted. */}
-            {modelSelectionNodeId && (
+            {modelSelection && (
                 <EngineModelSelectionModal
-                    key={modelSelectionNodeId}
-                    nodeId={modelSelectionNodeId}
+                    key={`${modelSelection.nodeId}:${modelSelection.engineType}`}
+                    nodeId={modelSelection.nodeId}
+                    engineType={modelSelection.engineType}
                 />
             )}
         </Stack>

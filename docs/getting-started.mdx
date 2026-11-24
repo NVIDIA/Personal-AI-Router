@@ -37,8 +37,10 @@ Nothing else has to be in place first:
 
 - **Engines.** PAIR installs and starts Ollama, LM Studio, llama.cpp, or (on Linux or Apple Silicon macOS) vLLM for you
   in step 4. Existing Ollama and LM Studio installations can also be detected
-  and used, as can an existing MTPLX install on an Apple Silicon Mac. MTPLX is
-  never installed for you; it is used where it is already present.
+  and used, as can an existing MTPLX install on an Apple Silicon Mac. MTPLX is not
+  offered during setup: add it afterwards in **Engine settings**, where it installs
+  through Homebrew on an Apple Silicon Mac that already has Homebrew, and is
+  otherwise only used where it is already present.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
   eligible node, so a single node holding the model is enough. Prepare the same
   model on additional nodes when you want any of them to be able to serve it.

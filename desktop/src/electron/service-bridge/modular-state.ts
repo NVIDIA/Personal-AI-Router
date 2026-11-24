@@ -81,6 +81,8 @@ interface RemoteEngineFacts {
     awaitingModel: boolean
     healthy: boolean
     port: number
+    canInstall: boolean
+    owner: string
 }
 
 /**
@@ -98,6 +100,20 @@ function factsProcessStatus(facts: {
     if (facts.starting) return 'starting'
     if (facts.awaitingModel) return 'awaiting-model'
     return facts.installed ? 'stopped' : 'not-installed'
+}
+
+/**
+ * The two install facts an engine-manager `EngineStatus` carries, read the same way
+ * for a local engine and for a peer's: whether there is an install this node's
+ * service could perform, and who owns the copy that is already there. A node that
+ * reports neither — an older peer, or a status that came from discovery rather than
+ * from an engine manager — reads as nothing installable and nothing owned, which is
+ * the safe answer: PAIR's services refuse both operations in exactly the cases
+ * these facts describe, so a card built on a guess would offer buttons that can only
+ * end in a refusal.
+ */
+function readInstallFacts(status: JsonObject): { canInstall: boolean; owner: string } {
+    return { canInstall: booleanValue(status.can_install), owner: stringValue(status.owner) }
 }
 
 interface NodeHardware {
@@ -973,6 +989,8 @@ class ModularBridgeState {
             starting: boolean
             awaitingModel: boolean
             port: number
+            canInstall: boolean
+            owner: string
         }
     >()
     /**
@@ -1400,7 +1418,8 @@ class ModularBridgeState {
             running: booleanValue(obj.running),
             starting: booleanValue(obj.starting),
             awaitingModel: booleanValue(obj.awaiting_model),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            ...readInstallFacts(obj)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -1762,7 +1781,11 @@ class ModularBridgeState {
                 // it for the engine port.
                 enginePort: facts.installed && facts.port > 0 ? facts.port : null,
                 // The peer's promoted proxy port, when its engine is advertised.
-                proxyPort: presence?.up && presence.port > 0 ? presence.port : null
+                proxyPort: presence?.up && presence.port > 0 ? presence.port : null,
+                // What the peer could do about the engine, from the peer: its own
+                // package manager, its own copy of an engine already in a folder.
+                canInstall: facts.canInstall,
+                owner: facts.owner
             }
         } else if (node && presence?.up && !node.clustered && !node.trusted) {
             // A live advertisement means the engine is reachable and serving, so
@@ -1811,7 +1834,8 @@ class ModularBridgeState {
                 starting: booleanValue(engineObj.starting),
                 awaitingModel: booleanValue(engineObj.awaiting_model),
                 healthy: booleanValue(engineObj.healthy),
-                port: numberValue(engineObj.port)
+                port: numberValue(engineObj.port),
+                ...readInstallFacts(engineObj)
             })
             seen.add(engineType)
         }
@@ -1844,7 +1868,10 @@ class ModularBridgeState {
             starting: booleanValue(obj.starting),
             awaitingModel: booleanValue(obj.awaiting_model),
             healthy: booleanValue(obj.healthy),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            // A start/stop answer is a full `EngineStatus`, so it restates the
+            // install facts too; read them or the toggle would quietly drop them.
+            ...readInstallFacts(obj)
         })
         this.emitRemoteEngineStatus(nodeId, engineType)
     }
@@ -2166,7 +2193,12 @@ class ModularBridgeState {
                 // Each proxy-fronted engine has its own broker proxy
                 // (mapped in proxy-engines.ts); report that engine's bound
                 // proxy port. Loopback-only engines get null.
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                // The engine card's Install and Uninstall buttons come from these,
+                // so an engine this machine has no way to install — and a copy that
+                // belongs to somebody else's installer — show neither.
+                canInstall: facts.canInstall,
+                owner: facts.owner
             }
         }
 

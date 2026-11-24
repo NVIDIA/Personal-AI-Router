@@ -24,6 +24,14 @@ export const WELCOME_ENGINE_DEFAULT_SELECTED: Partial<Record<EngineType, boolean
     vllm: true
 }
 
+/**
+ * Engines offered by the onboarding picker on a given operating system. This is a
+ * product choice about what a first-run user is handed, not a fact about a
+ * machine, and it only ever describes the local node — which is why it stays a
+ * table. Whether an install is actually possible on a specific node is that node's
+ * engine manager's answer, reported with its state as `canInstall`, and the engine
+ * card reads that instead.
+ */
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {
     const platform = displayNameToPlatform(os)
     return EnabledEngineTypes.filter(t => {

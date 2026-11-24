@@ -21,8 +21,9 @@ import (
 	"time"
 )
 
-// Install obtains the engine in user mode: download (checksum-verified)
-// then run the declared command. No-op if already detected.
+// Install obtains the engine in user mode: download (checksum-verified) then run
+// the declared command, or ask a package manager the machine already has to do
+// both. No-op if already detected.
 func (e *Executor) Install(ctx context.Context, engine string) error {
 	st, err := e.state(engine)
 	if err != nil {
@@ -57,10 +58,31 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	if inst == nil {
 		return fmt.Errorf("engine %q has no install block for this platform", engine)
 	}
+	if here := conflictingEnginePath(st); here != "" {
+		// The engine is on this machine, just not somewhere PAIR can run from.
+		// Installing a second copy would give it a second set of files beside the
+		// model library it already shares with the first, and PAIR could not take
+		// the extra copy back out.
+		err := fmt.Errorf("%s is already installed at %s. PAIR will not install a second copy: run it from there, or remove that copy and install again.",
+			st.manifest.DisplayName, here)
+		e.reportInstallFailed(engine, err)
+		return err
+	}
 	if inst.ModeOrDefault() == "admin" {
 		err := fmt.Errorf("engine %q declares an admin install, which is refused (engine-manager is user-mode only)", engine)
 		e.reportInstallFailed(engine, err)
 		return err
+	}
+	if inst.Pkg != nil {
+		// A package-mode install needs no PAIR install directory: the package
+		// manager decides where its files go, so PAIR neither owns them nor
+		// claims to, which is why this path closes the install unclaimed.
+		err := e.installWithPackageManager(ctx, engine, st.manifest.DisplayName, inst.Pkg)
+		if err != nil {
+			e.reportInstallFailed(engine, err)
+			return err
+		}
+		return e.completeInstall(st, engine, false)
 	}
 	if err := os.MkdirAll(st.installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
@@ -126,15 +148,26 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		}
 	}
 
+	return e.completeInstall(st, engine, true)
+}
+
+// completeInstall closes out an install this service performed. The engine has to
+// be detectable, otherwise nothing was installed, and PAIR records ownership
+// only of installs it put into its own directory: a package manager's files are
+// not PAIR's to remove, and a claim here would let a later reset delete them.
+func (e *Executor) completeInstall(st *engineState, engine string, claim bool) error {
 	if !e.waitDetect(engine, true, e.detectTimeout) {
 		err := fmt.Errorf("engine %q was not detected after install", engine)
 		e.reportInstallFailed(engine, err)
 		return err
 	}
-	// Claim the install now that it is real and detected. A failure to record it
-	// only costs the ability to uninstall later, so it must not fail the install.
-	if err := writeInstallMarker(st.installDir, engine); err != nil {
-		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
+	if claim {
+		// Claim the install now that it is real and detected. A failure to record
+		// it only costs the ability to uninstall later, so it must not fail the
+		// install.
+		if err := writeInstallMarker(st.installDir, engine); err != nil {
+			slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
+		}
 	}
 	e.reporter.clear(installFailedID(engine))
 	e.emitInstallProgress(engine, "done", 100)
@@ -161,6 +194,16 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		st.mu.Unlock()
 		e.emitState(engine)
 		return e.setDesiredEnabled(engine, false)
+	}
+	if pkg := st.plat.pkgInstall(); pkg != nil {
+		// Nothing here can be uninstalled, because nothing here was installed:
+		// the package manager put its own files in its own tree. Running the
+		// manifest's removal list against that tree would take the model library
+		// sitting beside it, and there is no ownership claim to check either — a
+		// package-mode install never writes one.
+		err := errors.New(packageManagerOwnershipRefusal(engine, pkg))
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		return err
 	}
 	un := st.plat.Uninstall
 	if un == nil || (len(un.Run) == 0 && len(un.Remove) == 0) {
