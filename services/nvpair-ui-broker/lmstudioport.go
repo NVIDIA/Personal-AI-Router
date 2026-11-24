@@ -72,24 +72,6 @@ func (b *Broker) lmstudioPortOwnershipPending() bool {
 	}
 }
 
-// needsLMStudioPortGate mirrors needsOllamaPortGate: these are the client
-// requests that can probe and adopt the configured port, so they must wait
-// while :1234 is changing hands. engine:install is gated for the same reason
-// as the rest — an install that starts the engine assigns it a port, and doing
-// that mid-transition can land on the port the proxy is about to take.
-func needsLMStudioPortGate(method string, params json.RawMessage) bool {
-	if method == "engine:get-installed" {
-		return true
-	}
-	if method != "engine:status" && method != "engine:install" && method != "engine:start" && method != "engine:restart" {
-		return false
-	}
-	var request struct {
-		Engine string `json:"engine"`
-	}
-	return json.Unmarshal(params, &request) == nil && request.Engine == "lmstudio"
-}
-
 func lmstudioSetPortRequest(method string, params json.RawMessage) (int, bool) {
 	if method != "engine:set-port" {
 		return 0, false

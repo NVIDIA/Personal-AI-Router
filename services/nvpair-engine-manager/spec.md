@@ -316,6 +316,8 @@ Requests (caller → service):
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine, port? }` | `EngineStatus`; an error for an engine this host cannot run |
 | `engine:install` | `{ engine }` | `EngineStatus` (after install) |
+| `engine:check-updates` | `{ engine }` | `{ updateAvailable: null }` when the engine is absent or no applicable update is available. A newer release yields `{ updateAvailable: { currentVersion, latestVersion, releaseUrl, installType, downloadUrl? } }`. `releaseUrl` links to release information. `installType` is `managed` or `external`. External offers include `downloadUrl` for the vendor's update page. Failed lookups return an RPC error. |
+| `engine:update` | `{ engine }` | `EngineStatus` after updating a local managed installation. Checks ownership and preserves the running or stopped state. External installs are refused. |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes the engines this service installed, selected by their install marker, each through the `engine:uninstall` path. Backs both clients' "reset all data"; the platform uninstallers reach the same code through `--uninstall-managed` because they have no broker. Neither `removed` nor `error` means the engine was left alone as not ours. |
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness); a non-loopback `bind` is rejected with `-32602` (`bind must be a loopback address`) unless the `engine_allow_lan_bind` node setting is on |
