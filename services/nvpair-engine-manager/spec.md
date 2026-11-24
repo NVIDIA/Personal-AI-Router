@@ -435,6 +435,21 @@ fails it with the peer's error message.
 
 ## 12. Failure Modes and Mitigations
 - **Download / checksum failure on install**: engine stays NotInstalled. → Fail fast before `run`; `engine:install-progress` error + `errors:report` (`engine-manager:install-failed:<engine>`); never execute an unverified payload.
+- **Transient LM Studio installation download failure**: retry the fetch-and-run
+  sequence up to three total attempts, waiting two and four seconds between
+  attempts while holding the lifecycle lock. Retry timeouts, temporary DNS
+  failures, connection resets, HTTP 408/429/500/502/503/504, explicit downloader
+  timeout/reset diagnostics, and the vendor's `_checksum_value` unbound-variable
+  error (independent of its script line number). Remove each attempt's temporary
+  downloads before retrying. Do not retry cancellation, checksum mismatches, or
+  other permanent/unrecognized failures. Preserve existing command timeouts and
+  verification. Keep existing nonterminal progress during retries; report a
+  terminal failure only once, using the same readable reason in the RPC error,
+  `engine:install-progress`, and `errors:report`. Identify a timeout only when
+  evidence supports it; otherwise describe a failed checksum download or generic
+  download failure. Retain the original diagnostic, category, and attempt number
+  in service logs. Both local and remote installs share this behavior; other
+  engines keep a single attempt.
 - **Engine fails its readiness probe**: start never reaches Running. → Bounded ready timeout → back to Stopped; structured error; no half-started state.
 - **Engine process crashes**: engine unavailable. → A watcher flips state, emits `engine:state-changed` + `errors:report` (`engine-manager:exited:<engine>`); the parent's supervisor reports if the *manager itself* dies. (Automatic restart is planned — see §4 — not yet implemented.)
 - **A status check overlaps a stop or port change**: an old result could restore
