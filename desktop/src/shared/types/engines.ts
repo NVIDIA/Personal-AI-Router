@@ -82,21 +82,17 @@ export interface EngineProgress {
     error?: string
 }
 
-/**
- * Available engine-update signal for one engine on one node. The backend
- * reports it per node; PAIR receives it through `engines:state-changed` and
- * the renderer's `engine-update-available.store`, so the Edit Node UI can
- * surface an Update affordance for any node — local or remote — the user can
- * reach in the cluster.
- */
-export interface EngineUpdateAvailable {
+/** Local engine manager update reported in the bridge snapshot and state patches. */
+export type EngineUpdateAvailable = {
     nodeId: string
     engineType: EngineType
     currentVersion: string
     latestVersion: string
     releaseUrl: string
-    installType: 'managed' | 'external'
-}
+} & (
+    | { installType: 'managed'; downloadUrl?: string }
+    | { installType: 'external'; downloadUrl: string }
+)
 
 export interface EngineModels {
     engineType: EngineType

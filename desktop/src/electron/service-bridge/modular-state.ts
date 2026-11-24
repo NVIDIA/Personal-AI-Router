@@ -8,6 +8,7 @@ import type {
     EngineProgress,
     EngineStatusData,
     EngineType,
+    EngineUpdateAvailable,
     ModelItem
 } from '@/shared/types/engines'
 import type { LogEntry, LogPage } from '@/shared/types/log'
@@ -252,6 +253,13 @@ function objectValue(value: JsonValue | undefined): JsonObject | null {
 
 function stringValue(value: JsonValue | undefined): string {
     return typeof value === 'string' ? value : ''
+}
+
+/** The local engine manager selects the vendor URLs for this installation. */
+function updateLink(value: JsonValue | undefined): string | undefined {
+    if (typeof value !== 'string' || !URL.canParse(value)) return undefined
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined
 }
 
 function numberValue(value: JsonValue | undefined): number {
@@ -957,6 +965,8 @@ class ModularBridgeState {
         vllm: 0
     }
     private selfId: string | null = null
+    private engineUpdates = new Map<EngineType, EngineUpdateAvailable>()
+    private refreshEngineUpdates?: (engineType?: EngineType) => void
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
      * engine type. Stored independent of `selfId` because engine-manager
@@ -1135,8 +1145,77 @@ class ModularBridgeState {
     setSelfId(nodeUuid: string): void {
         const trimmed = nodeUuid.trim()
         if (!trimmed || this.selfId === trimmed) return
+        this.clearEngineUpdates()
         this.selfId = trimmed
         emitBridgePush('state:request-refresh', undefined)
+        this.refreshEngineUpdates?.()
+    }
+
+    supportsEngine(engine: EngineType): boolean {
+        return this.localEngineList?.has(engine) ?? false
+    }
+
+    setEngineUpdateRefresher(refresh?: (engineType?: EngineType) => void): void {
+        this.refreshEngineUpdates = refresh
+    }
+
+    clearEngineUpdates(): void {
+        for (const engine of this.engineUpdates.keys()) this.clearEngineUpdate(engine)
+    }
+
+    private clearEngineUpdate(engineType: EngineType): void {
+        const update = this.engineUpdates.get(engineType)
+        if (!update) return
+        this.engineUpdates.delete(engineType)
+        emitBridgePush('engines:state-changed', {
+            nodeId: update.nodeId,
+            engineType,
+            updateAvailable: null
+        })
+    }
+
+    applyEngineUpdateCheck(
+        nodeId: string,
+        engineType: EngineType,
+        result: JsonValue | undefined
+    ): void {
+        if (nodeId !== this.selfId || !this.supportsEngine(engineType)) return
+        const value = objectValue(result)?.updateAvailable
+        if (value === null) {
+            this.clearEngineUpdate(engineType)
+            return
+        }
+        const info = objectValue(value)
+        if (!info) return
+        const currentVersion = stringValue(info.currentVersion)
+        const latestVersion = stringValue(info.latestVersion)
+        const releaseUrl = updateLink(info.releaseUrl)
+        const downloadUrl = updateLink(info.downloadUrl)
+        const installType = info.installType
+        if (!currentVersion || !latestVersion || !releaseUrl) return
+        if (info.downloadUrl !== undefined && !downloadUrl) return
+        const release = { nodeId, engineType, currentVersion, latestVersion, releaseUrl }
+        let update: EngineUpdateAvailable
+        if (installType === 'external' && downloadUrl) {
+            update = { ...release, installType, downloadUrl }
+        } else if (installType === 'managed') {
+            update = { ...release, installType, ...(downloadUrl && { downloadUrl }) }
+        } else return
+        const previous = this.engineUpdates.get(engineType)
+        if (
+            previous?.currentVersion === currentVersion &&
+            previous.latestVersion === latestVersion &&
+            previous.releaseUrl === releaseUrl &&
+            previous.downloadUrl === downloadUrl &&
+            previous.installType === installType
+        )
+            return
+        this.engineUpdates.set(engineType, update)
+        emitBridgePush('engines:state-changed', {
+            nodeId,
+            engineType,
+            updateAvailable: update
+        })
     }
 
     /** Bound proxy port for an engine reported by the broker, or null if unknown. */
@@ -1205,7 +1284,7 @@ class ModularBridgeState {
             statuses,
             models,
             activeProgress: Array.from(this.activePulls.values()),
-            updateAvailable: []
+            updateAvailable: Array.from(this.engineUpdates.values())
         }
     }
 
@@ -1370,15 +1449,19 @@ class ModularBridgeState {
         if (!Array.isArray(list)) return
         const listed = new Set<EngineType>()
         for (const entry of list) {
-            this.applyEngineManagerStatus(entry)
             const engineType = engineTypeFromManagerName(stringValue(objectValue(entry)?.engine))
             if (engineType) listed.add(engineType)
         }
         // An empty listing says nothing about what the host can run.
         if (listed.size === 0) return
         this.localEngineList = listed
+        for (const entry of list) this.applyEngineManagerStatus(entry)
         for (const engineType of EngineTypes) {
-            if (!listed.has(engineType)) this.emitLocalEngineStatus(engineType)
+            if (!listed.has(engineType)) {
+                this.engineManagerFacts.delete(engineType)
+                this.clearEngineUpdate(engineType)
+                this.emitLocalEngineStatus(engineType)
+            }
         }
     }
 
@@ -1393,19 +1476,29 @@ class ModularBridgeState {
         const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
-        this.engineManagerFacts.set(engineType, {
+        const previous = this.engineManagerFacts.get(engineType)
+        const facts = {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
             starting: booleanValue(obj.starting),
             awaitingModel: booleanValue(obj.awaiting_model),
             port: numberValue(obj.port)
-        })
+        }
+        this.engineManagerFacts.set(engineType, facts)
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
         // Drop the optimistic status without re-emitting here — the emit below
         // already carries the resolved, fact-derived status.
         this.discardPendingOp(engineType)
         this.emitLocalEngineStatus(engineType)
+        // Enabling vLLM can leave it awaiting a model without a serving process.
+        const lifecycleChanged =
+            !facts.starting &&
+            (facts.running !== previous?.running || facts.awaitingModel !== previous?.awaitingModel)
+        if (facts.installed !== previous?.installed || lifecycleChanged) {
+            if (!facts.installed) this.clearEngineUpdate(engineType)
+            this.refreshEngineUpdates?.(engineType)
+        }
     }
 
     /**
@@ -1427,10 +1520,16 @@ class ModularBridgeState {
      * `errors:report` that carries no `engine:state-changed` (LM Studio
      * start-command failure, uninstall failure, install failure). Called by the
      * supervisor's error demux. `operation` is the engine-manager error's
-     * `operation` field (`start` | `install` | `uninstall`).
+     * `operation` field (`start` | `install` | `uninstall` | `update`).
      */
     failLocalEngineOp(engineManagerEngine: string, operation: string): void {
-        if (operation !== 'start' && operation !== 'install' && operation !== 'uninstall') return
+        if (
+            operation !== 'start' &&
+            operation !== 'install' &&
+            operation !== 'uninstall' &&
+            operation !== 'update'
+        )
+            return
         const engineType =
             engineTypeFromManagerName(engineManagerEngine) ??
             (isEngineType(engineManagerEngine) ? engineManagerEngine : null)
@@ -2176,6 +2275,10 @@ class ModularBridgeState {
         //   done / already-installed -> success, failed -> error (percent -1).
         // On any terminal stage we clear the ephemeral progress entry.
         if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
+            if (stage !== 'failed') {
+                if (stage === 'done') this.clearEngineUpdate(engineType)
+                this.refreshEngineUpdates?.(engineType)
+            }
             emitBridgePush('engines:progress-cleared', {
                 key: `${nodeId}:${engineType}:install`
             })

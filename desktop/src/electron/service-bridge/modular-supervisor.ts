@@ -33,6 +33,7 @@ import {
     type ProxyEngine
 } from './proxy-engines'
 import { emitBridgePush } from './broadcaster'
+import { watchEngineUpdates } from './engine-update-checks'
 import { parseEngineSettings } from './engine-settings'
 import { resolvePullCatchError } from './pull-error-handling'
 import { serviceLogLevel } from './service-log-level'
@@ -372,6 +373,7 @@ class ModularSupervisor {
     private clusterPeerIds = new Set<string>()
     // Light interval that re-polls clusterPeerIds' authoritative engine status.
     private remoteStatusTimer: ReturnType<typeof setInterval> | null = null
+    private engineUpdateChecks?: ReturnType<typeof watchEngineUpdates>
     // Debounced follow-up poll when discovery:nodes-changed lands — the ec peer
     // directory in engine-manager is fed from that relay and may not be ready for
     // the first broker-ready sweep.
@@ -526,6 +528,7 @@ class ModularSupervisor {
         // Mark teardown first so the broker's exit during stop() is treated as a
         // deliberate shutdown, not a crash.
         this.shuttingDown = true
+        this.stopEngineUpdateChecks()
         if (this.remoteStatusDebounceTimer) {
             clearTimeout(this.remoteStatusDebounceTimer)
             this.remoteStatusDebounceTimer = null
@@ -748,6 +751,7 @@ class ModularSupervisor {
             if (!isCurrent()) return
             this.processes.delete(child.name as ModularProcessName)
             if (child.name === 'broker') {
+                this.stopEngineUpdateChecks()
                 this.brokerReady = false
                 this.brokerHydrationDone = false
                 this.isReady = false
@@ -1062,12 +1066,22 @@ class ModularSupervisor {
     }
 
     private async hydrateEngineManager(): Promise<void> {
-        if (!this.processes.has('broker')) return
+        const broker = this.processes.get('broker')
+        if (!broker) return
         try {
             const result = await this.callProcess('broker', 'engine:get-installed')
+            if (this.processes.get('broker') !== broker || this.shuttingDown) return
             const obj = objectValue(result)
-            if (!obj || !Array.isArray(obj.engines)) return
+            if (!obj || !Array.isArray(obj.engines) || obj.engines.length === 0) return
             getModularBridgeState().applyEngineManagerList(result)
+            this.engineUpdateChecks ??= watchEngineUpdates(engine =>
+                this.callProcess(
+                    'broker',
+                    'engine:check-updates',
+                    { engine: engineManagerName(engine) },
+                    30_000
+                )
+            )
             for (const engine of obj.engines) {
                 this.refreshManagedEngineModels(engine)
             }
@@ -1077,6 +1091,11 @@ class ModularSupervisor {
                 message: `Unable to hydrate engine-manager state: ${getErrorString(err)}`
             })
         }
+    }
+
+    private stopEngineUpdateChecks(): void {
+        this.engineUpdateChecks?.stop()
+        this.engineUpdateChecks = undefined
     }
 
     /**

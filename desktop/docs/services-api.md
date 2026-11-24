@@ -16,7 +16,6 @@
 - none ✅
 
 ### Requests the backend handles but the bridge never calls (unused capability)
-- ⚠️ nvpair-engine-manager → engine:check-updates
 - ⚠️ nvpair-engine-manager → engine:configure-launch
 - ⚠️ nvpair-engine-manager → engine:configured-ports
 - ⚠️ nvpair-engine-manager → engine:describe
@@ -46,7 +45,6 @@
 - ⚠️ nvpair-proxy → node/set-local-backend
 - ⚠️ nvpair-proxy → node/set-local-models
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
-- ⚠️ nvpair-ui-broker → engine:check-updates
 - ⚠️ nvpair-ui-broker → engine:configure-launch
 - ⚠️ nvpair-ui-broker → engine:restart
 - ⚠️ nvpair-ui-broker → engine:set-port
@@ -99,7 +97,7 @@
 | `engine:action` | request (we call) | ✅ yes |
 | `engine:cancel-pull` | request (we call) | ✅ yes |
 | `engine:catalog` | request (we call) | ✅ yes |
-| `engine:check-updates` | request (we call) | ⚠️ not called |
+| `engine:check-updates` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
@@ -279,7 +277,7 @@
 | `discovery:subscribe` | request (we call) | ✅ yes |
 | `discovery:unsubscribe` | request (we call) | ⚠️ not called |
 | `engine:apply-settings` | request (we call) | ✅ yes |
-| `engine:check-updates` | request (we call) | ⚠️ not called |
+| `engine:check-updates` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:get-installed` | request (we call) | ✅ yes |
 | `engine:get-settings` | request (we call) | ✅ yes |
