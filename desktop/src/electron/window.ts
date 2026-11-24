@@ -250,6 +250,15 @@ export function showOverviewMessage(message: OverviewMessage): void {
     enqueueOverviewCommand({ type: 'message', message }, false)
 }
 
+/** Withdraw a notice that has become obsolete while Overview was closed or open. */
+export function dismissOverviewMessage(id: string): void {
+    pendingOverviewCommands = pendingOverviewCommands.filter(
+        command => command.type !== 'message' || command.message.id !== id
+    )
+    if (getOverviewWindow() && overviewReady)
+        enqueueOverviewCommand({ type: 'dismiss-message', id }, false)
+}
+
 // Background throttling is left at Chromium's default (on). With it off, a hidden
 // or occluded window kept animating at full frame rate: the GPU process sat at
 // 50-80% of a core and the never-shown tray window at ~5% around the clock.

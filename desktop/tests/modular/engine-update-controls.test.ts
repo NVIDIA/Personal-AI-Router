@@ -5,14 +5,24 @@
 import { act, createElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { subscribeEngineUpdateNotifications } from '@/electron/updater/engine-update-notification'
+import { publishPush } from '@/electron/service-bridge/push-bus'
+import { dismissOverviewMessage, showOverviewMessage } from '@/electron/window'
 import type { EngineUpdateAvailable } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import type { IEngineApi } from '@/ui/api/engine-api'
+import { AppMessageModal } from '@/ui/components/AppMessageModal'
 import { BackendUpdateBanner } from '@/ui/components/BackendRow/BackendUpdateBanner'
 import { ErrorModal } from '@/ui/components/ErrorModal'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useErrorsStore } from '@/ui/stores/errors.store'
+import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import type { BackendInfo } from '@/ui/types/engine-info'
+
+vi.mock('@/electron/window', () => ({
+    showOverviewMessage: vi.fn<typeof showOverviewMessage>(),
+    dismissOverviewMessage: vi.fn<typeof dismissOverviewMessage>()
+}))
 
 // JSDOM does not implement the native modal dialog lifecycle.
 vi.mock('@nvidia/foundations-react-core', async importOriginal => {
@@ -56,6 +66,7 @@ beforeEach(() => {
 afterEach(async () => {
     await act(() => root.unmount())
     document.body.replaceChildren()
+    useOverviewUiStore.setState({ activeTab: 'overview', focusNodeId: null })
     useErrorsStore.setState({ errors: [] })
     useConnectionStore.setState({ selfId: null })
     vi.unstubAllGlobals()
@@ -66,6 +77,52 @@ function button(label: string): HTMLButtonElement | undefined {
         el => el.textContent.trim() === label
     )
 }
+
+function report(updateAvailable: EngineUpdateAvailable): void {
+    const { nodeId, engineType } = updateAvailable
+    publishPush('engines:state-changed', { nodeId, engineType, updateAvailable })
+}
+
+it('shows a local Ollama notification once per release and withdraws it when cleared', () => {
+    const unsubscribe = subscribeEngineUpdateNotifications(() => 'local-node')
+    report({ ...update, nodeId: 'peer' })
+    report(update)
+    report(update)
+    report({ ...update, latestVersion: '0.10.3' })
+    publishPush('engines:state-changed', {
+        nodeId: 'local-node',
+        engineType: 'ollama',
+        updateAvailable: null
+    })
+    unsubscribe()
+    expect(vi.mocked(showOverviewMessage).mock.calls.map(([message]) => message.id)).toEqual([
+        'engine-update:local-node:ollama:0.10.2',
+        'engine-update:local-node:ollama:0.10.3'
+    ])
+    expect(vi.mocked(dismissOverviewMessage).mock.calls).toEqual([
+        ['engine-update:local-node:ollama:0.10.2'],
+        ['engine-update:local-node:ollama:0.10.3']
+    ])
+    expect(vi.mocked(showOverviewMessage).mock.calls[0][0].title).toBe('Ollama update available')
+})
+
+it('opens the local engine settings from the Ollama notification', async () => {
+    const unsubscribe = subscribeEngineUpdateNotifications(() => 'local-node')
+    report(update)
+    unsubscribe()
+    const [[message]] = vi.mocked(showOverviewMessage).mock.calls
+    const onClose = vi.fn<() => void>()
+    useOverviewUiStore.getState().openSettings('service')
+    await act(() => root.render(createElement(AppMessageModal, { message, onClose })))
+    expect(document.body.textContent).toContain('Ollama update available')
+    await act(() => button('Open engine settings')?.click())
+
+    expect(useOverviewUiStore.getState()).toMatchObject({
+        activeTab: 'overview',
+        focusNodeId: 'local-node'
+    })
+    expect(onClose).toHaveBeenCalledOnce()
+})
 
 it('shows the installed and available Ollama versions and dispatches Update', async () => {
     const onUpdate = vi.fn<() => void>()

@@ -1,6 +1,6 @@
 ---
 title: Managing Engines in NVIDIA PAIR
-description: Install, start, stop, update, and remove the Ollama, LM Studio, and llama.cpp engines that NVIDIA PAIR uses to run models.
+description: Install, start, stop, and remove engines on a PAIR node, and check the local Ollama installation for updates.
 ---
 
 {/*
@@ -10,8 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 
 An **engine** is the local inference runtime NVIDIA PAIR uses to
 run models. Today that means Ollama, LM Studio, llama.cpp, or vLLM on a given machine.
-PAIR can install and run those engines for you, or work with a supported
-existing Ollama or LM Studio installation. This page explains what you can
+PAIR can install and run those engines for you or use an existing installation
+it recognizes. This page explains what you can
 expect when you install, start, stop, or remove an engine, and how to move one
 to a newer release.
 
@@ -81,7 +81,7 @@ When you install an engine, consider the following:
 - If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
   that install instead of downloading another copy. Adoption helps when the
   usual engine port is already in use.
-- llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
+- When PAIR installs llama.cpp, Windows and Linux download fixed
   checksum-pinned CUDA server/runtime archives. Apple silicon Macs download the
   standard Metal-enabled archive, and Intel Macs download the CPU-only build,
   because upstream builds it without Metal. The engine download, roughly
@@ -190,11 +190,24 @@ first.
 
 ## Updating and Uninstalling an Engine
 
-PAIR does not currently offer to update an engine, because it does not yet detect
-newer engine versions. To move an NVPAIR-installed Ollama or LM Studio to the
-vendor's current release, uninstall it and install it again, which keeps your
-models as described below. llama.cpp installs the build pinned by your version of
-PAIR. Update an engine you installed yourself with its own installer.
+The desktop checks the local Ollama installation at startup, every six hours,
+and when Ollama starts or stops. If the release service is unreachable, Ollama
+continues normally and PAIR keeps any previously reported offer. When PAIR
+finds a newer stable release, **Overview** shows a message once per release in
+that desktop session. Select **Open engine settings** to see the installed and
+available versions.
+
+- **Update** lets PAIR update the copy it installed in its standard folder when
+  the official package is available for this platform. PAIR keeps downloaded
+  models and settings and restores the previous running or stopped state.
+- **Get update** opens Ollama's download page for a user-installed copy or an
+  installation whose ownership PAIR cannot confirm.
+
+If GitHub rate-limits a release lookup, wait until the time in the error
+message, then select **Retry** in the desktop app.
+
+Use the vendor's installer to update an existing LM Studio installation.
+PAIR installs the llama.cpp and vLLM builds pinned for the platform.
 
 **Uninstall** removes the NVPAIR-installed copy of an engine, and applies only to
 an engine PAIR installed. Use it when you no longer want PAIR to own that engine
