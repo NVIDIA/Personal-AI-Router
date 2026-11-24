@@ -158,6 +158,18 @@ var vllmBaseRoutes = []route{
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},
 }
 
+// mtplxBaseRoutes is the engine-specific surface MTPLX exposes beyond the
+// shared OpenAI/Anthropic ones. MTPLX serves one model per process, like vLLM.
+//
+// /v1/messages/count_tokens is a model lookup, not a workload: it answers a
+// token count for the model named in its body, so it is routed by that model
+// (an unclassified POST would fan out to every node) while staying out of the
+// cluster's workload stream.
+var mtplxBaseRoutes = []route{
+	{Path: "/v1/models", Role: roleModelListOpenAIGET},
+	{Path: "/v1/messages/count_tokens", Role: roleModelLookupPOST},
+}
+
 // openAIInferenceRoutes is the OpenAI-compatible inference surface.
 var openAIInferenceRoutes = []route{
 	{Path: "/v1/chat/completions", Role: roleInferencePOST},
@@ -178,10 +190,12 @@ func buildProfiles() []engineProfile {
 	lmstudio, _ := engines.ByName("lmstudio")
 	llamacpp, _ := engines.ByName("llamacpp")
 	vllm, _ := engines.ByName("vllm")
+	mtplx, _ := engines.ByName("mtplx")
 	ollamaRoutes := slices.Concat(ollamaBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	lmStudioRoutes := slices.Concat(lmStudioBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 	llamaCPPRoutes := slices.Concat(llamaCPPBaseRoutes, openAIInferenceRoutes)
 	vllmRoutes := slices.Concat(vllmBaseRoutes, openAIInferenceRoutes)
+	mtplxRoutes := slices.Concat(mtplxBaseRoutes, openAIInferenceRoutes, anthropicInferenceRoutes)
 
 	return []engineProfile{
 		{
@@ -215,6 +229,15 @@ func buildProfiles() []engineProfile {
 			Routes:                vllmRoutes,
 			ModelNaming:           exactID,
 			ReservedPersistedPort: 8001,
+		},
+		{
+			Engine:         mtplx,
+			StandalonePort: 8100,
+			Routes:         mtplxRoutes,
+			ModelNaming:    exactID,
+			// 8101 is where engine-manager runs a managed MTPLX, so a proxy
+			// that restored it would sit on the engine's own port.
+			ReservedPersistedPort: 8101,
 		},
 	}
 }

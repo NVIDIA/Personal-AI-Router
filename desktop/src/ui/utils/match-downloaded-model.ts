@@ -19,6 +19,8 @@ import type { ModelEntry } from '@/ui/types/model-hub'
  *                    `<owner>/<repo>/<file>`); the hub id is `<owner>/<repo>`.
  * - llama.cpp:       router inventory and catalog use the same complete
  *                    `<owner>/<repo>:<quant>` id, so only exact ids match.
+ * - MTPLX:           a pack is a Hugging Face repo id and MTPLX serves that id
+ *                    verbatim, so only exact ids match.
  */
 type DownloadedMatcher = (hubEntry: ModelEntry, downloaded: ModelItem) => boolean
 
@@ -44,7 +46,8 @@ const MATCHERS: Partial<Record<EngineType, DownloadedMatcher>> = {
     ollama: matchOllama,
     'lm-studio': matchHfPullKeyOrName,
     'llama-cpp': matchExactName,
-    vllm: matchExactName
+    vllm: matchExactName,
+    mtplx: matchExactName
 }
 
 export function isHubEntryDownloaded(

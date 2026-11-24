@@ -34,8 +34,8 @@ func (e *Executor) prepareRequestedModel(ctx context.Context, engine, model stri
 	st.mu.Lock()
 	allowed := st.plat != nil && st.plat.Runtime.WaitForModel
 	st.mu.Unlock()
-	flag := modelLaunchFlag(st.manifest)
-	if !allowed || flag == "" {
+	flags := modelLaunchFlags(st.manifest)
+	if !allowed || len(flags) == 0 {
 		return 0, errors.New("this engine does not support request-triggered model loading")
 	}
 	if port, serving, err := e.servingRequestModel(ctx, st, engine, model); err != nil || serving {
@@ -45,7 +45,7 @@ func (e *Executor) prepareRequestedModel(ctx context.Context, engine, model stri
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.changeLaunchModel(ctx, engine, &ActionLaunchModel{Flag: flag}, params, true); err != nil {
+	if _, err := e.changeLaunchModel(ctx, engine, &ActionLaunchModel{Flags: flags}, params, true); err != nil {
 		return 0, err
 	}
 	state, err := e.Status(engine)

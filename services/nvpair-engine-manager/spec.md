@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 1. Purpose
 A declarative, config-driven control plane for **local inference engines**
-(currently Ollama, LM Studio, and llama.cpp). It owns an engine's entire
+(currently Ollama, LM Studio, llama.cpp, vLLM, and MTPLX, the last of those
+Apple Silicon only). It owns an engine's entire
 lifecycle *except serving inference* — locate, install, launch, stop, restart,
 health, and config-declared actions — so one uniform API manages any engine
 across OSes with no per-engine code. A third party drops in a JSON manifest and
@@ -113,7 +114,12 @@ loading is provided by the PAIR proxy endpoint.
   `chat`, `unload_model`, and `delete_model` (`remove_path` with
   `lms-disk-path` resolution);
   llama.cpp declares list, loaded-list, pull, load, unload, and native cache
-  delete with exact model ids. `loaded_models` reports
+  delete with exact model ids. vLLM and MTPLX declare list, loaded-list, pull,
+  load, unload and delete as well, but serve **one model per process**: their
+  `load_model` is a `launch_model` action that rewrites the model in the launch
+  arguments and restarts the engine on it, and their `unload_model` is a
+  `stop_engine` action, because neither can release its model and keep serving.
+  MTPLX declares no install block, so it is only ever detected. `loaded_models` reports
   models currently resident in memory, name-extracted via the same declarative
   `result` spec with optional nested-path and row filters: Ollama uses
   `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
@@ -134,17 +140,20 @@ loading is provided by the PAIR proxy endpoint.
 - A normalized node-level model list (`engine:models`): the union of each
   engine's advertised `modelsByEngine`, name-extracted through its declarative
   action result, plus the resident `loadedByEngine` from `loaded_models`.
-  Engines using `advertised_models: "loaded"` advertise only served names.
-  Enabled vLLM uses `advertised_models: "available"` to advertise complete cached
-  models for request-triggered loading, subject to the custom alias restriction
-  above. Its `list_models` disk inventory is also reported as
-  `downloadedByEngine`, including while disabled; its `loadedByEngine` uses those
-  cached repository IDs to identify resident rows. `requestableByEngine` carries
-  loader capability independently of ON/OFF intent for the broker's local route
-  updates. A successful empty inventory retains an engine key with `[]`; a
-  missing, malformed or failed inventory omits the key. A watcher polls these
-  lists and pushes `engine:models-changed` after load, unload, idle eviction,
-  download or deletion changes them.
+  Engines using `advertised_models: "loaded"` (MTPLX, which serves one pack per
+  process) advertise only served names. Enabled vLLM uses
+  `advertised_models: "available"` to advertise complete cached models for
+  request-triggered loading, subject to the custom alias restriction above.
+  Their `list_models` disk inventory is also reported as `downloadedByEngine`,
+  including while stopped or disabled; `loadedByEngine` names a resident model
+  the way that inventory names it — MTPLX by the `data[].id` that its
+  `--model-id` pins to the cache id, vLLM by the cached repository id, not a
+  `--served-model-name` alias. `requestableByEngine` carries loader capability
+  independently of ON/OFF intent for the broker's local route updates. A
+  successful empty inventory retains an engine key with `[]`; a missing,
+  malformed or failed inventory omits the key. A watcher polls these lists and
+  pushes `engine:models-changed` after load, unload, idle eviction, download or
+  deletion changes them.
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
 
 **Out of scope**
@@ -327,7 +336,7 @@ Requests (caller → service):
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
 | `engine:models` | — | `{ models: [string], modelsByEngine?, loadedByEngine?, downloadedByEngine? }` — advertised, loaded, and downloaded model lists |
-| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, vLLM, and MTPLX have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` from the remote node |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status }` after the remote install |
 | `engine:remote-pull-model` | `{ node, engine, model?, params?, opId? }` | `{ opId, result }` after the remote pull; `opId` is the caller's, or one minted for it (§14) |

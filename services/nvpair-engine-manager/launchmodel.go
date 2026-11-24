@@ -163,7 +163,7 @@ func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *A
 		if !current.Editable {
 			return fmt.Errorf("the launch settings of engine %q cannot be changed: %s", engine, current.Reason)
 		}
-		text, changed, err := withLaunchFlag(current.LaunchText, spec.Flag, model)
+		text, changed, err := withLaunchFlags(current.LaunchText, spec.Flags, model)
 		if err != nil {
 			return err
 		}
@@ -244,6 +244,39 @@ func withLaunchFlag(text, flag, value string) (result string, changed bool, err 
 	return result, !slices.Equal(tokens, out), err
 }
 
+// withLaunchFlags sets one model in every flag an engine names it by, in the
+// order the manifest declares them. An engine that also reads its served id
+// from a second flag (MTPLX's --model-id) needs both moved at once: leave that
+// one alone and the engine answers to a name derived from the model rather than
+// the id its clients, its peers and its own model list already use.
+func withLaunchFlags(text string, flags []string, value string) (string, bool, error) {
+	changed := false
+	for _, flag := range flags {
+		next, flagChanged, err := withLaunchFlag(text, flag, value)
+		if err != nil {
+			return "", false, err
+		}
+		text = next
+		changed = changed || flagChanged
+	}
+	return text, changed, nil
+}
+
+// withoutLaunchFlags clears every flag in flags. See withLaunchFlags for why an
+// engine can name its model in more than one place.
+func withoutLaunchFlags(text string, flags []string) (string, bool, error) {
+	changed := false
+	for _, flag := range flags {
+		next, flagChanged, err := withoutLaunchFlag(text, flag)
+		if err != nil {
+			return "", false, err
+		}
+		text = next
+		changed = changed || flagChanged
+	}
+	return text, changed, nil
+}
+
 // withoutLaunchFlag returns launch text with every "flag value" and
 // "flag=value" before any "--" terminator removed, and whether any was.
 func withoutLaunchFlag(text, flag string) (result string, changed bool, err error) {
@@ -289,12 +322,25 @@ func dropLaunchFlag(tokens []string, flag string) (rest []string, at int) {
 	return rest, at
 }
 
-// modelLaunchFlag is the flag an engine's launch_model action writes, or "" for
-// an engine that does not choose its model by launch argument.
-func modelLaunchFlag(m *Manifest) string {
+// modelLaunchFlags returns the flags an engine's launch_model action writes, or
+// nil for an engine that does not choose its model by launch argument.
+func modelLaunchFlags(m *Manifest) []string {
 	for _, act := range m.Actions {
 		if act.LaunchModel != nil {
-			return act.LaunchModel.Flag
+			return act.LaunchModel.Flags
+		}
+	}
+	return nil
+}
+
+// launchModelValue returns the model the arguments name, taken from the first
+// model flag they carry. Every flag an engine names its model by says the same
+// model, so any one answers the question; the first is the one it loads its
+// weights from.
+func launchModelValue(tokens []string, flags []string) string {
+	for _, flag := range flags {
+		if value, ok := launchFlagValue(tokens, flag); ok && value != "" {
+			return value
 		}
 	}
 	return ""
@@ -367,7 +413,7 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 // so no start is needed to enter this state. Callers hold the operation lock and
 // retain their stop request until this transaction finishes.
 func (l *launchEdit) awaitModelAfterEject(ctx context.Context) error {
-	text, _, err := withoutLaunchFlag(l.before.LaunchText, modelLaunchFlag(l.st.manifest))
+	text, _, err := withoutLaunchFlags(l.before.LaunchText, modelLaunchFlags(l.st.manifest))
 	if err != nil {
 		return err
 	}

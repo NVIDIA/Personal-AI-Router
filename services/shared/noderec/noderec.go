@@ -94,6 +94,7 @@ const (
 	ServiceLMStudio ServiceKey = "lm"
 	ServiceLlamaCPP ServiceKey = "lc"
 	ServiceVLLM     ServiceKey = "vl"
+	ServiceMTPLX    ServiceKey = "mx"
 	ServiceErrors   ServiceKey = "er"
 	ServiceWorkload ServiceKey = "wl"
 	ServiceCluster  ServiceKey = "cl"
@@ -112,8 +113,8 @@ const (
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
 	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceLlamaCPP, ServiceVLLM,
-	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl,
+	ServiceMTPLX, ServiceErrors, ServiceWorkload, ServiceCluster,
+	ServiceEngineManager, ServiceEngineControl,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).

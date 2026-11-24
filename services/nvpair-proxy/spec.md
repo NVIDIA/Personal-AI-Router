@@ -107,8 +107,13 @@ The process starts with **no engine and no listener**. The broker then sends one
 
 A flag cannot express this. The broker plans a different port for each engine —
 Ollama's managed facade wants `:11434`, LM Studio's wants `:1234`, and
-llama.cpp's managed facade wants `:8080`, and vLLM's wants `:8000`; any may be absent so the child keeps
-its own persisted port — and a single-valued flag carries only one plan.
+llama.cpp's managed facade wants `:8080`, and vLLM's wants `:8000`, while MTPLX's
+wants `:8100`; any may be absent so the child keeps
+its own persisted port — and a single-valued flag carries only one plan. MTPLX is
+not given `8000` although that is its own default: `8000` already belongs to the
+vLLM facade, and Apple Silicon macOS is the one host where both engines can be
+installed, so the pair for MTPLX is `8100` for the facade and `8101` for the
+managed server.
 
 ### 3.1 Why one process
 
@@ -116,7 +121,7 @@ Between scheduler snapshots a facade takes short-lived **reservations** for work
 it has dispatched but that the scheduler has not yet observed. Those live in the
 process, and every facade shares them. If each engine had its own proxy
 process, none could see the others' reservations, so simultaneous bursts across
-Ollama, LM Studio, llama.cpp, and vLLM could select the same node, each incorrectly
+Ollama, LM Studio, llama.cpp, vLLM and MTPLX could select the same node, each incorrectly
 believing it was idle.
 Sharing the map is the reason the engines share a process.
 
@@ -171,7 +176,7 @@ For a model-bearing inference request:
 
 1. Filter a request-local discovery snapshot to nodes whose per-engine inventory
    advertises the requested model. Ollama normalizes the implicit `:latest` tag;
-   LM Studio, llama.cpp, and vLLM ids match exactly. An empty owner set returns a local
+   LM Studio, llama.cpp, vLLM and MTPLX ids match exactly. An empty owner set returns a local
    `502` without contacting an engine.
 2. Order the eligible owners: explicit `node/select` pin, then the scheduler's
    priority list, then deterministic default ordering.
@@ -686,12 +691,22 @@ untouched, the primary listener stays up, and a warning is reported.
 
 ## 8. Ports
 
-| | Ollama | LM Studio | llama.cpp | vLLM |
-| --- | --- | --- | --- | --- |
-| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
-| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
-| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
+| | Ollama | LM Studio | llama.cpp | vLLM | MTPLX |
+| --- | --- | --- | --- | --- | --- |
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 | 8000 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 | 8101 |
+| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 | 8000 | 8100 |
+| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` | `mtplx-proxy-port.json` |
+
+MTPLX is the one engine whose own port is not a free facade slot. `8000` is
+already the vLLM facade, so claiming it for MTPLX would make the two facades
+compete for one listener on Apple Silicon, where both engines can be installed, and
+would sit in front of MTPLX's own desktop daemon. MTPLX clients are pointed at
+`8100` instead; a server the user started themselves on `8000` is left alone, which
+also means it is not routed. MTPLX declares no platform other than Apple Silicon, so
+everywhere else this facade is enabled with nothing behind it: it advertises no
+service key while no engine answers its health probe, and a snapshot that reports no
+owner for a model is a local `502`.
 
 A port chosen at runtime via `set-port` is persisted per engine and restored
 when that facade is enabled, taking precedence over the requested port, so the

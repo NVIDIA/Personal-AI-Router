@@ -152,13 +152,25 @@ var modelWires = map[string]modelWire{
 		"delete": modelOnly("delete_model"),
 		"pull":   modelOnly("pull_model"),
 	},
+	// MTPLX is vLLM-shaped: one model per process, so load restarts the server
+	// on the pack and eject stops it. Its CLI takes the cache id under "model"
+	// alone, which is also the id the server answers to (--model-id) and the id
+	// `mtplx models --json` reports.
+	engines.NameMTPLX: {
+		"load":   modelOnly("load_model"),
+		"unload": modelOnly("unload_model"),
+		"delete": modelOnly("delete_model"),
+		"pull":   modelOnly("pull_model"),
+	},
 }
 
 // pullsWhileStopped are the engines whose download does not go through their
-// server: vLLM downloads into the Hugging Face cache with its own tool. It
-// mirrors the desktop's modelOpsWhenStopped capability.
+// server: vLLM downloads into the Hugging Face cache with its own tool, and
+// MTPLX's `mtplx pull` writes to its own pack cache. It mirrors the desktop's
+// modelOpsWhenStopped capability.
 var pullsWhileStopped = map[string]bool{
-	engines.NameVLLM: true,
+	engines.NameVLLM:  true,
+	engines.NameMTPLX: true,
 }
 
 // downloadExamples show what a download name looks like for each engine. The
@@ -169,6 +181,7 @@ var downloadExamples = map[string]string{
 	engines.NameLMStudio: "lmstudio-community/Qwen3-8B-GGUF",
 	engines.NameLlamaCPP: "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
 	engines.NameVLLM:     "Qwen/Qwen3.5-4B",
+	engines.NameMTPLX:    "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
 }
 
 // downloadPrompt is the placeholder for the download-by-name field, with an

@@ -339,6 +339,12 @@ configured, and says why.
 The `LOADED` column reads `?` for an engine that cannot report which models are
 in memory.
 
+vLLM and MTPLX serve one model per process, so on those two `enter` restarts the
+engine on the model you pick and `e` stops the engine outright rather than only
+freeing memory. Their downloads also run while the engine is stopped. MTPLX
+refuses to start with no pack named, so downloading is the first thing you do
+there.
+
 Pressing `p` opens the catalog of models this engine can download. Press `/` to
 filter by name, family, parameter size, or tag, so both `llama` and `8b` narrow
 the list. Press `c` to clear the filter, `o` to change the sort between
@@ -352,14 +358,22 @@ publishers, but it can download any GGUF model on Hugging Face, so there `/`
 searches all of Hugging Face instead of filtering the list. Press `c` to go back
 to the starting list.
 
+MTPLX's catalog is the short list of packs published for its own decode path,
+because only those packs run on it. There is nothing wider behind it, so `/`
+filters that list instead of searching.
+
 Press `n` instead if you already know exactly what you want and would rather type
 it. Each engine names models its own way: an Ollama tag such as `llama3.2`, a
 Hugging Face repository for LM Studio, a repository with its quantization
-for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`, and a Hugging Face
-repository for vLLM, such as `Qwen/Qwen3.5-4B`. Either way, progress appears on
-the status line. Downloading needs a running engine, except with vLLM, which
-downloads into the Hugging Face cache without its server: highlight it in the
-Engines pane to download into it while it is stopped.
+for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`, a Hugging Face
+repository for vLLM, such as `Qwen/Qwen3.5-4B`, and a repository with its pack
+build for MTPLX, such as `Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16`.
+Either way, progress appears on the status line. Downloading needs a running
+engine, except with vLLM and MTPLX, whose own tools fetch into their caches
+without a server: highlight one of them in the Engines pane to download into it
+while it is stopped. The status line follows each download by stage, and shows a
+percentage only where the engine reports one, so an MTPLX download stays a plain
+running note until it finishes.
 
 In the Models pane, while a download is in progress, `c` cancels it. It picks
 the newest download into the engine highlighted in the Engines pane, or, when
@@ -410,6 +424,11 @@ sent after 60 seconds.
 
 It needs at least one engine running with a model installed. If nothing is
 available, the tab says so rather than starting.
+
+Only the Ollama, LM Studio, and llama.cpp endpoints are probed, because the
+traffic generator speaks those three dialects and no other. A vLLM or MTPLX
+endpoint is skipped, so no jobs appear for it even when it is up and serving.
+Point a real application at those.
 
 The test is local to the machine you run it on. Running it here does not start
 one anywhere else, and a peer running one does not show up as progress here,

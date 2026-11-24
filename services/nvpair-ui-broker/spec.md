@@ -12,12 +12,12 @@ The single front door every PAIR client talks to, and the supervisor of every ot
 **In scope**
 - Process supervision: spawn each worker as a child with stdio JSON-RPC pipes, watch it, restart it on unexpected exit under a bounded backoff policy, and stop it in a defined order on shutdown within a bounded teardown budget.
 - Startup ordering and the `app:ready` gate — the one signal a client waits on before assuming the node's service tree is live.
-- Namespace relay: forward `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*`, and `vllm-proxy:*` to that engine's `nvpair-proxy` facade, and `engine:*`, `settings/*`, `cluster:*`, `nodes:*`, and the manual-node methods to their owning worker verbatim, and map each worker's result or JSON-RPC error straight back.
+- Namespace relay: forward `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*`, `vllm-proxy:*`, and `mtplx-proxy:*` to that engine's `nvpair-proxy` facade, and `engine:*`, `settings/*`, `cluster:*`, `nodes:*`, and the manual-node methods to their owning worker verbatim, and map each worker's result or JSON-RPC error straight back.
 - Engine settings operations: `engine:get-settings`, `engine:preview-settings`, and `engine:apply-settings` for this node or a pinned peer, revision-checked and journaled, with every port setter routed through the same operation (§7.10).
 - Notification projection: consume every worker's stdout notifications, route the error-pipeline ones into `nvpair-errors`, translate or re-emit the rest as the client-facing push stream, and drop what is internal.
-- Opt-in subscription state per domain (`discovery:`, `ollama-proxy:`, `lmstudio-proxy:`, `llamacpp-proxy:`, `vllm-proxy:`, `engine:`, `workloads:`) so a client only receives the streams it asked for.
+- Opt-in subscription state per domain (`discovery:`, `ollama-proxy:`, `lmstudio-proxy:`, `llamacpp-proxy:`, `vllm-proxy:`, `mtplx-proxy:`, `engine:`, `workloads:`) so a client only receives the streams it asked for.
 - The node's discovery service registration: registering each worker's LAN service key and port with the scanner daemon on behalf of the worker, and replaying the registration set across every scanner respawn.
-- Proxy/engine port reconciliation for the Ollama and LM Studio compatibility ports, driven by the `settings/get-force-ports` policy and live `engine:status`, before each facade is enabled. llama.cpp and vLLM have no compatibility-port takeover; each facade is placed on its default port or a safe fallback without moving the engine (§7.7).
+- Proxy/engine port reconciliation for the Ollama and LM Studio compatibility ports, driven by the `settings/get-force-ports` policy and live `engine:status`, before each facade is enabled. llama.cpp, vLLM and MTPLX have no compatibility-port takeover; each facade is placed on its default port or a safe fallback without moving the engine (§7.7).
 - Scheduling telemetry: a source-aware cache of compact GPU telemetry fed by the scanner and by `nvpair-manual-nodes`, aged locally and relayed to `nvpair-job-scheduler`, and replayed when the scheduler restarts.
 - Discovery evidence relay: forwarding each proxy's peer-activity reports and `nvpair-node-info`'s peer-observed addresses to `nvpair-node-scanner`.
 - Merging manual nodes into the same discovery snapshot the scanner feeds, so one node list answers `discovery:get-nodes`.
@@ -132,7 +132,7 @@ The single front door every PAIR client talks to, and the supervisor of every ot
   when its source, proof, or target changes. Expose `info` only on client views.
 - Maintain the workload store from local-origin proxy events and peer-origin workload-manager events, persist its terminal history, load it on startup, and periodically retire remote-origin records whose origin has gone silent about them.
 - Register this node's LAN service keys with the scanner daemon and replay them on every scanner spawn.
-- Reconcile the Ollama and LM Studio compatibility ports against the `force_ports` policy and live engine status before enabling each facade, and place the llama.cpp and vLLM facades on their default ports or a safe fallback with no compatibility-port gate.
+- Reconcile the Ollama and LM Studio compatibility ports against the `force_ports` policy and live engine status before enabling each facade, and place the llama.cpp, vLLM and MTPLX facades on their default ports or a safe fallback with no compatibility-port gate.
 - Cache compact GPU telemetry from the scanner and `nvpair-manual-nodes` with the scanner taking precedence, relay it to `nvpair-job-scheduler`, and replay the cache when the scheduler respawns.
 - Forward a proxy's `node/activity` to the scanner as `discovery:node-activity`, and `nvpair-node-info`'s `nodeinfo:observed-addresses` to the scanner as `discovery:set-observed-addresses`.
 - Restore the persisted cluster id into `nvpair-cluster-manager` before `app:ready`, and persist a later `cluster:identity-changed` back into `nvpair-node-settings`.
@@ -220,7 +220,7 @@ record IDs even when their announcements claim a known host UUID.
 { subscribed: boolean }
 ```
 
-`ProxyStatusResult` — the response to `ollama-proxy:get-status`, `lmstudio-proxy:get-status`, `llamacpp-proxy:get-status`, and `vllm-proxy:get-status`, answered per engine from the broker's captured facade state with no round-trip to the proxy. It is per engine because the facades bind different ports. The zero value is a valid "not available" answer, so none of these methods errors:
+`ProxyStatusResult` — the response to `ollama-proxy:get-status`, `lmstudio-proxy:get-status`, `llamacpp-proxy:get-status`, `vllm-proxy:get-status`, and `mtplx-proxy:get-status`, answered per engine from the broker's captured facade state with no round-trip to the proxy. It is per engine because the facades bind different ports. The zero value is a valid "not available" answer, so none of these methods errors:
 ```json
 { ready: boolean, port: number }
 ```
@@ -272,10 +272,10 @@ Requests the broker answers itself (client → broker):
 | `ollama-proxy:subscribe` | — | `SubscriptionResult{subscribed:true}`, then a baseline `ollama-proxy:ready` if that facade has come up |
 | `ollama-proxy:unsubscribe` | — | `SubscriptionResult{subscribed:false}` |
 | `ollama-proxy:set-port` | `{ port }` | `{ port }`; runs `engine:apply-settings` with the new proxy port; `-32000` when the port is in use or the change fails |
-| `lmstudio-proxy:get-status`, `llamacpp-proxy:get-status`, `vllm-proxy:get-status` | — | `ProxyStatusResult` |
-| `lmstudio-proxy:subscribe`, `llamacpp-proxy:subscribe`, `vllm-proxy:subscribe` | — | `SubscriptionResult{subscribed:true}`, then a baseline `<engine>-proxy:ready` if that facade has come up |
-| `lmstudio-proxy:unsubscribe`, `llamacpp-proxy:unsubscribe`, `vllm-proxy:unsubscribe` | — | `SubscriptionResult{subscribed:false}` |
-| `lmstudio-proxy:set-port`, `llamacpp-proxy:set-port`, `vllm-proxy:set-port` | `{ port }` | same as `ollama-proxy:set-port`, for that engine |
+| `lmstudio-proxy:get-status`, `llamacpp-proxy:get-status`, `vllm-proxy:get-status`, `mtplx-proxy:get-status` | — | `ProxyStatusResult` |
+| `lmstudio-proxy:subscribe`, `llamacpp-proxy:subscribe`, `vllm-proxy:subscribe`, `mtplx-proxy:subscribe` | — | `SubscriptionResult{subscribed:true}`, then a baseline `<engine>-proxy:ready` if that facade has come up |
+| `lmstudio-proxy:unsubscribe`, `llamacpp-proxy:unsubscribe`, `vllm-proxy:unsubscribe`, `mtplx-proxy:unsubscribe` | — | `SubscriptionResult{subscribed:false}` |
+| `lmstudio-proxy:set-port`, `llamacpp-proxy:set-port`, `vllm-proxy:set-port`, `mtplx-proxy:set-port` | `{ port }` | same as `ollama-proxy:set-port`, for that engine |
 | `engine:get-settings` | `{ engine, nodeId? }` | the engine's full settings snapshot, local or from a pinned peer |
 | `engine:preview-settings` | `{ engine, nodeId?, expectedRevision, settings, resolution? }` | normalized settings, validation errors, conflicts, and a restart/rebind summary; changes nothing |
 | `engine:apply-settings` | the preview request plus `requestId` | `{ revision, phase }` receipt; progress arrives as `engine:settings-changed` |
@@ -292,7 +292,7 @@ Requests the broker answers itself (client → broker):
 | `engine:set-reserved-port` | — | `-32601` — private engine-manager method, refused at the boundary |
 | `internal:set-reserved-port` | — | `-32601` — private engine-manager method, refused at the boundary |
 | `shutdown` | — | `null`, then the ordered teardown begins |
-| `ollama-proxy:shutdown`, `lmstudio-proxy:shutdown`, `llamacpp-proxy:shutdown`, `vllm-proxy:shutdown` | — | `-32601` — the broker owns the proxy lifecycle and will not let a client kill it |
+| `ollama-proxy:shutdown`, `lmstudio-proxy:shutdown`, `llamacpp-proxy:shutdown`, `vllm-proxy:shutdown`, `mtplx-proxy:shutdown` | — | `-32601` — the broker owns the proxy lifecycle and will not let a client kill it |
 
 The facade rows are one profile-driven handler applied to every engine in `nvpair-shared/engines`, so each `<engine>-proxy:` namespace has the same broker-local surface.
 
@@ -300,7 +300,7 @@ Anything else is matched by namespace prefix and relayed verbatim:
 
 | Namespace | Owning worker | Relay shape |
 |-----------|---------------|-------------|
-| `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*`, `vllm-proxy:*` | that engine's `nvpair-proxy` facade | bounded synchronous `Call`; the client prefix is replaced by the engine address (`ollama-proxy:nodes/list` → `ollama:nodes/list`) |
+| `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*`, `vllm-proxy:*`, `mtplx-proxy:*` | that engine's `nvpair-proxy` facade | bounded synchronous `Call`; the client prefix is replaced by the engine address (`ollama-proxy:nodes/list` → `ollama:nodes/list`) |
 | `engine:*` | `nvpair-engine-manager` | asynchronous, **no broker-imposed timeout**, method verbatim |
 | `settings/*` | `nvpair-node-settings` | bounded synchronous `Call`, method verbatim |
 | `cluster:*`, `nodes:*` | `nvpair-cluster-manager` | bounded synchronous `Call`, method verbatim |
@@ -320,7 +320,7 @@ Notifications the broker emits to the client, and what produces each:
 | `app:ready{version}` | always | the broker itself, once, after the worker tree is started |
 | `discovery:nodes-changed` | `discovery:subscribe` | the merged discovery store (scanner + manual nodes); payload is a bare `AvailableNode[]` |
 | `discovery:node-info` | always | scanner full hardware event, accepted only for its current source record, including sanitized unverified previews |
-| `ollama-proxy:<method>`, `lmstudio-proxy:<method>`, `llamacpp-proxy:<method>`, `vllm-proxy:<method>` (notably `…:ready`) | that namespace's `…:subscribe` | the facade's engine-addressed notification, with the engine address replaced by the client prefix |
+| `ollama-proxy:<method>`, `lmstudio-proxy:<method>`, `llamacpp-proxy:<method>`, `vllm-proxy:<method>`, `mtplx-proxy:<method>` (notably `…:ready`) | that namespace's `…:subscribe` | the facade's engine-addressed notification, with the engine address replaced by the client prefix |
 | `engine:ready`, `engine:state-changed`, `engine:models-changed`, `engine:install-progress`, `engine:pull-progress`, `engine:remote-progress` | `engine:subscribe` | `nvpair-engine-manager`, verbatim (already `engine:`-prefixed) |
 | `engine:settings-changed` | always | the broker itself, a full settings snapshot per engine on every settings change |
 | `workloads:upsert`, `workloads:remove` | `workloads:subscribe` | `nvpair-workload-manager` (peer-origin) and `nvpair-proxy` (local-origin), after the store accepts the transition |
@@ -395,7 +395,7 @@ Each worker's reader goroutine invokes a forwarder. Every forwarder calls `dispa
 | `forwardEngineNotification` | `nvpair-engine-manager` | `engine:settings-request` / `engine:settings-cancel` carry a paired peer's settings operation into the broker (§7.10) — and a supervised worker's own `settings/*` read, such as the engine-manager's `settings/get-engine-allow-lan-bind` gate check, which the broker forwards verbatim to `nvpair-node-settings`; `engine:ready` also triggers LM Studio proxy reconciliation and re-sends the settings projection; `discovery:subscribe` is claimed as a worker relay subscription; everything else is re-emitted verbatim to `engine:subscribe`'d clients |
 | `forwardProxyProcessNotification` | `nvpair-proxy` | an engine-addressed notification goes to that engine's handler, with that engine's spawn generation for Ollama and LM Studio; an unaddressed one is process-scoped and handled once — `workload:*` is stamped and routed to the workload manager, and `node/activity` is forwarded to the scanner as `discovery:node-activity` |
 | `forwardProxyNotificationForGeneration` / `forwardLMStudioProxyNotificationForGeneration` | one facade | stale generations dropped; a `bind-failed` on the managed facade port blocks the facade, otherwise selects a fallback port unless the user set the port explicitly; `ready` triggers port reconciliation; the remainder is emitted as `<engine>-proxy:<method>` to that namespace's subscribers |
-| `forwardDefaultEngineProxyNotification` | the llama.cpp and vLLM facades | no port reconciliation and no generation check: error-pipeline frames are claimed, and the remainder is emitted as `llamacpp-proxy:<method>` or `vllm-proxy:<method>` to that namespace's subscribers |
+| `forwardDefaultEngineProxyNotification` | the llama.cpp, vLLM and MTPLX facades | no port reconciliation and no generation check: error-pipeline frames are claimed, and the remainder is emitted as `llamacpp-proxy:<method>`, `vllm-proxy:<method>`, or `mtplx-proxy:<method>` to that namespace's subscribers |
 | `handleManualNodesNotification` | `nvpair-manual-nodes` | source events upsert full authenticated hardware or separate display previews into `AvailableNode.info`; only pinned measurements feed scheduling; explicit reachable engine routes bridge independently; clients receive merged `discovery:nodes-changed` snapshots, not a separate manual `discovery:node-info` event |
 | `forwardSettingsNotification` | `nvpair-node-settings` | only `connection/cluster-identity` and `connection/cluster-auto-sync` are re-emitted, verbatim and unconditionally; everything else is debug-logged and dropped |
 | `forwardClusterManagerNotification` | `nvpair-cluster-manager` | notifications relayed verbatim; identity changes persist settings and reconverge advertisement; trust changes invalidate obsolete scanner/manual proofs and prompt scanner reauthentication; node-info follows live mesh membership |
@@ -403,7 +403,7 @@ Each worker's reader goroutine invokes a forwarder. Every forwarder calls `dispa
 | `forwardSchedulerNotification` | `nvpair-job-scheduler` | `schedule:priority` is de-duplicated, cached, and delivered to the proxy (§7.5); everything else is dropped |
 | `onErrorsUpdate` | `nvpair-errors` | `errors:update` relayed verbatim and unconditionally |
 
-The **generation** variants exist because a supervisor can replace the proxy process while its predecessor's frames are still in flight. Each spawn takes a monotonically increasing generation for Ollama and for LM Studio, and a forwarder invoked for an older generation returns before any side effect — so a dying process's `ready`, `bind-failed`, or error report can never be attributed to its successor, reconfigure the new process, or resurrect state the replacement has already moved past. The llama.cpp forwarder carries no generation. None of its notifications changes a port, so a stale one can reach only `llamacpp-proxy:` subscribers or the errors pipeline.
+The **generation** variants exist because a supervisor can replace the proxy process while its predecessor's frames are still in flight. Each spawn takes a monotonically increasing generation for Ollama and for LM Studio, and a forwarder invoked for an older generation returns before any side effect — so a dying process's `ready`, `bind-failed`, or error report can never be attributed to its successor, reconfigure the new process, or resurrect state the replacement has already moved past. The default engine forwarder — llama.cpp, vLLM and MTPLX — carries no generation. None of those facades' notifications changes a port, so a stale one can reach only its own `<engine>-proxy:` subscribers or the errors pipeline.
 
 Workload events funnel through one serialized apply-then-fan-then-notify path regardless of origin, so the client-visible order matches the applied order, and a stale or regressive upsert is dropped at the store rather than resurrecting a finished workload on the client stream.
 
@@ -442,12 +442,14 @@ llama.cpp has **no compatibility-port takeover**. `nvpair-engine-manager` owns i
 
 vLLM is placed the same way: `nvpair-engine-manager` starts `vllm serve` on its configured loopback port (`:8001` by default), and the broker requests the vLLM facade on `:8000` or a safe fallback, with no compatibility-port gate and no port-ownership block.
 
+MTPLX is placed the same way on its own pair: the managed `mtplx serve` on `:8101` behind a facade on `:8100`, with no compatibility-port gate and no port-ownership block. It is not given `8000` even though that is MTPLX's own default, because `8000` is already the vLLM facade's port and Apple Silicon is the one host where both engines can be installed; a server the user started themselves on `8000` is likewise left untouched rather than fronted. The broker builds its proxy profile set from `engines.All()` rather than from what the host can run, so the MTPLX facade is enabled on every host; off Apple Silicon nothing is ever detected behind it.
+
 A port the user chooses is never silently moved. `engine:set-port` and every `<engine>-proxy:set-port` are intercepted and run through `engine:apply-settings` (§7.10), which validates both of the engine's ports against registered services, aliases, other engines and facades, and occupied listeners. A port already in use is refused with `-32000`, and a collision with the `OLLAMA_HOST` alias is refused with a message naming it. Automatic steering remains only for a port the user did not just choose: when a facade announces a restored port a running engine has since taken, the broker moves the facade to a free port and surfaces the sticky warning `ollama-proxy:port-bumped`, never changing the engine's port. An `engine:*` request that depends on a facade port still being reconciled is parked on the corresponding gate and either replayed when the gate opens or answered with a retry-me error after 5 seconds.
 
 ### 7.8 Discovery registration and relay
 No worker registers itself. The broker holds a `relay.RegistrationCache` of this node's LAN services and pushes each entry into the scanner daemon on the worker's behalf, then **replays the whole cache on every scanner spawn** — so a scanner restart re-advertises the node's full service set with no reconnect logic in any worker. Registration is idempotent; only a real change is pushed.
 
-The canonical service keys and the ports the broker registers are `ni` = 14318 (`nvpair-node-info`), `er` = 14319 (`nvpair-errors`), `wl` = 14320 (`nvpair-workload-manager`), `cl` = 14321 (`nvpair-cluster-manager`), `em` = 14322 (`nvpair-engine-manager`'s model-list HTTP endpoint), and `ec` = 14323 (`nvpair-engine-manager`'s cluster-scoped remote-control surface, registered only when a cluster directory is configured). These six are one block — contiguous from `ni` through `ec` — and the broker spawns every block worker on the block it resolved at construction: `--port-base` shifts the whole block together, but only for a coexistence caller such as the cross-process test harness; the shipped app runs flagless on the canonical block, and clients locate workers through discovery records rather than these numbers, so a shifted block changes no contract. `ol`, `lm`, `lc`, and `vl` are registered dynamically with that engine's **facade** listen port — not the engine's port — while the broker's 5-second health poll of the engine's backend port answers (`/` for Ollama, `/v1/models` for LM Studio, `/health` for llama.cpp and vLLM), and are unregistered whenever the engine or its facade goes away, so a peer never routes to a facade that has nothing behind it.
+The canonical service keys and the ports the broker registers are `ni` = 14318 (`nvpair-node-info`), `er` = 14319 (`nvpair-errors`), `wl` = 14320 (`nvpair-workload-manager`), `cl` = 14321 (`nvpair-cluster-manager`), `em` = 14322 (`nvpair-engine-manager`'s model-list HTTP endpoint), and `ec` = 14323 (`nvpair-engine-manager`'s cluster-scoped remote-control surface, registered only when a cluster directory is configured). These six are one block — contiguous from `ni` through `ec` — and the broker spawns every block worker on the block it resolved at construction: `--port-base` shifts the whole block together, but only for a coexistence caller such as the cross-process test harness; the shipped app runs flagless on the canonical block, and clients locate workers through discovery records rather than these numbers, so a shifted block changes no contract. `ol`, `lm`, `lc`, `vl`, and `mx` are registered dynamically with that engine's **facade** listen port — not the engine's port — while the broker's 5-second health poll of the engine's backend port answers (`/` for Ollama, `/v1/models` for LM Studio, `/health` for llama.cpp, vLLM and MTPLX), and are unregistered whenever the engine or its facade goes away, so a peer never routes to a facade that has nothing behind it.
 
 The broker also relays two kinds of evidence into the scanner that it cannot gather itself. A proxy's `node/activity`, raised while a peer's engine streams response bytes back, becomes `discovery:node-activity`. The scanner uses that recent inference evidence when deciding whether to retain a verified peer independently of announcement expiry. `nvpair-node-info`'s `nodeinfo:observed-addresses`, the local addresses remote peers have actually reached, becomes `discovery:set-observed-addresses`, which the scanner uses to rank the addresses it publishes. Both are sent off the producing worker's reader goroutine.
 
@@ -660,7 +662,7 @@ The broker is a single Go binary that runs as a child of its client and as the p
 | `--engine-manager-path` | `./nvpair-engine-manager` | engine lifecycle and model operations |
 | `--node-info-path` | `./nvpair-node-info` | local hardware advertisement |
 | `--proxy-path` | `./nvpair-proxy` | the one proxy process that hosts every engine's facade |
-| `--proxy-engines` | every engine in `nvpair-shared/engines` (today `ollama,lmstudio,llamacpp,vllm`) | which engines to enable a facade for; an unrecognized name is fatal, and an engine left out is neither enabled nor prepared |
+| `--proxy-engines` | every engine in `nvpair-shared/engines` (today `ollama,lmstudio,llamacpp,vllm,mtplx`) | which engines to enable a facade for; an unrecognized name is fatal, and an engine left out is neither enabled nor prepared |
 | `--workload-manager-path` | `./nvpair-workload-manager` | cluster workload relay |
 | `--manual-nodes-path` | `./nvpair-manual-nodes` | user-entered nodes |
 | `--cluster-manager-path` | `./nvpair-cluster-manager` | identity, pairing, membership |

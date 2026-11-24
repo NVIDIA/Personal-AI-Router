@@ -83,10 +83,10 @@ parameter, because one flag cannot carry multiple engines' plans.
 Everything engine-specific is one entry in `engines.go`, plus the shared
 identity in `nvpair-shared/engines`.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` |
-|---|---|---|---|---|
-| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` | `vllm-proxy` |
-| Discovery service key | `ol` | `lm` | `lc` | `vl` |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` | `"engine":"mtplx"` |
+|---|---|---|---|---|---|
+| Facade id — error-ID prefix and broker relay namespace | `ollama-proxy` | `lmstudio-proxy` | `llamacpp-proxy` | `vllm-proxy` | `mtplx-proxy` |
+| Discovery service key | `ol` | `lm` | `lc` | `vl` | `mx` |
 
 The **log component, supervisor label, and TUI health crash key are not in that
 table**: they name the process (`nvpair-proxy`), not a facade, because one
@@ -95,17 +95,30 @@ Facade-scoped log records carry an `engine` field instead. The supervisor label
 and the health crash key are matched against each other, so they move together
 — see `nvpair-shared/engines` and `spec.md` §9.
 
-| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` |
-|---|---|---|---|---|
-| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
-| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
-| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
-| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) |
-| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below |
-| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte |
+| | `"engine":"ollama"` | `"engine":"lmstudio"` | `"engine":"llamacpp"` | `"engine":"vllm"` | `"engine":"mtplx"` |
+|---|---|---|---|---|---|
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 | 8000 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 | 8101 |
+| Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 | 8100 |
+| Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` | `mtplx-proxy-port.json` |
+| Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) |
+| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below | OpenAI and Anthropic Messages sets below |
+| Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte |
 
-All four facades classify these OpenAI-compatible POST routes as inference:
+MTPLX's own default is `8000` too, the same number the vLLM facade already owns,
+so the facade and the relocated engine move to `8100`/`8101` together: a managed
+MTPLX started on `8000` would be fighting the vLLM facade, and a managed proxy
+listening there would be fighting a MTPLX daemon the user started themselves. The
+profile is built on every host but is inert off Apple Silicon, where nothing
+detects the engine and a facade promotes an engine only while it answers its health
+probe.
+
+MTPLX also classifies `POST /v1/messages/count_tokens` as a **model lookup** rather
+than a workload: it is routed by the model named in its body, because an
+unclassified POST would fan out to every node, but it stays out of the cluster's
+workload stream.
+
+All five facades classify these OpenAI-compatible POST routes as inference:
 
 - `/v1/chat/completions` — [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - `/v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
@@ -113,14 +126,17 @@ All four facades classify these OpenAI-compatible POST routes as inference:
 - `/v1/responses` — [Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
 
 The [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create) set is `POST /v1/messages`, classified as inference by
-the Ollama and LM Studio facades.
+the Ollama, LM Studio and MTPLX facades. MTPLX serves Anthropic-style traffic
+itself, so on its facade that path is a workload, not one of the unlisted paths
+forwarded verbatim.
 
 The route table is a **classifier, not an allowlist**. An unlisted path is
 forwarded verbatim, which is how `/api/show`, `/api/pull`, `/api/ps`,
 `/api/version` and `OPTIONS` preflights keep working.
 
-The broker enables all four facades by default. Local llama.cpp-compatible
-clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM clients use `8000`, while the managed `vllm serve` stays on `8001`.
+The broker enables all five facades by default. Local llama.cpp-compatible
+clients use `8080`, while the managed `llama-server` stays on `8081`. vLLM clients use `8000`, while the managed `vllm serve` stays on `8001`. MTPLX
+clients use `8100`, while the managed `mtplx serve` stays on `8101`.
 `--proxy-engines` can restrict a standalone broker or TUI to a subset.
 
 ### HTTP Reverse Proxy

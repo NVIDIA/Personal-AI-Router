@@ -246,7 +246,8 @@ probes.
 ### Actions
 
 Each action is a config-declared operation exposed over `engine:action`.
-Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
+Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, `launch_model`,
+`hf_pull`, or `stop_engine`:
 
 - **`http`** — call the engine's loopback control API. The caller's
   `params` are sent as the JSON request body by default. Set
@@ -286,18 +287,25 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   refusing when it cannot tell, and holds the engine's operation lock until the
   removal and any rollback of the launch settings are done.
 - **`launch_model`** — switch the model an engine serves, for an engine with no
-  load call because the model is a launch argument (vLLM). `launch_model.flag`
-  names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
-  Hugging Face id such as `org/name`; anything that could be read as a flag, a
-  path or a shell fragment is refused), writes it into the saved launch
-  settings exactly as the settings editor would, and restarts a running engine
-  on it. If the new model does not come up, the previous one is restored and the
+  load call because the model is a launch argument (vLLM, MTPLX).
+  `launch_model.flags` lists every flag that has to move together, which for
+  vLLM is just `["--model"]`. MTPLX also takes `--model-id`: a server started
+  with only `--model` answers to a derived id such as
+  `mtplx-qwen38-27b-optimized-speed-fp16`, which matches neither the cache
+  entry the user picked nor the id a client puts in its request. The action
+  takes `{"model": "<id>"}` (a Hugging Face id such as `org/name`; anything
+  that could be read as a flag, a path or a shell fragment is refused), writes
+  that one value into each declared flag of the saved launch settings exactly
+  as the settings editor would, and restarts a running engine on it. An empty
+  flag list, a repeated flag, and an entry that is not a flag are manifest
+  errors. If the new model does not come up, the previous one is restored and the
   error says so; a stopped engine is started on it, and asking a running engine
   for the model already in the launch arguments restarts nothing. The engine's
   operation lock is held from reading the launch to the last restore. An engine
-  with a `launch_model` action will not start while its launch arguments lack
-  the flag: it has no model selected, and refusing beats letting the engine
-  pick and download a default of its own. The refusal is reported as a failed
+  with a `launch_model` action will not start while none of the declared flags
+  names a model: it has no model selected, and refusing beats letting the
+  engine pick and download a default of its own. The refusal is reported as a
+  failed
   start, like the other refusals before launch, so a client that does not wait
   for the reply still learns of it. Requires `runtime.editable_launch`
   and `runtime.ready` on every platform.
@@ -537,8 +545,10 @@ path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
 is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),
 an action sets none or more than one of
-`http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`, an `hf_cache` action omits
-`dir` or sets only one of `delete` and `tool`, a `launch_model` flag is not a flag or a platform lacks
+`http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`/`hf_pull`/`stop_engine`, an
+`hf_cache` action omits `dir` or sets only one of `delete` and `tool`, a
+`launch_model` action names no flag, repeats one, or lists a non-flag, or a
+platform lacks
 `editable_launch` or `ready`, `advertised_models` is unknown or `"loaded"`
 without a `loaded_models` action, `result.inventory_field` is set anywhere but
 the `loaded_models` action of an engine with `advertised_models` `"loaded"` or is

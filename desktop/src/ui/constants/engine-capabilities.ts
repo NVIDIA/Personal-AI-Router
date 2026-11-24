@@ -87,5 +87,40 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
             label: 'vLLM',
             url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
         }
+    },
+    mtplx: {
+        hasExpiry: false,
+        // MTPLX serves one pack per process and cannot drop it while running, so
+        // Eject stops the engine and Load starts it again on the chosen pack.
+        hasEject: true,
+        // Detect-only, and Apple Silicon only: PAIR drives the `mtplx` CLI of an
+        // install the user made themselves and never installs or uninstalls it.
+        // An empty list means no auto-install, and `getWelcomeEngineCandidates`
+        // leaves the engine out of onboarding rather than showing an install row
+        // that cannot be fulfilled.
+        hasInstall: [],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        // Packs live in MTPLX's own pack cache and its curated list is fetched, so
+        // the model list, Add model, Delete and Load all work while the engine is
+        // stopped (Load starts it): MTPLX is listed in `EnginesListingModelsWhenStopped`
+        // and its list comes from `mtplx models --json`, which answers offline.
+        hasModelSearchOnlyWhenRunning: false,
+        hasDeleteModel: true,
+        // `mtplx remove` has no in-use guard, and a stopped engine keeps the
+        // deleted pack in its launch arguments, so Delete is refused on the pack
+        // being served: eject first.
+        deleteBlockedWhileLoaded: true,
+        // Load rewrites the model launch flags and restarts MTPLX on them.
+        loadRestartsEngine: true,
+        // MTPLX only runs packs built for it, and that list is the only place
+        // they are named, so the hub lists those rather than any safetensors repo.
+        engineHub: {
+            label: 'MTPLX',
+            url: 'https://mtplx.com/releases/models.json'
+        }
     }
 }

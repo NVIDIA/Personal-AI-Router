@@ -220,9 +220,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	// An engine whose model is a launch argument cannot start without one. vLLM
 	// would serve, and first download, a default model of its own instead.
-	if flag := modelLaunchFlag(st.manifest); flag != "" {
+	if flags := modelLaunchFlags(st.manifest); len(flags) > 0 {
 		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
-		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
+		if model := launchModelValue(tokens, flags); err == nil && model == "" {
 			if rt.WaitForModel {
 				st.mu.Lock()
 				st.awaitingModel = true

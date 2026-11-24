@@ -23,7 +23,7 @@ namespace:
 | --- | --- | --- |
 | `nvpair-node-scanner` | Discovery daemon: advertises this host's one `_nvpair-node._tcp` record and browses the LAN | `discovery:*` |
 | `nvpair-node-info` | Owned inventory IPC, public display HTTP, and peer node inventory over pinned mTLS at `/v1/node-info` | _internal_ |
-| `nvpair-proxy` | One process hosting an inference proxy and router facade per enabled engine | `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*`, `vllm-proxy:*` |
+| `nvpair-proxy` | One process hosting an inference proxy and router facade per enabled engine | `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*`, `vllm-proxy:*`, `mtplx-proxy:*` |
 | `nvpair-engine-manager` | Local engine and model control plane; also serves `GET /v1/models` to peers | `engine:*` |
 | `nvpair-cluster-manager` | Node identity, trusted-node store, PIN pairing | `cluster:*`, `nodes:*` |
 | `nvpair-workload-manager` | Cluster workload relay between this node and peers | `workloads:*` |
@@ -40,8 +40,8 @@ lifecycle, and relay rules.
 Two responsibilities live in the broker itself rather than in a worker:
 
 - **Engine advertising.** The broker polls local Ollama, LM Studio,
-  llama.cpp, and vLLM every 5 s and registers each running engine's promoted facade port
-  (`ol` / `lm` / `lc` / `vl`) with the discovery daemon, so they are carried in this
+  llama.cpp, vLLM, and MTPLX every 5 s and registers each running engine's promoted facade port
+  (`ol` / `lm` / `lc` / `vl` / `mx`) with the discovery daemon, so they are carried in this
   host's single `_nvpair-node` record. The
   model list is not part of that record — it is served over HTTP by
   `nvpair-engine-manager` on the `em` service and fetched by a peer's daemon
@@ -118,7 +118,7 @@ their age. Notifications from a previous worker cannot restore its records.
 | `--scanner-path <path>` | `./nvpair-node-scanner[.exe]` in the CWD | Explicit path to the `nvpair-node-scanner` binary the broker should spawn |
 | `--node-info-path <path>` | `./nvpair-node-info[.exe]` in the CWD | Explicit path to the `nvpair-node-info` binary the broker should spawn. When omitted and no default sibling exists, the broker runs without the local inventory server (non-fatal); when set to an invalid path, the broker exits with an error |
 | `--proxy-path <path>` | `./nvpair-proxy[.exe]` in the CWD | Explicit path to the `nvpair-proxy` binary. One process fronts every engine: the broker spawns it once and then sends a `facade/enable` per entry in `--proxy-engines`. Same optional semantics as `--node-info-path`: an absent default sibling means no local proxies (non-fatal); an invalid explicit path exits with an error |
-| `--proxy-engines <csv>` | `ollama,lmstudio,llamacpp,vllm` | Which engines to front with a proxy. An unrecognized name exits with an error rather than being skipped, so a typo cannot look like it worked. An engine left out is not started **and not prepared** — the broker will not relocate an engine whose facade nothing is going to claim |
+| `--proxy-engines <csv>` | `ollama,lmstudio,llamacpp,vllm,mtplx` | Which engines to front with a proxy. An unrecognized name exits with an error rather than being skipped, so a typo cannot look like it worked. An engine left out is not started **and not prepared** — the broker will not relocate an engine whose facade nothing is going to claim |
 | `--workload-manager-path <path>` | `./nvpair-workload-manager[.exe]` in the CWD | Explicit path to the `nvpair-workload-manager` binary the broker spawns for the cluster workload relay. Same optional semantics as `--node-info-path`: an absent default sibling means no workload relay (non-fatal); an invalid explicit path exits with an error |
 | `--errors-path <path>` | `./nvpair-errors[.exe]` in the CWD | Explicit path to the `nvpair-errors` binary the broker spawns (with `--peer-sync`) for the service-error pipeline. Same optional semantics as `--node-info-path`: an absent default sibling means the error pipeline is disabled — producers' errors are dropped (non-fatal); an invalid explicit path exits with an error |
 | `--engine-manager-path <path>` | `./nvpair-engine-manager[.exe]` in the CWD | Explicit path to the `nvpair-engine-manager` binary the broker spawns for engine management. Same optional semantics as `--node-info-path` |
@@ -146,11 +146,12 @@ metadata back for peer node inventory responses. Spawning it is optional: if no 
 is resolved and no explicit path was given, the broker continues without it.
 
 **Engine advertising.** The broker runs an internal 5 s poll loop against local
-Ollama (`GET /`), LM Studio (`GET /v1/models`), llama.cpp (`GET /health`), and vLLM (`GET /health`)
+Ollama (`GET /`), LM Studio (`GET /v1/models`), llama.cpp (`GET /health`), vLLM (`GET /health`),
+and MTPLX (`GET /health`)
 at their configured backend ports and reconciles this node's engine registration
 with the scanner daemon:
 
-- engine **up** and facade **ready** → register `ol` / `lm` / `lc` / `vl` at the
+- engine **up** and facade **ready** → register `ol` / `lm` / `lc` / `vl` / `mx` at the
   promoted facade port, never the private backend port;
 - engine **down** → unregister it.
 
@@ -174,6 +175,16 @@ Ollama's standalone default is `:11435`; with managed port ownership enabled (th
 vLLM is a managed engine handled exactly like llama.cpp below, with the
 `vllm serve` process on `:8001` and its default-enabled facade on `:8000` or a
 safe fallback.
+
+MTPLX is a managed engine on the same shape, with the `mtplx serve` process on
+`:8101` and its default-enabled facade on `:8100` or a safe fallback. Those two are
+not `:8000` and `:8001`: `8000` is already the vLLM facade, and MTPLX's own default
+is `8000` too, so a managed server started there would fight either the vLLM facade
+or a MTPLX daemon the user launched. The engine is declared for Apple Silicon only;
+the facade is enabled everywhere, because the broker's proxy set is a fixed list
+rather than a per-host probe, and a facade promotes an engine only while that engine
+answers `/health`. Off Apple Silicon it therefore fronts nothing, and no peer is
+told MTPLX exists.
 
 llama.cpp is a managed engine: engine-manager owns its lifecycle and starts it
 on its configured loopback port, `:8081` by default. The broker places its
@@ -218,7 +229,7 @@ Two classes of proxy notification are **not** re-emitted under any
 telemetry, and discovery snapshot. It smooths fresh utilization into pressure
 0–3, uses neutral pressure 1 for invalid/missing/older-than-10-second samples,
 and orders by `pending + gpuPressure`, then pressure, then stable UUID. Load is
-node-wide across Ollama, LM Studio, llama.cpp, and vLLM because they normally contend
+node-wide across Ollama, LM Studio, llama.cpp, vLLM and MTPLX because they normally contend
 for the same resources. Each engine-specific `schedule:priority` carries
 `{engine,nodes,ranks}` and refreshes when order, pending counts, or pressure
 changes. The broker caches, generation-orders, and replays the full
@@ -540,7 +551,7 @@ Two relay-specific error cases:
 - If no proxy is being supervised (or it has exited), the broker replies with error `-32000` `"ollama-proxy not available"`.
 - `ollama-proxy:shutdown` is **refused** with error `-32601` — the broker owns the proxy's lifecycle, so a client can't terminate it independently. Shut the broker down instead (which tears the proxy down with it).
 
-#### `ollama-proxy:set-port` / `lmstudio-proxy:set-port` / `llamacpp-proxy:set-port` / `vllm-proxy:set-port`
+#### `ollama-proxy:set-port` / `lmstudio-proxy:set-port` / `llamacpp-proxy:set-port` / `vllm-proxy:set-port` / `mtplx-proxy:set-port`
 
 **Intercepted, not relayed verbatim.** For every engine profile, a port-only caller (none in tree; `nvpair-tui` uses `engine:apply-settings`) gets to move a single port without rendering the whole launch settings form, but the change still runs through the same authoritative settings operation the desktop editor uses, so a port set from the terminal cannot diverge from one set from the UI. The namespace selects the engine. The broker reads that engine's current settings, substitutes the requested proxy port, and applies the result while preserving the server port and launch arguments. Accepted settings are saved in the settings journal.
 
@@ -557,7 +568,7 @@ Automatic conflict resolution still exists, but only for a port the user did not
 
 The LM Studio counterpart of the `ollama-proxy:*` surface uses the LM Studio facade in the supervised `nvpair-proxy` process on compatibility port `:1234` and tracks the managed LM Studio engine on `:1235`. With managed port ownership enabled (the default), the broker identifies and moves an existing LM Studio server through engine-manager before allowing the proxy to claim `1234`; unknown owners are left untouched and force a warned proxy fallback. Disabling managed ownership preserves explicit custom engine and proxy ports. `lmstudio-proxy:get-status` reports the actual bound port; `lmstudio-proxy:subscribe` / `lmstudio-proxy:unsubscribe` opt into / out of its `lmstudio-proxy:<event>` stream; `lmstudio-proxy:set-port` uses the settings operation described above; and other `lmstudio-proxy:<method>` requests are relayed with the prefix translated (`nodes/list`, `node/select`, `node/add-manual`, `node/remove-manual`, ...). `lmstudio-proxy:shutdown` is refused because the broker owns lifecycle ordering. Workload and error events feed the shared streams exactly as Ollama's do.
 
-The same broker-local status, subscription, and port-setting methods apply to `llamacpp-proxy:*` and `vllm-proxy:*`. llama.cpp port changes use the same validation, journal, and application path; remaining methods use the generic facade relay, with `llamacpp-proxy:shutdown` refused.
+The same broker-local status, subscription, and port-setting methods apply to `llamacpp-proxy:*`, `vllm-proxy:*`, and `mtplx-proxy:*`. llama.cpp port changes use the same validation, journal, and application path; remaining methods use the generic facade relay, with `llamacpp-proxy:shutdown` refused.
 
 #### `ollama-proxy:subscribe`
 
@@ -738,8 +749,8 @@ Attach to a pre-existing endpoint:
 ## Integration and configuration boundaries
 
 - **Engine-advertise control surface.** Engine registration is auto-driven only:
-  the broker tracks local Ollama, LM Studio, llama.cpp, and vLLM and registers `ol`,
-  `lm`, `lc`, or `vl` with the daemon while each is up. There's no manual-advertise
+  the broker tracks local Ollama, LM Studio, llama.cpp, vLLM and MTPLX and registers `ol`,
+  `lm`, `lc`, `vl`, or `mx` with the daemon while each is up. There's no manual-advertise
   RPC (custom service, port, name, or TXT), and no way to advertise anything
   other than the detected engines.
 - **Node-info integration.** The broker passes node-info its cluster directory

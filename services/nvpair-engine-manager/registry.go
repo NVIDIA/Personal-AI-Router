@@ -433,11 +433,14 @@ type ActionHFPull struct {
 	Dir  string `json:"dir"`
 }
 
-// ActionLaunchModel names the launch flag that selects the engine's model, such
-// as "--model". The action takes {"model": "<id>"}, writes it into the saved
-// launch settings and restarts a running engine on it.
+// ActionLaunchModel names the launch flags that select the engine's model, such
+// as "--model". An engine that also names the model somewhere else lists every
+// flag that has to move together: MTPLX serves whatever --model-id says, so a
+// launch that rewrites only --model keeps answering to the derived id no client
+// asks for. The action takes {"model": "<id>"}, writes it into every declared
+// flag of the saved launch settings and restarts a running engine on it.
 type ActionLaunchModel struct {
-	Flag string `json:"flag"`
+	Flags []string `json:"flags"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -834,7 +837,7 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	for key, p := range m.Platforms {
-		if p.Runtime.WaitForModel && (p.Runtime.modeOrDefault() != "process" || modelLaunchFlag(m) == "") {
+		if p.Runtime.WaitForModel && (p.Runtime.modeOrDefault() != "process" || len(modelLaunchFlags(m)) == 0) {
 			return fmt.Errorf("platform %q: wait_for_model requires process mode and a launch_model action", key)
 		}
 	}
@@ -1156,9 +1159,19 @@ func (a *Action) validate(name string) error {
 		}
 	}
 	if hasLaunchModel {
-		flag := a.LaunchModel.Flag
-		if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
-			return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+		flags := a.LaunchModel.Flags
+		if len(flags) == 0 {
+			return fmt.Errorf("action %q: launch_model.flags needs at least one flag such as \"--model\"", name)
+		}
+		seen := make(map[string]bool, len(flags))
+		for _, flag := range flags {
+			if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+				return fmt.Errorf("action %q: launch_model.flags entry %q must be a flag such as \"--model\"", name, flag)
+			}
+			if seen[flag] {
+				return fmt.Errorf("action %q: launch_model.flags lists %q twice", name, flag)
+			}
+			seen[flag] = true
 		}
 	}
 	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {

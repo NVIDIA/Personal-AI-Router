@@ -38,7 +38,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama, LM Studio, llama.cpp, and vLLM (Linux with an NVIDIA GPU, or Apple Silicon macOS) |
+| **Inference engines** | Ollama, LM Studio, llama.cpp, and vLLM (Linux with an NVIDIA GPU, or Apple Silicon macOS), plus MTPLX (Apple Silicon macOS only, and only where you have installed it yourself) |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -101,7 +101,9 @@ you want by its full filename instead.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
   select **Install** next to Ollama, LM Studio, llama.cpp, or (on Linux or Apple Silicon macOS) vLLM. PAIR downloads and
-  sets the engine up for you, so nothing needs to be in place beforehand.
+  sets the engine up for you, so nothing needs to be in place beforehand. MTPLX is
+  the exception: on an Apple Silicon Mac PAIR drives a `mtplx` you installed
+  yourself and never installs one.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
@@ -287,6 +289,7 @@ feedback and contributions will help shape priorities.
 
 - [x] llama.cpp support.
 - [x] vLLM support.
+- [x] MTPLX support on Apple Silicon macOS, from an existing install.
 - [ ] EXO support.
 - [ ] ComfyUI integration.
 - [ ] Unsloth support.
