@@ -13,9 +13,34 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 )
+
+type EngineUpdateInfo struct {
+	CurrentVersion string `json:"currentVersion"`
+	LatestVersion  string `json:"latestVersion"`
+	ReleaseURL     string `json:"releaseUrl"`
+	DownloadURL    string `json:"downloadUrl,omitempty"`
+	InstallType    string `json:"installType"`
+}
+
+// The vendor recipe determines the exact release URL and platform archive.
+// Accept the published digest only for that same asset.
+func githubReleaseAssetFetch(assets []githubReleaseAsset, name, url string) (*Fetch, error) {
+	for _, asset := range assets {
+		if asset.Name != name || asset.BrowserDownloadURL != url {
+			continue
+		}
+		digest, ok := strings.CutPrefix(asset.Digest, "sha256:")
+		if ok && sha256Re.MatchString(digest) {
+			return &Fetch{URL: url, SHA256: digest}, nil
+		}
+		break
+	}
+	return nil, fmt.Errorf("no checksum-verified release asset for %s", name)
+}
 
 // An update may replace only a PAIR-owned binary installed using the bundled
 // recipe. A custom installer or install directory may contain unrelated files.
