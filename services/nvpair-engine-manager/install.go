@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,7 +64,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		return fmt.Errorf("create install dir: %w", err)
 	}
 
-	if err := e.installAttempt(ctx, engine, st); err != nil {
+	if err := e.installWithRetry(ctx, engine, st); err != nil {
 		return e.reportInstallFailed(engine, err)
 	}
 
@@ -462,7 +463,8 @@ func runManifestCommand(ctx context.Context, argv []string, environment map[stri
 
 func (e *Executor) reportInstallFailed(engine string, err error) error {
 	if engine == "lmstudio" {
-		if kind := classifyLMSInstallFailure(err); kind != "" {
+		var failure *lmsInstallFailure
+		if kind := classifyLMSInstallFailure(err); kind != "" && !errors.As(err, &failure) {
 			slog.Warn("LM Studio installer download failed", "engine", engine, "attempt", 1, "category", kind, "err", err)
 			err = &lmsInstallFailure{cause: err, kind: kind, attempts: 1}
 		}

@@ -334,6 +334,41 @@ func main() {
 		case "noserve": // run but never bind — used to test readiness timeout
 			time.Sleep(time.Hour)
 			return
+		case "installsim": // fail with the downloaded diagnostic, then install a marker
+			if len(os.Args) != 6 {
+				fmt.Fprintln(os.Stderr, "installsim: need counter, marker, failures, download")
+				os.Exit(2)
+			}
+			data, err := os.ReadFile(os.Args[2])
+			if err != nil && !os.IsNotExist(err) {
+				panic(err)
+			}
+			count := 0
+			if len(data) > 0 {
+				count, err = strconv.Atoi(string(data))
+				if err != nil {
+					panic(err)
+				}
+			}
+			if err := os.WriteFile(os.Args[2], []byte(strconv.Itoa(count+1)), 0o600); err != nil {
+				panic(err)
+			}
+			failures, err := strconv.Atoi(os.Args[4])
+			if err != nil {
+				panic(err)
+			}
+			diagnostic, err := os.ReadFile(os.Args[5])
+			if err != nil {
+				panic(err)
+			}
+			if count < failures {
+				fmt.Fprintln(os.Stderr, string(diagnostic))
+				os.Exit(1)
+			}
+			if err := os.WriteFile(os.Args[3], []byte("installed"), 0o600); err != nil {
+				panic(err)
+			}
+			return
 		case "failmark": // append a byte then exit non-zero — for uninstall-retry tests
 			if len(os.Args) > 2 {
 				if f, err := os.OpenFile(os.Args[2], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
