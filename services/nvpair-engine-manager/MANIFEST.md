@@ -228,6 +228,7 @@ applies to the host the test runs on.
 | `args` | string[] | no | Arguments (process mode). |
 | `env` | object | no | Extra environment (merged over the inherited env). Use `{host}`/`{port}` for the listen address, e.g. `"OLLAMA_HOST": "{host}:{port}"`. |
 | `port` | int | no | Fixed port, or `0` to auto-assign a free loopback port. |
+| `port_source` | object | no | Where the engine keeps the port it really listens on: `{"file":"<path>","field":"<dotted key>"}`, `field` defaulting to `port`. PAIR probes that port beside `port`, so an engine the user started themselves is adopted wherever their own app put it instead of being read as an empty port. Read fresh each poll; a missing file or key tells PAIR nothing. Requires `ready`. |
 | `bind` | string | no | Listen address, substituted as `{host}`. Empty ⇒ `127.0.0.1` (the safe default); an inference engine that serves the cluster sets `"0.0.0.0"`. A per-call `bind` via `engine:start {bind}` overrides this for one call, but a non-loopback value is honored only when the `engine_allow_lan_bind` node setting is on — otherwise the start is rejected with `-32602` (`bind must be a loopback address`). Probes always target loopback. |
 | `start` | string[][] | command mode | Ordered bring-up commands (each an argv) for `command` mode, e.g. `[["{cli}","server","start","--port","{port}"]]`. |
 | `cli` | string | no | The engine's control-CLI path for this platform, referenced as `{cli}` by start/stop/actions so the manifest's **global** actions resolve to the correct per-OS binary. |

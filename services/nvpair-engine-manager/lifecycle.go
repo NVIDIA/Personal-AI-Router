@@ -189,14 +189,18 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		if opts.RequireOwned {
 			return refuse(fmt.Errorf("cannot apply launch settings: another process already owns the server port"))
 		}
-		slog.Info("adopting already-running external engine", "engine", engine, "port", port)
+		// The engine answers on presence.Port, which is wherever it really is
+		// rather than the port PAIR asked about, so the health loop follows it.
+		slog.Info("adopting already-running external engine", "engine", engine, "port", presence.Port)
 		st.mu.Lock()
 		st.gen++
 		gen := st.gen
+		st.authBlocked = false
 		st.mu.Unlock()
 		e.reporter.clear(startFailedID(engine))
 		e.reporter.clear(exitedID(engine))
 		e.reporter.clear(unhealthyID(engine))
+		e.reporter.clear(authBlockedID(engine))
 		if rt.Health != nil {
 			hctx, cancel := context.WithCancel(context.Background())
 			st.mu.Lock()
@@ -205,12 +209,16 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 			}
 			st.healthStop = cancel
 			st.mu.Unlock()
-			go e.runHealth(hctx, st, engine, port, gen)
+			go e.runHealth(hctx, st, engine, presence.Port, gen)
 		}
 		return nil
 	}
-	if presence.Occupied && rt.modeOrDefault() == "process" {
-		return refuse(fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName))
+	// Only what sits on the port a new copy would bind, or an engine that will
+	// not answer PAIR for credentials, keeps it from starting. A stranger on a
+	// port this engine merely searches is not in the way of a server bound
+	// somewhere else, and PAIR hands MTPLX the port to bind.
+	if presence.obs.spawnBlocked() && rt.modeOrDefault() == "process" {
+		return refuse(errors.New(presence.obs.startRefusal(engine, st.manifest.DisplayName)))
 	}
 	// Not reported: a client offers Install, not Start, for an engine that is
 	// not installed, and an engine removed outside PAIR would otherwise raise an
@@ -266,12 +274,14 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.running = true
 	st.healthy = true
 	st.adopted = false
+	st.authBlocked = false
 	st.gen++
 	gen := st.gen
 	st.mu.Unlock()
 	e.reporter.clear(startFailedID(engine))
 	e.reporter.clear(exitedID(engine))
 	e.reporter.clear(unhealthyID(engine))
+	e.reporter.clear(authBlockedID(engine))
 	e.emitState(engine)
 
 	st.mu.Lock()
@@ -751,31 +761,7 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 // live listener returning 503 is unhealthy, not stopped. A successful control
 // command is likewise not proof that its daemon actually exited.
 func (e *Executor) waitUnavailable(p *Probe, port int, timeout time.Duration) bool {
-	return e.waitUnavailableContext(context.Background(), p, port, timeout)
-}
-
-func (e *Executor) waitUnavailableContext(parent context.Context, p *Probe, port int, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	misses := 0
-	for {
-		result := probeListener(ctx, p, port)
-		if result == listenerProbeRefused {
-			misses++
-			if misses == unavailableConfirmations {
-				return true
-			}
-		} else {
-			// A reachable listener, timeout, or malformed/indeterminate target
-			// cannot prove shutdown. Require a fresh consecutive sequence.
-			misses = 0
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+	return e.confirmPortsQuiet(context.Background(), p, []int{port}, timeout)
 }
 
 // probeListener reports whether the transport endpoint described by a
@@ -1066,7 +1052,9 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 }
 
 // waitReady polls the readiness probe until it passes or the manifest's
-// allowance, counted from began, runs out.
+// allowance, counted from began, runs out. A credential refusal ends the wait
+// at once: that answer does not change with time, so spending the remaining
+// window on it only delays telling the user.
 func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time.Time) error {
 	if p == nil {
 		return nil
@@ -1077,8 +1065,12 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time
 	}
 	deadline := began.Add(timeout)
 	for {
-		if e.probe(ctx, p, port) {
+		answer := e.probeIdentity(ctx, p, port)
+		switch {
+		case answer.outcome == probeIdentified:
 			return nil
+		case answer.blocked():
+			return &readyBlockedError{port: port, status: answer.status}
 		}
 		if time.Now().After(deadline) {
 			return &readyTimeoutError{timeout: timeout}
@@ -1091,68 +1083,119 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time
 	}
 }
 
+// probeOutcome is what an identity probe learned, not merely whether PAIR was
+// satisfied. "Not this engine" splits in two, because a service that refuses
+// PAIR for credentials is this engine configured in a way PAIR cannot work with
+// rather than somebody else's, and the two need different advice.
+type probeOutcome uint8
+
+const (
+	// probeUnanswered covers every other answer: nothing listening, a service
+	// that answers something else, a status the manifest did not expect.
+	probeUnanswered probeOutcome = iota
+	// probeIdentified is the expected status and, where the manifest asks for
+	// one, a body that matches.
+	probeIdentified
+	// probeKeyProtected is HTTP 401: the service wants an API key. MTPLX answers
+	// every route but its dashboard bundle this way once one is configured.
+	probeKeyProtected
+	// probeRefusedAuth is HTTP 403: the service refuses requests that carry no
+	// credentials at all.
+	probeRefusedAuth
+)
+
+type probeResult struct {
+	outcome probeOutcome
+	status  int
+}
+
+// blocked says the port refused PAIR for credentials. Nothing is gained by
+// waiting for that to change.
+func (r probeResult) blocked() bool {
+	return r.outcome == probeKeyProtected || r.outcome == probeRefusedAuth
+}
+
+// probe is the yes/no form of the identity probe, for the health loop, where a
+// credential refusal simply means the engine is not answering PAIR.
 func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
+	return e.probeIdentity(ctx, p, port).outcome == probeIdentified
+}
+
+func (e *Executor) probeIdentity(ctx context.Context, p *Probe, port int) probeResult {
 	if p == nil {
-		return true
+		return probeResult{outcome: probeIdentified}
 	}
 	vars := map[string]string{"port": strconv.Itoa(port)}
 	if p.HTTP != "" {
 		u, err := resolvePlaceholders(p.HTTP, vars)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 		pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 		req, err := http.NewRequestWithContext(pctx, http.MethodGet, u, nil)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 		req.Header.Set(engineIdentityProbeHeader, "1")
 		resp, err := e.client.Do(req)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		statusMatches := resp.StatusCode == want
+		if resp.StatusCode != want {
+			outcome := probeUnanswered
+			switch resp.StatusCode {
+			case http.StatusUnauthorized:
+				outcome = probeKeyProtected
+			case http.StatusForbidden:
+				outcome = probeRefusedAuth
+			}
+			httpcon.DrainAndClose(resp.Body)
+			return probeResult{outcome: outcome, status: resp.StatusCode}
+		}
 		if p.JSONMatch == nil {
 			httpcon.DrainAndClose(resp.Body)
-			return statusMatches
+			return probeResult{outcome: probeIdentified}
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeJSONBytes+1))
 		httpcon.DrainAndClose(resp.Body)
-		if !statusMatches || err != nil || len(body) > maxProbeJSONBytes {
-			return false
+		if err != nil || len(body) > maxProbeJSONBytes {
+			return probeResult{}
 		}
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal(body, &obj); err != nil {
-			return false
+			return probeResult{}
 		}
 		value, ok := resolveObjectPath(obj, p.JSONMatch.Field)
 		if !ok {
-			return false
+			return probeResult{}
 		}
 		var actual string
-		return json.Unmarshal(value, &actual) == nil && actual == p.JSONMatch.Value
+		if json.Unmarshal(value, &actual) == nil && actual == p.JSONMatch.Value {
+			return probeResult{outcome: probeIdentified}
+		}
+		return probeResult{}
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 		pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 		conn, err := (&net.Dialer{}).DialContext(pctx, "tcp", addr)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 		conn.Close()
-		return true
+		return probeResult{outcome: probeIdentified}
 	}
-	return true
+	return probeResult{outcome: probeIdentified}
 }
 
 func (e *Executor) reportStartFailed(engine string, err error) {

@@ -12,6 +12,7 @@ vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import {
     getModularSupervisor,
+    parseEngineModelSnapshot,
     parseListModelNames,
     pullModelParams
 } from '@/electron/service-bridge/modular-supervisor'
@@ -35,6 +36,55 @@ describe('engine model wire formats', () => {
         expect(() =>
             parseListModelNames({ models: null, data: [{ id: 'must-not-mask-malformed-models' }] })
         ).toThrow('missing its model array')
+    })
+
+    it("lists a served model the engine's own inventory cannot name", () => {
+        // MTPLX lists only the packs in ~/.mtplx/models, so a model served from a
+        // path appears nowhere in that list; the snapshot's loaded set is the only
+        // place it is named.
+        expect(
+            parseEngineModelSnapshot(
+                {
+                    models: ['mtplx-flash-next-optimized-speed'],
+                    modelsByEngine: { mtplx: ['mtplx-flash-next-optimized-speed'] },
+                    downloadedByEngine: { mtplx: [], vllm: ['Qwen/Qwen3-8B'] },
+                    loadedByEngine: { mtplx: ['mtplx-flash-next-optimized-speed'], vllm: [] }
+                },
+                'mtplx'
+            )
+        ).toEqual({
+            models: ['mtplx-flash-next-optimized-speed'],
+            loaded: ['mtplx-flash-next-optimized-speed']
+        })
+    })
+
+    it('keeps one row for a model that is both cached and served, and marks it loaded', () => {
+        expect(
+            parseEngineModelSnapshot(
+                {
+                    downloadedByEngine: { vllm: ['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'] },
+                    loadedByEngine: { vllm: ['Qwen/Qwen3-8B'] }
+                },
+                'vllm'
+            )
+        ).toEqual({
+            models: ['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'],
+            loaded: ['Qwen/Qwen3-8B']
+        })
+    })
+
+    it('reports no list for an engine the model sweep did not read', () => {
+        // A missing key is not an empty list: the caller keeps its last-good rows.
+        expect(
+            parseEngineModelSnapshot(
+                { models: [], loadedByEngine: { vllm: ['Qwen/Qwen3-8B'] } },
+                'mtplx'
+            )
+        ).toBeNull()
+        expect(
+            parseEngineModelSnapshot({ downloadedByEngine: { mtplx: 'not-a-list' } }, 'mtplx')
+        ).toBeNull()
+        expect(parseEngineModelSnapshot(undefined, 'mtplx')).toBeNull()
     })
 
     it('uses the manifest model field for llama.cpp pulls', () => {
@@ -551,19 +601,17 @@ describe('model list during a vLLM model switch', () => {
         const state = startVllmNode()
         const supervisor = getModularSupervisor()
         const hasProcess = vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
-        const call = vi
-            .spyOn(supervisor, 'callProcess')
-            .mockResolvedValue({ data: [{ id: 'Qwen/Qwen3-8B' }, { id: 'org/new' }] })
+        const call = vi.spyOn(supervisor, 'callProcess').mockResolvedValue({
+            downloadedByEngine: { vllm: ['Qwen/Qwen3-8B', 'org/new'] },
+            loadedByEngine: { vllm: [] }
+        })
 
         supervisor.refreshManagedEngineModels({ engine: 'vllm', running: false })
         expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'Qwen/Qwen3-32B'])
         await Promise.resolve()
         await Promise.resolve()
 
-        expect(call).toHaveBeenCalledWith('broker', 'engine:action', {
-            engine: 'vllm',
-            action: 'list_models'
-        })
+        expect(call).toHaveBeenCalledWith('broker', 'engine:models')
         expect(vllmModels()).toEqual(['Qwen/Qwen3-8B', 'org/new'])
         expect(state.getEngineInitialState().statuses.length).toBeGreaterThan(0)
         call.mockRestore()

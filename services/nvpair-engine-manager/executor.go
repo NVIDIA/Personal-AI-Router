@@ -78,9 +78,13 @@ type engineState struct {
 	healthy    bool
 	stopping   bool
 	// starting is true while a start launches the engine and waits for readiness.
-	awaitingModel  bool
-	starting       bool
-	adopted        bool  // started externally; we can't stop it
+	awaitingModel bool
+	starting      bool
+	adopted       bool // started externally; we can't stop it
+	// authBlocked records that this engine's port refused PAIR's health check
+	// for credentials, so the notice is raised and cleared on the transition
+	// rather than on every poll.
+	authBlocked    bool
 	gen            int64 // bumped each start; gates stale health loops
 	port           int
 	binPath        string
@@ -437,5 +441,11 @@ func pullFailedID(engine, model string) string {
 func startFailedID(engine string) string { return "engine-manager:start-failed:" + engine }
 
 func unhealthyID(engine string) string { return "engine-manager:unhealthy:" + engine }
+
+// authBlockedID names the standing notice that an engine's port refuses PAIR's
+// health checks for credentials. It is reported on the transition into that
+// state and cleared on the way out, because the error feed keeps one entry per
+// id and a re-report re-raises a dialog the user has already dismissed.
+func authBlockedID(engine string) string { return "engine-manager:auth-blocked:" + engine }
 
 func exitedID(engine string) string { return "engine-manager:exited:" + engine }

@@ -25,6 +25,7 @@
         "args": ["serve", "--host", "{host}", "--port", "{port}"],
         "bind": "127.0.0.1",
         "port": 8101,
+        "port_source": { "file": "~/Library/Application Support/MTPLX/settings.json", "field": "port" },
         "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 600 },
         "stop": { "signal": "term", "grace_s": 15 },
         "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 5 }

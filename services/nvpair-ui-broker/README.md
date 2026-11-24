@@ -148,7 +148,10 @@ is resolved and no explicit path was given, the broker continues without it.
 **Engine advertising.** The broker runs an internal 5 s poll loop against local
 Ollama (`GET /`), LM Studio (`GET /v1/models`), llama.cpp (`GET /health`), vLLM (`GET /health`),
 and MTPLX (`GET /health`)
-at their configured backend ports and reconciles this node's engine registration
+at the backend port `nvpair-engine-manager` reports for them (`engine:status`, so an
+engine the user started themselves is found on the port their own app chose rather
+than the configured one), falling back to the configured backend port only when
+there is no engine-manager answer, and reconciles this node's engine registration
 with the scanner daemon:
 
 - engine **up** and facade **ready** → register `ol` / `lm` / `lc` / `vl` / `mx` at the

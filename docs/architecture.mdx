@@ -526,6 +526,28 @@ Starting is similarly deferential. If something is already serving the engine's
 port, PAIR **adopts** that instance instead of spawning a second copy, and reports
 it as running even though it did not start it.
 
+An engine started that way does not always answer on the port PAIR configured for
+it, so a manifest may declare a `port_source`: a settings file and the key in it
+naming the port the engine really listens on. MTPLX declares one, because MTPLX.app
+records its chosen port in `~/Library/Application Support/MTPLX/settings.json` and
+that port is often neither `8101` nor MTPLX's own default. Every candidate port is
+probed on each poll, and the file is read again each round, so moving an engine in
+its own application takes effect on the next poll without restarting PAIR. A
+manifest with no `port_source` probes the one configured port it probed before any
+of this existed.
+
+A stranger on a search-only port does not stand in the way of a launch, because a
+launch PAIR writes is given the configured port, so only something on that port —
+or a credential refusal anywhere, which is the engine itself refusing PAIR — keeps
+a second copy from starting.
+
+A port that answers the health check with 401 or 403 is a service expecting an API
+key. PAIR never sends one, so that engine is neither adopted nor restarted: it
+stays shown offline with one standing warning naming the port and its status, which
+clears as soon as the port answers. Reporting that as an unrecognised service would
+send the user looking for a different engine while the right one is already
+running.
+
 Adoption is a real distinction, not a label. PAIR does not kill a process it did
 not start, so it refuses operations that would need to rather than faking them.
 The exception is an engine with an official stop command: PAIR stops an adopted

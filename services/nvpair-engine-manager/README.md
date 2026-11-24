@@ -602,12 +602,16 @@ platform. Explicit custom stop commands are executed unchanged.
 
 ### Adoption — start may attach to an engine it didn't launch
 
-Before spawning, `engine:start` **probes the chosen port's readiness
-endpoint**, including any manifest-declared JSON identity. If a compatible
-service answers there — the engine's own desktop
-app (e.g. the Ollama tray app on `11434`), or an instance left running from a
-previous session — the service **adopts** that instance: it marks the engine
-`running` without launching its own, rather than spawning a duplicate that
+Before spawning, `engine:start` **probes the readiness endpoint of every
+candidate port for the engine**: the configured port, plus the port the engine
+keeps in its own settings file when the manifest declares a `port_source`.
+That file is re-read on every probe round, so an engine the user moved in
+their own application is found where it actually is without restarting PAIR.
+The probe includes any manifest-declared JSON identity. If a compatible
+service answers on one of those ports — the engine's own desktop app (e.g.
+the Ollama tray app on `11434`), or an instance left running from a previous
+session — the service **adopts** that instance: it marks the engine `running`
+on that port without launching its own, rather than spawning a duplicate that
 would only collide on the port. Consequences worth knowing:
 
 - **An adopted engine has no child process the service owns**, so `engine:stop`
@@ -642,6 +646,32 @@ would only collide on the port. Consequences worth knowing:
   following `start:true` then adopts the running instance.
 - **Liveness reconciliation uses the same probe.** A fixed-port engine found
   already serving is reported `running: true` even though NVPAIR never started it.
+- **A port that answers 401 or 403 is a service waiting for an API key**, which
+  PAIR never sends. That engine is neither adopted nor restarted: a `start`
+  there fails at once, naming the refusing port and its status, instead of
+  waiting out the readiness timeout. While the refusal holds the engine carries
+  one standing `engine-manager:auth-blocked:<engine>` warning naming that port
+  — only for an engine the user turned on, and only on the way into that state,
+  because re-reporting per poll re-raises a dialog the user has already
+  dismissed. The warning clears once the port answers.
+- **Only the port a new copy would bind is blocked by a stranger.** A listener that
+  answers without identifying as this engine keeps `engine:start` and
+  `engine:install` off *that* port. On a candidate port that exists only to find
+  the engine — one named by `port_source` — it does not: PAIR hands the engine the
+  configured port when it launches one, so a stranger sitting on the searched port
+  is not in the way, and refusing over it left the engine offline because of a
+  service the user never asked PAIR about. A credential refusal is the exception,
+  because that one is the engine itself; it blocks from any candidate port.
+- **`engine:uninstall` keeps the wider rule.** Deleting an image cannot tell which
+  of an engine's ports a service answering on one of them was using, so it declines
+  while any unidentified service or unreadable port is found, and its message names
+  the port the listener was actually found on rather than the configured one.
+- **An adopted service is only given up after every candidate port refuses three
+  times in a row.** A timeout, or a listener that answers without identifying as
+  this engine, keeps the previous state rather than clearing it, so one dropped
+  request cannot flip a running engine to offline. When it does go, the port goes
+  back to the configured one instead of staying pinned where the adopted service
+  answered.
 
 `engine:status` and `engine:get-installed` check engines without holding the lock
 used by start, stop, and port changes. Overlapping requests for the same engine

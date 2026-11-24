@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,8 +48,8 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		e.emitInstallProgress(engine, "already-installed", 100)
 		return nil
 	}
-	if presence.Occupied && st.plat.Runtime.modeOrDefault() == "process" {
-		err := fmt.Errorf("cannot install engine %q for port %d: the port is occupied by a service that did not identify as %s; use the existing service or choose another port", engine, port, st.manifest.DisplayName)
+	if presence.obs.spawnBlocked() && st.plat.Runtime.modeOrDefault() == "process" {
+		err := errors.New(presence.obs.installRefusal(engine, st.manifest.DisplayName))
 		e.reportInstallFailed(engine, err)
 		return err
 	}
@@ -193,7 +194,10 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	ownedProcess := st.proc != nil
 	st.mu.Unlock()
 	if presence.Occupied && !presence.Identified && !ownedProcess {
-		err := fmt.Errorf("cannot uninstall engine %q: port %d is occupied by an unidentified service", engine, port)
+		// Deleting the image is refused while anything PAIR cannot identify is
+		// answering on a port this engine uses, wherever that is, and the
+		// refusal names the port the service was found on.
+		err := fmt.Errorf("cannot uninstall engine %q: port %d is occupied by an unidentified service", engine, presence.obs.servicePort())
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
 	}

@@ -35,7 +35,7 @@ func startModelSelectionBroker(t *testing.T) (io.WriteCloser, <-chan jsonrpc.Mes
 				"editable_launch": map[string]any{"fixed_args": []string{"serve"}, "controls": []map[string]any{{"env": []string{"OLLAMA_HOST"}, "value": "{server.host}:{server.port}"}}},
 			},
 		}},
-		"actions": map[string]any{"load_model": map[string]any{"launch_model": map[string]string{"flag": "--model"}}, "unload_model": map[string]any{"stop_engine": true}},
+		"actions": map[string]any{"load_model": map[string]any{"launch_model": map[string]any{"flags": []string{"--model"}}}, "unload_model": map[string]any{"stop_engine": true}},
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	require.NoError(t, err)

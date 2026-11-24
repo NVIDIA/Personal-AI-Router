@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,4 +222,167 @@ func TestOllamaFacade_IsPendingBackend(t *testing.T) {
 		facadeState: readyFacade(ollamaProxyProfile.Name, managedOllamaFacadePort),
 	})
 	require.True(t, b.ollamaFacadeIsPendingBackend(), "recovery must keep probes blocked until the proxy vacates 11434")
+}
+
+// advertiserMTPLXProfile is MTPLX's real broker profile, read from the same table
+// the running broker builds, so these tests cannot quietly drift onto a profile
+// that no longer exists.
+func advertiserMTPLXProfile(t *testing.T) engineProxyProfile {
+	t.Helper()
+	for _, profile := range buildEngineProxyProfiles() {
+		if profile.Name == "mtplx" {
+			require.False(t, profile.LoadOnRequest,
+				"MTPLX is not a model-on-request engine, so its reconcile takes the backend-resolution path")
+			return profile
+		}
+	}
+	t.Fatal("the broker has no MTPLX proxy profile")
+	return engineProxyProfile{}
+}
+
+// listenerAnsweringHealth puts a live service on a real port: it answers any
+// request, PAIR's health probe included, with 200. Which service it stands for —
+// MTPLX, or some stranger that happens to hold MTPLX's configured port, or the
+// compatibility proxy itself — is told by the test, because a 200 on its own says
+// nothing about who answered.
+func listenerAnsweringHealth(t *testing.T) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	_, portText, err := net.SplitHostPort(srv.Listener.Addr().String())
+	require.NoError(t, err, "read the fixture listener's port")
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err, "read the fixture listener's port")
+	return port
+}
+
+// fakeEngineManagerFor stands in for a supervised engine-manager: it answers
+// every request with whatever the test is serving at that moment, so one broker
+// can be polled twice with the engine in two different places.
+func fakeEngineManagerFor(t *testing.T, answer func() string) *rpcWorker {
+	t.Helper()
+	brokerSide, workerSide := net.Pipe()
+	t.Cleanup(func() {
+		_ = brokerSide.Close()
+		_ = workerSide.Close()
+	})
+	worker := &rpcWorker{peer: NewPeer(NewCodec(brokerSide))}
+	go worker.peer.Serve(nil, nil)
+	go func() {
+		codec := NewCodec(workerSide)
+		for {
+			msg, err := codec.Read()
+			if !assertRPCRead(t, err) {
+				return
+			}
+			assert.NoError(t, codec.Respond(msg.ID, json.RawMessage(answer())))
+		}
+	}()
+	return worker
+}
+
+// MTPLX answers on whatever port the user's own application chose, which is
+// rarely the port PAIR configured for it, and that configured port may well hold
+// a live service that is not MTPLX. Resolving the backend from the cached port
+// forwards inference to that stranger and never reaches the running engine.
+func TestEngineAdvertiser_TracksThePortEngineManagerReports(t *testing.T) {
+	profile := advertiserMTPLXProfile(t)
+	// Three loopback services, each answering 200: the stranger holding PAIR's
+	// configured port for MTPLX, MTPLX itself on the port the user gave it, and
+	// MTPLX again after the user restarts it somewhere else.
+	strangerPort := listenerAnsweringHealth(t)
+	servingPort := listenerAnsweringHealth(t)
+	movedPort := listenerAnsweringHealth(t)
+
+	// Where MTPLX is serving, answered on the wire as engine-manager answers it.
+	var reported atomic.Int64
+	reported.Store(int64(servingPort))
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	b := brokerWithEngineProxyProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+	b.setEngineMgr(fakeEngineManagerFor(t, func() string {
+		return `{"running":true,"port":` + strconv.FormatInt(reported.Load(), 10) + `}`
+	}))
+	b.engineProxy(profile).backendPort.Store(int32(strangerPort))
+	proxyPort, _ := reserveSettingsPort(t)
+	updates := attachAdvertiserProxy(t, b, profile, proxyPort)
+
+	b.reconcileAdvertiseEngine(profile, client)
+
+	update := <-updates
+	require.True(t, update.Healthy, "MTPLX running on its own port was routed as offline: %+v", update)
+	assert.Equal(t, servingPort, update.Port,
+		"the proxy was left pointing at PAIR's configured port %d instead of where MTPLX answers", strangerPort)
+	registrations := b.regCache.Snapshot()
+	require.Len(t, registrations, 1, "a running engine was not advertised")
+	assert.Equal(t, proxyPort, registrations[0].Port)
+
+	// The user restarts MTPLX on another port. The next poll follows it rather
+	// than holding on to the address that used to work.
+	reported.Store(int64(movedPort))
+	b.reconcileAdvertiseEngine(profile, client)
+
+	update = <-updates
+	require.True(t, update.Healthy, "MTPLX moved and the proxy did not follow: %+v", update)
+	assert.Equal(t, movedPort, update.Port, "the proxy kept forwarding to the port MTPLX left")
+	require.Len(t, b.regCache.Snapshot(), 1, "an engine that is still running was unadvertised")
+}
+
+// A quit MTPLX leaves no port behind. The answer engine-manager gives is
+// authoritative even though something is still listening on the cached port:
+// keeping that listener as the backend routes requests to a stranger, and
+// advertising it invites other nodes to send their traffic there too.
+func TestEngineAdvertiser_StopsAdvertisingAfterEngineManagerReportsStopped(t *testing.T) {
+	profile := advertiserMTPLXProfile(t)
+	strangerPort := listenerAnsweringHealth(t)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	b := brokerWithEngineProxyProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+	b.setEngineMgr(fakeEngineManagerFor(t, func() string {
+		return `{"running":false,"port":` + strconv.Itoa(strangerPort) + `}`
+	}))
+	b.engineProxy(profile).backendPort.Store(int32(strangerPort))
+	proxyPort, _ := reserveSettingsPort(t)
+	updates := attachAdvertiserProxy(t, b, profile, proxyPort)
+	b.regCache.Register(noderec.RegisterParams{Service: profile.DiscoveryService, Port: proxyPort})
+	require.Len(t, b.regCache.Snapshot(), 1, "the fixture starts advertised")
+
+	b.reconcileAdvertiseEngine(profile, client)
+
+	assert.Empty(t, b.regCache.Snapshot(), "an engine reported stopped was still advertised")
+	update := <-updates
+	assert.False(t, update.Healthy, "a stopped engine was still routed: %+v", update)
+	assert.Equal(t, 0, update.Port, "PAIR kept holding the port of a service it never owned")
+}
+
+// A 200 from a port is not proof of the right service: the compatibility proxy
+// answers /health on its own listener, so a backend resolved onto the proxy's own
+// port would forward every request back into the proxy that received it. A
+// resolved port equal to the proxy's own is dropped rather than probed.
+func TestEngineAdvertiser_NeverRoutesAnEngineThroughItsOwnProxy(t *testing.T) {
+	profile := advertiserMTPLXProfile(t)
+	// The listener standing on the facade port is the proxy itself, and it
+	// answers the health probe, so only the collision check can stop this.
+	facadePort := listenerAnsweringHealth(t)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	b := brokerWithEngineProxyProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+	b.setEngineMgr(fakeEngineManagerFor(t, func() string {
+		return `{"running":true,"port":` + strconv.Itoa(facadePort) + `}`
+	}))
+	updates := attachAdvertiserProxy(t, b, profile, facadePort)
+	b.regCache.Register(noderec.RegisterParams{Service: profile.DiscoveryService, Port: facadePort})
+	require.Len(t, b.regCache.Snapshot(), 1, "the fixture starts advertised")
+
+	b.reconcileAdvertiseEngine(profile, client)
+
+	assert.Empty(t, b.regCache.Snapshot(), "a self-forwarding facade remained advertised")
+	update := <-updates
+	assert.False(t, update.Healthy, "the proxy was named as its own backend: %+v", update)
+	assert.Equal(t, 0, update.Port, "the proxy was named as its own backend: %+v", update)
 }

@@ -174,8 +174,9 @@ func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	}
 }
 
-// runAutoAdvertiseEngine reconciles an engine using the configured port
-// recorded in its runtime profile, without compatibility-port reconciliation.
+// runAutoAdvertiseEngine reconciles an engine that has no compatibility-port
+// reconciliation, asking engine-manager where it is serving rather than
+// trusting the port PAIR configured for it.
 func (b *Broker) runAutoAdvertiseEngine(ctx context.Context, profile engineProxyProfile) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	ticker := time.NewTicker(autoAdvertiseInterval)
@@ -200,12 +201,23 @@ func (b *Broker) reconcileAdvertiseEngine(profile engineProxyProfile, client *ht
 		b.reconcileRequestedModelEngine(profile)
 		return
 	}
-	enginePort := int(b.engineProxy(profile).backendPort.Load())
+	// Ask where the engine actually is instead of trusting the port PAIR
+	// configured for it. An engine the user started themselves answers on the
+	// port their own app chose, and a cached port then probes a stranger's
+	// listener — or nothing — while the real engine goes unrouted. The cached
+	// port stays the fallback for the one case where there is nothing to ask:
+	// no engine-manager, or no answer from it.
+	cached := int(b.engineProxy(profile).backendPort.Load())
+	enginePort, probe := b.localEnginePort(profile.Name, cached)
 	proxyPort := b.engineProxyListenPort(profile)
-	up := enginePort > 0 &&
-		proxyPort > 0 &&
-		enginePort != proxyPort &&
-		checkEngineHealth(profile, client, enginePort)
+	if proxyPort != 0 && enginePort == proxyPort {
+		// A facade is never its own backend. This also covers an
+		// engine-manager that is slow to come up: a port resolved from a
+		// guess can land on the proxy, and forwarding a request to the proxy
+		// loops it.
+		enginePort, probe = 0, false
+	}
+	up := enginePort > 0 && probe && proxyPort > 0 && checkEngineHealth(profile, client, enginePort)
 	if up {
 		b.registerService(noderec.RegisterParams{Service: profile.DiscoveryService, Port: proxyPort})
 		b.setProxyLocalBackend(b.engineProxyHandle(profile), profile.Name, enginePort, true)

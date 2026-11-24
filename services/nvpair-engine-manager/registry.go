@@ -207,6 +207,12 @@ type Runtime struct {
 	// Port is the configured service port; zero requests an available loopback
 	// port.
 	Port int `json:"port"`
+	// PortSource names a file where the engine keeps the port it really listens
+	// on, for engines whose own application lets the user pick one. PAIR probes
+	// that port beside its configured one, so an instance the user started
+	// themselves is found wherever their app happens to keep it instead of being
+	// mistaken for an empty port.
+	PortSource *PortSource `json:"port_source,omitempty"`
 	// Bind is the default listener address, used as the value of {host}.
 	// Empty defaults to loopback; a per-call bind can override it.
 	Bind string `json:"bind,omitempty"`
@@ -222,6 +228,16 @@ type Runtime struct {
 	Stop *StopSpec `json:"stop,omitempty"`
 	// Health is the periodic availability probe for a running engine.
 	Health *Probe `json:"health,omitempty"`
+}
+
+// PortSource points at an engine's own settings file for the port it listens
+// on. File is a path template with the same ~ and OS environment expansion as
+// detect paths; Field is a dotted object path into that JSON file and defaults
+// to "port". A file that is missing, unreadable, or holds no usable port simply
+// tells PAIR nothing, which is the ordinary case.
+type PortSource struct {
+	File  string `json:"file"`
+	Field string `json:"field,omitempty"`
 }
 
 // AutoLaunch configures start-time launch arguments. The only kind is
@@ -1005,6 +1021,25 @@ func (p *Platform) validate(key string) error {
 		}
 	default:
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
+	}
+	if ps := p.Runtime.PortSource; ps != nil {
+		// An engine's own port is only worth hunting for when there is a probe
+		// to aim at it: the port read from the settings file widens the set of
+		// targets the readiness probe is asked about.
+		if p.Runtime.Ready == nil {
+			return fmt.Errorf("platform %q: runtime.port_source requires runtime.ready, whose probes the extra port would widen", key)
+		}
+		// Each rule here catches a declaration that can never find a port, which
+		// would read as an engine that simply does not publish one.
+		if strings.TrimSpace(ps.File) == "" {
+			return fmt.Errorf("platform %q: runtime.port_source file is required when port_source is declared", key)
+		}
+		if err := validatePlaceholderStrings([]string{ps.File}, allowedPlaceholders); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
+		}
+		if ps.Field != "" && !resultMatchFieldPathRe.MatchString(ps.Field) {
+			return fmt.Errorf("platform %q: runtime.port_source field %q is not a valid object path", key, ps.Field)
+		}
 	}
 	if p.Install != nil {
 		hasArtifacts := len(p.Install.Artifacts) > 0

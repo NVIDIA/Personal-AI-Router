@@ -164,7 +164,7 @@ loading is provided by the PAIR proxy endpoint.
 
 ## 3. Key Use Cases
 - **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
-- **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port.
+- **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port — the configured port, plus the port the engine records for itself when the manifest declares `runtime.port_source`.
 - **Run a declared action**: `engine:action {engine, action, params}` → the manifest-declared HTTP call to the engine's loopback control API (e.g. `127.0.0.1:{port}/api/pull`). (Methods, notifications, and UI events all use the colon form `engine:*`, matching the POC UI and the `errors:*` notifications.)
 - **Onboard a new engine (no code)**: a vendor adds `engines/<vendor>.json`; the generic runner exposes their lifecycle + actions immediately.
 - **Edge case — already installed**: detect short-circuits install (idempotent).
@@ -453,6 +453,7 @@ fails it with the peer's error message.
 ## 12. Failure Modes and Mitigations
 - **Download / checksum failure on install**: engine stays NotInstalled. → Fail fast before `run`; `engine:install-progress` error + `errors:report` (`engine-manager:install-failed:<engine>`); never execute an unverified payload.
 - **Engine fails its readiness probe**: start never reaches Running. → Bounded ready timeout → back to Stopped; structured error; no half-started state.
+- **Port answers the readiness probe with 401 or 403**: it is the engine, configured to require an API key PAIR never sends. → Neither adopted nor spawned over; start fails at once naming the port, and the engine carries one `engine-manager:auth-blocked:<engine>` warning while the refusal holds, so it reads as blocked rather than silently offline.
 - **Engine process crashes**: engine unavailable. → A watcher flips state, emits `engine:state-changed` + `errors:report` (`engine-manager:exited:<engine>`); the parent's supervisor reports if the *manager itself* dies. (Automatic restart is planned — see §4 — not yet implemented.)
 - **A status check overlaps a stop or port change**: an old result could restore
   the previous state. → Ignore the result when engine state has changed since

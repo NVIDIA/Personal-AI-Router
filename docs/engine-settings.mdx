@@ -166,7 +166,16 @@ searching Hugging Face, because only those packs run on it.
 MTPLX asks for an API key only where one is configured, and PAIR configures none,
 so a managed MTPLX is unauthenticated on loopback like the other OpenAI-compatible
 endpoints. If you add `--api-key` to the launch text or run PAIR with
-`MTPLX_API_KEY` set, the server demands that key and PAIR does not supply one.
+`MTPLX_API_KEY` set, the server demands that key and PAIR never supplies one. It
+refuses to start a second copy over your server, and while the key stays in place
+the engine is shown offline with a warning naming the refusing port. Remove the key,
+or choose a port nothing is listening on.
+
+A server you started yourself is found on the port it actually uses. PAIR asks both
+the port set in **Server port** and the port named in MTPLX's own settings file at
+`~/Library/Application Support/MTPLX/settings.json`, so an MTPLX.app server on a
+port of your choosing shows as online with nothing to configure in PAIR. That file
+only says where to look: a launch PAIR writes still uses **Server port**.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation

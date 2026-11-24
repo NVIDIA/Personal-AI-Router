@@ -1884,19 +1884,40 @@ class ModularBridgeState {
 
     /**
      * Cache and push the local node's model list for a non-discovery engine.
-     * Called by the supervisor after a `list_models` pull (or with an empty list
-     * when the engine is stopped, since its HTTP `list_models` is unreachable).
+     * Called by the supervisor after a model read (or with an empty list when the
+     * engine is stopped, since its own list is unreachable then).
+     *
+     * `loadedNames` is the set that read reported resident in memory; `null`
+     * means it reported none, so residency carries over from what the node last
+     * reported. A supplied set is written to the node as well:
+     * {@link discoveryModelsForNode} and {@link getEngineInitialState} re-stamp
+     * residency from the node, so a cache-only update would list the model being
+     * served as idle.
      */
-    setLocalEngineModels(engineType: EngineType, modelNames: string[]): void {
+    setLocalEngineModels(
+        engineType: EngineType,
+        modelNames: string[],
+        loadedNames: readonly string[] | null = null
+    ): void {
         const nodeId = this.selfId
-        // Stamp `'loaded'` from the self node's loaded set so a `list_models`
-        // refresh (pull/lifecycle) preserves residency instead of resetting every
-        // row to idle. The loaded set is seeded by discovery self-enrichment and
-        // kept fresh by {@link applyLocalModelSnapshot}.
-        const loaded = loadedNamesForEngine(nodeId ? this.nodes.get(nodeId) : undefined, engineType)
+        const node = nodeId ? this.nodes.get(nodeId) : undefined
+        // Stamp `'loaded'` from the read's residency, falling back to the self
+        // node's loaded set so a refresh (pull/lifecycle) preserves residency
+        // instead of resetting every row to idle. That set is seeded by discovery
+        // self-enrichment and kept fresh by {@link applyLocalModelSnapshot}.
+        const loaded = loadedNames ? new Set(loadedNames) : loadedNamesForEngine(node, engineType)
         const items = modelNames.map(name => modelItem(name, loaded.has(name)))
         this.localManagerModels.set(engineType, items)
         if (!nodeId) return
+        if (node && loadedNames) {
+            this.nodes.set(nodeId, {
+                ...node,
+                loadedByEngine: {
+                    ...node.loadedByEngine,
+                    [engineManagerName(engineType)]: [...loadedNames]
+                }
+            })
+        }
         emitBridgePush('engines:state-changed', {
             nodeId,
             engineType,

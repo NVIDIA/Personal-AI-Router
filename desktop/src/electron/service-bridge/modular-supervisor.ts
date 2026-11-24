@@ -194,6 +194,52 @@ export function parseListModelNames(result: JsonValue | undefined): string[] {
     return names
 }
 
+/**
+ * One engine's model list as read from the engine side: the rows to show for it
+ * and which of those are resident in memory. A `null` `loaded` means the read
+ * reported no residency, so the reader keeps the one it already has.
+ */
+type EngineModelInventory = {
+    models: string[]
+    loaded: string[] | null
+}
+
+/**
+ * Read one engine's name list out of an engine-keyed model map. `null` means the
+ * map holds no usable list for that engine, which is how `nvpair-engine-manager`
+ * says it did not read it.
+ */
+function namesForEngine(map: JsonValue | undefined, engine: string): string[] | null {
+    const entry = objectValue(map)?.[engine]
+    if (!Array.isArray(entry)) return null
+    return entry.filter((name): name is string => typeof name === 'string')
+}
+
+/**
+ * Narrow an `engine:models` reply to one engine. `downloadedByEngine` holds that
+ * engine's on-disk inventory and `loadedByEngine` what it serves right now, and
+ * engine-manager omits both keys for an engine it did not read, so a missing key
+ * is not an empty list: `null` comes back and the caller keeps its last-good
+ * list. The rows are the union of the two, because what an engine serves is not
+ * always in its own inventory — MTPLX lists only the packs in its cache, and
+ * neither vLLM's cache list nor `mtplx models` can name a model served straight
+ * from a path.
+ */
+export function parseEngineModelSnapshot(
+    result: JsonValue | undefined,
+    engine: string
+): EngineModelInventory | null {
+    const reply = objectValue(result)
+    if (!reply) return null
+    const downloaded = namesForEngine(reply.downloadedByEngine, engine)
+    const loaded = namesForEngine(reply.loadedByEngine, engine)
+    if (downloaded === null && loaded === null) return null
+    return {
+        models: [...new Set([...(downloaded ?? []), ...(loaded ?? [])])],
+        loaded: loaded ?? null
+    }
+}
+
 function normalizeLogLevel(value: string | undefined): ModularLogLevel {
     const lowered = value?.toLowerCase()
     if (lowered && isModularLogLevel(lowered)) return lowered
@@ -2015,38 +2061,69 @@ class ModularSupervisor {
     }
 
     /**
-     * Re-pull an engine's authoritative `list_models` after a model op and push
-     * it. Awaitable (so {@link pullModel} can land the new model in the list
-     * before clearing its spinner) and never throws — a failed refresh just logs.
+     * Re-pull an engine's authoritative model list after a model op and push it.
+     * Awaitable (so {@link pullModel} can land the new model in the list before
+     * clearing its spinner) and never throws — a failed refresh just logs.
      */
     private async refreshEngineModels(engine: string, engineType: EngineType): Promise<void> {
         if (this.stoppedModelEngines.has(engineType)) return
         const generation = this.beginModelRefresh(engineType)
         try {
-            const result = await this.callProcess('broker', 'engine:action', {
-                engine,
-                action: 'list_models'
-            })
-            const models = parseListModelNames(result)
-            this.commitModelInventory(engineType, models, generation)
+            const inventory = await this.fetchModelInventory(engine, engineType)
+            this.commitModelInventory(engineType, inventory, generation)
         } catch (err) {
             this.handleModelRefreshFailure(engineType, generation)
             log.verbose({
                 sublevel: 'engine-manager',
-                message: `list_models after pull for ${engine} failed: ${getErrorString(err)}`
+                message: `model list after pull for ${engine} failed: ${getErrorString(err)}`
             })
         }
     }
 
     /**
-     * Pull the local node's model list for an engine via engine-manager's
-     * `list_models` action, then cache + push it. Runs for **every** engine
-     * including Ollama: the discovery plane (proxy mDNS) advertises no model list,
-     * so `/api/tags` is the only working source for the local node's models.
+     * Ask the engine side for one engine's model list, and what that engine has
+     * resident in memory.
+     *
+     * Most engines answer `list_models` from their running server, and that one
+     * call is their whole answer. vLLM and MTPLX build their list from disk
+     * instead, and the model they serve is not necessarily in it, so those two
+     * are read through one `engine:models` sweep — the same snapshot the
+     * `engine:models-changed` push carries — and narrowed to the engine here.
+     * That is also the only way a model served by path, which neither engine's
+     * own list can name, reaches the model list at all.
+     *
+     * A read that names no list for the engine — a failed sweep, or an engine
+     * engine-manager did not read — rejects, so the caller keeps its last-good
+     * list or falls back to discovery rather than caching an empty one.
+     */
+    private fetchModelInventory(
+        engine: string,
+        engineType: EngineType
+    ): Promise<EngineModelInventory> {
+        if (!EnginesListingModelsWhenStopped.includes(engineType)) {
+            return this.callProcess('broker', 'engine:action', {
+                engine,
+                action: 'list_models'
+            }).then(result => ({ models: parseListModelNames(result), loaded: null }))
+        }
+        return this.callProcess('broker', 'engine:models').then(result => {
+            const snapshot = parseEngineModelSnapshot(result, engineManagerName(engineType))
+            if (!snapshot) {
+                throw new Error(`engine:models reported no model list for ${engine}`)
+            }
+            return snapshot
+        })
+    }
+
+    /**
+     * Pull the local node's model list for an engine from engine-manager, then
+     * cache + push it. Runs for **every** engine including Ollama: the discovery
+     * plane (proxy mDNS) advertises no model list, so engine-manager is the only
+     * working source for the local node's models.
      * `setLocalEngineModels` scopes the result to the local node, so remote nodes
-     * keep their discovery-derived lists. The action is an HTTP GET against the
-     * engine's loopback API and only works while it is running, so we clear the
-     * list when the engine is stopped/uninstalled.
+     * keep their discovery-derived lists. A read that needs the engine's loopback
+     * API only works while it is running, so we clear the list when the engine is
+     * stopped/uninstalled.
      */
     refreshManagedEngineModels(params: JsonValue | undefined): void {
         const obj = objectValue(params)
@@ -2078,19 +2155,15 @@ class ModularSupervisor {
         if (!this.hasProcess('broker')) return
         this.stoppedModelEngines.delete(engineType)
         const generation = this.beginModelRefresh(engineType)
-        this.callProcess('broker', 'engine:action', {
-            engine,
-            action: 'list_models'
-        })
-            .then(result => {
-                const models = parseListModelNames(result)
-                this.commitModelInventory(engineType, models, generation)
+        this.fetchModelInventory(engine, engineType)
+            .then(inventory => {
+                this.commitModelInventory(engineType, inventory, generation)
             })
             .catch(err => {
                 this.handleModelRefreshFailure(engineType, generation)
                 log.verbose({
                     sublevel: 'engine-manager',
-                    message: `list_models for ${engine} failed: ${getErrorString(err)}`
+                    message: `model list for ${engine} failed: ${getErrorString(err)}`
                 })
             })
     }
@@ -2112,13 +2185,9 @@ class ModularSupervisor {
             return
         }
         const generation = this.beginModelRefresh(engine)
-        this.callProcess('broker', 'engine:action', {
-            engine: engineManagerName(engine),
-            action: 'list_models'
-        })
-            .then(result => {
-                const models = parseListModelNames(result)
-                this.commitModelInventory(engine, models, generation)
+        this.fetchModelInventory(engineManagerName(engine), engine)
+            .then(inventory => {
+                this.commitModelInventory(engine, inventory, generation)
             })
             .catch(() => {
                 if (this.modelRefreshGenerations.get(engine) === generation) {
@@ -2134,14 +2203,18 @@ class ModularSupervisor {
         return generation
     }
 
-    private commitModelInventory(engine: EngineType, models: string[], generation: number): void {
+    private commitModelInventory(
+        engine: EngineType,
+        inventory: EngineModelInventory,
+        generation: number
+    ): void {
         if (this.modelRefreshGenerations.get(engine) !== generation) return
         this.stoppedModelSentinels.delete(engine)
         this.successfulModelInventories.add(engine)
         if (isProxyEngine(engine)) {
             this.cancelDiscoveryModelRefreshRetry(engine)
         }
-        getModularBridgeState().setLocalEngineModels(engine, models)
+        getModularBridgeState().setLocalEngineModels(engine, inventory.models, inventory.loaded)
     }
 
     private scheduleDiscoveryModelRefreshRetry(engine: ProxyEngine): void {

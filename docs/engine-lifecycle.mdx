@@ -163,6 +163,13 @@ When you install an engine, consider the following:
   has mapped. Only the pack being served is advertised to other nodes, so a request
   naming a different cached pack is refused until you load it.
 
+  An MTPLX server you started yourself, from MTPLX.app for example, is used rather
+  than duplicated. PAIR finds it on the port that app chose, read from MTPLX's own
+  settings file, and shows the engine online without starting a second router over
+  it. A server started with an API key refuses PAIR's health check, so it stays
+  offline with a warning naming that port: start it without a key, or on a port
+  nothing is listening on, if you want PAIR to route it.
+
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model
 automatically. The llama.cpp worker remains running and can retain some GPU
@@ -247,6 +254,10 @@ controlled:
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
   instance that way and restart it on the port you chose.
+- **MTPLX** has no stop command, so PAIR leaves an adopted server running: stop it
+  in MTPLX.app first, then start it again from PAIR to move it. A server that asks
+  for an API key is not adopted at all — its port refuses PAIR, so the engine stays
+  offline with a warning naming that port.
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.

@@ -255,6 +255,13 @@ facade those hosts still enable has nothing to front. MTPLX itself runs on `8101
 behind that facade; `8000` was not reused because it is already the vLLM facade's
 port and MTPLX's own default.
 
+A server the user started themselves keeps whatever port MTPLX.app gave it, which
+PAIR reads from MTPLX's own settings file on every poll, so `8101` is what PAIR
+configures rather than what an already-running MTPLX answers on. A server started
+with `--api-key` (or `MTPLX_API_KEY`) refuses PAIR's health checks, so it is not
+adopted and no second copy is launched over it; the engine stays offline with a
+warning naming that port.
+
 MTPLX is also detect-only: the manifest declares no install block, so there is no
 Install action, an explicit uninstall answers that no uninstall is defined for this
 platform, app-data reset skips the engine, and onboarding leaves it out rather than
@@ -277,7 +284,11 @@ selected; load a model to start it".
 
 Its model list comes from `mtplx models --json`, which reads the pack cache, so the
 list, Add model, Delete and Load all work while the engine is stopped, and only the
-pack being served is advertised to peers and the proxy. Identifier matching is
+pack being served is advertised to peers and the proxy. The desktop does not call
+that action itself: it reads the `engine:models` snapshot and shows the union of the
+cached packs and what the server has resident, because a pack served straight from a
+path is named by neither `mtplx models` nor the cache listing and would otherwise be
+invisible while clearly running. Identifier matching is
 byte-exact, as on LM Studio, llama.cpp and vLLM, rather than Ollama's implied
 `:latest`. Pulls and deletes are CLI actions with no byte progress, so a pull shows
 only that it is pulling. `mtplx remove` has no in-use guard and does not clear a
@@ -360,7 +371,9 @@ through literally, with no maintained catalog of engine options or variables.
 
 ## Models
 
-Local model state comes from engine-manager actions. Remote model state comes
+Local model state comes from engine-manager actions — one `engine:models` snapshot
+for vLLM and MTPLX, whose own list need not name the pack they serve, and the
+`list_models` action for the rest. Remote model state comes
 from node-scanner enrichment and is attributed per engine.
 
 Personal AI Router uses:
