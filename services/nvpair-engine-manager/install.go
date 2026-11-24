@@ -63,58 +63,8 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		return fmt.Errorf("create install dir: %w", err)
 	}
 
-	vars := map[string]string{"install_dir": st.installDir}
-
-	if len(inst.Script) > 0 {
-		// Escape hatch: vendor-script install with no checksum. Logged
-		// loudly so the weaker guarantee is never silent.
-		slog.Warn("running UNPINNED script install (no checksum verification)", "engine", engine)
-		e.emitInstallProgress(engine, "installing", 0)
-		argv, err := resolveArgs(inst.Script, vars)
-		if err != nil {
-			return e.reportInstallFailed(engine, err)
-		}
-		for i := range argv {
-			argv[i] = expandPath(argv[i])
-		}
-		if err := e.runCommand(ctx, argv); err != nil {
-			werr := fmt.Errorf("script install failed: %w", err)
-			return e.reportInstallFailed(engine, werr)
-		}
-	} else {
-		if inst.Fetch != nil {
-			e.emitInstallProgress(engine, "downloading", 0)
-			dp, err := e.download(ctx, engine, inst.Fetch)
-			if err != nil {
-				return e.reportInstallFailed(engine, err)
-			}
-			defer os.Remove(dp)
-			vars["download"] = dp
-			e.emitInstallProgress(engine, "verified", 0)
-		}
-		if len(inst.Artifacts) > 0 {
-			paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
-			defer removeDownloadedFiles(paths)
-			if err != nil {
-				return e.reportInstallFailed(engine, err)
-			}
-			maps.Copy(vars, artifactVars)
-			e.emitInstallProgress(engine, "verified", 50)
-		}
-		if len(inst.Run) > 0 {
-			e.emitInstallProgress(engine, "installing", 0)
-			args, err := resolveArgs(inst.Run, vars)
-			if err != nil {
-				return e.reportInstallFailed(engine, err)
-			}
-			for i := range args {
-				args[i] = expandPath(args[i])
-			}
-			if err := e.runCommandWithEnv(ctx, args, installCommandEnv(vars, inst.Artifacts)); err != nil {
-				werr := fmt.Errorf("install command failed: %w", err)
-				return e.reportInstallFailed(engine, werr)
-			}
-		}
+	if err := e.installAttempt(ctx, engine, st); err != nil {
+		return e.reportInstallFailed(engine, err)
 	}
 
 	if !e.waitDetect(engine, true, e.detectTimeout) {
@@ -129,6 +79,67 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	e.reporter.clear(installFailedID(engine))
 	e.emitInstallProgress(engine, "done", 100)
 	e.emitState(engine)
+	return nil
+}
+
+// installAttempt owns one attempt's downloads and cleans them up before returning.
+// Terminal reporting belongs to Install, after the attempt settles.
+func (e *Executor) installAttempt(ctx context.Context, engine string, st *engineState) error {
+	inst := st.plat.Install
+	vars := map[string]string{"install_dir": st.installDir}
+
+	if len(inst.Script) > 0 {
+		// Escape hatch: vendor-script install with no checksum. Logged
+		// loudly so the weaker guarantee is never silent.
+		slog.Warn("running UNPINNED script install (no checksum verification)", "engine", engine)
+		e.emitInstallProgress(engine, "installing", 0)
+		argv, err := resolveArgs(inst.Script, vars)
+		if err != nil {
+			return err
+		}
+		for i := range argv {
+			argv[i] = expandPath(argv[i])
+		}
+		if err := e.runCommand(ctx, argv); err != nil {
+			werr := fmt.Errorf("script install failed: %w", err)
+			return werr
+		}
+	} else {
+		if inst.Fetch != nil {
+			e.emitInstallProgress(engine, "downloading", 0)
+			dp, err := e.download(ctx, engine, inst.Fetch)
+			if err != nil {
+				return err
+			}
+			defer os.Remove(dp)
+			vars["download"] = dp
+			e.emitInstallProgress(engine, "verified", 0)
+		}
+		if len(inst.Artifacts) > 0 {
+			paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
+			defer removeDownloadedFiles(paths)
+			if err != nil {
+				return err
+			}
+			maps.Copy(vars, artifactVars)
+			e.emitInstallProgress(engine, "verified", 50)
+		}
+		if len(inst.Run) > 0 {
+			e.emitInstallProgress(engine, "installing", 0)
+			args, err := resolveArgs(inst.Run, vars)
+			if err != nil {
+				return err
+			}
+			for i := range args {
+				args[i] = expandPath(args[i])
+			}
+			if err := e.runCommandWithEnv(ctx, args, installCommandEnv(vars, inst.Artifacts)); err != nil {
+				werr := fmt.Errorf("install command failed: %w", err)
+				return werr
+			}
+		}
+	}
+
 	return nil
 }
 
