@@ -177,6 +177,9 @@ export const ModelHubContent = ({
         return queryFiltered.filter(m => !isHubEntryDownloaded(engine, m, downloadedModels))
     }, [engine, queryFiltered, downloadedModels])
 
+    const hasQuery = query.trim().length > 0
+    const listError = hasQuery ? errors.at(-1)?.message : catalogError
+
     // A searchable source browses only a sample of its upstream, so a search
     // can reach models this list does not show, even when every listed model
     // is already installed.
@@ -239,6 +242,7 @@ export const ModelHubContent = ({
         if (nextQuery.trim() === submittedQueryRef.current) return
         searchGenRef.current += 1
         submittedQueryRef.current = ''
+        setErrors([])
         setRemoteModels([])
         setSearching(false)
     }, [])
@@ -248,6 +252,7 @@ export const ModelHubContent = ({
         if (composing) {
             searchGenRef.current += 1
             submittedQueryRef.current = ''
+            setErrors([])
             setSearching(false)
         }
     }, [])
@@ -262,6 +267,7 @@ export const ModelHubContent = ({
 
             const generation = ++searchGenRef.current
             submittedQueryRef.current = normalized
+            setErrors([])
             setRemoteModels([])
             setSearching(true)
             // Wait for the active request; only the latest query may start next.
@@ -296,11 +302,19 @@ export const ModelHubContent = ({
         return () => clearTimeout(timer)
     }, [engine, catalog.searchable, query, composingQuery, handleSearch])
 
+    const retryModels = () => {
+        if (hasQuery) {
+            void handleSearch(query)
+        } else {
+            retryCatalog()
+        }
+    }
+
     return (
         <Stack gap="0" className="overflow-hidden min-h-0 min-w-0 grow w-full">
             <Stack gap="4" className="overflow-hidden min-h-0 min-w-0 grow w-full">
                 <Stack gap="1">
-                    {errors.length > 0 && (
+                    {hasQuery && !searching && visibleModels.length > 0 && errors.length > 0 && (
                         <Stack gap="1" className="mb-4">
                             {errors.map(error => (
                                 <InlineErrorBanner
@@ -309,7 +323,11 @@ export const ModelHubContent = ({
                                     onClose={() =>
                                         setErrors(prev => prev.filter(e => e.id !== error.id))
                                     }
-                                />
+                                >
+                                    <Button kind="secondary" size="small" onClick={retryModels}>
+                                        Retry
+                                    </Button>
+                                </InlineErrorBanner>
                             ))}
                         </Stack>
                     )}
@@ -329,22 +347,20 @@ export const ModelHubContent = ({
                         </Text>
                     )}
                 </Stack>
-                {catalogError &&
-                !query.trim() &&
-                !loading &&
-                !searching &&
-                visibleModels.length === 0 ? (
+                {listError && !loading && !searching && visibleModels.length === 0 ? (
                     <Stack align="center" justify="center" className="grow" role="alert">
                         <StatusMessage
                             size="small"
-                            slotHeading="Couldn't load models"
-                            slotSubheading={catalogError}
+                            slotHeading={
+                                hasQuery ? "Couldn't search models" : "Couldn't load models"
+                            }
+                            slotSubheading={listError}
                             slotFooter={
                                 <Stack gap="2" align="center">
-                                    <Button kind="primary" color="brand" onClick={retryCatalog}>
+                                    <Button kind="primary" color="brand" onClick={retryModels}>
                                         Retry
                                     </Button>
-                                    {catalogRetrySeconds !== null && (
+                                    {!hasQuery && catalogRetrySeconds !== null && (
                                         <Text
                                             kind="body/regular/sm"
                                             className="text-subtle-color"

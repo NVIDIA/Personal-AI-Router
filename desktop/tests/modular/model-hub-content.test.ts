@@ -394,6 +394,158 @@ testBrowseErrorAfterSearch(
     'No models found'
 )
 
+const testFailedSearchRetry = (name: string, engine: EngineType) => {
+    it(name, async () => {
+        searchHub
+            .mockResolvedValueOnce({ models: [], searchable: null })
+            .mockResolvedValueOnce({ models: [], searchable: null })
+            .mockResolvedValueOnce(populatedCatalog)
+        await openCatalog(engine)
+        await changeQuery('small-model')
+        await click('Search fixture')
+
+        expect(host.textContent).toContain("Couldn't search models")
+        expect(host.textContent).not.toContain('No models found')
+        expect(host.querySelector('[role="timer"]')).toBeNull()
+
+        await click('Retry')
+
+        expect(searchHub).toHaveBeenLastCalledWith(engine, 'fresh-node', 'small-model')
+        expect(searchHub).toHaveBeenCalledTimes(3)
+        expect(host.querySelector('input')?.value).toBe('small-model')
+        expect(host.textContent).toContain('org/small-model')
+        expect(host.querySelector('[role="alert"]')).toBeNull()
+
+        await changeQuery('')
+        expect(host.textContent).toContain("Couldn't load models")
+    })
+}
+testFailedSearchRetry('retries a failed vLLM query after the initial browse fails', 'vllm')
+testFailedSearchRetry(
+    'retries a failed LM Studio query after the initial browse fails',
+    'lm-studio'
+)
+testFailedSearchRetry(
+    'retries a failed llama.cpp query after the initial browse fails',
+    'llama-cpp'
+)
+
+const popularCatalog: EngineHubSearchResponse = {
+    ...populatedCatalog,
+    models: populatedCatalog.models.map(model => ({
+        ...model,
+        id: 'org/popular-model',
+        name: 'org/popular-model'
+    }))
+}
+
+it('retries a failed query instead of reloading a successful browse list', async () => {
+    searchHub
+        .mockResolvedValueOnce(popularCatalog)
+        .mockRejectedValueOnce(new Error('Search temporarily unavailable'))
+        .mockResolvedValueOnce(populatedCatalog)
+    await openCatalog()
+    await changeQuery('small-model')
+    await click('Search fixture')
+
+    expect(host.textContent).toContain("Couldn't search models")
+    expect(host.textContent).toContain('Search temporarily unavailable')
+
+    await click('Retry')
+
+    expect(searchHub).toHaveBeenLastCalledWith('vllm', 'fresh-node', 'small-model')
+    expect(searchHub).toHaveBeenCalledTimes(3)
+    expect(host.textContent).toContain('org/small-model')
+    expect(host.textContent).not.toContain('org/popular-model')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('keeps local matches available with a Retry action when an upstream search fails', async () => {
+    searchHub
+        .mockResolvedValueOnce(populatedCatalog)
+        .mockRejectedValueOnce(new Error('Search temporarily unavailable'))
+        .mockResolvedValueOnce(populatedCatalog)
+    await openCatalog()
+    await changeQuery('small-model')
+    await click('Search fixture')
+
+    expect(host.textContent).toContain('org/small-model')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+        'Search temporarily unavailable'
+    )
+
+    await click('Retry')
+
+    expect(searchHub).toHaveBeenLastCalledWith('vllm', 'fresh-node', 'small-model')
+    expect(host.textContent).toContain('org/small-model')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('keeps a failed search retryable until it returns a genuine empty result', async () => {
+    searchHub
+        .mockResolvedValueOnce(popularCatalog)
+        .mockResolvedValueOnce({ models: [], searchable: null })
+        .mockResolvedValueOnce({ models: [], searchable: null })
+        .mockResolvedValueOnce({ models: [], searchable: true })
+    await openCatalog()
+    await changeQuery('small-model')
+    await click('Search fixture')
+
+    await click('Retry')
+    expect(host.textContent).toContain("Couldn't search models")
+    await click('Retry')
+
+    expect(searchHub).toHaveBeenLastCalledWith('vllm', 'fresh-node', 'small-model')
+    expect(searchHub).toHaveBeenCalledTimes(4)
+    expect(host.textContent).toContain('No models found')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('clears the previous search error when the query changes', async () => {
+    searchHub
+        .mockResolvedValueOnce(popularCatalog)
+        .mockRejectedValueOnce(new Error('Previous search failed'))
+        .mockResolvedValueOnce(populatedCatalog)
+    await openCatalog()
+    await changeQuery('missing-model')
+    await click('Search fixture')
+
+    await changeQuery('small-model')
+
+    expect(host.textContent).not.toContain('Previous search failed')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    await click('Search fixture')
+    expect(searchHub).toHaveBeenLastCalledWith('vllm', 'fresh-node', 'small-model')
+    expect(host.textContent).toContain('org/small-model')
+})
+
+it('ignores a search retry failure after the query is cleared', async () => {
+    let finishRequest: (value: EngineHubSearchResponse) => void = () => {
+        throw new Error('Search retry has not started')
+    }
+    searchHub
+        .mockResolvedValueOnce({ models: [], searchable: null })
+        .mockResolvedValueOnce({ models: [], searchable: null })
+        .mockReturnValueOnce(
+            new Promise(resolve => {
+                finishRequest = resolve
+            })
+        )
+    await openCatalog()
+    await changeQuery('small-model')
+    await click('Search fixture')
+    await click('Retry')
+
+    expect(host.textContent).toContain('Searching models...')
+    expect(searchHub).toHaveBeenLastCalledWith('vllm', 'fresh-node', 'small-model')
+    await changeQuery('')
+    await act(() => finishRequest({ models: [], searchable: null }))
+
+    expect(host.textContent).toContain("Couldn't load models")
+    expect(host.textContent).not.toContain("Couldn't search models")
+    expect(host.querySelector('[role="timer"]')?.textContent).toBe('Retrying in 5s…')
+})
+
 it('shows a failed request when the rejection reaches the dialog', async () => {
     searchHub.mockRejectedValueOnce(new Error('Catalog temporarily unavailable'))
 

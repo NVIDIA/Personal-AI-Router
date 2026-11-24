@@ -167,6 +167,8 @@ longer wait before a new fetch is allowed.
 You can still search if the initial catalogue fails to load. Search results
 and an empty search result apply only to the query; clearing the search brings
 back **Retry** until the catalogue itself loads successfully.
+If a search fails, **Retry** repeats that query. Any matching entries from the
+catalogue remain visible while you retry the upstream search.
 
 ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
