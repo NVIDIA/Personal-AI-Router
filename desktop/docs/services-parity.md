@@ -272,14 +272,16 @@ where they were.
 Like vLLM it serves one model pack per process, so Eject is a `stop_engine` action
 and Load is a `launch_model` action: Load rewrites the saved launch arguments and
 restarts the server on the new pack, restoring the previous one if it does not come
-up. Two flags move together, `--model` and `--model-id`. The second fixes the id the
-server answers to, which makes the served id, the name in the model list, and the
-`model` field a client sends one string; started with `--model` alone, MTPLX derives
-a name such as `mtplx-qwen38-27b-optimized-speed-fp16`, matching no cache entry and
-no request. `loadRestartsEngine` is set for MTPLX as it is for vLLM, so the pending
+up. The flag it writes is `--model`, with the directory the engine's own listing
+keeps the chosen pack in, which is what MTPLX's app launches it with. `--model-id`,
+written beside it until now, is declared in `clear_flags` instead: a server that
+machine's MTPLX app started has no such flag in its arguments and still answers as a
+name that comes out of the pack, so it pinned nothing, while a value left in it names
+whichever pack was selected when it was last written. It is removed at every change of
+model, the eject included. `loadRestartsEngine` is set for MTPLX as it is for vLLM, so the pending
 Load in the renderer's pending-actions store covers it the same way. No pack is baked
 into the launch arguments, and an engine with a `launch_model` action will not start
-while none of its flags names a model, so a bare Start answers "MTPLX has no model
+while none of the flags PAIR writes names a model, so a bare Start answers "MTPLX has no model
 selected; load a model to start it".
 
 Its model list comes from `mtplx models --json`, which reads the pack cache, so the
@@ -733,7 +735,8 @@ entry is that one name, for routing. The whole downloaded list arrives as
 lists a node's vLLM and MTPLX rows from it. Each one's `loadedByEngine` names models
 the way that inventory does, so the served model still marks its row loaded: vLLM by
 the `root` of its `/v1/models`, not a `--served-model-name` alias, and MTPLX by the
-`data[].id` that `--model-id` pins to the cache id. When a peer's list was not read,
+residency join — the directory its `/health` reports, matched against that same
+listing, since the launch carries a directory and no flag carries the id. When a peer's list was not read,
 `EngineModels.inventoryKnown` is false and the model manager says the downloaded
 models are unavailable instead of claiming none are downloaded.
 

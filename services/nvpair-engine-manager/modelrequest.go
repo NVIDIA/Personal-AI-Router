@@ -34,8 +34,8 @@ func (e *Executor) prepareRequestedModel(ctx context.Context, engine, model stri
 	st.mu.Lock()
 	allowed := st.plat != nil && st.plat.Runtime.WaitForModel
 	st.mu.Unlock()
-	flags := modelLaunchFlags(st.manifest)
-	if !allowed || len(flags) == 0 {
+	spec := modelLaunchSpec(st.manifest)
+	if !allowed || spec == nil || len(spec.Flags) == 0 {
 		return 0, errors.New("this engine does not support request-triggered model loading")
 	}
 	if port, serving, err := e.servingRequestModel(ctx, st, engine, model); err != nil || serving {
@@ -45,7 +45,13 @@ func (e *Executor) prepareRequestedModel(ctx context.Context, engine, model stri
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.changeLaunchModel(ctx, engine, &ActionLaunchModel{Flags: flags}, params, true); err != nil {
+	// The manifest's own action, not one rebuilt from its flags: a manifest that asks
+	// for a lookup or names a flag to clear means it for every launch, and dropping
+	// either here would make this path launch differently from a Load. Nothing reaches
+	// here except an engine set to load on request, which is a property of the engine
+	// type rather than of its manifest — declaring launch_model.resolve does not open
+	// this path, and no manifest that has it can arrive by it today.
+	if _, err := e.changeLaunchModel(ctx, engine, spec, params, true); err != nil {
 		return 0, err
 	}
 	state, err := e.Status(engine)

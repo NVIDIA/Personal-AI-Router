@@ -587,14 +587,47 @@ type ActionHFPull struct {
 	Dir  string `json:"dir"`
 }
 
-// ActionLaunchModel names the launch flags that select the engine's model, such
-// as "--model". An engine that also names the model somewhere else lists every
-// flag that has to move together: MTPLX serves whatever --model-id says, so a
-// launch that rewrites only --model keeps answering to the derived id no client
-// asks for. The action takes {"model": "<id>"}, writes it into every declared
-// flag of the saved launch settings and restarts a running engine on it.
+// ActionLaunchModel names the launch flags that select the engine's model, such as
+// "--model", and takes {"model": "<id>"}: it writes that value into the saved launch
+// settings and restarts a running engine on it.
+//
+// Flags are the flags PAIR writes, and the first is the one the engine loads its weights
+// from: it alone answers "which model is selected", because an engine launched without it
+// has nothing to load.
+//
+// ClearFlags names a flag the engine still takes that PAIR has stopped writing. It is not
+// simply left alone: a value sitting there is a name for whichever pack was selected when
+// it was last written, so it is removed at every change of model — the load that replaces
+// it and the eject that gives it back alike. A flag may not be in both lists, which would
+// ask PAIR to write a model into a flag and empty the same flag in one transaction.
+//
+// Resolve names a lookup run on the value before it is written, for an engine whose launch
+// does not take the name its caller uses. "pack-path" replaces the pack the caller named
+// with the directory that pack's own listing keeps it in, which needs a loaded_models
+// result.residency declaration to read those rows from. A value the lookup cannot place —
+// one the listing does not hold, or a listing PAIR could not read — is written as it was
+// given, because a launch argument a user wrote is theirs to keep and a failed lookup is
+// no licence to write a path.
 type ActionLaunchModel struct {
-	Flags []string `json:"flags"`
+	Flags      []string `json:"flags"`
+	ClearFlags []string `json:"clear_flags,omitempty"`
+	Resolve    string   `json:"resolve,omitempty"`
+}
+
+// clearedFlags is every flag a site that takes the model away has to leave empty: the
+// ones the action writes, since the model is being taken out of them, and the ones it no
+// longer writes, since a leftover there is a model name still being handed to the engine.
+// Only a site that writes nothing takes this list — one that writes the model first would
+// undo its own write, because the write collapses each flag it manages to a single
+// occurrence. The sites that ask which model is selected read Flags alone: a flag this
+// engine no longer writes is the leftover of a selection, not one.
+func (a *ActionLaunchModel) clearedFlags() []string {
+	if len(a.ClearFlags) == 0 {
+		return a.Flags
+	}
+	flags := make([]string, 0, len(a.Flags)+len(a.ClearFlags))
+	flags = append(flags, a.Flags...)
+	return append(flags, a.ClearFlags...)
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -1018,6 +1051,18 @@ func (m *Manifest) Validate() error {
 					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.ready", name, key)
 				}
 			}
+			// A lookup is only as good as the rows it reads, and a manifest that says
+			// "resolve" without declaring where the engine's pack rows come from has
+			// asked for a lookup with nothing to look in. loaded_models result.residency
+			// is the declared place those rows are read from — the same listing the
+			// residency join reads, so a launch and an eject cannot end up disagreeing
+			// about which directories this engine's cache holds.
+			if a.LaunchModel.Resolve == launchModelResolvePackPath {
+				loaded, ok := m.Actions["loaded_models"]
+				if !ok || loaded.Result == nil || loaded.Result.Residency == nil {
+					return fmt.Errorf("action %q: launch_model.resolve %q requires a loaded_models result.residency to read the pack rows from", name, launchModelResolvePackPath)
+				}
+			}
 		}
 		if a.RestartAfter {
 			for key, p := range m.Platforms {
@@ -1390,6 +1435,25 @@ func (a *Action) validate(name string) error {
 				return fmt.Errorf("action %q: launch_model.flags lists %q twice", name, flag)
 			}
 			seen[flag] = true
+		}
+		// A flag PAIR clears is one it hands to the engine with no model in it, so it is
+		// spelled the same way and has to stay out of the list it writes: a flag in both
+		// would be set and emptied by one transaction, in an order no manifest states.
+		cleared := make(map[string]bool, len(a.LaunchModel.ClearFlags))
+		for _, flag := range a.LaunchModel.ClearFlags {
+			if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+				return fmt.Errorf("action %q: launch_model.clear_flags entry %q must be a flag such as \"--model-id\"", name, flag)
+			}
+			if seen[flag] {
+				return fmt.Errorf("action %q: launch_model.clear_flags lists %q, which launch_model.flags writes; a flag cannot be both", name, flag)
+			}
+			if cleared[flag] {
+				return fmt.Errorf("action %q: launch_model.clear_flags lists %q twice", name, flag)
+			}
+			cleared[flag] = true
+		}
+		if a.LaunchModel.Resolve != "" && a.LaunchModel.Resolve != launchModelResolvePackPath {
+			return fmt.Errorf("action %q: launch_model.resolve %q invalid (want %q)", name, a.LaunchModel.Resolve, launchModelResolvePackPath)
 		}
 	}
 	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {

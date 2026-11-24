@@ -82,6 +82,43 @@ func (l *launchEdit) start(ctx context.Context) error {
 	return l.e.setDesiredEnabled(l.engine, true)
 }
 
+// launchModelResolvePackPath is the one lookup a manifest can ask ActionLaunchModel to
+// run on the model its caller named: replace the pack with the directory that pack's own
+// listing keeps it in. MTPLX needs it because `serve --model <repository id>` runs a
+// completeness gate before loading, including a Qwen-specific one, while
+// `serve --model <existing path>` does not — and the directory is what its own app
+// launches with, what /health reports back, and the only one of its three spellings that
+// says which machine's cache the pack sits in.
+const launchModelResolvePackPath = "pack-path"
+
+// launchModelValueFor returns the value to write into the launch for the model the caller
+// named, as spec.Resolve asks.
+//
+// It fails open, always returning something to write rather than an error: the value the
+// lookup cannot place is one PAIR does not know, and the alternatives are worse than
+// writing what the user typed — inventing a path, or refusing to load an engine the user
+// can start by hand. The lookup being unavailable counts as not knowing: a cache listing
+// that did not arrive says nothing about whether this pack has a directory, not that it has
+// none. Callers hold the engine's operation lock, so the listing is read here rather than
+// before it: a pack that moved or was deleted while the caller waited is answered with the
+// listing the launch is written against, not one from before the lock.
+func (e *Executor) launchModelValueFor(ctx context.Context, engine string, spec *ActionLaunchModel, model string) string {
+	if spec.Resolve != launchModelResolvePackPath {
+		return model
+	}
+	rows, ok := e.packInventoryFrom(ctx, engine, inventoryAnswer{})
+	if !ok {
+		slog.Debug("engine:pack listing unreadable, launching the model as it was named", "engine", engine)
+		return model
+	}
+	row, found := packRowForRepoID(rows, model)
+	if !found {
+		slog.Debug("engine:pack listing holds no row for this model, launching it as it was named", "engine", engine, "rows", len(rows))
+		return model
+	}
+	return row.path
+}
+
 // switchLaunchModel is the launch_model action. An engine that serves one model
 // per process has no load call: the model it serves is a launch argument, so
 // loading a model means writing that argument into the saved launch settings
@@ -165,10 +202,24 @@ func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *A
 		if !current.Editable {
 			return fmt.Errorf("the launch settings of engine %q cannot be changed: %s", engine, current.Reason)
 		}
-		text, changed, err := withLaunchFlags(current.LaunchText, spec.Flags, model)
+		// The model is written where the engine will read it, which for an engine that
+		// takes a directory rather than a name is not the string the caller sent.
+		value := e.launchModelValueFor(ctx, engine, spec, model)
+		text, set, err := withLaunchFlags(current.LaunchText, spec.Flags, value)
 		if err != nil {
 			return err
 		}
+		// A flag this action stopped writing is emptied alongside the change, so a name
+		// for some other pack cannot outlive the pack it was written for. Writing first
+		// matters: clearing the flags the write manages would undo it.
+		text, cleared, err := withoutLaunchFlags(text, spec.ClearFlags)
+		if err != nil {
+			return err
+		}
+		// Repairing a leftover is a change of its own: an engine running on arguments
+		// that name a second pack has to be started on the ones just saved, however
+		// correct the flag it loads from already is.
+		changed := set || cleared
 		if !changed && current.Running {
 			return nil
 		}
@@ -246,11 +297,10 @@ func withLaunchFlag(text, flag, value string) (result string, changed bool, err 
 	return result, !slices.Equal(tokens, out), err
 }
 
-// withLaunchFlags sets one model in every flag an engine names it by, in the
-// order the manifest declares them. An engine that also reads its served id
-// from a second flag (MTPLX's --model-id) needs both moved at once: leave that
-// one alone and the engine answers to a name derived from the model rather than
-// the id its clients, its peers and its own model list already use.
+// withLaunchFlags sets one model in every flag an engine's action writes, in the
+// order the manifest declares them. Each flag it manages is left holding exactly
+// this value, so a flag the same transaction also has to empty is emptied after
+// this rather than before: see ActionLaunchModel.ClearFlags.
 func withLaunchFlags(text string, flags []string, value string) (string, bool, error) {
 	changed := false
 	for _, flag := range flags {
@@ -324,15 +374,42 @@ func dropLaunchFlag(tokens []string, flag string) (rest []string, at int) {
 	return rest, at
 }
 
-// modelLaunchFlags returns the flags an engine's launch_model action writes, or
-// nil for an engine that does not choose its model by launch argument.
-func modelLaunchFlags(m *Manifest) []string {
+// modelLaunchSpec returns the launch_model action an engine's manifest declares, or nil
+// for an engine that does not choose its model by launch argument. The manifest declares
+// at most one, so which one does not have to be worked out.
+func modelLaunchSpec(m *Manifest) *ActionLaunchModel {
 	for _, act := range m.Actions {
 		if act.LaunchModel != nil {
-			return act.LaunchModel.Flags
+			return act.LaunchModel
 		}
 	}
 	return nil
+}
+
+// modelLaunchFlags returns the flags an engine's launch_model action writes, or
+// nil for an engine that does not choose its model by launch argument. This is the
+// answer for a reader asking which model is selected, so it names only the flags
+// that carry a model the engine will load: see modelClearFlags for a reader that is
+// taking the model away.
+func modelLaunchFlags(m *Manifest) []string {
+	spec := modelLaunchSpec(m)
+	if spec == nil {
+		return nil
+	}
+	return spec.Flags
+}
+
+// modelClearFlags returns every flag that has to be left without a model when the
+// engine stops serving one: the ones the action writes, and the ones it declares it no
+// longer writes but the engine still takes. A leftover in the second kind is a model name
+// still being handed to the engine at the next start, which for a launch-flag engine is
+// how an engine comes back with a pack no list and no user named.
+func modelClearFlags(m *Manifest) []string {
+	spec := modelLaunchSpec(m)
+	if spec == nil {
+		return nil
+	}
+	return spec.clearedFlags()
 }
 
 // launchModelValue returns the model the arguments name, taken from the first
@@ -420,7 +497,7 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 // so no start is needed to enter this state. Callers hold the operation lock and
 // retain their stop request until this transaction finishes.
 func (l *launchEdit) awaitModelAfterEject(ctx context.Context) error {
-	text, _, err := withoutLaunchFlags(l.before.LaunchText, modelLaunchFlags(l.st.manifest))
+	text, _, err := withoutLaunchFlags(l.before.LaunchText, modelClearFlags(l.st.manifest))
 	if err != nil {
 		return err
 	}

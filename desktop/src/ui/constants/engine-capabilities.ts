@@ -122,7 +122,8 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // deleted pack in its launch arguments, so Delete is refused on the pack
         // being served: eject first.
         deleteBlockedWhileLoaded: true,
-        // Load rewrites the model launch flags and restarts MTPLX on them.
+        // Load writes the pack's directory into MTPLX's launch arguments and
+        // restarts the engine on them.
         loadRestartsEngine: true,
         // Like vLLM, MTPLX takes its pack as a launch argument and PAIR will not
         // start it without one, so turning it on offers the picker too.

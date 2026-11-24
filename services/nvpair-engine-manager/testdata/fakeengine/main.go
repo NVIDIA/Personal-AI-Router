@@ -39,6 +39,9 @@ var (
 	modelsMu sync.Mutex
 	models   = map[string]bool{"llama3.2:1b": true}
 	loaded   = map[string]bool{"llama3.2:1b": true}
+	// launchModel is what --model named, which for an engine that takes a directory
+	// rather than a name is a directory, not a pack. Only /health reports it.
+	launchModel string
 )
 
 func modelNames() []string {
@@ -191,6 +194,7 @@ func main() {
 		if ok {
 			models = map[string]bool{served: true}
 			loaded = map[string]bool{served: true}
+			launchModel = served
 		}
 	}
 	// FAKE_SERVE_MODEL stands in for a server someone started on another model
@@ -450,6 +454,14 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	// MTPLX answers /health with the directory it loaded its model from — for it the
+	// only spelling that says which cache the pack sits in — and PAIR joins that to the
+	// engine's own listing to work out which pack a running server holds. An engine
+	// launched by name has no directory to report, so it reports none.
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "model_path": launchModel})
 	})
 	// Ollama-shape model API (stateful).
 	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {

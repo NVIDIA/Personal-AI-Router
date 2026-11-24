@@ -152,13 +152,18 @@ error. To choose a parser yourself, add `--tool-call-parser <name>` to the
 launch text.
 
 MTPLX also serves one model per process, and only an Apple Silicon Mac has one.
-Its launch arguments name that model with `--model <repository id>` and repeat the
-same id as `--model-id`, so the name the server answers to is the name the model
-list shows, and choosing a different pack restarts `mtplx serve` on it. PAIR adds
+Its launch arguments name that model with `--model <pack directory>`: PAIR writes
+the directory the engine's own listing keeps the pack you chose in, which is the
+spelling MTPLX's app launches with, and choosing a different pack restarts
+`mtplx serve` on it. PAIR adds
 no sizing flags for MTPLX: there is no managed context length, memory share, or
-request limit, so the pack and the engine settle those. A `--model` or
-`--model-id` you write yourself is replaced with the pack you load rather than
-duplicated, and any other argument is left alone. A launch that names no pack is
+request limit, so the pack and the engine settle those. `--model` is replaced with
+the pack you load rather than duplicated, and a pack its listing does not hold is
+written as it was named, not guessed at. `--model-id` is no longer written, and one
+the launch
+text still carries from an older PAIR is removed whenever the model changes,
+because it names whichever pack was selected when it was last written. Any other
+argument is left alone. A launch that names no pack is
 refused, with a message to load a model, because MTPLX cannot pick one by itself.
 **Add model** lists the packs MTPLX publishes for its own decode path instead of
 searching Hugging Face, because only those packs run on it.

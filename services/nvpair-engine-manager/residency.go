@@ -182,6 +182,27 @@ func packRowForKey(rows []packRow, path string) (packRow, bool) {
 	return packRow{}, false
 }
 
+// packRowForRepoID finds the row for the pack named exactly this way — the key its own
+// listing carries, which is the spelling PAIR's model list, a request, and a delete all
+// use, and the only one a caller can be holding when the question is "where does that pack
+// sit?".
+//
+// Like packRowForKey the comparison is exact, for the same reason and with the same
+// consequence: the three other spellings one pack has (its directory, the name its running
+// server answers as, and any case or separator variant of the key) find nothing here. That
+// is the whole safety of the lookup. A caller that took the nearest row instead would hand
+// the engine a directory holding a different pack, which is worse than launching nothing,
+// and on the two Macs measured the nearest row is a real pack under the other machine's
+// root.
+func packRowForRepoID(rows []packRow, repoID string) (packRow, bool) {
+	for _, row := range rows {
+		if row.repoID == repoID {
+			return row, true
+		}
+	}
+	return packRow{}, false
+}
+
 // residentPackFrom answers which pack a running engine has mapped, as the inventory row
 // the engine itself gives for it, for a caller that has already read the inventory the join
 // joins against. The answer is reused only when it came from the action the join names;

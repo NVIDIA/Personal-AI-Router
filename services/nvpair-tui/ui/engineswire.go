@@ -153,9 +153,10 @@ var modelWires = map[string]modelWire{
 		"pull":   modelOnly("pull_model"),
 	},
 	// MTPLX is vLLM-shaped: one model per process, so load restarts the server
-	// on the pack and eject stops it. Its CLI takes the cache id under "model"
-	// alone, which is also the id the server answers to (--model-id) and the id
-	// `mtplx models --json` reports.
+	// on the pack and eject stops it. A client names the pack by the cache id
+	// `mtplx models --json` reports; the engine-manager turns that into the
+	// directory the listing keeps the pack in before it reaches the launch,
+	// because that is what `mtplx serve` is given.
 	engines.NameMTPLX: {
 		"load":   modelOnly("load_model"),
 		"unload": modelOnly("unload_model"),

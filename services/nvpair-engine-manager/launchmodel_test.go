@@ -226,9 +226,10 @@ func TestWithoutLaunchFlag_RemovesEveryFormOfTheFlag(t *testing.T) {
 	test("absent", "--port 8001", "--port 8001", false)
 }
 
-// MTPLX names the model it serves twice over: --model picks the weights,
-// --model-id picks the id it answers to. Both have to move on a Load, so the
-// helpers take the whole list a manifest declares.
+// An engine's model can be named in more than one launch flag, and PAIR has to move
+// or clear every one of them: a name left in a flag PAIR stopped writing is a second
+// pack's name still being handed to the engine. So both helpers take the whole list
+// a manifest declares rather than one flag.
 
 func TestWithLaunchFlags_SetsTheModelInEveryDeclaredFlag(t *testing.T) {
 	flags := []string{"--model", "--model-id"}
@@ -314,37 +315,377 @@ func TestLaunchModel_SwitchesAndRestartsARunningEngine(t *testing.T) {
 	assert.Equal(t, gen, startGeneration(t, e), "a no-op switch restarted the engine")
 }
 
-// MTPLX serves the id its --model-id says, not the id of the pack named by
-// --model, so a manifest that declares both has to move them together: a Load
-// that only repoints --model leaves the engine answering to a name derived from
-// the weights, which no client, peer, or model list asks for.
-func TestLaunchModel_SwitchesEveryFlagTheModelIsNamedBy(t *testing.T) {
-	e := switchModelExecutor(t, "--model", "--model-id")
-	// What each declared model flag says, so a lagging one shows up here rather
-	// than as a name mismatch somewhere else.
-	flagsSaying := func() map[string]string {
-		tokens := strings.Fields(launchTextOf(t, e))
-		said := map[string]string{}
-		for _, flag := range []string{"--model", "--model-id"} {
-			if value, found := launchFlagValue(tokens, flag); found {
-				said[flag] = value
-			}
+// flagsSaying is what each of flags says in the engine's saved launch text. A list
+// rather than a count, so a model left behind in one flag shows up here rather than
+// as a name mismatch somewhere else.
+func flagsSaying(t *testing.T, e *Executor, flags ...string) map[string]string {
+	t.Helper()
+	tokens, err := parseLaunchText(launchTextOf(t, e))
+	require.NoError(t, err)
+	said := make(map[string]string, len(flags))
+	for _, flag := range flags {
+		if value, found := launchFlagValue(tokens, flag); found {
+			said[flag] = value
 		}
-		return said
 	}
-	const first = "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16"
+	return said
+}
 
-	_, err := loadModel(t, e, first)
+// inventoryRow is one pack as an engine's own listing carries it: the name it calls
+// the pack and the directory that holds it.
+type inventoryRow struct {
+	repoID string
+	path   string
+}
+
+// packListingFixture stages an engine's pack listing in a temporary directory and
+// returns the file the fake engine prints as its listing. The directories it names are
+// never created: the listing is text a lookup reads, and a case that put real ones on
+// disk would pass on the machine it was written on rather than on the answer.
+func packListingFixture(t *testing.T, rows ...inventoryRow) string {
+	t.Helper()
+
+	entries := make([]string, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, `{"repo_id":`+quoteJSON(row.repoID)+`,"path":`+quoteJSON(row.path)+`}`)
+	}
+	file := filepath.Join(t.TempDir(), "models.json")
+	require.NoError(t, os.WriteFile(file, []byte(`{"models":[`+strings.Join(entries, ",")+`]}`), 0o600))
+	return file
+}
+
+// mtplxPackListing is the listing the residency fixtures measured on one Mac: the one
+// pack it caches, named by its repo id and kept in a directory spelled with a double
+// dash.
+func mtplxPackListing(t *testing.T) string {
+	t.Helper()
+
+	return packListingFixture(t, inventoryRow{repoID: mtplxPackRepoID, path: mtplxServedPath})
+}
+
+// packServingExecutor is a stopped fake engine on a manifest that selects its pack the
+// way the shipped MTPLX manifest does: the launch flag carries the pack's directory,
+// the model the caller names is looked up in the engine's own listing to find that
+// directory, and --model-id is a flag PAIR clears rather than writes. The listing is
+// the fixture's, staged in a temporary directory and printed by the fake engine as a
+// cmd action, so the lookup runs the real action machinery with a real subprocess
+// behind it and no case here asks a real MTPLX anything or reads a real cache.
+func packServingExecutor(t *testing.T, listing string, launchText string) *Executor {
+	t.Helper()
+
+	e := settingsExecutor(t, false)
+	m, ok := e.reg.Get("fake")
+	require.True(t, ok, "fake manifest missing")
+	platform := m.Platforms[hostPlatformKey()]
+	// An engine that serves one pack per process waits for a model and gives it back by
+	// stopping, which is what makes clearing a model flag a step the user can see.
+	platform.Runtime.WaitForModel = true
+	platform.Runtime.CLI = fakeEngineBin
+	m.Platforms[hostPlatformKey()] = platform
+	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{
+		Flags:      []string{"--model"},
+		ClearFlags: []string{"--model-id"},
+		Resolve:    launchModelResolvePackPath,
+	}}
+	m.Actions["unload_model"] = Action{StopEngine: true}
+	m.Actions["list_models"] = Action{
+		Cmd:    []string{"{cli}", "listfrom", listing},
+		Result: &ActionResult{Array: "models", Field: "repo_id"},
+	}
+	// The residency block is what the lookup reads its rows from, and what says which pack
+	// a running server holds: the listing action it names carries the rows, and /health
+	// says the directory the server mapped. Where a case's eject names the pack by its
+	// cache id and the engine was launched by directory, that join is the only thing that
+	// can tell them they mean the same pack.
+	m.Actions["loaded_models"] = Action{
+		HTTP: &ActionHTTP{Method: "GET", Path: "/v1/models"},
+		Result: &ActionResult{Array: "data", Field: "id", Residency: &ActionResidency{
+			Source: "list_models", Read: &ActionHTTP{Method: "GET", Path: "/health"},
+			PathField: "model_path", RowPathField: "path",
+		}},
+	}
+	require.NoError(t, m.Validate(), "a manifest that is not legal never reaches the code under test")
+	// A running engine reads the platform it was loaded with, not the manifest, so an
+	// engine that waits for a pack has to be told so where it will actually look.
+	st, err := e.state("fake")
+	require.NoError(t, err)
+	st.plat.Runtime.WaitForModel = true
+
+	state, err := e.LaunchSettings("fake")
+	require.NoError(t, err)
+	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{
+		Engine:   "fake",
+		Settings: settings.Config{ServerPort: state.ServerPort, LaunchText: launchText},
+	}, func() error { return nil })
+	require.NoError(t, err)
+	return e
+}
+
+// MTPLX answers requests as a name that comes out of the pack, not as whatever --model-id
+// says: its own app runs `serve` with the pack's directory and no --model-id anywhere in
+// its arguments, and that server answered
+// "youssofal-qwen3.5-4b-mtplx-optimized-speed" for
+// Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed, on two machines whose packs sit under
+// different roots. So a launched server's name is no handle on the flag, while a value
+// left in saved launch text is a name for whichever pack was selected when it was last
+// written. What has to hold, at every change of model, is that no model name survives in
+// a flag PAIR manages.
+func TestLaunchModel_ClearsTheFlagItNoLongerWrites(t *testing.T) {
+	listing := mtplxPackListing(t)
+	e := packServingExecutor(t, listing, "serve --host 127.0.0.1 --port 8101 --model-id "+mtplxPackRepoID)
+	require.NoError(t, e.Start(t.Context(), "fake"), "start")
+	require.Equal(t, map[string]string{"--model-id": mtplxPackRepoID},
+		flagsSaying(t, e, "--model", "--model-id"), "the case is about a launch with a stale name in it")
+
+	_, err := loadModel(t, e, mtplxPackRepoID)
 
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"--model": first, "--model-id": first}, flagsSaying())
+	assert.Equal(t, map[string]string{"--model": mtplxServedPath}, flagsSaying(t, e, "--model", "--model-id"),
+		"a Load moved --model to the pack's directory and left the stale name in --model-id")
+}
 
-	// A second switch moves the pair again, with nothing of the first model
-	// left behind in either flag.
-	_, err = loadModel(t, e, "org/second")
+// The pack PAIR launches is named by the directory its engine's own listing gives,
+// because that is the spelling the app launches with, the spelling /health answers
+// under, and the only one of MTPLX's three spellings that says which of two machines'
+// caches a pack sits in.
+func TestLaunchModel_ServesThePackAtThePathItsOwnListingGives(t *testing.T) {
+	listing := mtplxPackListing(t)
+	e := packServingExecutor(t, listing, "serve --host 127.0.0.1 --port 8101")
+	require.NoError(t, e.Start(t.Context(), "fake"), "start")
+
+	raw, err := loadModel(t, e, mtplxPackRepoID)
 
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"--model": "org/second", "--model-id": "org/second"}, flagsSaying())
+	assert.Equal(t, loadReply{Model: mtplxPackRepoID, Restarted: true}, decodeLoadReply(t, raw),
+		"the reply keeps naming the pack the caller asked for, not the directory PAIR wrote")
+	assert.Equal(t, map[string]string{"--model": mtplxServedPath}, flagsSaying(t, e, "--model", "--model-id"),
+		"the launch names the pack by the directory its own listing gives")
+
+	// The pack is already the one being served, so nothing restarts: the check is
+	// against what is in the launch, which is a directory, not against the name the
+	// caller used.
+	gen := startGeneration(t, e)
+	raw, err = loadModel(t, e, mtplxPackRepoID)
+	require.NoError(t, err)
+	assert.False(t, decodeLoadReply(t, raw).Restarted, "a load of the pack already served restarted the engine")
+	assert.Equal(t, gen, startGeneration(t, e), "a load of the pack already served restarted the engine")
+}
+
+// A model that is neither a pack in the listing nor a directory one of them sits in is
+// left exactly as it was typed. PAIR does not know what it is, and a launch argument a
+// user wrote is theirs to keep: the alternative is a lookup failure turning into a
+// wrong path, or into a refused Load for an engine the user can start by hand.
+func TestLaunchModel_LeavesAModelNoListingHoldsExactlyAsTyped(t *testing.T) {
+	listing := mtplxPackListing(t)
+	e := packServingExecutor(t, listing, "serve --host 127.0.0.1 --port 8101 --model-id "+mtplxPackRepoID)
+	require.NoError(t, e.Start(t.Context(), "fake"), "start")
+	const handTyped = "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed-Experimental"
+
+	_, err := loadModel(t, e, handTyped)
+
+	require.NoError(t, err, "a model PAIR cannot place must still be loadable")
+	said := flagsSaying(t, e, "--model", "--model-id")
+	assert.Equal(t, handTyped, said["--model"], "the name was rewritten, not left alone")
+	assert.NotContains(t, said, "--model-id", "and the flag PAIR only clears was not left holding another pack's name")
+}
+
+// The other way a lookup comes back knowing nothing: the listing itself did not arrive.
+// That is not the statement that this pack has no directory, and a user who chose a pack
+// should not be refused a load because a helper command failed — so the pack is launched
+// under the name it was given, exactly as a name no listing holds is.
+func TestLaunchModel_NamesThePackAsGivenWhenItsListingDoesNotArrive(t *testing.T) {
+	missingListing := filepath.Join(t.TempDir(), "models-that-never-came.json")
+	e := packServingExecutor(t, missingListing, "serve --host 127.0.0.1 --port 8101")
+	require.NoError(t, e.Start(t.Context(), "fake"), "start")
+
+	_, err := loadModel(t, e, mtplxPackRepoID)
+
+	require.NoError(t, err, "a listing that did not arrive refused the load the user asked for")
+	assert.Equal(t, map[string]string{"--model": mtplxPackRepoID}, flagsSaying(t, e, "--model", "--model-id"),
+		"the pack was launched under the name it was given, which is all PAIR knows about it")
+}
+
+// Clearing is not only a Load's job: ejecting is the other way a model stops being the
+// selected one, and a name left in any flag PAIR manages comes back as the selected
+// model the next time the engine starts.
+func TestEjectByStopping_ClearsEveryFlagTheModelWasNamedIn(t *testing.T) {
+	listing := mtplxPackListing(t)
+	e := packServingExecutor(t, listing, "serve --host 127.0.0.1 --port 8101 --model-id Youssofal/SomeOtherPack")
+	require.NoError(t, e.Start(t.Context(), "fake"), "start")
+	_, err := loadModel(t, e, mtplxPackRepoID)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"--model": mtplxServedPath}, flagsSaying(t, e, "--model", "--model-id"))
+
+	_, err = ejectEngine(t, e, mtplxPackRepoID)
+
+	require.NoError(t, err)
+	assert.Empty(t, flagsSaying(t, e, "--model", "--model-id"),
+		"an eject left a model selected in a flag the engine still gets")
+	assert.True(t, mustStatus(t, e).AwaitingModel, "an engine with no model selected is waiting for one")
+	assert.False(t, mustStatus(t, e).Running, "the eject did not stop the engine")
+}
+
+// An engine whose model is a launch argument cannot start without one, and a name in a
+// flag PAIR only ever clears is not a selection: it is the leftover of one. Reading it
+// as a selection starts the engine with no pack to load, which is worse than leaving it
+// waiting for the user to choose.
+func TestStart_KeepsAnEngineWaitingWhenOnlyAClearedFlagNamesAModel(t *testing.T) {
+	listing := mtplxPackListing(t)
+	e := packServingExecutor(t, listing, "serve --host 127.0.0.1 --port 8101 --model-id "+mtplxPackRepoID)
+
+	require.NoError(t, e.Start(t.Context(), "fake"))
+
+	status := mustStatus(t, e)
+	assert.True(t, status.AwaitingModel, "an engine with no pack flag started anyway: %v", launchTextOf(t, e))
+	assert.False(t, status.Running, "an engine with no pack flag was launched")
+	assert.Equal(t, map[string]string{"--model-id": mtplxPackRepoID}, flagsSaying(t, e, "--model", "--model-id"),
+		"waiting for a model must not rewrite the user's launch text")
+}
+
+// A model flag left behind gets into saved launch text more than one way — PAIR wrote
+// it when it was the flag it wrote, a user typed it, or a user copied a launch line from
+// somewhere — so the clear is tried against each spelling rather than the one this
+// machine happens to have. Each spelling is checked at both jobs that end a model: the
+// load that replaces it and the eject that gives it back. The eject case starts with the
+// pack flag already holding the right directory, so what is left for the eject to do about
+// the other flag is its own, not something the load did first.
+func TestLaunchModel_ClearsAStaleModelFlagHoweverItIsWritten(t *testing.T) {
+	const base = "serve --host 127.0.0.1 --port 8101"
+	for _, spelling := range []struct{ name, stale string }{
+		{"named after the flag", "--model-id " + mtplxPackRepoID},
+		{"joined to it by an equals sign", "--model-id=" + mtplxPackRepoID},
+		{"quoted after the equals sign", `--model-id="` + mtplxPackRepoID + `"`},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			t.Run("when a load takes the model's place", func(t *testing.T) {
+				e := packServingExecutor(t, mtplxPackListing(t), base+" "+spelling.stale)
+				require.NoError(t, e.Start(t.Context(), "fake"), "start")
+				require.Equal(t, map[string]string{"--model-id": mtplxPackRepoID},
+					flagsSaying(t, e, "--model", "--model-id"), "the launch has the stale name to begin with")
+
+				_, err := loadModel(t, e, mtplxPackRepoID)
+
+				require.NoError(t, err)
+				assert.Equal(t, map[string]string{"--model": mtplxServedPath},
+					flagsSaying(t, e, "--model", "--model-id"))
+			})
+			t.Run("when an eject gives the model back", func(t *testing.T) {
+				e := packServingExecutor(t, mtplxPackListing(t), base+" --model "+mtplxServedPath+" "+spelling.stale)
+				require.NoError(t, e.Start(t.Context(), "fake"), "start")
+
+				_, err := ejectEngine(t, e, mtplxPackRepoID)
+
+				require.NoError(t, err)
+				assert.Empty(t, flagsSaying(t, e, "--model", "--model-id"))
+				assert.True(t, mustStatus(t, e).AwaitingModel, "an eject that cleared the model left the engine not waiting for one")
+			})
+		})
+	}
+}
+
+// The whole reason for clearing a second flag is that PAIR does not otherwise touch the
+// launch it is given, so an argument it does not manage has to come through a load and an
+// eject exactly as it went in — including the ones that look like they belong to a model.
+func TestLaunchModel_LeavesUnmanagedArgumentsWhereTheyWere(t *testing.T) {
+	listing := mtplxPackListing(t)
+	e := packServingExecutor(t, listing, "serve --host 127.0.0.1 --port 8101 --unsafe-force-unverified --yes --memory-limit 48g --model-id "+mtplxPackRepoID)
+	require.NoError(t, e.Start(t.Context(), "fake"), "start")
+
+	_, err := loadModel(t, e, mtplxPackRepoID)
+	require.NoError(t, err)
+	_, err = ejectEngine(t, e, mtplxPackRepoID)
+	require.NoError(t, err)
+
+	text := launchTextOf(t, e)
+	for _, kept := range []string{"--unsafe-force-unverified", "--yes", "--memory-limit 48g"} {
+		assert.Contains(t, text, kept, "an argument PAIR does not manage did not survive the model changing")
+	}
+	assert.NotContains(t, text, "model-id", "a flag PAIR clears left a trace")
+	assert.Empty(t, flagsSaying(t, e, "--model", "--model-id"))
+}
+
+// The other half of reading a selection from the load flag: text that names a pack the
+// engine can load, beside a cleared flag holding another pack's name, is a selected model,
+// and the directory is what answers for it. The running engine's own arguments named a
+// different pack than the launch PAIR saves, so the load has to start it again on the
+// saved ones — the name it carried is the mis-identification this clears.
+func TestStart_TakesTheLoadFlagAsTheSelectedModelBesideAClearedFlag(t *testing.T) {
+	listing := mtplxPackListing(t)
+	e := packServingExecutor(t, listing, "serve --host 127.0.0.1 --port 8101 --model "+mtplxServedPath+" --model-id Youssofal/SomeOtherPack")
+
+	require.NoError(t, e.Start(t.Context(), "fake"), "an engine with a load flag started")
+
+	status := mustStatus(t, e)
+	assert.False(t, status.AwaitingModel, "an engine with a pack selected was left waiting for one")
+	assert.True(t, status.Running, "an engine with a pack selected was not started")
+
+	raw, err := loadModel(t, e, mtplxPackRepoID)
+
+	require.NoError(t, err)
+	reply := decodeLoadReply(t, raw)
+	assert.Equal(t, mtplxPackRepoID, reply.Model, "the reply names the pack the caller asked for, not the directory")
+	assert.True(t, reply.Restarted, "an engine started on arguments naming another pack kept them")
+	assert.Equal(t, map[string]string{"--model": mtplxServedPath}, flagsSaying(t, e, "--model", "--model-id"),
+		"the pack flag kept the directory it already held, and the other flag's name for another pack is gone")
+}
+
+// The manifest is where this answer has to live, so the shipped one is pinned, not a
+// fixture's copy: the launch names the pack by the directory its own listing gives, the
+// flag PAIR no longer writes is named as one it clears, and the lookup it asks for is one
+// the residency declaration can actually answer.
+func TestMTPLXManifest_NamesItsPackByTheDirectoryItsOwnListingGives(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"))
+	m, ok := reg.Get("mtplx")
+	require.True(t, ok, "mtplx manifest not loaded")
+
+	load := m.Actions["load_model"]
+	require.NotNil(t, load.LaunchModel, "load_model must switch the pack through a launch argument")
+	assert.Equal(t, []string{"--model"}, load.LaunchModel.Flags,
+		"the flag that picks the weights is the only one PAIR writes")
+	assert.Equal(t, []string{"--model-id"}, load.LaunchModel.ClearFlags,
+		"--model-id has to be cleared wherever the model changes, not merely stopped being written")
+	assert.Equal(t, launchModelResolvePackPath, load.LaunchModel.Resolve,
+		"the caller names a pack, and the engine has to be given the directory that pack sits in")
+
+	loaded := m.Actions["loaded_models"]
+	require.NotNil(t, loaded.Result, "loaded_models has to say which pack the server serves")
+	residency := loaded.Result.Residency
+	require.NotNil(t, residency,
+		"resolving a pack to its directory reads the same listing residency reads, so it has to be declared")
+	assert.Equal(t, "list_models", residency.Source)
+	assert.Equal(t, "path", residency.RowPathField,
+		"the launch gets the directory the listing itself gives, not one derived from a name")
+
+	assert.True(t, m.Actions["unload_model"].StopEngine,
+		"ejecting is the other way a model stops being selected, and it is the one that clears")
+}
+
+func TestLaunchModelAction_ClearFlagsAreFlagsPAIRStopsWriting(t *testing.T) {
+	accept := func(name string, spec ActionLaunchModel) {
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, (&Action{LaunchModel: &spec}).validate("load_model"))
+		})
+	}
+	reject := func(name string, spec ActionLaunchModel) {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, (&Action{LaunchModel: &spec}).validate("load_model"))
+		})
+	}
+	with := func(clearFlags []string, resolve string) ActionLaunchModel {
+		return ActionLaunchModel{Flags: []string{"--model"}, ClearFlags: clearFlags, Resolve: resolve}
+	}
+	accept("a flag to clear alongside the flag it writes", with([]string{"--model-id"}, ""))
+	accept("clearing several flags", with([]string{"--model-id", "--served-model-name"}, ""))
+	accept("resolving the model through the engine's pack listing", with([]string{"--model-id"}, launchModelResolvePackPath))
+	accept("no extra flags at all", with(nil, ""))
+	reject("a clear flag that is not a flag", with([]string{"model-id"}, ""))
+	reject("a clear flag with a value in it", with([]string{"--model-id=x"}, ""))
+	reject("a clear flag listed twice", with([]string{"--model-id", "--model-id"}, ""))
+	// A flag in both lists is a manifest that both writes a model into a flag and
+	// removes it, in the same transaction, in an order nothing in the manifest says.
+	reject("a flag both written and cleared", with([]string{"--model"}, ""))
+	reject("a resolution no lookup implements", with(nil, "public-model-id"))
 }
 
 // startGeneration counts how many times the engine has been started.
@@ -555,15 +896,20 @@ func ejectableMTPLXStagedManifest(t *testing.T, changeManifest func(manifest *Ma
 
 	manifest := residencyManifestWithRestart(t)
 	platform := manifest.Platforms[hostPlatformKey()]
-	// The four keys the shipped manifest declares for an engine that serves one pack per
+	// The five keys the shipped manifest declares for an engine that serves one pack per
 	// process: it waits for a model, it serves on a host and port it is told, it names
-	// the pack to serve with --model, and ejecting that model stops the engine rather
-	// than dropping it. Without them the eject these cases are about is a different
-	// action, and an engine with no launch arguments has no launch to keep.
+	// the pack to serve with the directory its own listing gives, it clears a flag it no
+	// longer writes, and ejecting that model stops the engine rather than dropping it.
+	// Without them the eject these cases are about is a different action, and an engine
+	// with no launch arguments has no launch to keep.
 	platform.Runtime.WaitForModel = true
 	platform.Runtime.Args = []string{"serve", "--host", "{host}", "--port", "{port}"}
 	manifest.Platforms[hostPlatformKey()] = platform
-	manifest.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: []string{"--model", "--model-id"}}}
+	manifest.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{
+		Flags:      []string{"--model"},
+		ClearFlags: []string{"--model-id"},
+		Resolve:    launchModelResolvePackPath,
+	}}
 	manifest.Actions["unload_model"] = Action{StopEngine: true}
 	if changeManifest != nil {
 		changeManifest(manifest)

@@ -401,6 +401,86 @@ func TestPackInventoryFrom_KeepsTwoRootsApartAndNeverGuessesASymlink(t *testing.
 	assert.False(t, found, "a trailing separator is not trimmed either")
 }
 
+// TestPackRowForRepoID_GivesTheDirectoryTheListingKeepsTheNamedPackIn is the lookup a
+// launch goes through: the model list and a request name a pack, and what the engine has
+// to be given is the directory the listing keeps it in. It runs against the two machines'
+// listings because that is where the answer differs — the same pack name on a second
+// machine sits under a second root — and against a directory on this machine because a
+// lookup that only worked for the two paths it was written from would not be a lookup.
+func TestPackRowForRepoID_GivesTheDirectoryTheListingKeepsTheNamedPackIn(t *testing.T) {
+	localPack := filepath.Join(t.TempDir(), "Youssofal--Qwen3.8-Flash-Next-MTPLX-Optimized-Speed")
+	localListing := `{"models":[{"repo_id":` + quoteJSON(mtplxPackRepoID) + `,"path":` + quoteJSON(localPack) + `}]}`
+
+	for _, tc := range []struct {
+		name    string
+		listing string
+		repoID  string
+		want    string
+	}{
+		{
+			name: "the machine these listings came from", listing: sagittariusModelsBody,
+			repoID: mtplxPackRepoID, want: mtplxServedPath,
+		},
+		{
+			name: "a second machine, under its own root", listing: bellatrixModelsBody,
+			repoID: "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed",
+			want:   "/Users/steven/.mtplx/models/Youssofal--Qwen3.5-4B-MTPLX-Optimized-Speed",
+		},
+		{
+			name: "a cache root this machine made for itself", listing: localListing,
+			repoID: mtplxPackRepoID, want: localPack,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ex := residencyAsking(t, residencyManifest(t), map[string]string{residencyInventoryPath: tc.listing})
+
+			rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
+
+			require.True(t, ok, "the listing arrived whole, so the cache is known")
+			row, found := packRowForRepoID(rows, tc.repoID)
+			require.True(t, found, "the listing names this pack, so its directory is answerable")
+			assert.Equal(t, tc.want, row.path, "the launch gets the directory this listing gives for this pack")
+		})
+	}
+}
+
+// TestPackRowForRepoID_FindsNothingForAnyOtherSpellingOfAPack is the lookup's other half,
+// and the one that keeps a failed lookup from becoming a wrong path: a name the listing
+// does not key a row by finds nothing, so the caller leaves the model it was given alone
+// rather than launching a pack nobody asked for.
+func TestPackRowForRepoID_FindsNothingForAnyOtherSpellingOfAPack(t *testing.T) {
+	ex := residencyAsking(t, residencyManifest(t), map[string]string{residencyInventoryPath: sagittariusModelsBody})
+
+	rows, ok := ex.packInventoryFrom(t.Context(), "mtplx", inventoryAnswer{})
+
+	require.True(t, ok, "the listing arrived whole, so the cache is known")
+
+	// The same pack has three other spellings and only one of them is a row key: the
+	// directory it sits in, and the name its running server answers requests as, are the
+	// other two.
+	_, found := packRowForRepoID(rows, mtplxServedPath)
+	assert.False(t, found, "the directory a pack sits in is not the name the listing keys it by")
+	_, found = packRowForRepoID(rows, mtplxServedModel)
+	assert.False(t, found, "the name the server answers as is not the name the listing keys it by")
+	_, found = packRowForRepoID(rows, strings.ToUpper(mtplxPackRepoID))
+	assert.False(t, found, "the lookup is exact, so an upper-cased name finds nothing")
+	_, found = packRowForRepoID(rows, mtplxPackRepoID+"/")
+	assert.False(t, found, "a trailing separator is not trimmed")
+
+	// The other machine's packs are not this machine's. A lookup that settled for the
+	// closest row — by prefix, by folder name, or by "the other root on this host" —
+	// answers a pack this cache does not hold with a directory that holds a different
+	// one, and the engine loads the wrong weights.
+	for _, other := range []string{
+		"Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed",
+		"Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed-Experimental",
+		"Youssofal/Qwen3.8-Flash-Next",
+	} {
+		_, found := packRowForRepoID(rows, other)
+		assert.False(t, found, "a name no row is keyed by finds nothing (%s)", other)
+	}
+}
+
 func TestPackInventoryFrom_TreatsAnEmptyListingAsKnownAndABlockedOneAsUnknown(t *testing.T) {
 	manifest := residencyManifest(t)
 
@@ -963,6 +1043,61 @@ func TestManifest_TheBundledMTPLXManifestDeclaresThePackJoin(t *testing.T) {
 	require.NotNil(t, source.Result, "the listing has to name a field before residency can key on it")
 	assert.Equal(t, "repo_id", source.Result.Field, "a listing keyed on anything else would key the join on nothing")
 	assert.Empty(t, residency.RowKeyField, "the row key is the listing's own field, not a second spelling")
+}
+
+// A launch that takes a pack's directory instead of its name finds that directory in the
+// engine's own listing, which is the same listing the residency declaration says how to
+// read. A manifest that asks for the lookup without declaring that has asked to look in
+// nothing, and the two could drift apart just as easily as the launch and the eject could.
+func TestManifestValidate_RejectsAPackPathLaunchWithNoListingToRead(t *testing.T) {
+	packPathLaunch := func(t *testing.T) *Manifest {
+		t.Helper()
+
+		manifest := residencyManifestWithRestart(t)
+		manifest.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{
+			Flags:      []string{"--model"},
+			ClearFlags: []string{"--model-id"},
+			Resolve:    launchModelResolvePackPath,
+		}}
+		manifest.Actions["unload_model"] = Action{StopEngine: true}
+		require.NoError(t, manifest.Validate(), "this is the shape the shipped MTPLX manifest has")
+		return manifest
+	}
+
+	withoutTheJoin := func(manifest *Manifest) {
+		loaded := manifest.Actions["loaded_models"]
+		loaded.Result.Residency = nil
+		manifest.Actions["loaded_models"] = loaded
+	}
+
+	t.Run("with the listing removed from what loaded_models declares", func(t *testing.T) {
+		manifest := packPathLaunch(t)
+		withoutTheJoin(manifest)
+
+		err := manifest.Validate()
+
+		require.Error(t, err, "a lookup with nowhere to read its rows is not a lookup")
+		assert.Contains(t, err.Error(), "result.residency")
+	})
+
+	t.Run("with no loaded_models action to declare it on", func(t *testing.T) {
+		manifest := packPathLaunch(t)
+		delete(manifest.Actions, "loaded_models")
+
+		err := manifest.Validate()
+
+		require.Error(t, err, "the rows have to be declared somewhere the manifest can be checked against")
+		assert.Contains(t, err.Error(), "result.residency")
+	})
+
+	t.Run("a launch that asks for no lookup keeps the shape it always had", func(t *testing.T) {
+		manifest := residencyManifestWithRestart(t)
+		withoutTheJoin(manifest)
+		manifest.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: []string{"--model"}}}
+
+		require.NoError(t, manifest.Validate(),
+			"an engine that takes the name its caller sends, as vLLM does, needs no listing to read")
+	})
 }
 
 func TestManifestValidate_RejectsAResidencyThatCouldNeverResolve(t *testing.T) {

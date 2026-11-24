@@ -157,8 +157,9 @@ loading is provided by the PAIR proxy endpoint.
   request-triggered loading, subject to the custom alias restriction above.
   Their `list_models` disk inventory is also reported as `downloadedByEngine`,
   including while stopped or disabled; `loadedByEngine` names a resident model
-  the way that inventory names it — MTPLX by the `data[].id` that its
-  `--model-id` pins to the cache id, vLLM by the cached repository id, not a
+  the way that inventory names it — MTPLX by the residency join, which matches
+  the directory its `/health` reports against that same listing, vLLM by the
+  cached repository id, not a
   `--served-model-name` alias. `requestableByEngine` carries loader capability
   independently of ON/OFF intent for the broker's local route updates. A
   successful empty inventory retains an engine key with `[]`; a missing,

@@ -53,7 +53,7 @@
       "result": { "array": "models", "field": "repo_id" }
     },
     "loaded_models": {
-      "description": "List the model this MTPLX server serves (it serves exactly one). The name it answers with is not the cache id: a machine serving the Qwen3.5 pack answered \"youssofal-qwen3.5-4b-mtplx-optimized-speed\" while its cache lists that pack as \"Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed\", so no spelling of the served name can be matched to a pack by eye. /health reports the directory the pack was loaded from, and that is what residency joins to the listing.",
+      "description": "List the model this MTPLX server serves (it serves exactly one). The name it answers with is not the cache id: a machine serving the Qwen3.5 pack answered \"youssofal-qwen3.5-4b-mtplx-optimized-speed\" while its cache lists that pack as \"Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed\", so no spelling of the served name can be matched to a pack by eye. /health reports the directory the pack was loaded from, and that is what residency joins to the listing. The same listing is where load_model reads a pack's directory from.",
       "http": { "method": "GET", "path": "/v1/models" },
       "result": {
         "array": "data",
@@ -67,11 +67,11 @@
       }
     },
     "load_model": {
-      "description": "Serve a different model pack (params: {\"model\": \"<cache id>\"}). MTPLX serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored. --model-id is written beside --model so the served name stays the cache id.",
-      "launch_model": { "flags": ["--model", "--model-id"] }
+      "description": "Serve a different model pack (params: {\"model\": \"<cache id>\"}). MTPLX serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored. The argument written is --model with the directory the pack's own listing keeps it in, which is what MTPLX's own app launches with, and a pack given that way is loaded without the completeness checks a cache id goes through first. --model-id is not written: an MTPLX answers as a name that lives inside the pack however it was launched, so the flag pinned nothing, and a value already sitting there is removed, because it names whichever pack was selected when it was last written.",
+      "launch_model": { "flags": ["--model"], "clear_flags": ["--model-id"], "resolve": "pack-path" }
     },
     "unload_model": {
-      "description": "Eject the model MTPLX is serving (params: {\"model\": \"<cache id>\"}). MTPLX cannot drop its model and keep running, so this stops the engine, which frees all of its memory. Load starts it again.",
+      "description": "Eject the model MTPLX is serving (params: {\"model\": \"<cache id>\"}). MTPLX cannot drop its model and keep running, so this stops the engine, which frees all of its memory, and takes the pack out of the launch arguments so the engine waits for a model to be chosen instead of coming back on the last one. Load starts it again.",
       "stop_engine": true
     },
     "pull_model": {

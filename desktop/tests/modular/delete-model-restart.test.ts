@@ -28,7 +28,8 @@ const MANIFEST_DIR = path.resolve(process.cwd(), '../services/nvpair-engine-mana
 const ENGINE_TYPE_BY_MANIFEST_ID: Record<string, EngineType> = {
     ollama: 'ollama',
     lmstudio: 'lm-studio',
-    llamacpp: 'llama-cpp'
+    llamacpp: 'llama-cpp',
+    mtplx: 'mtplx'
 }
 
 interface ManifestAction {

@@ -307,23 +307,44 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, `launch_model`,
   removal and any rollback of the launch settings are done.
 - **`launch_model`** — switch the model an engine serves, for an engine with no
   load call because the model is a launch argument (vLLM, MTPLX).
-  `launch_model.flags` lists every flag that has to move together, which for
-  vLLM is just `["--model"]`. MTPLX also takes `--model-id`: a server started
-  with only `--model` answers to a derived id such as
-  `mtplx-qwen38-27b-optimized-speed-fp16`, which matches neither the cache
-  entry the user picked nor the id a client puts in its request. The action
-  takes `{"model": "<id>"}` (a Hugging Face id such as `org/name`; anything
-  that could be read as a flag, a path or a shell fragment is refused), writes
-  that one value into each declared flag of the saved launch settings exactly
-  as the settings editor would, and restarts a running engine on it. An empty
+  `launch_model.flags` lists the flags PAIR writes, which for vLLM is just
+  `["--model"]`. The first is the flag the engine loads its weights from, and
+  these flags alone answer which model is selected: an engine launched without
+  any of them has nothing to load. `launch_model.clear_flags` names a flag the
+  engine still takes that PAIR has stopped writing, such as MTPLX's
+  `--model-id`. It is not simply left alone: a value sitting there names
+  whichever pack was selected when it was last written, so it is removed at
+  every change of model — on the load that replaces it and the eject that gives
+  it back alike. A flag in both lists is a manifest error, since that would
+  write a model into a flag and empty the same flag in one transaction, in an
+  order nothing in the manifest states. `launch_model.resolve: "pack-path"`
+  looks the value up before writing it, for an engine whose launch does not take
+  the name its caller uses: the pack named is replaced by the directory that
+  pack's own listing keeps it in, read from the `loaded_models`
+  `result.residency` the manifest must also declare. MTPLX wants it because its
+  own app launches `serve --model <pack directory>`, and a pack handed over that
+  way is loaded without the completeness checks a cache id goes through first. A
+  value the listing holds no row for, and a listing that could not be read, are
+  written as they were given: a launch argument a user typed is theirs to keep,
+  and a failed lookup is no licence to invent a path.
+  The action takes `{"model": "<id>"}` (a Hugging Face id such as `org/name`;
+  anything that could be read as a flag, a path or a shell fragment is refused),
+  writes the value it settled on into each flag it writes, of the saved launch
+  settings exactly as the settings editor would, empties the flags it clears,
+  and restarts a running engine on the result. An empty
   flag list, a repeated flag, and an entry that is not a flag are manifest
   errors. If the new model does not come up, the previous one is restored and the
   error says so; a stopped engine is started on it, and asking a running engine
-  for the model already in the launch arguments restarts nothing. The engine's
-  operation lock is held from reading the launch to the last restore. An engine
-  with a `launch_model` action will not start while none of the declared flags
+  for the model already in the launch arguments restarts nothing — unless a flag
+  it clears still holds a value, since starting the engine on the arguments just
+  saved is the only way to take that model away. The engine's
+  operation lock is held from reading the launch to the last restore, and the
+  lookup included, so the launch is written against the listing read under that
+  lock. An engine
+  with a `launch_model` action will not start while none of the flags it writes
   names a model: it has no model selected, and refusing beats letting the
-  engine pick and download a default of its own. The refusal is reported as a
+  engine pick and download a default of its own. A leftover in a flag it only
+  clears is not a selection, so it does not change that. The refusal is reported as a
   failed
   start, like the other refusals before launch, so a client that does not wait
   for the reply still learns of it. Requires `runtime.editable_launch`
