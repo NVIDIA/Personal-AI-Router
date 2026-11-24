@@ -40,7 +40,7 @@ fi
 
 if ! command -v go >/dev/null 2>&1; then
     echo "inference-dispatcher: go is required and was not found on PATH." >&2
-    echo "                      Install Go 1.24.3 or newer (see AGENTS.md)." >&2
+    echo "                      Install Go 1.25 or newer (see AGENTS.md)." >&2
     exit 2
 fi
 

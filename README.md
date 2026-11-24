@@ -38,7 +38,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama, LM Studio, and llama.cpp |
+| **Inference engines** | Ollama, LM Studio, llama.cpp, and vLLM (Linux with an NVIDIA GPU, or Apple Silicon macOS) |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -100,7 +100,7 @@ you want by its full filename instead.
   **Settings → Service** and read the status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
-  select **Install** next to Ollama, LM Studio, or llama.cpp. PAIR downloads and
+  select **Install** next to Ollama, LM Studio, llama.cpp, or (on Linux or Apple Silicon macOS) vLLM. PAIR downloads and
   sets the engine up for you, so nothing needs to be in place beforehand.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
@@ -111,6 +111,8 @@ you want by its full filename instead.
   Hugging Face. Type to filter the list, or press Enter to search the wider
   public catalog. Its exact IDs include the repository and quantization, such
   as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`.
+  When installing or turning on vLLM without a saved model, choose a downloaded
+  model in the picker or select **Add model**. Canceling the picker turns vLLM off.
 
   ![A node card with its engine expanded, one model pulling and the Add model button beside the list.](docs/assets/onboarding/getting-started/07-add-model.png)
 
@@ -199,7 +201,7 @@ Your data means settings, logs, cluster identity and certificates, and any engin
 PAIR installed for you. An engine the uninstaller cannot remove — one still
 holding a file open, say — is left in place rather than stopping the uninstall;
 remove it with its own uninstaller. **Model weights are not touched** — they live in the
-engine's own storage (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`), so
+engine's own storage (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`, `~/.cache/huggingface`), so
 removing PAIR does not delete the models you downloaded. Delete those through the
 engine, or by removing its directory. An engine you installed yourself is also
 left alone.
@@ -284,7 +286,7 @@ feedback and contributions will help shape priorities.
 ### Engines and integrations
 
 - [x] llama.cpp support.
-- [ ] vLLM support.
+- [x] vLLM support.
 - [ ] EXO support.
 - [ ] ComfyUI integration.
 - [ ] Unsloth support.

@@ -21,6 +21,7 @@ import (
 
 	"nvpair-shared/engines"
 	"nvpair-shared/errors"
+	"nvpair-shared/modelrequest"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
 	"nvpair-shared/splitlisten"
@@ -43,6 +44,12 @@ import (
 // differ. The transport pool is per process because it is keyed by peer, not
 // by engine, and duplicating it would double the connections to every peer.
 type facade struct {
+	localInventoryMu sync.Mutex
+	localInventory   *modelrequest.LocalInventory
+
+	modelGate     modelRequestGate
+	modelRequests modelRequestRelay
+
 	// host is the process hosting this facade. Reached for shared state only.
 	host *Proxy
 
@@ -316,11 +323,10 @@ func (f *facade) targetURL(n Node) *url.URL {
 }
 
 // replaceSubscribed replaces this facade's relay-fed routing overlay from a
-// discovery:nodes snapshot: it projects every node advertising this engine with
-// a dialable IP into the overlay (dropping the rest) and clears a user selection
-// pinned to a node that's no longer routable. The broker sends the full filtered
-// set on every change, so this is a wholesale replace, not a per-node apply — a
-// departed node is simply absent from the next snapshot.
+// discovery:nodes snapshot. It admits owned local records and trusted pinned
+// peers advertising this engine with a canonical IP, and clears a user selection
+// whose node is absent from both the relay and manual overlays. Each snapshot
+// supplies the full filtered set, replacing the relay overlay wholesale.
 func (f *facade) replaceSubscribed(params json.RawMessage) {
 	var res noderec.GetNodesResult
 	if err := json.Unmarshal(params, &res); err != nil {
@@ -488,7 +494,6 @@ func (f *facade) serveHTTP(ctx context.Context, ln net.Listener) {
 	slog.Info("proxy timeouts configured",
 		"dial_timeout", proxyDialTimeout,
 		"keep_alive", proxyKeepAlive,
-		"response_header_timeout", proxyResponseTimeout,
 		"max_idle_conns", proxyMaxIdleConns,
 		"idle_conn_timeout", proxyIdleConnTimeout,
 	)

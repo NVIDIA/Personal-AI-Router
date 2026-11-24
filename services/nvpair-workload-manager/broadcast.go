@@ -95,11 +95,9 @@ func (b *Broadcaster) Broadcast(ctx context.Context, frame []byte) {
 
 	var wg sync.WaitGroup
 	for _, t := range targets {
-		wg.Add(1)
-		go func(t target) {
-			defer wg.Done()
+		wg.Go(func() {
 			b.deliver(ctx, t, frame)
-		}(t)
+		})
 	}
 	wg.Wait()
 }

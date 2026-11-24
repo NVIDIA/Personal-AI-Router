@@ -44,7 +44,7 @@ func (w *recordingWriter) lines() [][]byte {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var out [][]byte
-	for _, line := range bytes.Split(w.buf.Bytes(), []byte("\n")) {
+	for line := range bytes.SplitSeq(w.buf.Bytes(), []byte("\n")) {
 		if len(bytes.TrimSpace(line)) > 0 {
 			out = append(out, append([]byte(nil), line...))
 		}
@@ -62,7 +62,7 @@ func (w *recordingWriter) lines() [][]byte {
 func enableOnFreePort(t *testing.T, p *Proxy, engine string) int {
 	t.Helper()
 	var lastErr error
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		port := freeTCPPort(t)
 		_, err := p.enableFacade(enableFacadeParams{
 			Engine:              engine,
@@ -193,7 +193,7 @@ func TestAddressedRequest_ReachesOnlyItsOwnFacade(t *testing.T) {
 	}
 
 	// An engine with no facade resolves to nothing rather than to a sibling.
-	assert.Nil(t, p.facadeFor("vllm"), "unknown engine resolved to the")
+	assert.Nil(t, p.facadeFor("nosuchengine"), "unknown engine resolved to the")
 	assert.Nil(t, p.facadeFor(""), "an unaddressed message resolved to the")
 }
 

@@ -21,7 +21,7 @@ import (
 // measurements behind that). These bodies pin the boundary: what fails over,
 // what commits, what terminates, and what is left alone.
 //
-// firstBodyTimeout stands in at 200ms for its production 120s throughout, so a
+// firstBodyTimeout stands in at 200ms for its production 180s throughout, so a
 // body that drives a node to its five-dispatch budget costs a second of wall
 // clock rather than ten minutes.
 const testFirstBodyTimeout = 200 * time.Millisecond
@@ -41,8 +41,7 @@ func newStalledEngine(t *testing.T) stalledEngine {
 	t.Helper()
 	var n atomic.Int32
 	releaseCh := make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(releaseCh) }) }
+	release := sync.OnceFunc(func() { close(releaseCh) })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n.Add(1)

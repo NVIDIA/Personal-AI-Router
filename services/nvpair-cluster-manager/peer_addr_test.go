@@ -29,8 +29,7 @@ const unreachableAddr = "192.0.2.1:14321"
 // could not reach, so every reconcile burned the full request timeout against it
 // while the address that worked sat unused in the same candidate list.
 func TestReconcileWith_FailsOverToAnAnsweringAddress(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	mA := newTestManagerPort(t, 15031)
 	mB := newTestManagerPort(t, 15032)

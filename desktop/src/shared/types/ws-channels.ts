@@ -103,7 +103,7 @@ export interface WsInvokeChannelMap {
     'engines:apply-settings': { request: EngineSettingsRequest; response: EngineSettingsReceipt }
     'engine:command': { request: EngineCommandPayload; response: null }
     'engine:search-hub': {
-        request: { engineType: EngineType; query?: string }
+        request: { engineType: EngineType; nodeId: string; query?: string }
         response: EngineHubSearchResponse
     }
 

@@ -15,6 +15,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	enginesettings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
 )
@@ -46,6 +47,27 @@ type actionParam struct {
 	Engine string          `json:"engine"`
 	Action string          `json:"action"`
 	Params json.RawMessage `json:"params,omitempty"`
+	// OpID is the client's name for a pull_model request, which the frames of
+	// the download it runs as carry; see validOpID. It sits beside params, not
+	// in them, because params go to the engine verbatim. Other actions ignore
+	// it.
+	OpID string `json:"opId,omitempty"`
+}
+
+// pullClaimFrom reports the engine, model and opId of an engine:action that
+// starts a download, for Executor.claimPull, and nothing for any other action.
+// Malformed params are left to the handler, which owns the error response, and
+// so is an opId runAction refuses: a request about to be refused claims
+// nothing, so no cancel can count it among the requests it stopped.
+func pullClaimFrom(params json.RawMessage) (engine, model, opID string) {
+	var p actionParam
+	if err := json.Unmarshal(params, &p); err != nil || p.Action != pullModelAction {
+		return "", "", ""
+	}
+	if p.OpID != "" && !validOpID(p.OpID) {
+		return "", "", ""
+	}
+	return p.Engine, modelFromParams(p.Params), p.OpID
 }
 
 // setPortParam is the engine:set-port input: the engine whose server port to
@@ -61,6 +83,7 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
+	preparations  modelPreparations
 	settingsRelay settingsRelay
 	codec         *Codec
 	exec          *Executor
@@ -69,9 +92,13 @@ type Manager struct {
 	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
-	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
+	// carries the longer header budget, for the calls waitsForEngineReadiness
+	// selects.
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
+	// remotePulls orders an engine:remote-cancel-pull behind the remote pulls
+	// it targets, the way claimPull orders a local one.
+	remotePulls remotePullGate
 	// catalog answers engine:catalog: the models an engine can download, as
 	// opposed to the ones it already holds.
 	catalog *catalogService
@@ -98,6 +125,15 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		cancel:  func() {},
 	}
 	m.settingsRelay.send = codec.Notify
+	m.catalog.llamaSource = func() (string, error) {
+		state, err := exec.state("llamacpp")
+		if err != nil {
+			return "", err
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return modelSource(state.plat.Runtime), nil
+	}
 	exec.settingsParent = m.settingsRelay.call
 	return m
 }
@@ -119,13 +155,22 @@ func (m *Manager) Run(ctx context.Context) error {
 		slog.Warn("failed to subscribe to discovery relay for ec peers", "err", err)
 	}
 
-	// Watch each running engine's loaded-model set and emit engine:models-changed
-	// on change (load/unload, JIT auto-load, TTL eviction). Bound to ctx: stops
+	// Watch each engine's model lists and emit engine:models-changed on change
+	// (load/unload, JIT auto-load, TTL eviction, pull, delete). Bound to ctx: stops
 	// when the read loop exits below.
 	go m.exec.watchLoaded(ctx)
 	go m.watchPeerSettings(ctx)
 
-	err := m.readLoop(ctx)
+	// The read blocks on stdin until the parent sends something or closes it, so
+	// a SIGTERM that cancels ctx would otherwise never reach the shutdown below:
+	// the process would sit there, with its engines running, until stdin closed.
+	readDone := make(chan error, 1)
+	go func() { readDone <- m.readLoop(ctx) }()
+	var err error
+	select {
+	case err = <-readDone:
+	case <-ctx.Done():
+	}
 	// Cancel first so any in-flight start aborts at its readiness wait,
 	// then stop engines so the parent's exit doesn't orphan them.
 	cancel()
@@ -159,6 +204,9 @@ func (m *Manager) readLoop(ctx context.Context) error {
 }
 
 func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
+	if m.handleModelPreparation(ctx, msg) {
+		return
+	}
 	if m.handleSettingsMessage(ctx, msg) {
 		return
 	}
@@ -285,16 +333,69 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		m.codec.Respond(msg.ID, map[string]int{"port": p.Port})
 
 	case "engine:action":
-		go m.runAction(ctx, msg)
+		// Claim a pull here rather than in the goroutine, as engine:cancel-pull
+		// below latches its cancel here. Each dispatches its own goroutine, so
+		// only the read loop sees the two in the order the client sent them.
+		engine, model, opID := pullClaimFrom(msg.Params)
+		actionCtx, release := m.exec.claimPull(ctx, engine, model, opID)
+		go func() {
+			defer release()
+			m.runAction(actionCtx, msg)
+		}()
+
+	case "engine:cancel-pull":
+		var p remoteParam
+		if !m.parse(msg, &p) {
+			return
+		}
+		if p.Engine == "" || p.Model == "" {
+			m.codec.RespondError(msg.ID, -32602, "engine and model are required")
+			return
+		}
+		// Latched here so the cancel stops the requests read before it and
+		// leaves a retry read after it alone. Only the wait for the download
+		// to stop and clean up runs off the read loop.
+		wait := m.exec.latchPullCancel(p.Engine, p.Model)
+		go func() { m.respondOrErr(msg, nil, wait(ctx)) }()
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
-		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
+		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model", "engine:remote-cancel-pull",
 		"engine:remote-start", "engine:remote-stop":
-		go m.runRemote(ctx, msg)
+		// Place a remote pull, and a cancel chasing one, here for the same
+		// reason engine:action claims a local pull: each dispatches its own
+		// goroutine, so a cancel can otherwise reach the peer first, and only
+		// here can it tell the pulls sent before it from a retry sent after.
+		// See remotePullGate.
+		order := m.remotePulls.place(msg.Method, msg.Params)
+		go func() {
+			defer order.end()
+			m.runRemote(ctx, msg, order)
+		}()
 
 	default:
 		m.codec.RespondError(msg.ID, -32601, fmt.Sprintf("method not found: %s", msg.Method))
 	}
+}
+
+// lanBindAllowed reports the live value of the engine_allow_lan_bind node
+// setting. Engine starts are not hot-path, so this reads through on every
+// call: flipping the setting takes effect immediately, no restart needed.
+// Any read failure denies (fail closed). The loopback-only default holds
+// unless the setting is affirmatively on.
+func (m *Manager) lanBindAllowed(ctx context.Context) bool {
+	raw, err := m.settingsRelay.call(ctx, "settings/get-engine-allow-lan-bind", enginesettings.Request{}, "engine:start")
+	if err != nil {
+		slog.Warn("failed to read engine-allow-lan-bind setting; denying LAN bind", "err", err)
+		return false
+	}
+	var r struct {
+		Value bool `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		slog.Warn("failed to decode engine-allow-lan-bind setting; denying LAN bind", "err", err)
+		return false
+	}
+	return r.Value
 }
 
 // runOp executes a lifecycle op asynchronously and responds with the
@@ -312,12 +413,33 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "port must be between 0 and 65535")
 		return
 	}
-	if p.Bind != "" && net.ParseIP(p.Bind) == nil {
-		m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
-		return
+	// allowLanBind carries the gate's decision into the launch path:
+	// applyLiteralLaunch re-checks the bind and would fail a start
+	// the gate just approved. The setting is read once, here, so the
+	// gate and the launch agree on the same value.
+	allowLanBind := false
+	if p.Bind != "" {
+		ip := net.ParseIP(p.Bind)
+		if ip == nil {
+			m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
+			return
+		}
+		// Local starts stay on loopback unless the operator has
+		// deliberately opted in: engine APIs are unauthenticated, and
+		// remote starts hard-bind 127.0.0.1 (see controllifecycle.go).
+		// A non-loopback override without the node setting would
+		// silently put them on the LAN. The setting is read live, so
+		// flipping it takes effect on the next start, no restart.
+		if !ip.IsLoopback() {
+			allowLanBind = m.lanBindAllowed(ctx)
+			if !allowLanBind {
+				m.codec.RespondError(msg.ID, -32602, "bind must be a loopback address")
+				return
+			}
+		}
 	}
 	start := func() error {
-		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind})
+		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind, AllowLanBind: allowLanBind})
 	}
 	var err error
 	switch msg.Method {
@@ -333,6 +455,11 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		err = m.exec.Stop(p.Engine)
 	case "engine:restart":
 		err = m.exec.Restart(ctx, p.Engine)
+	}
+	// A start, restart or install-and-start that the user's Stop cut short
+	// answers with the status, stopped.
+	if errors.Is(err, errStartStopped) {
+		err = nil
 	}
 	if err != nil {
 		m.codec.RespondError(msg.ID, -32000, err.Error())
@@ -380,11 +507,14 @@ func (m *Manager) runCatalog(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "engine is required")
 		return
 	}
-	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch, p.Query)
+	res, err := m.catalog.Catalog(ctx, p.Engine, p.Platform, p.Arch, p.Query, p.ModelSource)
 	if err != nil {
 		m.codec.RespondError(msg.ID, -32603, err.Error())
 		return
 	}
+	// A target whose engine cannot load some weights is not offered them, as
+	// filterForTarget does for MLX. The rule is the target's, not this host's.
+	res.Models = withoutUnsupportedWeights(res.Models, m.exec.unsupportedWeightsFor(normalizeCatalogEngine(p.Engine), res.Platform, res.Arch))
 	m.codec.Respond(msg.ID, res)
 }
 
@@ -405,15 +535,22 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 	var err error
 	if p.Action == pullModelAction {
 		model := modelFromParams(p.Params)
+		// The model keys the download: one naming none could not be cancelled,
+		// and its frames could not be told apart from the engine's others.
+		if model == "" {
+			m.codec.RespondError(msg.ID, -32602, "model is required")
+			return
+		}
+		// An opId names the request on its download's frames. An invalid one
+		// is refused rather than dropped, since its client would look for it
+		// on frames that never carry it.
+		if p.OpID != "" && !validOpID(p.OpID) {
+			m.codec.RespondError(msg.ID, -32602, invalidOpIDMessage)
+			return
+		}
 		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)
 		if err != nil {
-			// A pull can fail after the client's synchronous call has already
-			// timed out (long downloads), so the RPC error alone can't reach a
-			// UI that stopped waiting. Emit one terminal engine:pull-progress
-			// error frame so a local subscriber converges off "pulling" even in
-			// that case, mirroring install's failed progress step.
 			userMsg := m.exec.reportPullFailed(p.Engine, model, err)
-			m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Op: "pull", Stage: "error", Percent: -1, Message: userMsg})
 			m.codec.RespondError(msg.ID, -32000, userMsg)
 			return
 		}
@@ -424,11 +561,11 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32000, err.Error())
 		return
 	}
-	// An action may have changed what's resident (load/unload/pull/delete/run, or
-	// a chat that JIT-loads); nudge the loaded watcher so engine:models-changed
-	// fires promptly instead of waiting for the next poll tick. Pure reads
-	// (list_models/loaded_models/list_downloaded) can't move residency, so skip
-	// the nudge and its wasted sweep for them.
+	// An action may have changed a model list (load/unload/pull/delete/run, or
+	// a chat that JIT-loads); nudge the watcher so engine:models-changed fires
+	// promptly instead of waiting for the next poll tick. Pure reads
+	// (list_models/loaded_models/list_downloaded) can't change one, so skip the
+	// nudge and its wasted sweep for them.
 	if !residencyNeutralActions[p.Action] {
 		m.exec.pokeLoaded()
 	}

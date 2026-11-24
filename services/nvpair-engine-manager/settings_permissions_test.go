@@ -21,7 +21,7 @@ func TestSettingsOverride_RestrictsExistingPermissions(t *testing.T) {
 	path := filepath.Join(e.overrideDir, "fake.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"engine":"fake"}`), 0644))
 	environment := []string{"PAIR_TEST=private"}
-	require.NoError(t, e.persistRuntimeConfig("fake", 54321, nil, &environment))
+	require.NoError(t, e.persistRuntimeConfig("fake", 54321, nil, &environment, nil))
 	for path, want := range map[string]os.FileMode{e.overrideDir: 0700, path: 0600} {
 		info, err := os.Stat(path)
 		require.NoError(t, err)

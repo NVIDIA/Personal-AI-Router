@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Cross-process test for nvpair-ui-broker's opt-in discovery notification
-// stream (discovery:subscribe / discovery:unsubscribe).
+// Cross-process tests for nvpair-ui-broker's opt-in discovery notification
+// stream (discovery:subscribe / discovery:unsubscribe) and hardware delivery.
 //
 // The broker spawns nvpair-node-scanner, whose promoted daemon browses
 // _nvpair-node._tcp and folds each node into the broker's discovery store even
@@ -20,12 +20,17 @@
 //     still discovered (visible via get-nodes) but is NOT pushed.
 //
 // Both broker and scanner binaries are built by TestMain.
+// Hardware tests also start owned node-info or manual-node workers against
+// isolated configuration directories and local test servers.
 package tests
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"testing"
@@ -35,6 +40,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/noderec"
 
 	"github.com/grandcat/zeroconf"
 )
@@ -42,14 +48,19 @@ import (
 // availableNode mirrors the broker's external camelCase wire shape (see
 // AvailableNode in nvpair-ui-broker).
 type availableNode struct {
-	ID             string              `json:"id"`
-	Name           string              `json:"name"`
-	IPAddress      string              `json:"ipAddress"`
-	Port           int                 `json:"port"`
-	LastSeen       int64               `json:"lastSeen"`
-	Models         []string            `json:"models,omitempty"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	ID                   string                       `json:"id"`
+	HostUUID             string                       `json:"hostUuid"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	Trusted              bool                         `json:"trusted"`
+	Name                 string                       `json:"name"`
+	IPAddress            string                       `json:"ipAddress"`
+	Port                 int                          `json:"port"`
+	LastSeen             int64                        `json:"lastSeen"`
+	Models               []string                     `json:"models,omitempty"`
+	ModelsByEngine       map[string][]string          `json:"modelsByEngine,omitempty"`
+	LoadedByEngine       map[string][]string          `json:"loadedByEngine,omitempty"`
+	Info                 *noderec.NodeInfo            `json:"info,omitempty"`
 }
 
 type availableNodesResult struct {
@@ -269,4 +280,180 @@ func TestBroker_RelaysDiscoverySubscriptionAcrossProcesses(t *testing.T) {
 		return !containsNode(nodes, inst3)
 	})
 	t.Log("phase 5 OK: node discovered after unsubscribe with no push — gating confirmed")
+}
+
+// A real node-info worker first pushes local hardware through the broker.
+// A subsequent discovery query must include that cached hardware under the same
+// host and record identities, without waiting for another collection cycle.
+func TestBroker_IncludesLocalHardwareInQueriesAndUpdates(t *testing.T) {
+	if portBusy(14318) {
+		t.Skip("node-info port 14318 is already in use")
+	}
+	stdin, messages, _, cleanup := startBrokerWith(t, "--node-info-path", nodeInfoBin)
+	t.Cleanup(cleanup)
+	waitForMethod(t, messages, "app:ready", 10*time.Second)
+	var sample noderec.NodeInfoEvent
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+	for sample.IdentityVerification != noderec.IdentityLocal {
+		select {
+		case update, ok := <-messages:
+			require.True(t, ok, "broker stream closed before local hardware arrived")
+			if update.Method == noderec.NotifyNodeInfo {
+				require.NoError(t, json.Unmarshal(update.Params, &sample))
+			}
+		case <-timeout.C:
+			require.FailNow(t, "broker did not push owned local hardware")
+		}
+	}
+	require.Equal(t, noderec.IdentityLocal, sample.IdentityVerification)
+	require.NotEmpty(t, sample.HostUUID)
+	assert.Equal(t, sample.HostUUID, sample.Info.HostUUID)
+	require.Positive(t, sample.Info.ObservedAt)
+
+	sendReq(t, stdin, 100, "discovery:get-nodes")
+	response := waitForResponseID(t, messages, 100, 5*time.Second)
+	var snapshot availableNodesResult
+	require.NoError(t, json.Unmarshal(response.Result, &snapshot))
+	var local *availableNode
+	for i := range snapshot.Nodes {
+		if snapshot.Nodes[i].IdentityVerification == noderec.IdentityLocal {
+			local = &snapshot.Nodes[i]
+		}
+	}
+	require.NotNil(t, local)
+	require.NotNil(t, local.Info, "the query must include hardware received before the request")
+	assert.Equal(t, sample.HostUUID, local.Info.HostUUID)
+	assert.Equal(t, sample.DiscoveryRecordID, local.DiscoveryRecordID)
+	// The live worker may collect again before this query. Store tests check
+	// exact timestamp preservation using a fixed observation.
+	assert.GreaterOrEqual(t, local.Info.ObservedAt, sample.Info.ObservedAt)
+
+	assert.Len(t, local.Info.GPUs, len(sample.Info.GPUs))
+}
+
+// A public loopback server claims a host and cluster identity. The real manual
+// worker and broker must deliver its hardware under the independent manual
+// record, without adopting those claims or marking the entry trusted.
+func TestBroker_DeliversManualPreviewWithoutTrustingPublicIdentity(t *testing.T) {
+	// Manual previews use the default node-info port. A tls_port override would
+	// disable public previews, so use a fixed loopback listener and skip if busy.
+	listener, err := net.Listen("tcp", "127.0.0.1:14318")
+	if err != nil {
+		t.Skipf("hardware preview port unavailable: %v", err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal := "unverified-claim"
+		assert.NoError(t, json.NewEncoder(w).Encode(noderec.NodeInfo{
+			HostUUID: principal, ClusterUUID: &principal,
+			GPUs: []noderec.GPUInfo{{Name: "preview GPU"}},
+		}))
+	})}
+	t.Cleanup(func() { assert.NoError(t, server.Close()) })
+	go func() { assert.ErrorIs(t, server.Serve(listener), http.ErrServerClosed) }()
+	stdin, messages, _, cleanup := startBrokerWith(t, "--manual-nodes-path", manualNodesBin)
+	t.Cleanup(cleanup)
+	waitForMethod(t, messages, "app:ready", 10*time.Second)
+	sendReq(t, stdin, 100, "discovery:subscribe")
+	request := `{"jsonrpc":"2.0","id":101,"method":"node/add","params":{"address":"127.0.0.1","name":"preview-target"}}` + "\n"
+	_, err = stdin.Write([]byte(request))
+	require.NoError(t, err)
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case message, ok := <-messages:
+			require.True(t, ok, "broker stream closed before hardware preview arrived")
+			if message.Method != "discovery:nodes-changed" {
+				continue
+			}
+			var nodes []availableNode
+			require.NoError(t, json.Unmarshal(message.Params, &nodes))
+			for _, node := range nodes {
+				if node.DiscoveryRecordID != "manual:preview-target" || node.Info == nil {
+					continue
+				}
+				assert.Equal(t, noderec.IdentityUnverified, node.IdentityVerification)
+				assert.False(t, node.Trusted)
+				assert.Equal(t, "manual:preview-target", node.HostUUID)
+
+				// The public responder's claimed identity must not escape into
+				// either the manual record key or its display hardware payload.
+				assert.Empty(t, node.Info.HostUUID)
+				assert.Nil(t, node.Info.ClusterUUID)
+
+				assert.Equal(t, []noderec.GPUInfo{{Name: "preview GPU"}}, node.Info.GPUs)
+				assert.Positive(t, node.Info.ObservedAt)
+				return
+			}
+		case <-timeout.C:
+			require.FailNow(t, "broker did not deliver the unpaired manual hardware preview")
+		}
+	}
+}
+
+// The test peer's certificate is approved in an isolated cluster directory.
+// The real manual worker and broker must deliver its authenticated hardware
+// under that peer's UUID, rather than an unverified manual record key.
+func TestBroker_DeliversAuthenticatedManualHardwareInDiscovery(t *testing.T) {
+	cluster := newInterNodeCluster(t)
+	info := noderec.NodeInfo{
+		HostUUID: cluster.peerUUID, ClusterUUID: &cluster.peerUUID,
+		GPUs:   []noderec.GPUInfo{{Name: "paired test GPU", VramBytes: 8192}},
+		CPU:    &noderec.CPUInfo{Name: "paired test CPU", Cores: 8},
+		Memory: &noderec.MemoryInfo{TotalBytes: 16384}, TelemetryValid: true, MSSince: 137,
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := cluster.peer.VerifyClientPin(r); !ok {
+			http.Error(w, "not a pinned peer", http.StatusForbidden)
+			return
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(info))
+	}))
+	server.TLS = cluster.peer.ServerTLSConfig()
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	stdin, messages, _, cleanup := startBrokerWithDirs(t, t.TempDir(), cluster.nodeDir, "--manual-nodes-path", manualNodesBin)
+	t.Cleanup(cleanup)
+	waitForMethod(t, messages, "app:ready", 10*time.Second)
+	sendReq(t, stdin, 100, "discovery:subscribe")
+	_, err := fmt.Fprintf(stdin, `{"jsonrpc":"2.0","id":101,"method":"node/add","params":{"address":"127.0.0.1","name":"paired-target","tls_port":%d}}`+"\n", port)
+	require.NoError(t, err)
+	timeout := time.NewTimer(20 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case message, ok := <-messages:
+			require.True(t, ok)
+			if message.Method != "discovery:nodes-changed" {
+				continue
+			}
+			var nodes []availableNode
+			require.NoError(t, json.Unmarshal(message.Params, &nodes))
+			for _, node := range nodes {
+				if node.HostUUID != cluster.peerUUID || node.Info == nil {
+					continue
+				}
+				assert.Equal(t, noderec.IdentityPinned, node.IdentityVerification)
+				assert.True(t, node.Trusted)
+
+				assert.Equal(t, cluster.peerUUID, node.Info.HostUUID)
+				require.NotNil(t, node.Info.ClusterUUID)
+				assert.Equal(t, cluster.peerUUID, *node.Info.ClusterUUID)
+
+				// Identity-only responses cannot prove that the hardware payload
+				// survives the worker and broker's field projections.
+				assert.Equal(t, info.GPUs, node.Info.GPUs)
+				assert.Equal(t, info.CPU, node.Info.CPU)
+				assert.Equal(t, info.Memory, node.Info.Memory)
+				assert.True(t, node.Info.TelemetryValid)
+				assert.GreaterOrEqual(t, node.Info.MSSince, int64(137))
+				assert.Positive(t, node.Info.ObservedAt)
+				return
+			}
+		case <-timeout.C:
+			require.FailNow(t, "broker did not deliver pinned manual hardware")
+		}
+	}
 }

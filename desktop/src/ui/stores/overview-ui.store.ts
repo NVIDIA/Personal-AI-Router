@@ -4,6 +4,7 @@
 import { create } from 'zustand'
 import type { SettingsWindowTab } from '@/ui/types/settings-window'
 import type { OverviewTab } from '@/shared/types/overview'
+import { useErrorsStore } from '@/ui/stores/errors.store'
 
 interface OverviewUiStore {
     /** Which top-level Overview tab is showing the content area. */
@@ -12,6 +13,10 @@ interface OverviewUiStore {
     settingsSubTab: SettingsWindowTab
     /** One-shot request to expand a node card's inline engine settings. */
     focusNodeId: string | null
+    /** Turn-on/install interaction waiting to offer vLLM model selection. */
+    modelSelectionNodeId: string | null
+    /** Error identities at the start of setup, retained across tab navigation. */
+    modelSelectionErrorBaseline: ReadonlyMap<string, number>
     setActiveTab: (tab: OverviewTab) => void
     /** Switch to the Settings tab, optionally selecting a sub-tab. */
     openSettings: (subTab?: SettingsWindowTab) => void
@@ -20,12 +25,16 @@ interface OverviewUiStore {
     focusNodeEngineSettings: (nodeId: string) => void
     /** Clear a pending focus request once a card has consumed it. */
     consumeFocusNode: () => void
+    requestModelSelection: (nodeId: string) => void
+    dismissModelSelection: () => void
 }
 
 export const useOverviewUiStore = create<OverviewUiStore>(set => ({
     activeTab: 'overview',
     settingsSubTab: 'cluster',
     focusNodeId: null,
+    modelSelectionNodeId: null,
+    modelSelectionErrorBaseline: new Map(),
 
     setActiveTab: tab => set({ activeTab: tab }),
 
@@ -39,5 +48,15 @@ export const useOverviewUiStore = create<OverviewUiStore>(set => ({
 
     focusNodeEngineSettings: nodeId => set({ activeTab: 'overview', focusNodeId: nodeId }),
 
-    consumeFocusNode: () => set({ focusNodeId: null })
+    consumeFocusNode: () => set({ focusNodeId: null }),
+
+    requestModelSelection: nodeId =>
+        set({
+            modelSelectionNodeId: nodeId,
+            modelSelectionErrorBaseline: new Map(
+                useErrorsStore.getState().errors.map(error => [error.id, error.timestamp])
+            )
+        }),
+
+    dismissModelSelection: () => set({ modelSelectionNodeId: null })
 }))

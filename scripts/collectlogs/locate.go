@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 )
 
 // Directory and file names must match the desktop constants that create them:
@@ -156,7 +156,7 @@ func logFilesInDir(dir string) (rotation, bundles []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	sort.Strings(bundles)
+	slices.Sort(bundles)
 
 	if len(rotation) == 0 && len(bundles) == 0 {
 		return nil, nil, fmt.Errorf("no log files or exported bundles in %s", dir)

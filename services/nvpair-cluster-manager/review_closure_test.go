@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"eapnoob"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +30,7 @@ func TestInboundInitial_CannotPublishAfterTeardown(t *testing.T) {
 	sess := &pairingSession{
 		inviteID: inviteID,
 		role:     roleJoiner,
-		peerPairing: &PairingInfo{
+		peerPairing: &eapnoob.PairingInfo{
 			NodeUUID:  peer.identity.NodeUUID,
 			NodeID:    peer.identity.NodeID,
 			Name:      peer.identity.Name,
@@ -119,7 +121,7 @@ func TestPreInviteSessions_ExpireAndEnforceSessionLimit(t *testing.T) {
 	_, ok := m.getSession(expired.inviteID)
 	require.False(t, ok, "pre-invite session survived its TTL")
 
-	for i := 0; i < maxPreInviteSessions; i++ {
+	for i := range maxPreInviteSessions {
 		m.putSession(&pairingSession{
 			inviteID: "bounded-" + strconv.Itoa(i), role: roleJoiner,
 			createdAt: time.Now().UnixMilli(),

@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,8 +14,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRestoreEnabled_PreservesWaitingForModelAcrossShutdown(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	e.StopAll()
+	fresh := NewExecutor(e.reg, NewReporter(nil), func(string, any) {}, e.baseDir)
+	t.Cleanup(fresh.StopAll)
+	require.NoError(t, fresh.RestoreEnabled(t.Context()))
+
+	status, err := fresh.Status("fake")
+	require.NoError(t, err)
+	assert.True(t, status.AwaitingModel)
+	assert.False(t, status.Running)
+}
+
+func TestRestoreEnabled_AwaitsModelAfterEject(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	_, err := loadModel(t, e, "org/selected")
+	require.NoError(t, err)
+	_, err = ejectEngine(t, e, "org/selected")
+	require.NoError(t, err)
+	e.StopAll()
+	fresh := NewExecutor(e.reg, NewReporter(nil), func(string, any) {}, e.baseDir)
+	t.Cleanup(fresh.StopAll)
+
+	require.NoError(t, fresh.RestoreEnabled(t.Context()))
+
+	assert.True(t, mustStatus(t, fresh).AwaitingModel)
+	assert.False(t, mustStatus(t, fresh).Running)
+}
 
 func desiredTestExecutor(t *testing.T, manifest *Manifest, baseDir string) *Executor {
 	t.Helper()
@@ -45,7 +76,7 @@ func TestDesiredState_StoresExplicitOffAndLeavesLegacyUnknown(t *testing.T) {
 
 func TestDesiredOn_SurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 	baseDir := t.TempDir()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
 	require.NoError(t, first.Start(ctx, "fake"), "start")
@@ -69,7 +100,7 @@ func TestDesiredOn_SurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 func TestFailedRestore_RetainsDesiredOnForRetry(t *testing.T) {
 	baseDir := t.TempDir()
 	seed := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
-	require.NoError(t, seed.Start(context.Background(), "fake"), "seed start")
+	require.NoError(t, seed.Start(t.Context(), "fake"), "seed start")
 	seed.StopAll()
 
 	failing := testEngineManifest(fakeEngineBin)
@@ -78,11 +109,11 @@ func TestFailedRestore_RetainsDesiredOnForRetry(t *testing.T) {
 	platform.Runtime.Args = []string{"noserve"}
 	platform.Runtime.Ready.TimeoutS = 1
 	failing.Platforms[key] = platform
-	require.Error(t, desiredTestExecutor(t, failing, baseDir).RestoreEnabled(context.Background()), "expected restore failure")
+	require.Error(t, desiredTestExecutor(t, failing, baseDir).RestoreEnabled(t.Context()), "expected restore failure")
 
 	retry := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
 	t.Cleanup(retry.StopAll)
-	require.NoError(t, retry.RestoreEnabled(context.Background()), "retry restore")
+	require.NoError(t, retry.RestoreEnabled(t.Context()), "retry restore")
 	st, err := retry.Status("fake")
 	require.NoError(t, err, "retry status (%v, %v)", st, err)
 	require.True(t, st.Running, "retry status (%v, %v)", st, err)
@@ -125,7 +156,7 @@ func TestDeclinedAdoptedStop_StillPersistsOffIntent(t *testing.T) {
 
 	srv.Close()
 	fresh := desiredTestExecutor(t, m, baseDir)
-	require.NoError(t, fresh.RestoreEnabled(context.Background()), "restore after declined OFF")
+	require.NoError(t, fresh.RestoreEnabled(t.Context()), "restore after declined OFF")
 	st, err = fresh.Status("fake")
 	require.NoError(t, err, "declined-OFF engine was restarted: status (%v, %v)", st, err)
 	require.False(t, st.Running, "declined-OFF engine was restarted: status (%v, %v)", st, err)
@@ -155,7 +186,7 @@ func TestConfirmedStop_PersistsOffDespiteCommandExitError(t *testing.T) {
 	manifest.Platforms[key] = platform
 
 	first := desiredTestExecutor(t, manifest, baseDir)
-	require.NoError(t, first.Start(context.Background(), "fake"), "adopt and save ON")
+	require.NoError(t, first.Start(t.Context(), "fake"), "adopt and save ON")
 	closed := make(chan struct{})
 	go func() {
 		for !fileExists(marker) {
@@ -172,7 +203,7 @@ func TestConfirmedStop_PersistsOffDespiteCommandExitError(t *testing.T) {
 	require.False(t, enabled, "saved state after confirmed stop (%v, %v, %v)", enabled, known, err)
 
 	fresh := desiredTestExecutor(t, manifest, baseDir)
-	require.NoError(t, fresh.RestoreEnabled(context.Background()), "restore after confirmed OFF")
+	require.NoError(t, fresh.RestoreEnabled(t.Context()), "restore after confirmed OFF")
 	st, err := fresh.Status("fake")
 	require.NoError(t, err, "confirmed OFF was restored unexpectedly: status (%v, %v)", st, err)
 	require.False(t, st.Running, "confirmed OFF was restored unexpectedly: status (%v, %v)", st, err)

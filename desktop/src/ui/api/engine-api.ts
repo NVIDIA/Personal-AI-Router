@@ -16,6 +16,8 @@ import type {
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
+import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import type {
     EngineSettingsTarget,
     EngineSettingsRequest,
@@ -48,12 +50,18 @@ export interface IEngineApi {
 
     /** Start or stop an engine process on a node. */
     toggle(engineType: EngineType, nodeId: string): void
+    /**
+     * Stop an engine, including one that is still starting (a slow start, or a
+     * vLLM Load restarting it), which cancels the start.
+     */
+    stop(engineType: EngineType, nodeId: string): void
     /** Install an engine on a node. */
     install(engineType: EngineType, nodeId: string): void
     /** Uninstall an engine from a node without removing downloaded models. */
     uninstall(engineType: EngineType, nodeId: string): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
+    cancelModelPull(engineType: EngineType, nodeId: string, model: string): void
     /** Load a model into memory on a node. */
     loadModel(engineType: EngineType, nodeId: string, model: string): void
     /** Unload a model from memory on a node. */
@@ -62,8 +70,12 @@ export interface IEngineApi {
     deleteModel(engineType: EngineType, nodeId: string, model: string): void
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
-    /** Load an engine catalog or explicitly search its upstream registry. */
-    searchHub(engineType: EngineType, query?: string): Promise<EngineHubSearchResponse>
+    /** Load the catalog a node's engine downloads from, or search its upstream registry. */
+    searchHub(
+        engineType: EngineType,
+        nodeId: string,
+        query?: string
+    ): Promise<EngineHubSearchResponse>
 
     /** Durable engine state changed. Prefer this for new renderer state. */
     onStateChanged(callback: (patch: EngineStatePatch) => void): () => void
@@ -76,6 +88,19 @@ export interface IEngineApi {
 }
 
 function fireCommand(transport: ServiceTransport, payload: EngineCommandPayload): void {
+    // Remember the user's setup interaction across the backend's install/start
+    // reports. Only an awaiting-model report opens the picker; a saved model
+    // resuming normally needs no intervention. This covers onboarding and Retry
+    // as well as both engine switches.
+    if (
+        payload.engineType === 'vllm' &&
+        (payload.command === 'install' ||
+            (payload.command === 'toggle' &&
+                useEngineStatusStore.getState().statusByNode.get(payload.nodeId)?.get('vllm')
+                    ?.processStatus === 'stopped'))
+    ) {
+        useOverviewUiStore.getState().requestModelSelection(payload.nodeId)
+    }
     // Optimistically flip the clicked control to a "working"/disabled state so
     // the user gets immediate feedback even when the backend push lags (esp.
     // remote nodes). The entry clears itself on the superseding push / timeout.
@@ -94,12 +119,16 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
 
         toggle: (engineType, nodeId) =>
             fireCommand(transport, { command: 'toggle', engineType, nodeId }),
+        stop: (engineType, nodeId) =>
+            fireCommand(transport, { command: 'stop', engineType, nodeId }),
         install: (engineType, nodeId) =>
             fireCommand(transport, { command: 'install', engineType, nodeId }),
         uninstall: (engineType, nodeId) =>
             fireCommand(transport, { command: 'uninstall', engineType, nodeId }),
         pullModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'pullModel', engineType, nodeId, model }),
+        cancelModelPull: (engineType, nodeId, model) =>
+            fireCommand(transport, { command: 'cancelModelPull', engineType, nodeId, model }),
         loadModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'loadModel', engineType, nodeId, model }),
         unloadModel: (engineType, nodeId, model) =>
@@ -114,10 +143,10 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 model,
                 expiry
             }),
-        searchHub: (engineType, query) =>
+        searchHub: (engineType, nodeId, query) =>
             transport.invoke(
                 'engine:search-hub',
-                query === undefined ? { engineType } : { engineType, query }
+                query === undefined ? { engineType, nodeId } : { engineType, nodeId, query }
             ),
 
         onStateChanged: cb => transport.subscribePush('engines:state-changed', cb),

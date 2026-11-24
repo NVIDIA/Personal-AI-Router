@@ -4,7 +4,8 @@
 package ui
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"time"
 )
 
@@ -168,7 +169,7 @@ func buildDemoSchedule(targets []demoTarget) []demoRequest {
 	}
 	slots := make([]slot, 0, len(demoCohortOffsets)*perCohort*len(demoStages))
 	for _, cohort := range demoCohortOffsets {
-		for agent := 0; agent < perCohort; agent++ {
+		for range perCohort {
 			for i, stage := range demoStages {
 				at := cohort + stage.offset
 				// The ceiling is a planning invariant as well as a runtime one.
@@ -183,7 +184,9 @@ func buildDemoSchedule(targets []demoTarget) []demoRequest {
 	// A stable sort keeps equal-time slots in generation order, so the
 	// round-robin assignment below is reproducible for a given target list —
 	// which is what makes the schedule testable at all.
-	sort.SliceStable(slots, func(i, j int) bool { return slots[i].at < slots[j].at })
+	slices.SortStableFunc(slots, func(a, b slot) int {
+		return cmp.Compare(a.at, b.at)
+	})
 
 	out := make([]demoRequest, len(slots))
 	for i, s := range slots {

@@ -504,14 +504,12 @@ func TestChoose_IsConcurrencySafe(t *testing.T) {
 	candidates := []string{"10.0.0.1:14321", "10.0.0.2:14321"}
 	var wg sync.WaitGroup
 	for i := range 16 {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			choose(c, "peer", candidates)
 			if i%4 == 0 {
 				c.Forget("peer")
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, "10.0.0.2:14321", choose(c, "peer", candidates))

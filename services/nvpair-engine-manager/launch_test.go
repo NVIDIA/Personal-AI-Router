@@ -15,7 +15,24 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	settings "nvpair-shared/enginesettings"
 )
+
+func TestConfigureLaunch_StartsASelectedModelWhenEnabled(t *testing.T) {
+	e := waitingModelExecutor(t)
+	require.NoError(t, e.Start(t.Context(), "fake"))
+	before, err := e.LaunchSettings("fake")
+	require.NoError(t, err)
+	text, _, err := withLaunchFlag(before.LaunchText, "--model", "org/settings-choice")
+	require.NoError(t, err)
+	_, err = e.ConfigureLaunch(t.Context(), settings.Configure{Engine: "fake", Settings: settings.Config{ServerPort: before.ServerPort, LaunchText: text}}, func() error { return nil })
+	require.NoError(t, err)
+
+	status, err := e.Status("fake")
+	require.NoError(t, err)
+	assert.True(t, status.Running)
+	assert.False(t, status.AwaitingModel)
+}
 
 // Render the legacy full command only for migration and argv regression tests.
 func (command launchCommand) text() (string, error) {
@@ -36,7 +53,7 @@ func TestResolvedLaunch_MatchesBundledEngines(t *testing.T) {
 				var err error
 				var want []string
 				if engine == "ollama" {
-					launch, err = resolveProcessLaunch(platform.Runtime, "/test path/ollama", vars)
+					launch, err = resolveProcessLaunch(platform.Runtime, "/test path/ollama", vars, false)
 					want = []string{"OLLAMA_HOST=127.0.0.1:12345", "/test path/ollama", "serve"}
 					if strings.HasPrefix(platformKey, "linux/") {
 						want = append([]string{"LD_LIBRARY_PATH=/test path/lib/ollama"}, want...)
@@ -48,7 +65,7 @@ func TestResolvedLaunch_MatchesBundledEngines(t *testing.T) {
 					var bin string
 					bin, err = resolvePlaceholders(platform.Runtime.Bin, vars)
 					if err == nil {
-						launch, err = resolveProcessLaunch(platform.Runtime, bin, vars)
+						launch, err = resolveProcessLaunch(platform.Runtime, bin, vars, false)
 					}
 					want = []string{"LLAMA_CACHE=/test models", bin, "--sleep-idle-seconds", "300", "--host", "127.0.0.1", "--port", "12345", "--cors-origins", ""}
 					if strings.HasPrefix(platformKey, "linux/") {
@@ -176,9 +193,9 @@ func TestSavedLaunchArguments_ReplaceManifestDefaults(t *testing.T) {
 			var launch launchCommand
 			var err error
 			if mode == "process" {
-				launch, err = resolveProcessLaunch(rt, "", vars)
+				launch, err = resolveProcessLaunch(rt, "", vars, false)
 			} else {
-				launch, err = resolveRuntimeCommand(rt, 0, vars)
+				launch, err = resolveRuntimeCommand(rt, 0, vars, false)
 			}
 			require.NoError(t, err)
 			assert.Equal(t, want, launch.Args)

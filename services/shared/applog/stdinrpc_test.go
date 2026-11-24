@@ -89,9 +89,7 @@ func TestNotifier_SerializesConcurrentNotifyAndWrite(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for w := range writers {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for range framesPerWriter {
 				if w%2 == 0 {
 					params := map[string][]string{"addresses": {"10.172.54.70", "10.0.0.5", "192.168.240.1"}}
@@ -105,7 +103,7 @@ func TestNotifier_SerializesConcurrentNotifyAndWrite(t *testing.T) {
 					return
 				}
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 

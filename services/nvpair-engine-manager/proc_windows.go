@@ -54,6 +54,14 @@ func taskkill(cmd *exec.Cmd, force bool) error {
 	return kc.Run()
 }
 
+// procRunsScript is unused on Windows, where the engines are real executables
+// and procImage identifies them.
+func procRunsScript(int, string) bool { return false }
+
+// killGroupRemnants has nothing to do on Windows: every stop is taskkill /T,
+// which already takes the whole process tree.
+func killGroupRemnants(int) {}
+
 var (
 	iphlpapi                = windows.NewLazySystemDLL("iphlpapi.dll")
 	procGetExtendedTcpTable = iphlpapi.NewProc("GetExtendedTcpTable")

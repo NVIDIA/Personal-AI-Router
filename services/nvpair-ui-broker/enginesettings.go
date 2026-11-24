@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -201,7 +202,7 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 	if !ready && record != nil {
 		configuredProxy = record.Snapshot.Settings.ProxyPort
 	}
-	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText}
+	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText, ModelSource: launch.ModelSource}
 	if record == nil {
 		record = &engineSettingsRecord{Snapshot: settings.Snapshot{NodeID: b.nodeID, Engine: engine, Revision: 1, AppliedRevision: 1, Epoch: b.engineSettingsEpoch, Phase: "idle", Settings: current}, Receipts: make(map[string]settingsReceipt)}
 		b.engineSettings[engine] = record
@@ -412,7 +413,11 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	}
 	// An unsuccessful apply can leave the previous engine running. Restore
 	// discovery from observed runtime state, independent of the apply result.
-	if proxyReady && launch.Running && launch.EffectivePort > 0 && record.Snapshot.EffectiveProxyPort > 0 && launch.EffectivePort != record.Snapshot.EffectiveProxyPort {
+	if profile.LoadOnRequest {
+		// Idle engines remain requestable from cached inventory. Restore that
+		// eligibility before publishing completion, including after a failed apply.
+		b.reconcileRequestedModelEngine(profile)
+	} else if proxyReady && launch.Running && launch.EffectivePort > 0 && record.Snapshot.EffectiveProxyPort > 0 && launch.EffectivePort != record.Snapshot.EffectiveProxyPort {
 		b.setProxyLocalBackend(b.settingsProxy(engine), engine, launch.EffectivePort, true)
 		if b.regCache != nil {
 			b.registerService(noderec.RegisterParams{Service: service, Port: record.Snapshot.EffectiveProxyPort})
@@ -537,9 +542,7 @@ func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, ca
 	record := b.engineSettings[p.Engine]
 	previous := *record
 	previous.Receipts = make(map[string]settingsReceipt, len(record.Receipts))
-	for k, v := range record.Receipts {
-		previous.Receipts[k] = v
-	}
+	maps.Copy(previous.Receipts, record.Receipts)
 	if preview.Settings == record.Snapshot.Settings && record.Snapshot.Phase != "failed" {
 		record.Snapshot.RequestID = p.RequestID
 		record.Snapshot.Phase = "succeeded"
@@ -661,6 +664,23 @@ func (b *Broker) handleSettingsRelay(raw json.RawMessage) {
 				err = fmt.Errorf("unknown settings operation")
 			} else {
 				err = b.rebindSettingsProxy(operation.Engine, operation.Port)
+			}
+		} else if strings.HasPrefix(relay.Method, "settings/") {
+			// A worker reading a node setting (e.g. the engine-manager
+			// checking engine_allow_lan_bind). Forwarded verbatim to
+			// nvpair-node-settings, same as an inbound settings/ request.
+			st := b.getSettings()
+			if st == nil {
+				err = fmt.Errorf("node-settings not available")
+			} else {
+				var res json.RawMessage
+				var rpcErr *RPCError
+				res, rpcErr, err = st.Call(ctx, relay.Method, nil)
+				if rpcErr != nil {
+					err = fmt.Errorf("%s", rpcErr.Message)
+				} else {
+					result = res
+				}
 			}
 		} else {
 			result, err = b.dispatchEngineSettings(ctx, relay.Method, relay.Request, relay.Caller)

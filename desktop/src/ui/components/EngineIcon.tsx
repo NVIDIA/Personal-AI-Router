@@ -3,13 +3,29 @@
 
 import type { CSSProperties } from 'react'
 import { type EngineType } from '@/shared/types/engines'
+import { EngineDisplayNames } from '@/shared/constants/engines'
 import ollamaIcon from '@/ui/assets/engine-icons/ollama.png?inline'
 import lmStudioIcon from '@/ui/assets/engine-icons/lm-studio.png?inline'
 import llamaCppIcon from '@/ui/assets/engine-icons/llama-cpp.svg?inline'
+import vllmIcon from '@/ui/assets/engine-icons/vllm.svg?inline'
+
+const engineIcons: Record<EngineType, string> = {
+    ollama: ollamaIcon,
+    'lm-studio': lmStudioIcon,
+    'llama-cpp': llamaCppIcon,
+    vllm: vllmIcon
+}
 
 export default function EngineIcon({ type, size = 32 }: { type: EngineType; size?: number }) {
+    if (!Object.hasOwn(engineIcons, type)) return null
+    const icon = engineIcons[type]
+
     const dimension = `${size}px`
-    const imgStyle: CSSProperties = { width: '100%', height: '100%', objectFit: 'contain' }
+    const imgStyle: CSSProperties = {
+        width: '100%',
+        height: '100%',
+        objectFit: type === 'lm-studio' ? 'cover' : 'contain'
+    }
     const containerStyle: CSSProperties = {
         width: dimension,
         minWidth: dimension,
@@ -22,31 +38,9 @@ export default function EngineIcon({ type, size = 32 }: { type: EngineType; size
         overflow: 'hidden'
     }
 
-    if (type === 'ollama') {
-        return (
-            <div style={containerStyle}>
-                <img src={ollamaIcon} alt="Ollama" style={imgStyle} />
-            </div>
-        )
-    }
-
-    if (type === 'lm-studio') {
-        imgStyle.objectFit = 'cover'
-
-        return (
-            <div style={containerStyle}>
-                <img src={lmStudioIcon} alt="LM Studio" style={imgStyle} />
-            </div>
-        )
-    }
-
-    if (type === 'llama-cpp') {
-        return (
-            <div style={containerStyle}>
-                <img src={llamaCppIcon} alt="llama.cpp" style={imgStyle} />
-            </div>
-        )
-    }
-
-    return null
+    return (
+        <div style={containerStyle}>
+            <img src={icon} alt={EngineDisplayNames[type]} style={imgStyle} />
+        </div>
+    )
 }

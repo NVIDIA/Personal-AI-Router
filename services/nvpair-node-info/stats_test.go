@@ -162,7 +162,7 @@ func TestBuildResponse_ReportsTelemetryAgeAndFreshness(t *testing.T) {
 	now := time.Unix(1_700_000_000, 500_000_000)
 	test := func(name string, sampledAt time.Time, wantValid bool, wantAge int64) {
 		t.Run(name, func(t *testing.T) {
-			body := buildResponseAt(
+			typed := buildResponseAt(
 				[]GPUInfo{{Name: "GPU 0", statsKey: "gpu-a"}},
 				nil,
 				0,
@@ -174,11 +174,11 @@ func TestBuildResponse_ReportsTelemetryAgeAndFreshness(t *testing.T) {
 				nil,
 				now,
 			)
-			var typed NodeInfoResponse
-			require.NoError(t, json.Unmarshal(body, &typed), "decode response")
 			require.Equal(t, wantValid, typed.TelemetryValid)
 			require.Equal(t, wantAge, typed.MSSince)
 
+			body, err := json.Marshal(typed)
+			require.NoError(t, err)
 			var raw map[string]any
 			require.NoError(t, json.Unmarshal(body, &raw), "decode raw response")
 			require.Contains(t, raw, "telemetryValid", "telemetryValid missing from response")
@@ -197,7 +197,8 @@ func TestBuildResponse_ReportsTelemetryAgeAndFreshness(t *testing.T) {
 // with no "cpu" key at all, not `"cpu":null`.
 func buildResponseDecode(t *testing.T, static []GPUInfo, cpu *CPUInfo, memTotal uint64, snap statsSnapshot) (NodeInfoResponse, map[string]any) {
 	t.Helper()
-	body := buildResponse(static, cpu, memTotal, snap, "", nil)
+	body, err := json.Marshal(buildResponse(static, cpu, memTotal, snap, "", nil))
+	require.NoError(t, err)
 	var typed NodeInfoResponse
 	require.NoError(t, json.Unmarshal(body, &typed), "typed decode")
 	var raw map[string]any
@@ -260,9 +261,9 @@ func TestBuildResponseUnifiedMemory_UsesSystemSnapshot(t *testing.T) {
 }
 
 // Apple Silicon shares physical memory but ioreg reports the GPU-specific
-// mapped allocation. It must flow through the normal per-adapter stats path,
+// in-use memory. It must flow through the normal per-adapter stats path,
 // not be replaced with whole-system memory usage.
-func TestBuildResponseAppleUnifiedMemory_UsesGPUAllocation(t *testing.T) {
+func TestBuildResponseAppleUnifiedMemory_UsesGPUInUseMemory(t *testing.T) {
 	static := []GPUInfo{{
 		Name:      "Apple M3 Max",
 		VramBytes: 36 << 30,

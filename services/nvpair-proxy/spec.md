@@ -27,7 +27,7 @@ that choice good under bursts.
 ### 1.1 What a caller is promised
 
 The proxy aims to get every inference request **started** on some node that can
-serve it, and spends a bounded amount of effort doing so. Stated precisely:
+serve it, and spends a bounded number of dispatches doing so. Stated precisely:
 
 > While budget remains (§5.1), a failure that happens *before* the engine begins
 > producing output is retried rather than returned. Once output begins, the
@@ -40,9 +40,10 @@ at all, so a node blinking out does not spend the budget.
 
 Four things bound that aim, and a caller should design for them.
 
-**Effort is bounded, and which bound ran out changes what the caller gets.**
-Absorption holds only while budget remains. Past that there are two shapes, both
-detailed in §5.4:
+**Dispatches are bounded, elapsed time is not, and which bound ran out changes
+what the caller gets.** Absorption holds only while budget remains. Past that
+there are two shapes, both detailed in §5.4, and a third where no bound is
+reached:
 
 - **The dispatch budget ran out.** The final permitted attempt is never
   retried, so its own failure is the answer: the upstream's status and body
@@ -51,9 +52,13 @@ detailed in §5.4:
 - **The deadline passed between attempts, or no owner came back.** Nothing is
   in flight to answer, so the proxy generates a `503` with `Retry-After` that
   names which of those it was.
+- **An attempt never ends.** A node that withholds its headers holds the
+  attempt until it answers, the connection fails, the node leaves discovery, or
+  the caller gives up (§5.1, §5.6). Nothing is returned until one of those
+  happens.
 
-Either way this is a persistent, bounded attempt to start — not an assurance
-that every submission eventually runs.
+In every case this is a persistent attempt to start, bounded in dispatches but
+not in time — not an assurance that every submission eventually runs.
 
 **"Started" is the guarantee, not "finished".** Commitment ends at the first
 byte of response body (§5.2), so `completed` means the engine began generating,
@@ -69,10 +74,12 @@ it would mean parsing response bodies, which §9 forbids.
 
 **A non-streaming request is the weakest case.** Its headers arrive only when
 the response is complete, so "queued inside the engine" and "generating right
-now" look identical from outside. The attempt cap therefore has to cover whole
-generation, and when it expires the proxy cannot tell whether it abandoned a
-stalled request or a working one — so retrying may discard real progress. That
-is a genuine limitation, not a safety margin (§5.6).
+now" look identical from outside. The proxy puts no cap on that wait, so a long
+generation is never restarted, but a node that stalls before responding is never
+failed over for being slow either: the attempt lasts until the engine answers,
+the connection fails, the node leaves discovery (for a manual node, only when
+the user removes it), or the caller gives up. That is a genuine limitation, not
+a safety margin (§5.6).
 
 ## 2. Scope
 
@@ -100,7 +107,7 @@ The process starts with **no engine and no listener**. The broker then sends one
 
 A flag cannot express this. The broker plans a different port for each engine —
 Ollama's managed facade wants `:11434`, LM Studio's wants `:1234`, and
-llama.cpp's managed facade wants `:8080`; any may be absent so the child keeps
+llama.cpp's managed facade wants `:8080`, and vLLM's wants `:8000`; any may be absent so the child keeps
 its own persisted port — and a single-valued flag carries only one plan.
 
 ### 3.1 Why one process
@@ -109,7 +116,7 @@ Between scheduler snapshots a facade takes short-lived **reservations** for work
 it has dispatched but that the scheduler has not yet observed. Those live in the
 process, and every facade shares them. If each engine had its own proxy
 process, none could see the others' reservations, so simultaneous bursts across
-Ollama, LM Studio, and llama.cpp could select the same node, each incorrectly
+Ollama, LM Studio, llama.cpp, and vLLM could select the same node, each incorrectly
 believing it was idle.
 Sharing the map is the reason the engines share a process.
 
@@ -164,7 +171,7 @@ For a model-bearing inference request:
 
 1. Filter a request-local discovery snapshot to nodes whose per-engine inventory
    advertises the requested model. Ollama normalizes the implicit `:latest` tag;
-   LM Studio and llama.cpp ids match exactly. An empty owner set returns a local
+   LM Studio, llama.cpp, and vLLM ids match exactly. An empty owner set returns a local
    `502` without contacting an engine.
 2. Order the eligible owners: explicit `node/select` pin, then the scheduler's
    priority list, then deterministic default ordering.
@@ -191,7 +198,7 @@ not inventory scope. Its inference routes remain `/v1/*`.
 | --- | --- | --- |
 | `maxDispatchAttempts` | 5 | how many dispatches may fail |
 | `jobDeadline` | 10 minutes from request creation | how long new attempts may keep being started, including while waiting for an owner to exist |
-| `firstBodyTimeout` | `proxyResponseTimeout` (120s) | one attempt's wait for first content, measured from the arrival of headers |
+| `firstBodyTimeout` | 180s | one attempt's wait for first content, measured from the arrival of headers |
 
 The retry budget applies only to inference requests. Routes not classified in
 the engine's route table are still forwarded verbatim, and some perform
@@ -206,20 +213,25 @@ candidates, back off between rounds, or apply the inference deadline.
 eligible owner sends nothing, so a job whose only owner briefly drops out does
 not burn its budget while the node comes back.
 
-**Elapsed time per attempt is the sum of three budgets, not one.** They run in
-sequence: the dial (`proxyDialTimeout`, 10s), then headers
-(`proxyResponseTimeout`, 120s, enforced by the transport), then first content
-(`firstBodyTimeout`, 120s, which starts only once headers arrive). One attempt
-can therefore occupy around 240s — the two 120s caps back to back, since a slow
-dial is a LAN rarity — and nothing caps their sum.
+**Elapsed time per attempt is not capped.** The dial is bounded
+(`proxyDialTimeout`, 10s), and so is the wait for first content once headers
+arrive (`firstBodyTimeout`, 180s). The wait for headers is not: the transport
+sets no response-header timeout, so an engine that accepts a request and
+withholds its headers holds the attempt until it answers, the connection fails,
+the target leaves discovery (for a manual node, only when the user removes it),
+or the client disconnects.
 
 Both bounds are checked before every dispatch and **never truncate an attempt
 already in flight**. Killing one seconds from its first token and then failing
 the job for being out of time would spend the entire wait and discard the
 result. `jobDeadline` is therefore a "no new attempts after" line rather than a
 ceiling on elapsed time, and the worst case is the deadline plus one whole
-attempt: a last dispatch starting just under 600s and running its full 240s
-puts time to first content near fourteen minutes.
+attempt. Since an attempt's wait for headers has no cap, neither does that sum.
+
+vLLM model preparation has a separate ten-minute limit, including queueing
+behind active responses. It runs before inference, whose response-header wait
+remains uncapped as described above. The preparation budget is not an overall
+inference deadline; streaming after first content has its own idle deadlines.
 
 Which bound ends a job depends on how its attempts fail, and all three cases
 are real:
@@ -227,16 +239,19 @@ are real:
 - **Fast failures** — a refused connection, a prompt `503` — cost about a
   second, so all five attempts fit well inside the deadline and the dispatch
   budget is what ends the job. This is the common case.
-- **Slow failures** — an engine that accepts and then withholds everything —
-  cost close to a whole attempt each, so the deadline arrives first. At 240s
-  per attempt the fourth dispatch would start past 600s, so the job ends after
-  three attempts with budget unspent.
+- **Slow failures** — an engine that sends headers and then produces nothing —
+  cost about 180s each, so the deadline arrives first. With backoff between
+  them the fifth dispatch would start past 600s, so the job ends after four
+  attempts with budget unspent.
 - **No owner at all** costs no attempt, so the deadline is the only thing that
   can end the wait.
 
 The last case is why the deadline cannot be dropped as redundant with the
 attempt count, and the middle one is why five attempts is a ceiling rather than
-a promise. **Do not remove either bound as unreachable.**
+a promise.
+
+An engine that withholds its headers never fails for being slow, so neither
+bound ends that job; only the attempt ending does.
 
 #### Waiting for an owner
 
@@ -269,9 +284,8 @@ node.
 **Commit is the first byte of response body, not the response headers.**
 
 Headers are not a valid commit signal: they may show only that the engine
-accepted the request. Treating them as commitment would disable the header
-timeout and prevent failover while the request remains queued inside the
-engine. The first content byte is the first engine-independent evidence that
+accepted the request. Treating them as commitment would prevent failover while
+the request remains queued inside the engine. The first content byte is the first engine-independent evidence that
 generation has begun.
 
 The difference is engine-specific and large. Measured against LM Studio 0.4.x
@@ -374,6 +388,7 @@ These are the statuses the proxy itself returns:
 
 | Condition | Status |
 | --- | --- |
+| Request body exceeds 32 MiB, nothing dispatched | `413` |
 | No owner advertises the model, nothing dispatched | `502` |
 | Final permitted attempt returned a status | that status and body, unchanged |
 | Final permitted attempt failed at the transport | `502` |
@@ -457,22 +472,25 @@ treat an absent `scheduledOn` as "not placed" rather than assuming a node.
 
 ### 5.6 Coverage gap: non-streaming requests
 
-A non-streaming request is the case the retry policy serves worst, and the
-weakness is the opposite of too little retrying.
+A non-streaming request is the case the retry policy serves worst: once
+dispatched, it is never retried for being slow.
 
 Its headers arrive only when the response is complete, so from outside the
-engine "queued behind other work" and "generating right now" are
-indistinguishable. The 120s header cap therefore has to cover whole generation
-— the first-content wait adds nothing here, since the body arrives with the
-headers — and when it expires the proxy retries without being able to tell
-whether it just abandoned a stalled request or a working one. A generation
-legitimately slower than that cap is restarted elsewhere, discarding real
-progress, and the restart faces the same cap.
+engine "queued behind other work", "generating right now" and "stalled" are
+indistinguishable. The transport sets no response-header timeout, and the
+first-content wait adds nothing here, since the body arrives with the headers.
+A long generation therefore runs to completion rather than being restarted
+elsewhere, but a node that stalls before responding holds the attempt until it
+answers, the connection fails, the target leaves discovery (for a manual node,
+only when the user removes it), or the client disconnects, and it is never
+failed over for being slow. An engine that withholds headers on a streaming
+request too, as Ollama does until generation begins, shares this gap.
 
 Nothing in the current engine surface fixes this: there is no progress signal
 before the response is complete. A caller that cares should prefer a streaming
-request, where the first content byte gives the proxy the evidence it lacks
-here.
+request on an engine that sends headers before generating, such as LM Studio,
+where the first content byte gives the proxy the evidence it lacks here. On
+Ollama streaming does not help, because its headers are withheld as well.
 
 ### 5.7 Accepted behavior
 
@@ -508,15 +526,16 @@ approve. See README.md for the complete forwarding and intersection rules.
 
 ### 5.9 Candidate resolution
 
-Resolution turns the eligible owners into dial targets. It re-reads membership
-and pins from the cluster directory first, so a peer paired or removed since the
-last request is reflected on this one. Each owner is then classified by where
+Resolution turns the eligible owners into dial targets. Relay-fed owners first
+pass the identity gate in §5.11. Resolution then refreshes membership and pins
+from the cluster directory, so each relay-fed remote dial requires a current pin in
+addition to the admitted discovery record. Each owner is classified by where
 its address points:
 
 | Owner | Dialed as | Why |
 | --- | --- | --- |
 | This facade — its own listen port, or an alias address it bound | the local engine from `node/set-local-backend`, over loopback; dropped when none is set or it is unhealthy | this node advertises the facade under the engine's own key (e.g. `ol`, `lm`, `lc`), so dialing it would enter this node's own cluster ingress and recurse |
-| A peer this node holds a pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | the relayed `trusted` flag is the scanner's answer from the peer's last record change, so it is stale for a peer discovered before this node's pins existed |
+| An admitted peer this node holds a current pin for, read from the live mesh | `https` to that peer's facade, through the pooled client pinned to its UUID | discovery supplies the verified identity and `trusted: true`; the live mesh authorizes the outbound connection against the current pin |
 | A manual node from `node/add-manual` | plain HTTP to the address the user supplied | a deliberate, separately labelled bypass |
 | Anything else — an unpinned peer, or any peer while this node is unclustered | dropped | a peer's facade refuses plaintext from the LAN, so it is not reachable |
 
@@ -566,8 +585,11 @@ filtered set, on every change. Each snapshot **replaces** the facade's relay-fed
 overlay, so a departed node is simply absent from the next one and there is no
 state to drift.
 
-A directory node becomes a routable node only if it advertises that key and has
-an address:
+A directory node enters the routing overlay only when `identityVerification`
+is `local`, or it is `pinned` with `trusted: true`, and it advertises this
+engine's service key with a nonempty canonical `ip`. Owned local records need
+no peer pin. Unverified records remain outside the overlay regardless of their
+UUID, address, model, or trust claims. For an admitted record:
 
 - its id is its `hostUuid`, so routing, `scheduledOn`, and the scheduler's list
   agree on one identity that survives a rename;
@@ -664,12 +686,12 @@ untouched, the primary listener stays up, and a warning is reported.
 
 ## 8. Ports
 
-| | Ollama | LM Studio | llama.cpp |
-| --- | --- | --- | --- |
-| Engine's own client-facing port | 11434 | 1234 | 8080 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 |
-| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 |
-| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` |
+| | Ollama | LM Studio | llama.cpp | vLLM |
+| --- | --- | --- | --- | --- |
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
+| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
+| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
 
 A port chosen at runtime via `set-port` is persisted per engine and restored
 when that facade is enabled, taking precedence over the requested port, so the
@@ -705,8 +727,70 @@ new supervisor, and no new relay wiring.
 | Mode | Behavior |
 | --- | --- |
 | Requested port taken at enable | Tagged bind failure; broker retries on a fallback port |
+| Request body exceeds 32 MiB | Local `413`, rejected before candidate selection, no engine contacted |
 | No advertised owner for the model | Local `502`, no engine contacted |
 | All owners refuse retryably | Last upstream status surfaced |
 | Transport error with candidates left | Forget the node's confirmed address, fail over |
 | Client disconnects mid-stream | Terminal workload event emitted at once; upstream cancelled |
 | Broker link closed | Facades stop serving, then the shared transport pool closes |
+
+## Request-triggered model preparation
+
+The vLLM profile supports preparing an advertised cached model before inference.
+The broker's `node/set-local-backend` payload includes optional
+`loadOnRequest:true` while this engine is enabled, including awaiting-model and
+starting states. This permits a loopback routing target while the serving process
+is not yet healthy. It never permits a non-loopback local target.
+
+Only inference requests with an `application/json` content type and no `Origin`
+header may trigger preparation. Other requests retain the native engine's
+behavior and CORS decision without starting or switching a model.
+Their model-bearing inference responses still hold admission until completion,
+so an automatic switch cannot interrupt a response accepted by the native engine.
+
+The proxy sends operational `{id, engine, model}` metadata in `model:prepare` to
+its broker, receives `model:prepared {id, engine, port?, error?, status?}`, and
+sends `model:cancel` if that preparation is abandoned. Engine-manager rechecks
+cached inventory and enabled intent under the launch lock. Request content is
+never sent over this control channel. Non-retryable preparation failures retain
+an actionable error response rather than repeatedly restarting a failing model.
+Model preparation returns HTTP 503 if vLLM is OFF or starting from OFF after
+an explicit enable or model **Load**. It also returns 503 if **Stop** or
+**Eject** interrupts a request-triggered load and the manager restores any launch
+settings it changed. Within its retry budget, the proxy can then try another node
+that advertises the requested model.
+Requests for the last successfully prepared model skip this relay until a
+lifecycle change, engine-manager restart, or upstream failure invalidates it.
+Concurrent same-model requests share one preparation and its result. Each request
+can stop waiting independently; the shared load is cancelled only when its last
+waiting request leaves. Preparation retains its own 10-minute budget rather than
+inheriting the initiating request's cancellation or deadline. An already-serving
+model can also be confirmed by engine-manager without taking its launch operation
+lock; an overlapping lifecycle change falls back to the locked admission path.
+
+A per-facade gate allows concurrent same-model local inference and FIFO groups
+for different models. Admission spans the complete response, including streams;
+only after existing responses finish can another model be prepared. Both local
+requests and terminal pinned-mTLS ingress use this gate. The terminal ingress
+still never routes onward. Preparation has a bounded 10-minute allowance before
+ordinary inference begins. Local and peer requests share the standard transport
+pools, with no response-header timeout. Pin revocation, cancellation and
+connection cleanup remain enforced.
+
+The broker acknowledges `node/set-local-models {engine, id, enginePort, enabled,
+models}` before exposing initial model snapshots or model-change events to the
+UI. The proxy projects this authoritative inventory onto this node's stable ID,
+superseding only its stale self-discovery entry. This makes an immediate request
+after download routable and removes deleted local models immediately. The port
+comes from engine-manager lifecycle state, including custom server ports. Cached
+model listings through PAIR do not load a model. Browser-origin requests retain
+the native engine's CORS decision.
+
+A manager restart settles pending proxy preparations with a retryable failure;
+a proxy restart cancels preparations orphaned by the old process.
+
+For vLLM, the aggregated `/v1/models` response is limited to each peer's
+advertised model-owner inventory. A peer's fresher HTTP list cannot expose a
+new model before this facade can route an inference request to it. The model
+appears after discovery convergence; removed models disappear when the peer no
+longer reports them. Other engines retain their existing aggregation behavior.

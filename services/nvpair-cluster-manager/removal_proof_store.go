@@ -5,13 +5,14 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -176,8 +177,8 @@ func (m *Manager) snapshotRemovalProofs() []RemovalProof {
 		out = append(out, cloneRemovalProof(stored))
 	}
 	m.proofMu.Unlock()
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Tombstone.NodeUUID < out[j].Tombstone.NodeUUID
+	slices.SortFunc(out, func(a, b RemovalProof) int {
+		return cmp.Compare(a.Tombstone.NodeUUID, b.Tombstone.NodeUUID)
 	})
 	return out
 }
@@ -219,8 +220,8 @@ func (m *Manager) persistRemovalProofsLocked() error {
 	for _, p := range m.removalProofs {
 		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Tombstone.NodeUUID < out[j].Tombstone.NodeUUID
+	slices.SortFunc(out, func(a, b RemovalProof) int {
+		return cmp.Compare(a.Tombstone.NodeUUID, b.Tombstone.NodeUUID)
 	})
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

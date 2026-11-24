@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -52,9 +52,10 @@ const (
 // were always available on the broker, but there was nowhere to put them.
 //
 // Local and remote nodes differ in what they permit. The engine manager has
-// remote install, start, stop, and the four model operations, but no remote
-// restart, uninstall, or port change — those need process ownership on the
-// target host — so those verbs are hidden rather than offered and then failed.
+// remote install, start, stop, the four model operations, and download
+// cancellation, but no remote restart, uninstall, or port change — those need
+// process ownership on the target host — so those verbs are hidden rather than
+// offered and then failed.
 type nodeDetail struct {
 	client *rpc.Client
 	node   nodeRow
@@ -75,10 +76,6 @@ type nodeDetail struct {
 	// selection, which does not fit alongside two other tables.
 	catalog *catalogBrowser
 
-	// telemetry is the node's own hardware readout, polled directly over HTTP
-	// because the broker does not carry it. telemetryOK records whether the last
-	// poll succeeded, so an unreachable node reads as unavailable rather than as
-	// a machine with no hardware.
 	// pending is a destructive action waiting for confirmation. Deleting a model
 	// throws away gigabytes that have to be downloaded again; uninstalling an
 	// engine keeps its models but still costs a reinstall. Both keys sit among
@@ -88,6 +85,18 @@ type nodeDetail struct {
 	// because this list re-sorts underneath the cursor whenever a download
 	// finishes or a peer republishes its inventory.
 	pending *pendingDestructive
+
+	// downloads is every model download known to be in flight on this node,
+	// oldest first: the ones this screen started and any other its progress
+	// feed reports. It is what the cancel key chooses from, and it holds the
+	// model as well as the engine because an engine queues downloads rather
+	// than refusing them.
+	downloads []detailDownload
+	// latestAttempts is the attempt each model's newest download on this
+	// screen was given, keyed by its engine and model alone, and kept once
+	// that download ends: a reply carrying any other attempt is about a
+	// download of the model that was started before it.
+	latestAttempts map[detailDownload]int
 
 	// settings is the last settings snapshot seen per engine, keyed by engine
 	// name. Fetched when the operator asks to edit rather than for every engine
@@ -110,17 +119,8 @@ type nodeDetail struct {
 	// not necessarily the same row.
 	settingsEngine string
 
-	telemetry   nodeTelemetry
-	telemetryOK bool
-	// telemetryGen identifies this screen's polling chain. Bubble Tea cannot
-	// cancel a pending tick, so a chain is retired by no longer matching it.
-	telemetryGen int
-	// telemetryRunning is whether a chain is in flight. A node with no known
-	// address has nothing to poll and so no chain; one can start later.
-	telemetryRunning bool
-	// telemetryAddress is the address that answered the last poll, empty once
-	// a poll fails.
-	telemetryAddress string
+	// refreshGen retires remote engine ticks from previous detail screens.
+	refreshGen int
 	// enginesStale marks the engine list as last-known rather than current,
 	// because the most recent read of it failed. Held as state rather than
 	// announced, since the read repeats on a timer.
@@ -171,6 +171,41 @@ type detailModelRow struct {
 	loadKnown bool
 }
 
+// detailDownload is one model download in flight, named the way a cancel
+// names it, and numbered when a screen first saw it.
+//
+// A cancel names a download by engine and model alone, so only that number
+// tells a retry of a model from the attempt before it. A reply to a pull or a
+// cancel carries the attempt it was sent for, and one that arrives after that
+// attempt has ended and the model has been started again leaves the retry
+// alone, running or ended.
+//
+// A download a screen starts is also sent with an opId, which the engine
+// manager names on its frames, so they are told apart by attempt too; see
+// followDownload. One picked up from the feed is kept with none: the opIds a
+// frame names are the requests running as the download, which change as
+// requests join and leave it. Its frames are matched by engine and model, so
+// the window that leaves stays open for it: a progress frame of one this
+// screen cancelled, arriving after the cancel's acknowledgement, tracks it
+// again until its last frame, and on a peer's screen, whose frames for two
+// downloads are relayed independently, a stopped download's last frame can
+// arrive after a retry an earlier visit started was picked up, and retire the
+// retry until its next frame.
+type detailDownload struct {
+	engine  string
+	model   string
+	attempt int
+	// opID is the opId the download was sent with, set only on one this
+	// screen started.
+	opID string
+}
+
+// sameModel reports whether two downloads are of the same model on the same
+// engine, whichever attempts they are.
+func (dl detailDownload) sameModel(other detailDownload) bool {
+	return dl.engine == other.engine && dl.model == other.model
+}
+
 type detailEnginesMsg struct {
 	engines []engineStatus
 	err     error
@@ -204,23 +239,48 @@ var (
 	detailLoadKey       = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "load"))
 	detailEjectKey      = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "eject"))
 	detailDeleteKey     = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete"))
+	// Beside the keys that start a download. The catalog browser's own c
+	// never collides with it: the browser holds every key while it is open.
+	detailCancelPullKey = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel download"))
 )
 
-// telemetryChains numbers polling chains so a screen only continues its own.
+// detailRefreshes numbers engine polling chains so a screen continues its own.
 // Package-level rather than per-screen because each detail screen is a new value
 // and the point is to differ from every previous one.
-var telemetryChains int
+var detailRefreshes int
+
+// downloadAttempts numbers the downloads every detail screen tracks, for the
+// same reason: a screen's replies outlive it and reach the next screen of its
+// node, which must not give a download of its own a number one of them
+// carries.
+var downloadAttempts int
+
+// endedDownloads holds the opId of every download a screen started that has
+// since ended, by its outcome frame or by a reply that says so, so that a late
+// frame naming it changes nothing while no download of its model is in flight
+// on the screen; see followDownload. Package-level for the same reason: the
+// replies and frames of a screen's downloads outlive it. A late frame trails
+// its download's end by moments, so only the latest endedDownloadsKept are
+// held, endedOrder listing them oldest first.
+var (
+	endedDownloads = map[string]bool{}
+	endedOrder     []string
+)
+
+// endedDownloadsKept is far more downloads than can end in the moments a late
+// frame trails its download's end by.
+const endedDownloadsKept = 256
 
 func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	ti := textinput.New()
-	telemetryChains++
+	detailRefreshes++
 	d := &nodeDetail{
-		client:       client,
-		node:         node,
-		engineTable:  newTable(detailEngineColumns(defaultTableWidth, !node.self)),
-		modelTable:   newTable(detailModelColumns(defaultTableWidth)),
-		input:        ti,
-		telemetryGen: telemetryChains,
+		client:      client,
+		node:        node,
+		engineTable: newTable(detailEngineColumns(defaultTableWidth, !node.self)),
+		modelTable:  newTable(detailModelColumns(defaultTableWidth)),
+		input:       ti,
+		refreshGen:  detailRefreshes,
 	}
 	if node.self {
 		d.proxy = newProxyTracker()
@@ -228,29 +288,13 @@ func newNodeDetail(client *rpc.Client, node nodeRow) *nodeDetail {
 	// A remote node's models are already in the discovery snapshot the broker
 	// enriched, so the list is populated before any request completes.
 	d.models = modelsResult{
-		Models:         node.models,
-		ModelsByEngine: node.modelsByEngine,
-		LoadedByEngine: node.loadedByEngine,
+		Models:             node.models,
+		ModelsByEngine:     node.modelsByEngine,
+		LoadedByEngine:     node.loadedByEngine,
+		DownloadedByEngine: node.downloadedByEngine,
 	}
 	d.refreshModels()
-	d.adoptProbedTelemetry()
 	return d
-}
-
-// adoptProbedTelemetry shows the manual-node worker's hardware reading for a
-// node this screen does not poll itself.
-func (d *nodeDetail) adoptProbedTelemetry() {
-	if !d.node.nodeInfoTLS {
-		return
-	}
-	was := d.hardwareHeight()
-	d.telemetryOK = d.node.probedTelemetry != nil
-	if d.telemetryOK {
-		d.telemetry = *d.node.probedTelemetry
-	}
-	if d.hardwareHeight() != was {
-		d.sizeEngineTable()
-	}
 }
 
 // detailEngineColumns is the engine table's layout.
@@ -264,7 +308,7 @@ func detailEngineColumns(w int, remote bool) []table.Column {
 	cols := []column{
 		flexCol("ENGINE", 10, 1),
 		fixedCol("INSTALLED", 9),
-		fixedCol("RUNNING", 7),
+		fixedCol("RUNNING", 8), // fits "starting"
 		fixedCol("HEALTHY", 7),
 		fixedCol("ENGINE PORT", 11),
 	}
@@ -296,50 +340,29 @@ func (d *nodeDetail) nodeArg() string {
 }
 
 func (d *nodeDetail) Init() tea.Cmd {
-	// The telemetry chain is started by this first poll, not by a tick: each
-	// reading schedules the next one when it lands, so there is exactly one
-	// chain and it cannot outrun a slow node.
-	cmds := []tea.Cmd{d.enginesCmd(), d.modelsCmd(), d.telemetryCmd()}
+	cmds := []tea.Cmd{d.enginesCmd(), d.modelsCmd()}
 	if d.proxy != nil {
 		cmds = append(cmds, d.proxy.init(d.client))
 	}
 	if d.remote() {
-		cmds = append(cmds, detailEnginesTickCmd(d.telemetryGen))
+		cmds = append(cmds, detailEnginesTickCmd(d.refreshGen))
 	}
 	return tea.Batch(cmds...)
 }
 
 // remoteEngineRefresh is how often an open remote detail re-reads the peer's
-// engines. Slower than the telemetry poll because each read crosses the cluster
-// to another machine, and engine lifecycle changes in seconds, not milliseconds.
+// engines. Each read crosses the cluster to another machine, and engine
+// lifecycle changes in seconds, not milliseconds.
 const remoteEngineRefresh = 5 * time.Second
 
 // detailEnginesTickMsg re-reads a remote node's engines. gen scopes it to one
-// screen, exactly as the telemetry chain does.
+// screen, so reopening the same node cannot extend a previous screen's chain.
 type detailEnginesTickMsg struct{ gen int }
 
 func detailEnginesTickCmd(gen int) tea.Cmd {
 	return tea.Tick(remoteEngineRefresh, func(time.Time) tea.Msg {
 		return detailEnginesTickMsg{gen: gen}
 	})
-}
-
-func (d *nodeDetail) telemetryCmd() tea.Cmd {
-	if d.node.nodeInfoTLS {
-		// Not polled from here; see nodeRow.nodeInfoTLS. A plain-HTTP poll to
-		// a TLS listener only ever fails, and it was made anyway.
-		d.telemetryRunning = false
-		return nil
-	}
-	cmd := pollTelemetryCmd(d.node.key, d.telemetryGen,
-		preferAddress(telemetryHosts(d.node), d.telemetryAddress), d.node.port, telemetryIdentity(d.node))
-	// Whether a chain is running, so a node whose address is not known yet can
-	// have one started later. Nothing schedules a tick when there is nothing to
-	// poll, and the reply is what continues the chain — so without this a manual
-	// entry opened before its first probe landed showed "unavailable" forever,
-	// even once discovery supplied an address.
-	d.telemetryRunning = cmd != nil
-	return cmd
 }
 
 func (d *nodeDetail) enginesCmd() tea.Cmd {
@@ -404,21 +427,27 @@ func (d *nodeDetail) own(cmd tea.Cmd) tea.Cmd {
 // "Online" and "Member" here until the screen was reopened.
 func (d *nodeDetail) followNode(row nodeRow, found bool) {
 	was := d.node.membership
+	hardwareHeight := d.hardwareHeight()
 	if found {
-		d.node.name = row.name
-		d.node.presence = row.presence
-		d.node.membership = row.membership
-		// A hand-added node's node-info port and TLS setting arrive with the
-		// worker's first probe, which can land after the screen opened.
-		if d.node.port == 0 {
-			d.node.port = row.port
+		// Manual association can arrive after opening the detail, and its key
+		// can change after authentication. Keep the full merged row so later
+		// updates follow that same entry through promotion or proof withdrawal.
+		d.node = row
+		if d.remote() {
+			d.models = modelsResult{
+				Models: row.models, ModelsByEngine: row.modelsByEngine,
+				LoadedByEngine:     row.loadedByEngine,
+				DownloadedByEngine: row.downloadedByEngine,
+			}
+			d.refreshModels()
 		}
-		d.node.nodeInfoTLS = row.nodeInfoTLS
-		d.node.probedTelemetry = row.probedTelemetry
-		d.adoptProbedTelemetry()
 	} else {
 		d.node.presence = presenceOffline
 		d.node.membership = membershipNone
+		d.node.info = nil
+	}
+	if d.hardwareHeight() != hardwareHeight {
+		d.sizeEngineTable()
 	}
 	// Leaving the cluster puts the engines out of reach, so the list read while
 	// it was a member offers controls that can no longer do anything. It goes,
@@ -441,9 +470,8 @@ func (d *nodeDetail) followNode(row nodeRow, found bool) {
 // from here once the call fails, which is why this is decided before the call
 // rather than read out of its error.
 //
-// Hardware telemetry is a separate matter: that endpoint needs no pairing, so
-// an unpaired node can report its GPU and memory while its engines stay out of
-// reach. Anything saying "not answering" has to survive that combination.
+// The broker can independently supply public hardware previews for unpaired
+// nodes, while their engine controls remain out of reach.
 func (d *nodeDetail) enginesQueryable() bool {
 	return !d.remote() || d.node.membership == membershipMember
 }
@@ -492,15 +520,12 @@ const maxEngineRows = 6
 // status line — the exact failure the render-time sizing was introduced to make
 // impossible.
 func (d *nodeDetail) sizeEngineTable() {
-	want := clampWidth(len(d.engines)+tableHeaderRows, 1+tableHeaderRows)
-	if want > maxEngineRows {
-		want = maxEngineRows
-	}
+	want := min(max(len(d.engines)+tableHeaderRows, 1+tableHeaderRows), maxEngineRows)
 	// Everything the engine table must not crowd out: the fixed furniture, the
 	// hardware block, and a minimal models table.
 	reserved := detailChromeRows + d.hardwareHeight() + (1 + tableHeaderRows)
 	if room := d.height - reserved; room < want {
-		want = clampWidth(room, 1+tableHeaderRows)
+		want = max(room, 1+tableHeaderRows)
 	}
 	d.engineTable.SetHeight(want)
 }
@@ -514,13 +539,10 @@ const detailChromeRows = 4
 // hardwareHeight is the rows the hardware block occupies, so the model table can
 // be sized without rendering it first.
 func (d *nodeDetail) hardwareHeight() int {
-	if !d.telemetryOK {
-		return 1
-	}
 	// Must agree with hardwareBlock, including its cap — a height that ignored
 	// the cap would over-reserve, and one that ignored the truncation line would
 	// under-reserve by exactly the row that says devices were dropped.
-	lines := clampWidth(len(d.telemetry.summary()), 1)
+	lines := max(len(d.hardwareLines()), 1)
 	if max := d.hardwareBudget(); lines > max {
 		return max
 	}
@@ -627,9 +649,19 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 			d.status.error("%s failed: %s", what, msg.err)
 		case msg.detached:
 			d.status.info("%s is continuing in the background - watch for progress", what)
+		case msg.stopped:
+			d.status.info("%s was stopped before it finished", what)
 		default:
 			d.status.ok("%s requested", what)
 		}
+		return nil, true
+
+	case pullDoneMsg:
+		d.settlePull(msg)
+		return nil, true
+
+	case cancelPullMsg:
+		d.settleCancel(msg)
 		return nil, true
 
 	case engineSettingsMsg:
@@ -694,39 +726,6 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 
-	case nodeTelemetryMsg:
-		// Scoped to this screen's own chain, exactly as the tick is. This reply
-		// schedules the next poll, so accepting a superseded one would leave two
-		// chains running against the same node.
-		if msg.nodeKey != d.node.key || msg.gen != d.telemetryGen {
-			return nil, true
-		}
-		// A chain started before the worker reported TLS ends here, rather than
-		// overwriting the worker's reading with its own failure every poll.
-		if d.node.nodeInfoTLS {
-			d.telemetryRunning = false
-			return nil, true
-		}
-		// A failed poll is expected for an unreachable node and is recorded
-		// rather than reported: the panel says telemetry is unavailable, and no
-		// error toast fires every two seconds.
-		was := d.hardwareHeight()
-		d.telemetryOK = msg.err == nil
-		d.telemetryAddress = msg.address
-		if msg.err == nil {
-			d.telemetry = msg.telemetry
-		}
-		// The hardware block's height changes what the engine table may take.
-		// The models table needs no such nudge — View measures the hardware
-		// block directly every frame.
-		if d.hardwareHeight() != was {
-			d.sizeEngineTable()
-		}
-		// Schedule the next poll now that this one is done, so the interval is
-		// the gap between polls rather than the gap between their starts and a
-		// slow node cannot accumulate overlapping requests.
-		return telemetryTickCmd(d.node.key, d.telemetryGen), true
-
 	case detailEnginesTickMsg:
 		// A peer's engine state has no push: engine:state-changed carries a
 		// local snapshot with no node on it, so it cannot be attributed to
@@ -734,26 +733,10 @@ func (d *nodeDetail) update(msg tea.Msg) (tea.Cmd, bool) {
 		// way an open remote detail reflects an engine starting or stopping
 		// over there; without it the screen showed whatever was true when it
 		// was opened, including right after an action taken from this screen.
-		if msg.gen != d.telemetryGen || !d.remote() {
+		if msg.gen != d.refreshGen || !d.remote() {
 			return nil, true
 		}
-		return tea.Batch(d.enginesCmd(), detailEnginesTickCmd(d.telemetryGen)), true
-
-	case nodeTelemetryTickMsg:
-		// Only this screen's own chain continues. A tick from a previous visit
-		// to the same node is dropped rather than extended, so re-opening a
-		// detail screen cannot leave two chains polling in parallel.
-		if msg.nodeKey != d.node.key || msg.gen != d.telemetryGen {
-			return nil, true
-		}
-		// Only the poll. The next tick is scheduled when this one comes back —
-		// see nodeTelemetryMsg — because a poll can take longer than the
-		// interval: it tries each of the node's addresses in turn, so a
-		// multi-homed peer with an unreachable address already exceeds two
-		// seconds. Scheduling the next tick alongside the poll rather than after
-		// it started a new one regardless, so those polls accumulated for as
-		// long as the screen stayed open.
-		return d.telemetryCmd(), true
+		return tea.Batch(d.enginesCmd(), detailEnginesTickCmd(d.refreshGen)), true
 
 	case NotificationMsg:
 		return d.handleNotification(msg.Msg), true
@@ -813,52 +796,12 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		clear(d.settings)
 
 	case "engine:models-changed":
-		// The manager polls each running engine's resident set and pushes this
-		// on any change — explicit load/unload, LM Studio's JIT auto-load, and
-		// idle eviction alike. Re-reading is cheaper than merging the delta.
+		// The manager polls each engine's model lists and pushes this on any
+		// change — explicit load/unload, LM Studio's JIT auto-load, idle
+		// eviction, and a pull or delete alike. Re-reading is cheaper than
+		// merging the delta.
 		if !d.remote() {
 			return d.modelsCmd()
-		}
-
-	case "discovery:nodes-changed":
-		// This is where a peer's model inventory lives: the broker enriches the
-		// discovery snapshot with each node's per-engine models, and there is no
-		// per-node models RPC to ask instead. The detail seeded itself from the
-		// snapshot it was opened with and then never looked again, so a model
-		// pulled or deleted on that peer — including by an action taken from
-		// this very screen — did not appear until the operator backed out and
-		// came back in.
-		if !d.remote() {
-			return nil
-		}
-		var nodes []availableNode
-		decodeOrLog(msg.Method, msg.Params, &nodes)
-		for _, n := range nodes {
-			if n.HostUUID != d.node.key && n.ID != d.node.key {
-				continue
-			}
-			d.node.models = n.Models
-			d.node.modelsByEngine = n.ModelsByEngine
-			d.node.loadedByEngine = n.LoadedByEngine
-			d.models = modelsResult{
-				Models:         n.Models,
-				ModelsByEngine: n.ModelsByEngine,
-				LoadedByEngine: n.LoadedByEngine,
-			}
-			d.refreshModels()
-
-			// Adopt an address learned since the screen opened, and start
-			// polling if there was nothing to poll before. A manual entry is
-			// routinely opened before discovery has resolved it.
-			d.node.address = n.IPAddress
-			d.node.addresses = candidateAddresses(n)
-			if n.Port != 0 {
-				d.node.port = n.Port
-			}
-			if !d.telemetryRunning {
-				return d.telemetryCmd()
-			}
-			break
 		}
 
 	case "engine:install-progress":
@@ -874,6 +817,9 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 			Error   string `json:"error"`
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
+		if d.promptArmed() {
+			return nil
+		}
 		if p.Stage == "failed" {
 			// An outcome, so it expires like one. An install that outlived its
 			// reply deadline has no other way to report that it failed.
@@ -898,30 +844,42 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 		if d.remote() {
 			return nil
 		}
-		// An in-progress frame keeps the note sticky, so a download that stalls
-		// leaves its last reported percentage on screen instead of the line
-		// quietly expiring and making a stuck pull look like nothing happened.
-		// Only the terminal frames — done, failed — go back to expiring.
-		kind, format, args := progressToast(msg.Params, d.engineLabel)
-		if kind == toastInfo {
-			d.status.busy(format, args...)
-			return nil
+		var p pullFrame
+		decodeOrLog(msg.Method, msg.Params, &p)
+		if d.followDownload(p) {
+			d.showPullProgress(p)
 		}
-		d.status.set(kind, format, args...)
+		// engine:models-changed follows the loaded set, not the inventory, so a
+		// finished download is announced only here, whichever download the
+		// frame turns out to be. A peer's inventory arrives with discovery
+		// instead.
+		if p.Stage == "success" {
+			return d.modelsCmd()
+		}
 
 	case "engine:remote-progress":
 		var p struct {
-			Node    string `json:"node"`
-			Engine  string `json:"engine"`
-			Op      string `json:"op"`
-			Stage   string `json:"stage"`
-			Percent *int   `json:"percent"`
-			Message string `json:"message"`
+			pullFrame
+			Node string `json:"node"`
+			Op   string `json:"op"`
 		}
 		decodeOrLog(msg.Method, msg.Params, &p)
-		if p.Node == d.node.key {
-			d.status.busy("%s %s: %s%s", p.Op, d.engineLabel(p.Engine), p.Stage, progressPercent(p.Percent))
+		if p.Node != d.node.key {
+			return nil
 		}
+		// A peer's pull reports on the same frames as this machine's, model
+		// and all, and a download that outlasted its reply has no other way
+		// to say how it went.
+		if p.Op == "pull" {
+			if d.followDownload(p.pullFrame) {
+				d.showPullProgress(p.pullFrame)
+			}
+			return nil
+		}
+		if d.promptArmed() {
+			return nil
+		}
+		d.status.busy("%s %s: %s%s", p.Op, d.engineLabel(p.Engine), p.Stage, progressPercent(p.Percent))
 
 	default:
 		// A proxy rebinding its listener changes the proxy port shown against
@@ -934,29 +892,330 @@ func (d *nodeDetail) handleNotification(msg *rpc.Message) tea.Cmd {
 	return nil
 }
 
-// progressToast renders an engine:pull-progress frame. Terminal stages carry no
-// meaningful percent (success is implicitly complete, error uses -1), so they
-// read as outcomes rather than a misleading "success (0%)". A late failure that
-// arrives after the synchronous call timed out still surfaces here.
-func progressToast(params []byte, label func(string) string) (toastKind, string, []any) {
-	var p struct {
-		Engine  string `json:"engine"`
-		Stage   string `json:"stage"`
-		Percent *int   `json:"percent"`
-		Message string `json:"message"`
+// pullFrame is a model download's progress, this machine's or a peer's.
+type pullFrame struct {
+	Engine  string `json:"engine"`
+	Model   string `json:"model"`
+	Stage   string `json:"stage"`
+	Percent *int   `json:"percent"`
+	Message string `json:"message"`
+	// OpID is the opId a peer's download was sent with, on
+	// engine:remote-progress.
+	OpID string `json:"opId"`
+	// OpIDs are the opIds of the requests running as this machine's download,
+	// on engine:pull-progress: the one that started it and any that joined it.
+	// On the engine:remote-progress frame a peer's download ends on, they are
+	// this machine's other pulls of it that ended first.
+	OpIDs []string `json:"opIds"`
+}
+
+// named returns every opId the frame names, from either feed.
+func (p pullFrame) named() []string {
+	if p.OpID == "" {
+		return p.OpIDs
 	}
-	decodeOrLog("engine:pull-progress", params, &p)
+	return append([]string{p.OpID}, p.OpIDs...)
+}
+
+// ended reports whether the frame is the outcome its pull ended on. Every pull
+// ends on exactly one, whichever engine ran it.
+func (p pullFrame) ended() bool {
+	switch p.Stage {
+	case "success", "cancelled", "error":
+		return true
+	}
+	return false
+}
+
+// showPullProgress puts a pull's frame on the status line. An in-progress frame
+// keeps the note sticky, so a download that stalls leaves its last reported
+// percentage on screen instead of the line quietly expiring and making a stuck
+// pull look like nothing happened. The outcome a pull ends on expires like any
+// other, and reads as one rather than as "success (100%)" or "error". A late
+// outcome, arriving after the synchronous call timed out, still surfaces here.
+//
+// The model is named because an engine queues downloads: frames for two of
+// them interleave, and one's percent would otherwise read as the other's.
+func (d *nodeDetail) showPullProgress(p pullFrame) {
+	if d.promptArmed() {
+		return
+	}
+	what := d.downloadLabel(p.Engine, p.Model)
 	switch p.Stage {
 	case "success":
-		return toastOK, "download %s: done", []any{label(p.Engine)}
+		d.status.ok("download %s: done", what)
+	case "cancelled":
+		d.status.ok("download %s: cancelled", what)
 	case "error":
 		detail := p.Message
 		if detail == "" {
 			detail = "failed"
 		}
-		return toastError, "download %s failed: %s", []any{label(p.Engine), detail}
+		d.status.error("download %s failed: %s", what, detail)
 	default:
-		return toastInfo, "download %s: %s%s", []any{label(p.Engine), p.Stage, progressPercent(p.Percent)}
+		d.status.busy("download %s: %s%s", what, p.Stage, progressPercent(p.Percent))
+	}
+}
+
+// downloadLabel names a download for the status line: the model, and the
+// engine it is going into.
+func (d *nodeDetail) downloadLabel(engine, model string) string {
+	label := d.engineLabel(engine)
+	if model == "" {
+		return label
+	}
+	return fmt.Sprintf("%s (%s)", model, label)
+}
+
+// promptArmed reports whether the status line holds a question the next key
+// answers. Progress keeps arriving underneath one — for a cancellation, from
+// the very download it asks about — and replacing the prompt would leave that
+// key answering a question no longer on screen.
+func (d *nodeDetail) promptArmed() bool {
+	return d.pending != nil || d.settingsConfirm != nil
+}
+
+// followDownload keeps downloads current from a progress frame, and reports
+// whether the frame should be shown. A frame naming no model cannot be told
+// apart from another download on its engine, so it is shown but not followed.
+//
+// A frame naming the opId of a download this screen started is that
+// download's, and its outcome retires it. No other frame retires such a
+// download: while one is in flight, a frame of its model that does not name
+// it is an earlier attempt's, and changes nothing and is not shown. A frame
+// naming an attempt that has ended, while nothing of its model is in flight,
+// is dropped the same way, or it would bring that attempt back as one to
+// cancel, or report its outcome over a later attempt's. Any other frame is
+// matched by engine and model against a download picked up from the feed:
+// progress, queued included, tracks one when the model has none in flight,
+// and an outcome retires it. That includes a frame of an ended attempt while
+// a picked-up download of its model is in flight, which may be that very
+// attempt as a later screen picked it up, where no other frame retires it.
+func (d *nodeDetail) followDownload(p pullFrame) bool {
+	if p.Engine == "" || p.Model == "" {
+		return true
+	}
+	named := p.named()
+	own := slices.IndexFunc(d.downloads, func(dl detailDownload) bool {
+		return dl.opID != "" && slices.Contains(named, dl.opID)
+	})
+	if own >= 0 {
+		if p.ended() {
+			d.retireDownload(d.downloads[own])
+		}
+		return true
+	}
+	dl, tracked := d.trackedDownload(p.Engine, p.Model)
+	switch {
+	case tracked && dl.opID != "":
+		return false
+	case !tracked && slices.ContainsFunc(named, func(opID string) bool { return endedDownloads[opID] }):
+		return false
+	case p.ended():
+		if tracked {
+			d.retireDownload(dl)
+		}
+	default:
+		d.trackDownload(p.Engine, p.Model)
+	}
+	return true
+}
+
+// trackedDownload returns the download of model on engine in flight, if any.
+func (d *nodeDetail) trackedDownload(engine, model string) (detailDownload, bool) {
+	want := detailDownload{engine: engine, model: model}
+	i := slices.IndexFunc(d.downloads, want.sameModel)
+	if i < 0 {
+		return detailDownload{}, false
+	}
+	return d.downloads[i], true
+}
+
+// trackDownload records a download as in flight, keeping the order downloads
+// were first seen in, and returns it. A download first seen now is given the
+// next attempt number; one already in flight keeps its own.
+func (d *nodeDetail) trackDownload(engine, model string) detailDownload {
+	if dl, ok := d.trackedDownload(engine, model); ok {
+		return dl
+	}
+	downloadAttempts++
+	dl := detailDownload{engine: engine, model: model, attempt: downloadAttempts}
+	d.downloads = append(d.downloads, dl)
+	if d.latestAttempts == nil {
+		d.latestAttempts = make(map[detailDownload]int)
+	}
+	d.latestAttempts[detailDownload{engine: engine, model: model}] = dl.attempt
+	return dl
+}
+
+// trackOwnDownload is trackDownload for a download this screen is starting,
+// which it names by the opId it sends the download with. startDownload has
+// refused a model already in flight, so the download is always a new one.
+func (d *nodeDetail) trackOwnDownload(engine, model string) detailDownload {
+	dl := d.trackDownload(engine, model)
+	i := slices.Index(d.downloads, dl)
+	dl.opID = downloadOpID(dl.attempt)
+	d.downloads[i] = dl
+	return dl
+}
+
+// retireDownload forgets a download that has ended, and marks it ended if
+// this screen started it. A cancellation armed against that attempt is
+// withdrawn too: confirming it would stop nothing, and the outcome is the
+// thing to show.
+func (d *nodeDetail) retireDownload(dl detailDownload) {
+	markDownloadEnded(dl)
+	d.downloads = slices.DeleteFunc(d.downloads, func(x detailDownload) bool { return x == dl })
+	if p := d.pending; p != nil && p.download != nil && *p.download == dl {
+		d.pending = nil
+	}
+}
+
+// markDownloadEnded records that a download a screen started has ended, so a
+// frame naming it that arrives afterwards changes nothing on a screen with no
+// download of its model in flight; see followDownload. A download picked up
+// from the feed has no opId to record.
+func markDownloadEnded(dl detailDownload) {
+	if dl.opID == "" || endedDownloads[dl.opID] {
+		return
+	}
+	endedDownloads[dl.opID] = true
+	endedOrder = append(endedOrder, dl.opID)
+	if len(endedOrder) > endedDownloadsKept {
+		delete(endedDownloads, endedOrder[0])
+		endedOrder = endedOrder[1:]
+	}
+}
+
+// retried reports whether a reply sent for dl comes from an attempt that has
+// ended since, with the model started again: the newest download of its
+// engine and model this screen has seen is another attempt, which the reply
+// must neither act on nor report over, whether it is still in flight or has
+// ended too. The reply can be this screen's or an earlier screen's of the
+// same node.
+func (d *nodeDetail) retried(dl detailDownload) bool {
+	latest, ok := d.latestAttempts[detailDownload{engine: dl.engine, model: dl.model}]
+	return ok && latest != dl.attempt
+}
+
+// downloadToCancel is the download the cancel key stops: the newest on the
+// highlighted engine, else the newest on the node. The confirmation names it,
+// so the choice is never made silently.
+func (d *nodeDetail) downloadToCancel() (detailDownload, bool) {
+	if len(d.downloads) == 0 {
+		return detailDownload{}, false
+	}
+	if e := d.selectedEngine(); e != nil {
+		for i := len(d.downloads) - 1; i >= 0; i-- {
+			if d.downloads[i].engine == e.Engine {
+				return d.downloads[i], true
+			}
+		}
+	}
+	return d.downloads[len(d.downloads)-1], true
+}
+
+// cancelDownload arms the cancellation of a download in flight on this node.
+//
+// Confirmed like a delete, because for Ollama and LM Studio it is one: the
+// engine manager removes the partial files the download wrote, which for a
+// large model is gigabytes to fetch again.
+func (d *nodeDetail) cancelDownload() tea.Cmd {
+	target, ok := d.downloadToCancel()
+	if !ok {
+		d.status.error("no download in progress on %s", d.node.name)
+		return nil
+	}
+	what := d.downloadLabel(target.engine, target.model)
+	d.pending = &pendingDestructive{
+		download: &target,
+		// "cancelled" would say the opposite of what happened.
+		dismissed: "still downloading " + what,
+		run: func() tea.Cmd {
+			d.status.busy("cancelling download %s...", what)
+			return d.own(cancelPullCmd(d.client, d.nodeArg(), target.engine, target.model, target.attempt, target.opID))
+		},
+	}
+	d.status.arm("stop downloading %s into %s? press y to stop it, any other key to keep it",
+		target.model, d.engineLabel(target.engine))
+	return nil
+}
+
+// settlePull reports how a download this screen started settled. A reply for
+// an attempt that ended, with the model started again since, says nothing
+// about the retry and is dropped. One that says the download is over marks it
+// ended first, so its late frames change nothing even on a later screen of
+// the node, which never saw it.
+func (d *nodeDetail) settlePull(msg pullDoneMsg) {
+	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt, opID: msg.opID}
+	if !msg.detached {
+		markDownloadEnded(dl)
+	}
+	if d.retried(dl) {
+		return
+	}
+	what := d.downloadLabel(msg.engine, msg.model)
+	if msg.detached {
+		// Still running, so still cancellable; its frames report the end. One
+		// whose end a frame has reported already has nothing to add to it.
+		if slices.Contains(d.downloads, dl) && !d.promptArmed() {
+			d.status.info("download %s is continuing in the background - watch for progress", what)
+		}
+		return
+	}
+	d.retireDownload(dl)
+	if d.promptArmed() {
+		return
+	}
+	switch {
+	case msg.err != nil:
+		d.status.error("download %s failed: %s", what, msg.err)
+	case msg.cancelled:
+		d.status.ok("download %s: cancelled", what)
+	default:
+		d.status.ok("download %s: done", what)
+	}
+}
+
+// settleCancel reports how a cancellation settled. Only an acknowledged one
+// retires the download. One still being carried out, or one that never reached
+// the download — a peer that could not be asked — leaves it in flight, so the
+// cancel key can try again. A cancel that reached the download and failed, such
+// as llama.cpp's router not confirming the stop, has ended it already: the
+// pull's error frame retires it, and the engine manager stops tracking a
+// download it could not confirm stopped.
+//
+// An acknowledgement says the download settled, not how. One that finished, or
+// failed, just as the cancel arrived is acknowledged too, after its outcome
+// frame has retired it and said what happened; that outcome stays on screen,
+// as it does when the cancel's reply deadline passes after it. By then the
+// model may have been started again, and the reply, which is about the attempt
+// it stopped, leaves the retry alone. It still marks that attempt ended, as a
+// pull's reply does, wherever it lands.
+func (d *nodeDetail) settleCancel(msg cancelPullMsg) {
+	dl := detailDownload{engine: msg.engine, model: msg.model, attempt: msg.attempt, opID: msg.opID}
+	acknowledged := msg.err == nil && !msg.detached
+	if acknowledged {
+		markDownloadEnded(dl)
+	}
+	if d.retried(dl) {
+		return
+	}
+	what := d.downloadLabel(msg.engine, msg.model)
+	inFlight := slices.Contains(d.downloads, dl)
+	if acknowledged {
+		d.retireDownload(dl)
+	}
+	if d.promptArmed() {
+		return
+	}
+	switch {
+	case msg.detached && inFlight:
+		d.status.info("download %s is still being cancelled - watch for progress", what)
+	case msg.err != nil:
+		d.status.error("cancel download %s failed: %s", what, msg.err)
+	case inFlight:
+		d.status.ok("download %s: cancelled", what)
 	}
 }
 
@@ -1200,6 +1459,8 @@ func (d *nodeDetail) handleModelKey(msg tea.KeyMsg) tea.Cmd {
 		return d.modelOp("unload")
 	case key.Matches(msg, detailDeleteKey):
 		return d.deleteSelectedModel()
+	case key.Matches(msg, detailCancelPullKey):
+		return d.cancelDownload()
 	}
 	var cmd tea.Cmd
 	d.modelTable, cmd = d.modelTable.Update(msg)
@@ -1223,8 +1484,7 @@ func (d *nodeDetail) submitInput() tea.Cmd {
 			d.status.error("no engine available to download into")
 			return nil
 		}
-		d.status.busy("download %s: %s...", d.engineLabel(engine), val)
-		return d.own(modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], val))
+		return d.startDownload(engine, val)
 
 	case detailInputEnginePort, detailInputProxyPort, detailInputLaunchArgs:
 		return d.submitSettings(mode, d.input.Value(), val)
@@ -1370,7 +1630,7 @@ func joinSettingsErrors(errs map[string]string) string {
 	for field := range errs {
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 	parts := make([]string, 0, len(fields))
 	for _, field := range fields {
 		parts = append(parts, errs[field])
@@ -1424,14 +1684,33 @@ func (d *nodeDetail) openCatalog() tea.Cmd {
 		}
 	}
 	d.catalog = newCatalogBrowser(d.client, engine, label, d.node.name, d.remote())
+	d.catalog.nodeID = d.nodeArg()
 	d.catalog.SetSize(d.width, d.height)
 	return d.catalog.Init()
 }
 
 // downloadFromCatalog starts the download the operator picked in the browser.
 func (d *nodeDetail) downloadFromCatalog(engine, model string) tea.Cmd {
+	return d.startDownload(engine, model)
+}
+
+// startDownload sends a download and marks it in flight at once, so it can be
+// cancelled before its first progress frame arrives.
+//
+// A model already in flight is refused, as the desktop app refuses it. The
+// second request would share the first's entry and attempt, so the replies of
+// the first, or of a cancel stopping it, would retire the second too, leaving
+// it running with nothing on screen to cancel. Once the first has ended, the
+// model starts again as a new attempt, under an opId of its own, which the
+// first's replies and frames leave alone.
+func (d *nodeDetail) startDownload(engine, model string) tea.Cmd {
+	if _, ok := d.trackedDownload(engine, model); ok {
+		d.status.error("download %s is already in progress", d.downloadLabel(engine, model))
+		return nil
+	}
+	dl := d.trackOwnDownload(engine, model)
 	d.status.busy("download %s: %s...", d.engineLabel(engine), model)
-	return d.own(modelCmd(d.client, d.nodeArg(), engine, modelActions["pull"], model))
+	return d.own(pullCmd(d.client, d.nodeArg(), engine, model, dl.attempt, dl.opID))
 }
 
 func (d *nodeDetail) modelOp(op string) tea.Cmd {
@@ -1458,6 +1737,12 @@ func (d *nodeDetail) modelOp(op string) tea.Cmd {
 // against, so a list that re-sorts before the confirmation cannot redirect it.
 type pendingDestructive struct {
 	run func() tea.Cmd
+	// download is the download a cancellation was armed against, so the
+	// prompt is withdrawn if that download ends first.
+	download *detailDownload
+	// dismissed replaces "cancelled" as the answer to any other key, for a
+	// prompt whose own subject is a cancellation.
+	dismissed string
 }
 
 // arm holds a destructive action until the operator confirms it.
@@ -1570,6 +1855,10 @@ func (d *nodeDetail) resolvePending(msg tea.KeyMsg) tea.Cmd {
 		return act.run()
 	}
 	// Replaces the pinned prompt, which would otherwise stay on screen.
+	if act.dismissed != "" {
+		d.status.info("%s", act.dismissed)
+		return nil
+	}
 	d.status.info("cancelled")
 	return nil
 }
@@ -1605,10 +1894,13 @@ func (d *nodeDetail) uninstallEngine(engine *engineStatus) tea.Cmd {
 }
 
 // pullTargetEngine is the engine a download goes into: the one highlighted in
-// the engine pane when it can serve, else the only running engine. Downloading
-// requires a running engine, so a stopped one is never chosen silently.
+// the engine pane when it can download, else the only running engine. Most
+// engines download through their running server, so a stopped one is never
+// chosen silently. An engine that downloads without its server (vLLM, into the
+// Hugging Face cache) can be chosen stopped when it is highlighted, as the
+// desktop app allows.
 func (d *nodeDetail) pullTargetEngine() string {
-	if e := d.selectedEngine(); e != nil && e.Running {
+	if e := d.selectedEngine(); e != nil && (e.Running || e.Installed && pullsWhileStopped[e.Engine]) {
 		return e.Engine
 	}
 	for _, e := range d.engines {
@@ -1642,7 +1934,13 @@ func (d *nodeDetail) refreshEngines() {
 		if e.Port != 0 {
 			port = strconv.Itoa(e.Port)
 		}
-		row := table.Row{e.label(), yesNo(e.Installed), yesNo(e.Running), yesNo(e.Healthy), port}
+		running := yesNo(e.Running)
+		if e.Starting {
+			running = "starting"
+		} else if e.AwaitingModel {
+			running = "no model"
+		}
+		row := table.Row{e.label(), yesNo(e.Installed), running, yesNo(e.Healthy), port}
 		if d.proxy != nil {
 			row = append(row, d.proxyPortCell(e.Engine))
 		}
@@ -1681,11 +1979,16 @@ func (d *nodeDetail) refreshModels() {
 	// where it already was.
 	selected := d.selectedModelKey()
 
-	engines := make([]string, 0, len(d.models.ModelsByEngine))
+	engines := make([]string, 0, len(d.models.ModelsByEngine)+len(d.models.DownloadedByEngine))
 	for name := range d.models.ModelsByEngine {
 		engines = append(engines, name)
 	}
-	sort.Strings(engines)
+	for name := range d.models.DownloadedByEngine {
+		if _, listed := d.models.ModelsByEngine[name]; !listed {
+			engines = append(engines, name)
+		}
+	}
+	slices.Sort(engines)
 
 	d.modelRows = d.modelRows[:0]
 	for _, engine := range engines {
@@ -1696,8 +1999,8 @@ func (d *nodeDetail) refreshModels() {
 		for _, m := range residents {
 			loaded[m] = true
 		}
-		models := append([]string(nil), d.models.ModelsByEngine[engine]...)
-		sort.Strings(models)
+		models := managedModels(d.models, engine)
+		slices.Sort(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows,
 				detailModelRow{engine: engine, model: m, loaded: loaded[m], loadKnown: known})
@@ -1712,7 +2015,7 @@ func (d *nodeDetail) refreshModels() {
 	// difference. Fall back to the flat union rather than regressing to nothing.
 	if len(d.modelRows) == 0 && len(d.models.Models) > 0 {
 		models := append([]string(nil), d.models.Models...)
-		sort.Strings(models)
+		slices.Sort(models)
 		for _, m := range models {
 			d.modelRows = append(d.modelRows, detailModelRow{model: m})
 		}
@@ -1907,13 +2210,13 @@ func (d *nodeDetail) View() string {
 
 // hardwareBlock renders the node's own GPU, CPU, and memory readings.
 func (d *nodeDetail) hardwareBlock() string {
-	if !d.telemetryOK {
+	if d.node.info == nil {
 		if d.node.presence != presenceOnline {
 			return footerStyle.Render("  hardware: unavailable (node is not reachable)")
 		}
 		return footerStyle.Render("  hardware: unavailable")
 	}
-	lines := d.telemetry.summary()
+	lines := d.hardwareLines()
 	if len(lines) == 0 {
 		return footerStyle.Render("  hardware: no GPU, CPU, or memory reported")
 	}
@@ -1931,6 +2234,15 @@ func (d *nodeDetail) hardwareBlock() string {
 	return strings.Join(lines, "\n")
 }
 
+// hardwareLines includes time spent in this client without mutating the source
+// snapshot. Rebuilding the view must not make an older sample appear fresh.
+func (d *nodeDetail) hardwareLines() []string {
+	if d.node.info == nil {
+		return nil
+	}
+	return hardwareSummary(d.node.info.Aged(time.Since(d.node.infoReceivedAt)))
+}
+
 // hardwareBudget is the most rows the hardware block may take.
 //
 // Half the screen, floored at one line so there is always something. The engine
@@ -1938,7 +2250,26 @@ func (d *nodeDetail) hardwareBlock() string {
 // than an exhaustive device inventory — the operator came here to act on an
 // engine, not to audit GPUs.
 func (d *nodeDetail) hardwareBudget() int {
-	return clampWidth(d.height/2, 1)
+	return max(d.height/2, 1)
+}
+
+// managedModels is the list of models to manage for one engine. An engine that
+// reports a downloaded inventory (vLLM, which advertises only the model it is
+// serving) is listed from that inventory, which is read even while it is
+// stopped, plus anything loaded that is not in it, such as a model served from
+// a local path. Every other engine's advertised list is its inventory.
+func managedModels(res modelsResult, engine string) []string {
+	downloaded, ok := res.DownloadedByEngine[engine]
+	if !ok {
+		return slices.Clone(res.ModelsByEngine[engine])
+	}
+	models := slices.Clone(downloaded)
+	for _, m := range res.LoadedByEngine[engine] {
+		if !slices.Contains(models, m) {
+			models = append(models, m)
+		}
+	}
+	return models
 }
 
 // emptyModelsHint explains an empty list in terms of the thing to fix, since
@@ -2011,7 +2342,7 @@ func (d *nodeDetail) advertisedEngines() []string {
 		}
 		names = append(names, d.engineLabel(engine))
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -2025,7 +2356,13 @@ func (d *nodeDetail) emptyModelsHint() string {
 		// something needs starting. Whether an engine is running is exactly
 		// what cannot be seen from outside the cluster.
 		return "  No models advertised by this node."
-	case !d.anyEngineRunning():
+	case len(d.models.DownloadedByEngine) > 0 && d.remote():
+		// An engine read its downloaded models and found none, which is known
+		// with the engine stopped. One that could not be read has no entry.
+		return "  No models downloaded on this node's engines."
+	case len(d.models.DownloadedByEngine) > 0:
+		return "  No models installed. Press p to download one."
+	case !d.anyEngineEnabled():
 		return "  No models reported - start an engine to see its models."
 	case d.remote():
 		return "  No models reported by this node's engines."
@@ -2034,9 +2371,9 @@ func (d *nodeDetail) emptyModelsHint() string {
 	}
 }
 
-func (d *nodeDetail) anyEngineRunning() bool {
+func (d *nodeDetail) anyEngineEnabled() bool {
 	for _, e := range d.engines {
-		if e.Running {
+		if e.Running || e.AwaitingModel {
 			return true
 		}
 	}
@@ -2094,8 +2431,12 @@ func (d *nodeDetail) Help() []key.Binding {
 		}
 		return bindings
 	}
-	return append(bindings,
+	bindings = append(bindings,
 		detailPullKey, detailPullByNameKey, detailLoadKey, detailEjectKey, detailDeleteKey)
+	if len(d.downloads) > 0 {
+		bindings = append(bindings, detailCancelPullKey)
+	}
+	return bindings
 }
 
 func yesNo(b bool) string {

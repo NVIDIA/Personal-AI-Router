@@ -47,20 +47,17 @@ func startSchedulerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan js
 	require.NoError(t, err, "scheduler stdout pipe")
 	require.NoError(t, cmd.Start(), "start scheduler")
 	ch := startMsgReader(t, stdout)
-	var cleanupOnce sync.Once
-	return stdin, ch, func() {
-		cleanupOnce.Do(func() {
-			stdin.Close()
-			done := make(chan error, 1)
-			go func() { done <- cmd.Wait() }()
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				cmd.Process.Kill()
-				<-done
-			}
-		})
-	}
+	return stdin, ch, sync.OnceFunc(func() {
+		stdin.Close()
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			cmd.Process.Kill()
+			<-done
+		}
+	})
 }
 
 // waitForPriorityPair returns the next complete priority emission for both
@@ -226,7 +223,7 @@ func TestScheduler_BalancesMixedEngineBurstAcrossNodes(t *testing.T) {
 
 	depths := map[string]int{"a": 0, "b": 0, "c": 0}
 	current := initial
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		target := current[0]
 		engine := "ollama"
 		if i%2 == 1 {
@@ -302,8 +299,7 @@ func runBlockedProxyBurst(t *testing.T, pending, pressure []int, requests int) (
 	require.Len(t, pending, len(pressure), "pending/pressure length mismatch")
 
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	unblock := sync.OnceFunc(func() { close(release) })
 	hits := make(chan string, requests*len(pending))
 	ids := make([]string, len(pending))
 	servers := make([]*httptest.Server, len(pending))

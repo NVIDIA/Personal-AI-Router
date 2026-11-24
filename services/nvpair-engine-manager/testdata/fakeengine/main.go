@@ -13,12 +13,16 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,10 +74,82 @@ func bstr(m map[string]any, k string) string {
 	return ""
 }
 
+// reportDownloadProgress renders one `lms get` progress redraw at the
+// percentage named in os.Args[2], in the CLI's own two-decimal shape.
+func reportDownloadProgress() {
+	if len(os.Args) < 3 {
+		os.Exit(2)
+	}
+	percent, err := strconv.ParseFloat(os.Args[2], 64)
+	if err != nil {
+		os.Exit(2)
+	}
+	fmt.Printf("\r[====    ] %.2f%%", percent)
+}
+
+// writeAnnouncedPartial writes the partial file a transfer leaves and prints the
+// download plan line `lms get` shows for it. The plan names the quantization
+// the CLI chose, never the file, and that quantization is what lets a pull that
+// pins none attribute the partial to itself. Here it is the part of the
+// partial's name after its last hyphen.
+func writeAnnouncedPartial(partial string) {
+	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(partial), "downloading_"), ".gguf.part")
+	cut := strings.LastIndex(name, "-")
+	if cut < 0 || os.MkdirAll(filepath.Dir(partial), 0o755) != nil || os.WriteFile(partial, []byte("partial"), 0o644) != nil {
+		os.Exit(2)
+	}
+	fmt.Printf("\r ↓ To download: %s %s [GGUF] - 4.68 GB\x1b[0K\n", name[:cut], name[cut+1:])
+}
+
+// resolveLMSArtifact stands in for `lms get` resolving its argument before it
+// downloads anything. A huggingface.co URL resolves, and so does a bare id
+// under the hub/ owner, standing for an LM Studio Hub artifact such as
+// qwen/qwen3-8b. Any other bare id is a Hugging Face repository the Hub does
+// not have, and fails the way LM Studio fails it, so the runner falls back to
+// the repository's URL as it does for a real community model.
+func resolveLMSArtifact(arg string) {
+	if strings.HasPrefix(arg, "https://huggingface.co/") || strings.HasPrefix(arg, "hub/") {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: Failed to resolve artifact %q: The artifact does not exist or you do not have permission to read it\n", strings.ToLower(arg))
+	os.Exit(1)
+}
+
+// downloadUntilInterrupted reports progress and then blocks until this process
+// has been interrupted the given number of times, the way `lms get` waits
+// while it downloads. A partial file named in os.Args[3] is written first, as a
+// transfer under way would have, once the model in os.Args[4], if any,
+// resolves. It listens for the interrupt before reporting: the caller cancels
+// as soon as it reads progress, and an interrupt nothing is listening for ends
+// the process before it can answer, which is what a CLI that exits without
+// confirming looks like.
+//
+// When it waits for more than one interrupt, it writes a file named after the
+// partial with ".missed" added once the first lands, for a test that must act
+// only after the stop has begun.
+func downloadUntilInterrupted(interrupts int) {
+	if len(os.Args) > 4 {
+		resolveLMSArtifact(os.Args[4])
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
+	if len(os.Args) > 3 {
+		writeAnnouncedPartial(os.Args[3])
+	}
+	reportDownloadProgress()
+	for i := range interrupts {
+		<-signals
+		if i == 0 && interrupts > 1 && len(os.Args) > 3 {
+			_ = os.WriteFile(os.Args[3]+".missed", nil, 0600)
+		}
+	}
+}
+
 func main() {
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
-		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST"} {
+		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST", "MODEL_ENDPOINT"} {
 			values[key] = os.Getenv(key)
 		}
 		data, _ := json.Marshal(values)
@@ -81,11 +157,47 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	// "--fail-launch", or a model named org/fails-to-load, stands in for a launch
+	// the engine rejects, such as a model that does not fit in GPU memory.
 	for _, arg := range os.Args[1:] {
-		if arg == "--fail-launch" {
+		if arg == "--fail-metal-oom" || arg == "--metal-oom-before-wait" {
+			// Captured vLLM-Metal warm-up diagnostic. The same Metal signature is
+			// reported at https://github.com/ml-explore/mlx-examples/issues/481.
+			fmt.Fprintln(os.Stderr, "RuntimeError: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).")
+			if arg == "--metal-oom-before-wait" {
+				if err := os.WriteFile(os.Getenv("PAIR_TEST_STARTUP_MARKER"), []byte("ready"), 0o600); err != nil {
+					os.Exit(2)
+				}
+				// Keep the child alive so cancellation, rather than an OOM exit,
+				// is what ends this synthetic startup.
+				time.Sleep(time.Hour)
+				return
+			}
+			fmt.Fprintln(os.Stderr, "RuntimeError: Engine core initialization failed.")
+			os.Exit(1)
+		}
+		if arg == "--fail-launch" || arg == "org/fails-to-load" {
 			fmt.Fprintln(os.Stderr, "invalid launch", os.Args[1:])
 			os.Exit(2)
 		}
+	}
+	// Like vLLM, a server started with --model serves that one model and no
+	// other.
+	for i, arg := range os.Args[1:] {
+		served, ok := strings.CutPrefix(arg, "--model=")
+		if arg == "--model" && i+2 < len(os.Args) {
+			served, ok = os.Args[i+2], true
+		}
+		if ok {
+			models = map[string]bool{served: true}
+			loaded = map[string]bool{served: true}
+		}
+	}
+	// FAKE_SERVE_MODEL stands in for a server someone started on another model
+	// than the saved launch arguments name, which PAIR then adopted.
+	if served := os.Getenv("FAKE_SERVE_MODEL"); served != "" {
+		models = map[string]bool{served: true}
+		loaded = map[string]bool{served: true}
 	}
 	if path := os.Getenv("FAKE_START_LOG"); path != "" {
 		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
@@ -99,6 +211,84 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		// The five download subcommands stand in for `lms get` and cover the
+		// ways it can answer an interrupt. Each takes the percentage to report
+		// so the caller owns that number and can assert on the same constant it
+		// passed in, then optionally the partial file its transfer leaves.
+		case "canceldownload", "downloadmissesfirstinterrupt": // answers the prompt and confirms the cancellation
+			// The first interrupt can land while `lms get` is mid-redraw and
+			// never reach the handler that prints the prompt, and then the
+			// second is the one it answers.
+			interrupts := 1
+			if os.Args[1] == "downloadmissesfirstinterrupt" {
+				interrupts = 2
+			}
+			downloadUntilInterrupted(interrupts)
+			fmt.Fprint(os.Stderr, "Continue to download in the background? (Y/N): ")
+			answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+			if err != nil || strings.TrimSpace(answer) != "n" {
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stderr, "Download canceled.")
+			os.Exit(1)
+		case "downloadcompletes": // finishes as the interrupt lands
+			downloadUntilInterrupted(1)
+			fmt.Fprintln(os.Stderr, "Download completed.")
+			return
+		case "downloadsilent": // exits without answering the prompt
+			downloadUntilInterrupted(1)
+			os.Exit(1)
+		case "downloadignoresinterrupt": // never acknowledges, so it has to be killed
+			// Take delivery of the interrupt and do nothing with it. Calling
+			// signal.Ignore instead is worse than a no-op on Windows: the
+			// runtime's console handler exits the process for an event no
+			// receiver wants, which is the opposite of what this stands for.
+			swallowed := make(chan os.Signal, 1)
+			signal.Notify(swallowed, os.Interrupt)
+			defer signal.Stop(swallowed)
+			reportDownloadProgress()
+			// Sleeping rather than blocking forever: a bare receive is the
+			// runtime's deadlock condition, and that panic would exit the very
+			// process this case needs to outlive its interrupt.
+			time.Sleep(time.Hour)
+			os.Exit(2)
+		case "downloadleavesahelper": // stand in for an `lms get` that finishes
+			// while a process it started keeps its output open, and write that
+			// process's PID so the test can stop it.
+			// args: downloadleavesahelper <percent> <pidfile>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			reportDownloadProgress()
+			helper := exec.Command(os.Args[0], "holdoutput")
+			helper.Stdout, helper.Stderr = os.Stdout, os.Stderr
+			if helper.Start() != nil || os.WriteFile(os.Args[3], []byte(strconv.Itoa(helper.Process.Pid)), 0o644) != nil {
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stderr, "Download completed.")
+			return
+		case "holdoutput": // the helper downloadleavesahelper starts
+			time.Sleep(time.Minute)
+			os.Exit(2)
+		case "daemon", "server":
+			if strings.Join(os.Args[1:], " ") == "daemon status --json" {
+				if os.Getenv("PAIR_TEST_LMS_STATUS") == "command-error" {
+					fmt.Fprintln(os.Stderr, "host status unavailable")
+					os.Exit(1)
+				}
+				fmt.Println(os.Getenv("PAIR_TEST_LMS_STATUS"))
+				return
+			}
+			data, err := json.Marshal(os.Args[1:])
+			if err != nil || os.WriteFile(os.Getenv("PAIR_TEST_LMS_STOP"), data, 0o600) != nil {
+				os.Exit(1)
+			}
+			return
+		case "-I": // stand in for the memory probe's Python -I -c invocation
+			// Distinct readings in the service and engine environments let a test
+			// observe which environment the probe actually received.
+			fmt.Println(os.Getenv("PAIR_TEST_MEMORY_READING"))
+			return
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)
@@ -175,6 +365,21 @@ func main() {
 			}
 			fmt.Println("downloaded")
 			return
+		case "downloadstalls": // stand in for an `lms get` whose transfer times
+			// out: write the partial file its plan announces, the way a real
+			// download leaves one, then fail with LM Studio's transient
+			// "Download failed" so the runner waits to resume it.
+			// args: downloadstalls <partial> <model...>
+			if len(os.Args) < 3 {
+				fmt.Fprintln(os.Stderr, "downloadstalls: need <partial>")
+				os.Exit(2)
+			}
+			if len(os.Args) > 3 {
+				resolveLMSArtifact(os.Args[3])
+			}
+			writeAnnouncedPartial(os.Args[2])
+			fmt.Fprintln(os.Stderr, "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.")
+			os.Exit(1)
 		}
 	}
 
@@ -196,6 +401,20 @@ func main() {
 			log.Fatalf("invalid FAKE_START_DELAY %q: %v", raw, err)
 		}
 		time.Sleep(delay)
+	}
+	// Tests release startup explicitly rather than racing a fixed delay.
+	if gate := os.Getenv("FAKE_START_GATE"); gate != "" {
+		if err := os.WriteFile(gate+".waiting", nil, 0o600); err != nil {
+			log.Fatal(err)
+		}
+		for {
+			if _, err := os.Stat(gate); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				log.Fatal(err)
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -287,11 +506,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"models": ms})
 	})
-	// LM Studio-shape (OpenAI-compatible).
+	// LM Studio-shape (OpenAI-compatible). Each row also carries vLLM's root
+	// (the model it loaded). FAKE_SERVED_MODEL_NAME stands in for vLLM's
+	// --served-model-name: the id becomes that alias while root keeps the model.
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		data := make([]map[string]string, 0)
 		for _, n := range modelNames() {
-			data = append(data, map[string]string{"id": n, "object": "model"})
+			id := n
+			if alias := os.Getenv("FAKE_SERVED_MODEL_NAME"); alias != "" {
+				id = alias
+			}
+			data = append(data, map[string]string{"id": id, "root": n, "object": "model"})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

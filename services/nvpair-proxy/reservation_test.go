@@ -57,11 +57,9 @@ func TestReserveCandidate_ConcurrentEqualLoadHasAtMostOneSkew(t *testing.T) {
 	chosen := make(chan string, requests)
 	var wg sync.WaitGroup
 	for range requests {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			chosen <- reservedID(p, candidates)
-		}()
+		})
 	}
 	wg.Wait()
 	close(chosen)

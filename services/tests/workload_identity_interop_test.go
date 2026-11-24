@@ -31,7 +31,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -171,8 +170,6 @@ func TestWorkloadManager_RehydratesActiveWorkloadOnRestart(t *testing.T) {
 	// the request. An engine that blocks before producing content leaves the
 	// workload "queued", which is the truth but not what this test is about.
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	stopEngine := func() { releaseOnce.Do(func() { close(release) }) }
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, copyErr := io.Copy(io.Discard, r.Body)
 		assert.NoError(t, copyErr)
@@ -190,19 +187,19 @@ func TestWorkloadManager_RehydratesActiveWorkloadOnRestart(t *testing.T) {
 		// The request may have been canceled while the engine was held.
 		_, _ = io.WriteString(w, `{"done":true}`+"\n")
 	}))
-	// Defer order matters: stopEngine() must run BEFORE ollama.Close(), because
+	// Defer order matters: release must close before ollama.Close(), because
 	// Close() blocks until the deliberately-held request finishes, which only
 	// happens once release is closed. Registering ollama.Close() first makes it
 	// run last (LIFO).
 	defer ollama.Close()
-	defer stopEngine()
+	defer close(release)
 	ollamaPort := portOfURL(t, ollama.URL)
 
 	// Stub peer: a cross-pinned cluster peer that records every workload frame the
 	// manager fans out to it. The inter-node interface is cluster mTLS only, so the
 	// stub must hold a cluster identity the node under test pins.
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "rehydrate-wm-peer", "rehydrate-peer-uuid")
+	received, _ := fx.startStubClusterPeer(t, "rehydrate-wm-peer")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
 		"--proxy-path", proxyBin, "--proxy-engines", "ollama",
@@ -304,7 +301,7 @@ func TestWorkloadManager_RehydratesRecentTerminalOnRestart(t *testing.T) {
 	ollamaPort := portOfURL(t, ollama.URL)
 
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "rehydrate-term-peer", "rehydrate-term-peer-uuid")
+	received, _ := fx.startStubClusterPeer(t, "rehydrate-term-peer")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
 		"--proxy-path", proxyBin, "--proxy-engines", "ollama",

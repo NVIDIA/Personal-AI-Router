@@ -23,7 +23,9 @@ export function InstallButton({
     disabled: boolean
     onInstall: () => void
 }) {
-    const autoInstall = canAutoInstallBackendForOs(backend.type, targetOs)
+    // A remote not-installed status means the peer's engine manager lists this
+    // engine as supported. Its OS is a placeholder, so only local installs use it.
+    const autoInstall = !isLocalNode || canAutoInstallBackendForOs(backend.type, targetOs)
     const isNotInstalled = backend.processStatus === 'not-installed'
     const missingPrereqs = (backend.prerequisites ?? []).filter(p => !p.installed)
     const prereqsMet = missingPrereqs.length === 0

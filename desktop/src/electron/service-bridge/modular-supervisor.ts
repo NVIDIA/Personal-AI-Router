@@ -7,11 +7,13 @@ import { app } from 'electron'
 import {
     JsonRpcResponseError,
     JsonRpcSubprocess,
+    JsonRpcTimeoutError,
     type JsonObject,
     type JsonRpcInboundRequest,
     type JsonRpcNotification,
     type JsonValue
 } from './json-rpc-subprocess'
+import { EnginesListingModelsWhenStopped } from '@/shared/constants/engines'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
 import { currentPlatform } from '@/shared/utils/platform'
@@ -37,8 +39,8 @@ import { serviceLogLevel } from './service-log-level'
 import { engineManagerName } from '@/shared/utils/engines'
 import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
-import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
+    MODULAR_CANCEL_PULL_TIMEOUT_MS,
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
@@ -192,25 +194,6 @@ export function parseListModelNames(result: JsonValue | undefined): string[] {
     return names
 }
 
-/**
- * Extract the per-engine loaded-in-memory model set from an
- * `engine:models-changed` push. The payload is `{ engine, models }`
- * where `models` is the full `engine:models` result carrying `loadedByEngine`
- * (engine-manager engine name -> loaded model names). Missing/omitted maps yield
- * an empty record, which stamps every local model `idle`.
- */
-function parseLoadedByEngine(params: JsonValue | undefined): Record<string, string[]> {
-    const models = objectValue(objectValue(params)?.models)
-    const loaded = objectValue(models?.loadedByEngine)
-    if (!loaded) return {}
-    const out: Record<string, string[]> = {}
-    for (const [engine, list] of Object.entries(loaded)) {
-        if (!Array.isArray(list)) continue
-        out[engine] = list.filter((name): name is string => typeof name === 'string')
-    }
-    return out
-}
-
 function normalizeLogLevel(value: string | undefined): ModularLogLevel {
     const lowered = value?.toLowerCase()
     if (lowered && isModularLogLevel(lowered)) return lowered
@@ -323,8 +306,8 @@ function emptyLocalEngineBridge(): LocalEngineBridge {
  *   engine-manager, `errors:` for the error pipeline, `node/*` for manual nodes,
  *   `settings/*` and `cluster:` for the rest. Local inference jobs arrive on the
  *   broker's `workloads:subscribe` stream.
- * - The local `/v1/node-info` HTTP poll is the single sanctioned HTTP exception
- *   for telemetry (see `node-info-poller.ts`).
+ * - Hardware snapshots arrive through the broker's discovery subscription,
+ *   alongside node identity and service inventory.
  */
 class ModularSupervisor {
     private processes = new Map<ModularProcessName, JsonRpcSubprocess>()
@@ -346,6 +329,12 @@ class ModularSupervisor {
     private modelRefreshGenerations = new Map<EngineType, number>()
     private discoveryModelRetryTimers = new Map<ProxyEngine, ReturnType<typeof setTimeout>>()
     private discoveryModelRetryAttempts = new Map<ProxyEngine, number>()
+
+    // Download cancellations this is currently awaiting a broker reply for, by
+    // the attempt number of the download each was sent for. Held only for the
+    // duration of the await so a cancel that outlives its budget can be
+    // re-issued; see {@link ModularSupervisor.cancelModelPull}.
+    private cancelsInFlight = new Set<number>()
     // Authoritative value is the persisted ui-config `modularLogLevel`; the
     // connector seeds it via setLogLevel() before start() so spawn args use it.
     // This default only applies if start() runs before the connector seeds.
@@ -530,7 +519,6 @@ class ModularSupervisor {
 
         this.isReady = true
         this.updateReadiness()
-        startNodeInfoPoller()
         log.info({ sublevel: 'lifecycle', message: 'Started modular service processes' })
     }
 
@@ -538,7 +526,6 @@ class ModularSupervisor {
         // Mark teardown first so the broker's exit during stop() is treated as a
         // deliberate shutdown, not a crash.
         this.shuttingDown = true
-        stopNodeInfoPoller()
         if (this.remoteStatusDebounceTimer) {
             clearTimeout(this.remoteStatusDebounceTimer)
             this.remoteStatusDebounceTimer = null
@@ -1080,8 +1067,8 @@ class ModularSupervisor {
             const result = await this.callProcess('broker', 'engine:get-installed')
             const obj = objectValue(result)
             if (!obj || !Array.isArray(obj.engines)) return
+            getModularBridgeState().applyEngineManagerList(result)
             for (const engine of obj.engines) {
-                getModularBridgeState().applyEngineManagerStatus(engine)
                 this.refreshManagedEngineModels(engine)
             }
         } catch (err) {
@@ -1596,10 +1583,9 @@ class ModularSupervisor {
         if (notification.method === 'engine:models-changed') {
             // An engine's in-memory (loaded) model set changed — explicit
             // load/unload, LM Studio JIT auto-load, or idle/TTL eviction. The push
-            // carries the full engine:models snapshot; forward its per-engine
-            // loaded set so the local node's model rows reflect residency at once,
-            // ahead of the next discovery model-refresh sweep.
-            getModularBridgeState().applyLocalLoadedModels(parseLoadedByEngine(notification.params))
+            // carries the full engine:models snapshot; apply inventory and residency
+            // together so remote mutations also refresh the owning node's rows.
+            getModularBridgeState().applyLocalModelSnapshot(notification.params)
             return
         }
         if (notification.method === 'engine:install-progress') {
@@ -1680,6 +1666,84 @@ class ModularSupervisor {
             }
         } finally {
             state.finishModelPull(engineType, model)
+        }
+    }
+
+    /**
+     * Stop a model download. The backend acknowledges only after the transfer
+     * has stopped and its partial files are cleaned up, so the row stays in
+     * "Canceling" for the whole of that — see
+     * {@link MODULAR_CANCEL_PULL_TIMEOUT_MS} for what bounds it.
+     *
+     * A timeout is not a failure: the backend is still cancelling, and dropping
+     * the row back to "downloading" seconds before it finishes would be a lie
+     * the user acts on. Only a real rejection restores the previous status, and
+     * either way the pull's own settling event clears the entry.
+     *
+     * It does not make the cancel one-shot, though. A request that outlives
+     * its budget has stopped being awaited, and the row it left in "Canceling"
+     * is the user's only handle on a download that may still be running, so
+     * asking again has to reach the backend. Only a cancel this is currently
+     * waiting on is refused, which is what keeps a mashed button from fanning
+     * out duplicate requests.
+     *
+     * Each cancel belongs to the attempt it was sent for. The download can end,
+     * and its row clear, while its cancel is still awaited, and a retry of the
+     * model is then a new attempt the backend names the same way. That earlier
+     * cancel neither refuses the retry's nor, rejected late, restores the
+     * retry's row.
+     */
+    async cancelModelPull(
+        engine: string,
+        engineType: EngineType,
+        model: string,
+        nodeId?: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        const attempt = state.modelPullAttempt(engineType, model, nodeId)
+        if (attempt === undefined) return
+        if (this.cancelsInFlight.has(attempt)) return
+        if (!state.setModelPullCanceling(engineType, model, true, nodeId)) return
+        this.cancelsInFlight.add(attempt)
+        try {
+            if (nodeId) {
+                await this.callProcess(
+                    'broker',
+                    'engine:remote-cancel-pull',
+                    {
+                        node: nodeId,
+                        engine,
+                        model
+                    },
+                    MODULAR_CANCEL_PULL_TIMEOUT_MS
+                )
+            } else {
+                await this.callProcess(
+                    'broker',
+                    'engine:cancel-pull',
+                    { engine, model },
+                    MODULAR_CANCEL_PULL_TIMEOUT_MS
+                )
+            }
+        } catch (err) {
+            if (err instanceof JsonRpcTimeoutError) {
+                log.warn({
+                    sublevel: 'broker',
+                    message: `cancel of ${engine} download is still running after ${MODULAR_CANCEL_PULL_TIMEOUT_MS}ms`
+                })
+                return
+            }
+            if (state.modelPullAttempt(engineType, model, nodeId) === attempt) {
+                state.setModelPullCanceling(engineType, model, false, nodeId)
+            }
+            this.reportError(
+                `Failed to cancel download of ${model}: ${getErrorString(err)}`,
+                'error',
+                `engine-cancel-pull:${nodeId ?? 'local'}:${engine}:${model}`,
+                { engineType, nodeId, operation: 'pull', modelName: model }
+            )
+        } finally {
+            this.cancelsInFlight.delete(attempt)
         }
     }
 
@@ -1774,13 +1838,12 @@ class ModularSupervisor {
 
     /**
      * Download a model on a remote peer via `engine:remote-pull-model`
-     * (`nvpair-engine-manager` ec surface). Unlike a local pull, the backend emits
-     * **no** terminal `engine:remote-progress` for a remote pull — the peer's
-     * terminal stream frame becomes this RPC's reply
-     * (`nvpair-engine-manager/controlstream.go`), never a notification. So the
-     * awaited RPC settling is the *only* completion signal; we clear the
-     * optimistic entry here on resolve/reject. Fire-and-forget for the caller
-     * (`void`-ed) so the UI command returns immediately.
+     * (`nvpair-engine-manager` ec surface). As for a local pull, the last
+     * `engine:remote-progress` names how the download ended, but the peer's
+     * result and error arrive only as this RPC's reply
+     * (`nvpair-engine-manager/controlstream.go`), so we clear the optimistic
+     * entry here on resolve/reject. Fire-and-forget for the caller (`void`-ed)
+     * so the UI command returns immediately.
      */
     async pullModelRemote(
         nodeId: string,
@@ -1908,7 +1971,8 @@ class ModularSupervisor {
      * message distinguishes the two cases exactly as the local path does. The
      * error is stamped with the *peer's* nodeId (not our selfId) plus
      * `engineType`/`modelName` so `pending-actions.store` clears the right row's
-     * spinner instead of leaving it to the safety-net timeout.
+     * spinner instead of leaving it to the safety-net timeout. Resolves with the
+     * peer's reply, or undefined once a failure has been reported.
      */
     async modelActionRemote(
         nodeId: string,
@@ -1916,7 +1980,7 @@ class ModularSupervisor {
         engineType: EngineType,
         model: string,
         command: 'loadModel' | 'unloadModel' | 'deleteModel'
-    ): Promise<void> {
+    ): Promise<JsonValue | undefined> {
         const method =
             command === 'loadModel'
                 ? 'engine:remote-load-model'
@@ -1924,13 +1988,14 @@ class ModularSupervisor {
                   ? 'engine:remote-unload-model'
                   : 'engine:remote-delete-model'
         try {
-            await this.callProcess(
+            const result = await this.callProcess(
                 'broker',
                 method,
                 { node: nodeId, engine, model },
                 PULL_TIMEOUT_MS
             )
             await this.refreshRemoteEngineStatus(nodeId)
+            return result
         } catch (err) {
             const verb =
                 command === 'loadModel' ? 'load' : command === 'unloadModel' ? 'unload' : 'delete'
@@ -1945,6 +2010,7 @@ class ModularSupervisor {
                 { nodeId, engineType, operation: verb, modelName: model }
             )
             if (restartFailed) await this.refreshRemoteEngineStatus(nodeId)
+            return undefined
         }
     }
 
@@ -1989,7 +2055,11 @@ class ModularSupervisor {
         const engineType = getModularBridgeState().modelPullTarget(engine)
         if (!engineType) return
 
-        if (!booleanValue(obj.running)) {
+        // An engine whose list is on disk keeps it while stopped: read it like a
+        // running engine's instead of clearing it.
+        // vLLM, the one engine whose Load restarts it, is among these, so a model
+        // switch passing through stopped never clears its list.
+        if (!booleanValue(obj.running) && !EnginesListingModelsWhenStopped.includes(engineType)) {
             this.beginModelRefresh(engineType)
             this.stoppedModelEngines.add(engineType)
             this.stoppedModelSentinels.add(engineType)

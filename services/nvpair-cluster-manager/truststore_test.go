@@ -377,9 +377,7 @@ func TestTrustStore_AnnouncesConcurrentDuplicateEndorsementsOnce(t *testing.T) {
 	errs := make(chan error, workers)
 	var wg sync.WaitGroup
 	for i := range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			if i%2 == 0 {
 				updated := *pin
@@ -388,7 +386,7 @@ func TestTrustStore_AnnouncesConcurrentDuplicateEndorsementsOnce(t *testing.T) {
 			} else {
 				errs <- ts.AddEndorsements(pin.NodeUUID, want)
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

@@ -30,7 +30,7 @@ import (
 // has nothing to offer".
 func TestOllamaCatalog_LoadsFromEmbeddedFile(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64", "")
+	res, err := c.Catalog(t.Context(), "ollama", "linux", "amd64", "", "")
 	require.NoError(t, err, "ollama catalog")
 	require.NotEmpty(t, res.Models, "embedded ollama catalog is empty")
 	assert.NotEmpty(t, res.FetchedAt, "no scrape timestamp; an operator cannot tell how stale the list is")
@@ -45,18 +45,21 @@ func TestOllamaCatalog_LoadsFromEmbeddedFile(t *testing.T) {
 	}
 }
 
-// TestOllamaCatalogIsServedFromCache checks the embedded list is parsed once
-// rather than on every request: it is several thousand entries.
-func TestOllamaCatalog_IsServedFromCache(t *testing.T) {
+// The embedded list has several thousand entries, so requests for different
+// targets must reuse it while keeping their own target metadata.
+func TestOllamaCatalog_ReusesModelsAcrossRequestTargets(t *testing.T) {
 	c := newCatalogService()
-	first, _, err := c.ollamaCatalog()
+	first, err := c.Catalog(t.Context(), "ollama", "linux", "amd64", "", "")
 	require.NoError(t, err, "first load")
-	second, _, err := c.ollamaCatalog()
+	second, err := c.Catalog(t.Context(), "ollama", "darwin", "arm64", "", "")
 	require.NoError(t, err, "second load")
-	require.Len(t, second, len(first), "repeat load produced a different list")
-	if len(first) > 0 {
-		assert.Same(t, &first[0], &second[0], "catalog re-parsed instead of being reused")
-	}
+	assert.Equal(t, "linux", first.Platform)
+	assert.Equal(t, "amd64", first.Arch)
+	assert.Equal(t, "darwin", second.Platform)
+	assert.Equal(t, "arm64", second.Arch)
+	require.NotEmpty(t, first.Models)
+	require.Len(t, second.Models, len(first.Models), "repeat load produced a different list")
+	assert.Same(t, &first.Models[0], &second.Models[0], "catalog re-parsed instead of being reused")
 }
 
 // TestOllamaCatalogFitsInAFrame is the guard for the failure that made this
@@ -70,7 +73,7 @@ func TestOllamaCatalog_IsServedFromCache(t *testing.T) {
 // adding rows or by widening them.
 func TestOllamaCatalog_FitsInAFrame(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "linux", "amd64", "")
+	res, err := c.Catalog(t.Context(), "ollama", "linux", "amd64", "", "")
 	require.NoError(t, err, "ollama catalog")
 	body, err := json.Marshal(res)
 	require.NoError(t, err, "marshal catalog")
@@ -108,12 +111,10 @@ func TestLmStudioCatalog_CoalescesConcurrentCallers(t *testing.T) {
 	errs := make([]error, callers)
 	counts := make([]int, callers)
 	for i := range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			models, _, err := c.lmStudio.get(context.Background())
+		wg.Go(func() {
+			models, _, err := c.lmStudio.get(t.Context())
 			errs[i], counts[i] = err, len(models)
-		}()
+		})
 	}
 
 	// Let the callers pile up behind the one in flight, then answer.
@@ -149,7 +150,7 @@ func TestLmStudioCatalog_BacksOffAfterFailure(t *testing.T) {
 
 	// Seed a good list, then start failing.
 	fail = false
-	_, _, err := c.lmStudio.get(context.Background())
+	_, _, err := c.lmStudio.get(t.Context())
 	require.NoError(t, err, "seed fetch")
 	fail = true
 
@@ -160,7 +161,7 @@ func TestLmStudioCatalog_BacksOffAfterFailure(t *testing.T) {
 
 	before := requests.Load()
 	for range 3 {
-		models, _, err := c.lmStudio.get(context.Background())
+		models, _, err := c.lmStudio.get(t.Context())
 		require.NoError(t, err, "a failed refresh should still serve the stale list")
 		assert.Len(t, models, 1, "stale list lost its models")
 	}
@@ -184,18 +185,202 @@ func TestLmStudioCatalog_BacksOffWithNothingCached(t *testing.T) {
 	c.baseURL = srv.URL
 
 	for i := range 3 {
-		_, _, err := c.lmStudio.get(context.Background())
+		_, _, err := c.lmStudio.get(t.Context())
 		require.Error(t, err, "call %d: a failing upstream with nothing cached returned no error", i)
 	}
 	assert.Equal(t, int32(1), requests.Load(), "three calls against a failing upstream must back off after one request")
 
 	// Once the backoff has run out, the next call tries again.
 	c.lmStudio.mu.Lock()
-	c.lmStudio.failed = time.Now().Add(-2 * catalogRetryAfterFailure)
+	c.lmStudio.retryAt = time.Now().Add(-time.Second)
 	c.lmStudio.mu.Unlock()
-	_, _, err := c.lmStudio.get(context.Background())
+	_, _, err := c.lmStudio.get(t.Context())
 	assert.Error(t, err, "retry against a failing upstream must still report failure")
 	assert.Equal(t, int32(2), requests.Load(), "backoff expiry must permit a second attempt")
+}
+
+func TestCatalogRetryTime_AcceptsSecondsAndHTTPDates(t *testing.T) {
+	now := time.Date(2026, time.November, 19, 8, 0, 0, 0, time.UTC)
+	test := func(name, header string, want time.Time) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, catalogRetryTime(header, now))
+		})
+	}
+	test("delta seconds", "30", now.Add(30*time.Second))
+	test("HTTP date", "Thu, 19 Nov 2026 08:00:30 GMT", now.Add(30*time.Second))
+	test("zero seconds", "0", now)
+	test("missing header", "", time.Time{})
+	test("negative delay", "-1", time.Time{})
+	test("invalid date", "later", time.Time{})
+	test("oversized delay", "999999999999999999999", time.Time{})
+}
+
+func TestLmStudioCatalog_UsesFailureSpecificRetryDelays(t *testing.T) {
+	test := func(name string, status int, retryAfter string, minimum, maximum time.Duration) {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Retry-After", retryAfter)
+				w.WriteHeader(status)
+			}))
+			t.Cleanup(server.Close)
+			catalog := newCatalogService()
+			catalog.baseURL = server.URL
+
+			_, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+			require.Error(t, err)
+			remaining := time.Until(catalog.lmStudio.retryAt)
+			assert.GreaterOrEqual(t, remaining, minimum)
+			assert.LessOrEqual(t, remaining, maximum)
+			_, err = catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+			assert.Error(t, err)
+			assert.Equal(t, int32(1), calls.Load(), "a new caller must respect the cooldown")
+		})
+	}
+	test("temporary server failure", http.StatusServiceUnavailable, "", 4*time.Second, 5*time.Second)
+	test("bad gateway", http.StatusBadGateway, "", 4*time.Second, 5*time.Second)
+	test("rate limit with server delay", http.StatusTooManyRequests, "90", 89*time.Second, 90*time.Second)
+	test("server failure with server delay", http.StatusServiceUnavailable, "30", 29*time.Second, 30*time.Second)
+	test("rate limit without server delay", http.StatusTooManyRequests, "", 119*time.Second, 120*time.Second)
+	test("permanent rejection", http.StatusForbidden, "", 119*time.Second, 120*time.Second)
+}
+
+func TestLmStudioCatalog_RecoversAfterATransientFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writeTestResponse(t, w, []byte(`[{"id":"lmstudio-community/Model-GGUF","downloads":5}]`))
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.baseURL = server.URL
+	_, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+	require.Error(t, err)
+	// Expire the measured cooldown without making the test sleep for it.
+	catalog.lmStudio.retryAt = time.Now().Add(-time.Second)
+
+	result, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+
+	require.NoError(t, err)
+	require.Len(t, result.Models, 1)
+	assert.Equal(t, "lmstudio-community/Model-GGUF", result.Models[0].ID)
+	assert.True(t, catalog.lmStudio.retryAt.IsZero())
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestLmStudioCatalog_UsesShortCooldownForTransportFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Close()
+	catalog := newCatalogService()
+	catalog.baseURL = server.URL
+
+	_, err := catalog.Catalog(t.Context(), "lmstudio", "", "", "", "")
+
+	require.Error(t, err)
+	remaining := time.Until(catalog.lmStudio.retryAt)
+	assert.Greater(t, remaining, 4*time.Second)
+	assert.LessOrEqual(t, remaining, 5*time.Second)
+}
+
+func TestVLLMCatalog_HonorsTheLongestPublisherRetryAfter(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Query().Get("author") == "nvidia" {
+			w.Header().Set("Retry-After", "90")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	catalog := newCatalogService()
+	catalog.baseURL = server.URL
+
+	_, err := catalog.Catalog(t.Context(), "vllm", "", "", "", "")
+
+	require.Error(t, err)
+	assert.Greater(t, time.Until(catalog.vllm.retryAt), 89*time.Second)
+	assert.LessOrEqual(t, time.Until(catalog.vllm.retryAt), 90*time.Second)
+	assert.Equal(t, int32(10), calls.Load())
+}
+
+func TestCatalog_RespectsFailureCooldownAcrossSources(t *testing.T) {
+	test := func(name, engine, source string, wantCalls int32) {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			t.Cleanup(server.Close)
+			catalog := newCatalogService()
+			catalog.baseURL, catalog.modelScopeEndpoint = server.URL, server.URL
+
+			for range 3 {
+				_, err := catalog.Catalog(t.Context(), engine, "", "", "", source)
+				require.Error(t, err)
+			}
+
+			assert.Equal(t, wantCalls, calls.Load(), "later callers must not repeat the failed fetch")
+		})
+	}
+	test("LM Studio", "lmstudio", "", 1)
+	test("llama.cpp Hugging Face", "llamacpp", "huggingface", 3)
+	test("llama.cpp ModelScope", "llamacpp", "modelscope", 1)
+	test("vLLM", "vllm", "", 10)
+}
+
+func TestListingCache_RefetchesAnIncompleteListOnceTheBackoffEnds(t *testing.T) {
+	var fetches atomic.Int32
+	cache := &listingCache{label: "test catalog", fetch: func(context.Context) ([]CatalogModel, error) {
+		models := []CatalogModel{{ID: "owner/a:Q4_K_M"}}
+		if fetches.Add(1) > 1 {
+			models = append(models, CatalogModel{ID: "owner/b:Q4_K_M"})
+		}
+		return models, fmt.Errorf("%w: request ended", errCatalogPartial)
+	}}
+
+	for range 2 {
+		models, _, err := cache.get(t.Context())
+		require.NoError(t, err)
+		assert.Len(t, models, 1)
+	}
+	assert.Equal(t, int32(1), fetches.Load(), "an incomplete list is served through the backoff")
+
+	// An incomplete list is not kept for catalogCacheTTL, and a longer
+	// incomplete list replaces it.
+	cache.mu.Lock()
+	cache.retryAt = time.Now().Add(-time.Second)
+	cache.mu.Unlock()
+	models, _, err := cache.get(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, models, 2)
+	assert.Equal(t, int32(2), fetches.Load())
+}
+
+func TestListingCache_KeepsACompleteListThroughAnIncompleteRefresh(t *testing.T) {
+	incomplete := false
+	cache := &listingCache{label: "test catalog", fetch: func(context.Context) ([]CatalogModel, error) {
+		if incomplete {
+			return []CatalogModel{{ID: "owner/a:Q4_K_M"}}, fmt.Errorf("%w: request ended", errCatalogPartial)
+		}
+		return []CatalogModel{{ID: "owner/a:Q4_K_M"}, {ID: "owner/b:Q4_K_M"}}, nil
+	}}
+	_, _, err := cache.get(t.Context())
+	require.NoError(t, err, "seed fetch")
+	incomplete = true
+	cache.mu.Lock()
+	cache.fetched = time.Now().Add(-2 * catalogCacheTTL)
+	cache.mu.Unlock()
+
+	models, _, err := cache.get(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, models, 2, "a stale complete list beats a fresh incomplete one")
 }
 
 func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {
@@ -214,13 +399,14 @@ func TestNormalizeCatalogEngine_ResolvesSupportedEngineNames(t *testing.T) {
 	test("hyphenated llama.cpp", "llama-cpp", "llamacpp")
 	test("dotted llama.cpp", "llama.cpp", "llamacpp")
 	test("other engine preserved", "vllm", "vllm")
+	test("unknown engine preserved", "nosuchengine", "nosuchengine")
 }
 
 // TestCatalogRejectsUnknownEngine checks an engine with no curated source errors
 // rather than returning an empty list that reads as "nothing available".
 func TestCatalog_RejectsUnknownEngine(t *testing.T) {
 	c := newCatalogService()
-	_, err := c.Catalog(context.Background(), "vllm", "linux", "amd64", "")
+	_, err := c.Catalog(t.Context(), "nosuchengine", "linux", "amd64", "", "")
 	assert.Error(t, err, "unknown engine returned a catalog")
 }
 
@@ -276,20 +462,20 @@ func TestFilterForTarget_RestrictsMLXModelsToAppleSilicon(t *testing.T) {
 // as universal.
 func TestCatalog_EchoesTarget(t *testing.T) {
 	c := newCatalogService()
-	res, err := c.Catalog(context.Background(), "ollama", "darwin", "amd64", "")
+	res, err := c.Catalog(t.Context(), "ollama", "darwin", "amd64", "", "")
 	require.NoError(t, err, "catalog")
 	assert.Equal(t, "darwin", res.Platform)
 	assert.Equal(t, "amd64", res.Arch)
 
 	// Omitting both means this host.
-	res, err = c.Catalog(context.Background(), "ollama", "", "", "")
+	res, err = c.Catalog(t.Context(), "ollama", "", "", "", "")
 	require.NoError(t, err, "catalog")
 	assert.Equal(t, runtime.GOOS, res.Platform)
 	assert.Equal(t, runtime.GOARCH, res.Arch)
 
 	// A named platform does not borrow this host's architecture: that would
 	// describe a machine the caller did not ask about.
-	res, err = c.Catalog(context.Background(), "ollama", "darwin", "", "")
+	res, err = c.Catalog(t.Context(), "ollama", "darwin", "", "", "")
 	require.NoError(t, err, "catalog")
 	assert.Empty(t, res.Arch, "a platform named without an architecture must leave it unknown")
 }
@@ -394,7 +580,7 @@ func TestNormalizeLlamaCPPRows_KeepsOnlyDownloadableModels(t *testing.T) {
 		ggufRow("../escape", 1),
 		ggufRow("a/has space", 1),
 	}
-	got := normalizeLlamaCPPRows(rows)
+	got := normalizeListing(rows, llamaCPPModel)
 	ids := make([]string, len(got))
 	for i, m := range got {
 		ids[i] = m.ID
@@ -411,7 +597,7 @@ func TestNormalizeLlamaCPPRows_KeepsOnlyDownloadableModels(t *testing.T) {
 // TestNormalizeLlamaCPPRowsDedupesAcrossPublishers checks a repo listed twice,
 // as it is when a search and a publisher page overlap, yields one row.
 func TestNormalizeLlamaCPPRows_DedupesAcrossPublishers(t *testing.T) {
-	got := normalizeLlamaCPPRows([]hfModelRow{ggufRow("a/model", 1), ggufRow("a/model", 7)})
+	got := normalizeListing([]hfModelRow{ggufRow("a/model", 1), ggufRow("a/model", 7)}, llamaCPPModel)
 	if assert.Len(t, got, 1, "one row must carry the later entry") {
 		assert.Equal(t, 7, got[0].Downloads)
 	}
@@ -459,7 +645,7 @@ func TestLlamaCPPCatalog_ReadsEveryPublisher(t *testing.T) {
 	c := newCatalogService()
 	c.baseURL = srv.URL
 
-	res, err := c.Catalog(context.Background(), "llama.cpp", "linux", "arm64", "")
+	res, err := c.Catalog(t.Context(), "llama.cpp", "linux", "arm64", "", "")
 	require.NoError(t, err, "llama.cpp catalog")
 	require.Len(t, res.Models, len(llamaCPPPublishers), "one model from each publisher")
 	for _, publisher := range llamaCPPPublishers {
@@ -476,7 +662,7 @@ func TestLlamaCPPCatalog_FailsWhenAnyPublisherRequestFails(t *testing.T) {
 	c := newCatalogService()
 	c.baseURL = srv.URL
 
-	res, err := c.Catalog(context.Background(), "llamacpp", "", "", "")
+	res, err := c.Catalog(t.Context(), "llamacpp", "", "", "", "")
 	assert.Error(t, err, "a failed publisher still produced %d models", len(res.Models))
 }
 
@@ -488,16 +674,16 @@ func TestLlamaCPPSearch_ReturnsMatchingModelsAndCachesResults(t *testing.T) {
 	c := newCatalogService()
 	c.baseURL = srv.URL
 
-	res, err := c.Catalog(context.Background(), "llamacpp", "", "", "  Gemma 3  ")
+	res, err := c.Catalog(t.Context(), "llamacpp", "", "", "  Gemma 3  ", "")
 	require.NoError(t, err, "search")
 	require.Equal(t, "Gemma 3", res.Query)
 	require.Len(t, res.Models, 1)
 	require.Equal(t, "found/Gemma-3:Q4_K_M", res.Models[0].ID)
-	_, err = c.Catalog(context.Background(), "llamacpp", "", "", "gemma 3")
+	_, err = c.Catalog(t.Context(), "llamacpp", "", "", "gemma 3", "")
 	require.NoError(t, err, "repeat search")
 	assert.Len(t, requests(), 1, "the same query twice must make one request")
 
-	res, err = c.Catalog(context.Background(), "llamacpp", "", "", "nothing")
+	res, err = c.Catalog(t.Context(), "llamacpp", "", "", "nothing", "")
 	require.NoError(t, err, "a search matching nothing failed")
 	assert.Empty(t, res.Models, "a query that matches none must return no models")
 }
@@ -516,7 +702,7 @@ func TestFailedSearch_DoesNotRevealTheQuery(t *testing.T) {
 	c := newCatalogService()
 	c.baseURL = srv.URL
 
-	_, err := c.Catalog(context.Background(), "llamacpp", "", "", "private model name")
+	_, err := c.Catalog(t.Context(), "llamacpp", "", "", "private model name", "")
 	require.Error(t, err, "a search against an unreachable upstream succeeded")
 	var urlErr *url.Error
 	assert.NotErrorAs(t, err, &urlErr, "the error still carries the request URL")
@@ -532,7 +718,7 @@ func TestOverLongSearch_IsRefused(t *testing.T) {
 	c.baseURL = srv.URL
 
 	query := strings.TrimSpace(strings.Repeat("private ", maxCatalogQuery/len("private ")+1))
-	_, err := c.Catalog(context.Background(), "llamacpp", "", "", query)
+	_, err := c.Catalog(t.Context(), "llamacpp", "", "", query, "")
 	require.Error(t, err, "a %d-character query was answered", len(query))
 	assert.EqualError(t, err, "a model search is limited to 100 characters")
 	assert.Empty(t, requests(), "an over-long query reached the upstream")
@@ -547,7 +733,7 @@ func TestSearchAtTheLengthLimit_IsAnswered(t *testing.T) {
 	c.baseURL = srv.URL
 
 	query := strings.Repeat("a", maxCatalogQuery)
-	res, err := c.Catalog(context.Background(), "llamacpp", "", "", "  "+query+"  ")
+	res, err := c.Catalog(t.Context(), "llamacpp", "", "", "  "+query+"  ", "")
 	require.NoError(t, err, "a query at the limit failed")
 	assert.Equal(t, query, res.Query, "a query at the limit must be searched in full")
 	assert.Len(t, requests(), 1, "a query at the limit must make one request")
@@ -558,10 +744,10 @@ func TestSearchAtTheLengthLimit_IsAnswered(t *testing.T) {
 func TestLlamaCPPSearch_BoundsConcurrentQueries(t *testing.T) {
 	c := newCatalogService()
 	first := c.llamaCPPSearch("first")
-	for i := range llamaCPPSearchCacheLimit {
+	for i := range searchCacheLimit {
 		c.llamaCPPSearch(fmt.Sprint("query ", i))
 	}
-	assert.Len(t, c.llamaSearches, llamaCPPSearchCacheLimit)
+	assert.Len(t, c.searches, searchCacheLimit)
 	assert.NotSame(t, first, c.llamaCPPSearch("first"), "the least recently used search was not evicted")
 }
 
@@ -570,9 +756,9 @@ func TestLlamaCPPSearch_BoundsConcurrentQueries(t *testing.T) {
 // the client to filter itself.
 func TestQuery_IsIgnoredByASourceThatCannotSearch(t *testing.T) {
 	c := newCatalogService()
-	all, err := c.Catalog(context.Background(), "ollama", "", "", "")
+	all, err := c.Catalog(t.Context(), "ollama", "", "", "", "")
 	require.NoError(t, err, "ollama catalog")
-	queried, err := c.Catalog(context.Background(), "ollama", "", "", "llama")
+	queried, err := c.Catalog(t.Context(), "ollama", "", "", "llama", "")
 	require.NoError(t, err, "ollama catalog with a query")
 	assert.False(t, queried.Searchable)
 	assert.Empty(t, queried.Query)

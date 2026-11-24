@@ -152,7 +152,7 @@ func TestTeardownBudget_CapsAggregateWait(t *testing.T) {
 
 	const workers = 11
 	started := time.Now()
-	for i := 0; i < workers; i++ {
+	for range workers {
 		waitForStdinClose("scanner", nil, &closeRecorder{}, done)
 	}
 	elapsed := time.Since(started)
@@ -263,7 +263,7 @@ func TestStopWorkers_JoinsWorkersConcurrently(t *testing.T) {
 	workers := 10
 	stopTime := 400 * time.Millisecond
 	b := &Broker{}
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		h := newSlowStopHandle(stopTime)
 		sup := newSupervisor(fmt.Sprintf("worker-%d", i), noRestartPolicy(),
 			func() (supervisedHandle, error) { return h, nil })

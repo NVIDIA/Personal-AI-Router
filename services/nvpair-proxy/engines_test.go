@@ -58,6 +58,8 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	require.True(t, ok, "lmstudio profile missing")
 	llamacpp, ok := profileFor("llamacpp")
 	require.True(t, ok, "llamacpp profile missing")
+	vllm, ok := profileFor("vllm")
+	require.True(t, ok, "vllm profile missing")
 
 	accept := func(name string, profile engineProfile, method, path string, wantRole routeRole) {
 		t.Run(name, func(t *testing.T) {
@@ -104,6 +106,16 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	reject("lmstudio has no show", lmstudio, http.MethodPost, "/api/show")
 
 	reject("llamacpp models post passthrough", llamacpp, http.MethodPost, "/models")
+
+	accept("vllm chat", vllm, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
+	accept("vllm completions", vllm, http.MethodPost, "/v1/completions", roleInferencePOST)
+	accept("vllm embeddings", vllm, http.MethodPost, "/v1/embeddings", roleInferencePOST)
+	accept("vllm responses", vllm, http.MethodPost, "/v1/responses", roleInferencePOST)
+	accept("vllm list", vllm, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
+	// vLLM's own /health and /tokenize are forwarded verbatim, not classified.
+	reject("vllm health passthrough", vllm, http.MethodGet, "/health")
+	reject("vllm no native routes", vllm, http.MethodPost, "/api/chat")
+	reject("vllm wrong method on list", vllm, http.MethodPost, "/v1/models")
 }
 
 func TestIsInferenceRequest_FollowsTheProfile(t *testing.T) {

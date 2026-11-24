@@ -275,18 +275,15 @@ func (r *Responder) Run(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		r.announceLoop(ctx)
-	}()
+	})
 
 	go r.watchAddrs(ctx)
 
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		_ = udpConn.Close()
-	}()
+	})
 
 	buf := make([]byte, 65536)
 	for {

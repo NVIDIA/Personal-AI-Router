@@ -3,7 +3,11 @@
 
 package ui
 
-import "nvpair-shared/noderec"
+import (
+	"time"
+
+	"nvpair-shared/noderec"
+)
 
 // The wire shapes behind the Nodes tab. One machine is described by three
 // different services, so their payloads are collected here and folded into the
@@ -12,15 +16,17 @@ import "nvpair-shared/noderec"
 // availableNode mirrors the broker's discovery boundary shape (the
 // discovery:get-nodes element and discovery:nodes-changed payload entry).
 type availableNode struct {
-	ID        string `json:"id"`
-	HostUUID  string `json:"hostUuid"`
-	Name      string `json:"name"`
-	IPAddress string `json:"ipAddress"`
+	DiscoveryRecordID    string                       `json:"discoveryRecordId"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	HostUUID             string                       `json:"hostUuid"`
+	Name                 string                       `json:"name"`
+	IPAddress            string                       `json:"ipAddress"`
 	// IPAddresses is every address the node published, in its own ranked order
 	// with IPAddress first. A multi-homed node has no single address every peer
 	// can reach — a direct-connect link only works from the machine on its far
-	// end — so a client that dials the node must walk this list rather than
-	// treating IPAddress as the only answer. Omitted when there is just one.
+	// end. Workers own failover for hardware collection, while the TUI retains
+	// these addresses for filtering and display. Omitted when there is just one.
 	IPAddresses []string `json:"ipAddresses"`
 	Port        int      `json:"port"`
 	// LastSeen is when the scanner last WROTE this record — not when anything
@@ -43,11 +49,28 @@ type availableNode struct {
 	// The broker enriches each discovered node with the model inventory it
 	// learned from that peer's engine-manager, so a remote node's models need
 	// no extra call: Models is the flat de-duplicated union, ModelsByEngine
-	// attributes each to the engine serving it, and LoadedByEngine names those
-	// currently resident in memory.
-	Models         []string            `json:"models"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine"`
+	// attributes each to the engine serving it, LoadedByEngine names those
+	// currently resident in memory, and DownloadedByEngine lists what an engine
+	// that advertises only its served model (vLLM) has downloaded.
+	Models             []string            `json:"models"`
+	ModelsByEngine     map[string][]string `json:"modelsByEngine"`
+	LoadedByEngine     map[string][]string `json:"loadedByEngine"`
+	DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
+	// Info is the broker's latest hardware snapshot for this exact record.
+	// Unverified previews remain display data and cannot establish identity.
+	Info *noderec.NodeInfo `json:"info,omitempty"`
+	// Captured when a snapshot or hardware update arrives, never during a UI tick.
+	infoReceivedAt time.Time
+}
+
+func (n availableNode) nodeKey() string {
+	if n.IdentityVerification == noderec.IdentityUnverified {
+		return n.DiscoveryRecordID
+	}
+	if n.HostUUID != "" {
+		return n.HostUUID
+	}
+	return "name:" + n.Name
 }
 
 // clusterIdentity is this node's principal, from cluster:get-node-id.
@@ -82,26 +105,17 @@ type clusterInvite struct {
 // (services/nvpair-manual-nodes/manager.go), the element of the broker's
 // nodes/list reply, that the Nodes tab uses.
 type manualNode struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Address string `json:"address"`
-	// HostUUID is the machine's own identity, read from its node-info. It is
-	// what joins a hand-typed hostname to the same machine discovered by IP.
-	HostUUID   string `json:"hostUuid"`
-	OllamaUp   bool   `json:"ollama_up"`
-	LMStudioUp bool   `json:"lmstudio_up"`
-	NodeInfoUp bool   `json:"node_info_up"`
-	// NodeInfoPort is the port the probe reached node-info on, and TLSEnabled
-	// whether that was over TLS.
-	NodeInfoPort int  `json:"node_info_port"`
-	TLSEnabled   bool `json:"tls_enabled"`
-	// The worker's own hardware reading from that probe. For a TLS node it is
-	// the only one to be had: the worker holds the backend's trust to reach
-	// it, and this client holds none.
-	GPUs           []noderec.GPUInfo   `json:"gpus"`
-	CPU            *noderec.CPUInfo    `json:"cpu"`
-	Memory         *noderec.MemoryInfo `json:"memory"`
-	TelemetryValid bool                `json:"telemetryValid"`
+	IdentityVerification noderec.IdentityVerification `json:"identityVerification"`
+	ID                   string                       `json:"id"`
+	Name                 string                       `json:"name"`
+	Address              string                       `json:"address"`
+	// HostUUID comes from authenticated node-info and can join a verified
+	// manual entry to the same host discovered by IP.
+	HostUUID     string `json:"hostUuid"`
+	OllamaUp     bool   `json:"ollama_up"`
+	LMStudioUp   bool   `json:"lmstudio_up"`
+	NodeInfoUp   bool   `json:"node_info_up"`
+	NodeInfoPort int    `json:"node_info_port"`
 }
 
 // answered reports whether any service on the host responded to the worker's

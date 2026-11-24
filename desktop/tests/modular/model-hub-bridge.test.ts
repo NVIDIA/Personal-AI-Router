@@ -26,21 +26,26 @@ import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handl
 describe('model hub service bridge', () => {
     beforeEach(() => {
         vi.clearAllMocks()
-        mocks.getEngineHubModels.mockResolvedValue({ models: [] })
+        mocks.getEngineHubModels.mockResolvedValue({ models: [], searchable: true })
     })
 
-    it('forwards an explicit llama.cpp query to the catalog relay', async () => {
+    it('forwards an explicit llama.cpp query and its target node to the catalog relay', async () => {
         await handleServiceBridgeInvoke('engine:search-hub', {
             engineType: 'llama-cpp',
+            nodeId: 'mac',
             query: 'qwen coder'
         })
 
-        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', 'qwen coder')
+        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', 'mac', 'qwen coder')
     })
 
     it('preserves populated-catalog requests without a query', async () => {
-        await handleServiceBridgeInvoke('engine:search-hub', { engineType: 'llama-cpp' })
+        const result = await handleServiceBridgeInvoke('engine:search-hub', {
+            engineType: 'llama-cpp',
+            nodeId: 'mac'
+        })
 
-        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', undefined)
+        expect(mocks.getEngineHubModels).toHaveBeenCalledWith('llama-cpp', 'mac', undefined)
+        expect(result).toEqual({ models: [], searchable: true })
     })
 })

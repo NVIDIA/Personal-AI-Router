@@ -57,7 +57,7 @@ if (-not (Test-Path (Join-Path $ModuleDir 'go.mod'))) {
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     Write-Host 'collect-logs: this checkout has no compiled collector, so go is' -ForegroundColor Red
     Write-Host '              required to build one, and it was not found on PATH.' -ForegroundColor Red
-    Write-Host '              Install Go 1.24.3 or newer, or use the copy shipped' -ForegroundColor Red
+    Write-Host '              Install Go 1.25 or newer, or use the copy shipped' -ForegroundColor Red
     Write-Host '              with an installed PAIR.' -ForegroundColor Red
     exit 2
 }

@@ -57,6 +57,14 @@ const EngineHubListRow = memo(function EngineHubListRow({
                 <Stack>
                     <Text kind="body/bold/sm">{displayName}</Text>
                     <Flex align="center" wrap="wrap" gap="2">
+                        {/* The name drops its author, so two repositories that
+                            share a name are told apart here. */}
+                        {!!model.author.trim() && (
+                            <Text kind="body/regular/sm" className="text-subtle-color">
+                                by {model.author.trim()}
+                            </Text>
+                        )}
+
                         {!!model.size && (
                             <Text kind="body/regular/sm" className="text-subtle-color">
                                 {formatBytes(model.size)}

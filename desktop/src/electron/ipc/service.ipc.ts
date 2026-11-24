@@ -7,7 +7,7 @@ import { app, shell } from 'electron'
 import { safeHandle } from '@/electron/ipc/safe-handle'
 import { getStructuredLogFilePath } from '@/shared/utils/log'
 import { detectLicenseType } from '@/shared/utils/detect-license'
-import type { ServiceStatus, ServiceVersions } from '@/shared/types/ipc-channels'
+import type { ServiceStatus, ServiceVersions, StartupState } from '@/shared/types/ipc-channels'
 import {
     getConnectorStatus,
     getConnectorError,
@@ -16,7 +16,13 @@ import {
     destroyConnector,
     restartConnector
 } from '@/electron/connector'
-import { getModularLogLevel, setModularLogLevel } from '@/electron/config/ui-config'
+import {
+    getModularLogLevel,
+    getStartupSettings,
+    setModularLogLevel,
+    setStartupSettings
+} from '@/electron/config/ui-config'
+import { applyStartupChange, isLoginItemSupported, readLaunchAtLogin } from '@/electron/login-item'
 import {
     getModularSupervisor,
     readCliBinManifest
@@ -34,6 +40,24 @@ const THIRD_PARTY_LICENSE_FILE = 'THIRD_PARTY_NOTICES.md'
 function resolveShippedFile(name: string): string {
     const base = app.isPackaged ? process.resourcesPath : app.getAppPath()
     return path.join(base, name)
+}
+
+/**
+ * The startup switches as Settings should show them, plus whether this OS has a
+ * login item to write.
+ *
+ * `launchAtLogin` is what the OS reports, not the stored preference, so an entry
+ * the user disabled outside the app does not read as on. `startHidden` has no OS
+ * state of its own (macOS login items carry no arguments), so it is the stored
+ * preference.
+ */
+function startupState(): StartupState {
+    const stored = getStartupSettings()
+    return {
+        launchAtLogin: readLaunchAtLogin(stored),
+        startHidden: stored.startHidden,
+        supported: isLoginItemSupported()
+    }
 }
 
 /** Open a shipped file in the OS default handler, falling back to revealing it. */
@@ -96,6 +120,24 @@ export function registerServiceIpc(): void {
         // so the change applies without a restart.
         setModularLogLevel(payload.level)
         getModularSupervisor().setLogLevel(payload.level)
+    })
+
+    safeHandle('service:get-startup', async (): Promise<StartupState> => {
+        return startupState()
+    })
+
+    safeHandle('service:set-startup', async (_event, payload): Promise<StartupState> => {
+        // What the switches showed, read before anything changes: a request that
+        // repeats it is not a change and must not touch the OS entry.
+        const previous = getStartupSettings()
+        const registered = readLaunchAtLogin(previous)
+        // Persist first, then write the login item: the config is what the next
+        // launch reconciles from, so a login item that matched a payload the
+        // config never took would be undone on restart. The response is read back
+        // from the OS, so a switch the OS did not take reverts in the UI.
+        const next = setStartupSettings(payload)
+        applyStartupChange({ requested: payload, previous, next, registered })
+        return startupState()
     })
 
     safeHandle('service:open-log-file', async () => {

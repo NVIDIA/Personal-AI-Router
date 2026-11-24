@@ -6,20 +6,20 @@ SPDX-License-Identifier: Apache-2.0
 # Microservice: Node Settings (`nvpair-node-settings`)
 
 ## 1. Purpose
-A typed key-value datastore for per-node preferences, persisted to a single JSON file in the per-user data directory and exposed to the supervising broker over newline-delimited JSON-RPC 2.0. It owns exactly four settings — `force_ports`, `cluster_auto_sync`, `cluster_id`, `cluster_friendly_name` — and guarantees that a value acknowledged to a caller is a value already committed to disk.
+A typed key-value datastore for per-node preferences, persisted to a single JSON file in the per-user data directory and exposed to the supervising broker over newline-delimited JSON-RPC 2.0. It owns exactly five settings — `force_ports`, `cluster_auto_sync`, `cluster_id`, `cluster_friendly_name`, `engine_allow_lan_bind` — and guarantees that a value acknowledged to a caller is a value already committed to disk.
 
-It is deliberately a *pure datastore*: no business logic, no value generation, no cross-setting inference, and no defaulting beyond one product default (`force_ports`). Every consumer that acts on a setting — the broker's managed-port reconciliation, the cluster identity restore path, the UI's cluster affordances — interprets the stored value itself. That separation is what lets the clustering and node-joining semantics evolve without touching this service's wire contract.
+It is deliberately a *pure datastore*: no business logic, no value generation, no cross-setting inference, and no defaulting beyond one product default (`force_ports`). Every consumer that acts on a setting — the broker's managed-port reconciliation, the cluster identity restore path, the UI's cluster affordances, the engine-manager's `engine:start` bind gate — interprets the stored value itself. That separation is what lets the clustering and node-joining semantics evolve without touching this service's wire contract.
 
 ## 2. Scope
 **In scope**
 - Load, validate the *shape* of, and persist `settings.json` for the current user.
-- Serve a getter and a setter for each of the four settings over JSON-RPC.
+- Serve a getter and a setter for each of the five settings over JSON-RPC.
 - Guarantee atomic, permission-pinned writes and a durable-before-acknowledged ordering.
 - Recover from a malformed settings file without wedging its callers.
 - Push `connection/cluster-identity` and `connection/cluster-auto-sync` on change so live consumers do not poll.
 
 **Out of scope**
-- **Interpreting any setting.** `force_ports` is acted on by `nvpair-ui-broker`'s managed-port reconciliation; `cluster_id` and `cluster_friendly_name` mirror the identity `nvpair-cluster-manager` owns, and the broker replays them into it on startup.
+- **Interpreting any setting.** `force_ports` is acted on by `nvpair-ui-broker`'s managed-port reconciliation; `cluster_id` and `cluster_friendly_name` mirror the identity `nvpair-cluster-manager` owns, and the broker replays them into it on startup; `engine_allow_lan_bind` is read live by `nvpair-engine-manager`'s `engine:start` gate.
 - **Cluster identity, pairing, trust, and membership** — owned entirely by `nvpair-cluster-manager`, which mints or adopts the cluster id and keeps its own durable admission state. This service stores the broker-facing mirror as an opaque `cluster_id` string and never derives, validates, or authorizes anything from it.
 - **Port ownership or process termination.** `force_ports` is a policy flag only; the authority to reconcile a port belongs to the broker and `nvpair-engine-manager`.
 - **Engine and proxy port persistence** — owned by `nvpair-engine-manager` and by `nvpair-proxy`, which keeps one persisted-port file per engine.
@@ -126,6 +126,8 @@ Requests (broker → service):
 | `settings/set-cluster-id` | `{ value: string }` | `{ ok: true }` |
 | `settings/get-cluster-friendly-name` | — | `{ value: string }` |
 | `settings/set-cluster-friendly-name` | `{ value: string }` | `{ ok: true }` |
+| `settings/get-engine-allow-lan-bind` | — | `{ value: boolean }` |
+| `settings/set-engine-allow-lan-bind` | `{ value: boolean }` | `{ ok: true }` |
 | `log/set-level` | `{ level }` | `{ level }` |
 | `shutdown` | — | `null` |
 
@@ -216,16 +218,16 @@ The `connection/*` names returning `-32601` is a deliberate, tested property: th
 - **External**: the per-user filesystem location resolved by `nvpair-shared/appdir`. First-party shared packages only: `nvpair-shared/jsonrpc` (the newline-delimited codec), `nvpair-shared/ipc` (the `--ipc` transport and its platform split), `nvpair-shared/applog` (structured logging and `log/set-level`), and `nvpair-shared/appdir`. No third-party runtime services and no network dependency.
 
 ## 9. Data Ownership
-- **Owned**: the four settings and the `settings.json` file that holds them. This is one of the few workers that owns durable user state.
-- **Source of truth**: yes, for these four values. It is *not* the source of truth for anything derived from them — cluster membership belongs to `nvpair-cluster-manager`, and port ownership decisions belong to the broker and `nvpair-engine-manager`.
+- **Owned**: the five settings and the `settings.json` file that holds them. This is one of the few workers that owns durable user state.
+- **Source of truth**: yes, for these five values. It is *not* the source of truth for anything derived from them — cluster membership belongs to `nvpair-cluster-manager`, and port ownership decisions belong to the broker and `nvpair-engine-manager`.
 - **Storage**: a single JSON file, `settings.json`, in the per-user data directory — `%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux, `~/Library/Application Support/Nvidia Corporation/Personal AI Router` on macOS. Directory mode `0o700`, file mode `0o600`. No database. In-memory state is a single `Settings` value guarded by a `sync.RWMutex`.
 
 ## 10. Design Constraints
 - **Performance**: getters are in-memory and effectively free. Setters cost one serialize plus one write and rename, and are on interactive settings paths only — there is no hot path here. The broker's `settings/get-force-ports` reads during facade preparation, and its identity reads when it spawns `nvpair-cluster-manager`, are synchronous. Getters never touch the disk, but the read loop is serial, so a getter queued behind a setter waits for that setter's write.
-- **Scalability**: one instance per node, one peer, four settings, single-digit calls per session. Nothing here scales with cluster size.
+- **Scalability**: one instance per node, one peer, five settings, single-digit calls per session. Nothing here scales with cluster size.
 - **Reliability**: durable-before-acknowledged on every write; atomic replace so no crash yields a torn file; corrupt-file recovery keeps the service available. A persist failure is reported to the caller rather than silently swallowed. There is no retry and no write queue — the caller decides whether to retry.
 - **Security**: no network surface at all, so nothing here is remotely reachable; the only channel is the parent's pipe. The file is per-user state pinned to `0o600` in a `0o700` directory. This service holds **no** secrets, key material, or credentials, and implements no cryptography — `cluster_id` is an opaque label, not an authenticator, and possession of it proves nothing. Cluster trust is owned entirely by `nvpair-cluster-manager`.
-- **Compliance**: no PII. The stored values are a boolean policy flag, a boolean sync preference, an opaque cluster identifier, and a user-chosen cluster label. Logs record the *presence* of `cluster_id` and `cluster_friendly_name` as booleans (`has_cluster_id`, `has_cluster_friendly_name`) rather than their values.
+- **Compliance**: no PII. The stored values are two boolean policy flags, a boolean sync preference, an opaque cluster identifier, and a user-chosen cluster label. Logs record the *presence* of `cluster_id` and `cluster_friendly_name` as booleans (`has_cluster_id`, `has_cluster_friendly_name`) rather than their values.
 
 ## 11. Assumptions
 - The broker is always the parent: it spawns this service, owns the pipe, and is the only caller. On `stdin` EOF the service shuts down cleanly — there is no reconnect and no buffering.

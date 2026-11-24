@@ -5,13 +5,18 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"math"
+	"regexp"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nvpair-shared/engines"
+	"nvpair-tui/rpc"
 )
 
 // wireOf builds a model operation's envelope, failing the test if the engine
@@ -91,12 +96,95 @@ func TestOllamaUnload_SendsKeepAlive(t *testing.T) {
 // was too, leaving the operator unable to tell a started download from a
 // keystroke that missed.
 func TestPullDeadline_ReportsDetachedNotSilence(t *testing.T) {
-	msg := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
-	require.NotNil(t, msg, "a pull that outran its deadline produced no message at all")
-	op, ok := msg.(engineOpMsg)
-	require.True(t, ok, "result must be engineOpMsg")
+	op := classifyOpResult("download big-model", "ollama", "pull", context.DeadlineExceeded)
 	require.NoError(t, op.err, "a still-running download must not be reported as failed")
 	assert.True(t, op.detached, "a still-running download must not be reported as complete")
+}
+
+// A pull's reply is the engine manager's result on this machine, and from a peer
+// it arrives wrapped beside the operation's id. A check that read only one
+// shape called the other's cancelled download complete.
+func TestPullWasCancelled_ReadsBothReplyShapes(t *testing.T) {
+	test := func(name, result string, want bool) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, want, pullWasCancelled(&rpc.Message{Result: json.RawMessage(result)}))
+		})
+	}
+	test("this machine's cancelled download", `{"status":"cancelled"}`, true)
+	test("a peer's cancelled download", `{"opId":"op-1","result":{"status":"cancelled"}}`, true)
+	test("this machine's completed download", `{"status":"success"}`, false)
+	test("a peer's completed download", `{"opId":"op-1","result":{"status":"success"}}`, false)
+	test("an engine's reply that is not an object", `"downloaded"`, false)
+	test("a peer relaying such a reply", `{"opId":"op-1","result":"downloaded"}`, false)
+	t.Run("no reply", func(t *testing.T) {
+		assert.False(t, pullWasCancelled(nil))
+	})
+}
+
+// A download is sent with the opId the screen names it by, which the engine
+// manager puts on the download's frames. It goes at the top of the request in
+// both shapes: the params of this machine's engine:action are the engine's
+// own request, and an opId there would be passed on to the engine. The reply
+// carries the opId back to the screen.
+func TestPullRequest_CarriesTheOpIDBesideTheEnginesParams(t *testing.T) {
+	test := func(name, node, wantMethod string, wantParams map[string]any) {
+		t.Run(name, func(t *testing.T) {
+			client, calls := removalBroker(t, "")
+
+			reply := pullCmd(client, node, engines.NameOllama, "llama3.2", 7, "tui-0123456789abcdef-7")()
+
+			var sent removalCall
+			select {
+			case sent = <-calls:
+			case <-time.After(2 * time.Second):
+				require.FailNow(t, "the broker received no request")
+			}
+			assert.Equal(t, wantMethod, sent.method)
+			var params map[string]any
+			require.NoError(t, json.Unmarshal(sent.params, &params), "decode %s params", sent.method)
+			assert.Equal(t, wantParams, params)
+			assert.Equal(t, pullDoneMsg{engine: engines.NameOllama, model: "llama3.2", attempt: 7, opID: "tui-0123456789abcdef-7"}, reply)
+		})
+	}
+	test("this machine", "", "engine:action", map[string]any{
+		"engine": "ollama", "action": "pull_model", "opId": "tui-0123456789abcdef-7",
+		"params": map[string]any{"name": "llama3.2", "model": "llama3.2"},
+	})
+	test("a peer", "peer", "engine:remote-pull-model", map[string]any{
+		"node": "peer", "engine": "ollama", "model": "llama3.2", "opId": "tui-0123456789abcdef-7",
+	})
+}
+
+// A cancel stops every request running as the download, not only the one this
+// screen sent, so it names the download by engine and model alone. The opId
+// is the screen's own name for the download, and only its reply carries it.
+func TestCancelPullRequest_NamesTheDownloadByEngineAndModel(t *testing.T) {
+	test := func(name, node, wantMethod string, wantParams map[string]string) {
+		t.Run(name, func(t *testing.T) {
+			client, calls := removalBroker(t, "")
+
+			reply := cancelPullCmd(client, node, engines.NameOllama, "llama3.2", 7, "tui-0123456789abcdef-7")()
+
+			method, params := receivedCall(t, calls)
+			assert.Equal(t, wantMethod, method)
+			assert.Equal(t, wantParams, params)
+			assert.Equal(t, cancelPullMsg{engine: engines.NameOllama, model: "llama3.2", attempt: 7, opID: "tui-0123456789abcdef-7"}, reply)
+		})
+	}
+	test("this machine", "", "engine:cancel-pull", map[string]string{"engine": "ollama", "model": "llama3.2"})
+	test("a peer", "peer", "engine:remote-cancel-pull", map[string]string{"node": "peer", "engine": "ollama", "model": "llama3.2"})
+}
+
+// The engine manager refuses a pull whose opId is not 1 to 128 characters of
+// [A-Za-z0-9._:-], so every opId a screen hands out must be one it accepts,
+// whatever the attempt, and no two attempts may share one.
+func TestDownloadOpID_IsOneTheEngineManagerAccepts(t *testing.T) {
+	accepted := regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+	for _, attempt := range []int{1, 41, math.MaxInt} {
+		assert.Regexp(t, accepted, downloadOpID(attempt), "attempt %d", attempt)
+	}
+	assert.Regexp(t, `^tui-[0-9a-f]{16}-41$`, downloadOpID(41), "the opId is the process's prefix and the attempt")
+	assert.NotEqual(t, downloadOpID(41), downloadOpID(42))
 }
 
 // TestDeadlineLeniencyTracksOperationLength checks which operations are excused
@@ -113,12 +201,11 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	// Only operations engineOps actually declares: the TUI offers no engine
 	// update, so listing one here would assert against a path nothing reaches.
 	// Start and restart wait on the engine's readiness probe, which the
-	// manifests allow up to ten minutes, so a deadline on either is a slow
+	// manifests allow up to thirty minutes, so a deadline on either is a slow
 	// reply rather than a failed start.
 	longRunning := func(name, op string) {
 		t.Run(name, func(t *testing.T) {
-			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-			require.True(t, ok, "result must be engineOpMsg")
+			result := classifyOpResult("x", "ollama", op, context.DeadlineExceeded)
 			assert.True(t, result.detached, "a timed-out long operation must be reported as still running")
 			require.NoError(t, result.err, "operation is still running")
 		})
@@ -132,8 +219,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 
 	quick := func(name, op string) {
 		t.Run(name, func(t *testing.T) {
-			result, ok := classifyOpResult("x", "ollama", op, context.DeadlineExceeded).(engineOpMsg)
-			require.True(t, ok, "result must be engineOpMsg")
+			result := classifyOpResult("x", "ollama", op, context.DeadlineExceeded)
 			assert.False(t, result.detached, "a quick operation that times out has really failed")
 			assert.Error(t, result.err, "a timeout must not be reported as success")
 		})
@@ -143,7 +229,7 @@ func TestDeadlineLeniency_TracksOperationLength(t *testing.T) {
 	quick("stop times out", "stop")
 
 	// A real error is still an error, however long the operation usually takes.
-	result, _ := classifyOpResult("x", "ollama", "pull", errors.New("no such model")).(engineOpMsg)
+	result := classifyOpResult("x", "ollama", "pull", errors.New("no such model"))
 	assert.False(t, result.detached, "a genuine pull error must not be detached")
 	assert.Error(t, result.err, "a genuine pull error must be reported")
 }
@@ -191,7 +277,7 @@ func TestDownloadPrompt_UsesTheEnginesSpelling(t *testing.T) {
 		assert.Contains(t, downloadExamples, e.Name, "every engine needs a download example")
 	}
 	assert.Contains(t, downloadPrompt(engines.NameLlamaCPP, "llama.cpp"), ":Q4_K_M", "llama.cpp prompt must show the quantization suffix")
-	assert.Equal(t, "model name for vLLM", downloadPrompt("vllm", "vLLM"))
+	assert.Equal(t, "model name for No Such Engine", downloadPrompt("nosuchengine", "No Such Engine"))
 }
 
 // TestEveryEngineHasAModelWire is what makes adding an engine a matter of
@@ -205,7 +291,7 @@ func TestEveryEngine_HasAModelWire(t *testing.T) {
 			require.NoError(t, err, "%s must have a local wire for %s", e.Name, op)
 		}
 	}
-	_, err := modelActionWire("vllm", "load", "m")
+	_, err := modelActionWire("nosuchengine", "load", "m")
 	assert.Error(t, err, "an engine with no wire must not be given one")
 }
 
@@ -247,4 +333,28 @@ func TestLifecycleRemoteCoverage_MatchesManager(t *testing.T) {
 	for _, name := range []string{"install", "start", "stop"} {
 		assert.False(t, engineOps[name].localOnly, "%s has a remote variant and should not be local-only", name)
 	}
+}
+
+// A vLLM Load that a Stop or Eject ended replies with stopped set. That is what
+// the user asked for, so it must not read as a failure, nor as a model loaded.
+func TestModelOpResult_ReportsAStoppedLoadAsStopped(t *testing.T) {
+	test := func(name, op, result string, want engineOpMsg) {
+		t.Run(name, func(t *testing.T) {
+			msg := classifyModelOpResult("load org/m", "vllm", op, &rpc.Message{Result: json.RawMessage(result)}, nil)
+			assert.Equal(t, want, msg)
+		})
+	}
+	test("a stopped Load", "load", `{"model":"org/m","restarted":false,"stopped":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm", stopped: true})
+	test("a Load that finished", "load", `{"model":"org/m","restarted":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+	test("another engine's Load result", "load", `{"ok":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+	test("only a Load can be stopped", "delete", `{"stopped":true}`,
+		engineOpMsg{what: "load org/m", engine: "vllm"})
+
+	d := localDetail()
+	d.update(engineOpMsg{what: "load org/m", engine: "vllm", stopped: true})
+	assert.Contains(t, d.status.render(), "was stopped before it finished")
+	assert.NotContains(t, d.status.render(), "failed")
 }

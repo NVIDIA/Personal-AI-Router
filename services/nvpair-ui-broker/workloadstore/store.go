@@ -35,8 +35,9 @@
 package workloadstore
 
 import (
+	"cmp"
 	"encoding/json"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -369,14 +370,12 @@ func (s *Store) ActiveSnapshot() []json.RawMessage {
 }
 
 func snapshotRecords(recs []Record) []json.RawMessage {
-	sort.Slice(recs, func(i, j int) bool {
-		if recs[i].CreatedAt != recs[j].CreatedAt {
-			return recs[i].CreatedAt < recs[j].CreatedAt
-		}
-		if recs[i].Origin != recs[j].Origin {
-			return recs[i].Origin < recs[j].Origin
-		}
-		return recs[i].ID < recs[j].ID
+	slices.SortFunc(recs, func(a, b Record) int {
+		return cmp.Or(
+			cmp.Compare(a.CreatedAt, b.CreatedAt),
+			cmp.Compare(a.Origin, b.Origin),
+			cmp.Compare(a.ID, b.ID),
+		)
 	})
 
 	out := make([]json.RawMessage, len(recs))

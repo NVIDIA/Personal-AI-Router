@@ -736,8 +736,8 @@ func (v *serviceView) rebuildCrashes(errs []svcerrors.ServiceError) {
 		if v.localNodeUUID == "" || (e.NodeID != "" && e.NodeID != v.localNodeUUID) {
 			continue
 		}
-		if strings.HasPrefix(e.ID, crashPrefix) {
-			crashed[strings.TrimPrefix(e.ID, crashPrefix)] = e
+		if workerName, ok := strings.CutPrefix(e.ID, crashPrefix); ok {
+			crashed[workerName] = e
 		}
 	}
 	v.crashed = crashed

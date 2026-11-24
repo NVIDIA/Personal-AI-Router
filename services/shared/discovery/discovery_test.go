@@ -29,8 +29,8 @@ func seenSet(ns ...Node) map[string]Node {
 }
 
 // eventsByType tallies events for concise assertions.
-func eventsByType(evs []Event) map[string]int {
-	m := map[string]int{}
+func eventsByType(evs []Event) map[EventType]int {
+	m := map[EventType]int{}
 	for _, e := range evs {
 		m[e.Type]++
 	}
@@ -46,7 +46,7 @@ func TestReconcile_ReportsDiscoveredUpdatedAndRemovedNodes(t *testing.T) {
 	// Changed TXT → updated.
 	assert.Equal(t, 1, eventsByType(b.reconcile(seenSet(node("a", "v=2"))))[Updated], "changed scan")
 	// Absent for < threshold: no removal yet.
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		require.Empty(t, b.reconcile(seenSet()))
 	}
 	// Third consecutive miss reaches the threshold → removed.
@@ -190,7 +190,7 @@ func TestAnySeenNode_ResetsTheEmptyRun(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool { return false }))
 	b.reconcile(seenSet(node("a"), node("b")))
 
-	for i := 0; i < emptyScanGrace; i++ {
+	for range emptyScanGrace {
 		b.reconcile(seenSet())
 	}
 	assert.Equal(t, emptyScanGrace, b.emptyScans, "empty run")
@@ -214,7 +214,7 @@ func TestPartialScan_StillPenalizesTheMissingNode(t *testing.T) {
 // discovered.
 func TestEmptyScan_DoesNotAccumulateMissesWithoutKnownNodes(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithLivenessProbe(func(Node) bool { return false }))
-	for i := 0; i < emptyScanGrace*2; i++ {
+	for range emptyScanGrace * 2 {
 		b.reconcile(seenSet())
 	}
 	assert.Equal(t, 0, b.emptyScans, "empty run")
@@ -236,7 +236,7 @@ func TestReconcile_IgnoresSnapshotOrdering(t *testing.T) {
 func TestReconcile_KeepsNodesWhenEvictionIsDisabled(t *testing.T) {
 	b := New("_nvpair-test._tcp", "local", WithNoEviction(), WithMissThreshold(1))
 	b.reconcile(seenSet(node("a")))
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		require.Empty(t, b.reconcile(seenSet()), "no-evict browser emitted")
 	}
 	require.Len(t, b.Nodes(), 1, "no-evict browser dropped the node")
@@ -337,7 +337,7 @@ func TestRun_EmitsAndCloses(t *testing.T) {
 	done := make(chan struct{})
 	go func() { b.Run(ctx, events); close(done) }()
 
-	got := map[string]int{}
+	got := map[EventType]int{}
 	timeout := time.After(2 * time.Second)
 	for {
 		select {

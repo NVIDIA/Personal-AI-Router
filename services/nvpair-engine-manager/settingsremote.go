@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -168,9 +169,7 @@ func (m *Manager) watchPeerSettings(ctx context.Context) {
 			m.mesh.Refresh()
 			m.peers.mu.RLock()
 			peers := make(map[string]ecPeer, len(m.peers.peers))
-			for k, v := range m.peers.peers {
-				peers[k] = v
-			}
+			maps.Copy(peers, m.peers.peers)
 			m.peers.mu.RUnlock()
 			for node, cancel := range active {
 				p, exists := peers[node]

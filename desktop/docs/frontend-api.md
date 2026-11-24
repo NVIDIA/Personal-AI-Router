@@ -67,10 +67,27 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 ### `pairApi.discovery`
 
 - `getNodes()` returns discoverable nodes. Each `AvailableNode` carries the
-  backend `id` (the stable per-host UUID that keys every domain), the display
-  `name` (hostname), the reachable `ipAddress`/`port`, and the `trusted` and
-  `clustered` flags. A `clustered` node already belongs to some cluster and is
+  normalized `id` (the host UUID for local and verified rows, or the discovery
+  record ID for unverified rows), the display `name` (hostname), the reachable
+  `ipAddress`/`port`, and the `trusted` and `clustered` flags. A `clustered` node
+  already belongs to some cluster and is
   rendered non-invitable.
+  Broker records also carry `discoveryRecordId` and `identityVerification` (`local`,
+  `pinned`, or `unverified`). The bridge retains these provenance fields through
+  proxy updates. Broker withdrawal deletes a pinned peer's row, including cached
+  proxy presence. For other records, a surviving proxy keeps the row while its
+  broker provenance and hardware are cleared. Public hardware readings cannot
+  change provenance. Broker snapshots carry optional full
+  hardware in `info`, and live `discovery:node-info` updates refresh the same
+  record. Electron matches record ID, verification, and verified host identity
+  before projecting GPU, CPU, memory, and VRAM fields. Workers collect local
+  IPC measurements, pinned peer measurements, and sanitized unverified previews.
+  The broker's `info.observedAt` supplies a stable Unix millisecond display
+  observation time, independently of GPU sample age.
+  Electron emits `metrics:update` once for each newer observation, including
+  unchanged readings, and ignores replayed or older measurements. Changes to
+  utilization, used memory, sample time, or directory freshness do not emit
+  structural node or engine updates. Charts also reject non-increasing times.
 - `onNodesChanged(callback)` reports discovery changes.
 
 ### `pairApi.engines`
@@ -78,9 +95,10 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `getInitialState()` returns engine statuses, models, active progress, and available
   updates.
 - `toggle`, `install`, `uninstall`, and `update` manage engine lifecycle.
-- `pullModel`, `loadModel`, `unloadModel`, `deleteModel`, and
+- `pullModel`, `cancelModelPull`, `loadModel`, `unloadModel`, `deleteModel`, and
   `setModelExpiry` manage models.
-- `searchHub(engineType)` returns the curated model catalog for an engine.
+- `searchHub(engineType, nodeId)` returns the curated model catalog for a
+  node's engine.
 - `onStateChanged`, `onProgress`, and `onProgressRemove` expose backend truth.
 - `getSettings(target)` reads the owning node's authoritative settings snapshot
   (server port, proxy port, engine arguments) for one engine.
@@ -89,8 +107,8 @@ They do not imply a WebSocket connection. Browser clients are not supported.
   errors, any port conflict, and whether applying restarts or rebinds.
 - `applySettings(request)` commits a draft and waits for the owner's stop,
   rebind, and restart/readiness operation before returning its receipt. This
-  can take minutes (Ollama permits ten minutes for readiness; the desktop call
-  allows fourteen minutes). The receipt identifies the accepted operation;
+  can take minutes (vLLM permits thirty minutes for readiness; the desktop call
+  allows thirty-four minutes). The receipt identifies the accepted operation;
   use `onSettingsChanged` for its authoritative applied or failed state. Once
   durably accepted, the owner continues even if the caller disconnects or
   loses the response; reload the snapshot before retrying.
@@ -99,11 +117,30 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
-`EngineType` currently includes `ollama`, `lm-studio`, and `llama-cpp`.
-`searchHub(engineType, query?)` serves Ollama's locked local catalog and cached
-live Hugging Face catalogs for LM Studio and llama.cpp. A non-empty llama.cpp
-query performs an explicit bounded search across public Hugging Face GGUF
-repositories; other calls return the populated engine catalog. llama.cpp pull
+`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and `vllm`.
+vLLM serves one model per process, so `unloadModel` (Eject) stops the engine,
+which frees its GPU memory, and `loadModel` on a stopped engine starts it. Its model
+list is the Hugging Face cache, which stays available while the engine is stopped, `deleteModel` removes a cached model (not the one
+loaded in vLLM; deleting an ejected or stopped vLLM's model leaves it with no model
+selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo into
+that cache (no running engine needed), and `loadModel` on a cached model switches
+the served model by restarting vLLM on it.
+`searchHub(engineType, nodeId, query?)` serves Ollama's locked local catalog,
+cached live Hugging Face catalogs for LM Studio and vLLM, and llama.cpp's
+catalog from the node's selected download source. For a peer's llama.cpp
+it first reads that peer's saved model download source and lists that source,
+Hugging Face or ModelScope, even when this device selected the other; a peer
+whose source cannot be read, or that does not report one, rejects the call
+rather than falling back. This device's own llama.cpp uses its own selection
+without a settings read. It returns the model
+rows and the backend's `searchable` flag, which controls whether the model hub
+submits an upstream query or filters the populated list locally. An unavailable
+catalog reports `searchable: null`, so an explicit query can retry after an
+initial browse failure. A non-empty
+llama.cpp or vLLM query performs an explicit bounded search: GGUF repositories
+in the node's llama.cpp download source, or public Hugging Face safetensors chat
+models for vLLM;
+other calls return the populated engine catalog. llama.cpp pull
 IDs are exact `owner/repository:quantization` values; load, unload, and delete
 all use that same exact id.
 
@@ -120,6 +157,7 @@ environment assignments pass through without an engine-option catalog.
 - `uninstall`;
 - `update`;
 - `pullModel`;
+- `cancelModelPull`;
 - `loadModel`;
 - `unloadModel`;
 - `deleteModel`;
@@ -128,6 +166,22 @@ environment assignments pass through without an engine-option catalog.
 Commands return no state. Renderer stores update from
 `engines:state-changed`, `engines:progress-changed`, and
 `engines:progress-cleared`.
+
+The model-bearing commands — `pullModel`, `cancelModelPull`, `loadModel`,
+`unloadModel`, `deleteModel`, and `setModelExpiry` — carry the target in
+`model`. A node can have several downloads outstanding, because each engine
+fetches one model at a time and queues the rest while different engines download
+side by side. Naming the model is what lets each one be cancelled, and
+progress-tracked, on its own.
+
+`cancelModelPull` reaches `engine:cancel-pull`, or `engine:remote-cancel-pull`
+when `nodeId` names a peer. The download is not cancelled when the command
+returns: the row moves to Canceling and clears when the pull itself settles. A
+cancel whose request outlives its budget leaves the row in Canceling, because
+the backend is still working on it, and stays available to issue again. A
+download that ends while its cancel is under way — one that finished first, or
+whose engine could not confirm the stop — shows how it ended rather than
+Canceling.
 
 ### `pairApi.workloads`
 
@@ -147,27 +201,27 @@ Commands return no state. Renderer stores update from
 
 ## Logical invoke channels
 
-| Channel                     | Request                      | Response                  |
-| --------------------------- | ---------------------------- | ------------------------- |
-| `app:get-initial`           | `void`                       | `AppInitialSnapshot`      |
-| `nodes:get-initial`         | `void`                       | node map and fetch status |
-| `nodes:remove-member`       | `{ nodeId }`                 | `{ nodeId, removed }`     |
-| `discovery:get-nodes`       | `void`                       | `AvailableNode[]`         |
-| `cluster:get-initial`       | `void`                       | `ClusterInitialSnapshot`  |
-| `cluster:invite-node`       | `{ ipAddress }`              | `Invite`                  |
-| `cluster:invite-status`     | `{ inviteId }`               | `Invite`                  |
-| `cluster:respond-to-invite` | `{ inviteId, accept, pin? }` | `Invite`                  |
-| `cluster:cancel-invite`     | `{ inviteId }`               | `Invite`                  |
-| `cluster:abandon-if-solo`   | `void`                       | `null`                    |
-| `engines:get-initial`       | `void`                       | `EngineInitialState`      |
-| `engines:get-settings`      | `EngineSettingsTarget`       | `EngineSettingsSnapshot`  |
-| `engines:preview-settings`  | `EngineSettingsRequest`      | `EngineSettingsPreview`   |
-| `engines:apply-settings`    | `EngineSettingsRequest`      | `EngineSettingsReceipt`   |
-| `engine:command`            | `EngineCommandPayload`       | `null`                    |
-| `engine:search-hub`         | `{ engineType, query? }`     | `EngineHubSearchResponse` |
-| `errors:get-initial`        | `void`                       | `ServiceError[]`          |
-| `errors:clear`              | error ID                     | `null`                    |
-| `workloads:get-initial`     | `void`                       | workload map              |
+| Channel                     | Request                          | Response                  |
+| --------------------------- | -------------------------------- | ------------------------- |
+| `app:get-initial`           | `void`                           | `AppInitialSnapshot`      |
+| `nodes:get-initial`         | `void`                           | node map and fetch status |
+| `nodes:remove-member`       | `{ nodeId }`                     | `{ nodeId, removed }`     |
+| `discovery:get-nodes`       | `void`                           | `AvailableNode[]`         |
+| `cluster:get-initial`       | `void`                           | `ClusterInitialSnapshot`  |
+| `cluster:invite-node`       | `{ ipAddress }`                  | `Invite`                  |
+| `cluster:invite-status`     | `{ inviteId }`                   | `Invite`                  |
+| `cluster:respond-to-invite` | `{ inviteId, accept, pin? }`     | `Invite`                  |
+| `cluster:cancel-invite`     | `{ inviteId }`                   | `Invite`                  |
+| `cluster:abandon-if-solo`   | `void`                           | `null`                    |
+| `engines:get-initial`       | `void`                           | `EngineInitialState`      |
+| `engines:get-settings`      | `EngineSettingsTarget`           | `EngineSettingsSnapshot`  |
+| `engines:preview-settings`  | `EngineSettingsRequest`          | `EngineSettingsPreview`   |
+| `engines:apply-settings`    | `EngineSettingsRequest`          | `EngineSettingsReceipt`   |
+| `engine:command`            | `EngineCommandPayload`           | `null`                    |
+| `engine:search-hub`         | `{ engineType, nodeId, query? }` | `EngineHubSearchResponse` |
+| `errors:get-initial`        | `void`                           | `ServiceError[]`          |
+| `errors:clear`              | error ID                         | `null`                    |
+| `workloads:get-initial`     | `void`                           | workload map              |
 
 ## Logical push channels
 

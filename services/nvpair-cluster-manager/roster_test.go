@@ -23,8 +23,7 @@ import (
 // between two managers cross-pinned as if they had paired, with A also holding a
 // third member C endorsed by A. After one reconcile, B must transitively pin C.
 func TestReconcile_ContactsPeersOverMutualTLS(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	mA := newTestManagerPort(t, 15011)
 	mB := newTestManagerPort(t, 15012)

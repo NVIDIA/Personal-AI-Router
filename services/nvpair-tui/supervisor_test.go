@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,8 +108,7 @@ func TestResolveBrokerPath_UsesConfiguredOverride(t *testing.T) {
 func TestShutdown_IsBoundedWhenTheBrokerIsSilent(t *testing.T) {
 	t.Setenv("NVPAIR_TUI_SILENT_BROKER", "1")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	sup, err := Spawn(ctx, os.Args[0])
 	require.NoError(t, err, "spawn")
@@ -139,8 +137,7 @@ func TestShutdown_IsBoundedWhenTheBrokerIsSilent(t *testing.T) {
 func TestSupervisor_WaitsForReadyAndShutsDownBroker(t *testing.T) {
 	t.Setenv("NVPAIR_TUI_FAKE_BROKER", "1")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	sup, err := Spawn(ctx, os.Args[0])
 	require.NoError(t, err, "spawn")

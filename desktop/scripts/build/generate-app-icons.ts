@@ -13,6 +13,7 @@
  *   resources/icons/logo.png        <- pair-1024.png (tray/window downscale)
  *   resources/icons/logo.ico        <- pair.ico (Windows builder)
  *   resources/icons/logo.icns       <- assembled from the sized PNGs (macOS builder)
+ *   resources/icons/pairTrayTemplate.png <- transparent macOS menu bar symbol
  *   resources/icons/linux/<N>x<N>.png <- freedesktop hicolor set (Linux builder)
  *   src/ui/public/favicon.png       <- pair-256.png (renderer favicon)
  *
@@ -86,6 +87,9 @@ function assertSources(): void {
         }
     }
     if (!existsSync(resolve(srcDir, 'pair.ico'))) problems.push('pair.ico is missing')
+    if (!existsSync(resolve(srcDir, 'pair-tray-template.png'))) {
+        problems.push('pair-tray-template.png is missing')
+    }
     if (problems.length > 0) {
         throw new Error(
             'Invalid source icons in resources/app-icon/:\n  - ' +
@@ -121,6 +125,10 @@ function copyStaticIcons(): void {
 
     copyFileSync(master, resolve(iconsDir, 'logo.png'))
     copyFileSync(ico, resolve(iconsDir, 'logo.ico'))
+    copyFileSync(
+        resolve(srcDir, 'pair-tray-template.png'),
+        resolve(iconsDir, 'pairTrayTemplate.png')
+    )
 
     copyFileSync(srcPngPath(256), resolve(faviconDir, 'favicon.png'))
 }
@@ -148,6 +156,7 @@ function main(): void {
     console.log(
         'Generated app icons:\n' +
             '  resources/icons/logo.{png,ico,icns}\n' +
+            '  resources/icons/pairTrayTemplate.png\n' +
             `  resources/icons/linux/<N>x<N>.png (${linuxIconSizes.join(', ')})\n` +
             '  src/ui/public/favicon.png'
     )

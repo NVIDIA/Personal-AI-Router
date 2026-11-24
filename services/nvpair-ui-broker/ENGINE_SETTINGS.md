@@ -16,8 +16,12 @@ propagation is not part of this API.
 | `engine:preview-settings` | `{engine, nodeId?, expectedRevision, settings, resolution?}` | Normalized settings, errors, conflict, restart/rebind summary |
 | `engine:apply-settings` | Preview request plus `requestId` | `{revision, phase}` acknowledgement |
 
-`engine` is `ollama`, `lmstudio`, or `llamacpp`. `settings` contains all three
-fields: `serverPort`, `proxyPort`, `launchText`. The last field contains
+`engine` is `ollama`, `lmstudio`, `llamacpp`, or `vllm`. `settings` contains all three
+fields: `serverPort`, `proxyPort`, `launchText`. llama.cpp additionally exposes
+`modelSource` (`huggingface` or `modelscope`, default `huggingface`); other engines
+omit it. The selection is persisted and relayed with the rest of the settings.
+Changing it restarts a running llama.cpp router and changes both its catalogue
+and downloads. `launchText` contains
 arguments and leading environment assignments, without the executable or
 startup subcommand. The argument grammar is
 [`pair-arguments-v1`](../nvpair-engine-manager/LAUNCH_TEXT.md). Preview does not
@@ -93,9 +97,13 @@ The existing engine-control listener exposes pinned-mTLS POST endpoints
 `/v1/engine-settings/get`, `/preview`, `/apply` and GET `/events`. Requests are
 limited to 64 KiB and cannot forward another hop. The authenticated caller ID is
 carried through correlated `engine:settings-request` / `engine:settings-reply`
-notifications to the local broker. Cancellation and pin removal cancel queued
+notifications to the local broker. The same notification pair also carries a
+supervised worker's own `settings/*` read — the engine-manager asking
+`settings/get-engine-allow-lan-bind` before a start — which the broker
+forwards verbatim to `nvpair-node-settings` rather than treating it as a
+peer operation. Cancellation and pin removal cancel queued
 work; the broker rechecks the caller after acquiring the node lock. Once
-durably accepted, the target completes under its own eleven-minute deadline even
+durably accepted, the target completes under its own thirty-one-minute deadline even
 if the initiating peer disconnects.
 
 `engine:settings-projection` seeds the worker's subscription hub with full local

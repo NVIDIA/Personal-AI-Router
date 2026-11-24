@@ -95,16 +95,30 @@ ships in `cli-bin` and the app's updater replaces it.
   screen shows the engine port only, though `p` still writes that peer's proxy
   port.
 - **Models** — the inventory per engine with loaded state, plus browse-and-download
-  (`p`), download by name (`n`), load (`enter`), eject (`e`), and delete (`d`,
+  (`p`), download by name (`n`), load (`enter`), eject (`e`), delete (`d`,
+  confirmed with `y`), and, while a download is in flight, cancel it (`c`,
   confirmed with `y`). Every destructive key arms on the first press and acts
   only on `y`, against the target captured at arm time — these lists re-sort
-  under the cursor whenever a download finishes or a peer republishes.
+  under the cursor whenever a download finishes or a peer republishes. `c` stops
+  the newest download on the highlighted engine, or the newest on the node when
+  that engine has none, and its prompt names the model it will stop. A model
+  already downloading, or still being cancelled, cannot be downloaded again
+  until that download ends, and a reply for the ended download that arrives
+  once the model has been started again, on this visit to the node's screen
+  or a later one, leaves the new download alone, running or ended. Each
+  download this program starts is also sent with an identifier of its own,
+  which its progress reports carry, so a late report from the ended download
+  is not taken for the new one's and does not bring the ended one back.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a
 source that cannot search, such as Ollama's list of thousands of entries. For
-one whose reply says it is `searchable` — llama.cpp's, a slice of Hugging Face —
+one whose reply says it is `searchable` — llama.cpp's selected model source —
 `/` sends the query upstream instead, and `c` returns to the browse list.
+For a peer's llama.cpp engine, each browse/search reads that peer's saved
+`modelSource` through `engine:get-settings` and passes it to `engine:catalog`.
+A failed read or a peer that does not report its source fails the catalog load
+instead of displaying this machine's source.
 
 Both panes work on remote cluster peers through the engine manager's
 `engine:remote-*` methods. Restart and uninstall need process ownership on the
@@ -116,9 +130,17 @@ A remote node's models come from the discovery snapshot, which the broker
 enriches from each peer's engine manager — no extra request. This machine's come
 from `engine:models` and stay live through `engine:models-changed`.
 
-The detail screen also polls the node's own `/v1/node-info` endpoint over HTTP
-for GPU, CPU, and memory. That is the one reading the broker's JSON-RPC surface
-does not carry, and only the open node is polled.
+The detail screen shows GPU, CPU, and memory information supplied by the broker.
+It updates as new measurements arrive, including authenticated peer measurements
+and public previews for eligible unpaired discoveries and manual entries. If the
+node disappears or the broker invalidates its measurements, the screen clears
+those hardware details.
+
+GPU utilization includes the sample's age, for example `73% (10m ago)`. Age
+includes time spent cached in services and in the TUI and advances on UI ticks.
+A failed read keeps the last accepted snapshot with its increasing age. A GPU
+without a valid utilization sample shows `--%`; its name and memory capacity
+remain visible. GPU sample age does not describe CPU or system-memory freshness.
 
 ## Keys
 

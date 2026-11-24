@@ -92,8 +92,10 @@ func TestHandleClusterIdentity_IgnoresMalformed(t *testing.T) {
 func TestBuildResponse_DistinguishesUnknownAndEmptyClusterIdentity(t *testing.T) {
 	raw := func(clusterUUID *string) map[string]any {
 		t.Helper()
+		body, err := json.Marshal(buildResponse(nil, nil, 0, statsSnapshot{}, "host", clusterUUID))
+		require.NoError(t, err)
 		var out map[string]any
-		require.NoError(t, json.Unmarshal(buildResponse(nil, nil, 0, statsSnapshot{}, "host", clusterUUID), &out), "decode")
+		require.NoError(t, json.Unmarshal(body, &out), "decode")
 		return out
 	}
 

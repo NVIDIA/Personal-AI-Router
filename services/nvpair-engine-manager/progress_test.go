@@ -57,7 +57,7 @@ func TestProgressHub_DropsWhenFull(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 10_000; i++ {
+		for i := range 10_000 {
 			h.publish(ProgressEvent{Engine: "ollama", Op: "install", Percent: i})
 		}
 		close(done)

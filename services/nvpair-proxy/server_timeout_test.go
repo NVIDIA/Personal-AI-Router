@@ -25,7 +25,7 @@ func TestHTTPServers_ConfigureIdleConnectionTimeouts(t *testing.T) {
 	require.NotNil(t, p.soleFacade().plainSrv, "servers not recorded")
 	require.NotNil(t, p.soleFacade().tlsSrv, "servers not recorded")
 	for name, srv := range map[string]struct {
-		readHeader, idle interface{}
+		readHeader, idle any
 	}{
 		"plain": {p.soleFacade().plainSrv.ReadHeaderTimeout, p.soleFacade().plainSrv.IdleTimeout},
 		"tls":   {p.soleFacade().tlsSrv.ReadHeaderTimeout, p.soleFacade().tlsSrv.IdleTimeout},
