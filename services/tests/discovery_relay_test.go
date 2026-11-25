@@ -4,6 +4,7 @@
 package tests
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -13,12 +14,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBrokerAdvertisesNodeRecord exercises the register->advertise path
+// TestBroker_AdvertisesNodeRecord exercises the register->advertise path
 // end to end: the broker spawns node-info and the promoted daemon, registers
 // node-info's service broker-locally, and the daemon folds that into its
 // registry and advertises ONE _nvpair-node record carrying the schema key and
-// ni=14318. This is the new consolidated discovery record (distinct from
-// node-info's own transitional _nvpair-node-info advertisement).
+// ni=<this run's block ni port>. This is the new consolidated discovery record
+// (distinct from node-info's own transitional _nvpair-node-info advertisement).
+//
+// The ni= match doubles as the discriminator that separates this run's record
+// from a live PAIR on the same host (#226): the hostname-named instance can
+// belong to either node, but only this run's daemon advertises the allocated
+// block base.
 func TestBroker_AdvertisesNodeRecord(t *testing.T) {
 	_, msgs, stderr, cleanup := startBrokerWith(t, "--node-info-path", nodeInfoBin)
 	t.Cleanup(cleanup)
@@ -41,21 +47,10 @@ func TestBroker_AdvertisesNodeRecord(t *testing.T) {
 	// node-info registers ni=. Startup ordering can therefore expose a valid
 	// base record for a moment; wait for the enriched update instead of treating
 	// the first packet as final.
-	var entryText []string
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		entry := browseForInstance(t, "_nvpair-node._tcp", instance, 2*time.Second)
-		if entry != nil {
-			entryText = entry.Text
-			if strings.Contains(strings.Join(entry.Text, ";"), "ni=14318") {
-				break
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	entry := entryText
-	require.NotNil(t, entry, "did not discover this node's _nvpair-node record within timeout")
-	txt := strings.Join(entry, ";")
-	assert.Contains(t, txt, "ni=14318", "_nvpair-node TXT missing ni=14318 (register->advertise path) (%v)", entry)
-	assert.Contains(t, txt, "v=1", "_nvpair-node TXT missing schema v=1 (%v)", entry)
+	wantTXT := fmt.Sprintf("ni=%d", testPortBase)
+	entryText := browseForTXT(t, "_nvpair-node._tcp", instance, 20*time.Second, wantTXT)
+	require.NotNil(t, entryText, "no _nvpair-node record for this host advertising %s within timeout", wantTXT)
+	txt := strings.Join(entryText, ";")
+	assert.Contains(t, txt, wantTXT, "_nvpair-node TXT missing %s (register->advertise path) (%v)", wantTXT, entryText)
+	assert.Contains(t, txt, "v=1", "_nvpair-node TXT missing schema v=1 (%v)", entryText)
 }

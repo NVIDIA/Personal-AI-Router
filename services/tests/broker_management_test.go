@@ -293,10 +293,6 @@ func TestBroker_BridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 // reflected in the next errors:update — the same as a supervised worker
 // emitting one on its stdout.
 func TestBroker_AcceptsClientErrorsReport(t *testing.T) {
-	if portBusy(14319) {
-		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
-	}
-
 	stdin, msgs, _, cleanup := startBrokerWith(t, "--errors-path", errorsBin)
 	t.Cleanup(cleanup)
 
@@ -317,10 +313,6 @@ func TestBroker_AcceptsClientErrorsReport(t *testing.T) {
 // leg B: an id-bearing errors:report is acked with a null result and also
 // reflected in errors:update.
 func TestBroker_AcceptsClientErrorsReportRequest(t *testing.T) {
-	if portBusy(14319) {
-		t.Skip("nvpair-errors --peer-sync port 14319 already in use; skipping")
-	}
-
 	stdin, msgs, _, cleanup := startBrokerWith(t, "--errors-path", errorsBin)
 	t.Cleanup(cleanup)
 

@@ -49,7 +49,7 @@ func TestLaunchBindings_PreserveDeclaredControlsAndUnrelatedArguments(t *testing
 			request.Settings = preview.Settings
 			assert.Equal(t, preview, previewSettings(t, e, request), "preview does not round-trip")
 			rt.LaunchArgs, rt.LaunchEnv = preview.Args, preview.Env
-			launch, err := launchForState(settingsState(t, e), 23456)
+			launch, err := launchForState(settingsState(t, e), 23456, false)
 			require.NoError(t, err)
 			require.NoError(t, validateEffectiveLaunch(*rt, launch, tc.Host, "23456"))
 			assert.Equal(t, []string{"--unrelated", "literal"}, launch.Args[len(launch.Args)-2:], "unrelated arguments changed")

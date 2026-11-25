@@ -228,8 +228,11 @@ after any change to a JSON-RPC method, payload, or notification.
 
 Some tests need something the machine may not have, and skip rather than fail:
 
-- Tests that bind a well-known port (`11434`, `14319`, `14321`) skip when it is
-  already in use — so quit PAIR before running them, or expect gaps.
+- Tests that bind a proxy facade port (`11434`, `11435`, `1234`) skip when it
+  is already in use. The cross-process suite no longer needs you to quit PAIR:
+  `services/tests` gives each run its own six-port service block and starts
+  every supervised broker with `--port-base`, so the canonical `14318`-`14323`
+  block can stay busy with a running install.
 - Tests needing a real mDNS responder skip when one is unavailable.
 - Live engine tests only run when you opt in:
 

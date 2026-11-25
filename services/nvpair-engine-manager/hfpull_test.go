@@ -625,6 +625,11 @@ func TestHFToolPath_FindsHFBesideTheEngineALinkPointsTo(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
 	require.NoError(t, os.MkdirAll(env, 0o755))
 	require.NoError(t, os.MkdirAll(bin, 0o755))
+	// hfToolPath canonicalises the path it returns, and on macOS a t.TempDir
+	// sits behind the /var to /private/var link, so the expected directory
+	// has to be canonicalised the same way for the comparison to hold.
+	env, err := filepath.EvalSymlinks(env)
+	require.NoError(t, err)
 	for _, name := range []string{"vllm", "hf"} {
 		require.NoError(t, os.WriteFile(filepath.Join(env, name), []byte("#!/bin/sh\n"), 0o755))
 	}
@@ -635,7 +640,9 @@ func TestHFToolPath_FindsHFBesideTheEngineALinkPointsTo(t *testing.T) {
 	tool, err := hfToolPath(st, "hf")
 
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(env, "hf"), tool)
+	resolvedEnv, err := filepath.EvalSymlinks(env)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(resolvedEnv, "hf"), tool)
 }
 
 // PAIR reads the same Hugging Face settings vLLM's huggingface_hub reads, in

@@ -23,6 +23,7 @@ import (
 	"nvpair-shared/appdir"
 	"nvpair-shared/engines"
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/noderec"
 )
 
 var (
@@ -155,6 +156,20 @@ func TestMain(m *testing.M) {
 			log.Fatalf("set %s: %v", key, err)
 		}
 	}
+
+	// Give this run its own six-port service block so supervised workers bind
+	// nothing in the canonical 14318-14323 range and the suite works beside a
+	// live PAIR (#226). A failure here means no six consecutive free ports on
+	// this host — independent of, and not caused by, anything PAIR is running.
+	base, err := allocatePortBlock()
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		log.Fatalf("allocate test service port block (independent of any running PAIR): %v", err)
+	}
+	testPortBase = base
+	log.Printf("using test service port block %d-%d", base, base+noderec.PortBlockSize-1)
+
+	workloadEventsURL, errorsSyncURL = blockDataPlaneURLs(base)
 
 	code := m.Run()
 	os.RemoveAll(tmpDir)

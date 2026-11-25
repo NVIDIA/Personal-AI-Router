@@ -5,9 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-node-settings
 
-> **Status: scaffolding.** This subprocess persists four per-node
+> **Status: scaffolding.** This subprocess persists five per-node
 > settings (`force_ports`, `cluster_auto_sync`, `cluster_id`,
-> `cluster_friendly_name`) and pushes cluster identity / auto-sync
+> `cluster_friendly_name`, `engine_allow_lan_bind`) and pushes cluster identity / auto-sync
 > change notifications to its peer. The **names** of the settings
 > reflect a later reshape of the design (auto-join-invites and the
 > opaque cluster-secret were dropped; a stable cluster identifier and
@@ -70,16 +70,18 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
   "force_ports":            true,
   "cluster_auto_sync":      false,
   "cluster_id":             "",
-  "cluster_friendly_name":  ""
+  "cluster_friendly_name":  "",
+  "engine_allow_lan_bind": false
 }
 ```
 
-The four stored fields:
+The five stored fields:
 
 - `force_ports` (bool) — when true, NVPAIR attempts to reserve the Ollama compatibility port for its proxy. Running or unidentified owners are left untouched and reported as blocked; this setting does not authorize a generic process kill. An explicitly saved `false` is preserved as an opt-out.
 - `cluster_auto_sync` (bool) — when true, this node accepts automatic syncs of cluster-managed state from peers.
 - `cluster_id` (string) — opaque, stable identifier for the cluster this node belongs to. Empty means "not in a cluster". The wire format is byte-for-byte (no normalization, no trimming) so a future migration of the id format doesn't have to coordinate with the datastore.
 - `cluster_friendly_name` (string) — human-presentable label for the cluster (e.g. "Lab 3 desks"). Display only — anything operational keys off `cluster_id`.
+- `engine_allow_lan_bind` (bool) — when true, local engine starts may bind to non-loopback addresses. Default `false`: a non-loopback `bind` on `engine:start` is rejected, because engine APIs are unauthenticated and a LAN bind is usually accidental. Read live by `nvpair-engine-manager` on every start, so no restart is needed after a change.
 
 ## JSON-RPC Notifications (manager → caller)
 
@@ -145,6 +147,10 @@ as a simple ack so React-init code can rely on a single round-trip.
 // cluster-friendly-name (string)
 {"jsonrpc":"2.0","id":8,"method":"settings/get-cluster-friendly-name"}                                  // -> {"value": ""}
 {"jsonrpc":"2.0","id":9,"method":"settings/set-cluster-friendly-name","params":{"value":"Lab 3 desks"}} // -> {"ok": true}
+
+// engine-allow-lan-bind (bool)
+{"jsonrpc":"2.0","id":10,"method":"settings/get-engine-allow-lan-bind"}                                   // -> {"value": false}
+{"jsonrpc":"2.0","id":11,"method":"settings/set-engine-allow-lan-bind","params":{"value": true}}          // -> {"ok": true}
 ```
 
 `settings/get-cluster-id` returns the raw stored `cluster_id`
@@ -154,6 +160,14 @@ string — the same shape every other `settings/get-*` getter uses
 non-empty is the verbatim id. Live cluster-membership changes
 come from `connection/cluster-identity` push notifications, not
 from polling this getter.
+
+`settings/get-engine-allow-lan-bind` returns whether local engine starts
+may bind to non-loopback addresses (`{"value": <bool>}`, default `false`).
+PAIR keeps engine starts on loopback unless the operator opts in here: the
+setting is read live on every start, so no restart is needed. It is
+deliberately a node-level switch rather than a per-call flag — opening an
+unauthenticated engine API to the LAN should be a conscious, persistent
+decision about the machine, not something a single broker call can slip in.
 
 ### Removed methods
 

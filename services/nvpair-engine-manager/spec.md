@@ -175,6 +175,14 @@ The `engine:catalog` request accepts `modelSource` for a peer's saved choice.
 Omitting it uses this node's setting. Only `huggingface` and `modelscope` are
 accepted for llama.cpp; each source keeps its own browse/search cache.
 
+Fetched catalogues coalesce concurrent callers and retain a complete cached
+list if refresh fails. A transport or HTTP 5xx failure permits another attempt
+after five seconds. Other failures, including HTTP 429 without `Retry-After`,
+retain a two-minute backoff. A valid `Retry-After` delta or HTTP date is honored
+for failed listings; the longest delay applies when several publishers or file
+listings fail. These are cooldowns checked on the next request, not background
+fetch timers. Catalogue request and response payloads are unchanged.
+
 ModelScope's public GGUF catalogue is normalized through the same quantization
 and generative-model filters as Hugging Face. Browse and search each read one
 50-entry page by downloads, the largest ModelScope serves, and list each
@@ -233,8 +241,10 @@ implementation is used.
   mutual TLS for pinned LAN peers. The cluster-control listener also requires
   mutual TLS for pinned peers.
 - Engines bind loopback by default, but `runtime.bind` can open an inference
-  engine to the LAN. Ollama defaults to `0.0.0.0`; `engine:start {bind}` can
-  override this for one call.
+  engine to the LAN. `engine:start {bind}` can override this for one call,
+  but a non-loopback `bind` is honored only when the `engine_allow_lan_bind`
+  node setting is on — otherwise `engine:start` rejects it with `-32602`
+  (`bind must be a loopback address`).
 - Downloads use HTTPS, except for loopback HTTP, and are checksum-verified
   when the manifest pins a `sha256`.
 - Fully testable end-to-end with no real engines, network, or installers in the test path.
@@ -308,7 +318,7 @@ Requests (caller → service):
 | `engine:install` | `{ engine }` | `EngineStatus` (after install) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes the engines this service installed, selected by their install marker, each through the `engine:uninstall` path. Backs both clients' "reset all data"; the platform uninstallers reach the same code through `--uninstall-managed` because they have no broker. Neither `removed` nor `error` means the engine was left alone as not ours. |
-| `engine:start` | `{ engine }` | `EngineStatus` (after readiness) |
+| `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness); a non-loopback `bind` is rejected with `-32602` (`bind must be a loopback address`) unless the `engine_allow_lan_bind` node setting is on |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:action` | `{ engine, action, params, opId? }` | the engine's raw response; `opId` names a `pull_model` request on its download's frames (§14) |
@@ -422,13 +432,13 @@ fails it with the peer's error message.
   limits.
 - **Scalability**: a handful of engines per node; one managed instance per engine in v1.
 - **Reliability**: best-effort; readiness + health probes; automatic restart on crash is planned but **not yet implemented** (see §4); install is one-shot and idempotent (detect short-circuits).
-- **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install and uninstall time: the Windows uninstaller is elevated and runs `--uninstall-managed`, which for that reason loads only the manifests compiled into the binary, never the user-writable override directory); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN (Ollama defaults to `0.0.0.0`, overridable per-call); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
+- **Security**: **user mode only — no admin/sudo at runtime** (escalation reserved for product install and uninstall time: the Windows uninstaller is elevated and runs `--uninstall-managed`, which for that reason loads only the manifests compiled into the binary, never the user-writable override directory); both optional LAN listeners terminate pin-based mTLS and reject unpinned peers — the read-only model-list listener (`em`) because a node's model inventory is cluster data, and the `ec` control listener because its routes are privileged; `em` additionally serves plaintext on loopback only, for this node's own scanner; engines bind loopback by default, but a manifest's `runtime.bind` may open an inference engine to the LAN; a per-call `bind` overrides it for one call, but a non-loopback value is honored only when the `engine_allow_lan_bind` node setting is on, otherwise `engine:start` rejects it with `-32602` (`bind must be a loopback address`); downloads are HTTPS-only (plain HTTP only from loopback) and checksum-verified before execution when the manifest pins a `sha256` (an unpinned fetch is HTTPS-only with a loud warning, like a `script` install).
 - **Compliance**: no PII; payloads carry engine/model identifiers and error messages only.
 
 ## 11. Assumptions
 - The orchestrator owns the stdio/IPC pipe and is the only peer; on parent exit (stdin EOF) the service shuts down cleanly — no reconnect or buffering.
 - Manifests are either well-formed (validated) or rejected; authors keep `engine:*` and manifest shapes stable per the versioning rules.
-- Engines bind loopback unless the manifest's `runtime.bind` opts otherwise (inference engines default to `0.0.0.0`; a per-call `bind` overrides); the engine's own startup banner is not trusted — the readiness probe confirms the actual bind.
+- Engines bind loopback unless the manifest's `runtime.bind` opts otherwise; a per-call `bind` overrides for one call, but a non-loopback value is honored only when the `engine_allow_lan_bind` node setting is on, otherwise `engine:start` rejects it with `-32602` (`bind must be a loopback address`); the engine's own startup banner is not trusted — the readiness probe confirms the actual bind.
 - `nvpair-errors` is best-effort; its absence degrades to local logs only.
 
 ## 12. Failure Modes and Mitigations
@@ -455,7 +465,7 @@ fails it with the peer's error message.
 ## 14. Sample usage
 The operator opens the UI; the Broker calls `engine:get-installed`, which returns each manifest's `EngineStatus` (e.g. Ollama `installed:true, running:false`). To set up a missing engine, the Broker sends `engine:install {engine:"ollama"}`: the service downloads the per-OS user-scoped package, checksum-verifies it, runs it user-mode, and re-detects — progress streaming as `engine:install-progress` notifications.
 
-The operator starts it: `engine:start {engine:"ollama"}` resolves the manifest runtime (`OLLAMA_HOST` = `{host}:{port}`, `{host}` from `runtime.bind` defaulting to `0.0.0.0`; per-call `port`/`bind` override either), spawns the process, and waits for the readiness probe before reporting `running:true, healthy:true` in the response and an `engine:state-changed` notification. A periodic health probe keeps the state current; an unexpected exit emits `engine:state-changed` + `errors:report`. If something is already serving the port, `start` **adopts** it instead of spawning a duplicate.
+The operator starts it: `engine:start {engine:"ollama"}` resolves the manifest runtime (`OLLAMA_HOST` = `{host}:{port}`, `{host}` from `runtime.bind` defaulting to `127.0.0.1`; per-call `port`/`bind` override either, but a non-loopback `bind` is honored only when the `engine_allow_lan_bind` node setting is on, otherwise the start is rejected with `-32602`), spawns the process, and waits for the readiness probe before reporting `running:true, healthy:true` in the response and an `engine:state-changed` notification. A periodic health probe keeps the state current; an unexpected exit emits `engine:state-changed` + `errors:report`. If something is already serving the port, `start` **adopts** it instead of spawning a duplicate.
 
 The operator stops it: `engine:stop {engine:"ollama"}` signals a process the service owns. For an **adopted** engine (no owned process), it resolves the PID bound to the port and terminates it only when that process is running the binary we manage — reclaiming an orphan a prior run left on our own managed port; a genuinely foreign listener (a different image on a different port) is declined with an error naming its PID and image. A user-initiated `stop` records the OFF intent regardless (even when the RPC returns an error), so the health loop and restore-on-restart don't flip the engine back on — clients must not treat a stop error as proof the OFF choice was discarded. The cluster `ec` stop endpoint shares this semantics and may return HTTP 500 while OFF is persisted.
 
