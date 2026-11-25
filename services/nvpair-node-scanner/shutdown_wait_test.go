@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -24,6 +25,36 @@ import (
 // per-interface send it is waiting for is pinned in the shared mdns
 // package's goodbye tests, and live SIGTERM wire capture is a Task 7
 // deliverable.
+
+func TestDaemonBrowseLoop_WaitsForResponderAfterEventsClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		events := make(chan DiscoveryEvent)
+		close(events)
+		responderDone := make(chan struct{})
+		returned := make(chan struct{})
+		d := &daemon{}
+		go func() {
+			// Keep the context live to force the closed-events exit path.
+			d.runBrowseLoop(context.Background(), events, responderDone)
+			close(returned)
+		}()
+
+		synctest.Wait()
+		select {
+		case <-returned:
+			t.Error("daemon returned before the responder finished its goodbye")
+		default:
+		}
+
+		close(responderDone)
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			t.Error("daemon did not return after the responder finished")
+		}
+	})
+}
 
 func TestWaitForShutdown_ReturnsImmediatelyWhenNothingToJoin(t *testing.T) {
 	// A daemon built without an mDNS responder hands down a nil done
