@@ -96,6 +96,59 @@ func firstLabel(s string) string {
 	return strings.SplitN(s, ".", 2)[0]
 }
 
+// shutdownDeadline bounds one grandcat teardown, with room to spare: a healthy
+// host finishes unregistering in single-digit milliseconds, so anything still
+// running this long after the request is parked rather than merely slow.
+const shutdownDeadline = 5 * time.Second
+
+// boundedShutdown unregisters a test advertisement and reports whether grandcat
+// finished within shutdownDeadline.
+//
+// The bound is needed because the teardown cannot be interrupted from here:
+// Server.Shutdown takes its shutdown lock, then sends the goodbye on every
+// multicast-capable interface the host reports — loopback, VPN tunnels and
+// peer-to-peer interfaces included — before it closes any socket, and grandcat
+// sets no write deadline on that socket at all. An interface that answers
+// "network is unreachable" is harmless, because grandcat discards write errors;
+// one that accepts the packet into a queue that never drains leaves the write
+// waiting for the socket to become writable, and nothing ever wakes it. On such
+// a host every advertisement in this package would be torn down by a parked
+// goroutine, and because cleanups run one test at a time the whole package
+// stalls until go test's own timeout dumps it.
+//
+// What this bounds is the wait, not the write: after a timeout the parked
+// goroutine keeps the socket until this binary exits, and the advertisement is
+// retracted only when its records reach their TTL. That residue is always a
+// synthetic label pointing at 127.0.0.1 and never this machine's hostname, so
+// what is left behind is a dead entry a peer drops by itself, not a live node's
+// entry being replaced.
+func boundedShutdown(srv *zeroconf.Server) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.Shutdown()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(shutdownDeadline):
+		return false
+	}
+}
+
+// logStuckTeardown reports an advertisement that outlived shutdownDeadline. It
+// is a report and not a failure: a host that cannot send a goodbye is an
+// environment this suite cannot fully exercise, and that is worth stating once
+// per advertisement rather than turning every test that advertised anything into
+// a failure. Call it with the test's own *testing.T — a throwaway one discards
+// everything written to it.
+func logStuckTeardown(t *testing.T, what string) {
+	t.Helper()
+	t.Logf("%s did not finish unregistering within %s: a multicast interface on this host accepts the goodbye "+
+		"write into a queue it never drains, so its records linger until their TTL and grandcat's unregister "+
+		"goroutine stays parked until this binary exits", what, shutdownDeadline)
+}
+
 // registerTestAdvertisement publishes one service advertisement for a test stub
 // node, under a synthetic host label and a loopback A record instead of the
 // machine hostname and a machine-chosen address.
@@ -114,7 +167,9 @@ func firstLabel(s string) string {
 // call site cannot reintroduce the conflict by passing os.Hostname(); every
 // converted site passes one of the synthetic labels above and can never reach
 // that check. ifaces stays nil, so the announcement reaches every interface and
-// same-process discovery keeps working exactly as before the conversion.
+// same-process discovery keeps working exactly as before the conversion. The
+// cleanup it registers bounds grandcat's teardown, so an interface that will not
+// take the goodbye cannot stall the rest of the package — see boundedShutdown.
 func registerTestAdvertisement(t *testing.T, instance, service, hostLabel string, port int, txt []string) *zeroconf.Server {
 	t.Helper()
 
@@ -128,7 +183,11 @@ func registerTestAdvertisement(t *testing.T, instance, service, hostLabel string
 
 	srv, err := zeroconf.RegisterProxy(instance, service, testDomain, port, hostLabel, []string{"127.0.0.1"}, txt, nil)
 	require.NoErrorf(t, err, "register test advertisement %s under %s", instance, hostLabel)
-	t.Cleanup(srv.Shutdown)
+	t.Cleanup(func() {
+		if !boundedShutdown(srv) {
+			logStuckTeardown(t, "the test advertisement "+instance+" under "+hostLabel)
+		}
+	})
 	return srv
 }
 
@@ -247,20 +306,29 @@ func TestRegisterTestAdvertisement_RejectsAClaimOfTheMachineName(t *testing.T) {
 	// The control keeps the assertion above from passing vacuously: with a
 	// synthetic label the same helper does reach the wire, so the abort above is
 	// the guard refusing the claim and not a broken helper.
+	//
+	// controlUnregistered reports whether that control left the wire. It is set
+	// from the goroutine runOnThrowawayT owns and read only once that goroutine
+	// has reported itself finished, and it is reported through t rather than ft
+	// because a throwaway *testing.T discards everything written to it.
+	controlUnregistered := true
 	control := runOnThrowawayT(t, func(ft *testing.T) {
 		srv := registerTestAdvertisement(ft, "nvpair-guard-control-probe", "_t5guard._tcp", testHostOne, 59911, nil)
 		if srv != nil {
 			// The throwaway *testing.T never runs its cleanups, so the
-			// helper's t.Cleanup(srv.Shutdown) can never fire: close the
+			// helper's bounded teardown can never fire: unregister the
 			// server on this goroutine instead, deferred right where it is
 			// created so it leaves the wire even if the closure unwinds
 			// before returning normally.
-			defer srv.Shutdown()
+			defer func() { controlUnregistered = boundedShutdown(srv) }()
 		}
 	})
 	require.Nilf(t, control.crash, "the helper crashed on a synthetic label: %v", control.crash)
 	require.Truef(t, control.reachedEnd,
 		"the helper refused the synthetic label %q too, so the refusal of %q proves nothing", testHostOne, hostname)
+	if !controlUnregistered {
+		logStuckTeardown(t, "the control advertisement of "+testHostOne)
+	}
 }
 
 // TestZeroconfAdvertisements_AllRoutedThroughTheHelper pins the conversion
@@ -363,9 +431,10 @@ func browseOnce(service, instance string, window time.Duration) (*zeroconf.Servi
 //
 // The control carries a host label outside the nvpair-test-* family — checked
 // against the real hostname with the same first-label guard the helper applies
-// — and an explicit 127.0.0.1, and it is shut down by a defer on every exit
-// path, including the fatal and skip ones, so the diagnosis leaves nothing
-// announced behind.
+// — and an explicit 127.0.0.1, and it is unregistered by a bounded defer on
+// every exit path, including the fatal and skip ones, so the diagnosis leaves
+// nothing announced behind and a host that will not take the goodbye cannot
+// stall the package here either.
 func discoverProbeWithMulticastControl(t *testing.T, probeService, probeInstance string) *zeroconf.ServiceEntry {
 	t.Helper()
 
@@ -387,7 +456,11 @@ func discoverProbeWithMulticastControl(t *testing.T, probeService, probeInstance
 	if err != nil {
 		t.Skipf("the probe stayed unseen and even a control published straight through grandcat could not be registered (%v): this environment does not support the mDNS this test needs", err)
 	}
-	defer srv.Shutdown()
+	defer func() {
+		if !boundedShutdown(srv) {
+			logStuckTeardown(t, "the multicast control "+controlInstance)
+		}
+	}()
 
 	type browseOutcome struct {
 		entry *zeroconf.ServiceEntry

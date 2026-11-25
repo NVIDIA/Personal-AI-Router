@@ -65,7 +65,8 @@ func TestDiscovery_ResolvesMultipleRegisteredNodes(t *testing.T) {
 	instances := []string{"node-alpha", "node-beta", "node-gamma"}
 
 	for i, inst := range instances {
-		// registerTestAdvertisement registers t.Cleanup(srv.Shutdown) itself.
+		// registerTestAdvertisement unregisters each advertisement itself when
+		// the test ends.
 		registerTestAdvertisement(t, inst, service, fmt.Sprintf("%s-%d", testHostLoopPrefix, i+1), 50000+i, nil)
 	}
 	time.Sleep(500 * time.Millisecond)
