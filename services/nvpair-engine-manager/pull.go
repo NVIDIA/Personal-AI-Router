@@ -139,6 +139,21 @@ func (e *Executor) pullModelStream(ctx context.Context, engine, model string, pa
 	if len(params) == 0 || string(params) == "null" {
 		params, _ = json.Marshal(map[string]string{"name": model, "model": model})
 	}
+	// Strata's install CLI fetches a model as a family and quant pair while the
+	// fleet names one model by a single "family/quant" string, so the pair is
+	// derived here for every pull path (local, remote, engine:action). An id
+	// without a slash falls back to qwen, the family Strata itself prefers.
+	if engine == "strata" {
+		var pm map[string]any
+		_ = json.Unmarshal(params, &pm)
+		if pm["family"] == nil {
+			family, quant, found := strings.Cut(model, "/")
+			if !found || family == "" || quant == "" {
+				family, quant = "qwen", model
+			}
+			params, _ = json.Marshal(map[string]string{"name": model, "model": quant, "family": family})
+		}
+	}
 
 	if act.ModelResolution == modelResolutionLMSGet {
 		actionCtx, cancel := context.WithTimeoutCause(ctx, e.actionTimeout, fmt.Errorf("the download did not finish within %s", e.actionTimeout))

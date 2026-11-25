@@ -29,7 +29,7 @@ func TestLaunchBindings_PreserveDeclaredControlsAndUnrelatedArguments(t *testing
 	require.NoError(t, json.Unmarshal(data, &cases))
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			require.NoError(t, tc.Definition.validateControls())
+			require.NoError(t, tc.Definition.validateControls(true))
 			e := settingsExecutor(t, true)
 			rt := &settingsState(t, e).plat.Runtime
 			rt.EditableLaunch = &tc.Definition

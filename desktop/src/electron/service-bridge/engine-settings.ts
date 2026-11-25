@@ -49,12 +49,39 @@ function config(value: JsonValue | undefined): EngineSettingsConfig {
         ...(modelSource ? { modelSource } : {})
     }
 }
+function stringList(value: JsonValue | undefined): string[] {
+    if (value === undefined) return []
+    if (!Array.isArray(value)) throw new Error('Invalid engine settings response.')
+    return value.map(entry => {
+        if (typeof entry !== 'string') throw new Error('Invalid engine settings response.')
+        return entry
+    })
+}
+function external(value: JsonValue | undefined): EngineSettingsSnapshot['external'] | undefined {
+    if (!value) return undefined
+    const row = object(value)
+    const preset = text(row.preset)
+    const host = text(row.host)
+    const model = text(row.model)
+    const readyFile = text(row.readyFile)
+    const configFile = text(row.configFile)
+    return {
+        ...(preset ? { preset } : {}),
+        ...(host ? { host } : {}),
+        port: number(row.port),
+        ...(model ? { model } : {}),
+        launchArgs: stringList(row.launch_args),
+        ...(readyFile ? { readyFile } : {}),
+        ...(configFile ? { configFile } : {})
+    }
+}
 export function parseEngineSettings(value: JsonValue | undefined): EngineSettingsSnapshot {
     const row = object(value)
     const engine = row.engine
     const phase = row.phase
     if (!isSettingsEngine(engine) || !isSnapshotPhase(phase) || !text(row.epoch))
         throw new Error('Invalid engine settings response.')
+    const ext = external(row.external)
     return {
         nodeId: text(row.nodeId),
         engine,
@@ -68,6 +95,7 @@ export function parseEngineSettings(value: JsonValue | undefined): EngineSetting
         effectiveProxyPort: number(row.effectiveProxyPort),
         running: flag(row.running),
         adopted: flag(row.adopted),
+        ...(ext ? { external: ext } : {}),
         editable: flag(row.editable),
         reason: text(row.reason),
         // Preserve the target's argument format so incompatible devices stay read-only.

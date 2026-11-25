@@ -135,6 +135,7 @@ const (
 	NameLMStudio = "lmstudio"
 	NameLlamaCPP = "llamacpp"
 	NameVLLM     = "vllm"
+	NameStrata   = "strata"
 )
 
 // all is the ordered engine set. Ollama is first; see the package comment.
@@ -171,6 +172,22 @@ var all = []Engine{
 		FacadePort:       8000,
 		EnginePortBase:   8001,
 		PortFile:         "vllm-proxy-port.json",
+	},
+	{
+		// Strata's stock client port is 8080, which llamacpp's facade
+		// already claims; the identity test above forbids two engines
+		// sharing one FacadePort. So Strata's facade is a PAIR-only port
+		// and its stock 8080 is left unclaimed: a stand-alone `strata
+		// launch` keeps its default address, and PAIR clients address
+		// the Strata facade at 8090. EnginePortBase 8091 is where a
+		// managed Strata is launched (--port), freeing 8090 for the
+		// proxy.
+		Name:             NameStrata,
+		DisplayName:      "Strata",
+		DiscoveryService: noderec.ServiceStrata,
+		FacadePort:       8090,
+		EnginePortBase:   8091,
+		PortFile:         "strata-proxy-port.json",
 	},
 }
 

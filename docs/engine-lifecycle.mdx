@@ -9,9 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 */}
 
 An **engine** is the local inference runtime NVIDIA PAIR uses to
-run models. Today that means Ollama, LM Studio, llama.cpp, or vLLM on a given machine.
+run models. Today that means Ollama, LM Studio, llama.cpp, vLLM, or Strata on a given machine.
 PAIR can install and run those engines for you, or work with a supported
-existing Ollama or LM Studio installation. This page explains what you can
+existing Ollama, LM Studio, or Strata installation. This page explains what you can
 expect when you install, start, stop, or remove an engine, and how to move one
 to a newer release.
 
@@ -80,7 +80,12 @@ When you install an engine, consider the following:
   normally do not need a separate start step right after install.
 - If Ollama or LM Studio is already running on the machine, PAIR can **adopt**
   that install instead of downloading another copy. Adoption helps when the
-  usual engine port is already in use.
+  usual engine port is already in use. PAIR also finds a **Strata** you
+  started yourself in a terminal, on whatever port it is listening on,
+  because its health endpoint identifies it. While a Strata you started
+  outside PAIR is running, its **Settings** page shows the port, model and
+  launch arguments from Strata's own state files, read-only - PAIR displays
+  what the instance actually runs with, and never changes it.
 - llama.cpp is always a PAIR-managed install. Windows and Linux download fixed
   checksum-pinned CUDA server/runtime archives. Apple silicon Macs download the
   standard Metal-enabled archive, and Intel Macs download the CPU-only build,
@@ -145,6 +150,15 @@ When you install an engine, consider the following:
   a saved selection leaves the enabled engine waiting for another model. vLLM
   does not unload automatically after inactivity. Use **Eject** to release its
   memory.
+
+- Strata is detected on Linux when a `strata` CLI is already installed at
+  a known location (`~/.local/bin/strata`); PAIR does not install or uninstall
+  it yet. `strata launch` starts the server detached, so PAIR drives it through
+  its CLI and follows the server's health endpoint instead of owning the
+  process, and stop and **Eject** go through `strata launch --stop`. Strata
+  serves one model per instance, named by a family and quantization pair from
+  its fixed catalog, such as `qwen/q2_0`: **Load** switches models by restarting
+  the engine, and downloads run while the engine is stopped.
 
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model
@@ -231,6 +245,10 @@ controlled:
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
   instance that way and restart it on the port you chose.
+- **Strata** that you launched yourself stays yours. PAIR lists it as running
+  on the port it found it on, but Stop is refused, because running Strata's
+  own stop command would end an instance PAIR never started. Stop it in your
+  terminal when you want it down.
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.

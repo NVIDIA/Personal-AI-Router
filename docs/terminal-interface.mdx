@@ -356,10 +356,11 @@ Press `n` instead if you already know exactly what you want and would rather typ
 it. Each engine names models its own way: an Ollama tag such as `llama3.2`, a
 Hugging Face repository for LM Studio, a repository with its quantization
 for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`, and a Hugging Face
-repository for vLLM, such as `Qwen/Qwen3.5-4B`. Either way, progress appears on
-the status line. Downloading needs a running engine, except with vLLM, which
-downloads into the Hugging Face cache without its server: highlight it in the
-Engines pane to download into it while it is stopped.
+repository for vLLM, such as `Qwen/Qwen3.5-4B`, and a family with its
+quantization for Strata, such as `qwen/q2_0`. Either way, progress appears on
+the status line. Downloading needs a running engine, except with vLLM and
+Strata, which download without their server: highlight one in the Engines pane
+to download into it while it is stopped.
 
 In the Models pane, while a download is in progress, `c` cancels it. It picks
 the newest download into the engine highlighted in the Engines pane, or, when

@@ -59,7 +59,8 @@ export const DEMO_ENGINE_PROBES: readonly {
 }[] = [
     { backend: 'ollama', proxyEngine: 'ollama' },
     { backend: 'lmstudio', proxyEngine: 'lm-studio' },
-    { backend: 'llamacpp', proxyEngine: 'llama-cpp' }
+    { backend: 'llamacpp', proxyEngine: 'llama-cpp' },
+    { backend: 'strata', proxyEngine: 'strata' }
 ]
 
 /**

@@ -286,7 +286,7 @@ not select or pin proxy routes.
 An NVPAIR-launched engine binds to loopback and is never directly LAN-reachable.
 Peers reach it only through the node's proxy over a cluster-mTLS ingress, so
 discovery advertises the promoted proxy port for `ol`/`lm` rather than the
-engine's private port; llama.cpp uses the additional `lc` key and vLLM the `vl` key. Transport
+engine's private port; llama.cpp uses the additional `lc` key, vLLM the `vl` key, and Strata the `st` key. Transport
 security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.

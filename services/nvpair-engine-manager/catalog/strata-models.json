@@ -1,0 +1,343 @@
+{
+  "scrapedAt": "2026-11-21T21:31:54+00:00",
+  "source": "Strata 0.2.18 setup.py FAMILIES/MODELS/OWN_PATH_FAMILIES tables",
+  "count": 28,
+  "models": [
+    {
+      "id": "qwen/Q2_0",
+      "name": "qwen/Q2_0",
+      "author": "ISTA-DASLab",
+      "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/Q2_0",
+      "size": 66400000000,
+      "tags": [
+        "Qwen3.8-Flash-Next",
+        "Q2_0"
+      ],
+      "family": "qwen"
+    },
+    {
+      "id": "qwen/IQ2_XS",
+      "name": "qwen/IQ2_XS",
+      "author": "ISTA-DASLab",
+      "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ2_XS",
+      "size": 68000000000,
+      "tags": [
+        "Qwen3.8-Flash-Next",
+        "IQ2_XS"
+      ],
+      "family": "qwen"
+    },
+    {
+      "id": "qwen/IQ3_XXS",
+      "name": "qwen/IQ3_XXS",
+      "author": "ISTA-DASLab",
+      "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS",
+      "size": 75800000000,
+      "tags": [
+        "Qwen3.8-Flash-Next",
+        "IQ3_XXS"
+      ],
+      "family": "qwen"
+    },
+    {
+      "id": "qwen/IQ3_S",
+      "name": "qwen/IQ3_S",
+      "author": "ISTA-DASLab",
+      "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S",
+      "size": 83600000000,
+      "tags": [
+        "Qwen3.8-Flash-Next",
+        "IQ3_S"
+      ],
+      "family": "qwen"
+    },
+    {
+      "id": "swift/IQ2_XS",
+      "name": "swift/IQ2_XS",
+      "author": "UkisAI",
+      "url": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d",
+      "size": 68000000000,
+      "tags": [
+        "Swift 1.5",
+        "IQ2_XS"
+      ],
+      "family": "swift"
+    },
+    {
+      "id": "swift/IQ3_XXS",
+      "name": "swift/IQ3_XXS",
+      "author": "UkisAI",
+      "url": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d",
+      "size": 75800000000,
+      "tags": [
+        "Swift 1.5",
+        "IQ3_XXS"
+      ],
+      "family": "swift"
+    },
+    {
+      "id": "swift/IQ3_S",
+      "name": "swift/IQ3_S",
+      "author": "UkisAI",
+      "url": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d",
+      "size": 83600000000,
+      "tags": [
+        "Swift 1.5",
+        "IQ3_S"
+      ],
+      "family": "swift"
+    },
+    {
+      "id": "coder/IQ1_M",
+      "name": "coder/IQ1_M",
+      "author": "ISTA-DASLab",
+      "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/resolve/bba88856f8c3c0c9e40e45f82d05e228b814ac43/IQ1_M",
+      "size": 58400000000,
+      "tags": [
+        "Qwen3.8-Flash-Next Coder",
+        "IQ1_M"
+      ],
+      "family": "coder"
+    },
+    {
+      "id": "unsloth/UD-IQ4_XS",
+      "name": "unsloth/UD-IQ4_XS",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS",
+      "size": 93700000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-IQ4_XS"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-Q4_K_XL",
+      "name": "unsloth/UD-Q4_K_XL",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q4_K_XL",
+      "size": 111300000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-Q4_K_XL"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-Q5_K_XL",
+      "name": "unsloth/UD-Q5_K_XL",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q5_K_XL",
+      "size": 158300000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-Q5_K_XL"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-Q6_K_XL",
+      "name": "unsloth/UD-Q6_K_XL",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q6_K_XL",
+      "size": 169200000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-Q6_K_XL"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/Q8_0",
+      "name": "unsloth/Q8_0",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/Q8_0",
+      "size": 188200000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "Q8_0"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-IQ1_M",
+      "name": "unsloth/UD-IQ1_M",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ1_M",
+      "size": 68000000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-IQ1_M"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-Q2_0",
+      "name": "unsloth/UD-Q2_0",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q2_0",
+      "size": 70500000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-Q2_0"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-IQ2_XS",
+      "name": "unsloth/UD-IQ2_XS",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ2_XS",
+      "size": 75800000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-IQ2_XS"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-Q2_K_XL",
+      "name": "unsloth/UD-Q2_K_XL",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q2_K_XL",
+      "size": 79600000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-Q2_K_XL"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-IQ3_XXS",
+      "name": "unsloth/UD-IQ3_XXS",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ3_XXS",
+      "size": 83600000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-IQ3_XXS"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-Q3_K_XL",
+      "name": "unsloth/UD-Q3_K_XL",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q3_K_XL",
+      "size": 89500000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-Q3_K_XL"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "unsloth/UD-IQ4_XS-v31",
+      "name": "unsloth/UD-IQ4_XS-v31",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS-v31",
+      "size": 93700000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Unsloth)",
+        "UD-IQ4_XS-v31"
+      ],
+      "family": "unsloth"
+    },
+    {
+      "id": "gyro/Gyro-S",
+      "name": "gyro/Gyro-S",
+      "author": "agentaionai",
+      "url": "https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/resolve/1ada08422e404aca51ab9df665f089f34c419c6b",
+      "size": 58500000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Gyro)",
+        "Gyro-S"
+      ],
+      "family": "gyro"
+    },
+    {
+      "id": "gyro/Gyro-M",
+      "name": "gyro/Gyro-M",
+      "author": "agentaionai",
+      "url": "https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/resolve/1ada08422e404aca51ab9df665f089f34c419c6b",
+      "size": 92000000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (Gyro)",
+        "Gyro-M"
+      ],
+      "family": "gyro"
+    },
+    {
+      "id": "nvfp4/NVFP4",
+      "name": "nvfp4/NVFP4",
+      "author": "strata packs",
+      "url": "https://huggingface.co/Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata",
+      "size": 128000000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (NVFP4)",
+        "NVFP4"
+      ],
+      "family": "nvfp4"
+    },
+    {
+      "id": "nvfp4/NVFP4-NVIDIA",
+      "name": "nvfp4/NVFP4-NVIDIA",
+      "author": "strata packs",
+      "url": "https://huggingface.co/Maximilian228/Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata",
+      "size": 128000000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (NVFP4)",
+        "NVFP4-NVIDIA"
+      ],
+      "family": "nvfp4"
+    },
+    {
+      "id": "nvfp4/NVFP4-QAD",
+      "name": "nvfp4/NVFP4-QAD",
+      "author": "strata packs",
+      "url": "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local",
+      "size": 102200000000,
+      "tags": [
+        "Qwen3.8-Flash-Next (NVFP4)",
+        "NVFP4-QAD"
+      ],
+      "family": "nvfp4"
+    },
+    {
+      "id": "qwen36/UD-Q4_K_XL",
+      "name": "qwen36/UD-Q4_K_XL",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+      "size": 22853663008,
+      "tags": [
+        "Qwen3.6-35B-A3B",
+        "UD-Q4_K_XL"
+      ],
+      "family": "qwen36"
+    },
+    {
+      "id": "qwen36/UD-Q6_K_XL",
+      "name": "qwen36/UD-Q6_K_XL",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+      "size": 32611711264,
+      "tags": [
+        "Qwen3.6-35B-A3B",
+        "UD-Q6_K_XL"
+      ],
+      "family": "qwen36"
+    },
+    {
+      "id": "qwen36/Q8_0",
+      "name": "qwen36/Q8_0",
+      "author": "Unsloth",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+      "size": 37801097504,
+      "tags": [
+        "Qwen3.6-35B-A3B",
+        "Q8_0"
+      ],
+      "family": "qwen36"
+    }
+  ]
+}

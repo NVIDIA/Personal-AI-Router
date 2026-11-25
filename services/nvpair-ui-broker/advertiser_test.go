@@ -157,6 +157,63 @@ func TestEngineAdvertiser_RejectsSelfForwardLoop(t *testing.T) {
 	assert.False(t, (<-updates).Healthy, "self-forwarding backend remained healthy")
 }
 
+// TestEngineAdvertiser_AdoptedEngineUsesObservedPort: an engine adopted from
+// outside PAIR serves on a port PAIR never launched. engine-manager reports
+// that observed port as running; the runtime cache still holds the managed
+// port. The advertiser must health-probe and advertise against the observed
+// port, or the adopted engine's proxy is never registered in discovery and
+// every facade - local and remote - resolves zero candidates.
+func TestEngineAdvertiser_AdoptedEngineUsesObservedPort(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	_, portText, err := net.SplitHostPort(backend.Listener.Addr().String())
+	require.NoError(t, err)
+	observedPort, err := strconv.Atoi(portText)
+	require.NoError(t, err)
+
+	profile := testDefaultEngineProxyProfile()
+	profile.DiscoveryService = noderec.ServiceStrata
+	b := brokerWithEngineProxyProfile(profile)
+	b.regCache = relay.NewRegistrationCache()
+
+	// The stale cache: the managed port PAIR would have launched, not where
+	// the adopted instance actually answers.
+	managedPort := observedPort + 1
+	if managedPort == profile.FacadePort {
+		managedPort++
+	}
+	b.engineProxy(profile).backendPort.Store(int32(managedPort))
+
+	// engine-manager says the engine runs on the observed port.
+	engineWorker, engineCodec := newTestRPCWorkerPipe(t)
+	b.setEngineMgr(engineWorker)
+	go func() {
+		request, err := engineCodec.Read()
+		if err != nil {
+			return
+		}
+		_ = engineCodec.Respond(request.ID, map[string]any{"running": true, "port": observedPort})
+	}()
+
+	proxyPort := 44000
+	if proxyPort == observedPort {
+		proxyPort++
+	}
+	updates := attachAdvertiserProxy(t, b, profile, proxyPort)
+
+	b.reconcileAdvertiseEngine(profile, backend.Client())
+
+	registrations := b.regCache.Snapshot()
+	require.Len(t, registrations, 1, "adopted engine on an unmanaged port must still advertise its proxy")
+	assert.Equal(t, profile.DiscoveryService, registrations[0].Service)
+	assert.Equal(t, proxyPort, registrations[0].Port)
+	update := <-updates
+	assert.True(t, update.Healthy, "observed port is healthy")
+	assert.Equal(t, observedPort, update.Port, "local backend must follow the observed port, not the managed cache")
+}
+
 func attachAdvertiserProxy(
 	t *testing.T,
 	b *Broker,

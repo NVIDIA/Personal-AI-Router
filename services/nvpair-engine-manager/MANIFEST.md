@@ -73,6 +73,7 @@ PAIR has a small, fixed policy surface:
 | --- | --- |
 | `server.port` | Integer 1–65535, synchronized with the server-port field. |
 | `server.host` | Managed loopback host, keeping direct engine access behind the proxy. |
+| `network.access` | Strata's share kind: `local` (loopback) or `lan` (every interface address, no API key). Engines whose launch templates carry no `{host}` placeholder bind this instead of `server.host`. |
 | `cors.origins` | Comma-separated origin list, normalized and validated; changes are local-only. |
 | `cors.enabled` | Explicit boolean, normalized to `true` or `false`; changes are local-only. |
 
@@ -182,6 +183,12 @@ PAIR cannot replace for them. Two separate removals have to leave them alone:
    data directory. Nothing can exempt a subdirectory of it, so the only defense
    is for `models_dir` to resolve somewhere else entirely.
 
+An engine may also declare no `models_dir` at all when it places its library
+where the engine's own settings decide (Strata does). That is legal only while
+`uninstall.remove` is absent too: no declared deletion, no store to protect.
+Bundled manifests must never pin a personal library path the engine does not
+use; that only splits the library in two.
+
 That second one is why `models_dir` must be a literal path. By default,
 `{install_dir}` is inside the app data root, so any store derived from it is
 destroyed when a user uninstalls the app. A platform may declare an external
@@ -234,6 +241,8 @@ applies to the host the test runs on.
 | `ready` | probe | no | Readiness probe; `start` waits for it before reporting Running. |
 | `stop` | object | no | Process mode: `signal` (`"term"` default, or `"kill"`) + `grace_s` (seconds before force-kill). Command mode: `cmd` (argv) to bring the engine down. |
 | `health` | probe | no | Periodic liveness probe while Running; `interval_s` between checks. |
+| `adopt_ports` | int[] | no | Extra loopback ports (typically the engine's vendor stock port) probed to discover an instance the user started outside PAIR. Only valid when `ready` carries a `json_match`: the body must positively identify the listener as this engine, so a foreign service on a shared port is never adopted. A discovered instance reports Running+adopted; PAIR never starts or stops it. |
+| `adopt_port_files` | object | no | Port nomination from JSON state files the engine writes while it runs: `globs` (expanded with manifest path rules) match per-instance files, `port_field` (default `port`) names the integer port inside. Nomination only - the same `json_match` identity probe decides every candidate, so a stale file costs one failed probe and a reused port stays foreign. Same `ready`+`json_match` requirement as `adopt_ports`. Optional `instance_info` (`config_dir`, `strip_prefix`, `args_field` default `args`, `model_field`) links each adopted instance to the engine's own launch config by file name (ready-file base name minus `strip_prefix` minus a trailing hex token, plus `.json` in `config_dir`); the settings page then shows that instance's real port, host, model and arguments read-only - display only, PAIR never applies them. |
 
 A **probe** is `{ "http": "<url>", "status": <int>, "timeout_s": <int>, "interval_s": <int> }`
 or `{ "tcp": "<host:port>", ... }`. `status` defaults to `200`. Prefer
@@ -286,8 +295,11 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   refusing when it cannot tell, and holds the engine's operation lock until the
   removal and any rollback of the launch settings are done.
 - **`launch_model`** — switch the model an engine serves, for an engine with no
-  load call because the model is a launch argument (vLLM). `launch_model.flag`
-  names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
+  load call because the model is a launch argument (vLLM, Strata). `launch_model.flag`
+  names the flag (`"--model"`); where the engine names its model with a pair of
+  launch flags, `launch_model.family_flag` names the second (Strata: `"--family"`)
+  and the id is split at its first `/`, so `family/quant` writes both. The
+  action takes `{"model": "<id>"}` (a
   Hugging Face id such as `org/name`; anything that could be read as a flag, a
   path or a shell fragment is refused), writes it into the saved launch
   settings exactly as the settings editor would, and restarts a running engine

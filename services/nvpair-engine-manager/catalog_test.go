@@ -45,6 +45,56 @@ func TestOllamaCatalog_LoadsFromEmbeddedFile(t *testing.T) {
 	}
 }
 
+// TestStrataCatalog_LoadsFromEmbeddedFile checks the locked family/quant table
+// is compiled in and parses. Every id must split into a family selector and a
+// quantization: pull_model and launch_model both cut the id at the first "/" to
+// build `strata launch --family <f> --model <q>`, so a malformed id names a
+// model Strata would refuse.
+func TestStrataCatalog_LoadsFromEmbeddedFile(t *testing.T) {
+	// The selectors Strata's setup.py FAMILIES/OWN_PATH_FAMILIES accept.
+	families := map[string]bool{
+		"qwen": true, "coder": true, "unsloth": true, "gyro": true,
+		"swift": true, "nvfp4": true, "qwen36": true,
+	}
+	c := newCatalogService()
+	res, err := c.Catalog(t.Context(), "strata", "linux", "amd64", "", "")
+	require.NoError(t, err, "strata catalog")
+	require.NotEmpty(t, res.Models, "embedded strata catalog is empty")
+	assert.NotEmpty(t, res.FetchedAt, "no generation timestamp; an operator cannot tell how stale the list is")
+
+	seen := map[string]bool{}
+	for _, m := range res.Models {
+		require.NotEmpty(t, m.Name, "a model has no pull name")
+		assert.Equal(t, m.Name, m.ID, "id and name must both be pull-ready")
+		family, quant, ok := strings.Cut(m.ID, "/")
+		require.True(t, ok, "model %q is not a family/quant pair", m.ID)
+		require.True(t, families[family], "model %q has unknown family %q", m.ID, family)
+		require.NotEmpty(t, quant, "model %q has no quantization half", m.ID)
+		assert.Equal(t, family, m.Family, "model %q disagrees with its own family field", m.ID)
+		assert.True(t, strings.HasPrefix(m.URL, "https://"), "model %q URL %q", m.Name, m.URL)
+		require.False(t, seen[m.ID], "duplicate model %q", m.ID)
+		seen[m.ID] = true
+	}
+
+	// qwen36 has no Apple silicon build: a Mac must not be offered it, and a
+	// Linux node must.
+	mac, err := c.Catalog(t.Context(), "strata", "darwin", "arm64", "", "")
+	require.NoError(t, err, "mac target")
+	for _, m := range mac.Models {
+		require.NotEqual(t, "qwen36", m.Family, "Mac target was offered %q", m.ID)
+	}
+	linux, err := c.Catalog(t.Context(), "strata", "linux", "amd64", "", "")
+	require.NoError(t, err, "linux target")
+	require.Contains(t, seen, "qwen36/Q8_0", "the locked list is missing its qwen36 rows")
+	hasQwen36 := false
+	for _, m := range linux.Models {
+		if m.Family == "qwen36" {
+			hasQwen36 = true
+		}
+	}
+	require.True(t, hasQwen36, "a Linux node was not offered the qwen36 rows")
+}
+
 // The embedded list has several thousand entries, so requests for different
 // targets must reuse it while keeping their own target metadata.
 func TestOllamaCatalog_ReusesModelsAcrossRequestTargets(t *testing.T) {

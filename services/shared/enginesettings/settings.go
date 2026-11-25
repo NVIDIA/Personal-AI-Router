@@ -28,23 +28,24 @@ type Request struct {
 }
 
 type Snapshot struct {
-	NodeID              string `json:"nodeId"`
-	Engine              string `json:"engine"`
-	Revision            uint64 `json:"revision"`
-	AppliedRevision     uint64 `json:"appliedRevision"`
-	Sequence            uint64 `json:"sequence"`
-	Epoch               string `json:"epoch"`
-	Settings            Config `json:"settings"`
-	EffectiveServerPort int    `json:"effectiveServerPort"`
-	EffectiveProxyPort  int    `json:"effectiveProxyPort"`
-	Running             bool   `json:"running"`
-	Adopted             bool   `json:"adopted"`
-	Editable            bool   `json:"editable"`
-	Reason              string `json:"reason,omitempty"`
-	Format              string `json:"format"`
-	Phase               string `json:"phase"`
-	Error               string `json:"error,omitempty"`
-	RequestID           string `json:"requestId,omitempty"`
+	NodeID              string            `json:"nodeId"`
+	Engine              string            `json:"engine"`
+	Revision            uint64            `json:"revision"`
+	AppliedRevision     uint64            `json:"appliedRevision"`
+	Sequence            uint64            `json:"sequence"`
+	Epoch               string            `json:"epoch"`
+	Settings            Config            `json:"settings"`
+	EffectiveServerPort int               `json:"effectiveServerPort"`
+	EffectiveProxyPort  int               `json:"effectiveProxyPort"`
+	Running             bool              `json:"running"`
+	External            *ExternalInstance `json:"external,omitempty"`
+	Adopted             bool              `json:"adopted"`
+	Editable            bool              `json:"editable"`
+	Reason              string            `json:"reason,omitempty"`
+	Format              string            `json:"format"`
+	Phase               string            `json:"phase"`
+	Error               string            `json:"error,omitempty"`
+	RequestID           string            `json:"requestId,omitempty"`
 }
 
 type Conflict struct {
@@ -77,6 +78,24 @@ type LaunchState struct {
 	Editable      bool   `json:"editable"`
 	Reason        string `json:"reason,omitempty"`
 	Format        string `json:"format"`
+	// External describes the running instance when it was started outside
+	// PAIR and adopted, as recorded by the engine's own state files. Display
+	// only: PAIR never applies it.
+	External *ExternalInstance `json:"external,omitempty"`
+}
+
+// ExternalInstance is what the engine's own runtime state says about an
+// instance PAIR did not start: the port it actually listens on and the
+// launch content the engine recorded for it.
+type ExternalInstance struct {
+	Preset string `json:"preset,omitempty"`
+	Host   string `json:"host,omitempty"`
+	Port   int    `json:"port"`
+	Model  string `json:"model,omitempty"`
+	// Named to match Preview's redact-friendly keys (see Preview.Args).
+	Args       []string `json:"launch_args,omitempty"`
+	ReadyFile  string   `json:"readyFile,omitempty"`
+	ConfigFile string   `json:"configFile,omitempty"`
 }
 
 type Configure struct {

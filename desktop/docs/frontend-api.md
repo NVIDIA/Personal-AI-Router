@@ -117,7 +117,8 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
-`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and `vllm`.
+`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, `vllm`,
+and `strata`.
 vLLM serves one model per process, so `unloadModel` (Eject) stops the engine,
 which frees its GPU memory, and `loadModel` on a stopped engine starts it. Its model
 list is the Hugging Face cache, which stays available while the engine is stopped, `deleteModel` removes a cached model (not the one

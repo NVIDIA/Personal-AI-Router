@@ -87,5 +87,30 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
             label: 'vLLM',
             url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
         }
+    },
+    strata: {
+        hasExpiry: false,
+        // Strata serves one model per instance and has no in-process unload, so
+        // Eject stops the instance (`strata launch --stop`). Load writes the
+        // model into the launch arguments and restarts on it.
+        hasEject: true,
+        // Detect-only for now: the manifest ships no install block, so PAIR
+        // shows Strata only when the user installed it themselves.
+        hasInstall: [],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        // `strata models list` reads the run-config files from disk.
+        hasModelSearchOnlyWhenRunning: false,
+        // Strata model files live in a user-chosen library folder under tags;
+        // there is no managed delete for them yet.
+        hasDeleteModel: false,
+        loadRestartsEngine: true,
+        engineHub: {
+            label: 'Strata',
+            url: 'https://github.com/Niko1221/Strata/blob/main/docs/MODELS.md'
+        }
     }
 }

@@ -53,6 +53,30 @@ export function isEngineTypeRunningClusterWide(
     return false
 }
 
+/**
+ * The proxy port to offer for this engine on `nodeId`'s own API endpoint.
+ * A node publishes its facade port for engines it can run; the facade port is
+ * the same per-engine constant on every node. So when the local node cannot
+ * host an engine (an engine unsupported on its OS has no status row at all),
+ * the port reported by a node that runs the engine is valid evidence for
+ * routing through the local proxy, which serves remote engines cluster-wide.
+ * The local node's own port always wins when present.
+ */
+export function endpointProxyPortForNode(
+    nodeId: string,
+    statusByNode: EngineStatusByNode,
+    engineType: EngineType
+): number | null {
+    const local = statusByNode.get(nodeId)?.get(engineType)
+    if (local?.proxyPort) return local.proxyPort
+    if (!isEngineTypeRunningClusterWide(statusByNode, engineType)) return null
+    for (const inner of statusByNode.values()) {
+        const s = inner.get(engineType)
+        if (s?.processStatus === 'running' && s.proxyPort) return s.proxyPort
+    }
+    return null
+}
+
 export function engineStatusesToListRows(engineStatuses: EngineStatusData[]): EngineListRow[] {
     return engineStatuses.map(s => ({
         rowKey: `${s.nodeId}:${s.engineType}`,

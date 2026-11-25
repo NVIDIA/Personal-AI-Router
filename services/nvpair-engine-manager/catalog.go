@@ -44,6 +44,10 @@ import (
 //     source as `repo:quantization`.
 //     Hugging Face browses approved publishers; ModelScope browses popular
 //     repositories. Both fetch live, with each source and search cached separately.
+//   - Strata installs a fixed family x quantization matrix (its setup.py tables)
+//     and names a model by the pair, "family/quant". A locked file generated
+//     from those tables by catalog/gen-strata-models.py is compiled in, so the
+//     browse list shows exactly what `strata launch --family --model` accepts.
 
 // catalogSourceKind distinguishes how an engine's catalogue is obtained.
 type catalogSourceKind int
@@ -121,11 +125,14 @@ type catalogParams struct {
 	ModelSource string `json:"modelSource"` // Peer selection; omitted uses this node's setting.
 }
 
-//go:embed catalog/ollama-models.json
+//go:embed catalog/ollama-models.json catalog/strata-models.json
 var catalogFS embed.FS
 
 // ollamaCatalogPath is the embedded locked list.
 const ollamaCatalogPath = "catalog/ollama-models.json"
+
+// strataCatalogPath is the embedded locked Strata family/quant table.
+const strataCatalogPath = "catalog/strata-models.json"
 
 // The LM Studio catalogue endpoint. Its repo ids are the pull-ready strings.
 const (
@@ -242,6 +249,8 @@ type catalogService struct {
 
 	ollamaCatalog func() (CatalogResult, error)
 
+	strataCatalog func() (CatalogResult, error)
+
 	lmStudio   *listingCache
 	llamaCPP   *listingCache
 	vllm       *listingCache
@@ -353,6 +362,7 @@ func newCatalogService() *catalogService {
 	c := &catalogService{
 		client:        newEngineHTTPClient(catalogHTTPTimeout),
 		ollamaCatalog: sync.OnceValues(loadOllamaCatalog),
+		strataCatalog: sync.OnceValues(loadStrataCatalog),
 		searches:      map[string]*listingCache{},
 	}
 	// ModelScope serves file lists over HTTP/1.1, so keep a connection idle for
@@ -380,6 +390,25 @@ func (c *catalogService) Catalog(ctx context.Context, engine, platform, arch, qu
 		}
 		// The committed Ollama list carries no machine-locked entries, so
 		// nothing is dropped and the caller's target does not change it.
+		result.Platform, result.Arch = platform, arch
+		return result, nil
+	case "strata":
+		result, err := c.strataCatalog()
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		// Qwen3.6-35B-A3B has no Apple silicon build (Strata's CAPABILITIES:
+		// "does not run on Apple silicon"), so a Mac is never offered it. The
+		// rest of the matrix installs wherever Strata itself runs.
+		if platform == "darwin" {
+			kept := make([]CatalogModel, 0, len(result.Models))
+			for _, m := range result.Models {
+				if m.Family != "qwen36" {
+					kept = append(kept, m)
+				}
+			}
+			result.Models = kept
+		}
 		result.Platform, result.Arch = platform, arch
 		return result, nil
 	case "lmstudio":
@@ -538,6 +567,47 @@ func loadOllamaCatalog() (CatalogResult, error) {
 	}
 	models := normalizeOllamaRows(file.Models)
 	slog.Info("ollama model catalog loaded",
+		"models", len(models), "scrapedAt", file.ScrapedAt)
+	return CatalogResult{
+		Models:    models,
+		Source:    file.Source,
+		FetchedAt: file.ScrapedAt,
+	}, nil
+}
+
+// strataCatalogFile is the locked Strata list's on-disk shape: rows already in
+// the shared shape, generated from Strata's own family/size tables.
+type strataCatalogFile struct {
+	ScrapedAt string         `json:"scrapedAt"`
+	Source    string         `json:"source"`
+	Count     int            `json:"count"`
+	Models    []CatalogModel `json:"models"`
+}
+
+func loadStrataCatalog() (CatalogResult, error) {
+	raw, err := catalogFS.ReadFile(strataCatalogPath)
+	if err != nil {
+		return CatalogResult{}, fmt.Errorf("read embedded strata catalog: %w", err)
+	}
+	var file strataCatalogFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return CatalogResult{}, fmt.Errorf("parse embedded strata catalog: %w", err)
+	}
+	// A row's id doubles as its pull name (`strata launch --family f --model q`
+	// takes the halves), so a row missing either half is dropped.
+	models := make([]CatalogModel, 0, len(file.Models))
+	seen := make(map[string]bool, len(file.Models))
+	for _, m := range file.Models {
+		if m.ID == "" {
+			m.ID = m.Name
+		}
+		if m.ID == "" || m.Name == "" || seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
+		models = append(models, m)
+	}
+	slog.Info("strata model catalog loaded",
 		"models", len(models), "scrapedAt", file.ScrapedAt)
 	return CatalogResult{
 		Models:    models,

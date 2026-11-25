@@ -24,7 +24,7 @@ func TestLaunchControls_BuildEquivalentLaunchesAcrossSources(t *testing.T) {
 			e := settingsExecutor(t, true)
 			rt := &settingsState(t, e).plat.Runtime
 			require.NoError(t, json.Unmarshal([]byte(definition), &rt.EditableLaunch.Controls))
-			require.NoError(t, rt.EditableLaunch.validateControls())
+			require.NoError(t, rt.EditableLaunch.validateControls(true))
 			request := settingsRequest(t, e)
 			request.Resolution = "launch"
 			if rt.EditableLaunch.Controls[0].Value == "{server.port}" {
@@ -112,7 +112,7 @@ func TestBundledLlamaCPP_DisablesCORSByDefault(t *testing.T) {
 func TestBundledManifests_DeclareReviewedNetworkingControls(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	// Adding a bundled engine requires an explicit networking review and cases.
-	wantEngines := []string{"llamacpp", "lmstudio", "ollama", "vllm"}
+	wantEngines := []string{"llamacpp", "lmstudio", "ollama", "strata", "vllm"}
 	names := reg.Names()
 	slices.Sort(names)
 	assert.Equal(t, wantEngines, names, "review networking controls for every bundled engine")
@@ -140,6 +140,18 @@ func TestBundledManifests_DeclareReviewedNetworkingControls(t *testing.T) {
 					require.Equal(t, []LaunchControl{{Value: "{server.host}", Flags: []string{"--host"}}, {Value: "{server.port}", Flags: []string{"--port"}}}, policy.Controls, "incomplete vLLM controls")
 					valid = []string{"--host 127.0.0.1 --port 23456", "--host=127.0.0.1 --port=23456", "--port 23456 --model Qwen/Qwen2.5-0.5B-Instruct"}
 					invalid = []string{"--host 0.0.0.0", "--host=::", "--port 0", "--port 65536", "--port", "--port 23456 --port 23457", "-- --host 0.0.0.0"}
+				case "strata":
+					// Strata picks its bind by access keyword: "local" (the default)
+					// is loopback, "lan" binds every address of the machine and
+					// still answers PAIR's loopback probe. "address" and the rest
+					// are refused here - they move the server off loopback and the
+					// readiness probe would hang until its 30-minute timeout.
+					// --no-api-key is fixed because PAIR's probe and proxy cannot
+					// present a key Strata would mint.
+					require.Equal(t, []string{"launch", "--yes", "--no-tui", "--no-api-key"}, policy.FixedArgs, "Strata serve subcommand and access policy are not fixed")
+					require.Equal(t, []LaunchControl{{Value: "{network.access}", Flags: []string{"--access"}}, {Value: "{server.port}", Flags: []string{"--port"}}}, policy.Controls, "incomplete Strata controls")
+					valid = []string{"--access local --port 23456", "--access lan --port=23456", "--access Lan --port 23456", "--port 23456 --family qwen --model q2_0"}
+					invalid = []string{"--access address --port 23456", "--access bogus --port 23456", "--access local --port 23456 --access lan", "--port 0", "--port 65536", "--port", "--port 23456 --port 23457"}
 				default:
 					require.Equal(t, []LaunchControl{{Value: "{server.host}:{server.port}", Env: []string{"OLLAMA_HOST"}}, {Value: "{cors.origins}", Env: []string{"OLLAMA_ORIGINS"}}}, policy.Controls, "incomplete Ollama controls")
 					valid = []string{`OLLAMA_HOST="127.0.0.1:23456"`, `OLLAMA_HOST='127.0.0.1:23456'`, "OLLAMA_HOST=127.0.0.1:23456"}
@@ -299,7 +311,7 @@ func TestNetworkingManifest_RejectsAmbiguousDeclarations(t *testing.T) {
 		{{Value: "{server.port}", Flags: []string{"--port"}}},
 	} {
 		policy := EditableLaunch{Controls: controls}
-		assert.Error(t, policy.validateControls(), "accepted (%v)", policy)
+		assert.Error(t, policy.validateControls(true), "accepted (%v)", policy)
 	}
 
 }

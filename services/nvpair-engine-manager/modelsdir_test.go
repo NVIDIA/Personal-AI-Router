@@ -27,7 +27,12 @@ func TestBundledModelStores_RemainOutsideManagedApplicationPaths(t *testing.T) {
 	forbidden := []string{"nvidia corporation", "personal ai router"}
 	for name, manifest := range bundledManifestSet(t) {
 		for key, platform := range manifest.Platforms {
-			if !assert.NotEmpty(t, platform.ModelsDir, "%s/%s: declare the engine's model store so uninstall knows what to keep", name, key) {
+			if platform.Uninstall != nil && len(platform.Uninstall.Remove) > 0 {
+				if !assert.NotEmpty(t, platform.ModelsDir, "%s/%s: declare the engine's model store so uninstall knows what to keep", name, key) {
+					continue
+				}
+			}
+			if platform.ModelsDir == "" {
 				continue
 			}
 			resolved := strings.ToLower(filepath.ToSlash(expandPath(platform.ModelsDir)))
@@ -42,6 +47,9 @@ func TestBundledModelStores_RemainOutsideManagedApplicationPaths(t *testing.T) {
 		}
 		platform, ok := manifest.HostPlatform()
 		if !ok {
+			continue
+		}
+		if platform.ModelsDir == "" {
 			continue
 		}
 		root, err := appdir.Dir()

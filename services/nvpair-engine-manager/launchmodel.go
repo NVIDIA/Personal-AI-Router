@@ -163,9 +163,21 @@ func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *A
 		if !current.Editable {
 			return fmt.Errorf("the launch settings of engine %q cannot be changed: %s", engine, current.Reason)
 		}
-		text, changed, err := withLaunchFlag(current.LaunchText, spec.Flag, model)
+		modelValue, familyValue := model, ""
+		if spec.FamilyFlag != "" {
+			familyValue, modelValue, _ = strings.Cut(model, "/")
+		}
+		text, changed, err := withLaunchFlag(current.LaunchText, spec.Flag, modelValue)
 		if err != nil {
 			return err
+		}
+		if spec.FamilyFlag != "" && familyValue != "" {
+			var familyChanged bool
+			text, familyChanged, err = withLaunchFlag(text, spec.FamilyFlag, familyValue)
+			if err != nil {
+				return err
+			}
+			changed = changed || familyChanged
 		}
 		if !changed && current.Running {
 			return nil

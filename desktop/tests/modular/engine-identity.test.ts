@@ -16,20 +16,32 @@ import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 
 describe('engine identity', () => {
     it('enables llama.cpp workflows on every platform', () => {
-        expect(EngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
-        expect(EnabledEngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
+        expect(EngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'strata'])
+        expect(EnabledEngineTypes).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'strata'])
         expect(getWelcomeEngineCandidates('Windows')).toContain('llama-cpp')
         expect(getWelcomeEngineCandidates('MacOS')).toContain('llama-cpp')
         expect(getWelcomeEngineCandidates('Linux')).toContain('llama-cpp')
     })
 
-    it('preselects every engine during onboarding', () => {
+    it('preselects every engine during onboarding, detect-only Strata aside', () => {
         expect(WELCOME_ENGINE_DEFAULT_SELECTED).toEqual({
             ollama: true,
             'lm-studio': true,
             'llama-cpp': true,
-            vllm: true
+            vllm: true,
+            strata: false
         })
+    })
+
+    it('keeps Strata detect-only, browsable when stopped, and without model delete', () => {
+        expect(EngineManagerNames.strata).toBe('strata')
+        expect(EngineDisplayNames.strata).toBe('Strata')
+        // PAIR detects a user's Strata but never installs it.
+        expect(getWelcomeEngineCandidates('Linux')).not.toContain('strata')
+        expect(EngineCapabilities.strata.hasInstall).toEqual([])
+        // One model per instance: Load restarts on it, Eject stops the instance.
+        expect(EngineCapabilities.strata.loadRestartsEngine).toBe(true)
+        expect(EngineCapabilities.strata.hasDeleteModel).toBe(false)
     })
 
     it('offers vLLM on Linux and macOS, not Windows', () => {

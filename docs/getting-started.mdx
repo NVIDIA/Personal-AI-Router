@@ -36,8 +36,8 @@ inference. Two or more on the same local network let you try pairing and routing
 Nothing else has to be in place first:
 
 - **Engines.** PAIR installs and starts Ollama, LM Studio, llama.cpp, or (on Linux or Apple Silicon macOS) vLLM for you
-  in step 4. Existing Ollama and LM Studio installations can also be detected
-  and used.
+  in step 4. Existing Ollama, LM Studio, and Strata (on Linux) installations can
+  also be detected and used.
 - **Models.** PAIR downloads models for you in step 4. A request needs only one
   eligible node, so a single node holding the model is enough. Prepare the same
   model on additional nodes when you want any of them to be able to serve it.
@@ -193,9 +193,10 @@ inference engine or the node that serves the request. PAIR calls that local
 address an endpoint.
 
 Select **Endpoints** in the top toolbar to open the **API endpoints** window. It
-lists one copyable `http://127.0.0.1:<port>` URL for each engine. Copy the one for the
-engine you prepared. If it says **No engines are running**, return to step 4 and
-start an engine.
+lists one copyable `http://127.0.0.1:<port>` URL for each engine running on any
+cluster node - the local proxy routes requests to whichever node runs it. Copy
+the one for the engine you prepared. If it says **No engines are running**,
+return to step 4 and start an engine.
 
 ![The API endpoints window listing a copyable local URL for each running engine.](assets/onboarding/getting-started/08-api-endpoints.png)
 
@@ -213,6 +214,7 @@ engine would normally listen on:
 - `1234` for LM Studio.
 - `8080` for llama.cpp.
 - `8000` for vLLM.
+- `8090` for Strata.
 
 Tools already pointed at those ports keep working without reconfiguration, and
 the engine moves to the next free port.
@@ -243,6 +245,7 @@ The engine therefore has to understand the style you send.
 | LM Studio | Works | Not available |
 | llama.cpp | Works | Not available |
 | vLLM | Works | Not available |
+| Strata | Works | Not available |
 
 **If you are unsure, send the OpenAI-style request.** It works with every
 supported engine, and most tools and SDKs use it. Use the Ollama style

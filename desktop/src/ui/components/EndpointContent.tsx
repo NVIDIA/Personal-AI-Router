@@ -9,7 +9,10 @@ import { EnabledEngineTypes, EngineDisplayNames } from '@/shared/constants/engin
 import { useCallback, useMemo, useState } from 'react'
 import EngineIcon from './EngineIcon'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
-import { getEnginesForNode, isEngineTypeRunningClusterWide } from '@/ui/utils/get-engines-for-node'
+import {
+    endpointProxyPortForNode,
+    isEngineTypeRunningClusterWide
+} from '@/ui/utils/get-engines-for-node'
 import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
 import type { EngineType } from '@/shared/types/engines'
 
@@ -32,20 +35,15 @@ export default function EndpointContent({
         createCopiedState(EnabledEngineTypes)
     )
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
-    const selfEngines = useMemo(
-        () => getEnginesForNode(selfId, statusByNode, EnabledEngineTypes),
-        [selfId, statusByNode]
-    )
     const allBackends = useMemo(() => {
         const engines = EnabledEngineTypes.map(type => {
-            const backend = selfEngines.find(b => b.engineType === type)
             const isAvailable = isEngineTypeRunningClusterWide(statusByNode, type)
+            const port = endpointProxyPortForNode(selfId, statusByNode, type)
 
-            if (!backend || !backend.proxyPort || !isAvailable) {
+            if (!port || !isAvailable) {
                 return null
             }
 
-            const port = backend.proxyPort
             return {
                 name: EngineDisplayNames[type],
                 proxyPort: port,
@@ -59,7 +57,7 @@ export default function EndpointContent({
         }
 
         return engines
-    }, [selfEngines, statusByNode])
+    }, [selfId, statusByNode])
 
     const handleCopy = useCallback(async (value: string, backend: string) => {
         const electronCopy = window.windowApi?.window?.copyToClipboard

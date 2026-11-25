@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 1. Purpose
 A declarative, config-driven control plane for **local inference engines**
-(currently Ollama, LM Studio, and llama.cpp). It owns an engine's entire
+(currently Ollama, LM Studio, llama.cpp, vLLM, and Strata). It owns an engine's entire
 lifecycle *except serving inference* — locate, install, launch, stop, restart,
 health, and config-declared actions — so one uniform API manages any engine
 across OSes with no per-engine code. A third party drops in a JSON manifest and
@@ -113,7 +113,10 @@ loading is provided by the PAIR proxy endpoint.
   `chat`, `unload_model`, and `delete_model` (`remove_path` with
   `lms-disk-path` resolution);
   llama.cpp declares list, loaded-list, pull, load, unload, and native cache
-  delete with exact model ids. `loaded_models` reports
+  delete with exact model ids. Strata declares list as a CLI command rather
+  than a server call, loaded-list as `GET /v1/models`, pull and load through
+  `launch_model` writing a `--family`/`--model` pair, and unload as
+  `stop_engine`. `loaded_models` reports
   models currently resident in memory, name-extracted via the same declarative
   `result` spec with optional nested-path and row filters: Ollama uses
   `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
@@ -327,7 +330,7 @@ Requests (caller → service):
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
 | `engine:models` | — | `{ models: [string], modelsByEngine?, loadedByEngine?, downloadedByEngine? }` — advertised, loaded, and downloaded model lists |
-| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, Strata, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Strata's is compiled in (`catalog/strata-models.json`, no network) and fixed: each id is exactly the `family/quant` pair its install and launch commands take, and `qwen36` rows are dropped for a `darwin` target. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` from the remote node |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status }` after the remote install |
 | `engine:remote-pull-model` | `{ node, engine, model?, params?, opId? }` | `{ opId, result }` after the remote pull; `opId` is the caller's, or one minted for it (§14) |
@@ -381,7 +384,7 @@ With `--control-port` and a clustered `--cluster-dir`, engine-manager serves a c
 
 The `engine:remote-*` methods are the client half. Engine-manager subscribes to the broker relay with `discovery:subscribe{services:[ec]}` and replaces its `ec` directory from each `discovery:nodes` snapshot. Admission requires `identityVerification: "local"`, or `identityVerification: "pinned"` with `trusted: true`, together with an `ec` service, a nonzero service port, and at least one candidate address. Entries are keyed by verified `hostUuid`; owned local records need no peer pin for directory admission, and unverified records are excluded.
 
-For each call, engine-manager resolves the target `node` from that directory, refreshes the live mesh, and requires clustered membership and a current target pin before dialing the `ec` surface over mTLS. It relays each streamed progress frame up as `engine:remote-progress` (keyed by the `opId` the caller named a pull with, or else a minted one) and settles the request on the terminal frame. Remote install/pull run for the operation's full duration (no broker-imposed timeout); remote stop and model unload are fast request/response. Remote start, model delete, Ollama and vLLM model loads (a vLLM load restarts the engine on the new model), and download cancel can answer only after slow work on the peer — an engine reaching readiness, a model loading, a download stopping — so they use the readiness-sized response budget, and remote start waits for the engine's bounded readiness result.
+For each call, engine-manager resolves the target `node` from that directory, refreshes the live mesh, and requires clustered membership and a current target pin before dialing the `ec` surface over mTLS. It relays each streamed progress frame up as `engine:remote-progress` (keyed by the `opId` the caller named a pull with, or else a minted one) and settles the request on the terminal frame. Remote install/pull run for the operation's full duration (no broker-imposed timeout); remote stop and model unload are fast request/response. Remote start, model delete, Ollama, vLLM, and Strata model loads (a vLLM or Strata load restarts the engine on the new model), and download cancel can answer only after slow work on the peer — an engine reaching readiness, a model loading, a download stopping — so they use the readiness-sized response budget, and remote start waits for the engine's bounded readiness result.
 
 The remote client reads NDJSON one line at a time with the shared worker-path
 8 MiB buffer limit (`remoteStreamFrameBytes = maxFrameBytes`), including the line

@@ -16,6 +16,7 @@ import (
 // the cross-process e2e test).
 var (
 	fakeEngineBin string
+	fakeStrataBin string
 	managerBin    string
 )
 
@@ -35,6 +36,15 @@ func TestMain(m *testing.M) {
 	fakeEngineBin = filepath.Join(tmp, "fake-engine"+suffix)
 	if out, err := exec.Command("go", "build", "-o", fakeEngineBin, "./testdata/fakeengine").CombinedOutput(); err != nil {
 		panic("build fake-engine: " + err.Error() + "\n" + string(out))
+	}
+
+	// The fake Strata CLI detaches its server with Setsid, a POSIX call,
+	// so it is built for POSIX only; the tests that use it skip elsewhere.
+	if runtime.GOOS != "windows" {
+		fakeStrataBin = filepath.Join(tmp, "fake-strata")
+		if out, err := exec.Command("go", "build", "-o", fakeStrataBin, "./testdata/fakestrata").CombinedOutput(); err != nil {
+			panic("build fake-strata: " + err.Error() + "\n" + string(out))
+		}
 	}
 
 	// The Hugging Face tool an hf_cache delete runs, beside the fake engine as

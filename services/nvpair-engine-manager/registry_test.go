@@ -885,3 +885,41 @@ func TestBundledVLLMManifest_DeclaresTheModelActionsTheStackReliesOn(t *testing.
 		assert.Equal(t, "{hf_hub_cache}", pull.HFPull.Dir)
 	}
 }
+
+// TestPlatformValidate_AdoptPorts: adopt_ports must be real non-runtime
+// ports, and a manifest may only declare them when its ready probe carries
+// a json_match - the identity test that keeps foreign listeners unadopted.
+func TestPlatformValidate_AdoptPorts(t *testing.T) {
+	p := Platform{Runtime: Runtime{
+		Bin:        "engine-bin",
+		Port:       8091,
+		AdoptPorts: []int{8080},
+		Ready:      &Probe{HTTP: "http://127.0.0.1:{port}/health", Status: 200},
+	}}
+	require.ErrorContains(t, p.validate("linux/amd64"), "json_match")
+	p.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service", Value: "strata"}
+	require.NoError(t, p.validate("linux/amd64"))
+	p.Runtime.AdoptPorts = []int{8091}
+	require.ErrorContains(t, p.validate("linux/amd64"), "must not repeat")
+	p.Runtime.AdoptPorts = []int{0}
+	require.ErrorContains(t, p.validate("linux/amd64"), "not a port")
+	p2 := Platform{Runtime: Runtime{
+		Bin:            "engine-bin",
+		Port:           8091,
+		AdoptPortFiles: &AdoptPortFiles{Globs: []string{"~/state/*.ready.json"}},
+		Ready:          &Probe{HTTP: "http://127.0.0.1:{port}/health", Status: 200},
+	}}
+	require.ErrorContains(t, p2.validate("linux/amd64"), "json_match")
+	p2.Runtime.Ready.JSONMatch = &ProbeJSONMatch{Field: "service", Value: "strata"}
+	require.NoError(t, p2.validate("linux/amd64"))
+	// Empty globs are legal: that is how a user override disables file
+	// nomination (user manifests deep-merge, so omission cannot remove the
+	// bundled list and an invalid replacement would drop the override).
+	p2.Runtime.AdoptPortFiles.Globs = nil
+	require.NoError(t, p2.validate("linux/amd64"))
+	p2.Runtime.AdoptPortFiles.Globs = []string{"~/state/*.ready.json"}
+	p2.Runtime.AdoptPortFiles.InstanceInfo = &InstanceInfo{}
+	require.ErrorContains(t, p2.validate("linux/amd64"), "instance_info needs config_dir")
+	p2.Runtime.AdoptPortFiles.InstanceInfo = &InstanceInfo{ConfigDir: "~/state/launch"}
+	require.NoError(t, p2.validate("linux/amd64"))
+}

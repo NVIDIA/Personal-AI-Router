@@ -222,6 +222,43 @@ type Runtime struct {
 	Stop *StopSpec `json:"stop,omitempty"`
 	// Health is the periodic availability probe for a running engine.
 	Health *Probe `json:"health,omitempty"`
+	// AdoptPorts are additional well-known ports to probe for a listener that
+	// identifies as this engine - a vendor stock port where the user may have
+	// started it themselves. The status poll probes the resolved runtime port
+	// first and these after it; a listener is adopted only when the Ready
+	// probe (with its json_match when declared) positively identifies it, so
+	// an engine without a distinctive readiness body must not declare these:
+	// adoption must never claim another engine's or PAIR's own listener.
+	AdoptPorts []int `json:"adopt_ports,omitempty"`
+	// AdoptPortFiles enumerates further candidate ports from small JSON
+	// state files the engine writes while it runs (Strata records the bound
+	// port of every running instance in its runtime directory). The files
+	// only nominate ports; adoption still requires the Ready probe's
+	// json_match to positively identify each listener.
+	AdoptPortFiles *AdoptPortFiles `json:"adopt_port_files,omitempty"`
+}
+
+// AdoptPortFiles points at engine-written JSON files whose named port field
+// marks a port a listener may live on. Globs expand with the same path rules
+// as other manifest paths; PortField (default "port") selects the integer.
+type AdoptPortFiles struct {
+	Globs     []string `json:"globs"`
+	PortField string   `json:"port_field,omitempty"`
+	// InstanceInfo optionally names the engine's own per-instance launch
+	// config store, so the settings page can show what an adopted instance
+	// was actually started with. The config file is linked by name from the
+	// ready file: base name minus StripPrefix and minus a trailing hex token
+	// (Strata's launch-<preset>-<hash>.ready.json names launch/<preset>.json).
+	InstanceInfo *InstanceInfo `json:"instance_info,omitempty"`
+}
+
+// InstanceInfo maps fields of the engine's launch config file for display.
+// Host and Model fall back to the ready file's own fields when absent.
+type InstanceInfo struct {
+	ConfigDir   string `json:"config_dir"`
+	StripPrefix string `json:"strip_prefix,omitempty"`
+	ArgsField   string `json:"args_field,omitempty"`
+	ModelField  string `json:"model_field,omitempty"`
 }
 
 // AutoLaunch configures start-time launch arguments. The only kind is
@@ -438,6 +475,12 @@ type ActionHFPull struct {
 // launch settings and restarts a running engine on it.
 type ActionLaunchModel struct {
 	Flag string `json:"flag"`
+	// FamilyFlag, when set, splits the model id on its first "/": the part
+	// before it goes to FamilyFlag, the remainder to Flag. Strata names its
+	// model as a family and quant pair (--family qwen --model q2_0) while a
+	// fleet names one model by a single string, so a "family/quant" id
+	// writes both flags of the launch.
+	FamilyFlag string `json:"family_flag,omitempty"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -907,6 +950,25 @@ func (p *Platform) validate(key string) error {
 	if source := p.Runtime.ModelSource; source != "" && source != "huggingface" && source != "modelscope" {
 		return fmt.Errorf("platform %q: invalid model_source", key)
 	}
+	for _, ap := range p.Runtime.AdoptPorts {
+		if ap < 1 || ap > 65535 {
+			return fmt.Errorf("platform %q: adopt_ports entry %d is not a port", key, ap)
+		}
+		if p.Runtime.Port > 0 && ap == p.Runtime.Port {
+			return fmt.Errorf("platform %q: adopt_ports must not repeat the runtime port %d", key, p.Runtime.Port)
+		}
+	}
+	if len(p.Runtime.AdoptPorts) > 0 && (p.Runtime.Ready == nil || p.Runtime.Ready.JSONMatch == nil) {
+		return fmt.Errorf("platform %q: adopt_ports requires runtime.ready with a json_match, so an adopted listener is positively identified as this engine", key)
+	}
+	if apf := p.Runtime.AdoptPortFiles; apf != nil && len(apf.Globs) > 0 {
+		if p.Runtime.Ready == nil || p.Runtime.Ready.JSONMatch == nil {
+			return fmt.Errorf("platform %q: adopt_port_files requires runtime.ready with a json_match, so an adopted listener is positively identified as this engine", key)
+		}
+		if ii := apf.InstanceInfo; ii != nil && strings.TrimSpace(ii.ConfigDir) == "" {
+			return fmt.Errorf("platform %q: adopt_port_files.instance_info needs config_dir", key)
+		}
+	}
 	if p.InstallDir != "" {
 		if strings.TrimSpace(p.InstallDir) == "" {
 			return fmt.Errorf("platform %q: install_dir cannot be blank", key)
@@ -971,7 +1033,7 @@ func (p *Platform) validate(key string) error {
 		if _, err := formatLaunchText(policy.FixedArgs); err != nil {
 			return fmt.Errorf("platform %q: invalid fixed launch arguments", key)
 		}
-		if err := policy.validateControls(); err != nil {
+		if err := policy.validateControls(runtimeLaunchReferencesHost(p.Runtime)); err != nil {
 			return fmt.Errorf("platform %q: %w", key, err)
 		}
 	}

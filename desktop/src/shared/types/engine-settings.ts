@@ -34,12 +34,23 @@ export interface EngineSettingsSnapshot extends EngineSettingsTarget {
     effectiveProxyPort: number
     running: boolean
     adopted: boolean
+    external?: EngineExternalInstance
     editable: boolean
     reason: string
     format: string
     phase: 'idle' | 'applying' | 'succeeded' | 'failed'
     error: string
     requestId: string
+}
+
+export interface EngineExternalInstance {
+    preset?: string
+    host?: string
+    port: number
+    model?: string
+    launchArgs: string[]
+    readyFile?: string
+    configFile?: string
 }
 
 export interface EngineSettingsPreview {

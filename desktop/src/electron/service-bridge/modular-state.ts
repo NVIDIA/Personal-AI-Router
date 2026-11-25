@@ -194,7 +194,8 @@ function emptyEngines(): Record<ProxyEngine, EnginePresence> {
         ollama: emptyPresence(),
         'lm-studio': emptyPresence(),
         'llama-cpp': emptyPresence(),
-        vllm: emptyPresence()
+        vllm: emptyPresence(),
+        strata: emptyPresence()
     }
 }
 
@@ -954,7 +955,8 @@ class ModularBridgeState {
         ollama: 0,
         'lm-studio': 0,
         'llama-cpp': 0,
-        vllm: 0
+        vllm: 0,
+        strata: 0
     }
     private selfId: string | null = null
     /**
@@ -2018,10 +2020,12 @@ class ModularBridgeState {
         // Per-engine attribution is authoritative when the node carries any:
         // return exactly this engine's models so a dual-engine node attributes
         // each model to the engine that serves it, and a missing key means this
-        // engine serves none (NOT the cross-engine union). Mirrors
-        // noderec.DirectoryNode.EngineModels.
+        // engine serves none (NOT the cross-engine union). Base list mirrors
+        // noderec.DirectoryNode.EngineModels; the append below is display-side.
         if (Object.keys(node.modelsByEngine).length > 0) {
-            return node.modelsByEngine[engineManagerName(engine)] ?? []
+            const rows = node.modelsByEngine[engineManagerName(engine)] ?? []
+            const loaded = node.loadedByEngine[engineManagerName(engine)] ?? []
+            return [...rows, ...loaded.filter(name => !rows.includes(name))]
         }
         // Fallback for a pre-attribution peer: the flat union is unattributed, so
         // attribute it only when exactly one proxy engine is active on the node,
